@@ -15,7 +15,7 @@ Usage:  python3 capture-signals.py [--label round4] [--out DIR]
 Prints the written path on stdout. No shell=True (no injection surface).
 """
 import argparse
-import json, os, re, shutil, socket, subprocess, sys, time
+import hashlib, json, os, re, shutil, socket, subprocess, sys, time
 import urllib.request
 from datetime import datetime, timezone
 
@@ -418,6 +418,275 @@ def _process_identity(pid, proc_root="/proc"):
         # The process may have exited between cgroup.procs and /proc. The
         # caller records the miss explicitly rather than fabricating identity.
         return None
+
+
+def _memory_fields(text):
+    """Only kernel kB fields; absent/malformed values stay absent, never zero."""
+    fields = {}
+    for line in text.splitlines():
+        match = re.fullmatch(r"([A-Za-z_()]+):\s+(\d+)\s+kB", line.strip())
+        if match:
+            fields[match.group(1)] = int(match.group(2)) * 1024
+    return fields
+
+
+def host_memory(proc_root="/proc"):
+    """A physical partition, plus explicitly overlapping diagnostic views.
+
+    Hugetlb includes the ENTIRE pool (also free huge pages); reservations are a
+    subset of that pool, and THP is already ordinary memory. Never add these
+    views to process PSS or inclusive cgroup values.
+    """
+    try:
+        with open(os.path.join(proc_root, "meminfo")) as f:
+            text = f.read()
+    except OSError:
+        return {"available": False, "reason": "meminfo-unreadable"}
+    fields = _memory_fields(text)
+    total, free, pool = (fields.get(k) for k in ("MemTotal", "MemFree", "Hugetlb"))
+    ordinary = (total - free - pool if None not in (total, free, pool)
+                and total >= free + pool else None)
+    counts = dict((key, int(value)) for key, value in
+                  re.findall(r"^(HugePages_(?:Total|Free|Rsvd|Surp)):\s+(\d+)\s*$",
+                             text, re.MULTILINE))
+    page_size = fields.get("Hugepagesize")
+    # meminfo's HugePages_* covers only the default size. If another pool exists,
+    # the total still comes from Hugetlb but the free/used partition is UNKNOWN.
+    default_pool = (counts.get("HugePages_Total", -1) * page_size
+                    if page_size is not None else None)
+    pool_free = (counts["HugePages_Free"] * page_size
+                 if default_pool == pool and page_size is not None
+                 and "HugePages_Free" in counts else None)
+    reserved = (counts["HugePages_Rsvd"] * page_size
+                if pool_free is not None and "HugePages_Rsvd" in counts else None)
+    if pool_free is not None and not 0 <= pool_free <= pool:
+        pool_free = reserved = None
+    if reserved is not None and reserved > pool_free:
+        reserved = None
+    return {
+        "available": True, "unit": "bytes",
+        "partition": {"memTotalBytes": total, "memFreeBytes": free,
+                      "hugeTlbPoolBytes": pool, "ordinaryNonFreeBytes": ordinary},
+        "partitionComplete": ordinary is not None,
+        "hugeTlb": {"freeBytes": pool_free,
+                    "usedBytes": pool - pool_free if pool_free is not None else None,
+                    "reservedSubsetOfFreeBytes": reserved},
+        "overlappingViews": {key: fields.get(key) for key in
+                             ("MemAvailable", "Cached", "Buffers", "Shmem", "Slab",
+                              "SReclaimable", "SUnreclaim", "KernelStack", "PageTables",
+                              "AnonHugePages", "ShmemHugePages", "FileHugePages")},
+        "accounting": "physical-partition; overlapping views are not additive",
+    }
+
+
+def _memory_process_stat(pid, proc_root):
+    with open(os.path.join(proc_root, str(pid), "stat")) as f:
+        text = f.read()
+    end = text.rfind(")")
+    if end < 0:
+        raise ValueError("malformed process stat")
+    # Fields after comm start at field 3; starttime is field 22.
+    fields = text[end + 2:].split()
+    return int(fields[19]), int(fields[6])
+
+
+def _memory_process_identity(pid, proc_root):
+    return _memory_process_stat(pid, proc_root)[0]
+
+
+def _hugetlb_backing_ranges(text, pagemap_reader=None, base_page_size=4096):
+    """Prove sharing from resident MAP_SHARED backing offsets.
+
+    A matching path or inode alone does not prove anonymous/COW/partial-resident
+    pages are identical. A partial mapping needs pagemap presence for each huge
+    page. Private/anonymous mappings stay unknown: mixing physical-frame keys
+    with backing-offset keys could count a private alias of a shared page twice.
+    Missing or changing detail stays unattributed; physical frames are not read.
+    """
+    header = re.compile(r"^([0-9a-f]+)-([0-9a-f]+)\s+\S+\s+([0-9a-f]+)\s+([0-9a-f]+:[0-9a-f]+)\s+(\d+)(?:\s|$)")
+    blocks = []
+    current = None
+    for line in text.splitlines():
+        match = header.match(line)
+        if match:
+            current = {"header": match.groups(), "lines": []}
+            blocks.append(current)
+        elif current is not None:
+            current["lines"].append(line)
+    ranges, unresolved, observed = [], 0, 0
+    for block in blocks:
+        fields = _memory_fields("\n".join(block["lines"]))
+        if "Shared_Hugetlb" not in fields or "Private_Hugetlb" not in fields:
+            continue
+        resident = fields["Shared_Hugetlb"] + fields["Private_Hugetlb"]
+        observed += resident
+        if not resident:
+            continue
+        start, end, offset, device, inode = block["header"]
+        size = int(end, 16) - int(start, 16)
+        flags = next((line.split()[1:] for line in block["lines"]
+                      if line.startswith("VmFlags:")), [])
+        shared_backing = int(inode) > 0 and "ht" in flags and "sh" in flags
+        if (shared_backing
+                and resident == size == fields.get("Size")):
+            ranges.append((device, int(inode), int(offset, 16), int(offset, 16) + size))
+        else:
+            page_size = fields.get("KernelPageSize", 0)
+            pieces = []
+            if (pagemap_reader is not None and shared_backing
+                    and page_size >= base_page_size and page_size % base_page_size == 0
+                    and size == fields.get("Size") and size % page_size == 0
+                    and int(start, 16) % page_size == 0 and int(offset, 16) % page_size == 0
+                    and size // page_size <= 65536):
+                try:
+                    for delta in range(0, size, page_size):
+                        entry = pagemap_reader(int(start, 16) + delta)
+                        if entry & (1 << 62):
+                            raise ValueError("swapped HugeTLB page")
+                        if not entry & (1 << 63):
+                            continue
+                        key, position = (device, int(inode)), int(offset, 16) + delta
+                        if pieces and pieces[-1][:2] == key and pieces[-1][3] == position:
+                            prior = pieces[-1]
+                            pieces[-1] = (*key, prior[2], position + page_size)
+                        else:
+                            pieces.append((*key, position, position + page_size))
+                except (OSError, ValueError):
+                    pieces = []
+            if pieces and sum(stop - begin for _, _, begin, stop in pieces) == resident:
+                ranges.extend(pieces)
+            else:
+                unresolved += resident
+    return ranges, unresolved, observed
+
+
+def _process_memory(pid, proc_root):
+    before = _memory_process_identity(pid, proc_root)
+    base = os.path.join(proc_root, str(pid))
+    try:
+        with open(os.path.join(base, "smaps_rollup")) as f:
+            fields = _memory_fields(f.read())
+    except OSError:
+        # PF_KTHREAD has no userspace mm. Its memory belongs to the host/kernel
+        # view, not a missing process PSS measurement. Revalidate its identity.
+        after, flags = _memory_process_stat(pid, proc_root)
+        if before == after and flags & 0x00200000:
+            return ({"pid": pid, "startTimeTicks": before, "kernelThread": True}, [], 0)
+        raise
+    required = ("Pss", "Private_Clean", "Private_Dirty", "SwapPss",
+                "Shared_Hugetlb", "Private_Hugetlb")
+    if any(key not in fields for key in required):
+        raise ValueError("incomplete smaps_rollup")
+    huge = fields["Shared_Hugetlb"] + fields["Private_Hugetlb"]
+    ranges, unresolved = [], huge
+    if huge:
+        try:
+            with open(os.path.join(base, "smaps")) as f:
+                text = f.read(2 * 1024 * 1024 + 1)
+            if len(text) <= 2 * 1024 * 1024:
+                try:
+                    with open(os.path.join(base, "pagemap"), "rb") as pagemap:
+                        base_page_size = os.sysconf("SC_PAGE_SIZE")
+                        reads = 0
+                        def read_page(address):
+                            nonlocal reads
+                            reads += 1
+                            if reads > 65536:
+                                raise ValueError("pagemap detail capped")
+                            raw = os.pread(pagemap.fileno(), 8, address // base_page_size * 8)
+                            if len(raw) != 8:
+                                raise ValueError("pagemap detail unreadable")
+                            return int.from_bytes(raw, sys.byteorder)
+                        found, unknown, observed = _hugetlb_backing_ranges(text, read_page, base_page_size)
+                except OSError:
+                    found, unknown, observed = _hugetlb_backing_ranges(text)
+                with open(os.path.join(base, "smaps_rollup")) as f:
+                    after_fields = _memory_fields(f.read())
+                after_huge = (after_fields.get("Shared_Hugetlb", -1)
+                              + after_fields.get("Private_Hugetlb", -1))
+                if observed == huge == after_huge:
+                    ranges, unresolved = found, unknown
+        except OSError:
+            pass  # ordinary PSS is measured; huge mapping attribution is unknown
+    if _memory_process_identity(pid, proc_root) != before:
+        raise ValueError("process-identity-changed")
+    return ({"pid": pid, "startTimeTicks": before,
+             "ordinaryPssBytes": fields["Pss"],
+             "ordinaryPrivateBytes": fields["Private_Clean"] + fields["Private_Dirty"],
+             "swapPssBytes": fields["SwapPss"], "rssBytes": fields.get("Rss"),
+             "explicitHugeTlbMappedBytes": huge}, ranges, unresolved)
+
+
+def process_memory(proc_root="/proc", budget_sec=5.0, max_scanned=4096, top_n=40,
+                   monotonic_fn=time.monotonic):
+    """Bounded census with explicit population/identity/permission uncertainty.
+
+    PSS is kernel-proportional attribution, NOT unique physical memory for a
+    partial population. SwapPss is a separate view. Host, process and cgroup
+    views must never be added to one another.
+    """
+    started = monotonic_fn()
+    try:
+        pids = sorted(int(entry) for entry in os.listdir(proc_root) if entry.isdigit())
+    except OSError:
+        return {"available": False, "reason": "process-population-unreadable"}
+    rows, unmeasured, ranges, identities = [], [], {}, []
+    unresolved_huge, scanned, kernel_threads = 0, 0, 0
+    for pid in pids:
+        if scanned >= max_scanned or monotonic_fn() - started > budget_sec:
+            break
+        scanned += 1
+        try:
+            row, backing, unknown = _process_memory(pid, proc_root)
+            if row.get("kernelThread"):
+                kernel_threads += 1
+                identities.append([pid, row["startTimeTicks"], "kernel-thread"])
+                continue
+            rows.append(row)
+            unresolved_huge += unknown
+            identities.append([pid, row["startTimeTicks"]])
+            for device, inode, start, end in backing:
+                ranges.setdefault((device, inode), []).append((start, end))
+        except (OSError, ValueError, IndexError) as error:
+            reason = ("permission-denied" if isinstance(error, PermissionError) else
+                      "vanished" if isinstance(error, FileNotFoundError) else
+                      str(error) if isinstance(error, ValueError) else "unreadable")
+            unmeasured.append({"pid": pid, "reason": reason})
+            identities.append([pid, "unmeasured"])
+    attributed_huge = 0
+    for intervals in ranges.values():
+        end = -1
+        for start, stop in sorted(intervals):
+            attributed_huge += max(0, stop - max(start, end))
+            end = max(end, stop)
+    rows.sort(key=lambda row: (-row["ordinaryPssBytes"], row["pid"]))
+    reasons = {}
+    for gap in unmeasured:
+        reasons[gap["reason"]] = reasons.get(gap["reason"], 0) + 1
+    return {
+        "available": True, "unit": "bytes", "scope": "captured-processes",
+        "accounting": "kernel-proportional PSS; separate HugeTLB and SwapPss views",
+        "capturedAt": datetime.now(timezone.utc).isoformat(),
+        "captureDurationSec": monotonic_fn() - started,
+        "populationCount": len(pids), "scannedProcesses": scanned,
+        "measuredProcesses": len(rows), "unmeasuredProcesses": len(unmeasured),
+        "kernelThreadsInHostView": kernel_threads, "unmeasuredReasons": reasons,
+        "notScannedProcesses": len(pids) - scanned,
+        "maxScanned": max_scanned, "maxRows": top_n, "budgetSec": budget_sec,
+        "populationFingerprint": hashlib.sha256(json.dumps(pids).encode()).hexdigest(),
+        "identityFingerprint": hashlib.sha256(json.dumps(identities).encode()).hexdigest(),
+        "partial": bool(unmeasured) or scanned < len(pids),
+        "ordinaryPssBytesAttributed": sum(r["ordinaryPssBytes"] for r in rows) if rows else None,
+        "ordinaryPrivateBytes": sum(r["ordinaryPrivateBytes"] for r in rows) if rows else None,
+        "swapPssBytes": sum(r["swapPssBytes"] for r in rows) if rows else None,
+        "uniquePhysicalBytes": None,
+        "uniquePhysicalReason": "sharing population and atomic page snapshot not established",
+        "explicitHugeTlbBytesAttributed": attributed_huge,
+        "hugeTlbBytesInUnresolvedMappings": unresolved_huge,
+        "hugeTlbAttributionComplete": not unresolved_huge and not unmeasured and scanned == len(pids),
+        "unmeasured": unmeasured[:top_n], "top": rows[:top_n],
+        "rowsTruncated": len(rows) > top_n,
+    }
 
 
 def cgroup_memory(budget_sec=5.0, max_scanned=4096, top_n=40, root=None,
@@ -1173,13 +1442,28 @@ def argument_parser():
         default=OUT_DIR,
         help="directory for the snapshot (default: %(default)s)",
     )
+    parser.add_argument("--memory-budget-sec", type=float, default=5.0,
+                        help="bounded process-memory census budget, >0 to 60 seconds (default: 5)")
+    parser.add_argument("--memory-max-processes", type=int, default=4096,
+                        help="process-memory census cap, 1 to 100000 (default: 4096)")
     return parser
 
 
 def main():
-    args = argument_parser().parse_args()
+    parser = argument_parser()
+    args = parser.parse_args()
+    if not 0 < args.memory_budget_sec <= 60 or not 1 <= args.memory_max_processes <= 100000:
+        parser.error("memory budget must be >0 to 60 seconds and process cap 1 to 100000")
     label, out_dir = args.label, args.out
     os.makedirs(out_dir, exist_ok=True)
+
+    with open(__file__, "rb") as f:
+        source_hash = hashlib.sha256(f.read()).hexdigest()
+    try:
+        with open("/proc/sys/kernel/random/boot_id") as f:
+            boot_id = f.read().strip()
+    except OSError:
+        boot_id = None
 
     la = loadavg()
     ow = operator_workers()
@@ -1192,6 +1476,9 @@ def main():
         "capturedAt": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "label": label,
         "capturedBy": "E1 capture-signals.py (host-side leg)",
+        "captureRuntime": {"sourceSha256": source_hash, "hostname": socket.gethostname(),
+                           "bootId": boot_id, "pid": os.getpid(), "euid": os.geteuid(),
+                           "kernelRelease": os.uname().release, "pythonVersion": sys.version},
         "hostState": host_state(la),
         "signals": {
             "loadavg": la,
@@ -1205,6 +1492,8 @@ def main():
             "operator_3070_reachable": tcp_reachable(OPERATOR_PORT),
             "kopia": kopia(),
             "psi": (host_psi := psi()),
+            "memoryViews": {"host": host_memory(), "processes": process_memory(
+                budget_sec=args.memory_budget_sec, max_scanned=args.memory_max_processes)},
             "cgroupMemory": cgroup_memory(),
             "cgroupCpu": cgroup_cpu(),
             "cgroupIo": cgroup_io(),

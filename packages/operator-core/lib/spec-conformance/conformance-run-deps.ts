@@ -2,6 +2,7 @@
  * Production adapters for `runPlanConformance` — every one an existing surface:
  *
  *   - tests checks       → judged from the test-run ledger (latest row per named file);
+ *   - cargo checks       → the same native evaluator used by scorecard grading;
  *   - probe checks       → evaluateCriterionProbeChecks through the re-score dispatcher;
  *   - instrument checks  → runInstrumentChecks (registered command instruments);
  *   - requirements checks → the canonical activation/completion realization judge;
@@ -34,6 +35,7 @@ import {
   type RubricCheckResult,
 } from '../check-results-ledger';
 import {
+  evaluateCriterionCargoChecks,
   evaluateCriterionProbeChecks,
   evaluateCriterionRequirementChecks,
   loadCriterionCheckCases,
@@ -427,6 +429,8 @@ export interface ProductionConformanceDepsInput {
   dispatchTool?: Parameters<typeof rescoreProbeDispatcher>[1];
   /** Injectable probe evaluator for focused tests; production uses the continuity evaluator. */
   evaluateProbes?: typeof evaluateCriterionProbeChecks;
+  /** Same native evaluator as scorecard grading; injectable without replacing its judge. */
+  evaluateCargo?: typeof evaluateCriterionCargoChecks;
   /** Same realization data used by scorecard grading; injectable without replacing its judge. */
   readRequirementRealization?: RequirementRealizationReader;
   /**
@@ -486,6 +490,28 @@ export function productionConformanceDeps(input: ProductionConformanceDepsInput)
           contentEquivalence,
           ...(cases ? { cases } : {}),
         }, sql());
+      }
+      if (check.kind === 'cargo') {
+        const evaluation = await (input.evaluateCargo ?? evaluateCriterionCargoChecks)({
+          criteria: [{ key: request.checkId, check }],
+          ratings: { [request.checkId]: { rating: 'unknown' } },
+        });
+        if (!evaluation.ok) return {
+          kind: 'cargo', verdict: 'error', value: null, unit: 'failed tests', measuredAt: nowIso(),
+          detail: `${evaluation.error}: ${evaluation.detail}`,
+        };
+        const run = evaluation.checkRuns[request.checkId];
+        if (run?.kind !== 'cargo') return {
+          kind: 'cargo', verdict: 'error', value: null, unit: 'failed tests', measuredAt: nowIso(),
+          detail: 'native Cargo check produced no measurement',
+        };
+        return {
+          kind: 'cargo', verdict: run.verdict, value: run.failed, unit: 'failed tests',
+          measuredAt: run.measuredAt,
+          detail: `${run.manifestPath}${run.test ? ` (${run.test})` : ''}: ` +
+            `${run.passed} passed, ${run.failed} failed, ${run.ignored} ignored; run ${run.runId ?? 'unrecorded'}` +
+            (run.failures?.length ? `; ${run.failures.join('; ')}` : ''),
+        };
       }
       if (check.kind === 'probe') {
         const criterion = { key: request.checkId, check };

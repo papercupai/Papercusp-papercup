@@ -1487,7 +1487,7 @@ describe('deterministic carry-respawn cutover (P-018)', () => {
     expect(injectMock).not.toHaveBeenCalled();
   });
 
-  it('refuses a deliberate cut that would cross an unanswered owner message', async () => {
+  it('refuses once, then carries the same unanswered owner message on the next sweep', async () => {
     estimateMock.mockResolvedValue(170_000);
     specMock.mockResolvedValue('sonnet');
     getFlagMock.mockResolvedValue(true);
@@ -1496,16 +1496,30 @@ describe('deterministic carry-respawn cutover (P-018)', () => {
     hostSupportsMock.mockReturnValue(true);
     buildOwnerRespawnMock.mockResolvedValue({
       systemPromptAddendum: 'deterministic carry',
-      firstPrompt: null,
+      firstPrompt: 'please fix the operator',
       budgetChars: 32_000,
-      openOwnerQuestion: { crossesOpenOwnerMessage: true },
+      openOwnerQuestion: { crossesOpenOwnerMessage: true, basis: 'known-unanswered' },
     });
 
-    const out = await checkCompactionCompliance(fakeSql({ seeded }));
+    const first = await checkCompactionCompliance(fakeSql({ seeded }));
 
-    expect(out.carryRespawned).toEqual([]);
-    expect(out.forceCompacted).toEqual([]);
+    expect(first.carryRespawned).toEqual([]);
+    expect(first.forceCompacted).toEqual([]);
     expect(injectMock).not.toHaveBeenCalled();
+
+    const second = await checkCompactionCompliance(fakeSql({ seeded }));
+
+    expect(second.carryRespawned).toEqual(['hot']);
+    expect(second.forceCompacted).toEqual([]);
+    expect(injectMock).toHaveBeenCalledTimes(1);
+    expect(injectMock).toHaveBeenCalledWith(
+      '/tmp/hot.sock',
+      expect.objectContaining({
+        mode: 'carry-respawn',
+        data: 'please fix the operator',
+        systemPromptAddendum: 'deterministic carry',
+      }),
+    );
   });
 
   it('P-022: a host without carry-respawn is neither cut NOR force-compacted — native /compact has no fallback; the death detector covers it', async () => {

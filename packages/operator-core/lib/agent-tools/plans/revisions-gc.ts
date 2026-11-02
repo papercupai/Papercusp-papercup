@@ -54,6 +54,11 @@ export async function gcOldPlanRevisions(
        USING ranked r
        WHERE p.id = r.id
          AND r.rn > ${keepPerPlan}
+         AND NOT EXISTS (
+           SELECT 1 FROM harness_shared.harness_plans h
+            WHERE h.workspace_id=p.workspace_id AND h.harness_slug=p.harness_slug
+              AND h.plan_slug=p.plan_slug AND h.execution_start_revision_seq=p.seq
+         )
       RETURNING 1
     )
     SELECT count(*)::int AS n FROM d

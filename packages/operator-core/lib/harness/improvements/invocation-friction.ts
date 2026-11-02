@@ -1,6 +1,7 @@
 /** R-7 delivery reuses invocation metadata and the existing watchdog cadence.
  * The row is the durable pending record; memory only bounds the fast path. */
 import { getOrgPg } from '@papercusp/db-org';
+import { isTransientPgConnectionError } from '../../host-benign-errors';
 import { runWithWorkspace } from '../../workspace-als';
 import { captureToolInvocationFriction, type ToolInvocationFriction } from './capture-core';
 
@@ -137,25 +138,38 @@ export async function recoverInvocationFriction(
   let failed = 0;
   const failureClasses = new Map<string, number>();
   for (const ref of refs) {
-    try {
-      if (await captureInvocationFriction({ ...ref, workspaceId }, { ...deps, sql })) delivered++;
-    } catch (error) {
-      failed++;
-      const failure = safeFailureDetails(error);
-      failureClasses.set(failure.label, (failureClasses.get(failure.label) ?? 0) + 1);
-      // Rotate a failed row behind unattempted work. A permanently failing
-      // first batch must not starve every later report on every watchdog tick.
-      await sql.unsafe(`UPDATE harness_shared.tool_invocations
-        SET metadata_json = COALESCE(metadata_json, '{}'::jsonb) || jsonb_build_object(
-          'frictionAttemptAt', $3::text,
-          'frictionFailureClass', $4::text,
-          'frictionFailureCode', $5::text
-        )
-        WHERE workspace_id = $1 AND id = $2::bigint
-          AND metadata_json->>'frictionCapture' = 'pending'`, [
-        workspaceId, ref.id, new Date().toISOString(), failure.name, failure.code,
-      ]);
+    let captureError: unknown;
+    let failedCapture = false;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        if (await captureInvocationFriction({ ...ref, workspaceId }, { ...deps, sql })) delivered++;
+        break;
+      } catch (error) {
+        // postgres-js can close a socket mid-write; its pool reconnects on the
+        // next query. The row transaction has rolled back by this point, so one
+        // retry uses a fresh transaction. Persistent failures remain visible.
+        if (attempt === 0 && isTransientPgConnectionError(error)) continue;
+        captureError = error;
+        failedCapture = true;
+        break;
+      }
     }
+    if (!failedCapture) continue;
+    failed++;
+    const failure = safeFailureDetails(captureError);
+    failureClasses.set(failure.label, (failureClasses.get(failure.label) ?? 0) + 1);
+    // Rotate a failed row behind unattempted work. A permanently failing
+    // first batch must not starve every later report on every watchdog tick.
+    await sql.unsafe(`UPDATE harness_shared.tool_invocations
+      SET metadata_json = COALESCE(metadata_json, '{}'::jsonb) || jsonb_build_object(
+        'frictionAttemptAt', $3::text,
+        'frictionFailureClass', $4::text,
+        'frictionFailureCode', $5::text
+      )
+      WHERE workspace_id = $1 AND id = $2::bigint
+        AND metadata_json->>'frictionCapture' = 'pending'`, [
+      workspaceId, ref.id, new Date().toISOString(), failure.name, failure.code,
+    ]);
   }
   if (failed) {
     const failureSummary = [...failureClasses.entries()]

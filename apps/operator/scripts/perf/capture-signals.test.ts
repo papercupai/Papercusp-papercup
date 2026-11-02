@@ -8,6 +8,17 @@ import { describe, expect, it } from "vitest";
 const scriptPath = fileURLToPath(new URL("./capture-signals.py", import.meta.url));
 
 describe("capture-signals.py CLI", () => {
+  it.each(["0", "61", "nan"])("refuses invalid memory budget %s before writing a capture", (budget) => {
+    const outputDir = mkdtempSync(join(tmpdir(), "capture-signals-invalid-"));
+    try {
+      expect(() => execFileSync("python3", [scriptPath, "--memory-budget-sec", budget, "--out", outputDir],
+        { stdio: "pipe" })).toThrow();
+      expect(readdirSync(outputDir)).toEqual([]);
+    } finally {
+      rmSync(outputDir, { recursive: true, force: true });
+    }
+  });
+
   it("prints help without creating a capture artifact", () => {
     const outputDir = mkdtempSync(join(tmpdir(), "capture-signals-help-"));
 
@@ -50,6 +61,168 @@ function runPy(body: string): unknown {
     rmSync(root, { recursive: true, force: true });
   }
 }
+
+describe("host memory right-sizing accounting", () => {
+  const fixture = [
+    "def proc(pid, start=99, huge=0):",
+    "    put(f'proc/{pid}', 'stat', f'{pid} (name with (parens)) S ' + '0 ' * 18 + str(start) + '\\n')",
+    "    put(f'proc/{pid}', 'smaps_rollup', f'Rss: 100 kB\\nPss: 60 kB\\nPrivate_Clean: 10 kB\\nPrivate_Dirty: 20 kB\\nSwapPss: 5 kB\\nShared_Hugetlb: {huge} kB\\nPrivate_Hugetlb: 0 kB\\nAnonHugePages: 40 kB\\n')",
+    "def mapping(address, offset=0, inode=7, resident=2048, flags='ht sh'): ",
+    "    return f'{address:x}-{address+2097152:x} rw-s {offset:08x} 00:01 {inode} /same-name\\nSize: 2048 kB\\nShared_Hugetlb: {resident} kB\\nPrivate_Hugetlb: 0 kB\\nVmFlags: {flags}\\n'",
+  ].join("\n");
+
+  it("partitions host physical memory without adding reservations, THP or overlapping cache views", () => {
+    const out = runPy([
+      "put('proc', 'meminfo', 'MemTotal: 16384 kB\\nMemFree: 4096 kB\\nHugetlb: 4096 kB\\nHugepagesize: 2048 kB\\nHugePages_Total: 2\\nHugePages_Free: 1\\nHugePages_Rsvd: 1\\nHugePages_Surp: 1\\nCached: 3000 kB\\nShmem: 1000 kB\\nSlab: 500 kB\\nAnonHugePages: 2048 kB\\n')",
+      "print(json.dumps(cs.host_memory(os.path.join(root, 'proc'))))",
+    ].join("\n")) as any;
+    expect(out.partition).toEqual({ memTotalBytes: 16384 * 1024, memFreeBytes: 4096 * 1024,
+      hugeTlbPoolBytes: 4096 * 1024, ordinaryNonFreeBytes: 8192 * 1024 });
+    expect(out.hugeTlb).toEqual({ freeBytes: 2048 * 1024, usedBytes: 2048 * 1024,
+      reservedSubsetOfFreeBytes: 2048 * 1024 });
+    expect(out.overlappingViews.AnonHugePages).toBe(2048 * 1024);
+    expect(out.partitionComplete).toBe(true);
+  });
+
+  it("keeps a non-default huge-page pool partition and malformed host fields unknown", () => {
+    const out = runPy([
+      "put('proc', 'meminfo', 'MemTotal: bad kB\\nMemFree: 1 kB\\nHugetlb: 8192 kB\\nHugepagesize: 2048 kB\\nHugePages_Total: 2\\nHugePages_Free: 1\\nHugePages_Rsvd: 1\\n')",
+      "print(json.dumps(cs.host_memory(os.path.join(root, 'proc'))))",
+    ].join("\n")) as any;
+    expect(out.partition.memTotalBytes).toBeNull();
+    expect(out.partition.ordinaryNonFreeBytes).toBeNull();
+    expect(out.partitionComplete).toBe(false);
+    expect(out.hugeTlb).toEqual({ freeBytes: null, usedBytes: null, reservedSubsetOfFreeBytes: null });
+  });
+
+  it("unions proven shared backing offsets across virtual aliases and different processes", () => {
+    const out = runPy([fixture,
+      "proc(10, huge=4096)", "proc(20, huge=4096)",
+      "put('proc/10', 'smaps', mapping(0x1000000) + mapping(0x2000000, offset=2097152))",
+      "put('proc/20', 'smaps', mapping(0x3000000) + mapping(0x4000000, offset=4194304))",
+      "print(json.dumps(cs.process_memory(os.path.join(root, 'proc'))))",
+    ].join("\n")) as any;
+    // Four mappings, three physical backing ranges; the first page is shared.
+    expect(out.explicitHugeTlbBytesAttributed).toBe(3 * 2097152);
+    expect(out.hugeTlbAttributionComplete).toBe(true);
+    expect(out.ordinaryPssBytesAttributed).toBe(120 * 1024);
+    expect(out.ordinaryPrivateBytes).toBe(60 * 1024);
+    expect(out.swapPssBytes).toBe(10 * 1024);
+    expect(out.uniquePhysicalBytes).toBeNull();
+  });
+
+  it("does not merge same-name different backings, partial residency or private COW mappings", () => {
+    const out = runPy([fixture,
+      "proc(10, huge=2048)", "proc(20, huge=2048)",
+      "proc(30, huge=1024)", "proc(40, huge=2048)",
+      "put('proc/10', 'smaps', mapping(0x1000000, inode=7))",
+      "put('proc/20', 'smaps', mapping(0x1000000, inode=8))",
+      "put('proc/30', 'smaps', mapping(0x1000000, resident=1024))",
+      "put('proc/40', 'smaps', mapping(0x1000000, flags='ht'))",
+      "print(json.dumps(cs.process_memory(os.path.join(root, 'proc'))))",
+    ].join("\n")) as any;
+    expect(out.explicitHugeTlbBytesAttributed).toBe(2 * 2097152);
+    expect(out.hugeTlbBytesInUnresolvedMappings).toBe(3072 * 1024);
+    expect(out.hugeTlbAttributionComplete).toBe(false);
+  });
+
+  it("reports vanished, malformed and capped populations without measured-zero savings", () => {
+    const out = runPy([fixture,
+      "proc(10)", "os.makedirs(os.path.join(root, 'proc/20'))", "proc(30)",
+      "put('proc/30', 'smaps_rollup', 'Pss: invalid kB\\n')", "proc(40)",
+      "print(json.dumps(cs.process_memory(os.path.join(root, 'proc'), max_scanned=3)))",
+    ].join("\n")) as any;
+    expect(out).toMatchObject({ partial: true, populationCount: 4, scannedProcesses: 3,
+      measuredProcesses: 1, unmeasuredProcesses: 2, notScannedProcesses: 1,
+      ordinaryPssBytesAttributed: 60 * 1024, uniquePhysicalBytes: null });
+    expect(out.unmeasured).toEqual([{ pid: 20, reason: "vanished" }, { pid: 30, reason: "incomplete smaps_rollup" }]);
+    expect(out.populationFingerprint).toMatch(/^[a-f0-9]{64}$/);
+  });
+
+  it("deduplicates partial residency only at proven resident backing offsets", () => {
+    const out = runPy([fixture,
+      "text = mapping(0x1000000, resident=1024).replace('Size: 2048 kB', 'Size: 2048 kB\\nKernelPageSize: 512 kB')",
+      // Present-bit alone identifies a shared file offset; PFNs may be redacted.
+      "present = 1 << 63",
+      "read = lambda address: present if address in (0x1000000, 0x1100000) else 0",
+      "ranges, unknown, observed = cs._hugetlb_backing_ranges(text, read)",
+      "bad = cs._hugetlb_backing_ranges(text, lambda _: present)",
+      "print(json.dumps({'ranges': ranges, 'unknown': unknown, 'observed': observed, 'changed': bad}))",
+    ].join("\n")) as any;
+    expect(out.ranges).toEqual([["00:01", 7, 0, 524288], ["00:01", 7, 1048576, 1572864]]);
+    expect(out.unknown).toBe(0);
+    expect(out.observed).toBe(1024 * 1024);
+    // Changed presence no longer agrees with the kernel's resident byte count.
+    expect(out.changed).toEqual([[], 1024 * 1024, 1024 * 1024]);
+  });
+
+  it("keeps private/anonymous huge pages unknown even with PFNs, avoiding mixed-identity double counts", () => {
+    const out = runPy([fixture,
+      "text = mapping(0x1000000, inode=0, flags='ht').replace('Size: 2048 kB', 'Size: 2048 kB\\nKernelPageSize: 2048 kB')",
+      "known = cs._hugetlb_backing_ranges(text, lambda _: (1 << 63) | 1024)",
+      "redacted = cs._hugetlb_backing_ranges(text, lambda _: 1 << 63)",
+      "print(json.dumps({'known': known, 'redacted': redacted}))",
+    ].join("\n")) as any;
+    expect(out.known).toEqual([[], 2097152, 2097152]);
+    expect(out.redacted).toEqual([[], 2097152, 2097152]);
+  });
+
+  it("captures partially resident shared aliases through actual sparse pagemap fixtures", () => {
+    const out = runPy([fixture,
+      "for pid, address in [(10, 0x1000000), (20, 0x2000000)]:",
+      "    proc(pid, huge=1024)",
+      "    text = mapping(address, resident=1024).replace('Size: 2048 kB', 'Size: 2048 kB\\nKernelPageSize: 512 kB')",
+      "    put(f'proc/{pid}', 'smaps', text)",
+      "    with open(os.path.join(root, f'proc/{pid}/pagemap'), 'wb') as f:",
+      "        for delta in [0, 524288, 1048576, 1572864]:",
+      "            f.seek((address + delta) // os.sysconf('SC_PAGE_SIZE') * 8)",
+      "            f.write(((1 << 63) if delta in [0, 1048576] else 0).to_bytes(8, sys.byteorder))",
+      "print(json.dumps(cs.process_memory(os.path.join(root, 'proc'))))",
+    ].join("\n")) as any;
+    expect(out.explicitHugeTlbBytesAttributed).toBe(1024 * 1024);
+    expect(out.hugeTlbBytesInUnresolvedMappings).toBe(0);
+    expect(out.hugeTlbAttributionComplete).toBe(true);
+  });
+
+  it("discards a PID reused during capture and leaves an entirely unreadable census unknown", () => {
+    const out = runPy([fixture, "proc(10)",
+      "starts = iter([99, 100])",
+      "cs._memory_process_identity = lambda *_: next(starts)",
+      "print(json.dumps(cs.process_memory(os.path.join(root, 'proc'))))",
+    ].join("\n")) as any;
+    expect(out.ordinaryPssBytesAttributed).toBeNull();
+    expect(out.swapPssBytes).toBeNull();
+    expect(out.unmeasured).toEqual([{ pid: 10, reason: "process-identity-changed" }]);
+    expect(out.hugeTlbAttributionComplete).toBe(false);
+  });
+
+  it("makes permission and elapsed-budget gaps explicit", () => {
+    const out = runPy([fixture, "proc(10)", "proc(20)",
+      "cs._process_memory = lambda *_: (_ for _ in ()).throw(PermissionError())",
+      "clock = iter([0, 0, 6, 6])",
+      "print(json.dumps(cs.process_memory(os.path.join(root, 'proc'), monotonic_fn=lambda: next(clock))))",
+    ].join("\n")) as any;
+    expect(out).toMatchObject({ partial: true, measuredProcesses: 0, unmeasuredProcesses: 1,
+      notScannedProcesses: 1, ordinaryPssBytesAttributed: null });
+    expect(out.unmeasured).toEqual([{ pid: 10, reason: "permission-denied" }]);
+    expect(out.unmeasuredReasons).toEqual({ "permission-denied": 1 });
+  });
+
+  it("distinguishes a stable kernel thread with no userspace mm from an unreadable user process", () => {
+    const out = runPy([fixture, "proc(10)", "proc(20)",
+      "fields = ['S'] + ['0'] * 18 + ['99']",
+      "fields[6] = str(0x00200000)",
+      "put('proc/10', 'stat', '10 (kernel thread) ' + ' '.join(fields))",
+      "os.remove(os.path.join(root, 'proc/10/smaps_rollup'))",
+      "os.remove(os.path.join(root, 'proc/20/smaps_rollup'))",
+      "print(json.dumps(cs.process_memory(os.path.join(root, 'proc'))))",
+    ].join("\n")) as any;
+    expect(out).toMatchObject({ populationCount: 2, scannedProcesses: 2,
+      kernelThreadsInHostView: 1, measuredProcesses: 0, unmeasuredProcesses: 1,
+      ordinaryPssBytesAttributed: null, partial: true });
+    expect(out.unmeasured).toEqual([{ pid: 20, reason: "vanished" }]);
+  });
+});
 
 // EI-24438849822675827: the 2026-09-27 IO saturation could not be attributed because
 // the capture recorded host PSI but neither per-cgroup IO nor the D-state task set.

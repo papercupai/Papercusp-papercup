@@ -1,8 +1,20 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
+const deps = vi.hoisted(() => ({ loads: 0 }));
+vi.mock('../projected-tool-deps', () => {
+  deps.loads++;
+  return { PROJECTED_DEPS: {} };
+});
+vi.mock('../device-operator-actions', () => ({ workspaceBackgroundActivityAllowed: vi.fn(async () => true) }));
 import type { UnifiedToolContext } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../agent-tools/coordination/identity';
-import { buildReactionCtx } from './dispatch-reaction';
+import { buildReactionCtx, fireReactionInProcess, reactionBackgroundActivityAllowed } from './dispatch-reaction';
+import { workspaceBackgroundActivityAllowed } from '../device-operator-actions';
+import { CACHE_BUMP_TAGS_ACTION } from './builtin-actions';
 import type { ReactionCause } from './types';
+
+it('builds reaction context without loading the product dispatcher', () => {
+  expect(deps.loads).toBe(0);
+});
 
 const parent = {
   workspaceId: 'w1',
@@ -15,6 +27,25 @@ const parent = {
 } as unknown as UnifiedToolContext;
 
 const cause: ReactionCause = { depth: 1, chain: ['r1'], ruleId: 'r1', rootRunId: 'root' };
+
+describe('event execution admission', () => {
+  it('withholds before tool lookup/dispatch and rechecks after resume', async () => {
+    vi.mocked(workspaceBackgroundActivityAllowed).mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+    const options = { fire: 'unregistered:optional', args: {}, parentCtx: parent, cause };
+    await expect(fireReactionInProcess(options)).resolves.toEqual({ ok: true, withheld: true });
+    await expect(fireReactionInProcess(options)).resolves.toMatchObject({ ok: false, error: 'unknown reaction tool "unregistered:optional"' });
+    expect(workspaceBackgroundActivityAllowed).toHaveBeenLastCalledWith('w1');
+    expect(deps.loads).toBe(0);
+  });
+
+  it('keeps the closed cache/control actions available without reading optional policy', async () => {
+    vi.mocked(workspaceBackgroundActivityAllowed).mockClear();
+    await expect(reactionBackgroundActivityAllowed('w1', CACHE_BUMP_TAGS_ACTION)).resolves.toBe(true);
+    for (const workspaceId of ['', '*', ' '])
+      await expect(reactionBackgroundActivityAllowed(workspaceId, CACHE_BUMP_TAGS_ACTION)).resolves.toBe(false);
+    expect(workspaceBackgroundActivityAllowed).not.toHaveBeenCalled();
+  });
+});
 
 describe('buildReactionCtx', () => {
   it('inherits the trigger scope + stamps reaction provenance', () => {

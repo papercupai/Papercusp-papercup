@@ -514,6 +514,30 @@ describe('fleet:assignments bounded handler reads', () => {
     expect(result.data).not.toHaveProperty('readTimings');
   });
 
+  it('starts member decorations while the full coverage rollup is pending', async () => {
+    const coverage = deferred<Map<string, never>>();
+    mocks.coverage.mockReturnValue(coverage.promise);
+    mocks.listAssignments.mockResolvedValue([liveRow()]);
+
+    const pending = fleetAssignmentsTool.handler(
+      { fleet: 'test-fleet' } as never,
+      ctx,
+    ) as Promise<{ data: { summary: { agents: number } } }>;
+
+    const decorationsStarted = await vi.waitFor(() => {
+      expect(mocks.wakeability).toHaveBeenCalledTimes(1);
+      expect(mocks.parkedOn).toHaveBeenCalledTimes(1);
+    }, { timeout: 500, interval: 10 }).then(
+      () => true,
+      () => false,
+    );
+    coverage.resolve(new Map());
+
+    const result = await pending;
+    expect(decorationsStarted).toBe(true);
+    expect(result.data.summary.agents).toBe(1);
+  });
+
   it('shows scheduler-held blocked claims when the actionable assignment view omits them', async () => {
     mocks.listAssignments.mockResolvedValue([livePresenceRow()]);
     mocks.schedulerClaims.mockResolvedValue(

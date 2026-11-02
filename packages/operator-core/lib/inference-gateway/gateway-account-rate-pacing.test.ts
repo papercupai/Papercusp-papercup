@@ -249,7 +249,8 @@ describe('production gateway account-governor wiring', () => {
     expect((await send()).status).toBe(200);
     expect(routed[0]).toContain('token-account-a');
     expect(affected.state.rpmFactor).toBeLessThan(1);
-    expect(sibling.state.rpmFactor ?? 1).toBe(1);
+    // One successful destination response earns one independent upward probe.
+    expect(sibling.state.rpmFactor).toBeCloseTo(1 + 1 / sibling.state.limits.rpm!);
     expect(otherProvider.state.rpmFactor ?? 1).toBe(1);
     expect(acquireA).toHaveBeenCalled();
     expect(routed.length).toBeGreaterThan(1);
@@ -523,7 +524,7 @@ describe('production gateway account-governor wiring', () => {
     expect(waits.every(wait => wait >= 100)).toBe(true);
     expect(governors.map(governor => governor.state.inFlight)).toEqual([0, 0]);
     expect(governors[0]!.state.rpmFactor).toBeLessThan(1);
-    expect(governors[1]!.state.rpmFactor ?? 1).toBe(1);
+    expect(governors[1]!.state.rpmFactor).toBeCloseTo(1 + 1 / governors[1]!.state.limits.rpm!);
   });
 
   const nonRateCases: Array<{ name: string; status: number; headers: Record<string, string> }> = [
@@ -544,9 +545,10 @@ describe('production gateway account-governor wiring', () => {
       : response()) as typeof fetch;
     gateway = createInferenceGateway({ accountId: 'account-a', token: async () => 'claude-token',
       codexPool: accounts(), fetchImpl, selfHeal: { enabled: false } });
-    await send();
+    const result = await send();
     expect(fetchImpl).toHaveBeenCalled();
     expect(affected.state.rpmFactor ?? 1).toBe(1);
-    expect(sibling.state.rpmFactor ?? 1).toBe(1);
+    expect(sibling.state.rpmFactor ?? 1).toBeCloseTo(result.status === 200
+      ? 1 + 1 / sibling.state.limits.rpm! : 1);
   });
 });

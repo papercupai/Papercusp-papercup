@@ -100,7 +100,7 @@ export default defineTool({
       .min(0)
       .max(8)
       .optional()
-      .describe(`Select at least this many responders even below the relevance floor (best-available LIVE fill, labeled via:'minimum'; default ${DEFAULT_MIN_RESPONDERS}). Pass 0 to restore pure-floor selection.`),
+      .describe(`Select at least this many responders even below the relevance floor (best-available fill, labeled via:'minimum'; default ${DEFAULT_MIN_RESPONDERS}). When subject_refs are supplied, every selected transcript, including a minimum fill, must support every ref. Pass 0 to disable below-floor fill.`),
     policy: z
       .string()
       .optional()

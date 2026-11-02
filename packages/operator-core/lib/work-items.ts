@@ -75,13 +75,14 @@ import { sealSharedTextInTxOrRefuse } from './personal-vault/shared-store-seal';
 import {
   admittedWhereSql,
   admittedWhereSqlWi,
-  admissionFailOpenSec,
-  admissionFailOpenGuaranteedSec,
   admissionPendingCreateRemedy,
+  admissionFailOpenRetryWindow,
   admissionPendingExplanation,
+  admissionPendingBackstopExplanation,
   admissionPromoterTickSec,
   admissionPromoterStall,
   admissionStallBasis,
+  readAdmissionFailOpenLiveness,
   asAdmissionFailOpenExclusion,
   autoPickableWhereSql,
   type AdmissionFailOpenExclusion,
@@ -9268,6 +9269,7 @@ export async function explainIssueClaimFloors(
   const rows = await sql<
     {
       id: string;
+      created_ts: number | string | null;
       taken_by: string | null;
       ok_status: boolean;
       ok_untaken: boolean;
@@ -9297,6 +9299,7 @@ export async function explainIssueClaimFloors(
     }[]
   >`
     SELECT wi.feature_id AS id,
+           wi.created_ts                                                          AS created_ts,
            wi.taken_by                                                            AS taken_by,
            wi.duplicate_of                                                        AS duplicate_of,
            (wi.status = ANY(${[...states]}::text[]))                              AS ok_status,
@@ -9321,9 +9324,18 @@ export async function explainIssueClaimFloors(
   // named id is actually floored on admission-pending — the common case (a fleet
   // leader diagnosing a mix of floors) never touches it.
   const anyAdmissionPending = rows.some((r) => !r.ok_admission);
-  const promoterStall = anyAdmissionPending
-    ? await admissionPromoterStall(issueWs, sql)
-    : ({ stalled: false } as const);
+  const anyFailOpenEligiblePending = rows.some((r) =>
+    !r.ok_admission && asAdmissionFailOpenExclusion(r.admission_fail_open_exclusion) === null,
+  );
+  const observedAtMs = Date.now();
+  const [promoterStall, failOpenLiveness] = await Promise.all([
+    anyAdmissionPending
+      ? admissionPromoterStall(issueWs, sql)
+      : Promise.resolve({ stalled: false } as const),
+    anyFailOpenEligiblePending
+      ? readAdmissionFailOpenLiveness(issueWs, sql, observedAtMs)
+      : Promise.resolve(null),
+  ]);
   return ids.map((id) => {
     const r = byId.get(id);
     // Preserve the claim path's first-refusal order while allowing reports to
@@ -9339,12 +9351,33 @@ export async function explainIssueClaimFloors(
     const failedFloors = floorChecks.filter(([, passed]) => !passed).map(([label]) => label);
     const refusedBy = failedFloors[0] ?? null;
     const failOpenExclusion = asAdmissionFailOpenExclusion(r?.admission_fail_open_exclusion);
+    const failOpenWindow =
+      refusedBy === 'admission-pending' && !failOpenExclusion && r && failOpenLiveness
+        ? admissionFailOpenRetryWindow(
+            r.created_ts == null ? null : Number(r.created_ts),
+            observedAtMs,
+            failOpenLiveness,
+          )
+        : null;
+    const backstopDetail = failOpenWindow
+      ? admissionPendingBackstopExplanation(failOpenWindow)
+      : null;
+    const admissionDetail = refusedBy === 'admission-pending'
+      ? failOpenExclusion
+        ? admissionPendingExplanation(undefined, {
+            failOpenExclusion,
+            duplicateOf: r?.duplicate_of ?? null,
+          })
+        : backstopDetail ?? admissionPendingExplanation()
+      : null;
     return {
       id,
       admissible: refusedBy === null,
       refusedBy,
       ...(opts.includeAllFloors ? { failedFloors } : {}),
-      detail: refusedBy ? (ISSUE_FLOOR_EXPLANATIONS[refusedBy] ?? null) : null,
+      detail: refusedBy
+        ? admissionDetail ?? (ISSUE_FLOOR_EXPLANATIONS[refusedBy] ?? null)
+        : null,
       // Only the already-taken floor has a holder to name (P-027). Every other
       // refusal is a property of the ROW, so `heldBy` stays absent rather than
       // carrying a stale `taken_by` that had nothing to do with the refusal.
@@ -9375,30 +9408,22 @@ export async function explainIssueClaimFloors(
             // row gets its own explanation and no `retry` bound at all.
             // EI-25209690807142935: the same holds for EVERY row the runner excludes (degraded
             // coverage, a typed duplicate verdict), read from the runner's own exclusion record.
-            ...(failOpenExclusion
-              ? {
-                  detail: admissionPendingExplanation(undefined, {
-                    failOpenExclusion,
-                    duplicateOf: r?.duplicate_of ?? null,
-                  }),
-                  failOpenExclusion,
-                }
-              : {}),
-            retry: failOpenExclusion
-              ? undefined
-              : promoterStall.stalled
-              ? {
-                  clearsOnItsOwn: true as const,
-                  expectedWithinSec: admissionFailOpenSec(),
-                  guaranteedWithinSec: admissionFailOpenGuaranteedSec(),
-                  basis: admissionStallBasis(promoterStall),
-                }
-              : {
-                  clearsOnItsOwn: true as const,
-                  expectedWithinSec: admissionPromoterTickSec(),
-                  guaranteedWithinSec: admissionFailOpenGuaranteedSec(),
-                  basis: admissionStallBasis(promoterStall),
-                },
+            ...(failOpenExclusion ? { failOpenExclusion } : {}),
+            retry:
+              failOpenWindow?.status === 'healthy'
+                ? {
+                    clearsOnItsOwn: true as const,
+                    expectedWithinSec: Math.min(
+                      failOpenWindow.remainingSec,
+                      promoterStall.stalled ? failOpenWindow.remainingSec : admissionPromoterTickSec(),
+                    ),
+                    guaranteedWithinSec: failOpenWindow.remainingSec,
+                    basis:
+                      `${admissionStallBasis(promoterStall)}; the fail-open backstop's last successful run ` +
+                      `completed at ${new Date(failOpenWindow.lastSuccessAtMs).toISOString()} ` +
+                      `(${Math.round((observedAtMs - failOpenWindow.lastSuccessAtMs) / 60_000)}m ago)`,
+                  }
+                : undefined,
             remedy: admissionPendingCreateRemedy(),
           }
         : {}),

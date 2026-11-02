@@ -228,7 +228,7 @@ function isRunScopedInFlight(text: string, index: number, length: number): boole
 // (`...test log was read, while scorecards:repair is still running`). Keep the
 // completed operation's artifact out of the pending operation's reference range.
 const SENTENCE_BOUNDARY_RE =
-  /[\n;]|\b(?:but|while|whereas|however)\b|,(?=\s+(?:(?:and|but|while|whereas|however)\s+)?(?:\w+\s+){0,4}(?:run|test|suite|job|command|process|build|check|lint|typecheck)\b)|[.!?](?=\s|$)/g;
+  /[\n;]|\b(?:but|while|whereas|however|although)\b|,(?=\s+(?:(?:and|but|while|whereas|however|although)\s+)?(?:\w+\s+){0,4}(?:run|test|suite|job|command|process|build|check|lint|typecheck)\b)|[.!?](?=\s|$)/g;
 const RUN_SUBJECT_AFTER_LAUNCH_RE =
   /^\W*(?:(?:a|an|the|my|our|this|that|full|affected|verification|separate)\W+){0,3}\b(?:run|test|suite|job|command|process|build|check|lint|typecheck)\b/i;
 

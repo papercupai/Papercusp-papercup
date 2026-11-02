@@ -15,6 +15,7 @@ import { readProcessIdentity } from '@papercusp/operator-core/lib/process-identi
 import { createTextCollector } from "@papercusp/operator-core/lib/child-output";
 import {
   applyMcpBuildSelector,
+  currentBuildDefaultTool,
   CURRENT_BUILD_DEFAULT_TOOLS,
   isStagingTarget,
   MCP_BUILD_META_KEY,
@@ -203,6 +204,39 @@ function stubOperator(label: string, seen: Array<{ label: string; body: string }
   );
 }
 
+function toolListOperator(
+  label: string,
+  seen: Array<{ label: string; body: string }>,
+  tools: Array<Record<string, unknown>>,
+  contentType: "application/json" | "text/event-stream" = "application/json",
+): http.Server {
+  return track(http.createServer((req, res) => {
+    const chunks: Buffer[] = [];
+    req.on("data", (chunk: Buffer) => chunks.push(chunk));
+    req.on("end", () => {
+      const body = Buffer.concat(chunks).toString("utf8");
+      seen.push({ label, body });
+      const request = JSON.parse(body) as { id?: unknown };
+      const response = JSON.stringify({ jsonrpc: "2.0", id: request.id, result: { tools } });
+      res.writeHead(200, { "content-type": contentType });
+      res.end(contentType === "text/event-stream" ? `event: message\ndata: ${response}\n\n` : response);
+    });
+  }));
+}
+
+function parseToolListResponse(
+  body: string,
+  contentType: string | string[] | undefined,
+): { id: unknown; result: { tools: Array<Record<string, unknown>> } } {
+  const text = Array.isArray(contentType) ? contentType.join(",") : contentType ?? "";
+  if (/text\/event-stream/i.test(text)) {
+    const data = body.split(/\r?\n/).find((line) => line.startsWith("data:"));
+    if (!data) throw new Error("tools/list SSE response had no data event");
+    return JSON.parse(data.slice(5).trim()) as { id: unknown; result: { tools: Array<Record<string, unknown>> } };
+  }
+  return JSON.parse(body) as { id: unknown; result: { tools: Array<Record<string, unknown>> } };
+}
+
 async function proxyFor(targets: () => McpProxyTarget[], windowMs = 300): Promise<number> {
   const proxy = track(
     createMcpProxy({
@@ -301,11 +335,125 @@ describe("MCP proxy build routing (end to end)", () => {
   });
 });
 
-// gate-repair-plane-on-current-build-2026-10-15 P-003 (D-004): release:repair-queue runs
-// the current build's logic whichever way it reaches this proxy.
-describe("current-build default for release:repair-queue", () => {
-  it("lists release:repair-queue as a current-build default tool", () => {
-    expect(CURRENT_BUILD_DEFAULT_TOOLS).toContain("release:repair-queue");
+// gate-repair-plane-on-current-build-2026-10-15 D-016 G-5: the full repair plane uses
+// current-build defaults, including the final release:test-downgrade rung.
+describe("current-build defaults for release repair-plane tools", () => {
+  it("enumerates the full repair-plane set", () => {
+    expect(CURRENT_BUILD_DEFAULT_TOOLS).toEqual(["release:repair-queue", "release:test-downgrade"]);
+  });
+
+  it.each(["application/json", "text/event-stream"] as const)(
+    "substitutes current-build default definitions in %s tools/list responses",
+    async (contentType) => {
+      const seen: Array<{ label: string; body: string }> = [];
+      const main = await listen(toolListOperator("main", seen, [
+        {
+          name: "release:repair-queue",
+          description: "release guidance",
+          inputSchema: { type: "object", properties: { oldField: { type: "boolean" } } },
+          _meta: { build: "main" },
+        },
+        {
+          name: "release:test-downgrade",
+          description: "release downgrade guidance",
+          inputSchema: { type: "object", properties: { oldReason: { type: "string" } } },
+        },
+        { name: "coord:presence", description: "main-only guidance" },
+      ], contentType));
+      const staging = await listen(toolListOperator("staging", seen, [
+        {
+          name: "release:repair-queue",
+          description: "current-build guidance",
+          inputSchema: { type: "object", properties: { patchCommits: { type: "array" } } },
+          _meta: { build: "staging" },
+        },
+        {
+          name: "release:test-downgrade",
+          description: "current-build downgrade guidance",
+          inputSchema: { type: "object", properties: { reason: { type: "string" } } },
+        },
+        { name: "coord:presence", description: "staging-only guidance" },
+      ], contentType));
+      const p = await proxyFor(() => staticMcpProxyTargets("127.0.0.1", port(main), port(staging)));
+
+      const r = await post(p, JSON.stringify({ jsonrpc: "2.0", id: 7, method: "tools/list" }));
+      expect(r.status).toBe(200);
+      const response = parseToolListResponse(r.body, contentType);
+      const listed = response.result.tools;
+      expect(response.id).toBe(7);
+      expect(listed.find((tool) => tool.name === "release:repair-queue")).toMatchObject({
+        description: "current-build guidance",
+        inputSchema: { properties: { patchCommits: { type: "array" } } },
+        _meta: { build: "staging" },
+      });
+      expect(listed.find((tool) => tool.name === "release:test-downgrade")).toMatchObject({
+        description: "current-build downgrade guidance",
+        inputSchema: { properties: { reason: { type: "string" } } },
+      });
+      expect(listed.find((tool) => tool.name === "coord:presence")?.description).toBe("main-only guidance");
+      expect(seen.map((entry) => entry.label)).toEqual(["main", "staging"]);
+      expect(JSON.parse(seen[0]!.body)).toEqual(JSON.parse(seen[1]!.body));
+    },
+  );
+
+  it("fails closed when staging cannot supply a definition currently advertised by main", async () => {
+    const seen: Array<{ label: string; body: string }> = [];
+    const main = await listen(toolListOperator("main", seen, [{
+      name: "release:repair-queue",
+      description: "stale release guidance",
+      inputSchema: { type: "object", properties: { oldField: { type: "boolean" } } },
+    }]));
+    const stagingDown = await freePort();
+    const p = await proxyFor(() => staticMcpProxyTargets("127.0.0.1", port(main), stagingDown), 200);
+
+    const r = await post(p, JSON.stringify({ jsonrpc: "2.0", id: 8, method: "tools/list" }));
+    expect(r.status).toBe(503);
+    expect(JSON.parse(r.body)).toMatchObject({
+      jsonrpc: "2.0",
+      id: 8,
+      error: { code: -32603, message: "Current-build tool definitions are unavailable" },
+    });
+    expect(r.body).not.toContain("stale release guidance");
+    expect(seen.map((entry) => entry.label)).toEqual(["main"]);
+  });
+
+  it("recognizes test-downgrade as a current-build default", () => {
+    expect(currentBuildDefaultTool({ name: "release:test-downgrade", arguments: { op: "list" } })).not.toBeNull();
+  });
+
+  it("routes selector-less test-downgrade calls to staging, directly or wrapped in tools:invoke", () => {
+    const forms = [
+      call("release:test-downgrade", { op: "list" }),
+      call("release_test-downgrade", { op: "list" }),
+      call("tools:invoke", { name: "release:test-downgrade", args: { op: "list" } }),
+      call("tools_invoke", JSON.stringify({ name: "release_test_downgrade", args: { op: "list" } })),
+    ];
+    for (const form of forms) {
+      const r = applyMcpBuildSelector(buf(form), { defaultToCurrentBuild: true });
+      expect(r.kind, JSON.stringify(form)).toBe("routed");
+      if (r.kind !== "routed") continue;
+      expect(r.build).toBe("staging");
+      expect(r.defaultedTools).toEqual([expect.stringMatching(/^release:test:?downgrade$/)]);
+      expect(JSON.parse(r.body.toString("utf8")).params._meta[MCP_BUILD_META_KEY]).toBe("staging");
+    }
+  });
+
+  it("routes selector-less code:run scripts naming test-downgrade to staging", () => {
+    const forms = [
+      call("code:run", { script: "return await tools.release.testDowngrade({ op: 'list' });" }),
+      call("code_run", { script: "return await tools.release['test-downgrade']({ op: 'list' });" }),
+      call("tools:invoke", {
+        name: "code:run",
+        args: { script: "await tools.release.test_downgrade({ op: 'list' });" },
+      }),
+    ];
+    for (const form of forms) {
+      const r = applyMcpBuildSelector(buf(form), { defaultToCurrentBuild: true });
+      expect(r.kind, JSON.stringify(form)).toBe("routed");
+      if (r.kind !== "routed") continue;
+      expect(r.build).toBe("staging");
+      expect(r.defaultedTools).toEqual([expect.stringMatching(/^release:test:?downgrade$/)]);
+    }
   });
 
   it("routes a selector-less repair-queue call to staging, directly or wrapped in tools:invoke", () => {

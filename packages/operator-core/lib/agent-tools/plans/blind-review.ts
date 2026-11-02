@@ -75,7 +75,7 @@ export default defineTool({
     }).strict().optional().describe('mint/replace: exact maintained product doc slugs and test files. replace persists this corrected manifest immutably for the authenticated request. No plan artifacts or proof IDs.'),
     activationAuditSeq: z.number().int().positive().optional().describe("post/replace: the exact current activationAuditSeq."),
     sourceReviewId: z.number().int().positive().optional().describe('replace: exact original inconclusive material receipt.'),
-    requestKey: z.string().min(1).max(200).optional().describe('replace: stable identity for this authenticated immutable request. Repeat it to reconcile; use a new key after a confirmed no-process failure.'),
+    requestKey: z.string().trim().min(1).max(200).optional().describe('mint/replace: stable identity for this authenticated request. Repeat it to reconcile; use a new key only after a confirmed no-process failure.'),
     gaps: z.array(z.object({ text: z.string().min(1).max(4000) })).max(100).optional().describe('post: one entry per gap; [] when none.'),
     dispositions: z.array(dispositionSchema).min(1).max(200).optional().describe('dispose: one per gap.'),
     summary: z.string().max(4000).optional(),
@@ -86,8 +86,11 @@ export default defineTool({
         if (args[key] === undefined) ctx.addIssue({ code: z.ZodIssueCode.custom, path: [key], message: `${key} is required for op 'replace'` });
       }
     } else {
-      for (const key of ['sourceReviewId', 'requestKey'] as const) {
-        if (args[key] !== undefined) ctx.addIssue({ code: z.ZodIssueCode.custom, path: [key], message: `${key} is op 'replace' only` });
+      if (args.sourceReviewId !== undefined) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['sourceReviewId'], message: "sourceReviewId is op 'replace' only" });
+      }
+      if (args.op !== 'mint' && args.requestKey !== undefined) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['requestKey'], message: "requestKey is op 'mint' or 'replace' only" });
       }
     }
     if (args.op === 'post' && args.outcome === undefined) {
@@ -158,6 +161,7 @@ export default defineTool({
         harness: harnessSlug,
         workspaceId,
         howToRun: args.howToRun,
+        requestKey: args.requestKey,
         productReads: args.productReads,
         ctx: ctx as unknown as Record<string, unknown>,
       });

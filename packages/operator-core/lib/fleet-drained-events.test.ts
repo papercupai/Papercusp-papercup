@@ -8,6 +8,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { FleetAssignmentRow } from './fleet/assignments';
 import type { FleetLaneHealth } from './fleet/lane-health';
+import type { FleetScopeTerminalExhaustion } from './scheduler/fleet-scope-admission';
 import {
   isTerminalItemStatus,
   countOpenItems,
@@ -42,6 +43,17 @@ function laneHealth(claimable: number | null): FleetLaneHealth {
 }
 
 const zeroLane = () => vi.fn(async () => laneHealth(0));
+const terminalPopulation = (
+  matchedByFilter: number,
+  terminalMatchedByFilter: number,
+  inFlightMatchedByFilter = 0,
+  parkedMatchedByFilter = 0,
+) => vi.fn(async (): Promise<FleetScopeTerminalExhaustion | null> => ({
+  matchedByFilter,
+  terminalMatchedByFilter,
+  inFlightMatchedByFilter,
+  parkedMatchedByFilter,
+}));
 
 /** A fleet_assignment row with every field defaulted; override only what a case needs. */
 function row(p: Partial<FleetAssignmentRow>): FleetAssignmentRow {
@@ -110,7 +122,12 @@ describe('pure drain arithmetic', () => {
 describe('emitFleetDrainedEvent (WI-1830)', () => {
   it('fires fleet:drained:<slug> with the slug in both key and payload; awaiter-only (no `to`)', async () => {
     const emit = typedEmit();
-    emitFleetDrainedEvent('my-fleet', { emit, readLaneHealth: zeroLane(), workspaceId: 'ws' });
+    emitFleetDrainedEvent('my-fleet', {
+      emit,
+      readLaneHealth: zeroLane(),
+      readTerminalExhaustion: terminalPopulation(3, 3),
+      workspaceId: 'ws',
+    });
     await new Promise((r) => setTimeout(r, 0));
     expect(emit).toHaveBeenCalledTimes(1);
     const call = emit.mock.calls[0][0];
@@ -120,6 +137,7 @@ describe('emitFleetDrainedEvent (WI-1830)', () => {
       payload: {
         fleetSlug: 'my-fleet',
         claimableProof: { value: 0, basis: 'issue-family', spec: 'bugs@7', harness: 'papercusp' },
+        terminalProof: { matched: 3, terminal: 3, nonTerminal: 0 },
       },
     });
     expect(call.summary).toContain('my-fleet');
@@ -133,6 +151,40 @@ describe('emitFleetDrainedEvent (WI-1830)', () => {
     await new Promise((r) => setTimeout(r, 0));
     expect(readLaneHealth).toHaveBeenCalledWith({ fleet: 'busy-fleet', workspaceId: 'ws' });
     expect(emit).not.toHaveBeenCalled();
+  });
+
+  it('does not call held or admission-pending matches drained when claimability is zero', async () => {
+    const emit = typedEmit();
+    const readTerminalExhaustion = terminalPopulation(2, 0, 1, 0);
+    emitFleetDrainedEvent('frozen-burndown', {
+      emit,
+      readLaneHealth: zeroLane(),
+      readTerminalExhaustion,
+      workspaceId: 'ws',
+    });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(readTerminalExhaustion).toHaveBeenCalledWith({ fleet: 'frozen-burndown', workspaceId: 'ws' });
+    expect(emit).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when the terminal population is empty or unavailable', async () => {
+    const emptyEmit = typedEmit();
+    emitFleetDrainedEvent('empty-fleet', {
+      emit: emptyEmit,
+      readLaneHealth: zeroLane(),
+      readTerminalExhaustion: terminalPopulation(0, 0),
+      workspaceId: 'ws',
+    });
+    const unknownEmit = typedEmit();
+    emitFleetDrainedEvent('unknown-fleet', {
+      emit: unknownEmit,
+      readLaneHealth: zeroLane(),
+      readTerminalExhaustion: vi.fn(async () => null),
+      workspaceId: 'ws',
+    });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(emptyEmit).not.toHaveBeenCalled();
+    expect(unknownEmit).not.toHaveBeenCalled();
   });
 
   it('fails closed when fleet claimability is unknown', async () => {
@@ -152,7 +204,12 @@ describe('emitFleetDrainedEvent (WI-1830)', () => {
       throw new Error('engine down');
     });
     expect(() =>
-      emitFleetDrainedEvent('f1', { emit: emit as never, readLaneHealth: zeroLane(), workspaceId: 'ws' }),
+      emitFleetDrainedEvent('f1', {
+        emit: emit as never,
+        readLaneHealth: zeroLane(),
+        readTerminalExhaustion: terminalPopulation(1, 1),
+        workspaceId: 'ws',
+      }),
     ).not.toThrow();
     await new Promise((r) => setTimeout(r, 0));
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('drained-event for f1'));
@@ -167,8 +224,18 @@ describe('emitFleetDrainedEvent (WI-1830)', () => {
     const missing = vi.fn(async () => {
       throw new Error('relation "harness_shared.event_await" does not exist');
     });
-    emitFleetDrainedEvent('f2', { emit: ended as never, readLaneHealth: zeroLane(), workspaceId: 'ws' });
-    emitFleetDrainedEvent('f3', { emit: missing as never, readLaneHealth: zeroLane(), workspaceId: 'ws' });
+    emitFleetDrainedEvent('f2', {
+      emit: ended as never,
+      readLaneHealth: zeroLane(),
+      readTerminalExhaustion: terminalPopulation(1, 1),
+      workspaceId: 'ws',
+    });
+    emitFleetDrainedEvent('f3', {
+      emit: missing as never,
+      readLaneHealth: zeroLane(),
+      readTerminalExhaustion: terminalPopulation(1, 1),
+      workspaceId: 'ws',
+    });
     await new Promise((r) => setTimeout(r, 0));
     const drainedEventWarnings = warn.mock.calls
       .map(([message]) => String(message))
@@ -234,6 +301,7 @@ describe('emitFleetDrainedForPlan (orchestrator, injected seams)', () => {
       emit,
       listAssignments,
       readLaneHealth: zeroLane(),
+      readTerminalExhaustion: terminalPopulation(1, 1),
       workspaceId: 'ws',
     });
     await new Promise((r) => setTimeout(r, 0));

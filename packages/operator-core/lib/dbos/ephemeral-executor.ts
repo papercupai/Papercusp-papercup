@@ -31,6 +31,7 @@ import { restrictedTreeSkipReason } from '../harness/routines/restricted-tree-sk
 import '../harness/routines/register-system-actions';
 import { backgroundWorkspaceIds } from '../workspace-registry';
 import { runWithWorkspace } from '../workspace-als';
+import { routineBackgroundActivityAllowed } from '../device-operator-actions';
 
 /** Min cadence floor (seconds) — mirrors blueprint:validate's EPHEMERAL_MIN_INTERVAL_SEC. */
 export const EPHEMERAL_MIN_INTERVAL_SEC = 1;
@@ -77,6 +78,8 @@ export interface EphemeralExecutorDeps {
    * `last_error` without counting as a failed fire (WI-10005164).
    */
   fire: (r: EphemeralRoutineSpec) => Promise<void | SystemActionResult>;
+  /** Execution permission, separate from timer shedding and catalog arm state. */
+  admit?: (r: EphemeralRoutineSpec) => Promise<boolean>;
   /** Durable per-schedule liveness — UPDATE the ONE routine row (D-004), never INSERT per fire. */
   recordFire: (r: EphemeralRoutineSpec, error: string | null) => Promise<void>;
   /** Optional durable global heartbeat (best-effort). The inventory-visible heartbeat timer is the
@@ -102,14 +105,18 @@ const logWith = (deps: EphemeralExecutorDeps, msg: string): void =>
 
 /** Arm ONE ephemeral routine as a managed timer (category 'ephemeral-harness'). */
 function armOne(spec: EphemeralRoutineSpec, deps: EphemeralExecutorDeps): ArmedEphemeral {
+  let stopped = false;
   const intervalSec = Math.max(EPHEMERAL_MIN_INTERVAL_SEC, Math.floor(spec.intervalSec));
   const handle = managedSetInterval(
     `ephemeral:${spec.id}`,
     intervalSec * 1000,
     async () => {
+      if (deps.admit && !await deps.admit(spec)) return;
+      if (stopped) return;
       let err: string | null = null;
       try {
         const result = await deps.fire(spec);
+        if (result && result.diagnostics?.backgroundActivityWithheld === true) return;
         // WI-10005164: a fail-soft sub-pass failure. Recorded like a throw so the
         // routine stops reading healthy, but not logged here: the action logs it
         // when it happens, and a sticky failure would repeat this line every tick.
@@ -128,7 +135,7 @@ function armOne(spec: EphemeralRoutineSpec, deps: EphemeralExecutorDeps): ArmedE
     // The registry's re-entrancy guard + shed gate; ephemeral fires are bounded sweeps → shed-eligible.
     { category: 'ephemeral-harness', shed: true },
   );
-  return { spec, handle };
+  return { spec, handle: { stop: () => { stopped = true; handle.stop(); } } };
 }
 
 /**
@@ -299,6 +306,7 @@ export function armedEphemeralIds(): string[] {
  */
 export function productionEphemeralExecutorDeps(): EphemeralExecutorDeps {
   return {
+    admit: routineBackgroundActivityAllowed,
     list: async () => {
       const out: EphemeralRoutineSpec[] = [];
       for (const ws of backgroundWorkspaceIds()) {
@@ -338,6 +346,8 @@ export function productionEphemeralExecutorDeps(): EphemeralExecutorDeps {
       return out;
     },
     fire: async (r) => {
+      // Also fence direct calls to production deps, independently of timer admission.
+      if (!await routineBackgroundActivityAllowed(r)) return { diagnostics: { backgroundActivityWithheld: true } };
       // Deterministic-action-only: blueprint:validate guarantees an ephemeral action is a concrete
       // system:<x>. A non-system role is out of contract for this bounded in-process fire path.
       if (!r.targetRole.startsWith(SYSTEM_TARGET_PREFIX)) {

@@ -76,15 +76,19 @@ export const liveProcExec: ProcExec = (cmd, args, opts) =>
     execFile(
       cmd,
       args,
-      { cwd: opts?.cwd, env: { ...process.env, ...opts?.env }, maxBuffer: 256 * 1024 * 1024 },
+      { cwd: opts?.cwd, env: { ...process.env, ...opts?.env }, maxBuffer: 256 * 1024 * 1024,
+        timeout: opts?.timeoutMs, signal: opts?.signal, killSignal: 'SIGKILL' },
       (err, stdout, stderr) => {
+        const timedOut = !!err?.killed && !!opts?.timeoutMs;
         const code =
-          err && typeof (err as NodeJS.ErrnoException & { code?: unknown }).code === 'number'
+          timedOut ? 124 : err && typeof (err as NodeJS.ErrnoException & { code?: unknown }).code === 'number'
             ? ((err as unknown as { code: number }).code)
             : err
               ? 1
               : 0;
-        resolve({ stdout: stdout?.toString() ?? '', stderr: stderr?.toString() ?? '', code });
+        const detail = timedOut ? `subprocess timed out after ${opts!.timeoutMs}ms` : err?.message;
+        resolve({ stdout: stdout?.toString() ?? '',
+          stderr: [stderr?.toString() ?? '', detail].filter(Boolean).join('\n'), code });
       },
     );
   });

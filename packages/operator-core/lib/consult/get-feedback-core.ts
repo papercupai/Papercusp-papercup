@@ -1500,6 +1500,9 @@ export async function getFeedbackCore(
   // then the global default. A governed call site passes only `policy` and so
   // cannot drift from the registered value.
   const policyBounds = req.policy ? selectionPolicy(req.policy) : null;
+  const requiresSupportedSubjectEvidence = Boolean(
+    req.subjectRefs?.length || req.resolvedSubjectRefs?.length || req.unresolvedSubjectRefs?.length,
+  );
   const minResponders = Math.max(0, req.minResponders ?? policyBounds?.min ?? DEFAULT_MIN_RESPONDERS);
   const maxResponders = Math.max(1, req.maxResponders ?? policyBounds?.max ?? DEFAULT_MAX_RESPONDERS);
   let selected = selectResponders({
@@ -1507,6 +1510,9 @@ export async function getFeedbackCore(
     allCandidates: route.snapshot.candidates,
     min: minResponders,
     max: maxResponders,
+    // An exact source ref constrains best-available fills too; otherwise the
+    // minimum policy could dispatch a transcript that failed the source check.
+    requireSupportedSubjectEvidence: requiresSupportedSubjectEvidence,
     // D-002 REMOVED THE LIVENESS GATE. Delivery no longer needs the expert's
     // session to be reachable — it forks or converts their TRANSCRIPT — so
     // `ended`/`recorded`/`parked`/`warmIdle` stopped being reasons to pass over
@@ -1923,6 +1929,8 @@ export async function getFeedbackCore(
       ? `The embedder is unavailable on this host — similarity could NOT be measured, so there is no ranking to fill a minimum from (cannot-measure ≠ measured-nothing). Proceed on your own judgment; retry later if the answer matters.`
       : reason === 'evidence_unavailable'
         ? 'Problem-specific expertise could not be fully measured within the bounded evidence check. This does not prove no expert exists. Read the candidate transcript references and retry if the answer matters.'
+      : requiresSupportedSubjectEvidence
+        ? 'No responder cleared the routing floor with supported transcript evidence for every requested source ref. Minimum-fill candidates also need that evidence, so unrelated transcripts were not dispatched. Proceed on your own judgment or inspect remaining_candidates directly.'
       : reason === 'no_available_responder' && preLaunchRefusals && preLaunchRefusals.total > 0 &&
           preLaunchRefusals.refused === preLaunchRefusals.total
         ? `Matching experts were selected, but every dispatch walk (${preLaunchRefusals.total}) was refused BEFORE any model was tried, so no account wall is involved and retrying after a reset will not help: ${preLaunchRefusals.details.join(' | ')}. Nothing is coming, so do not park: remaining_candidates lists the experts; read their transcripts via sessions:read / sessions:search (retrieval fallback) and proceed.`

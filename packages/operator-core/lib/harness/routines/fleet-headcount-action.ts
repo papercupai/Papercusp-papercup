@@ -32,6 +32,7 @@ import { buildConsoleEnvelope } from '../../console-launcher';
 import { spawnConsole, spawnHeadless } from '../../console-spawn';
 import { liveFleetMemberIds } from '../../fleet/fleet-roster';
 import { isWorkspaceWideLoopStanddownActive } from './release-pause-ttl';
+import { getLoopStatuses } from './loop';
 import {
   composeModelSpec,
   composeMemberLaunchContext,
@@ -1152,7 +1153,8 @@ function governorLaunchTransaction(args: {
   return transaction;
 }
 
-async function topUpOneFleet(workspaceId: string, fleetSlug: string): Promise<void> {
+async function topUpOneFleet(ctx: SystemActionCtx, fleetSlug: string): Promise<void> {
+  const { workspaceId } = ctx;
   // EI-23259368987233359, half 2 of 2 — THE BARRIER A MEMBER IS ACTUALLY OPENED
   // BEHIND. This repeats the check `runFleetHeadcountGovernor` already made, on
   // purpose and for the same reason `claimFleetHeadcountAttempt` repeats the
@@ -1171,6 +1173,10 @@ async function topUpOneFleet(workspaceId: string, fleetSlug: string): Promise<vo
     );
     return;
   }
+  // Exact continuation takes precedence over manufacturing another identity.
+  // Both this actor and the interruption routine enter the same durable claim.
+  const { sweepSessionInterruptions } = await import('./session-interruption-runtime');
+  const recovery = await sweepSessionInterruptions(ctx, false, { fleetSlug });
   const attempt = await claimFleetHeadcountAttempt({ workspaceId, fleetSlug });
   if (!attempt) return;
   const fleet = await getFleet(workspaceId, fleetSlug);
@@ -1225,6 +1231,63 @@ async function topUpOneFleet(workspaceId: string, fleetSlug: string): Promise<vo
     executingMemberIds = countedMemberSet(
       await readFleetMemberSilence(liveMemberIds, { fleetPaused: false }),
     );
+    const pendingOriginals = recovery.protectedOwnerIds.filter(id => !executingMemberIds?.has(id));
+    if (pendingOriginals.length > 0) {
+      await recordFleetHeadcountAttempt({ workspaceId, fleetSlug, succeeded: false,
+        error: `exact member continuation awaiting execution census: ${pendingOriginals.join(', ')}` });
+      return;
+    }
+
+    // EI-27234017287695175 / EI-27209771505784406: a deliberate loop:end is
+    // an admission boundary, just as it is for exact interruption recovery.
+    // A stale no-assignment boot must not be killed/replaced for obeying its
+    // launch fence. Keep readiness truthful and preserve the stop until an
+    // explicit rearm or a new authorized launch replaces the stopped cohort.
+    const holdForDeliberateStop = async (): Promise<boolean> => {
+      const retired = new Set(transaction?.governor?.retiredMemberIds ?? []);
+      const owners = [...new Set([
+        ...liveMemberIds,
+        ...(transaction?.requestedMemberIds ?? []),
+        ...(transaction?.openedMemberIds ?? []),
+        ...(transaction?.governor?.probeOwnerIds ?? []),
+      ])].filter(owner => !retired.has(owner));
+      if (owners.length === 0) return false;
+      let reason: string;
+      try {
+        const loops = await getLoopStatuses(owners);
+        const stopped = owners.filter(owner => {
+          const loop = loops.get(owner);
+          return loop?.active === false && loop.explicitlyEnded === true;
+        });
+        if (stopped.length === 0) return false;
+        reason = `headcount repair held by explicit loop:end: ${stopped.join(', ')}; ` +
+          'resolve the current assignment with the fleet leader, then explicitly loop:arm ' +
+          'the member or authorize a fresh fleet launch';
+      } catch (error) {
+        reason = `headcount repair held: deliberate loop-end evidence is unreadable: ` +
+          `${error instanceof Error ? error.message : String(error)}`;
+      }
+      if (claimedLaunchSlotAt != null) {
+        await releaseFleetLaunchSlot({ workspaceId, fleetSlug, at: claimedLaunchSlotAt });
+        claimedLaunchSlotAt = null;
+      }
+      assessment = assessFleetHeadcountGovernor({
+        target: attempt.target, productiveCapacityFloor, liveMemberIds,
+        executingMemberIds, transaction, now: Date.now(),
+      });
+      transaction = transactionForGovernorVerdict({
+        transaction, liveMemberIds, launcherOwnerId: fleet.leaderOwnerId, now: Date.now(),
+      });
+      const verdict = governorVerdictForAssessment(assessment, Date.now(), {
+        action: 'wait', outcome: 'unverified', reason,
+      });
+      recordGovernorVerdict(transaction, verdict);
+      transaction.recovery.nextAction = reason;
+      await persistTransaction(transaction);
+      await recordFleetHeadcountAttempt({ workspaceId, fleetSlug, succeeded: false, error: reason });
+      return true;
+    };
+    if (await holdForDeliberateStop()) return;
 
     // Legacy launch records have no truthful --launched-by correlation. Adopt
     // the independently-live roster into a fresh, unprobed transaction before
@@ -1580,6 +1643,10 @@ async function topUpOneFleet(workspaceId: string, fleetSlug: string): Promise<vo
     }
     claimedLaunchSlotAt = slot.at;
 
+    // Launch preflight awaits provider/goal/slot reads. Respect a stop that
+    // arrived meanwhile, and release the reservation without opening a process.
+    if (!pruneOwnerId && await holdForDeliberateStop()) return;
+
     // Persist the measurement before any prune or terminal spawn side effect.
     // The next transaction wave carries this snapshot forward for durable
     // inspection; a failed CAS still releases the launch slot in the catch path.
@@ -1609,6 +1676,7 @@ async function topUpOneFleet(workspaceId: string, fleetSlug: string): Promise<vo
         await recordFleetHeadcountAttempt({ workspaceId, fleetSlug, succeeded: false, error: reason });
         return;
       }
+      if (await holdForDeliberateStop()) return;
       const killed = killOutcome(await killTool.handler(
         {
           owner: pruneOwnerId,
@@ -1683,7 +1751,6 @@ async function topUpOneFleet(workspaceId: string, fleetSlug: string): Promise<vo
       account: effectiveAccount,
       action,
     });
-    transaction = launchTransaction;
     if (pruneOwnerId) {
       appendGovernorHistory(launchTransaction.governor!, {
         at: now,
@@ -1697,6 +1764,11 @@ async function topUpOneFleet(workspaceId: string, fleetSlug: string): Promise<vo
     await persistTransaction(launchTransaction);
 
     const logDir = config.headless ? `${papercuspPathForWorkspace(workspaceId)}/fleet-logs` : null;
+    // Keep the original cohort until this last fence passes. A reserved new
+    // identity has no stop history; switching early would erase a stop by the
+    // departed member and let the following tick refill it again.
+    if (await holdForDeliberateStop()) return;
+    transaction = launchTransaction;
     spawnAttempted = true;
     const results = await Promise.all(
       newMemberIds.map((ownerId, i) =>
@@ -2049,7 +2121,7 @@ export async function runFleetHeadcountGovernor(ctx: SystemActionCtx): Promise<v
       );
       continue;
     }
-    await topUpOneFleet(ctx.workspaceId, target.fleetSlug);
+    await topUpOneFleet(ctx, target.fleetSlug);
   }
 }
 

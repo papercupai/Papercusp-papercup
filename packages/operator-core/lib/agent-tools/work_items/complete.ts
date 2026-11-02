@@ -305,6 +305,7 @@ import {
   describeUnparseableCompletionJsonString,
   gatherFlatCompletion,
   hoistMisplacedCompletionFields,
+  normalizeDeferred,
 } from './completion-coerce';
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
@@ -2101,7 +2102,7 @@ function completionTextParts(completion: unknown): string[] {
     ...strings(rec.verifiedHow),
     ...strings(rec.coordNotes),
     ...strings(rec.whatLanded),
-    ...strings(rec.deferred),
+    ...strings(normalizeDeferred(rec.deferred)),
     ...strings(rec.migrations),
     ...strings(nested.testsRun),
     ...strings(nested.testResult),
@@ -2975,7 +2976,7 @@ export function claimsUniversalVerification(completion: {
     completion.testResult,
     completion.coordNotes,
     ...list(completion.whatLanded),
-    ...list(completion.deferred),
+    ...list(normalizeDeferred(completion.deferred)),
   ]
     .filter((part): part is string => typeof part === 'string' && part.trim().length > 0)
     .join('\n');
@@ -4864,7 +4865,8 @@ async function completeOneTracked(
     completionNarrative.rootCauseVerification = it.completion.rootCauseVerification;
   }
   if (it.completion.whatLanded?.length) completionNarrative.whatLanded = it.completion.whatLanded;
-  if (it.completion.deferred?.length) completionNarrative.deferred = it.completion.deferred;
+  const normalizedDeferred = normalizeDeferred(it.completion.deferred);
+  if (normalizedDeferred?.length) completionNarrative.deferred = normalizedDeferred;
   if (it.completion.coordNotes) completionNarrative.coordNotes = it.completion.coordNotes;
   if (it.completion.discharges?.length) completionNarrative.discharges = it.completion.discharges;
   if (it.completion.contributesTo?.length) completionNarrative.contributesTo = it.completion.contributesTo;
@@ -4988,7 +4990,7 @@ async function completeOneTracked(
     authorityByEvidence === 'committed'
       ? requirementDispositionShortfall(completionEvidenceForGate, {
           sourceText: `${existing.title ?? ''}\n${existing.summary ?? ''}`,
-          declaresDeferredWork: Boolean(it.completion.deferred?.some((d) => d.trim())),
+          declaresDeferredWork: Boolean(normalizedDeferred?.some((d) => d.trim())),
           // `registeredRepoRoots` is only computed on the unresolved-path branch above, so
           // fall back to the primary checkout the way `unresolvedPathsInCompletion` does —
           // otherwise the citation check would sit permanently unjudgeable on the closes
@@ -5029,7 +5031,7 @@ async function completeOneTracked(
       const cited = residueCitations(
         {
           residue: completionEvidenceForGate?.coverage?.residue,
-          deferred: it.completion.deferred,
+          deferred: normalizedDeferred,
           requirementDisposition: completionEvidenceForGate?.requirementDisposition,
           summary: it.completion.summary,
         },
@@ -5516,8 +5518,31 @@ async function completeOneTracked(
   const planLanePreviewError = it.validateOnly && closeIntentRequested && effectiveState
     ? await workItemPlanLaneTransitionRefusal(existing, effectiveState) ?? undefined
     : undefined;
-  setContractRequirement('plan-item-lane', closeIntentRequested, planLanePreviewError);
-  const previewError = changeKindProofError ?? liveServiceProofError ?? heldOpenPreviewError ?? planLanePreviewError;
+  const planStampForPreview =
+    it.validateOnly && closeIntentRequested && effectiveState ? finishPlanStamp(existing) : null;
+  const reflectedPlanStatus = effectiveState ? reflectedTerminalStatus(effectiveState) : null;
+  let draftPlanStartGatePreviewError: string | undefined;
+  if (planStampForPreview && reflectedPlanStatus === 'done' && !planLanePreviewError) {
+    try {
+      const { checkDraftItemStartGateLive } = await import('../plans/draft-item-start-gate');
+      const refusal = await checkDraftItemStartGateLive({
+        workspaceId: ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId(),
+        harnessSlug: planStampForPreview.harness_slug,
+        slug: planStampForPreview.plan_slug,
+        itemId: planStampForPreview.item_id,
+        toStatus: reflectedPlanStatus,
+      });
+      if (refusal) draftPlanStartGatePreviewError = refusal.error + ': ' + refusal.hint;
+    } catch (error) {
+      draftPlanStartGatePreviewError =
+        'Could not evaluate the plan-item activation precondition for ' +
+        planStampForPreview.plan_slug + '#' + planStampForPreview.item_id + ': ' +
+        (error instanceof Error ? error.message : String(error));
+    }
+  }
+  const planItemPreviewError = planLanePreviewError ?? draftPlanStartGatePreviewError;
+  setContractRequirement('plan-item-lane', closeIntentRequested, planItemPreviewError);
+  const previewError = changeKindProofError ?? liveServiceProofError ?? heldOpenPreviewError ?? planItemPreviewError;
   if (it.validateOnly) {
     // EI-26592766858681844: the content floor already lowered the authority above. Surface
     // its measured paths here too, without borrowing the real close's settlement promises.
@@ -5908,7 +5933,7 @@ async function completeOneTracked(
   // of truth, so "did this completion record verification" can never disagree
   // between the two call sites.
   const hasTests = completionEvidenceForGate !== undefined;
-  const hasDeferred = Array.isArray(it.completion.deferred) && it.completion.deferred.length > 0;
+  const hasDeferred = Boolean(normalizedDeferred?.length);
   // Bare strings never reach this handler: completionSpec rejects them before
   // completeOne runs, with the exact structured-object example in its issue message.
   const verificationWarning =

@@ -1855,13 +1855,14 @@ describe('wrapHeadlessSigtermDiagnostic (EI-9748)', () => {
 });
 
 describe('buildConsoleOneliner', () => {
-  it('cds, starts an interactive supervisor, evals the greeting, then execs a login shell', () => {
+  it('runs the login shell under the sentinel trap supervisor', () => {
     const out = buildConsoleOneliner('/proj', {}, 'npm run dev', APPEARANCE);
     const script = interactiveRcScript(out);
     expect(out).toContain("cd '/proj'");
     expect(out).toContain("exec bash --noprofile --rcfile <(printf '%s\\n'");
     expect(script).toContain("(eval 'npm run dev'); __papercusp_greeting_rc=$?");
-    expect(script).toContain('exec "${SHELL:-/bin/bash}" -l');
+    expect(script).toContain(' -l; __papercusp_login_rc=$?; exit "$__papercusp_login_rc"');
+    expect(script).not.toContain('; exec "$');
   });
 
   it('always drops to the shell after the greeting and prints a failure banner for non-zero greetings', () => {
@@ -1871,15 +1872,35 @@ describe('buildConsoleOneliner', () => {
     // does not short-circuit the interactive shell (matches native_console.rs).
     expect(script).toContain('); __papercusp_greeting_rc=$?');
     expect(script).toContain('initial terminal command exited with status %s');
-    expect(script).toContain('; exec "${SHELL:-/bin/bash}" -l');
+    expect(script).toContain('; "$' + '{SHELL:-/bin/bash}" -l; __papercusp_login_rc=$?; exit "$__papercusp_login_rc"');
     expect(script).not.toContain(') && exec');
   });
 
-  it('drops the sentinel + EXIT trap so the desktop side can detect shell exit', () => {
+  it('stores sentinels under scratch and traps their removal on shell exit', () => {
     const out = buildConsoleOneliner('/x', {}, 'true', APPEARANCE);
     const script = interactiveRcScript(out);
-    expect(script).toContain('touch .papercup-console-active.$$');
-    expect(script).toContain("trap 'rm -f .papercup-console-active.$$' EXIT");
+    expect(script).toContain('mkdir -p .papercusp/scratch/console-active');
+    expect(script).toContain('> .papercusp/scratch/console-active/.papercup-console-active.$$');
+    expect(script).toContain("trap 'rm -f .papercusp/scratch/console-active/.papercup-console-active.$$' EXIT");
+    expect(script).toContain('stale_markers=()');
+    expect(script).not.toContain('touch .papercup-console-active.$$');
+  });
+
+  it('reaps dead legacy markers and removes its marker after the login shell exits', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'papercup-console-marker-cleanup-'));
+    const deadMarker = join(dir, '.papercup-console-active.4294967295');
+    const liveMarker = join(dir, '.papercup-console-active.' + process.pid);
+    try {
+      writeFileSync(deadMarker, '');
+      writeFileSync(liveMarker, '');
+      const out = buildConsoleOneliner(dir, { SHELL: '/bin/true' }, 'true', APPEARANCE);
+      execFileSync('bash', ['-c', out], { stdio: 'ignore' });
+      expect(existsSync(deadMarker)).toBe(false);
+      expect(existsSync(liveMarker)).toBe(true);
+      expect(readdirSync(join(dir, '.papercusp', 'scratch', 'console-active'))).toEqual([]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('stamps a shell birth identity before the greeting for orphan-window cleanup', () => {
@@ -1909,7 +1930,7 @@ describe('buildConsoleOneliner', () => {
     const out = buildConsoleOneliner('/repo', {}, 'true', APPEARANCE, null, false);
     const script = interactiveRcScript(out);
     expect(script).not.toContain('.papercup-console-active');
-    expect(script).toContain('exec "${SHELL:-/bin/bash}" -l');
+    expect(script).toContain(' -l; __papercusp_login_rc=$?; exit "$__papercusp_login_rc"');
   });
 
   describe('headless exit mode (EI-21199387444499618)', () => {

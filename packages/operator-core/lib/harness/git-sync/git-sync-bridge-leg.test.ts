@@ -15,6 +15,9 @@
  * the first message a fresh device can emit.
  */
 import { describe, expect, it, vi, beforeEach } from 'vitest';
+import { mkdtemp, mkdir, rm, writeFile, readFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 const loadHarnessRegistryMock = vi.hoisted(() => vi.fn());
 const hiveGitRepoPathMock = vi.hoisted(() => vi.fn());
@@ -85,8 +88,10 @@ import {
   refreshRemoteTrackingRefFromProvenTip,
   resolveGithubCredentialHelper,
   runGithubBridgeLeg,
+  recoverEmptyCanonicalRef,
 } from './git-sync-action';
 import { BRIDGE_CANONICAL_REF, GITHUB_CREDENTIAL_HELPER_KEY } from '../../sync/pot-git/github-bridge-tick';
+import { hiveEffectFixture } from '../../sync/pot-git/hive-effect-authority.fixture';
 
 const SLUG = 'shop-hive';
 const WS = 'ws-1';
@@ -96,6 +101,62 @@ const BARE = '/repos/shop-hive/shop-hive.git';
  *  behaviour under test: on a cold device the spawn itself is what dies. */
 const gitRanAgainstStore = () =>
   defaultRunGitMock.mock.calls.some((c) => c[1] === BARE);
+
+describe('EI-27658326760198862 — malformed loose canonical ref (real Git)', () => {
+  it.each(['recover', 'no-owner', 'held-lock', 'packed-ahead', 'nonempty'] as const)(
+    'repairs only an authorized empty shadow while retaining Git locks and packed ancestry: %s', async mode => {
+    const { defaultRunGit: realGit } = await vi.importActual<typeof import('../../sync/pot-git/storage')>(
+      '../../sync/pot-git/storage',
+    );
+    const root = await mkdtemp(join(tmpdir(), 'bridge-broken-canonical-'));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const git = async (...args: string[]) => {
+      const result = await realGit(args, root);
+      expect(result.code, result.stderr).toBe(0);
+      return result.stdout.trim();
+    };
+    try {
+      await git('init', '-q', '-b', 'staging');
+      await git('-c', 'user.name=Bridge test', '-c', 'user.email=bridge@example.test',
+        '-c', 'core.hooksPath=/dev/null', 'commit', '--allow-empty', '-qm', 'accepted');
+      const accepted = await git('rev-parse', 'HEAD');
+      let packed = accepted;
+      if (mode === 'packed-ahead') {
+        await git('-c', 'user.name=Bridge test', '-c', 'user.email=bridge@example.test',
+          '-c', 'core.hooksPath=/dev/null', 'commit', '--allow-empty', '-qm', 'newer canonical');
+        packed = await git('rev-parse', 'HEAD');
+      }
+      await git('update-ref', BRIDGE_CANONICAL_REF, packed);
+      await git('pack-refs', '--all');
+      await mkdir(join(root, '.git/refs/hive'), { recursive: true });
+      await writeFile(join(root, '.git', BRIDGE_CANONICAL_REF), '');
+      const broken = await realGit(['rev-parse', '--verify', '--quiet', BRIDGE_CANONICAL_REF], root);
+      expect(broken.code).not.toBe(0);
+      expect(broken.stderr).toContain('broken ref');
+      const normalPin = await realGit(['update-ref', BRIDGE_CANONICAL_REF, accepted], root);
+      expect(normalPin.code).not.toBe(0);
+      const refPath = join(root, '.git', BRIDGE_CANONICAL_REF);
+      if (mode === 'held-lock') await writeFile(`${refPath}.lock`, 'peer');
+      if (mode === 'nonempty') await writeFile(refPath, 'malformed-but-not-empty\n');
+      const recovered = await recoverEmptyCanonicalRef({
+        ...hiveEffectFixture(), ...(mode === 'no-owner' ? { authority: null } : {}),
+        repoPath: join(root, '.git'), acceptedSha: accepted, runGit: realGit,
+      });
+      if (mode === 'recover') {
+        expect(recovered).toEqual({ recovered: true });
+        expect(await git('rev-parse', '--verify', BRIDGE_CANONICAL_REF)).toBe(accepted);
+      } else {
+        expect(recovered.recovered).toBe(false);
+        expect(await readFile(refPath, 'utf8')).toBe(mode === 'nonempty' ? 'malformed-but-not-empty\n' : '');
+        if (mode === 'held-lock') expect(await readFile(`${refPath}.lock`, 'utf8')).toBe('peer');
+        else await expect(readFile(`${refPath}.lock`)).rejects.toMatchObject({ code: 'ENOENT' });
+      }
+    } finally {
+      warn.mockRestore();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});
 
 beforeEach(() => {
   vi.clearAllMocks();

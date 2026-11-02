@@ -192,6 +192,16 @@ beforeEach(() => {
 });
 
 describe('routines:list', () => {
+  it('adds a structured marker when trimmed health clips a nested string', () => {
+    const shaped = listTool.shape!.trimmed!({
+      count: 1,
+      routines: [{ name: 'git-sync', health: { explanation: 'H'.repeat(10_000) } }],
+    }, { args: {} } as never) as { routines: Array<{ health: Record<string, unknown> }> };
+
+    expect(shaped.routines[0]?.health.healthTruncated).toBe(true);
+    expect(String(shaped.routines[0]?.health.explanation)).toContain('[TRUNCATED');
+  });
+
   it('projects scheduled action, run creation, and current plan scan coverage separately', async () => {
     const now = Date.now();
     const scheduledRow = {

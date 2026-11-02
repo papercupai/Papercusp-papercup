@@ -60,7 +60,11 @@ describe('mergeClaudeHookSettings — full install into empty settings', () => {
     // (Edit|Write|MultiEdit, claude-md-projection-from-pg-2026-08-10 P-006) +
     // unreserved-migration-guard (Edit|Write|MultiEdit, WI-38352) + identity-guard
     // (every tool, portable-identity-packages P-011), in install order.
-    expect(commandsFor(cfg, 'PreToolUse')).toEqual([
+    expect(
+      commandsFor(cfg, 'PreToolUse').filter(
+        (command) => command !== DEST + '/posttooluse-resource-governor-nudge.mjs',
+      ),
+    ).toEqual([
       `${DEST}/pretooluse-locks-acquire.sh`,
       `${DEST}/pretooluse-activity-report.sh`,
       `${DEST}/pretooluse-bash-resource-gate.sh`,
@@ -136,6 +140,8 @@ describe('mergeClaudeHookSettings — full install into empty settings', () => {
     expect(matcherOf('pretooluse-write-overwrite-guard.mjs')).toBe(FILE_OVERWRITE_MATCHER);
     expect(matcherOf('pretooluse-generated-file-edit-guard.mjs')).toBe(FILE_WRITE_MATCHER);
     expect(matcherOf('pretooluse-unreserved-migration-guard.mjs')).toBe(FILE_WRITE_MATCHER);
+    expect(matcherOf('posttooluse-resource-governor-nudge.mjs')).toBe('Edit|Write|MultiEdit');
+    expect(commandsFor(cfg, 'PreToolUse')[2]).toBe(DEST + '/posttooluse-resource-governor-nudge.mjs');
 
     // PostToolBatch: complete native edit-batch lock release first, then the
     // mid-turn context push (context-injection-audit-2026-07-28 P-015).

@@ -53,6 +53,7 @@ const DEFAULT_BATCH_LIMIT = 5000;
  * silently left terminal rows behind once it was reached.
  */
 const DEFAULT_TIME_BUDGET_MS = 30_000;
+const TERMINAL_TIME_BOUND_MS = 60_000;
 
 export function dbosWorkflowGcEnabled(): boolean {
   // DEFAULT-ON (owner durable-stability directive, 2026-06-19): the GC MUST run
@@ -115,11 +116,11 @@ export async function runDbosWorkflowHistoryAlarmOnce(opts: {
 /** Injectable query seams (sql-backed in production; faked in tests). */
 export interface DbosGcDeps {
   /** Terminal workflow_uuids with updated_at < cutoff, oldest created_at/uuid first. */
-  selectTerminalVictims: (cutoffMs: number, limit: number) => Promise<string[]>;
+  selectTerminalVictims: (cutoffMs: number, limit: number, signal?: AbortSignal) => Promise<string[]>;
   /** Delete operation_outputs for these workflow_uuids; returns rows deleted. */
-  deleteOutputs: (ids: string[]) => Promise<number>;
+  deleteOutputs: (ids: string[], signal?: AbortSignal) => Promise<number>;
   /** Delete workflow_status for these workflow_uuids; returns rows deleted. */
-  deleteWorkflows: (ids: string[]) => Promise<number>;
+  deleteWorkflows: (ids: string[], signal?: AbortSignal) => Promise<number>;
 }
 
 export interface DbosWorkflowGcResult {
@@ -132,33 +133,48 @@ export interface DbosWorkflowGcResult {
   durationMs: number;
 }
 
-type SqlLike = <T = unknown>(strings: TemplateStringsArray, ...values: unknown[]) => Promise<T>;
+type SqlLike = <T = unknown>(strings: TemplateStringsArray, ...values: unknown[]) => PromiseLike<T> & { cancel?: () => void };
+
+/** Forward the pass deadline to postgres.js, so a failed pass leaves no live SQL behind. */
+async function gcQuery<T>(query: PromiseLike<T> & { cancel?: () => void }, signal?: AbortSignal): Promise<T> {
+  const cancel = () => query.cancel?.();
+  if (signal?.aborted) {
+    cancel();
+    throw signal.reason;
+  }
+  signal?.addEventListener('abort', cancel, { once: true });
+  try {
+    return await query;
+  } finally {
+    signal?.removeEventListener('abort', cancel);
+  }
+}
 
 /** Build the production sql-backed query seams. */
 export function dbosWorkflowGcSqlDeps(sql: SqlLike): DbosGcDeps {
   const statuses = [...DBOS_TERMINAL_STATUSES];
   return {
-    selectTerminalVictims: async (cutoffMs, limit) => {
-      const rows = await sql<Array<{ workflow_uuid: string }>>`
+    selectTerminalVictims: async (cutoffMs, limit, signal) => {
+      const rows = await gcQuery(sql<Array<{ workflow_uuid: string }>>`
         SELECT workflow_uuid FROM dbos.workflow_status
          WHERE status = ANY(${statuses})
            AND updated_at < ${cutoffMs}
          ORDER BY created_at ASC, workflow_uuid ASC
-         LIMIT ${limit}`;
+         LIMIT ${limit}`, signal);
       return rows.map((r) => r.workflow_uuid);
     },
-    deleteOutputs: async (ids) => {
+    deleteOutputs: async (ids, signal) => {
       if (ids.length === 0) return 0;
-      const rows = await sql<Array<{ n: number }>>`
+      const rows = await gcQuery(sql<Array<{ n: number }>>`
         WITH d AS (DELETE FROM dbos.operation_outputs WHERE workflow_uuid = ANY(${ids}) RETURNING 1)
-        SELECT count(*)::int AS n FROM d`;
+        SELECT count(*)::int AS n FROM d`, signal);
       return rows[0]?.n ?? 0;
     },
-    deleteWorkflows: async (ids) => {
+    deleteWorkflows: async (ids, signal) => {
       if (ids.length === 0) return 0;
-      const rows = await sql<Array<{ n: number }>>`
+      const rows = await gcQuery(sql<Array<{ n: number }>>`
         WITH d AS (DELETE FROM dbos.workflow_status WHERE workflow_uuid = ANY(${ids}) RETURNING 1)
-        SELECT count(*)::int AS n FROM d`;
+        SELECT count(*)::int AS n FROM d`, signal);
       return rows[0]?.n ?? 0;
     },
   };
@@ -192,13 +208,34 @@ export async function runDbosWorkflowGcOnce(
   const days = opts.retentionDays ?? dbosWorkflowGcRetentionDays();
   const batchLimit = opts.batchLimit ?? DEFAULT_BATCH_LIMIT;
   const nowMs = opts.nowMs ?? Date.now();
-  const timeBudgetMs = opts.timeBudgetMs ?? DEFAULT_TIME_BUDGET_MS;
+  const timeBudgetMs = Math.min(opts.timeBudgetMs ?? DEFAULT_TIME_BUDGET_MS, DEFAULT_TIME_BUDGET_MS);
   const cutoffMs = nowMs - days * 86_400_000;
 
   let deletedWorkflows = 0;
   let deletedOutputs = 0;
   let batches = 0;
   let budgetExhausted = false;
+  const control = new AbortController();
+  const deadlineError = new Error(`DBOS workflow GC exceeded its ${TERMINAL_TIME_BOUND_MS}ms terminal deadline`);
+  let terminalTimer: ReturnType<typeof setTimeout> | undefined;
+  const terminal = new Promise<never>((_resolve, reject) => {
+    terminalTimer = setTimeout(() => {
+      reject(deadlineError);
+      control.abort(deadlineError);
+    }, Math.max(0, TERMINAL_TIME_BOUND_MS - (nowClockMs() - startedAtMs)));
+  });
+  const run = async <T>(operation: (signal: AbortSignal) => Promise<T>): Promise<T> => {
+    if (control.signal.aborted || nowClockMs() - startedAtMs >= TERMINAL_TIME_BOUND_MS) {
+      control.abort(deadlineError);
+      throw deadlineError;
+    }
+    const result = await Promise.race([operation(control.signal), terminal]);
+    if (nowClockMs() - startedAtMs >= TERMINAL_TIME_BOUND_MS) {
+      control.abort(deadlineError);
+      throw deadlineError;
+    }
+    return result;
+  };
   try {
     const deps = opts.deps ?? dbosWorkflowGcSqlDeps(getOrgPg().sql as SqlLike);
     while (true) {
@@ -206,7 +243,7 @@ export async function runDbosWorkflowGcOnce(
         budgetExhausted = true;
         break;
       }
-      const ids = await deps.selectTerminalVictims(cutoffMs, batchLimit);
+      const ids = await run(signal => deps.selectTerminalVictims(cutoffMs, batchLimit, signal));
       // Selection can consume the remaining budget. Leave those victims for
       // the next pass rather than starting deletion after the liveness window.
       if (nowClockMs() - startedAtMs >= timeBudgetMs) {
@@ -216,8 +253,10 @@ export async function runDbosWorkflowGcOnce(
       if (ids.length === 0) break;
       batches += 1;
       // operation_outputs first (FK order), then the workflow rows.
-      deletedOutputs += await deps.deleteOutputs(ids);
-      deletedWorkflows += await deps.deleteWorkflows(ids);
+      deletedOutputs += await run(signal => deps.deleteOutputs(ids, signal));
+      const removed = await run(signal => deps.deleteWorkflows(ids, signal));
+      deletedWorkflows += removed;
+      if (removed === 0) throw new Error('DBOS workflow GC made no deletion progress for selected eligible rows');
       // Finish the committed batch, then yield before admitting another.
       if (nowClockMs() - startedAtMs >= timeBudgetMs) {
         budgetExhausted = true;
@@ -232,6 +271,8 @@ export async function runDbosWorkflowGcOnce(
       error: error instanceof Error ? error.message : String(error),
     })}`);
     throw error; // Preserve DBOS failure/retry semantics after recording partial progress.
+  } finally {
+    clearTimeout(terminalTimer);
   }
   return finish({ skipped: false, deletedWorkflows, deletedOutputs, cutoffMs, batches, budgetExhausted });
 }

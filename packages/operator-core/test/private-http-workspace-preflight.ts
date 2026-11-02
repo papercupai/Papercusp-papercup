@@ -23,6 +23,8 @@ import type { CommittedReaderObservationCohort, CommittedReaderObservationIdenti
 import { decideWatchdogExpiry } from '../../../scripts/lib/batch-watchdog.mjs';
 // @ts-ignore -- reuse install:safe's maintained direct-dependency range detector.
 import { findUnsatisfiedDeclaredDepRanges } from '../../../scripts/check-declared-deps-extracted.mjs';
+// @ts-ignore -- share the unit-test process boundary with other standalone runtimes.
+import { isolatedRuntimeEnv } from '../../../scripts/lib/isolation-child-env.mjs';
 
 export interface PrivateUnrelatedCheckpointObservation {
   workspace: string;
@@ -1177,7 +1179,7 @@ export function buildPrivateOperatorApiBundle(root: string, evidenceDir: string,
   };
   const command = builder?.command ?? 'bash';
   const args = builder?.args ?? [join(root, 'apps/operator/bin/bundle-host.sh'), 'bin/hono-host.ts', path];
-  const environment = builder?.env ?? process.env;
+  const environment = isolatedRuntimeEnv(builder?.env ?? process.env);
   if (builder?.maxMs !== undefined) {
     const maxMs = builder.maxMs;
     return new Promise<PrivateBundleReceipt>((resolveBuild, reject) => {

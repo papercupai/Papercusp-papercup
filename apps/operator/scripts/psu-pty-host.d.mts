@@ -798,6 +798,7 @@ export function nativeLatestExecution({ agent, env, receivedAtMs, nowMs, nativeS
     nowMs?: number;
     nativeSessionId?: string | null;
 }): {
+    nativeSessionId: string | null;
     observedAt: number;
     phase: string;
     turnStartedAt: number | null;

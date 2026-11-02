@@ -42,6 +42,7 @@ import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { certifyCheckpointProgress, DEFAULT_STALL_THRESHOLD_MS } from "@papercusp/operator-core/lib/release-trace-progress";
 import * as targetedTaskReuse from "../../../../scripts/lib/targeted-task-reuse.mjs";
 import * as testPassReuse from "../../../../scripts/lib/test-pass-reuse.mjs";
 import {
@@ -189,9 +190,14 @@ vi.mock("@papercusp/operator-core/lib/attention-notify", () => ({
 // measure committed gate defaults regardless of how the containing test process was scheduled.
 const inheritedVitestMaxForks = process.env.VITEST_MAX_FORKS;
 const inheritedVitestMaxThreads = process.env.VITEST_MAX_THREADS;
+// These fixtures simulate an independent checkpoint. The verifier's own deadline
+// can be shorter than its 15-minute isolation reserve, which would suppress every
+// injected rescue before the fixture reaches the behavior it is testing.
+const inheritedTaskDeadline = process.env.PAPERCUSP_TASK_DEADLINE_EPOCH_MS;
 beforeAll(() => {
   delete process.env.VITEST_MAX_FORKS;
   delete process.env.VITEST_MAX_THREADS;
+  delete process.env.PAPERCUSP_TASK_DEADLINE_EPOCH_MS;
 });
 afterAll(() => {
   if (inheritedVitestMaxForks === undefined)
@@ -200,6 +206,9 @@ afterAll(() => {
   if (inheritedVitestMaxThreads === undefined)
     delete process.env.VITEST_MAX_THREADS;
   else process.env.VITEST_MAX_THREADS = inheritedVitestMaxThreads;
+  if (inheritedTaskDeadline === undefined)
+    delete process.env.PAPERCUSP_TASK_DEADLINE_EPOCH_MS;
+  else process.env.PAPERCUSP_TASK_DEADLINE_EPOCH_MS = inheritedTaskDeadline;
 });
 
 interface ExecResp {
@@ -621,6 +630,61 @@ describe("EI-27265866190725513: real deps forward runGreenCheckpoint's phase rep
       throw new Error("progress sink down");
     });
     expect(() => deps.reportProgress!("phase:suite")).not.toThrow();
+  });
+
+  it.each([true, false])("refreshes durable repair progress from child output (observer=%s)", async (observe) => {
+    const root = mkdtempSync(join(tmpdir(), "checkpoint-child-progress-"));
+    const config = { ...cfg, integrationRoot: root, checkpointLogDir: join(root, "logs") };
+    const lockDir = checkpointRunLockDir(config.checkpointLogDir, root);
+    const lock = acquireCheckpointRunLock(lockDir);
+    expect(lock.acquired).toBe(true);
+    vi.useFakeTimers();
+    const startedAtMs = Date.now() - 1;
+    const detail = { activity: "repair-head-verification", leg: { label: "unit", index: 2, total: 5 } };
+    const marker = () => JSON.parse(readFileSync(join(lockDir, "phase.json"), "utf8"));
+    const certificate = () => certifyCheckpointProgress({
+      active: true, activeSource: "run-lock", startedAtMs, progressAtMs: Date.parse(marker().at),
+    }, Date.now());
+    try {
+      writeCheckpointRunPhase(lockDir, "suite", detail);
+      const exec: CheckpointExec = async (_cmd, _args, options) => {
+        vi.setSystemTime(Date.now() + DEFAULT_STALL_THRESHOLD_MS + 1);
+        expect(certificate().verdict).toBe("stalled");
+        options?.onProgress?.();
+        expect(marker()).toMatchObject({ phase: "suite", ...detail });
+        expect(certificate().verdict).toBe("progressing");
+        // Mere process existence must not keep a silent child looking healthy.
+        vi.setSystemTime(Date.now() + DEFAULT_STALL_THRESHOLD_MS + 1);
+        expect(certificate().verdict).toBe("stalled");
+        return { code: 0, stdout: "a".repeat(40), stderr: "" };
+      };
+      const deps = realCheckpointDeps(config, exec, "child-progress", undefined, observe ? () => {} : undefined);
+      await expect(deps.resolveTip!()).resolves.toBe("a".repeat(40));
+      expect(certificate().verdict).toBe("progressing");
+    } finally {
+      vi.useRealTimers();
+      lock.release();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each([null, process.pid + 1])("does not refresh a marker without its own run lock (owner=%s)", (ownerPid) => {
+    const root = mkdtempSync(join(tmpdir(), "checkpoint-foreign-progress-"));
+    const config = { ...cfg, integrationRoot: root, checkpointLogDir: join(root, "logs") };
+    const lockDir = checkpointRunLockDir(config.checkpointLogDir, root);
+    mkdirSync(lockDir, { recursive: true });
+    vi.useFakeTimers();
+    try {
+      writeCheckpointRunPhase(lockDir, "suite", { activity: "repair-head-verification" });
+      if (ownerPid !== null) writeFileSync(join(lockDir, "owner.json"), JSON.stringify({ pid: ownerPid }));
+      const before = readFileSync(join(lockDir, "phase.json"), "utf8");
+      vi.setSystemTime(Date.now() + DEFAULT_STALL_THRESHOLD_MS + 1);
+      realCheckpointDeps(config).reportProgress!("command:output:npm");
+      expect(readFileSync(join(lockDir, "phase.json"), "utf8")).toBe(before);
+    } finally {
+      vi.useRealTimers();
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 
@@ -2865,7 +2929,7 @@ describe("realCheckpointDeps.runGreen — real-path wiring (gap #10)", () => {
       },
     );
 
-    expect(result.green).toBe(true);
+    expect(result.green, result.isolationNote ?? result.summary.slice(0, 500)).toBe(true);
     expect(calls.filter((call) => call.cmd === "git")).toHaveLength(1);
     expect(
       calls.filter(
@@ -4641,6 +4705,28 @@ describe("EI-19332206710686203: rescue re-runs carry an explicit per-test timeou
       testRun!.args.indexOf("--"),
     );
     expect(testRun!.args).toContain("lib/a.test.ts");
+  });
+
+  it("runs targeted integration repair files through the private-PG wrapper", async () => {
+    const { exec, calls } = makeExec([]);
+    const deps = realCheckpointDeps(cfg, exec);
+    const file = "lib/persistence-venue.integration.test.ts";
+
+    await deps.runTestsAtRef?.("deadbeef", [
+      { workspace: "@example/fixture-pkg", file },
+    ]);
+
+    const testRun = calls.find((c) => c.args.includes(file));
+    expect(testRun).toBeDefined();
+    expect(testRun!.cmd).toBe(process.execPath);
+    expect(testRun!.args.slice(0, 3)).toEqual([
+      join(cpTree, "scripts", "with-test-pg.mjs"),
+      "--",
+      "npm",
+    ]);
+    expect(testRun!.args).toContain(TIMEOUT_FLAG);
+    expect(testRun!.args).toContain("--no-file-parallelism");
+    expect(testRun!.opts?.env?.VITEST_MAX_FORKS).toBe("1");
   });
 
   it("routes standalone package rescue runs through the package directory", async () => {

@@ -1359,9 +1359,8 @@ export default defineTool({
         : Promise.resolve<Set<string> | null>(null);
     // Phases (handler-phases-v1): assignments:rows, one assignments:decorate:<leg> per
     // decoration leg, assignments:schedulerClaims.
-    const [rows, coverageRead, harnessPlans] = await trackPhase(ctx.phases, 'assignments:rows', () => Promise.all([
+    const [rows, harnessPlans] = await trackPhase(ctx.phases, 'assignments:rows', () => Promise.all([
       rowsPromise,
-      coveragePromise,
       harnessPlansPromise,
     ]));
     // P-010 (fleet-lead-instrumentation-audit-2026-08-09): the filter and the
@@ -1712,6 +1711,7 @@ export default defineTool({
     let coverageTruncated = false;
     let collisions: CoverageCollision[] = [];
     let duplicates: CoverageDuplicate[] = [];
+    const coverageRead = await coveragePromise;
     // Reuse the bounded top-level coverage read for both the rollup and the
     // optional DAG frontier — one getAllPlanItemCoverage() call, not two. If
     // harness scoping failed, omit this section rather than widening an

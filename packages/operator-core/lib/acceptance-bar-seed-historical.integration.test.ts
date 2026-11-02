@@ -95,6 +95,53 @@ function seedInput(planSlug: string, planContent: string, actorId: string) {
 }
 
 describe('historical deterministic acceptance BAR rubric collision', () => {
+  it('validates the live verification repair without rewriting the preserved acceptance rubric', async () => {
+    const slug = 'seed-live-verification-repair';
+    const file = 'packages/operator-core/lib/acceptance-bar-seed-historical.integration.test.ts';
+    const exact = 'validates the live verification repair without rewriting the preserved acceptance rubric';
+    const content = (testName: string) => contentFor(slug).replace(
+      '**R-1 — Canonical outcome.** The first outcome holds.',
+      '**R-1 — Canonical outcome.**\n```requirement\n' + JSON.stringify({
+        intent: { request: 'Keep the accepted outcome while repairing its verification selector.' },
+        acceptance: { condition: 'The first outcome holds.', falsifier: 'The first outcome fails.',
+          evidencePlane: 'tree', requiredScope: ['P-001'], requiredTestLayers: ['integration'] },
+        verification: { method: 'Run the exact maintained case.', check: { kind: 'tests', files: [file],
+          cases: [{ file, testName }] } },
+      }) + '\n```',
+    );
+    await insertSubject(slug, content(exact));
+    const seed = (testName: string, dryRun = false) => db.adminSql.begin(tx => seedAcceptanceBarsInTransaction({
+      ...seedInput(slug, content(testName), 'su-seeder'), executor: tx as unknown as SpecClauseSql, dryRun,
+    }));
+    const initial = await seed(exact);
+    expect(initial.ok).toBe(true);
+    if (!initial.ok) throw new Error(initial.message);
+    // Model a historical selector accepted before exact-case preflight existed.
+    // Verification fields do not enter the BAR hash. The live plan supplies the repair.
+    await db.adminSql`UPDATE harness_shared.harness_plans
+      SET template_data = jsonb_set(template_data, '{criteria,0,check,cases,0,testName}',
+        ${JSON.stringify('historical suite-only selector')}::jsonb)
+      WHERE workspace_id = ${WORKSPACE} AND harness_slug = ${HARNESS} AND plan_slug = ${initial.rubricSlug}`;
+    const snapshot = async () => ({
+      rubric: await db.adminSql`SELECT version, content, template_data FROM harness_shared.harness_plans
+        WHERE workspace_id = ${WORKSPACE} AND harness_slug = ${HARNESS} AND plan_slug = ${initial.rubricSlug}`,
+      clauses: await db.adminSql`SELECT spec_id, current_revision FROM harness_shared.plan_spec_clauses
+        WHERE workspace_id = ${WORKSPACE} AND harness_slug = ${HARNESS} AND plan_slug = ${slug}
+        ORDER BY spec_id`,
+    });
+    const before = await snapshot();
+    for (const dryRun of [true, false]) {
+      const repaired = await seed(exact, dryRun);
+      expect(repaired).toMatchObject({ ok: true, rubricChanged: false, rubricRevision: initial.rubricRevision,
+        barSetHash: initial.barSetHash });
+      expect(await snapshot()).toEqual(before);
+      expect(await seed('another nonexistent case', dryRun)).toMatchObject({
+        ok: false, error: 'bar_contract_check_invalid',
+      });
+      expect(await snapshot()).toEqual(before);
+    }
+  });
+
   it('persists an explicitly planned case extension while an unmarked selector refuses before writes', async () => {
     const slug = 'seed-planned-case-extension';
     const file = 'packages/operator-core/lib/acceptance-bar-seed-historical.integration.test.ts';

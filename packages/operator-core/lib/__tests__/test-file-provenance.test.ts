@@ -502,14 +502,16 @@ describe('test-spawned child committed-source substitutions', () => {
     const diff = { drifted: false, uncomparable: [] };
     const base = 'head=aaa uncommittedPaths=0/1 provenance=stamped startedAt=2026-10-13T00:00:00.000Z';
     expect(provenanceResultFields(snapshot, diff)).toBe(base);
-    expect(provenanceResultFields(snapshot, diff, { records: [{}, {}], malformed: 0, unreadable: false })).toBe(
-      `${base} childSubstituted=2`,
+    expect(provenanceResultFields(snapshot, diff, { records: [{}, {}], malformed: 0, unreadable: false }, 0)).toBe(
+      `${base} childSubstituted=2 childNoticeOffsetBytes=0`,
     );
-    expect(provenanceResultFields(snapshot, diff, { records: [], malformed: 1, unreadable: false })).toBe(
-      `${base} childSubstituted=0`,
+    expect(provenanceResultFields(snapshot, diff, { records: [], malformed: 1, unreadable: false }, 0)).toBe(
+      `${base} childSubstituted=0 childNoticeOffsetBytes=0`,
     );
     for (const unreadable of [{ records: [], malformed: 0, unreadable: true }, null]) {
-      expect(provenanceResultFields(snapshot, diff, unreadable)).toBe(`${base} childSubstituted=unknown`);
+      expect(provenanceResultFields(snapshot, diff, unreadable)).toBe(
+        `${base} childSubstituted=unknown childNoticeOffsetBytes=unknown`,
+      );
     }
   });
 

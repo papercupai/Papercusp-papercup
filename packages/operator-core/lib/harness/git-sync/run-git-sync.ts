@@ -7042,6 +7042,20 @@ async function commitOneRepoWithScratch(
       );
     }
     const excludePaths = [...new Set([...packageSafeBaseExcludePaths, ...manifestClosure.paths])];
+    // Keep clean live-lock paths out of the post-stage dependency roots. They remain pathspec
+    // exclusions for staging safety, but their unchanged HEAD blobs are still in the commit
+    // index. The post-stage guard independently detects changes that arrive after this census.
+    const dirtyLiveLockPaths = new Set(
+      protectedHoldings
+        .filter((holding) => dirty.some((file) => gitSyncPathsOverlap(file, holding.path.trim())))
+        .map((holding) => holding.path.trim()),
+    );
+    const cleanLiveLockPaths = new Set(
+      protectedHoldings
+        .map((holding) => holding.path.trim())
+        .filter((path) => !dirtyLiveLockPaths.has(path)),
+    );
+    const postStageExcludedDependencies = excludePaths.filter((path) => !cleanLiveLockPaths.has(path));
     const cumulativeExcludedPaths = oversized
       .filter((file) => file.exclusionReason === 'cumulative-limit')
       .map((file) => file.path);
@@ -7136,12 +7150,12 @@ async function commitOneRepoWithScratch(
         scope: logScope,
         refreshLiveLockHoldings: o.refreshLiveLockHoldings,
         readText: (rel) => o.readText(repoPath, rel),
-        excludedDependencies: excludePaths,
+        excludedDependencies: postStageExcludedDependencies,
         preserveCumulativeUntracking,
         excludedDependencyReasons: exclusionReasons,
         generatedDeclarationPaths: o.forceCatchAllPaths,
         alwaysInfectiousDependencies: [
-          ...protectedHoldings.map((holding) => holding.path),
+          ...dirtyLiveLockPaths,
           ...atomicExclusions.paths,
           ...cargoPackageClosure.paths,
         ],

@@ -23,6 +23,7 @@ import {
 } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
+import Database from 'better-sqlite3';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parse as parseToml } from '@iarna/toml';
@@ -81,6 +82,12 @@ beforeEach(() => {
   process.env.PAPERCUSP_HOME = join(fakeHome, '.papercusp');
   process.env.PAPERCUSP_SU_CODEX_HOMES_DIR = join(fakeHome, '.papercusp', 'su-codex-homes');
   process.env.PAPERCUSP_CODEX_SQLITE_HOMES_DIR = join(fakeHome, 'codex-sqlite-homes');
+  // Home and hook tests must not depend on the installed Codex CLI supporting
+  // `debug models`. Tests for a particular model replace this isolated cache.
+  mkdirSync(join(fakeHome, '.codex'), { recursive: true });
+  writeFileSync(join(fakeHome, '.codex', 'models_cache.json'), JSON.stringify({
+    models: [{ slug: 'fixture-model', multi_agent_version: 'v2' }],
+  }));
   vi.resetModules();
 });
 
@@ -1494,6 +1501,73 @@ describe('writeSuCodexHome', () => {
     expect(readFileSync(transcript, 'utf8')).toBe('native transcript');
     expect(existsSync(changedRoot)).toBe(false);
   });
+
+  it.each(['su', 'role'])('recovers a missing %s SQLite receipt only from the same owner native index', async kind => {
+    const { writeSuCodexHome, writeRoleCodexHome, ensureSuCodexHomeConfig } = await loadMod();
+    const input = { sessionKey: 'recovered-state', mcpUrl: 'http://x/api/mcp?superuser=1',
+      sid: 'su-recovered-state', promptText: 'KEEP NATIVE STATE' };
+    const first = kind === 'su' ? writeSuCodexHome(input) : writeRoleCodexHome(input);
+    // Recovery requires the existing explicit owner stamp; an unstamped role
+    // home is deliberately ineligible even when its database looks familiar.
+    writeFileSync(join(first.codexHome, '.owner-sid'), input.sid);
+    const state = join(fakeHome, 'retained-native-state', 'session-recovered-state');
+    mkdirSync(state, { recursive: true });
+    const transcript = join(first.codexHome, 'sessions', 'rollout.jsonl');
+    mkdirSync(join(first.codexHome, 'sessions'), { recursive: true });
+    writeFileSync(transcript, JSON.stringify({ type: 'session_meta', payload: { id: 'native-recovered' } }) + '\n');
+    const db = new Database(join(state, 'state_5.sqlite'));
+    try {
+      db.exec('CREATE TABLE threads (id TEXT PRIMARY KEY, rollout_path TEXT, updated_at INTEGER)');
+      db.prepare('INSERT INTO threads VALUES (?, ?, ?)').run('native-recovered', transcript, 1);
+      writeFileSync(first.configPath, readFileSync(first.configPath, 'utf8')
+        .replace(JSON.stringify(first.sqliteHome), JSON.stringify(state)));
+      rmSync(first.sqliteHome, { recursive: true, force: true });
+      const repair = () => kind === 'su'
+        ? ensureSuCodexHomeConfig({ ...input, recordedSqliteHome: first.sqliteHome })
+        : writeRoleCodexHome({ ...input, preserveExisting: true, recordedSqliteHome: first.sqliteHome });
+      // An extant receipt location is ambiguous, even when empty.
+      mkdirSync(first.sqliteHome, { recursive: true });
+      expect(repair).toThrow('launch receipt and configured sqlite_home disagree');
+      rmSync(first.sqliteHome, { recursive: true });
+      const repaired = repair();
+      expect(repaired.sqliteHome).toBe(state);
+      expect(parseToml(readFileSync(first.configPath, 'utf8')).sqlite_home).toBe(state);
+      expect(existsSync(first.sqliteHome)).toBe(false);
+      expect(readFileSync(transcript, 'utf8')).toContain('native-recovered');
+      expect(db.prepare('SELECT id FROM threads').all()).toEqual([{ id: 'native-recovered' }]);
+    } finally { db.close(); }
+  });
+
+  it.each(['wrong-owner', 'missing-owner', 'foreign-transcript', 'wrong-thread', 'missing-index', 'wrong-session'])
+    ('refuses unverified SQLite receipt recovery: %s', async scenario => {
+      const { writeSuCodexHome, ensureSuCodexHomeConfig } = await loadMod();
+      const input = { sessionKey: 'unverified-state', mcpUrl: 'http://x/api/mcp?superuser=1',
+        sid: 'su-unverified-state', promptText: 'KEEP NATIVE STATE' };
+      const first = writeSuCodexHome(input);
+      const state = join(fakeHome, 'native-state', scenario === 'wrong-session' ? 'session-foreign' : 'session-unverified-state');
+      mkdirSync(state, { recursive: true });
+      const transcript = scenario === 'foreign-transcript'
+        ? join(fakeHome, 'foreign.jsonl') : join(first.codexHome, 'sessions', 'rollout.jsonl');
+      mkdirSync(join(first.codexHome, 'sessions'), { recursive: true });
+      writeFileSync(transcript, JSON.stringify({ type: 'session_meta', payload: { id: 'native-owned' } }) + '\n');
+      const db = new Database(join(state, 'state_5.sqlite'));
+      try {
+        db.exec('CREATE TABLE threads (id TEXT PRIMARY KEY, rollout_path TEXT, updated_at INTEGER)');
+        db.prepare('INSERT INTO threads VALUES (?, ?, ?)').run(
+          scenario === 'wrong-thread' ? 'native-foreign' : 'native-owned', transcript, 1);
+      } finally { db.close(); }
+      if (scenario === 'missing-index') rmSync(join(state, 'state_5.sqlite'));
+      if (scenario === 'wrong-owner') writeFileSync(join(first.codexHome, '.owner-sid'), 'su-foreign');
+      if (scenario === 'missing-owner') rmSync(join(first.codexHome, '.owner-sid'));
+      writeFileSync(first.configPath, readFileSync(first.configPath, 'utf8')
+        .replace(JSON.stringify(first.sqliteHome), JSON.stringify(state)));
+      rmSync(first.sqliteHome, { recursive: true, force: true });
+      const before = readFileSync(first.configPath, 'utf8');
+      expect(() => ensureSuCodexHomeConfig({ ...input, recordedSqliteHome: first.sqliteHome }))
+        .toThrow('launch receipt and configured sqlite_home disagree');
+      expect(readFileSync(first.configPath, 'utf8')).toBe(before);
+      expect(existsSync(first.sqliteHome)).toBe(false);
+    });
 
   it('refuses conflicting SU SQLite receipts and propagates non-permission read failures', async () => {
     const { writeSuCodexHome, ensureSuCodexHomeConfig } = await loadMod();

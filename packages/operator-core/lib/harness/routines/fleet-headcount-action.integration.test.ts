@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { FleetLaunchTransaction } from '../../agent-fleets-store';
 
 const mocks = vi.hoisted(() => ({
   getFlag: vi.fn(),
@@ -26,6 +27,8 @@ const mocks = vi.hoisted(() => ({
   lapseRule: vi.fn(),
   orgSql: vi.fn(),
   getModes: vi.fn(),
+  recoverInterruptions: vi.fn(),
+  loopStatuses: vi.fn(),
   events: [] as string[],
   headcountEvents: [] as Record<string, unknown>[],
 }));
@@ -114,8 +117,15 @@ vi.mock('../../mcp-base-url', () => ({
 vi.mock('../../papercusp-root', () => ({
   papercuspPathForWorkspace: () => '/tmp/fleet-headcount-action-test',
 }));
-vi.mock('./system-actions', () => ({
+vi.mock('./system-actions', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./system-actions')>()),
   registerSystemAction: vi.fn(),
+}));
+vi.mock('./session-interruption-runtime', () => ({
+  sweepSessionInterruptions: (...args: unknown[]) => mocks.recoverInterruptions(...args),
+}));
+vi.mock('./loop', () => ({
+  getLoopStatuses: (...args: unknown[]) => mocks.loopStatuses(...args),
 }));
 
 import { FLEET_HEADCOUNT_BOOT_FAILURE_HOLD_MS, runFleetHeadcountGovernor } from './fleet-headcount-action';
@@ -189,6 +199,8 @@ const grantedTarget = (config: Record<string, unknown> | null = baseConfig) => (
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mocks.recoverInterruptions.mockResolvedValue({ protectedOwnerIds: [] });
+  mocks.loopStatuses.mockResolvedValue(new Map());
   mocks.events.length = 0;
   mocks.headcountEvents.length = 0;
   mocks.getFlag.mockResolvedValue(true);
@@ -245,6 +257,161 @@ beforeEach(() => {
   mocks.setHeadcountTarget.mockResolvedValue(undefined);
   mocks.orgSql.mockResolvedValue([]);
   mocks.getModes.mockResolvedValue([]);
+});
+
+describe('deliberate loop-end is a headcount repair admission fence', () => {
+  const owner = 'su-stopped';
+  const stopped = () => new Map([[owner, { active: false, explicitlyEnded: true }]]);
+  const run = () => runFleetHeadcountGovernor({
+    installSlug: 'papercusp', workspaceId: 'ws', triggerConfig: {}, payloadTemplate: null,
+  });
+  const setup = (live = true): FleetLaunchTransaction => {
+    const transaction: FleetLaunchTransaction = {
+      version: 1, transactionId: 'tx-stale-assignment', launcherOwnerId: 'su-reaped-leader',
+      state: 'partial', requestedAt: 1, updatedAt: 1,
+      requestedMemberIds: [owner], openedMemberIds: [owner], verifiedMemberIds: [owner],
+      workerReadyMemberIds: [], workerAttestations: [readyAttestation(owner, false)],
+      failed: [], waves: [], recovery: { retryOwnerIds: [owner], nextAction: 'observe' },
+      governor: {
+        version: 1, probeOwnerIds: [owner], attestationAttempts: { [owner]: 2 },
+        retiredMemberIds: [], history: [], terminalVerdict: null,
+      },
+    };
+    mocks.getFleet.mockResolvedValue({
+      fleetSlug: 'fleet-a', leaderOwnerId: 'su-reaped-leader', lastLaunchTransaction: transaction,
+    });
+    mocks.liveMemberIds.mockResolvedValue(live ? [owner] : []);
+    mocks.executingOwnersSince.mockResolvedValue(new Set());
+    mocks.verify.mockImplementation(async (args: { expectedOwnerIds: string[] }) =>
+      verifierResult(args.expectedOwnerIds[0]!, args.expectedOwnerIds[0] !== owner));
+    return transaction;
+  };
+
+  it.each([true, false])('preserves a settled no-assignment disposition across ticks (member live: %s)', async (live) => {
+    const transaction = setup(live);
+    mocks.loopStatuses.mockResolvedValue(stopped());
+
+    await run();
+    await run();
+
+    expect(mocks.kill).not.toHaveBeenCalled();
+    expect(mocks.spawnHeadless).not.toHaveBeenCalled();
+    expect(mocks.spawnConsole).not.toHaveBeenCalled();
+    expect(mocks.verify).not.toHaveBeenCalled();
+    expect(mocks.claimSlot).not.toHaveBeenCalled();
+    expect(transaction.workerAttestations?.[0].ready).toBe(false);
+    expect(transaction.governor?.attestationAttempts[owner]).toBe(2);
+    expect(transaction.governor?.terminalVerdict).toMatchObject({
+      action: 'wait', outcome: 'unverified', reason: expect.stringContaining('explicit loop:end'),
+    });
+    expect(transaction.recovery.nextAction).toContain(owner);
+    expect(transaction.recovery.nextAction).toContain('loop:arm');
+    expect(mocks.setHeadcountTarget).not.toHaveBeenCalled();
+  });
+
+  it.each([true, false])('rechecks a stop during asynchronous launch preflight (prune: %s)', async (live) => {
+    setup(live);
+    mocks.loopStatuses.mockResolvedValueOnce(new Map()).mockResolvedValue(stopped());
+
+    await run();
+
+    expect(mocks.kill).not.toHaveBeenCalled();
+    expect(mocks.spawnHeadless).not.toHaveBeenCalled();
+    expect(mocks.spawnConsole).not.toHaveBeenCalled();
+    expect(mocks.releaseSlot).toHaveBeenCalledWith({ workspaceId: 'ws', fleetSlug: 'fleet-a', at: 10 });
+    expect(mocks.recordAttempt).toHaveBeenLastCalledWith(expect.objectContaining({
+      succeeded: false, error: expect.stringContaining('explicit loop:end'),
+    }));
+  });
+
+  it('fails closed when the deliberate-stop read is unavailable', async () => {
+    const transaction = setup();
+    mocks.loopStatuses.mockRejectedValue(new Error('loop store unavailable'));
+
+    await run();
+
+    expect(mocks.kill).not.toHaveBeenCalled();
+    expect(mocks.spawnHeadless).not.toHaveBeenCalled();
+    expect(transaction.governor?.terminalVerdict).toMatchObject({
+      action: 'wait', outcome: 'unverified', reason: expect.stringContaining('loop store unavailable'),
+    });
+  });
+
+  it('retains the original stopped cohort when the stop arrives after replacement reservation', async () => {
+    setup(false);
+    mocks.loopStatuses
+      .mockResolvedValueOnce(new Map())
+      .mockResolvedValueOnce(new Map())
+      .mockImplementation(async (owners: string[]) => new Map(
+        owners.filter(id => id === owner).map(id => [id, { active: false, explicitlyEnded: true }]),
+      ));
+
+    await run();
+
+    expect(mocks.spawnHeadless).not.toHaveBeenCalled();
+    expect(mocks.releaseSlot).toHaveBeenCalledWith({ workspaceId: 'ws', fleetSlug: 'fleet-a', at: 10 });
+    const held = mocks.setTransaction.mock.calls.at(-1)?.[0].transaction;
+    expect(held).toMatchObject({
+      transactionId: 'tx-stale-assignment', requestedMemberIds: [owner],
+      governor: { terminalVerdict: { action: 'wait', outcome: 'unverified' } },
+    });
+    mocks.getFleet.mockResolvedValue({
+      fleetSlug: 'fleet-a', leaderOwnerId: 'su-reaped-leader', lastLaunchTransaction: held,
+    });
+    await run();
+    expect(mocks.spawnHeadless).not.toHaveBeenCalled();
+  });
+
+  it('resumes ordinary repair after an explicit rearm', async () => {
+    setup();
+    mocks.loopStatuses.mockResolvedValue(stopped());
+    await run();
+    expect(mocks.spawnHeadless).not.toHaveBeenCalled();
+
+    mocks.loopStatuses.mockResolvedValue(new Map([[owner, { active: true, explicitlyEnded: false }]]));
+    await run();
+
+    expect(mocks.kill).toHaveBeenCalledTimes(1);
+    expect(mocks.spawnHeadless).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps ordinary system-paused workers eligible for repair', async () => {
+    setup();
+    mocks.loopStatuses.mockResolvedValue(new Map([[owner, { active: false, explicitlyEnded: false }]]));
+
+    await run();
+
+    expect(mocks.kill).toHaveBeenCalledTimes(1);
+    expect(mocks.spawnHeadless).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not revive a stop from a member already retired by a previous repair', async () => {
+    const transaction = setup(false);
+    transaction.governor!.retiredMemberIds = [owner];
+    mocks.loopStatuses.mockResolvedValue(stopped());
+
+    await run();
+
+    expect(mocks.kill).not.toHaveBeenCalled();
+    expect(mocks.spawnHeadless).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('interrupted original members precede refill', () => {
+  it('defers a replacement while the original continuation is not yet in the execution census', async () => {
+    mocks.recoverInterruptions.mockResolvedValue({ protectedOwnerIds: ['original-member'] });
+    mocks.liveMemberIds.mockResolvedValue([]);
+    await runFleetHeadcountGovernor({ installSlug: 'papercusp', workspaceId: 'ws',
+      triggerConfig: {}, payloadTemplate: null });
+    expect(mocks.recoverInterruptions).toHaveBeenCalledWith(expect.objectContaining({ workspaceId: 'ws' }),
+      false, { fleetSlug: 'fleet-a' });
+    expect(mocks.spawnHeadless).not.toHaveBeenCalled();
+    expect(mocks.spawnConsole).not.toHaveBeenCalled();
+    expect(mocks.claimSlot).not.toHaveBeenCalled();
+    expect(mocks.recordAttempt).toHaveBeenCalledWith(expect.objectContaining({
+      error: expect.stringContaining('original-member'),
+    }));
+  });
 });
 
 // WI-1457060. The governor reasoned only about member headcount and readiness, never

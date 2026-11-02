@@ -107,11 +107,11 @@ type JsonRecord = Record<string, unknown>;
  * gate-repair-plane-on-current-build-2026-10-15 P-003 (D-004): tools whose call names NO
  * build is routed to the current build (staging) instead of the release build.
  *
- * `release:repair-queue` mutates the frozen repair lineage while `main` is red. The release
- * operator (:3070) runs the last GREEN `main`, so a fix to repair-queue logic cannot reach it
- * until the very red it repairs is cleared. Measured before this change: ~96% of
- * repair-queue calls executed on a 13-day-old release build (D-002). Routing the default to
- * staging makes every ingress through this proxy run current-build repair-queue logic.
+ * The repair plane spans repair/eject operations through release:repair-queue and the final
+ * downgrade rung through release:test-downgrade. The release operator (:3070) runs the last
+ * GREEN main and may not have newly-added repair tools. Measured before this change: ~96% of
+ * repair-queue calls executed on a 13-day-old release build (D-002). Routing the full plane
+ * to staging makes every ingress through this proxy run current-build repair logic.
  *
  * The default never overrides a caller: an explicit `build` argument or `_meta` selector
  * wins (`build:'main'` is the deliberate opt-out). It applies only when the proxy HAS a
@@ -119,7 +119,10 @@ type JsonRecord = Record<string, unknown>;
  * current build already) keeps today's routing. A defaulted call that cannot reach staging
  * is answered `staging_unavailable`; it never silently runs on the release build.
  */
-export const CURRENT_BUILD_DEFAULT_TOOLS: readonly string[] = ["release:repair-queue"];
+export const CURRENT_BUILD_DEFAULT_TOOLS: readonly string[] = [
+  "release:repair-queue",
+  "release:test-downgrade",
+];
 
 const CURRENT_BUILD_DEFAULT_LOOKUP: ReadonlySet<string> = new Set(
   CURRENT_BUILD_DEFAULT_TOOLS.map(normalizeMcpName),
@@ -228,13 +231,13 @@ export function applyMcpBuildSelector(
   opts: { defaultToCurrentBuild?: boolean } = {},
 ): McpBuildRouting {
   const defaultToCurrentBuild = opts.defaultToCurrentBuild === true;
-  // Cheap pre-filter: both selector spellings contain the literal "build"; every
-  // current-build default tool contains "repair".
-  if (
-    rawBody.length === 0 ||
-    !(rawBody.includes("build") || (defaultToCurrentBuild && rawBody.includes("repair")))
-  )
-    return { kind: "none" };
+  // Cheap pre-filter: explicit selector spellings contain "build". Default-tool patterns
+  // are derived from the allowlist so a newly added verb cannot be skipped before parsing.
+  if (rawBody.length === 0) return { kind: "none" };
+  const bodyText = rawBody.toString("utf8");
+  const hasCurrentBuildDefault =
+    defaultToCurrentBuild && CURRENT_BUILD_DEFAULT_SCRIPT_PATTERNS.some(({ pattern }) => pattern.test(bodyText));
+  if (!(bodyText.includes("build") || hasCurrentBuildDefault)) return { kind: "none" };
   let parsed: unknown;
   try {
     parsed = JSON.parse(rawBody.toString("utf8"));

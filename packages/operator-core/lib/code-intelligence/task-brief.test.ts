@@ -34,7 +34,7 @@ describe('P039 completion pre-review briefs', () => {
     const root = fixture();
     writeFileSync(join(root, 'target.ts'), 'export function target() { return 1; }');
     writeFileSync(join(root, 'target.test.ts'), 'import { target } from "./target"; target();');
-    // Prepare real compiler evidence before the brief starts its six-second capture.
+    // Prepare real compiler evidence before the brief starts its capture budget.
     // Reuse it across advice/toolset/coverage calls; nativeChangeReport still checks
     // its source hashes, so an edit cannot turn this fixture into stale evidence.
     const compiler = firstPartyCallers({ ts, root, name: 'target', filePath: 'target.ts',
@@ -43,7 +43,7 @@ describe('P039 completion pre-review briefs', () => {
       exec: async () => ({ stdout: '', stderr: '' }), writeArtifact: async () => 'fixture-artifact',
       graph: async () => compiler,
     });
-    return { root, report, rootResolver: async () => root };
+    return { root, report, rootResolver: async () => root, compiler };
   };
   it('uses actual compiler test reach and flags missing bound execution without trusting prose', async () => {
     const { report, rootResolver } = setup();
@@ -134,12 +134,22 @@ describe('P039 completion pre-review briefs', () => {
     await getCompletionTimeBrief({ ...ref(), reuse: { owner: 'su-fixture', invocation: 'completion-coverage', observe } },
       { root: rootResolver, report: measured, cochange: async () => coChangeFromCommits({ end: new Date().toISOString(),
         paths: ['target.ts'], commit: null, complete: false, commits: [] }),
-      reuse: { providers: [], recordIssued: async () => true } });
+      reuse: { providers: [], recordIssued: async () => true }, budgetMs: 60_000 });
     const context = observe.mock.calls[0]![0].context;
     expect(context.changedLines).toEqual(mode === 'complete' ? { 'target.ts': [2, 3] } : undefined);
     expect(context.staticTests).toContain('target.test.ts');
     // Neither a static path nor a diff becomes checked or executed source.
     expect(context.checkedPaths).toBeUndefined();
+  });
+  it('lets completion tests pin the budget while production keeps its six-second default', async () => {
+    const { rootResolver, compiler } = setup();
+    const graph = vi.fn(async (_request: ChangeReportRequest, _root: string, _budgetMs: number) => compiler);
+    await getCompletionTimeBrief(ref(), { root: rootResolver, graph,
+      effects: { exec: async () => ({ stdout: '', stderr: '' }), writeArtifact: async () => 'fixture-artifact' },
+      budgetMs: 60_000 });
+    expect(TASK_BRIEF_BUDGET_MS).toBe(6_000);
+    expect(graph).toHaveBeenCalledOnce();
+    expect(graph.mock.calls[0]?.[2]).toBeGreaterThan(TASK_BRIEF_BUDGET_MS);
   });
   it('keeps an independent SQL provider when the co-change source is unavailable', async () => {
     const { report, rootResolver } = setup();

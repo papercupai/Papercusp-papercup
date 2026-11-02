@@ -31,7 +31,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { pinModuleState } from '@papercusp/module-singleton';
-import type { MergeTestFailure, MergeTestRecord } from './decide-merge-gate';
+import type { MergePathAttribution, MergeTestFailure, MergeTestRecord } from './decide-merge-gate';
 import type { AdvanceTargetResult, StandingPrMergeDeps } from './standing-pr-merge';
 
 let execFilePMemo: typeof execFile.__promisify__ | null = null;
@@ -66,6 +66,13 @@ export interface DefaultStandingPrMergeDepsArgs {
   prNumber: number;
   store: StandingPrMergeMetaStore;
   runSuite: RunSuite;
+  /** Resolve admitted completion paths for the exact PR head and target. Missing resolver fails closed. */
+  resolveAdmittedFixPaths?: (input: {
+    prHeadSha: string;
+    targetTipSha: string;
+    prUrl: string;
+    prNumber: number;
+  }) => Promise<{ ok: true; paths: string[] } | { ok: false; reason: string }>;
   /** Git remote name for the upstream repo. Default `origin`. */
   remoteName?: string;
   /** Background-run failures that could not be recorded. */
@@ -183,6 +190,26 @@ export function createDefaultStandingPrMergeDeps(args: DefaultStandingPrMergeDep
       if (!isMergeTestRecord(rec)) return null;
       if (rec.result === 'running' && !runs.active.has(runKey(installSlug, n, rec.mergeSha))) return null;
       return rec;
+    },
+
+    async loadPathAttribution(input): Promise<MergePathAttribution> {
+      try {
+        await ensureCommits(input.prHeadSha, input.targetTipSha);
+        const diff = await gitCode(
+          ['diff', '--no-renames', '--name-only', '-z', `${input.targetTipSha}...${input.prHeadSha}`],
+          repoDir,
+        );
+        if (diff.code !== 0) throw new Error(errText({ stderr: diff.stderr }));
+        const prDiffPaths = diff.stdout.split('\0').filter((path) => path.length > 0);
+        if (!args.resolveAdmittedFixPaths) {
+          return { ok: false, reason: 'admitted fix path resolver is unavailable' };
+        }
+        const admitted = await args.resolveAdmittedFixPaths(input);
+        if (!admitted.ok) return admitted;
+        return { ok: true, prDiffPaths: [...new Set(prDiffPaths)].sort(), admittedFixPaths: admitted.paths };
+      } catch (error) {
+        return { ok: false, reason: error instanceof Error ? error.message : String(error) };
+      }
     },
 
     async saveTest(n, rec) {

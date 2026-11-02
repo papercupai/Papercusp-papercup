@@ -5,6 +5,25 @@ import { BG_HOST_HOT_PATHS as SERVICE_HEALTH_BG_HOST_HOT_PATHS } from '../../../
 process.env.PAPERCUSP_BGHOST_WATCHDOG_NO_AUTOSTART = '1';
 
 let parseIdleSec: (s: unknown) => number | null;
+let parseRoutineLiveness: (
+  s: unknown,
+) => { idleSec: number | null; overdueCount: number; activeCount: number } | null;
+let shouldAlertSelectiveRoutineBacklog: (overdueCount: number, activeCount: number) => boolean;
+let selectiveRoutineBacklogAlertMessage: (snapshot: {
+  idleSec: number | null;
+  overdueCount: number;
+  activeCount: number;
+}) => string | null;
+let routineLivenessSnapshot: (
+  dbUrl: string | null,
+  deps?: {
+    sh?: (
+      cmd: string,
+      args: string[],
+      opts?: { timeout?: number },
+    ) => Promise<{ err: Error | null; stdout: string }>;
+  },
+) => Promise<{ idleSec: number | null; overdueCount: number; activeCount: number } | null>;
 let isFrozen: (idleSec: number | null | undefined, freezeSilenceS?: number) => boolean;
 let resolveDbUrl: (readFile?: (p: string, enc: string) => string) => string | null;
 let shouldRestart: (idleSec: number | null, schedSec: number | null, freezeSilenceS?: number) => boolean;
@@ -150,6 +169,10 @@ let waitForBgHostRestartGeneration: (
 beforeAll(async () => {
   ({
     parseIdleSec,
+    parseRoutineLiveness,
+    shouldAlertSelectiveRoutineBacklog,
+    selectiveRoutineBacklogAlertMessage,
+    routineLivenessSnapshot,
     isFrozen,
     resolveDbUrl,
     shouldRestart,
@@ -445,6 +468,44 @@ describe('bghost-watchdog — journald-independent freeze signal (EI-2434)', () 
     it('junk / undefined ⇒ UNKNOWN(null)', () => {
       expect(parseIdleSec('xyz')).toBeNull();
       expect(parseIdleSec(undefined)).toBeNull();
+    });
+  });
+
+  describe('selective routine backlog signal', () => {
+    it('alerts on the measured 77/363 backlog even when global routine freshness is healthy', () => {
+      const snapshot = parseRoutineLiveness('224|77|363');
+      expect(snapshot).toEqual({ idleSec: 224, overdueCount: 77, activeCount: 363 });
+      expect(isFrozen(snapshot!.idleSec, 240)).toBe(false);
+      expect(shouldAlertSelectiveRoutineBacklog(snapshot!.overdueCount, snapshot!.activeCount)).toBe(true);
+      expect(selectiveRoutineBacklogAlertMessage(snapshot!)).toContain('77 of 363');
+    });
+
+    it('requires both a minimum backlog and a minimum share of schedulable routines', () => {
+      expect(shouldAlertSelectiveRoutineBacklog(9, 90)).toBe(false);
+      expect(shouldAlertSelectiveRoutineBacklog(10, 101)).toBe(false);
+      expect(shouldAlertSelectiveRoutineBacklog(10, 100)).toBe(true);
+      expect(shouldAlertSelectiveRoutineBacklog(1, 363)).toBe(false);
+      expect(shouldAlertSelectiveRoutineBacklog(77, 0)).toBe(false);
+      expect(shouldAlertSelectiveRoutineBacklog(101, 100)).toBe(false);
+      expect(parseRoutineLiveness('not-a-census')).toBeNull();
+    });
+
+    it('reads global freshness and the active durable schedule census in one bounded psql call', async () => {
+      const calls: Array<{ cmd: string; args: string[]; opts?: { timeout?: number } }> = [];
+      const snapshot = await routineLivenessSnapshot('postgresql://test', {
+        sh: async (cmd, args, opts) => {
+          calls.push({ cmd, args, opts });
+          return { err: null, stdout: '224|77|363' };
+        },
+      });
+      expect(snapshot).toEqual({ idleSec: 224, overdueCount: 77, activeCount: 363 });
+      expect(calls).toHaveLength(1);
+      expect(calls[0].cmd).toBe('psql');
+      expect(calls[0].args.slice(0, 2)).toEqual(['postgresql://test', '-tAqc']);
+      expect(calls[0].args[2]).toContain("tier = 'durable'");
+      expect(calls[0].args[2]).toContain("next_fire_at < now() - interval '30 minutes'");
+      expect(calls[0].args[2]).toContain("NOT jsonb_exists(trigger_config, 'cron')");
+      expect(calls[0].opts).toEqual({ timeout: 10_000 });
     });
   });
 

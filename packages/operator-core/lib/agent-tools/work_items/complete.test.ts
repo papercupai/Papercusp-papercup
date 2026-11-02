@@ -83,6 +83,9 @@ vi.mock('../../plan-types/item-type-contract', async (importOriginal) => ({
 vi.mock('../../external-condition-reachability', () => ({
   readEventConditionReachability: (...args: unknown[]) => parkReachability.read(...args),
 }));
+vi.mock('../plans/draft-item-start-gate', () => ({
+  checkDraftItemStartGateLive: (...args: unknown[]) => draftItemStartGate.read(...args),
+}));
 vi.mock('../locks/contention-retry', () => ({
   acquireWithContentionRetry: (...args: unknown[]) => contentionMocks.acquireWithContentionRetry(...args),
 }));
@@ -115,6 +118,7 @@ const listWorkItems = vi.fn();
 const setWorkItemStateWithAliasInfo = vi.fn();
 const assessWorkItemHeldOpenTerminalTransition = vi.fn();
 const workItemPlanLaneTransitionRefusal = vi.fn();
+const draftItemStartGate = vi.hoisted(() => ({ read: vi.fn() }));
 const setWorkItemClaimHold = vi.fn();
 const mergeWorkItemOutputPayload = vi.fn();
 const resolveWorkItemRef = vi.fn();
@@ -450,6 +454,7 @@ beforeEach(() => {
   assessWorkItemHeldOpenTerminalTransition.mockResolvedValue({ allowed: true, staleHoldOpen: false });
   workItemPlanLaneTransitionRefusal.mockReset();
   workItemPlanLaneTransitionRefusal.mockResolvedValue(null);
+  draftItemStartGate.read.mockReset().mockResolvedValue(null);
   listWorkItems.mockReset();
   listWorkItems.mockResolvedValue([]);
   setWorkItemStateWithAliasInfo.mockReset();
@@ -1287,6 +1292,46 @@ describe('EI-18793465701838962 — contrastive root-cause verification gate', ()
     expect(setWorkItemStateWithAliasInfo).toHaveBeenCalledTimes(1);
   });
 
+  it('does not treat the deferred no-work sentinel as an omitted requirement disposition', async () => {
+    const sentinels = ['none', ' N/A ', 'NA', '-', 'Nothing', 'NOTHING DEFERRED'];
+    for (const [index, deferred] of sentinels.entries()) {
+      const closeItem = {
+        ...item,
+        id: 'WI-deferred-no-work-sentinel-' + index,
+        kind: 'change',
+        family: 'issue',
+        state: 'open',
+        title: 'Bind the test result to a real run and require that run to be a PASS before closing this change.',
+        summary:
+          'The close must account for deferred work against the originating requirement, preserve the exact requested behavior, and record a durable follow-up for anything still outstanding.',
+      };
+      getWorkItem.mockResolvedValue(closeItem);
+
+      const validation = await oneRaw({
+        id: closeItem.id,
+        state: 'resolved',
+        assumptions: 'none',
+        validateOnly: true,
+        completion: {
+          summary: 'implemented the change',
+          verifiedHow: 'unit',
+          testResult: 'focused test passed',
+          filesChanged: ['packages/operator-core/lib/agent-tools/work_items/complete.ts'],
+          deferred,
+        },
+      });
+
+      expect(validation).toMatchObject({
+        ok: true,
+        validationOnly: true,
+        completionAuthority: 'committed',
+      });
+      expect(validation.requirementShortfallWarning).toBeUndefined();
+      expect(validation.completionEvidenceFindings).toBeUndefined();
+      expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+    }
+  });
+
   it('keeps discard/wontfix bug closes drainable without inventing a causal record', async () => {
     setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...bug, state: 'dropped' }));
     const r = await oneRaw({
@@ -1940,6 +1985,43 @@ describe('work_items:complete (keyed-array)', () => {
     expect(r.finish).toMatchObject({ complete: false, planItem: 'failed' });
   });
 
+  it('keeps a terminal finish incomplete when plans:set-status refuses the activation gate', async () => {
+    const linked = {
+      id: 'WI-plan-reflection',
+      kind: 'task',
+      family: 'issue',
+      state: 'open',
+      harness: 'papercup',
+      payload: { plan_item: { plan_slug: 'release-plan', item_id: 'P-007', harness_slug: 'papercup' } },
+    };
+    getWorkItem.mockResolvedValue(linked);
+    setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...linked, state: 'done' }));
+    const defaultRows = dbMocks.planItemStatusRows.getMockImplementation();
+    dbMocks.planItemStatusRows.mockImplementation(async (strings: TemplateStringsArray, ...values: unknown[]) =>
+      strings.join('').includes('FROM harness_shared.plan_items')
+        ? [{ status: 'todo' }]
+        : defaultRows?.(strings, ...values),
+    );
+    fireReactionInProcess.mockResolvedValueOnce({
+      ok: true,
+      result: { ok: false, error: 'activation_audit_required', gateCode: 'conversation_audit_required' },
+    });
+
+    const result = await one({
+      id: linked.id,
+      state: 'done',
+      assumptions: 'none',
+      completion: { summary: 'finished the work item' },
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      workItem: { state: 'done' },
+      finish: { complete: false, completionEvidenceStored: true, planItem: 'failed' },
+    });
+    expect(result.finish.errors?.join(' ')).toContain('activation_audit_required');
+  });
+
   it('refuses terminal completion of a remote-authored issue before emitting a false completion', async () => {
     // The shared DB stub defaults to a non-empty plan-item result. This early
     // remote-origin guard also asks whether this row is own-node authored, so
@@ -2012,6 +2094,53 @@ describe('work_items:complete (keyed-array)', () => {
       expect(actual.stateWarning).toMatch(/returned.*completion.*not persisted/i);
       expect(actual.stateWarning).not.toMatch(/recorded a completion/i);
       expect(actual.completion).toMatchObject({ summary: 'fixed it' });
+    });
+
+    it('previews the activation precondition for a stamped plan-item reflection', async () => {
+      const linked = {
+        id: 'WI-plan-reflection-preview',
+        kind: 'task',
+        family: 'issue',
+        state: 'open',
+        harness: 'papercup',
+        payload: { plan_item: { plan_slug: 'release-plan', item_id: 'P-007', harness_slug: 'papercup' } },
+      };
+      getWorkItem.mockResolvedValue(linked);
+      draftItemStartGate.read.mockResolvedValue({
+        ok: false,
+        slug: 'release-plan',
+        itemId: 'P-007',
+        error: 'activation_audit_required',
+        gateCode: 'conversation_audit_required',
+        hint: 'Run the activation audit before starting this item.',
+      });
+
+      const preview = await one({
+        id: linked.id,
+        state: 'done',
+        validateOnly: true,
+        assumptions: 'none',
+        completion: { summary: 'finished the work item' },
+      });
+
+      expect(draftItemStartGate.read).toHaveBeenCalledWith(expect.objectContaining({
+        harnessSlug: 'papercup',
+        slug: 'release-plan',
+        itemId: 'P-007',
+        toStatus: 'done',
+      }));
+      expect(preview).toMatchObject({
+        ok: false,
+        validationOnly: true,
+        stateError: expect.stringContaining('activation_audit_required'),
+      });
+      expect(preview.completionContract.requirements).toContainEqual(expect.objectContaining({
+        key: 'plan-item-lane',
+        applicable: true,
+        satisfied: false,
+      }));
+      expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+      expect(fireReactionInProcess).not.toHaveBeenCalled();
     });
 
     it('previews an actionable plan lane without persisting a completion', async () => {
@@ -3169,6 +3298,8 @@ describe('work_items:complete (keyed-array)', () => {
       kind: 'feature',
       family: 'feature',
       state: 'in_progress',
+      assignee: 'su-tester',
+      takenAt: '2026-10-31T00:00:00.000Z',
       harness: 'papercusp',
       payload: {
         plan_item: {
@@ -3572,6 +3703,7 @@ describe('work_items:complete (keyed-array)', () => {
         targetIds: pendingTargets,
         ctx,
         harness: 'papercusp',
+        acceptanceRef: 'F-101',
       });
       expect(r).toMatchObject({
         ok: false,

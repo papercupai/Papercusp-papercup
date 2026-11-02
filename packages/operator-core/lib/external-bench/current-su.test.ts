@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { claudeAttemptHeaders, makeBearerCredentialResolver } from '../inference-gateway/credential-store';
 import {
   currentBenchLaunchRequest, currentBenchRunLabel, currentBenchAttemptLabel, currentSuBenchHarnessDriver, currentStockBenchHarnessDriver,
-  liveCurrentSuBenchPorts, recoverCurrentBenchRun, beginCurrentBenchNativeSession,
+  liveCurrentSuBenchPorts, recoverCurrentBenchRun, beginCurrentBenchNativeSession, currentBenchNativeFailure,
   currentBenchIdentityFromObservation, type CurrentBenchIdentityObservation,
   currentBenchObservationReader, liveCurrentBenchObservationReaderPorts, type CurrentBenchObservationReaderPorts,
   currentBenchAssignmentId, currentBenchGatewayController, currentBenchProviderAuthenticator,
@@ -23,6 +23,7 @@ import type { BenchHarnessOps } from './bench-harness-live';
 import type { BenchmarkContextReceipt } from './reproducibility/context';
 import { evaluateSessionConfinement, type SessionToolConfinement } from '../capability-envelope/session-confinement';
 import { runManagedPreCompact } from '../../../../apps/operator/scripts/hooks/cc/precompact-managed-carry.mjs';
+import type { PsuPtyHost } from '../events/await/psu-pty-discovery';
 
 const NEVER_EMIT_MARKER = 'never-emit-me';
 
@@ -1770,6 +1771,66 @@ function fixture(opts = options) {
   };
   return { row, ports, lifecycle, context, run: () => currentSuBenchHarnessDriver(lifecycle, ports, opts).spinRunAndCost(request) };
 }
+function nativeFailureFixture() {
+  const now = Date.now(), f = fixture();
+  Object.assign(f.row, { state: 'running', exitCode: null, startedAt: new Date(now - 3000).toISOString(),
+    sessionId: '01a14805-79b8-7d81-b44c-d0466d80c71d' });
+  f.row.detail.coordOwnerId = 'su-native';
+  const execution: NonNullable<PsuPtyHost['execution']> & { nativeSessionId: string } = {
+    phase: 'failed', ownerId: 'su-native', nativeSessionId: f.row.sessionId!, hostPid: 101, childPid: 102,
+    childGeneration: 2, receivedAtMs: now - 1000, turnStartedAt: now - 900,
+    lastProgressAt: now - 500, pendingTools: 0, observedAt: now,
+    failure: { code: 'native_error', retryable: false, retryAfterMs: null, atMs: now - 500 },
+  };
+  const host: PsuPtyHost = { ownerId: 'su-native', advSessionId: '1', pid: 101, ptyPid: 102,
+    nativeSessionId: f.row.sessionId, childGeneration: 2, startedAt: now - 2000,
+    sock: '/private/native.sock', command: 'codex', execution };
+  return { ...f, host, execution, now };
+}
+describe('current benchmark native terminal failure observation', () => {
+  it('reads a current host refusal through production task ports without changing the stored process row', async () => {
+    const f = nativeFailureFixture();
+    const store = await import('../task-manager/store'), discovery = await import('../events/await/psu-pty-discovery');
+    const readTask = vi.spyOn(store, 'getTask').mockResolvedValue(f.row as never);
+    const readHost = vi.spyOn(discovery, 'findLiveHostAsync').mockResolvedValue(f.host);
+    try {
+      const ports = liveCurrentSuBenchPorts({ workspaceId: options.workspaceId } as PapercuspUnifiedToolContext,
+        { admit: f.ports.admit, observeIdentity: async () => null }, options);
+      expect(await ports.getTask(f.row.taskId)).toMatchObject({ state: 'running',
+        detail: { nativeStreamError: 'Native benchmark turn failed: native_error (nonretryable).' } });
+      expect(readHost).toHaveBeenCalledWith('su-native', undefined, { workspaceId: options.workspaceId });
+      expect(f.row.detail.nativeStreamError).toBeUndefined();
+      f.row.workspaceId = 'foreign-workspace';
+      readHost.mockClear();
+      expect(await ports.getTask(f.row.taskId)).toBe(f.row);
+      expect(readHost).not.toHaveBeenCalled();
+    } finally { readTask.mockRestore(); readHost.mockRestore(); }
+  });
+  it.each(['absent', 'owner', 'session', 'execution-session', 'host-pid', 'child-pid', 'generation',
+    'missing-generation', 'stale', 'future', 'old-turn', 'old-host', 'retryable', 'running', 'missing-start',
+    'terminal-process', 'missing-observation', 'invalid-code'] as const)(
+    'leaves %s host evidence unknown instead of retiring a pending benchmark', invalid => {
+      const f = nativeFailureFixture();
+      if (invalid === 'owner') f.execution.ownerId = 'peer';
+      if (invalid === 'session') f.host.nativeSessionId = 'peer-session';
+      if (invalid === 'execution-session') f.execution.nativeSessionId = 'predecessor';
+      if (invalid === 'host-pid') f.execution.hostPid = 999;
+      if (invalid === 'child-pid') f.execution.childPid = 999;
+      if (invalid === 'generation') f.execution.childGeneration = 1;
+      if (invalid === 'missing-generation') delete f.host.childGeneration;
+      if (invalid === 'stale') f.execution.observedAt = f.now - 15_001;
+      if (invalid === 'future') f.execution.observedAt = f.now + 1;
+      if (invalid === 'old-turn') f.execution.failure!.atMs = f.execution.receivedAtMs! - 1;
+      if (invalid === 'old-host') f.host.startedAt = Date.parse(f.row.startedAt!) - 1;
+      if (invalid === 'retryable') f.execution.failure!.retryable = true;
+      if (invalid === 'running') f.execution.phase = 'running';
+      if (invalid === 'missing-start') delete f.row.startedAt;
+      if (invalid === 'terminal-process') f.row.state = 'exited';
+      if (invalid === 'missing-observation') f.execution.observedAt = Number.NaN;
+      if (invalid === 'invalid-code') f.execution.failure!.code = 'untrusted\ntext';
+      expect(currentBenchNativeFailure(f.row, invalid === 'absent' ? null : f.host, f.now)).toBeNull();
+    });
+});
 describe('current native benchmark execution', () => {
   it('runs the frozen Claude stock baseline only through its matching native blueprint and measured identity', async () => {
     const protocol = currentProtocolFixture();
@@ -2208,6 +2269,22 @@ describe('current native benchmark execution', () => {
       nativeStart: { status: 'pending' }, identityStatus: 'unknown', retiredTaskIds: [f.row.taskId],
     });
     expect(f.ports.sleep).toHaveBeenCalled();
+  });
+  it('retires a nonretryable native turn refusal before first-turn identity without waiting for the cap', async () => {
+    const f = nativeFailureFixture(); f.row.state = 'pending';
+    vi.mocked(f.ports.launch).mockResolvedValue(pendingLaunch(f));
+    vi.mocked(f.ports.readIdentity).mockResolvedValue(null);
+    vi.mocked(f.ports.getTask).mockResolvedValue({ ...f.row,
+      detail: { ...f.row.detail, nativeStreamError: currentBenchNativeFailure(f.row, f.host, f.now)! } });
+    const result = await f.run();
+    expect(result.telemetry.stopReason).toBe('error');
+    expect(result.telemetry.generationError).toMatch(/native_error.*nonretryable/);
+    expect(result.telemetry.armMeta?.currentExecution).toMatchObject({ nativeStart: { status: 'pending' },
+      terminalReceipt: { state: 'pending', detail: { nativeStreamError: expect.stringMatching(/native_error/) } },
+      retiredTaskIds: [f.row.taskId] });
+    expect(f.ports.readIdentity).not.toHaveBeenCalled();
+    expect(f.ports.sleep).not.toHaveBeenCalled();
+    expect(f.ports.killTask).toHaveBeenCalledWith(f.row.taskId);
   });
   it('does not claim successful generation when process cleanup fails', async () => {
     const f = fixture();

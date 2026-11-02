@@ -50,6 +50,7 @@ vi.mock('./hive-federation', async () => {
   };
 });
 const releaseReclaimedWorkItemLocks = vi.hoisted(() => vi.fn());
+const checkpointOnReleaseForTest = vi.hoisted(() => vi.fn().mockResolvedValue({ written: false }));
 const leaderDispatchAdmission = vi.hoisted(() => ({
   resolveFleetScopeContext: vi.fn(),
   fleetControlWindDownRefusal: vi.fn(),
@@ -66,6 +67,12 @@ vi.mock('./workspace-registry', async () => {
 });
 vi.mock('./work-item-lock-release', () => ({
   releaseReclaimedWorkItemLocks: (...args: unknown[]) => releaseReclaimedWorkItemLocks(...args),
+}));
+// This fixture tests claim/release persistence, not detached checkpoint IO. Keep the
+// lifecycle side effect out of its shared test-container boundary; its behavior is
+// exercised independently in turn-end-tracking-io.test.ts.
+vi.mock('./turn-end-tracking-io', () => ({
+  checkpointOnRelease: (...args: unknown[]) => checkpointOnReleaseForTest(...args),
 }));
 vi.mock('./scheduler/fleet-scope-admission', () => ({
   resolveFleetScopeContext: (...args: unknown[]) => leaderDispatchAdmission.resolveFleetScopeContext(...args),

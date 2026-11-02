@@ -52,6 +52,7 @@ import {
 } from '../../agent-fleets-store';
 import { decideMemberRecovery, type MemberRecoveryDecision } from '../../fleet/member-recovery';
 import { strandWedgedMember, type StrandMemberResult } from '../../fleet/member-recovery-actions';
+import { liveFleetMemberIds } from '../../fleet/fleet-roster';
 import { listTasks, markStranded } from '../../task-manager/store';
 import { freezeTask } from '../../task-manager/control';
 import { emitFleetTransitionEdge } from '../../fleet-transition-events';
@@ -744,14 +745,17 @@ type RespawnFailureHeadcount = {
 async function readRespawnFailureHeadcount(opts: {
   target: number;
   drainedOwnerId: string;
+  failedReplacementOwnerId: string;
   leaderOwnerId: string | null;
-  list: () => Promise<FleetPresenceRow[]>;
+  list: () => Promise<string[]>;
 }): Promise<RespawnFailureHeadcount> {
   try {
-    const excluded = new Set([opts.drainedOwnerId, opts.leaderOwnerId].filter((id): id is string => Boolean(id)));
-    const memberOwnerIds = [...new Set((await opts.list())
-      .map((row) => row.ownerId)
-      .filter((ownerId) => !excluded.has(ownerId)))];
+    const excluded = new Set([
+      opts.drainedOwnerId,
+      opts.failedReplacementOwnerId,
+      opts.leaderOwnerId,
+    ].filter((id): id is string => Boolean(id)));
+    const memberOwnerIds = [...new Set((await opts.list()).filter((ownerId) => !excluded.has(ownerId)))];
     const current = memberOwnerIds.length;
     const shortfall = Math.max(0, opts.target - current);
     return {
@@ -1653,8 +1657,9 @@ export default defineTool({
       const headcount = await readRespawnFailureHeadcount({
         target: savedLaunchSpec.target,
         drainedOwnerId: memberOwnerId,
+        failedReplacementOwnerId: replacementOwner,
         leaderOwnerId: target.fleet.leaderOwnerId,
-        list: () => listFleetPresence(workspaceId, slug),
+        list: () => liveFleetMemberIds(slug, workspaceId, 'launch'),
       });
       const launchTransactionPersistence = await persistRespawnTransaction('launch-failed', launch.text || undefined);
       return json(

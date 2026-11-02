@@ -542,6 +542,53 @@ describe('readFleetAdmissionBlocks availability contract (EI-22054599451266989)'
     expect(measuredEmpty).toEqual({ available: true, blocks: [] });
   });
 
+  it('does not emit a new edge for a refusal superseded by a newer spec or an already successful claim', async () => {
+    const fleetSlug = 'frozen-burndown';
+    const itemId = 'EI-27227496676244088';
+    const member = 'su-4b0d1e41';
+    const readAt = META.atMs + 1_000;
+    const currentHeads: Array<{ specId: string; revision: number } | null> = [
+      { specId: 'frozen-burndown-buckets', revision: 11 },
+      null,
+    ];
+
+    for (const currentSpec of currentHeads) {
+      const measured = await readFleetAdmissionBlocks(fleetSlug, {
+        nowMs: readAt,
+        hasPgFastPath: () => true,
+        readRows: async () => [{
+          msg_id: 'superseded-refusal',
+          ts_ms: META.atMs,
+          stamp: stamp({
+            itemId,
+            member,
+            specId: 'frozen-burndown-buckets',
+            specRevision: 10,
+            harness: 'papercusp',
+          }),
+        }],
+        resolveFleetSpec: async () => currentSpec,
+        resolveFleetControlState: async () => 'active',
+        resolveFleetHarness: async () => 'papercusp',
+        liveMemberIds: [member],
+        isTargetTerminal: async (candidate, harness) =>
+          admissionBlockTargetIsResolved(candidate, harness, async () => ({ state: 'open', assignee: member })),
+      });
+
+      const blockedCount = measured.available ? measured.blocks?.length ?? null : null;
+      const newestBlockAtMs = measured.available && measured.blocks && measured.blocks.length > 0
+        ? Math.max(...measured.blocks.map((candidate) => candidate.atMs))
+        : null;
+      expect(measured).toEqual({ available: true, blocks: [] });
+      expect(
+        detectFleetAdmissionTransitions(
+          new Map([[fleetSlug, 0]]),
+          [{ fleetSlug, blockedCount, newestBlockAtMs }],
+        ),
+      ).toEqual([]);
+    }
+  });
+
   it('reconciles a pause refusal against the current fleet control state after resume', async () => {
     const read = (currentControlState: 'active' | 'winding-down') =>
       readFleetAdmissionBlocks('fleet-a', {

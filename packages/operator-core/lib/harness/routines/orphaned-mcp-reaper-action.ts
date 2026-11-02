@@ -49,4 +49,4 @@ registerSystemAction('orphaned-mcp-reaper', async (ctx: SystemActionCtx) => {
       (result.killed.length ? ` [pids: ${result.killed.slice(0, 30).join(',')}${result.killed.length > 30 ? ',…' : ''}]` : '') +
       ` (skipped ${result.skippedTooYoung} too-young, ${result.skippedNoAgentAnchor} no-agent-anchor)`,
   );
-});
+}, { requiredForControl: 'Releases orphaned agent transport processes so control and shutdown can recover.' });

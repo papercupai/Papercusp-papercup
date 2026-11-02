@@ -4,7 +4,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-li
 import { NuqsTestingAdapter } from 'nuqs/adapters/testing';
 import { useEffect, useRef } from 'react';
 
-const fixture = vi.hoisted(() => ({ enabled: true, queries: [] as { queryName: string; args: Record<string, unknown>; enabled?: boolean }[],
+const fixture = vi.hoisted(() => ({ enabled: true, queries: [] as { queryName: string; args: Record<string, unknown>; enabled?: boolean; requestClass?: string }[],
   list: [] as Record<string, unknown>[], catalog: null as Record<string, unknown>[] | null,
   detail: [] as Record<string, unknown>[], previous: [] as Record<string, unknown>[] | null,
   preferences: {} as Record<string, unknown>, history: [] as Record<string, unknown>[], error: null as Error | null }));
@@ -130,9 +130,18 @@ describe('Reports route', () => {
       subject: { kind: 'plan', ref: 'example-plan' }, originHarnessSlug: 'pot-a', visibility: 'owner', query: 'findings',
       tags: ['operations'], since: '2026-10-01T00:00:00.000Z', limit: 200 });
     expect(fixture.queries.find(q => q.queryName === 'reports.get')?.args).toEqual({ reportId: 'edition-2' });
+    expect(fixture.queries.find(q => q.queryName === 'reports.get')?.requestClass).toBe('interactive-control');
+    expect(fixture.queries.filter(q => q.queryName === 'reports.list' || q.queryName === 'userPreferences.current')
+      .every(q => q.requestClass === 'background-sync')).toBe(true);
     expect(fixture.queries.find(q => q.queryName === 'reports.lineage')?.enabled).toBe(true);
     expect(screen.getByTestId('markdown-preview').textContent).toBe(report.body_md);
     expect(screen.getAllByText('writer')).toHaveLength(2);
+  });
+  it('keeps library browsing in the foreground when no report is selected', () => {
+    mount();
+    expect(fixture.queries.filter(q => q.queryName === 'reports.list')
+      .every(q => q.requestClass === 'foreground-read')).toBe(true);
+    expect(fixture.queries.find(q => q.queryName === 'reports.get')?.enabled).toBe(false);
   });
   it('accepts the native history and subject filter witness from the real button control', () => {
     const original = { ...report, report_id: 'edition-1', supersedes_report_id: null };

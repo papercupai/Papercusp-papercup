@@ -3,6 +3,52 @@ import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 describe('retained search baseline edition custody',()=>{
+  it('keeps observed capture separate and rejects runtime or artifact custody mismatches',()=>{
+    const driver=fileURLToPath(new URL('../../../../../scripts/backup/search-bench/run-retained-baseline.py',import.meta.url));
+    const result=execFileSync('python3',['-B','-c',[
+      'import importlib.util,json,tempfile,pathlib,sys',
+      'spec=importlib.util.spec_from_file_location("baseline",sys.argv[1]);m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)',
+      'with tempfile.TemporaryDirectory() as root:',
+      ' p=pathlib.Path(root);program=p/"packages/operator-core/lib/search/bench/prose-adapter-capture-cli.ts";program.parent.mkdir(parents=True);program.write_text("// fixture")',
+      ' requests=p/"requests.json";population=[{"id":"a","adapter":"search:fulltext","args":{"query":"test"}}];requests.write_text(json.dumps(population))',
+      ' plan={"configuration":{"path":str(p/"config.json")},"adapterCapture":{"program":m.fingerprint(program),"requests":m.fingerprint(requests)}}',
+      ' cases=[]',
+      ' modes=["pass","kind","components","result","exercised","closure","latency","requests","artifact","population","adapter-exercised","accepted","adapter-latency","missing-report","wrong-entrypoint"]',
+      ' for mode in modes:',
+      '  destination=p/mode;destination.mkdir();direct=destination/"adapter-captures.json";direct.write_text("uninstrumented sentinel");calls=[]',
+      '  def command(label,args,env):',
+      '   calls.append(label);assert label=="observed-adapters" and env=={"PRIVATE_DB":"fixture"}',
+      '   assert args[:4]==["node","--import","tsx","packages/operator-core/lib/memory/bench/runtime-qualification-cli.ts"]',
+      '   assert "--benchmark" not in args and args[args.index("--assets")+1]==str(p/"assets.json")',
+      '   assert args[args.index("--adapter")+1:args.index("--requests")]==["--"]',
+      '   output=pathlib.Path(args[-1]);assert output.name=="adapter-observed-captures.json"',
+      '   output.write_text(json.dumps([{"schemaVersion":1,"attemptId":"a","adapter":"search:fulltext","request":population[0]["args"],"exitCode":0,"stdout":"{}","deliveryWallMs":1}]))',
+      '   adapter={"requests":m.fingerprint(requests),"artifact":m.fingerprint(output),"executed":1,"searchAdapterExercised":True,"baselineAccepted":False,"latencyAcceptance":False}',
+      '   report={"kind":"shared-search-adapter-runtime-qualification","qualifiedComponentsOnly":True,"result":{"code":0,"signal":None},"searchAdapterExercised":True,"completeRuntimeClosureVerified":False,"latencyAcceptance":False,"adapter":adapter}',
+      '   changes={"kind":("kind","wrong"),"components":("qualifiedComponentsOnly",False),"result":("result",{"code":1,"signal":None}),"exercised":("searchAdapterExercised",False),"closure":("completeRuntimeClosureVerified",True),"latency":("latencyAcceptance",True)}',
+      '   nested={"requests":("requests",{}),"artifact":("artifact",{}),"population":("executed",2),"adapter-exercised":("searchAdapterExercised",False),"accepted":("baselineAccepted",True),"adapter-latency":("latencyAcceptance",True)}',
+      '   if mode in changes:key,value=changes[mode];report[key]=value',
+      '   if mode in nested:key,value=nested[mode];adapter[key]=value',
+      '   if mode!="missing-report":pathlib.Path(args[args.index("--output")+1]+".report.json").write_text(json.dumps(report))',
+      '  actual=plan',
+      '  if mode=="wrong-entrypoint":',
+      '   other=p/"other.ts";other.write_text("// other");actual={**plan,"adapterCapture":{**plan["adapterCapture"],"program":m.fingerprint(other)}}',
+      '  try:',
+      '   receipt=m.capture_observed_adapters(actual,p,destination,p/"assets.json",command,{"PRIVATE_DB":"fixture"})',
+      '   assert receipt["qualifiedComponentsOnly"] and not receipt["latencyAcceptance"] and not receipt["completeRuntimeClosureVerified"] and not receipt["baselineAccepted"]',
+      '   assert receipt["runtimeReport"]==m.fingerprint(destination/"adapter-runtime.report.json");cases.append([mode,"pass",calls])',
+      '  except (ValueError,FileNotFoundError):cases.append([mode,"rejected",calls])',
+      '  assert direct.read_text()=="uninstrumented sentinel"',
+      ' print(json.dumps(cases))',
+    ].join('\n'),driver],{encoding:'utf8'});
+    const modes=['kind','components','result','exercised','closure','latency','requests','artifact','population','adapter-exercised','accepted','adapter-latency','missing-report'];
+    expect(JSON.parse(result)).toEqual([
+      ['pass','pass',['observed-adapters']],
+      ...modes.map(mode=>[mode,'rejected',['observed-adapters']]),
+      ['wrong-entrypoint','rejected',[]],
+    ]);
+  });
+
   it('binds actual adapter captures to exact requests and refuses drift, missing attempts and fabricated success',()=>{
     const driver=fileURLToPath(new URL('../../../../../scripts/backup/search-bench/run-retained-baseline.py',import.meta.url));
     const result=execFileSync('python3',['-B','-c',[

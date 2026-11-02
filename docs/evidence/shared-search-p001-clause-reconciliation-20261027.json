@@ -1,5 +1,62 @@
 {
   "schemaVersion": 1,
+  "runnerReuseMap20261102": {
+    "qualification": "Source reconciliation only; no new capture, runtime qualification or acceptance.",
+    "custody": "run-retained-baseline.py adapter_inputs/capture_adapters checks program/request SHA before restoration and dispatch, exact ordered request/terminal captures, and stable inputs afterward. adapterCapture returns BEFORE --benchmark/timing branches, with adapterBehaviorAuthenticated=false and baselineAccepted=false.",
+    "actualAdapter": "prose-adapter-capture-cli.ts runProseAdapterCapture is an exported callable seam for isolated search:fulltext/search:semantic work_item/session_turn direct handlers. It excludes transport/auth middleware and paid judging.",
+    "pairedBenchmark": "bm25-hybrid-recall-cli.ts runBm25HybridRecall retains inputs/declaration/attempts/ledger and paired/warm/steady attribution. declareBm25Attempts sets corpus:null. Timed-query embeddings are precomputed; keep that timing/cost boundary explicit. Query identity is not retrieval-corpus identity.",
+    "runtimeObserver": "runtime-qualification-cli.ts child --benchmark dynamically invokes runBm25HybridRecall and parent re-reads benchmark evidence. Ordinary mode embeds one SDK probe. Preflight and later handler capture are separate processes. Reports deliberately keep qualifiedComponentsOnly=true and completeRuntimeClosureVerified=false on a successful component qualification.",
+    "nextSeam": "Extend the existing runtime qualifier's child invocation and parent artifact readback for exported runProseAdapterCapture; preserve source/native/model observers and cleanup. Bind observed process and capture request/output identities. Do not join the SDK probe and separately launched handler receipts as one process, or turn instrumentation latency into budget acceptance.",
+    "remaining": "Authenticate independent retrieval-corpus provenance and full applicable loaded closure, then freeze source-backed per-cell policy and FrozenAdapterStudy before new treatment. Retain paired benchmark for inherited R18 method; actual handler cells need their own budget authority. G remains exploratory."
+  },
+  "prospectiveDeclarationReconciliation20261102": {
+    "status": "preparation-only; no study sealed, adapter invoked, threshold accepted or baseline discharged",
+    "reuse": "FrozenAdapterStudy in adapter-baseline.ts, SearchEvaluationCell in libs/generic/search-core/src/relevance-eval.ts, and adapter-baseline-cli.ts --freeze. This is a worklist for that existing format, not a new executable study format.",
+    "acceptedLatencyScope": {
+      "authority": "inventory-20261023-v2.json inheritedBudgets and budgetAuthority; R-13/R-18 known-item benchmark population only",
+      "product": "papercusp",
+      "adapter": "runHybridSearch before rerank",
+      "sourceDecisions": ["bm25-lexical-search-evoke-adoption-2026-10-10#D-020", "bm25-lexical-search-evoke-adoption-2026-10-10#D-028", "bm25-lexical-search-evoke-adoption-2026-10-10#D-029"],
+      "requiredMethod": {
+        "warm": "D-028 warm-repeat: after the paired pass, run each paired query once untimed then once timed; record timed block reads and flag calls that were not warm. A generic process-warm label does not establish this method.",
+        "cold": "D-029 preserves BOTH the absolute cold ceiling and D-019 relative bound: BM25-arm paired p95 must be at or below legacy-arm p95 in the same run/sample with alternating order. All three clauses (cold absolute, cold relative, warm absolute) must pass.",
+        "scope": "The flat SearchEvaluationCell latency ceiling alone cannot represent the paired-arm relative comparison or prove cache state. Keep the maintained bm25-hybrid-recall judgeLatency/paired-pass artifact alongside the cell assertion; do not drop these inherited conditions."
+      },
+      "cells": [
+        { "source": "work_item", "temperature": "warm", "maxP95LatencyMs": 200 },
+        { "source": "work_item", "temperature": "cold", "maxP95LatencyMs": 1000 },
+        { "source": "session_turn", "temperature": "warm", "maxP95LatencyMs": 400 },
+        { "source": "session_turn", "temperature": "cold", "maxP95LatencyMs": 1200 }
+      ],
+      "boundary": "These values do not qualify direct search:semantic handler delivery, reranking, other adapters, Restart, or a different query population. Operational timeout constants are not percentile targets."
+    },
+    "requiredBeforeFreeze": [
+      { "fields": ["declaration.pins.sourceRevision", "declaration.pins.corpus", "declaration.pins.querySet", "declaration.pins.modelConfiguration"], "work": "Authenticate exact source/runtime closure, isolated retrieval corpus and model/configuration bytes; derive querySet with adapterQuerySetFingerprint. Historical source pins remain historical." },
+      { "fields": ["cells[].product", "cells[].adapter", "cells[].queryClass", "cells[].temperature"], "work": "Enumerate distinct actual delivered-result paths and cold/warm cells; do not pool fallback, browse, conversational, memory or caller-scope populations. Encode further path distinctions in adapter/queryClass identity." },
+      { "fields": ["cells[].attemptIds", "cells[].minExecuted", "cells[].minJudged", "cells[].censoring"], "work": "Select prospective query identities and explicit exclusions before retrieval. Both minima must be positive integers no larger than the uncensored population. Missing evidence remains unknown, not an exclusion invented after capture." },
+      { "fields": ["cells[].budgetSource", "cells[].quality", "cells[].maxP95LatencyMs", "cells[].maxPerAttemptCostUsd", "cells[].maxErrorRate", "cells[].maxDegradedRate"], "work": "Record pre-treatment target authority for every numeric policy. Only the four narrowly scoped latency targets above are inherited here; quality, cost, error/degradation ceilings and minimum population policies remain undeclared. A nonempty budgetSource string alone does not authenticate policy authority." },
+      { "fields": ["queries[].args", "queries[].queryField", "queries[].k", "queries[].groundTruthIds"], "work": "Freeze exact request defaults/scope/filter/mode, delivered k and independent known-item gold. No-match requires independently empty gold; returned-set quality cannot supply its own recall denominator." },
+      { "fields": ["judge.model", "judge.rubricVersion", "judge.inputContract"], "work": "Keep paid judging paused. Require matching independently qualified pre-run pilot before accepting labels; retain exact final delivered text without a second clip." },
+      { "fields": ["costContracts[cellId].metric", "costContracts[cellId].unit", "costContracts[cellId].boundary", "costContracts[cellId].pricingFingerprint"], "work": "Define USD/attempt attribution and actual provider-usage or local-resource meter for each cell. Keep evaluation-judge spend separate; unknown local resource cost is not zero." }
+    ],
+    "freezeProcedure": "Resolve the worklist first, then --freeze --input <study.json> --out <new-frozen-study.json> before new retrieval. Preserve the exclusive output, input SHA and study fingerprint. Freeze supplies the actual declaration timestamp; never backdate it to accept retained G captures.",
+    "retainedG": {
+      "directory": "/mnt/data/offload/verification-harness/papercusp/shared-search-p001-adapter-20261102-g",
+      "captureSha256": "d777e648b051df62e3618c39f23ea7e7d6d091f909d90a007225a5d4610f1c40",
+      "use": "Exploratory request/response and degradation evidence only. It cannot become a prospective accepted study after execution. Ordinary runtime qualification exercised components, not the search adapter or complete process closure.",
+      "coverageBoundary": "The isolated restore omitted embed_coverage_samples. Persisted coverage UNKNOWN and standalone table-count measurements have different writers; do not substitute one for the other."
+    },
+    "nextExecutableStep": "Resolve prospective policy sources and exact adapter/corpus/runtime pins, then instantiate FrozenAdapterStudy. Do not rerun G or buy labels merely to fill undeclared cells."
+  },
+  "policyAuthorityRead20261102": {
+    "specs": {
+      "SEARCH-BASELINE-BUDGETS": { "revision": 4, "contentHash": "01bb95293fe090aecf4960d00d5916a01c6be58bb0e35acb5a7f28180d5d6ed2" },
+      "SEARCH-BASELINE-PINS": { "revision": 2, "contentHash": "e6eb9ec5401d63a0892e6ebcd1b7692d26cad95def4be8e6cd088c2e7143f366" }
+    },
+    "decisions": "Current shared-search D-012/D-013 permit absent targets to be set from source-backed baseline inventory before treatment; neither supplies extra numeric thresholds. The referenced ranking D-020/D-028/D-029 preserve both numeric values and measurement methods above.",
+    "rubric": { "ref": "search-retrieval-quality", "revision": 4, "criteriaHash": "f09bead9a5ff7a134633007a4b97a36fab13df13f495113eedf929bc316c7bdc" },
+    "boundary": "Rubric method requires prospective practical margins, effective population accounting and declared latency justification. The fixture-only-targets values in adapter-baseline.test.ts are validator controls, not accepted product policy. This read establishes authority references, not a measured study or acceptance."
+  },
   "retainedPopulationFollowup20261028": {
     "qualification": "Prospective reuse of retained bytes only. No new restored database, executed adapter baseline, accepted target, quality label or production/runtime completeness is claimed.",
     "consumptionManifest": {

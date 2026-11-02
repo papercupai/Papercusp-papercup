@@ -28,7 +28,9 @@
  * test prints exactly what drifted.
  */
 import { describe, it, expect } from 'vitest';
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync, existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 
@@ -195,6 +197,52 @@ describe('desktop ACL command sync (WI-2143 guard)', () => {
     expect(collect.has('workspaces_list')).toBe(true);
     expect(build.has('workspaces_list')).toBe(true);
     expect(grants.has('allow-workspaces-list')).toBe(true);
+  });
+
+  maybe('startup policy status and controls have native handlers, generated permissions and grants', () => {
+    const collect = new Set(extractCollectCommands(readFileSync(MAIN_RS, 'utf8')));
+    const build = new Set(extractBuildCommands(readFileSync(BUILD_RS, 'utf8')));
+    const grants = new Set(extractCapabilityAllows(readFileSync(CAP_JSON, 'utf8')));
+    for (const command of ['startup_policy_status', 'startup_policy_set_login', 'startup_policy_set_keep_running']) {
+      expect(collect.has(command), `${command} native handler`).toBe(true);
+      expect(build.has(command), `${command} permission generation`).toBe(true);
+      expect(grants.has(permId(command)), `${command} capability grant`).toBe(true);
+    }
+  });
+
+  maybe('build-time specta guard rejects a missing command before tauri_build, including a future command', () => {
+    const source = readFileSync(BUILD_RS, 'utf8');
+    const helper = source.match(/fn check_specta_commands_are_registered[\s\S]*?\n\}\n/)?.[0];
+    expect(helper, 'native build must guard the specta-to-manifest direction').toBeTruthy();
+    const main = source.slice(source.indexOf('fn main()'));
+    expect(main.indexOf('check_specta_commands_are_registered(&manifest_dir, commands)')).toBeGreaterThan(-1);
+    expect(main.indexOf('check_specta_commands_are_registered(&manifest_dir, commands)')).toBeLessThan(main.indexOf('tauri_build::try_build('));
+    // Run the actual std-only Rust helper against positive and violating inputs;
+    // a missing future command must fail without booting Tauri or a webview.
+    const dir = mkdtempSync(resolve(tmpdir(), 'desktop-specta-acl-'));
+    try {
+      mkdirSync(resolve(dir, 'src'));
+      const runner = resolve(dir, 'guard.rs');
+      const binary = resolve(dir, 'guard');
+      writeFileSync(runner, `use std::collections::HashSet;\nuse std::path::Path;\n${helper}\nfn main() {
+        let args: Vec<String> = std::env::args().collect();
+        let commands: Vec<&str> = args.iter().skip(2).map(String::as_str).collect();
+        check_specta_commands_are_registered(Path::new(&args[1]), &commands);
+      }`);
+      const built = spawnSync('rustc', [runner, '-o', binary], { encoding: 'utf8', timeout: 30_000 });
+      expect(built.error).toBeUndefined();
+      expect(built.status, built.stderr).toBe(0);
+      writeFileSync(resolve(dir, 'src/main.rs'), '// collect_commands![obsolete]\nfn main() { let _ = collect_commands![module::startup_policy_status, future_command]; }');
+      const good = spawnSync(binary, [dir, 'startup_policy_status', 'future_command'], { encoding: 'utf8', timeout: 5_000 });
+      expect(good.status, good.stderr).toBe(0);
+      for (const missing of ['startup_policy_status', 'future_command']) {
+        const bad = spawnSync(binary, [dir, ...['startup_policy_status', 'future_command'].filter(command => command !== missing)], { encoding: 'utf8', timeout: 5_000 });
+        expect(bad.status).not.toBe(0);
+        expect(bad.stderr).toContain(`Specta commands missing from AppManifest: ${missing}`);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   maybe('clean-checkout guard validates the db-sql resource independently of serve.mjs', () => {

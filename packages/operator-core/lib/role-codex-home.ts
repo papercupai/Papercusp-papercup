@@ -45,12 +45,16 @@
  * Server-only.
  */
 import {
+  closeSync,
   cpSync,
   existsSync,
   lstatSync,
   mkdirSync,
+  openSync,
   readdirSync,
   readFileSync,
+  readSync,
+  realpathSync,
   renameSync,
   rmSync,
   statSync,
@@ -60,7 +64,9 @@ import {
 } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { homedir as osHomedir } from 'node:os';
-import { isAbsolute, join, resolve } from 'node:path';
+import { basename, isAbsolute, join, relative, resolve } from 'node:path';
+import Database from 'better-sqlite3';
+import { papercuspHome } from '@papercusp/host-platform/home';
 import { parse as parseToml } from '@iarna/toml';
 import { CODEX_CAPABILITY_CONTROLS } from '@papercusp/orchestrator/managed-capability-policy';
 import {
@@ -107,7 +113,7 @@ function homedir(): string {
 // data root in PAPERCUSP_HOME. Reuse this path for enrollment AND repair checks
 // so a missing workspace copy cannot hide an installed journal or guard.
 function installedHookPath(...parts: string[]): string {
-  return join(homedir(), '.papercusp', 'hooks', ...parts);
+  return join(papercuspHome({}, homedir()), 'hooks', ...parts);
 }
 
 import { dirname as __esmDirname } from 'node:path';
@@ -293,9 +299,60 @@ function freshCodexSqliteHome(sessionKey: string | number): string {
   return sqliteHome;
 }
 
+/** Older home rebuilds could move SQLite with the serving TMPDIR without
+ * updating the launch receipt. Recover only a missing receipt location, with
+ * positive proof from the retained native index and this owner's transcript.
+ * An extant alternative or any missing/foreign proof remains a conflict. */
+function verifiedRetainedCodexSqliteHome(codexHome: string, sessionKey: string | number,
+  recordedHome: string, sqliteHome: string, sid?: string): boolean {
+  try {
+    if (!sid || existingCodexHomeOwnerSid(codexHome) !== sid) return false;
+    const expectedName = `session-${sessionKey}`;
+    if (basename(recordedHome) !== expectedName || basename(sqliteHome) !== expectedName ||
+        !lstatSync(sqliteHome).isDirectory()) return false;
+    try {
+      lstatSync(recordedHome);
+      return false;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') return false;
+    }
+    const index = readdirSync(sqliteHome).filter(name => /^state_\d+\.sqlite$/.test(name))
+      .sort((a, b) => Number(b.slice(6, -7)) - Number(a.slice(6, -7)))[0];
+    if (!index || !lstatSync(join(sqliteHome, index)).isFile()) return false;
+    const db = new Database(join(sqliteHome, index), { readonly: true, fileMustExist: true, timeout: 1000 });
+    let thread: { id: string; rollout_path: string } | undefined;
+    try {
+      thread = db.prepare('SELECT id, rollout_path FROM threads ORDER BY updated_at DESC LIMIT 1')
+        .get() as typeof thread;
+    } finally { db.close(); }
+    if (!thread || typeof thread.id !== 'string' || !thread.id || typeof thread.rollout_path !== 'string') return false;
+    const sessions = join(realpathSync(codexHome), 'sessions');
+    if (realpathSync(sessions) !== sessions) return false;
+    const transcript = realpathSync(thread.rollout_path);
+    const rel = relative(sessions, transcript);
+    if (!rel || rel === '..' || rel.startsWith('../') || isAbsolute(rel) ||
+        !lstatSync(thread.rollout_path).isFile()) return false;
+    const fd = openSync(transcript, 'r');
+    let firstLine: string;
+    try {
+      const bytes = Buffer.alloc(64 * 1024);
+      const count = readSync(fd, bytes, 0, bytes.length, 0);
+      const end = bytes.subarray(0, count).indexOf(0x0a);
+      if (end < 0) return false;
+      firstLine = bytes.subarray(0, end).toString('utf8');
+    } finally { closeSync(fd); }
+    const meta = JSON.parse(firstLine);
+    return meta?.type === 'session_meta' && meta.payload?.id === thread.id;
+  } catch {
+    // Recovery is evidence-gated. Never create an empty replacement database
+    // or turn a corrupt/unreadable index into permission to ignore a conflict.
+    return false;
+  }
+}
+
 /** A resume must retain its recorded state location even when the serving
  * operator has a different TMPDIR or SQLite-root override from the launch. */
-function preservedCodexSqliteHome(codexHome: string, sessionKey: string | number, recordedHome?: string | null, allowUnreadableConfig = false, requireExistingBinding = false): string {
+function preservedCodexSqliteHome(codexHome: string, sessionKey: string | number, recordedHome?: string | null, allowUnreadableConfig = false, requireExistingBinding = false, sid?: string): string {
   if (recordedHome && (!isAbsolute(recordedHome) || recordedHome.includes('\0'))) {
     throw new Error('Cannot repair Codex home: recorded sqlite_home must be an absolute path');
   }
@@ -335,7 +392,8 @@ function preservedCodexSqliteHome(codexHome: string, sessionKey: string | number
   if (typeof sqliteHome !== 'string' || !isAbsolute(sqliteHome) || sqliteHome.includes('\0')) {
     throw new Error('Cannot repair Codex home: recorded sqlite_home must be an absolute path');
   }
-  if (recordedHome && recordedHome !== sqliteHome) {
+  if (recordedHome && recordedHome !== sqliteHome &&
+      !verifiedRetainedCodexSqliteHome(codexHome, sessionKey, recordedHome, sqliteHome, sid)) {
     throw new Error('Cannot repair Codex home: launch receipt and configured sqlite_home disagree');
   }
   return sqliteHome;
@@ -1589,7 +1647,7 @@ export function writeRoleCodexHome(opts: WriteRoleCodexHomeOptions): RoleCodexHo
     ? codexHomeForSessionKey(opts.sessionKey)
     : freshCodexHome(codexHomeForSessionKey(opts.sessionKey));
   const sqliteHome = opts.preserveExisting
-    ? preservedCodexSqliteHome(codexHome, opts.sessionKey, opts.recordedSqliteHome)
+    ? preservedCodexSqliteHome(codexHome, opts.sessionKey, opts.recordedSqliteHome, false, false, opts.sid)
     : freshCodexSqliteHome(opts.sessionKey);
   if (opts.preserveExisting) {
     mkdirSync(codexHome, { recursive: true, mode: 0o700 });
@@ -1955,7 +2013,7 @@ function ensureSuCodexHomeConfigImpl(opts: SuCodexConfigInput & {
       else throw error;
     }
   }
-  const sqliteHome = preservedCodexSqliteHome(codexHome, opts.sessionKey, opts.recordedSqliteHome, configUnreadable);
+  const sqliteHome = preservedCodexSqliteHome(codexHome, opts.sessionKey, opts.recordedSqliteHome, configUnreadable, false, opts.sid);
   if (!existsSync(codexHome)) {
     if (!opts.recoverMissingHome || !opts.promptText?.trim()) {
       return { codexHome, sqliteHome, configPath, repaired: false, identityRepaired: false, promptRepaired: false, reason: 'no-home' };

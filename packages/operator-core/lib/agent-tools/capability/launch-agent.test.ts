@@ -363,7 +363,7 @@ vi.mock('../../agent-launch-core', async (orig) => ({
 const launchAgentModule = await import('./launch-agent');
 const launchAgent = launchAgentModule.default;
 const { goalHolderPlanFleetBypass, INTERNAL_LOOP_FIRE_ORIGIN, INTERNAL_SCOPED_INFERENCE_GATEWAY, INTERNAL_SCOPED_SESSION_CONFINEMENT,
-  INTERNAL_BACKEND_BIN_OVERRIDE } = launchAgentModule;
+  INTERNAL_BACKEND_BIN_OVERRIDE, INTERNAL_INTERRUPTION_RECOVERY } = launchAgentModule;
 
 const ctx = { workspaceId: 'ws-test', harnessSlug: 'papercusp', role: 'su' } as never;
 const textOf = (res: unknown): string => (res as { content: Array<{ text: string }> }).content[0].text;
@@ -1722,6 +1722,29 @@ describe('fleet composition (D-003: fleet is an ARG, not a separate tool)', () =
     expect(spawnedCommand()).toContain('--fleet=alpha-fleet');
   });
 
+  it('clamps and discloses a requested compaction limit above the fleet-member ceiling', async () => {
+    fetchPresenceFleetMock.mockResolvedValue(
+      new Map([['su-caller', { fleetSlug: 'alpha-fleet', fleetRole: 'leader' }]]),
+    );
+
+    const res = await launchAgent.handler({
+      brief: 'help out',
+      members: [{ compactionLimit: 500_000 }],
+    }, ctx);
+
+    expect(spawnedCommand()).toContain('--fleet=alpha-fleet');
+    expect(spawnedCommand()).toContain('--compaction-limit=400000');
+    expect(spawnedCommand()).not.toContain('--compaction-limit=500000');
+    expect(textOf(res)).toContain('500000');
+    expect(textOf(res)).toContain('400000');
+    expect(textOf(res)).toContain('independent: true');
+    expect(dataOf(res)?.launch).toMatchObject({
+      fleet: 'alpha-fleet',
+      independent: false,
+      compactionLimitWarnings: [{ memberIndex: 0, requested: 500_000, effective: 400_000 }],
+    });
+  });
+
   it('keeps an independent fresh launch out of the caller presence fleet', async () => {
     fetchPresenceFleetMock.mockResolvedValue(
       new Map([['su-caller', { fleetSlug: 'alpha-fleet', fleetRole: 'leader' }]]),
@@ -1782,11 +1805,12 @@ describe('fleet composition (D-003: fleet is an ARG, not a separate tool)', () =
     expect(command).toContain('--model=gpt-5.6-luna:max');
     expect(command).toContain('--account=default');
     expect(command).toContain('--context-size=trimmed');
-    expect(command).toContain('--compaction-limit=825000');
+    expect(command).toContain('--compaction-limit=400000');
     expect(command).toContain('--headless');
     expect(dataOf(res)?.launch).toMatchObject({
       fleet: 'alpha-fleet',
       headcountProfile: { applied: true, target: 30 },
+      compactionLimitWarnings: [{ memberIndex: 0, requested: 825_000, effective: 400_000 }],
     });
   });
 });
@@ -2029,6 +2053,126 @@ describe('resume + fork (D-004/D-007)', () => {
       startedAt: '2026-07-11 09:00:00.123456+00',
     },
   };
+
+  describe('explicit resume inherited goal context', () => {
+    let inheritedGoal: string | null;
+    let callerGoal: string | null;
+    let readFailure: boolean;
+    let writeFailure: boolean;
+    let writtenGoals: Array<string | null>;
+
+    beforeEach(() => {
+      findLiveHostMock.mockReturnValue(null);
+      resolveResumeTargetMock.mockResolvedValue(dead);
+      // Policy admission is separate; use the real context resolver and writer
+      // to check the governed process-start boundary.
+      goalLaunchResolveMock.mockResolvedValue({ goalId: null, effective: {} });
+      inheritedGoal = 'goal-paused';
+      callerGoal = null;
+      readFailure = false;
+      writeFailure = false;
+      writtenGoals = [];
+      goalContextSqlMock.mockImplementation(async (...args: unknown[]) => {
+        const [strings, ...values] = args;
+        const query = Array.isArray(strings) ? strings.join(' ') : '';
+        if (query.includes('SELECT goal_id FROM harness_shared.session_briefs')) {
+          if (values[0] === 'su-caller' && readFailure) throw new Error('launcher context unavailable');
+          return [{ goal_id: values[0] === 'su-caller' ? callerGoal : inheritedGoal }];
+        }
+        if (query.includes('INSERT INTO harness_shared.session_briefs')) {
+          if (writeFailure) throw new Error('inherited context write unavailable');
+          if (values[0] === dead.ownerId) {
+            inheritedGoal = values[2] as string | null;
+            writtenGoals.push(inheritedGoal);
+          }
+        }
+        return [];
+      });
+    });
+
+    afterEach(() => {
+      goalContextSqlMock.mockImplementation(async () => []);
+    });
+
+    it.each([null, 'goal-new', 'goal-paused'])('reconciles an admitted different launcher goal %s before spawning', async (goal) => {
+      callerGoal = goal;
+      const spawn = spawnConsoleMock.getMockImplementation()!;
+      spawnConsoleMock.mockImplementationOnce(async (opts) => {
+        expect(inheritedGoal).toBe(goal);
+        return spawn(opts);
+      });
+      const result = await launchAgent.handler({ resume: { agentId: dead.ownerId }, fork: false,
+        brief: 'continue the explicitly assigned work' }, ctx);
+      expect(isError(result), textOf(result)).toBe(false);
+      expect(writtenGoals).toEqual([goal]);
+      expect(spawnGovernedAgentProcessMock).toHaveBeenCalledWith(expect.objectContaining({ owner: dead.ownerId }), expect.any(Function));
+      expect(spawnedCommand()).toContain('--resume=sid-dead');
+      expect(spawnedCommand()).not.toContain('--fork');
+    });
+
+    it('does not reparent before governor admission succeeds', async () => {
+      spawnGovernedAgentProcessMock.mockResolvedValueOnce({ status: 'error', code: 409, error: 'admission refused' });
+      const result = await launchAgent.handler({ resume: { agentId: dead.ownerId }, fork: false, brief: 'continue' }, ctx);
+      expect(isError(result)).toBe(true);
+      expect(writtenGoals).toEqual([]);
+      expect(inheritedGoal).toBe('goal-paused');
+      expect(spawnConsoleMock).not.toHaveBeenCalled();
+    });
+
+    it('refuses process start when the launcher context cannot be read', async () => {
+      readFailure = true;
+      const result = await launchAgent.handler({ resume: { agentId: dead.ownerId }, fork: false, brief: 'continue' }, ctx);
+      expect(isError(result)).toBe(true);
+      expect(textOf(result)).toContain('launcher context unavailable');
+      expect(writtenGoals).toEqual([]);
+      expect(inheritedGoal).toBe('goal-paused');
+      expect(spawnConsoleMock).not.toHaveBeenCalled();
+      expect(spawnHeadlessMock).not.toHaveBeenCalled();
+    });
+
+    it('refuses process start when the inherited-only write fails', async () => {
+      writeFailure = true;
+      const result = await launchAgent.handler({ resume: { agentId: dead.ownerId }, fork: false, brief: 'continue' }, ctx);
+      expect(isError(result)).toBe(true);
+      expect(textOf(result)).toContain('goal context');
+      expect(inheritedGoal).toBe('goal-paused');
+      expect(spawnConsoleMock).not.toHaveBeenCalled();
+      expect(spawnHeadlessMock).not.toHaveBeenCalled();
+    });
+
+    it('preserves inherited context during internal wait recovery', async () => {
+      const result = await launchAgent.handler({ resume: { agentId: dead.ownerId }, fork: false,
+        [INTERNAL_INTERRUPTION_RECOVERY]: { ownerId: dead.ownerId, nativeSessionId: dead.sessionId, wait: true },
+      } as never, ctx);
+      expect(isError(result), textOf(result)).toBe(false);
+      expect(writtenGoals).toEqual([]);
+      expect(inheritedGoal).toBe('goal-paused');
+    });
+
+    it('preserves inherited context on a self resume', async () => {
+      callerIdentity.current.ownerId = dead.ownerId;
+      const result = await launchAgent.handler({ resume: { agentId: dead.ownerId }, fork: false, brief: 'continue own work' }, ctx);
+      expect(isError(result), textOf(result)).toBe(false);
+      expect(writtenGoals).toEqual([]);
+      expect(inheritedGoal).toBe('goal-paused');
+    });
+
+    it('preserves the source inherited context when forking', async () => {
+      const result = await launchAgent.handler({ resume: { agentId: dead.ownerId }, fork: true, brief: 'independent fork' }, ctx);
+      expect(isError(result), textOf(result)).toBe(false);
+      expect(writtenGoals).toEqual([]);
+      expect(inheritedGoal).toBe('goal-paused');
+    });
+
+    it('does not clear context on an unattributed resume', async () => {
+      callerIdentity.current.ownerId = null;
+      const result = await launchAgent.handler({ resume: { agentId: dead.ownerId }, fork: false, brief: 'continue' }, ctx);
+      expect(isError(result)).toBe(true);
+      expect(writtenGoals).toEqual([]);
+      expect(inheritedGoal).toBe('goal-paused');
+      expect(spawnConsoleMock).not.toHaveBeenCalled();
+    });
+  });
 
   it('reserves an ended source before governed admission and passes the same key to its exact child', async () => {
     findLiveHostMock.mockReturnValue(null);
@@ -3479,6 +3623,69 @@ describe('resume + fork (D-004/D-007)', () => {
     });
   });
 
+  it('internal wait recovery opens the exact host without kickoff or retirement override', async () => {
+    findLiveHostMock.mockReturnValue(null);
+    resolveResumeTargetMock.mockResolvedValue(dead);
+    const res = await launchAgent.handler({ resume: { agentId: dead.ownerId }, fork: false,
+      [INTERNAL_INTERRUPTION_RECOVERY]: { ownerId: dead.ownerId, nativeSessionId: dead.sessionId, wait: true },
+    } as never, ctx);
+    expect(isError(res), textOf(res)).toBe(false);
+    const spawn = spawnConsoleMock.mock.calls[0]?.[0] ?? spawnHeadlessMock.mock.calls[0]?.[0];
+    expect(spawn).toBeDefined();
+    const env = (spawn as { envelope: { env: Record<string, string> } }).envelope.env;
+    expect(env).not.toHaveProperty('PAPERCUSP_KICKOFF_PROMPT');
+    expect(env).not.toHaveProperty('PSU_ALLOW_RETIRED_RESUME');
+  });
+
+  it.each(['live', 'identity'])('internal recovery refuses a changed %s source without launching', async kind => {
+    resolveResumeTargetMock.mockResolvedValue({ ...dead, ...(kind === 'live' ? { live: true } : { sessionId: 'changed' }) });
+    const res = await launchAgent.handler({ resume: { agentId: dead.ownerId }, fork: false,
+      [INTERNAL_INTERRUPTION_RECOVERY]: { ownerId: dead.ownerId, nativeSessionId: dead.sessionId, wait: true },
+    } as never, ctx);
+    expect(isError(res)).toBe(true);
+    expect(spawnConsoleMock).not.toHaveBeenCalled();
+    expect(spawnHeadlessMock).not.toHaveBeenCalled();
+  });
+
+  it.each([1, 2])('internal recovery revalidates at native creation boundary %s', async boundary => {
+    findLiveHostMock.mockReturnValue(null);
+    resolveResumeTargetMock.mockResolvedValue(dead);
+    let calls = 0;
+    const beforeNativeCreate = vi.fn(async () => {
+      if (++calls === boundary) throw new Error('interruption-revalidation:owner-stop');
+    });
+    const res = await launchAgent.handler({ resume: { agentId: dead.ownerId }, fork: false,
+      [INTERNAL_INTERRUPTION_RECOVERY]: { ownerId: dead.ownerId, nativeSessionId: dead.sessionId,
+        wait: true, beforeNativeCreate },
+    } as never, ctx);
+    expect(isError(res)).toBe(true);
+    expect(beforeNativeCreate).toHaveBeenCalledTimes(boundary);
+    expect(spawnConsoleMock).not.toHaveBeenCalled();
+    expect(spawnHeadlessMock).not.toHaveBeenCalled();
+  });
+
+  it('interruption recovery preserves a member role and uses that member launch record', async () => {
+    findLiveHostMock.mockReturnValue(null);
+    resolveResumeTargetMock.mockResolvedValue(dead);
+    latestFleetMembershipMock.mockResolvedValue({ fleetSlug: 'target-fleet', fleetRole: 'member' });
+    readAdvSessionLaunchRecordByOwnerMock.mockResolvedValue({
+      workspaceId: 'ws-test', agent: 'claude',
+      launchSpec: { v: 1, agent: 'claude', workspaceId: 'ws-test', harnessSlug: 'papercusp',
+        fleet: { slug: 'target-fleet', role: 'member' }, model: 'sonnet:high' },
+      launchArgv: ['psu', '--no-picker', '--fleet=target-fleet', '--agent=claude',
+        '--harness=papercusp', '--headless', '--carry=warm', '--account=default',
+        '--model=sonnet:high', '--role=su'],
+    });
+    const res = await launchAgent.handler({ resume: { agentId: dead.ownerId }, fork: false,
+      [INTERNAL_INTERRUPTION_RECOVERY]: { ownerId: dead.ownerId, nativeSessionId: dead.sessionId, wait: true },
+    } as never, ctx);
+    expect(isError(res), textOf(res)).toBe(false);
+    const command = spawnedCommand(spawnHeadlessMock);
+    expect(command).toContain('--fleet=target-fleet');
+    expect(command).not.toContain('--fleet-role=leader');
+    expect(readAdvSessionLaunchRecordByOwnerMock).toHaveBeenCalledWith(dead.ownerId, 'ws-test');
+  });
+
   it('leader recovery uses the ended owner launch record and restores the leader role', async () => {
     findLiveHostMock.mockReturnValue(null);
     resolveResumeTargetMock.mockResolvedValue(dead);
@@ -3717,6 +3924,9 @@ describe('resume + fork (D-004/D-007)', () => {
     expect(spawnedCommand()).toContain('--resume=sid-dead --fork');
     expect(textOf(res)).toContain('still LIVE');
     expect(textOf(res)).toContain('FRESH identity');
+    expect(spawnedEnv().PAPERCUSP_KICKOFF_PROMPT).toContain('LIVE SOURCE SAFETY');
+    expect(spawnedEnv().PAPERCUSP_KICKOFF_PROMPT).toContain('inherits no work-item claims');
+    expect(spawnedEnv().PAPERCUSP_KICKOFF_PROMPT).toContain('confirm this fork holds the claim');
   });
 
   it.each([5, 31])('fails closed for an explicit in-place resume when the source is LIVE (idle %s minutes)', async (idleMinutes) => {

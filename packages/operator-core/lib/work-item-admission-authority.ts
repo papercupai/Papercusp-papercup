@@ -75,9 +75,10 @@ function policyReadDiagnosticSuffix(meta: unknown): string {
   return ` [authority-read ${JSON.stringify(diagnostic)}]`;
 }
 
-/** Called on the authenticated dispatch context, never on caller-supplied args. */
+/** Bind transport credentials from `ctx`; use a validated per-call harness only as scope fallback. */
 export function bindAdmissionAuthority(
   ctx: UnifiedToolContext & AdmissionAuthorityContext,
+  fallbackHarness?: string | null,
 ): AdmissionRecoveryAuthority | undefined {
   if (!ctx.admissionRecoveryAuthority) return undefined;
   // The final dispatcher stamps its verified applied revision on the handler.
@@ -94,7 +95,8 @@ export function bindAdmissionAuthority(
       ctx.telemetrySurface) {
     throw new AdmissionAuthorityRefused('explicit kernel/reaction dispatch context is not renewable for admission recovery');
   }
-  const harnessSlug = resolveConcreteHarnessSlug(undefined, ctx);
+  const harnessSlug = resolveConcreteHarnessSlug(undefined, ctx) ??
+    resolveConcreteHarnessSlug(fallbackHarness, ctx);
   if (!harnessSlug) return undefined;
   const bound = admissionAuthoritySchema.safeParse({
     ...ctx.admissionRecoveryAuthority,

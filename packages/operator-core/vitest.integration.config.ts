@@ -8,6 +8,13 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 // Reuse the live profile's selected runtime for integration evidence as well.
 // Configuration preparation stays outside the reporter's bounded observation.
 const profileRuntimeReader = await prepareRuntimeReader();
+// Hand the deliberately selected live target across the worker's hermetic env
+// scrub. The existing reader independently measures the serving processes.
+const recoveryProfile = process.env.PAPERCUSP_APP_OPERATION_LIVE_PROFILE;
+const recoveryRuntime = recoveryProfile === 'packages/operator-core/test/fixtures/session-recovery.live-profile.json'
+  || recoveryProfile === 'packages/operator-core/test/fixtures/session-recovery-release.live-profile.json'
+  ? { url: process.env.PAPERCUSP_OPERATOR_URL ?? '', runtime: await profileRuntimeReader?.() ?? null }
+  : null;
 // Preload the existing host resolver before the reporter's bounded witness
 // read. Ordinary isolated integration suites do not open the live-host graph.
 const liveRuntime = process.env.PAPERCUSP_WOE_SERVED_AUDIT === '1'
@@ -31,7 +38,7 @@ const POSTHOG_RUNTIME_CAPTURE_TIMEOUT_MS = 15_000;
 // Coverage-census attribution (P-004) — see the note in vitest.config.ts. The INTEGRATION
 // layer is where this actually produces rows: it is the layer with a reachable Postgres, so a
 // flush lands instead of disabling the sink.
-export default defineVitestConfig({
+const config = defineVitestConfig({
   layer: 'integration',
   exclude: ['lib/blueprint/launch-blueprint-account-route.e2e.test.ts'],
   ...(profileRuntimeReader || liveRuntime || remoteRuntime ? {
@@ -67,3 +74,7 @@ export default defineVitestConfig({
     resolve(__dirname, 'lib/detached-imports/setup-vitest.ts'),
   ],
 });
+if (recoveryRuntime && config.test) {
+  config.test.provide = { ...config.test.provide, sessionRecoveryRuntime: recoveryRuntime };
+}
+export default config;

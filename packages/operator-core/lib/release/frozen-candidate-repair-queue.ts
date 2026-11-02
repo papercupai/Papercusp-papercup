@@ -1852,6 +1852,8 @@ export interface FrozenRepairQueueDiagnostic {
    * prefer this field whenever they need to distinguish it from `repairHead`.
    */
   frozenCandidate?: string;
+  /** Exact CI run group that produced the frozen candidate's affected-test population. */
+  affectedTestProofGroup?: string | null;
   phase: FrozenCandidateRepairPhase;
   candidate: string;
   repairHead: string;
@@ -3183,6 +3185,7 @@ export function diagnoseFrozenCandidateRepairQueue(
   return {
     ...identity,
     candidate: queue.candidate,
+    affectedTestProofGroup: queue.affectedTestProofGroup ?? null,
     // P-002/P-003: carried onto the diagnostic so a reader holding it can answer "which
     // non-test leg, and did its fix land" without re-parsing the raw queue blob.
     legs: queue.legs ?? [],

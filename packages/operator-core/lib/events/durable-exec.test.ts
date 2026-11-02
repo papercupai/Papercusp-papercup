@@ -12,12 +12,14 @@ vi.mock('./reaction-dedup', () => ({
 }));
 vi.mock('./dispatch-reaction', () => ({
   fireReactionInProcess: vi.fn(async () => ({ ok: true })),
+  reactionBackgroundActivityAllowed: vi.fn(async () => true),
   buildReactionCtx: vi.fn(),
 }));
 
 import { executeDurableReaction, type DurableReactionPayload } from './durable-exec';
 import { claimReaction, releaseReaction } from './reaction-dedup';
-import { fireReactionInProcess } from './dispatch-reaction';
+import { fireReactionInProcess, reactionBackgroundActivityAllowed } from './dispatch-reaction';
+import { completeReaction, markReactionUncertain } from './reaction-dedup';
 
 const claim = vi.mocked(claimReaction);
 const release = vi.mocked(releaseReaction);
@@ -40,9 +42,30 @@ beforeEach(() => {
   claim.mockReset().mockResolvedValue(true);
   release.mockReset().mockResolvedValue(undefined);
   fire.mockReset().mockResolvedValue({ ok: true });
+  vi.mocked(reactionBackgroundActivityAllowed).mockReset().mockResolvedValue(true);
+  vi.mocked(completeReaction).mockClear();
+  vi.mocked(markReactionUncertain).mockClear();
 });
 
 describe('executeDurableReaction', () => {
+  it('checks current policy before claiming a queued reaction, and permits a later resumed execution', async () => {
+    vi.mocked(reactionBackgroundActivityAllowed).mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+    await executeDurableReaction(payload());
+    expect(claim).not.toHaveBeenCalled();
+    expect(fire).not.toHaveBeenCalled();
+    await executeDurableReaction(payload());
+    expect(claim).toHaveBeenCalledOnce();
+    expect(fire).toHaveBeenCalledOnce();
+  });
+
+  it('releases a fresh claim when the final effect fence withholds after preclaim admission', async () => {
+    fire.mockResolvedValue({ ok: true, withheld: true });
+    await executeDurableReaction(payload());
+    expect(release).toHaveBeenCalledWith('reaction:root:r1');
+    expect(completeReaction).not.toHaveBeenCalled();
+    expect(markReactionUncertain).not.toHaveBeenCalled();
+  });
+
   it('claims the dedup id then dispatches when fresh', async () => {
     await executeDurableReaction(payload());
     expect(claim).toHaveBeenCalledOnce();

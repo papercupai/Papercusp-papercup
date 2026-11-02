@@ -10,7 +10,7 @@
   "scope": "Finite recorded native action events and exact typed-receipt joins; not universal source immutability or an exhaustive database/system/filesystem mutation history.",
   "nativeSnapshots": {
     "source44024": {
-      "nativePath": "/home/builduser/.papercusp/su-codex-homes/session-44024/sessions/2026/10/15/rollout-2026-10-15T00-49-11-01a13de4-8aa4-7602-a68a-e5169d0fa42a.jsonl",
+      "nativePath": "~/.papercusp/su-codex-homes/session-44024/sessions/2026/10/15/rollout-2026-10-15T00-49-11-01a13de4-8aa4-7602-a68a-e5169d0fa42a.jsonl",
       "capturedCompleteBytes": 4189328,
       "capturedSha256": "88b01275741bcb0bc91206996572f63e6f693e240ef878bbd751b9866664ce0f",
       "population": {
@@ -160,7 +160,7 @@
       ]
     },
     "target50125": {
-      "nativePath": "/home/builduser/.papercusp/su-codex-homes/session-50125/sessions/2026/10/22/rollout-2026-10-22T20-29-38-01a16629-d0b0-7d61-b6e0-d4f21dd8a1cf.jsonl",
+      "nativePath": "~/.papercusp/su-codex-homes/session-50125/sessions/2026/10/22/rollout-2026-10-22T20-29-38-01a16629-d0b0-7d61-b6e0-d4f21dd8a1cf.jsonl",
       "capturedCompleteBytes": 520119,
       "capturedSha256": "6254451033c9df1a42cec21d80f27052547672846574134fd1c7cf55bc044f6c",
       "population": "Saved native stream through its recorded task_complete; action inventory covers only item_completed McpToolCall and CommandExecution records.",
@@ -286,7 +286,7 @@
       ]
     },
     "target50137": {
-      "nativePath": "/home/builduser/.papercusp/su-codex-homes/session-50137/sessions/2026/10/22/rollout-2026-10-22T20-45-19-01a16638-22c5-7891-98ae-864ac76f19f4.jsonl",
+      "nativePath": "~/.papercusp/su-codex-homes/session-50137/sessions/2026/10/22/rollout-2026-10-22T20-45-19-01a16638-22c5-7891-98ae-864ac76f19f4.jsonl",
       "capturedCompleteBytes": 480580,
       "capturedSha256": "9ce6b852811a7c4bd8239dcff8dba1bb6b6e1ace44ffae6a5f13a881a05e4c72",
       "population": "Saved native stream through its recorded task_complete; action inventory covers only item_completed McpToolCall and CommandExecution records.",

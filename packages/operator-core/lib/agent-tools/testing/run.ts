@@ -78,7 +78,7 @@ import {
   statSync,
   type Dirent,
 } from 'node:fs';
-import { cp, readdir, readFile } from 'node:fs/promises';
+import { cp, open, readdir, readFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -88,10 +88,12 @@ import { parseTestRunExecutionDetails } from '@papercusp/test-config/execution-d
 import { resolveTestRunsPgUrl } from '@papercusp/test-config/admin-test-runs-reporter';
 import { captureConfigurationSnapshot } from '@papercusp/test-config/configuration-snapshot';
 import { cleanupOwnedTestDatabases, dropDatabaseOnDedicatedConnection, type OwnedTestDbCleanupResult } from '@papercusp/test-config/pg';
+import { redactSensitiveText } from '../../sensitive-text';
 import { TestRunArtifactPacket, testRunDeadline, type TestRunArtifactPaths, type TestRunDeadline } from './run-artifacts';
 import {
   boundTestRunPayload,
   captureWorktreeSnapshotAsync,
+  COLLECTION_FAILURE_TEST,
   computeWorktreeDirty,
   distillVitestRun,
   mergeDistilledRuns,
@@ -1869,6 +1871,74 @@ export function emptyDistilledRunRefusal(opts: {
   };
 }
 
+const VITEST_COLLECTION_DIAGNOSTIC = /(?:failed to (?:load|resolve|import|collect)|cannot find (?:package|module)|cannot resolve|could not resolve|err_module_not_found|err_package_path_not_exported)/i;
+const MAX_ROUTER_DIAGNOSTIC_CHARS = 2_000;
+const MAX_ROUTER_DIAGNOSTIC_SOURCE_BYTES = 64 * 1024;
+
+function rootRelativeTestFile(root: string, file: string): string {
+  const absolute = isAbsolute(file) ? resolve(file) : resolve(root, file);
+  return relative(resolve(root), absolute).split(sep).join('/').replace(/^\.\//, '');
+}
+
+function unreportedVitestFiles(
+  byFile: DistilledTestRun['byFile'],
+  requestedFiles: readonly string[],
+  root: string,
+): string[] {
+  const reported = new Set(Object.keys(byFile ?? {}).map((file) => rootRelativeTestFile(root, file)));
+  return [...new Set(requestedFiles
+    .filter((file) => /\.(?:test|spec)\.tsx?$/i.test(file))
+    .map((file) => rootRelativeTestFile(root, file))
+    .filter((file) => !reported.has(file)))];
+}
+
+function vitestCollectionFailureReport(files: readonly string[], root: string, diagnostic?: string): string {
+  const message = diagnostic?.trim() || 'Vitest produced no file-level result for this requested test file.';
+  return JSON.stringify({
+    testResults: files.map((file) => ({
+      name: resolve(root, file),
+      status: 'failed',
+      message,
+      assertionResults: [],
+    })),
+  });
+}
+
+async function readRouterFailureDiagnostic(
+  outputLogPaths: readonly string[],
+  output: string,
+  environment: Readonly<Record<string, string | undefined>>,
+): Promise<string | undefined> {
+  const sources: string[] = [];
+  for (const path of [...outputLogPaths].reverse()) {
+    const handle = await open(path, 'r').catch(() => null);
+    if (!handle) continue;
+    try {
+      const size = (await handle.stat()).size;
+      const buffer = Buffer.alloc(Math.min(size, MAX_ROUTER_DIAGNOSTIC_SOURCE_BYTES));
+      const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+      const text = buffer.subarray(0, bytesRead).toString('utf8');
+      if (text.trim()) sources.push(redactSensitiveText(text, [], environment));
+    } catch {
+      // Retained logs are diagnostic evidence; a failed read must not change
+      // the measured test result or turn a refusal into a pass.
+    } finally {
+      await handle.close().catch(() => {});
+    }
+  }
+  if (output.trim()) sources.push(redactSensitiveText(output, [], environment));
+
+  for (const source of sources) {
+    const lines = source.split(/\r?\n/);
+    const signalIndex = lines.findIndex((line) =>
+      /(?:error|failed|cannot|could not|unable|not found|ERR_[A-Z0-9_]+)/i.test(line));
+    const start = signalIndex < 0 ? 0 : Math.max(0, signalIndex - 1);
+    const excerpt = lines.slice(start, start + 12).join('\n').trim();
+    if (excerpt) return excerpt.slice(0, MAX_ROUTER_DIAGNOSTIC_CHARS);
+  }
+  return undefined;
+}
+
 /**
  * A foreground timeout must return its detached recovery handle without waiting on
  * optional execution-ledger readback. The timeout path has no completed foreground
@@ -3142,12 +3212,24 @@ export function noReportDiagnostics(
   routerExit: number | null,
   reportDirEntries: readonly string[],
   outputLogPaths: readonly string[] = [],
-): { routerExit: number | null; reportDirEntries: string[]; markerSeen: boolean; summarySeen: 'node' | 'vitest' | 'none'; routerLogPaths?: string[] } {
+  routerDiagnostic?: string,
+  missingReportPaths: readonly string[] = [],
+): {
+  routerExit: number | null;
+  reportDirEntries: string[];
+  markerSeen: boolean;
+  summarySeen: 'node' | 'vitest' | 'none';
+  routerLogPaths?: string[];
+  routerDiagnostic?: string;
+  missingReportPaths?: string[];
+} {
   const text = output.replace(ANSI_SGR, '');
   return {
     routerExit,
     reportDirEntries: [...reportDirEntries].slice(0, 20),
     ...(outputLogPaths.length ? { routerLogPaths: [...outputLogPaths] } : {}),
+    ...(routerDiagnostic ? { routerDiagnostic } : {}),
+    ...(missingReportPaths.length ? { missingReportPaths: [...missingReportPaths].slice(0, 20) } : {}),
     markerSeen: /^TEST_FILE_RESULT\b/m.test(text),
     summarySeen: /^\s*(?:ℹ|#)?\s*tests\s+\d+\s*$/m.test(text)
       ? 'node'
@@ -3991,6 +4073,25 @@ async function runTestFilesCoreInternal(opts: RunTestFilesCoreOptions, deps: Tes
     packet.write('router.json', { code: outcome.code, signal: outcome.signal, timedOut: outcome.timedOut,
       aborted: outcome.aborted, taskId: outcome.taskId ?? null, outputLogPaths, childState: packet.childState });
     packet.stage('router-result', { childState: packet.childState, outputLogPaths });
+    const persistExternalTestRunRows = async (reportBodies: readonly string[]) => {
+      if (!(ingestLedgerInProcess && ledgerWorktreeBefore && opts.workspaceId && opts.harnessSlug)) return;
+      const rows = reportBodies.flatMap((text) => parseVitestJsonForHarnessRows(text, root, childEnv));
+      if (rows.length === 0) return;
+      const ledgerWorktreeAfter = await captureWorktreeSnapshotAsync(root);
+      await persistHarnessTestRuns({
+        harnessSlug: opts.harnessSlug,
+        workspaceId: opts.workspaceId,
+        rows,
+        runGroupId: runId,
+        source: 'local',
+        runStartedAt,
+        commit: ledgerWorktreeAfter.commit,
+        worktreeDirty: computeWorktreeDirty(ledgerWorktreeBefore, ledgerWorktreeAfter),
+        root,
+        testNamePattern: opts.testNamePattern ?? null,
+        configurationSnapshot: captureConfigurationSnapshot(childEnv),
+      });
+    };
     // Spend the reserve on resource cleanup before report parsing, ledger
     // finalization or detached recovery can consume it.
     if (packet.childState === 'closed') {
@@ -4146,16 +4247,7 @@ async function runTestFilesCoreInternal(opts: RunTestFilesCoreOptions, deps: Tes
     // run: a two-workspace request with a RED first group returned `failed:0,
     // failures:[]`. `dir` is this run's private retained report directory, so every *.json in
     // it belongs to THIS run and can be merged without any output parsing.
-    if (directReportPaths?.some((path) => !existsSync(path))) {
-      return {
-        ok: false,
-        runId,
-        root,
-        error: 'no_report',
-        routerOutput: outcome.output.slice(-2000),
-        diagnostics: noReportDiagnostics(outcome.output, outcome.code, await readdir(dir).catch(() => []), outputLogPaths),
-      };
-    }
+    const missingDirectReportPaths = directReportPaths?.filter((path) => !existsSync(path)) ?? [];
 
     let reportTexts: string[];
     let reportDirEntries: string[] = [];
@@ -4192,6 +4284,22 @@ async function runTestFilesCoreInternal(opts: RunTestFilesCoreOptions, deps: Tes
           routerResult,
         ) as TestFilesCoreResult;
       }
+      const routerDiagnostic = await readRouterFailureDiagnostic(outputLogPaths, outcome.output, childEnv);
+      const missingVitestFiles = unreportedVitestFiles({}, pathResolution.files, root);
+      if (missingVitestFiles.length > 0 && VITEST_COLLECTION_DIAGNOSTIC.test(routerDiagnostic ?? '')) {
+        const collectionFailureReport = vitestCollectionFailureReport(missingVitestFiles, root, routerDiagnostic);
+        const collectionFailureRun = distillVitestRun(collectionFailureReport, root, {
+          maxFailures: opts.maxFailures,
+          environment: childEnv,
+        });
+        await persistExternalTestRunRows([collectionFailureReport]);
+        return boundTestRunPayload({
+          ok: false,
+          runId,
+          root,
+          routerOutput: routerDiagnostic,
+        }, collectionFailureRun) as TestFilesCoreResult;
+      }
       // Exit 1 with no report is the REFUSED false-green (the router bailed
       // before running anything) — the one case where "no results" is the
       // answer, and must never read as a pass.
@@ -4200,8 +4308,10 @@ async function runTestFilesCoreInternal(opts: RunTestFilesCoreOptions, deps: Tes
         runId,
         root,
         error: 'no_report',
-        routerOutput: outcome.output.slice(-2000),
-        diagnostics: noReportDiagnostics(outcome.output, outcome.code, reportDirEntries, outputLogPaths),
+        routerOutput: routerDiagnostic ?? outcome.output.slice(-2000),
+        diagnostics: noReportDiagnostics(
+          outcome.output, outcome.code, reportDirEntries, outputLogPaths, routerDiagnostic, missingDirectReportPaths,
+        ),
       };
     }
 
@@ -4220,17 +4330,37 @@ async function runTestFilesCoreInternal(opts: RunTestFilesCoreOptions, deps: Tes
       pathResolution.files,
       opts.maxFailures !== undefined ? { maxFailures: opts.maxFailures } : {},
     );
-    const emptyReport = emptyDistilledRunRefusal({
+    const mergedReportRun = mergeDistilledRuns(distilledRuns, { maxFailures: opts.maxFailures });
+    const missingVitestFiles = unreportedVitestFiles(mergedReportRun.byFile, pathResolution.files, root);
+    const routerDiagnostic = missingVitestFiles.length > 0
+      ? await readRouterFailureDiagnostic(outputLogPaths, outcome.output, childEnv)
+      : undefined;
+    const shouldRecordCollectionFailure = missingVitestFiles.length > 0
+      && (mergedReportRun.files > 0 || VITEST_COLLECTION_DIAGNOSTIC.test(routerDiagnostic ?? ''));
+    const collectionFailureReport = shouldRecordCollectionFailure
+      ? vitestCollectionFailureReport(missingVitestFiles, root, routerDiagnostic)
+      : undefined;
+    const emptyReport = collectionFailureReport ? null : emptyDistilledRunRefusal({
       runs: distilledRuns,
       runId,
       root,
-      routerOutput: outcome.output,
+      routerOutput: routerDiagnostic ?? outcome.output,
     });
     if (emptyReport) return {
       ...emptyReport,
-      diagnostics: noReportDiagnostics(outcome.output, outcome.code, reportDirEntries, outputLogPaths),
+      routerOutput: routerDiagnostic ?? emptyReport.routerOutput,
+      diagnostics: noReportDiagnostics(
+        outcome.output, outcome.code, reportDirEntries, outputLogPaths, routerDiagnostic, missingDirectReportPaths,
+      ),
     };
-    const run = mergeDistilledRuns(distilledRuns, { maxFailures: opts.maxFailures });
+    const run = collectionFailureReport
+      ? mergeDistilledRuns([
+        ...distilledRuns,
+        distillVitestRun(collectionFailureReport, root, {
+          maxFailures: opts.maxFailures, failureDetails, environment: childEnv,
+        }),
+      ], { maxFailures: opts.maxFailures })
+      : mergedReportRun;
 
     // External Vitest checkouts have no Papercusp reporter to write the
     // workspace-scoped execution ledger. Reuse the Tests-tab ingestion
@@ -4238,24 +4368,10 @@ async function runTestFilesCoreInternal(opts: RunTestFilesCoreOptions, deps: Tes
     // happens in the operator process, where the database handle is known, and
     // only when no child reporter exists so a managed checkout cannot double-
     // record the same run group.
-    if (ingestLedgerInProcess && ledgerWorktreeBefore && opts.workspaceId && opts.harnessSlug) {
-      const ledgerWorktreeAfter = await captureWorktreeSnapshotAsync(root);
-      const rows = reportTexts.flatMap((text) => parseVitestJsonForHarnessRows(text, root, childEnv));
-      await persistHarnessTestRuns({
-        harnessSlug: opts.harnessSlug,
-        workspaceId: opts.workspaceId,
-        rows,
-        runGroupId: runId,
-        source: 'local',
-        runStartedAt,
-        commit: ledgerWorktreeAfter.commit,
-        worktreeDirty: computeWorktreeDirty(ledgerWorktreeBefore, ledgerWorktreeAfter),
-        root,
-        testNamePattern: opts.testNamePattern ?? null,
-        // P-011: the env the measured Vitest children actually ran under (runDirectVitest).
-        configurationSnapshot: captureConfigurationSnapshot(childEnv),
-      });
-    }
+    await persistExternalTestRunRows([
+      ...reportTexts,
+      ...(collectionFailureReport ? [collectionFailureReport] : []),
+    ]);
 
     // EI-19425177453558152: a `testNamePattern` matching ZERO tests measured NOTHING, yet every
     // test is merely SKIPPED and vitest exits 0 — so this used to return a green.
@@ -4289,7 +4405,9 @@ async function runTestFilesCoreInternal(opts: RunTestFilesCoreOptions, deps: Tes
     // explicitly, so `failures.length` is never readable as "how many failed".
     return boundTestRunPayload({
       ok: run.failed === 0 && outcome.code === 0, runId, root,
-      ...(outcome.code === ROUTER_EXIT_FINALIZATION_ERROR ? { routerOutput: outcome.output.slice(-2000) } : {}),
+      ...(collectionFailureReport
+        ? { routerOutput: routerDiagnostic ?? outcome.output.slice(-2000) }
+        : outcome.code === ROUTER_EXIT_FINALIZATION_ERROR ? { routerOutput: outcome.output.slice(-2000) } : {}),
     }, run) as TestFilesCoreResult;
   } finally {
     packet.stage('report-finalized', { outputLogPaths });

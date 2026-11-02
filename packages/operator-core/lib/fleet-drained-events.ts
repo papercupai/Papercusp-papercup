@@ -14,18 +14,19 @@
  * WHY A DERIVED DETECTOR (not a 1-line emit): unlike the other Phase-2 keys
  * (service/plan-item/claim-released) there is no single transition site that MEANS "the
  * fleet drained" — it is a COMPUTED condition (are all the fleet's lanes terminal?). This
- * module supplies (a) the pure drain arithmetic + (b) a fire-and-forget emitter, and is
- * driven from the ONE transition that can flip a fleet into drained: a plan item going
- * →done (wired in plans:set-status). Because set-status only fires on a real →done edge AND
- * we additionally gate on "this flip left the plan with zero open items", that edge identifies a
- * drain CANDIDATE. The shared emit boundary then re-reads the family-complete fleet claim-lane
- * oracle and fires only when its effective claimable count is exactly zero.
+ * module supplies (a) the pure drain arithmetic + (b) a fire-and-forget emitter, driven by
+ * candidate signals such as a plan item going →done (wired in plans:set-status). The shared
+ * emit boundary re-reads the family-complete claim-lane oracle AND a status-floor-free
+ * matching population. It fires only when claimability is zero and every non-empty matching
+ * row is terminal; held and admission-pending rows therefore cannot turn an idle lane into a
+ * drained event.
  *
  * SCOPE: plan terminality + the assignment snapshot discover candidate fleets; the persisted
- * fleet claim spec + family-complete lane-health reader decides whether each candidate is truly
- * drained. An unclaimed issue/feature backlog is therefore visible to the final decision even
- * though it is absent from fleet_assignment. Missing spec, unreadable lane state, or any positive
- * claimable count fails closed to NO event.
+ * fleet claim spec + family-complete lane-health and terminal-population readers decide whether
+ * each candidate is truly drained. An unclaimed issue/feature backlog is therefore visible to
+ * the final decision even though it is absent from fleet_assignment. Missing spec, unreadable
+ * lane/population state, an empty matching population, or any non-terminal match fails closed to
+ * NO event.
  *
  * PURE core + injectable seams (session-compacted-events.ts / plan-item-events.ts
  * discipline): no PG / IO / clock in the arithmetic; the emit + the assignment read are the
@@ -35,6 +36,7 @@
 import { emitAwaitedEvent } from './events/await/engine';
 import { listFleetAssignments, type FleetAssignmentRow } from './fleet/assignments';
 import type { FleetLaneHealth } from './fleet/lane-health';
+import type { FleetScopeTerminalExhaustion } from './scheduler/fleet-scope-admission';
 import { resolveConcreteWorkspaceId } from './workspace-registry';
 
 /** Terminal plan-item statuses — a finished item (mirrors plans/set-status isTerminalStatus). */
@@ -93,6 +95,11 @@ export interface FleetDrainedEventsDeps {
     fleet: string;
     workspaceId?: string | null;
   }) => Promise<FleetLaneHealth | null>;
+  /** Status-floor-free population proof: every matching work item must be terminal. */
+  readTerminalExhaustion?: (args: {
+    fleet: string;
+    workspaceId?: string | null;
+  }) => Promise<FleetScopeTerminalExhaustion | null>;
   /** Capture the caller's concrete workspace before the detached promise runs. */
   workspaceId?: string;
 }
@@ -105,6 +112,33 @@ async function readLaneHealthDefault(args: {
   return readFleetLaneHealth(args);
 }
 
+async function readTerminalExhaustionDefault(args: {
+  fleet: string;
+  workspaceId?: string | null;
+}): Promise<FleetScopeTerminalExhaustion | null> {
+  const [{ resolveClaimSpecWorkspace, resolveFleetClaimSpec }, { diagnoseFleetScopeTerminalExhaustion }] =
+    await Promise.all([
+      import('./scheduler/claim-spec-store'),
+      import('./scheduler/fleet-scope-admission'),
+    ]);
+  const workspaceId = resolveClaimSpecWorkspace(args.workspaceId ?? undefined);
+  if (!workspaceId) return null;
+  const resolved = await resolveFleetClaimSpec({ spec: args.fleet, workspaceId });
+  const harness = resolved?.record.harnessSlug;
+  if (!resolved || !harness) return null;
+  return diagnoseFleetScopeTerminalExhaustion({
+    scope: {
+      ownerId: '',
+      fleetSlug: resolved.fleetSlug,
+      fleetRole: 'member',
+      record: resolved.record,
+      workspaceId,
+    },
+    harness,
+    workspaceId,
+  });
+}
+
 /**
  * Verify and fire `fleet:drained:<fleetSlug>` for one candidate fleet. Awaiter-only (no `to`
  * push): the audience is whoever registered interest in this fleet. Fire-and-forget; never
@@ -114,6 +148,7 @@ async function readLaneHealthDefault(args: {
 export function emitFleetDrainedEvent(fleetSlug: string, deps: FleetDrainedEventsDeps = {}): void {
   const emit = deps.emit ?? emitAwaitedEvent;
   const readLaneHealth = deps.readLaneHealth ?? readLaneHealthDefault;
+  const readTerminalExhaustion = deps.readTerminalExhaustion ?? readTerminalExhaustionDefault;
   // Resolve synchronously while the request/tool ALS scope is still unquestionably
   // present. The detached continuation must never fall through to another workspace.
   const workspaceId = resolveConcreteWorkspaceId(deps.workspaceId);
@@ -126,9 +161,21 @@ export function emitFleetDrainedEvent(fleetSlug: string, deps: FleetDrainedEvent
       const laneHealth = await readLaneHealth({ fleet: fleetSlug, workspaceId });
       if (laneHealth?.effective.claimable !== 0) return;
 
+      // Claimability deliberately excludes held and admission-pending rows. They still
+      // match the fleet's persisted spec and are non-terminal, so zero pull-claimable rows
+      // alone is an idle signal, not proof that the fleet's work has drained. The
+      // status-floor-free read counts the complete matching population, including those
+      // rows; empty, incomplete, or non-terminal populations fail closed.
+      const terminalExhaustion = await readTerminalExhaustion({ fleet: fleetSlug, workspaceId });
+      if (
+        !terminalExhaustion ||
+        terminalExhaustion.matchedByFilter <= 0 ||
+        terminalExhaustion.terminalMatchedByFilter !== terminalExhaustion.matchedByFilter
+      ) return;
+
       await emit({
         key: `fleet:drained:${fleetSlug}`,
-        summary: `fleet ${fleetSlug} drained — authoritative claimability is zero`,
+        summary: `fleet ${fleetSlug} drained — all ${terminalExhaustion.matchedByFilter} claim-spec matches are terminal`,
         payload: {
           fleetSlug,
           claimableProof: {
@@ -136,6 +183,11 @@ export function emitFleetDrainedEvent(fleetSlug: string, deps: FleetDrainedEvent
             basis: laneHealth.effective.basis,
             spec: laneHealth.spec.ref,
             harness: laneHealth.spec.harness,
+          },
+          terminalProof: {
+            matched: terminalExhaustion.matchedByFilter,
+            terminal: terminalExhaustion.terminalMatchedByFilter,
+            nonTerminal: 0,
           },
         },
         source: 'fleet',

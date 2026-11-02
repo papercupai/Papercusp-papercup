@@ -1,10 +1,16 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { createHash, generateKeyPairSync, sign } from 'node:crypto';
+import { mkdtempSync, writeFileSync, readFileSync, rmSync, existsSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { issueApplicationRuntimeAcceptance } from './application-runtime-acceptance-issuer';
 import type { AcceptanceBarContractSnapshot } from './acceptance-bar-contract-snapshot';
 import type { ApplicationRuntimeCandidate } from './bundled-node';
 const h = vi.hoisted(() => ({ snapshot: vi.fn(), artifacts: vi.fn() }));
 vi.mock('./acceptance-bar-contract-snapshot', () => ({ readAcceptanceBarContractSnapshot: h.snapshot }));
 vi.mock('./agent-tools/plans/spec-evidence-store', () => ({ readCurrentOperationalArtifacts: h.artifacts }));
-import { BUN_MIGRATION_PLAN, readApplicationRuntimeAcceptance } from './application-runtime-acceptance';
+import { BUN_MIGRATION_PLAN, readApplicationRuntimeAcceptance, prepareApplicationRuntimeAcceptanceEnvelope,
+  readSignedApplicationRuntimeAcceptance } from './application-runtime-acceptance';
 
 const sha = (n: number) => String(n).repeat(64);
 const reference = 'docs/evidence/bun-candidate.json';
@@ -124,4 +130,79 @@ describe('Bun pre-cutover canonical acceptance', () => {
       if (condition === 'unsigned') artifact.artifact.signedArtifacts[0]!.signatureVerificationRef = '';
       await expect(readApplicationRuntimeAcceptance(request)).resolves.toBeNull();
     });
+});
+
+function signEnvelope(envelope: string) {
+  const { publicKey, privateKey } = generateKeyPairSync('ed25519');
+  const keyId = Buffer.from('1234567890abcdef', 'hex');
+  const raw = (publicKey.export({ format: 'der', type: 'spki' }) as Buffer).subarray(-32);
+  const trustedPublicKey = Buffer.from(`untrusted comment: minisign public key\n${Buffer.concat([
+    Buffer.from('Ed'), keyId, raw]).toString('base64')}\n`).toString('base64');
+  const signatureBytes = sign(null, createHash('blake2b512').update(envelope).digest(), privateKey);
+  const block = Buffer.concat([Buffer.from('ED'), keyId, signatureBytes]).toString('base64');
+  const comment = 'runtime eligibility';
+  const global = sign(null, Buffer.concat([signatureBytes, Buffer.from(comment)]), privateKey).toString('base64');
+  return { envelope: Buffer.from(envelope), trustedPublicKey,
+    signature: Buffer.from(`untrusted comment: fixture\n${block}\ntrusted comment: ${comment}\n${global}\n`).toString('base64') };
+}
+
+describe('detached canonical runtime eligibility', () => {
+  it('executes canonical issuance with exclusive output and refuses a rejected verdict without an output', async () => {
+    const { request, snapshot } = fixture(); snapshot.contentHash = sha(9);
+    const root = mkdtempSync(join(tmpdir(), 'runtime-issuer-'));
+    try {
+      const input = join(root, 'request.json'); const output = join(root, 'eligibility.json');
+      writeFileSync(input, JSON.stringify(request));
+      await expect(issueApplicationRuntimeAcceptance(input, output)).resolves.toMatchObject({ outputPath: output, signed: false });
+      const bytes = readFileSync(output, 'utf8');
+      expect(JSON.parse(bytes)).toMatchObject({ canonicalSnapshotHash: sha(9), acceptance: { candidateSha256: sha(1) } });
+      await expect(issueApplicationRuntimeAcceptance(input, output)).rejects.toThrow('EEXIST');
+      expect(readFileSync(output, 'utf8')).toBe(bytes);
+      snapshot.grading.authorVerdict.state = 'rejected';
+      await expect(issueApplicationRuntimeAcceptance(input, output + '.refused')).rejects.toThrow('canonical runtime eligibility refused');
+      expect(existsSync(output + '.refused')).toBe(false);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+  it('prepares signable bytes only after canonical eligibility, then verifies offline without a ledger read', async () => {
+    const { request, snapshot } = fixture(); snapshot.contentHash = sha(9);
+    const envelope = await prepareApplicationRuntimeAcceptanceEnvelope(request);
+    expect(envelope).not.toBeNull();
+    expect(JSON.parse(envelope!)).toMatchObject({ canonicalSnapshotHash: sha(9), harnessSlug: 'papercusp',
+      acceptance: { candidateSha256: request.candidate.candidateSha256 } });
+    h.snapshot.mockClear(); h.artifacts.mockClear();
+    const signed = signEnvelope(envelope!);
+    await expect(readSignedApplicationRuntimeAcceptance({ ...request, ...signed })).resolves.toMatchObject({ verdict: 'accepted' });
+    expect(h.snapshot).not.toHaveBeenCalled(); expect(h.artifacts).not.toHaveBeenCalled();
+    signed.envelope[0] = 32;
+    await expect(readSignedApplicationRuntimeAcceptance({ ...request, ...signed })).resolves.toBeNull();
+  });
+  it('does not prepare a receipt for failed or revoked canonical eligibility', async () => {
+    const { request, snapshot } = fixture(); snapshot.contentHash = sha(9);
+    snapshot.grading.authorVerdict.state = 'rejected';
+    await expect(prepareApplicationRuntimeAcceptanceEnvelope(request)).resolves.toBeNull();
+    snapshot.grading.authorVerdict.state = 'accepted-pending-delivery';
+    h.snapshot.mockResolvedValueOnce(snapshot).mockResolvedValueOnce({ ...snapshot, contentHash: sha(8) });
+    await expect(prepareApplicationRuntimeAcceptanceEnvelope(request)).resolves.toBeNull();
+  });
+  it.each(['harnessSlug', 'candidateSha256', 'sourceSha', 'role', 'binarySha256', 'nodeBinarySha256',
+    'entrypointSha256', 'evidenceRef', 'validUntil', 'issuedAt'])(
+    'rejects a signed but wrong or stale %s binding', async field => {
+      const { request, snapshot } = fixture(); snapshot.contentHash = sha(9);
+      const parsed = JSON.parse((await prepareApplicationRuntimeAcceptanceEnvelope(request))!);
+      if (field === 'harnessSlug') parsed.harnessSlug = 'other';
+      else if (field === 'issuedAt') parsed.issuedAt = Date.now() + 60_000;
+      else parsed.acceptance[field] = field === 'validUntil' ? Date.now() - 1
+        : field === 'role' ? 'background' : field === 'evidenceRef' ? 'other'
+          : field === 'sourceSha' ? 'c'.repeat(40) : sha(8);
+      const signed = signEnvelope(JSON.stringify(parsed));
+      await expect(readSignedApplicationRuntimeAcceptance({ ...request, ...signed })).resolves.toBeNull();
+    });
+  it('requires the independently trusted release key and a valid signature', async () => {
+    const { request, snapshot } = fixture(); snapshot.contentHash = sha(9);
+    const envelope = (await prepareApplicationRuntimeAcceptanceEnvelope(request))!;
+    const signed = signEnvelope(envelope);
+    await expect(readSignedApplicationRuntimeAcceptance({ ...request, ...signed, signature: '' })).resolves.toBeNull();
+    await expect(readSignedApplicationRuntimeAcceptance({ ...request, ...signed,
+      trustedPublicKey: signEnvelope(envelope).trustedPublicKey })).resolves.toBeNull();
+  });
 });

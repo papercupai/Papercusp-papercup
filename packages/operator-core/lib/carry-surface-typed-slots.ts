@@ -64,7 +64,9 @@ const WALLS_HEADING_RE = /^walls$/i;
  *  - blocked-on-answer: "waiting on the owner", "blocked on owner input",
  *    "needs the owner's decision/approval/go".
  * Plain mentions of the owner ("the owner said X" — provenance lint's beat) or
- * of owner-walled facts with the wall marker do not match.
+ * of owner-walled facts with the wall marker do not match. The final family
+ * also accepts shorthand such as "owner answer is still needed"; conditional
+ * practice clauses that mention an owner wait are suppressed below.
  */
 const OWNER_QUESTION_RES: RegExp[] = [
   // `coord:ask owner-UI-only` is a tool-mode label, not prose; a word boundary
@@ -108,6 +110,12 @@ const AGENT_SUBJECT_RE = /\b(?:su|claude)-[0-9a-f]{4,}(?:-[0-9a-f]{4,})*\b/i;
  * phrasing used in carry notes, e.g. "WI-40086 peer owner to confirm the exact
  * event emitter" (EI-21392657495371064). */
 const PEER_OWNER_SUBJECT_RE = /\b(?:peer|item|work[-\s]?item)\s+owner\b/i;
+
+/** A conditional procedure describes a possible owner wait, not the writer's
+ *  current question. Keep this clause-scoped so a real ask later on the same
+ *  line is still examined (EI-27165070964574205). */
+const CONDITIONAL_OWNER_WAIT_RE =
+  /^\s*(?:when|if)\s+(?:waiting|waits?|blocked|pending|holding|held)\s+(?:on|for)\s+(?:(?:the|an?)\s+)?(?:owner|human)\b/i;
 
 /**
  * A `dev:why` diagnostic can quote the peer-owned repair wait verbatim in a
@@ -159,6 +167,8 @@ function isSuppressedMatch(line: string, match: RegExpExecArray): boolean {
   if (EXPLICIT_EMPTY_STATUS_RE.test(afterMatch)) return true;
   const clauseStart = clauseStartBefore(line, matchIndex);
   const clauseBefore = line.slice(clauseStart, matchIndex);
+  const clauseThroughMatch = line.slice(clauseStart, matchIndex + match[0].length);
+  if (CONDITIONAL_OWNER_WAIT_RE.test(clauseThroughMatch)) return true;
   // Reading an existing answer before acting does not ask for a new one.
   // Bound both sides of this noun phrase so a real wait or later question
   // on the same line is still evaluated normally.
@@ -168,7 +178,6 @@ function isSuppressedMatch(line: string, match: RegExpExecArray): boolean {
   // Include the matched phrase: the `owner` in "peer owner to confirm" is
   // itself the start of the trigger match, so looking only before matchIndex
   // would miss the peer-owner subject.
-  const clauseThroughMatch = line.slice(clauseStart, matchIndex + match[0].length);
   if (AGENT_SUBJECT_RE.test(clauseBefore) || PEER_OWNER_SUBJECT_RE.test(clauseThroughMatch)) return true;
   const negationWindowStart = Math.max(clauseStart, matchIndex - NEGATION_WINDOW_CHARS);
   const negationWindow = line.slice(negationWindowStart, matchIndex);
@@ -191,6 +200,33 @@ export interface TypedSlotLintResult {
 
 const MAX_MATCH_LINES = 5;
 const MATCH_LINE_CAP = 200;
+const CONVERSATION_ANSWER_AWAIT_REF_RE = /\bconversation:answered:([a-z0-9][a-z0-9_-]{3,63})\b/gi;
+
+function conversationAnswerAwaitRefs(text: string): string[] {
+  const refs: string[] = [];
+  const pattern = new RegExp(CONVERSATION_ANSWER_AWAIT_REF_RE.source, 'gi');
+  for (const match of text.matchAll(pattern)) {
+    const id = match[1]?.toLowerCase();
+    if (id) refs.push(id);
+  }
+  return refs;
+}
+
+function conversationAnswerAwaitRefsInWalls(text: string): Set<string> {
+  const refs = new Set<string>();
+  let inWallsSection = false;
+  for (const rawLine of text.split('\n')) {
+    const line = rawLine.trim();
+    const heading = HEADING_RE.exec(line);
+    if (heading) {
+      inWallsSection = WALLS_HEADING_RE.test(heading[1] ?? '');
+      continue;
+    }
+    if (!inWallsSection) continue;
+    for (const id of conversationAnswerAwaitRefs(line)) refs.add(id);
+  }
+  return refs;
+}
 
 /**
  * Scan `text` line-by-line for owner-blocking-question prose with no [ask:…]
@@ -205,6 +241,7 @@ const MATCH_LINE_CAP = 200;
  */
 export function lintOwnerQuestionSlots(text: string | null | undefined): TypedSlotLintResult {
   if (!text) return { flagged: false, matches: [] };
+  const typedWallAwaitRefs = conversationAnswerAwaitRefsInWalls(text);
   const matches: TypedSlotLintMatch[] = [];
   let inWallsSection = false;
   for (const rawLine of text.split('\n')) {
@@ -222,6 +259,10 @@ export function lintOwnerQuestionSlots(text: string | null | undefined): TypedSl
     if (inWallsSection) continue; // EI-21762824239199233: walls rows ARE the typed form
     if (ASK_REF_RE.test(line)) continue; // the question IS a typed record
     if (WALL_MARKER_RE.test(line)) continue; // the walls slot is the typed form
+    // A prose line explicitly citing a conversation-answer key already stored
+    // in the typed Walls section refers to that existing await. Require the
+    // same key on both lines so an unrelated wall cannot clear a new question.
+    if (conversationAnswerAwaitRefs(line).some((id) => typedWallAwaitRefs.has(id))) continue;
     if (DEV_WHY_PEER_REPAIR_NEXT_VERB_QUOTE_RE.test(line)) continue; // quoted peer-owned diagnostic, not a human ask
     let matchedTrigger: RegExpExecArray | undefined;
     for (const sourceRe of OWNER_QUESTION_RES) {

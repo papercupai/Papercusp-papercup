@@ -472,6 +472,48 @@ describe('declared completion receipt retention', () => {
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
+  it('retains Playwright trace ZIPs after the source run is count-pruned', async () => {
+    const root = tmp();
+    const firstRunId = '20261029T000001Z-1';
+    const secondRunId = '20261029T000002Z-2';
+    const selectors = ['phases/assert/playwright/**/*.png', 'phases/assert/playwright/**/trace.zip'];
+    const trace = Buffer.from('trace bytes');
+    vi.stubEnv('VH_KEEP_RUNS', '1');
+    try {
+      const wrapper = readFileSync(new URL('../../../../scripts/verify-tauri-headless.sh', import.meta.url), 'utf8');
+      expect(wrapper).toContain(`--retain-artifact 'phases/assert/playwright/**/trace.zip'`);
+      const first = await runHarness({
+        contract: { name: 'trace-proof', phases: [{ id: 'assert' }] },
+        evidenceRoot: root,
+        runId: firstRunId,
+        retainedArtifacts: selectors,
+        runPhase: async ({ evidenceDir }) => {
+          const traceDir = path.join(evidenceDir, 'playwright', 'quick-access-native');
+          mkdirSync(traceDir, { recursive: true });
+          writeFileSync(path.join(traceDir, 'trace.zip'), trace);
+          return { ok: true };
+        },
+      });
+      const manifestPath = path.join(root, 'retained', firstRunId, 'retained-artifacts.json');
+      const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as {
+        selectors: string[];
+        artifacts: { path: string }[];
+      };
+      const tracePath = 'phases/assert/playwright/quick-access-native/trace.zip';
+      expect(manifest.selectors).toEqual(selectors);
+      expect(manifest.artifacts.map(artifact => artifact.path)).toContain(tracePath);
+      await runHarness({
+        contract: { name: 'trace-proof', phases: [{ id: 'assert' }] },
+        evidenceRoot: root,
+        runId: secondRunId,
+        retainedArtifacts: selectors,
+        runPhase: async () => ({ ok: true }),
+      });
+      expect(existsSync(first.evidenceDir)).toBe(false);
+      expect(readFileSync(path.join(root, 'retained', firstRunId, tracePath))).toEqual(trace);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
   const receipts = ['phases/prepare/source.json', 'phases/execute/lifecycle.json'];
   const source = Buffer.from('{"source":"original bytes", "sequence":1}\n');
   const lifecycle = Buffer.from('{"worker":23,"ended":true}\n');

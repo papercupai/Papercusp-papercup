@@ -4146,8 +4146,11 @@ describe('applyResultDoor', () => {
       ],
       [
         'clipped string',
-        JSON.stringify({ evidence: 'evidence prefix…[TRUNCATED +17 chars — re-read with payloadTier:full]' }),
-        'textTruncated',
+        JSON.stringify({
+          evidence: 'evidence prefix…[TRUNCATED +17 chars — re-read with payloadTier:full]',
+          evidence_truncated: true,
+        }),
+        'evidence_truncated',
       ],
     ] as const)('returns an incomplete envelope for an under-budget %s marker', (_shape, text, marker) => {
       expect(Buffer.byteLength(text, 'utf8')).toBeLessThan(BUDGET_CHARS);
@@ -4172,6 +4175,19 @@ describe('applyResultDoor', () => {
         content: Array<{ type: string; text: string }>;
       };
       expect(spill.content[0].text).toBe(text);
+    });
+
+    it('does not treat a quoted truncation marker in opaque output as an upstream partial result', () => {
+      const text = JSON.stringify({
+        stdout: 'Example output: …[TRUNCATED +17 chars — re-read with payloadTier:full]',
+      });
+      const input: DoorableResult = { content: [{ type: 'text' as const, text }] };
+
+      expect(Buffer.byteLength(text, 'utf8')).toBeLessThan(BUDGET_CHARS);
+      expect(applyResultDoor(
+        input,
+        { toolName: 'capability:bash', workspaceId: 'ws-1', runId: RUN_ID },
+      )).toBe(input);
     });
 
     it.each([
@@ -4214,6 +4230,7 @@ describe('applyResultDoor', () => {
     it('gives capability:read a schema-compatible recovery path for truncated evidence', () => {
       const text = JSON.stringify({
         evidence: 'evidence prefix…[TRUNCATED +17 chars — re-read with payloadTier:full]',
+        evidence_truncated: true,
       });
       const doored = applyResultDoor(
         { content: [{ type: 'text' as const, text }] },
@@ -4545,11 +4562,11 @@ describe('applyResultDoor', () => {
       expect(pointer).toContain("Re-read using that field's documented recovery handle or narrower arguments");
     });
 
-    it('detects code:run middle-elision markers with lower-case text and a space after the ellipsis', () => {
-      const text = withMarker(
-        'result head … [truncated 1227 chars] … result tail\n',
-        BUDGET_CHARS * 3,
-      );
+    it('detects code:run log truncation from a structured marker beside middle-elision text', () => {
+      const text = JSON.stringify({
+        logsNotice: { truncatedLines: 1, textTruncated: true },
+        logs: [withMarker('result head … [truncated 1227 chars] … result tail\n', BUDGET_CHARS * 3)],
+      });
       const doored = applyResultDoor(
         { content: [{ type: 'text' as const, text }] },
         { toolName: 'code:run', workspaceId: 'ws-1', runId: RUN_ID },
@@ -4557,10 +4574,10 @@ describe('applyResultDoor', () => {
       const pointer = boundedBody(doored)._projection.next;
       const spill = readSpill('ws-1', 'code:run', RUN_ID);
 
-      expect(pointer).toContain('TOOL ITSELF already truncated');
+      expect((doored._meta as { resultDoor?: Record<string, unknown> } | undefined)?.resultDoor)
+        .toMatchObject({ innerTruncationMarkers: ['textTruncated'] });
       expect(pointer).toContain('textTruncated');
       expect(pointer).not.toContain('No upstream truncation marker was detected');
-      expect(spill).toContain('TOOL ITSELF already truncated');
       expect(spill).toContain('truncated 1227 chars');
     });
 

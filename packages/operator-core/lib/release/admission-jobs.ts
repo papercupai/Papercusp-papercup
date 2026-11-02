@@ -113,6 +113,25 @@ export const ADMISSION_RADIUS_CAP = 40;
 const RADIUS_SOURCE_RE = /\.[cm]?[jt]sx?$/;
 /** Directories every Vitest config excludes (`baseExclude`, libs/test-config/src/vitest-config.ts): no suite runs a test there. */
 const RADIUS_EXCLUDED_DIRS = new Set(['node_modules', 'dist', '.next', '.papercusp', '_retired']);
+
+/** Build every workspace's pinned source list in one repository pass. */
+export function groupRadiusSourceFilesByWorkspace(
+  entries: Iterable<readonly [string, { mode: string }]>,
+  repoRoot: string,
+  ownerOf: (file: string) => string | null,
+): Map<string | null, string[]> {
+  const grouped = new Map<string | null, string[]>();
+  for (const [file, entry] of entries) {
+    const { mode } = entry;
+    if (mode === '120000' || !RADIUS_SOURCE_RE.test(file)) continue;
+    const owner = ownerOf(file);
+    if (relative(owner ?? repoRoot, file).split(sep).some((part) => RADIUS_EXCLUDED_DIRS.has(part))) continue;
+    const files = grouped.get(owner) ?? [];
+    files.push(file);
+    grouped.set(owner, files);
+  }
+  return grouped;
+}
 /** One `cat-file --batch` per chunk: a whole large workspace in one call overflows the git output buffer. */
 const RADIUS_BLOB_CHUNK = 500;
 /**
@@ -397,16 +416,15 @@ export function ordinaryAdmissionRadius(input: {
     const sourcesByRepo = new Map<PinnedRepo, Map<string | null, string[]>>();
     const workspaceSources = (repo: PinnedRepo, wsRoot: string | null): string[] => {
       let groups = sourcesByRepo.get(repo);
-      if (!groups) { groups = new Map(); sourcesByRepo.set(repo, groups); }
-      let files = groups.get(wsRoot);
-      if (!files) {
-        files = [...repo.blobs.keys()].filter((file) =>
-          RADIUS_SOURCE_RE.test(file) && repo.blobs.get(file)!.mode !== '120000' &&
-          !relative(wsRoot ?? repo.cwd, file).split(sep).some((part) => RADIUS_EXCLUDED_DIRS.has(part)) &&
-          owningWorkspace(repo, file) === wsRoot);
-        groups.set(wsRoot, files);
+      if (!groups) {
+        groups = groupRadiusSourceFilesByWorkspace(
+          repo.blobs.entries(),
+          repo.cwd,
+          (file) => owningWorkspace(repo, file),
+        );
+        sourcesByRepo.set(repo, groups);
       }
-      return files;
+      return groups.get(wsRoot) ?? [];
     };
     for (const { dir: wsRoot, repo, name: leg } of workspaces.filter(ws => affected.has(ws.name)).sort((a, b) => a.dir.localeCompare(b.dir))) {
       const wsSources = workspaceSources(repo, wsRoot);

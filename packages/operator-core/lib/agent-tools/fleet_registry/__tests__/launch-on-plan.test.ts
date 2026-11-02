@@ -1519,6 +1519,7 @@ describe('fleet:launch-on-plan handler — atomic leader control (WI-38804)', ()
         compactionLimit: 200_000,
         carry: 'cold',
         extraArgs: ['--safe-flag'],
+        supervise: true,
       },
     });
     expect(payload.headcountProfile).toMatchObject({
@@ -1532,6 +1533,41 @@ describe('fleet:launch-on-plan handler — atomic leader control (WI-38804)', ()
         effort: 'high',
       },
     });
+  });
+
+  it.each([true, false])('persists an explicit supervise:%s on a new fleet', async (supervise) => {
+    const payload = parseHandlerPayload(await invokeLaunchHandler(
+      { name: 'Supervision Fleet', plan: 'my-plan', harness: 'papercusp', count: 1, headless: true, supervise } as never,
+      {} as never,
+      null,
+    ));
+
+    expect(payload.ok).toBe(true);
+    expect(setFleetHeadcountTargetMock).toHaveBeenCalledTimes(1);
+    expect(setFleetHeadcountTargetMock).toHaveBeenCalledWith(expect.objectContaining({
+      config: expect.objectContaining({ supervise }),
+    }));
+    expect(payload.superviseGrant).toMatchObject({ requested: supervise, persisted: true });
+  });
+
+  it.each([false, true])('preserves an existing fleet supervise:%s when supervise is omitted', async (supervise) => {
+    createFleetIfAbsentMock.mockResolvedValue({
+      record: { leaderOwnerId: 'owner-1', colorScheme: { name: 'Ocean' } },
+      created: false,
+    });
+    getFleetHeadcountTargetMock.mockResolvedValue({
+      workspaceId: 'ws-1', fleetSlug: 'existing-fleet', enabled: true, target: 1,
+      config: { plan: 'my-plan', harness: 'papercusp', supervise },
+    });
+    const payload = parseHandlerPayload(await invokeLaunchHandler(
+      { name: 'Existing Fleet', plan: 'my-plan', harness: 'papercusp', count: 1 } as never,
+      {} as never,
+      null,
+    ));
+
+    expect(payload.ok).toBe(true);
+    expect(setFleetHeadcountTargetMock).not.toHaveBeenCalled();
+    expect(payload.superviseGrant).toBeNull();
   });
 
   it('composes flat effort onto the model and persists it in a fresh homogeneous profile', async () => {
@@ -4892,7 +4928,7 @@ describe('fleet:launch-on-plan handler — claim-spec wiring (plan-scoped #4 + c
   // R-8 (feature-drain-delivery-readiness-and-outcome-accounting-2026-10-01, AUTO-BAR-R-8-P-007):
   // the fresh-recipe write used to require a plan, so every plan-less drain fleet was left with
   // a NULL headcount target. A drain launched without an explicit headcount must still record one.
-  it('R-8: a fresh plan-less claimKinds drain fleet receives a headcount target (no plan, no supervise grant)', async () => {
+  it('R-8: a fresh plan-less claimKinds drain fleet receives a supervised headcount target by default', async () => {
     const res = await invokeLaunchHandler(
       { name: 'Target Drain Fleet', harness: 'papercusp', count: 3, claimKinds: ['bug', 'change'] } as never,
       {} as never,
@@ -4913,8 +4949,7 @@ describe('fleet:launch-on-plan handler — claim-spec wiring (plan-scoped #4 + c
     // so the recipe carries no plan and no duplicated claimKinds.
     expect(persisted.config).not.toHaveProperty('plan');
     expect(persisted.config).not.toHaveProperty('claimKinds');
-    // A recorded target is not supervision consent (R5 / WI-1454201).
-    expect(persisted.config).not.toHaveProperty('supervise');
+    expect(persisted.config.supervise).toBe(true);
     expect(payload.headcountProfile).toMatchObject({ applied: true, target: 3 });
   });
 

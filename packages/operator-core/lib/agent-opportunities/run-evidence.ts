@@ -7,6 +7,7 @@ import type { SqlMiningOptions } from '../bash-substitution/sql-tool-candidates'
 import { readMonitoredFireSnapshot } from '../harness/routines/fire-provenance';
 import { AGGREGATE_LIFETIME_DAYS, miningScopeId } from './privacy';
 import { boundedStage, MONITORED_FAMILIES, type MonitoredFamily, type MonitoredRunEvidence } from './pipeline';
+import { productionOpportunityReaders } from './source-readers';
 
 type RecordValue = Record<string, unknown>;
 const record = (value: unknown): value is RecordValue => !!value && typeof value === 'object' && !Array.isArray(value);
@@ -42,7 +43,11 @@ export function monitoredTestRunGroup(runId: string, runtime: string): string {
 }
 
 export async function readMonitoredRunEvidence(opts: MonitoredRunReadOptions,
-  deps: { workflow?: MonitoredWorkflowReader } = {}): Promise<MonitoredRunReadResult> {
+  deps: { workflow?: MonitoredWorkflowReader;
+    /** Trusted reader-test seam only. Production renews the original issued
+     * source population, exact-call receipts, signing key and current ACL. */
+    readNativeContinuity?: (window: { since: string; until: string }) => Promise<'complete' | 'gap' | 'unknown'>;
+  } = {}): Promise<MonitoredRunReadResult> {
   const unknown = (reason: string): MonitoredRunReadResult => ({ status: 'UNKNOWN', reasons: [reason] });
   if (opts.workspaceId !== opts.scope.workspaceId || !opts.harnessSlug
     || !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(opts.runId)) return unknown('invalid-scope-or-run');
@@ -103,6 +108,29 @@ export async function readMonitoredRunEvidence(opts: MonitoredRunReadOptions,
     const families = await loadFamilies();
     if (families.length !== MONITORED_FAMILIES.length || MONITORED_FAMILIES.some(f => families.filter(r => r.family === f).length !== 1))
       return unknown('family-population-missing-or-duplicate');
+    const native = families.find(row => row.family === 'native-operation')!;
+    let renewNative: (() => Promise<boolean>) | undefined;
+    if (native.coverage === 'measured') {
+      const diagnostics = native.diagnostics, window = record(diagnostics) ? diagnostics.window : null;
+      const coverage = record(diagnostics) ? diagnostics.sourceCoverage : null;
+      const matrix = record(coverage) ? coverage.matrix : null;
+      if (!record(window) || typeof window.since !== 'string' || typeof window.until !== 'string'
+        || !iso(window.since) || !iso(window.until)
+        || Date.parse(window.until) - Date.parse(window.since) !== 7 * 86400_000
+        || Date.parse(window.until) > Date.parse(finishedAt) || !Array.isArray(matrix)
+        || !['claude', 'codex', 'omp'].every(provider => ['shell', 'browser'].every(kind =>
+          matrix.some(cell => record(cell) && cell.provider === provider && cell.kind === kind
+            && cell.source === 'transcript' && cell.status === 'measured'))))
+        return unknown('native-window-or-coverage-invalid');
+      const since = window.since, until = window.until;
+      const readers = productionOpportunityReaders({ ...opts, sourceBoundary: opts.scope.sourceBoundary });
+      renewNative = async () => (deps.readNativeContinuity
+        ? await deps.readNativeContinuity({ since, until })
+        : await readers.readContinuity({ family: 'native-operation', since, until })) === 'complete';
+      // Saved measured rows survive source/receipt/key/ACL invalidation. They
+      // cannot replace the existing canonical source reconciler at read time.
+      if (!await renewNative()) return unknown('native-source-authority-unavailable');
+    }
     const familyRows: MonitoredRunEvidence['families'] = [];
     for (const row of families) {
       const candidates = record(row.diagnostics) ? row.diagnostics.candidates : undefined;
@@ -169,6 +197,7 @@ export async function readMonitoredRunEvidence(opts: MonitoredRunReadOptions,
     const finalSchedule = await readMonitoredFireSnapshot(sql, opts.workspaceId, run.routine_id);
     if (JSON.stringify(sameRun) !== JSON.stringify(run) || !finalSchedule || !finalSchedule.active
       || finalSchedule.configHash !== current.configHash || !await allowed()) return unknown('evidence-changed-or-revoked');
+    if (renewNative && !await renewNative()) return unknown('native-source-authority-unavailable');
     const schedule = (s: RecordValue) => ({ id: run.routine_id as string, configHash: s.configHash as string,
       active: s.active === true, paused: s.active !== true, expression: s.expression as string,
       timezone: s.timezone as string, dueAt });

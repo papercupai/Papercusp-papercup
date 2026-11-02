@@ -3,6 +3,58 @@ import { boundedFrontier, censusSites, changedSites, createPreparationLedger, op
   selectSourcePath, verifyPreparationCitation } from './lib/source-path-census.mjs';
 
 describe('source-only call-site preparation', () => {
+  it('does not attribute a shadowed parameter call to an imported process primitive', () => {
+    const unit = censusSites('unit.ts', `import { spawn } from 'node:child_process';
+      function handler(spawn) { spawn('local callback'); }`);
+    const call = unit.sites.find(site => site.expression === 'spawn');
+    expect(call?.binding).toBeNull();
+    expect(call?.calleeCoverage).toBe('UNKNOWN');
+  });
+
+  it.each([
+    `function handler(){ const run = local; run(); }`,
+    `function handler({ run }){ run(); }`,
+    `function handler([run]){ run(); }`,
+    `function handler(){ try { work(); } catch(run) { run(); } }`,
+    `function handler(){ function run(){} run(); }`,
+    `function handler(){ class run{} new run(); }`,
+  ])('retains ambiguous calls without selecting an import across a local declaration: %s', body => {
+    const unit = censusSites('unit.ts', `import { run } from './effects'; ${body}`);
+    const calls = unit.sites.filter(site => site.expression === 'run');
+    expect(calls).toHaveLength(1);
+    expect(calls[0].binding).toBeNull(); expect(calls[0].calleeCoverage).toBe('UNKNOWN');
+  });
+
+  it.each(['run = local', '[run] = values', '({ run } = values)', 'run++'])('invalidates a reassigned dynamic import alias: %s', mutation => {
+    const unit = censusSites('unit.ts', `async function handler(){ let { run } = await import('./effects'); ${mutation}; run(); }`);
+    expect(unit.sites.find(site => site.expression === 'run')?.binding).toBeNull();
+    expect(unit.sites.some(site => site.specifier === './effects')).toBe(true);
+  });
+
+  it.each([
+    `const { run } = wrap(await import('./effects'))`,
+    `const { run = local } = await import('./effects')`,
+    `const { [field]: run } = await import('./effects')`,
+    `const { ...run } = await import('./effects')`,
+  ])('keeps non-exact destructuring unresolved: %s', declaration => {
+    const unit = censusSites('unit.ts', `async function handler(){ ${declaration}; run(); }`);
+    expect(unit.sites.find(site => site.expression === 'run')?.binding).toBeNull();
+    expect(unit.sites.some(site => site.specifier === './effects')).toBe(true);
+  });
+
+  it('preserves unambiguous renamed imports and direct dynamic aliases without claiming callee coverage', () => {
+    const unit = censusSites('unit.ts', `import { spawn as launch } from 'node:child_process';
+      async function handler(){ const { 'writeFile': save } = await import('node:fs/promises'); launch(); save(); }`);
+    expect(unit.sites.find(site => site.expression === 'launch')?.binding).toEqual({ imported: 'spawn', specifiers: ['node:child_process'] });
+    expect(unit.sites.find(site => site.expression === 'save')?.binding).toEqual({ imported: 'writeFile', specifiers: ['node:fs/promises'] });
+    expect(unit.sites.filter(site => site.kind === 'call').every(site => site.calleeCoverage === 'UNKNOWN')).toBe(true);
+  });
+
+  it('does not turn type-only imports into executable aliases', () => {
+    const unit = censusSites('unit.ts', `import type { run } from './types'; run();`);
+    expect(unit.sites.find(site => site.expression === 'run')?.binding).toBeNull();
+  });
+
   it('retains a new import occurrence even when its module specifier already existed', () => {
     const before = censusSites('unit.ts', `async function handler(){ if (old) await import('./funding'); }`);
     const after = censusSites('unit.ts', `async function handler(){ if (old) await import('./funding'); if (preserveArtifact) await import('./funding'); }`);

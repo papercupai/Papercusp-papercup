@@ -10,6 +10,7 @@
  */
 import { describe, it, expect, vi } from 'vitest';
 import { toArgsJsonSchema } from '@papercusp/tooldef';
+import { lookupByMcpName } from '@papercusp/agent-mcp';
 
 // P-012: default FALSE so the pre-existing exact-equality metadata assertions stay
 // byte-identical; the dispatch-wrapper describe flips it per-test.
@@ -71,6 +72,8 @@ describe('tools:invoke registration', () => {
     const dbMigrateTimeoutSec = (dbMigrateTool as unknown as { timeoutSec: number }).timeoutSec;
     expect(def.timeoutSec - dbMigrateTimeoutSec).toBeGreaterThanOrEqual(60);
     expect(def.timeoutSec - SCORECARD_EMIT_TIMEOUT_SEC).toBeGreaterThanOrEqual(60);
+    expect(lookupByMcpName('tools:invoke')?.expose.mcp)
+      .toMatchObject({ name: 'tools:invoke', streaming: true });
     expect(def.args.safeParse({ name: 'flags:set', args: { key: 'x', value: true } }).success).toBe(true);
     expect(def.args.safeParse({
       name: 'flags:set',
@@ -294,6 +297,33 @@ describe('tools:invoke handler', () => {
     expect(res.content[0].text).toBe('dispatched-ok');
     expect(res.isError).toBe(false);
     expect(metadata).toHaveBeenCalledWith({ effectiveStatus: 'ok', childFailureCount: 0 });
+  });
+
+  it('emits periodic progress while a nested tool is pending and clears the heartbeat when it settles', async () => {
+    vi.useFakeTimers();
+    let resolveDispatch!: (result: { content: Array<{ type: 'text'; text: string }>; isError?: boolean }) => void;
+    const dispatchTool = vi.fn(() => new Promise<{ content: Array<{ type: 'text'; text: string }>; isError?: boolean }>(
+      resolve => { resolveDispatch = resolve; },
+    ));
+    const progress = vi.fn();
+
+    try {
+      const pending = def.handler({ name: 'scorecards:emit', args: {} }, { dispatchTool, progress });
+      expect(progress).toHaveBeenCalledWith(undefined, 'Dispatching nested tool "scorecards:emit".');
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(progress).toHaveBeenCalledTimes(2);
+      expect(progress).toHaveBeenLastCalledWith(undefined, 'Still waiting for nested tool "scorecards:emit" to finish.');
+
+      resolveDispatch({ content: [{ type: 'text', text: 'done' }], isError: false });
+      const result = await pending;
+      expect(result.content[0].text).toBe('done');
+
+      const callsAtSettlement = progress.mock.calls.length;
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(progress).toHaveBeenCalledTimes(callsAtSettlement);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('requests full target payloads for in-script re-dispatches', async () => {

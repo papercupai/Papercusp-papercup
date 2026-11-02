@@ -8,6 +8,8 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const dispatchMocks = vi.hoisted(() => ({
+  dependencyLoads: 0,
+  projectedDeps: {},
   lookupByMcpName: vi.fn(),
   dispatchProjectedTool: vi.fn<typeof import('@papercusp/agent-mcp')['dispatchProjectedTool']>(async () => ({ ok: true })),
   withWorkspace: vi.fn(async (_workspaceId: string, callback: (tx: unknown) => Promise<unknown>) => callback({})),
@@ -21,6 +23,10 @@ vi.mock('@papercusp/db-org', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@papercusp/db-org')>()),
   withWorkspace: dispatchMocks.withWorkspace,
 }));
+vi.mock('../../projected-tool-deps', () => {
+  dispatchMocks.dependencyLoads++;
+  return { PROJECTED_DEPS: dispatchMocks.projectedDeps };
+});
 import {
   valueAtPath,
   comparePredicate,
@@ -39,6 +45,12 @@ import {
   type EvaluatorBaseline,
   type PredicateWatchRow,
 } from './predicate-watch';
+
+const dependencyLoadsAtImport = dispatchMocks.dependencyLoads;
+
+it('keeps dispatcher product dependencies out of helper-only liveness imports', () => {
+  expect(dependencyLoadsAtImport).toBe(0);
+});
 
 describe('predicate tool effect resolution', () => {
   it('uses argument-sensitive read/write classification for the exact call args', () => {
@@ -89,6 +101,7 @@ describe('read-only projected dispatch effect gate', () => {
     expect(effectForCall).toHaveBeenCalledWith({ op: 'get' });
     expect(dispatchMocks.withWorkspace).toHaveBeenCalledTimes(1);
     expect(dispatchMocks.dispatchProjectedTool).toHaveBeenCalledTimes(1);
+    expect(dispatchMocks.dispatchProjectedTool.mock.calls[0]?.[4]).toBe(dispatchMocks.projectedDeps);
   });
 
   it('honors a resolver tool\'s skipWorkspaceTx contract instead of holding an idle transaction', async () => {

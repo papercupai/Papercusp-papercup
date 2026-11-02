@@ -76,6 +76,7 @@ import {
 } from './expert-model-allowlist';
 import type { ConsultReviewerModel } from './get-feedback-core';
 import { ACCEPTANCE_BAR_AMENDMENT_REVIEW_POLICY, RUBRIC_VETTING_POLICY } from './selection-policies';
+import { consultResponderVerbMenu } from './responder-verb-menu';
 import { captureNativeConsultBoundary, nativePlanClaimRequirementMismatch, nativeConsultConstraintsSchema, type NativeConsultConstraints, type NativeConsultSourceObservation } from './native-consult';
 
 /** How long the dispatcher waits for the answering session's pty host to
@@ -127,6 +128,8 @@ export const BRIEF_FALLBACK_REASONS: ReadonlySet<DispatchSkipReason> = new Set<D
 /** Per-turn and total caps on the quoted evidence a `brief` kickoff carries. */
 export const BRIEF_TURN_TEXT_MAX = 4_000;
 export const BRIEF_TOTAL_TEXT_MAX = 24_000;
+/** Leave room for provenance and cited turns below native single-message limits. */
+const CONSULT_INLINE_REQUEST_MAX = 64_000;
 
 /** Render cited turns as the quoted-evidence block of a `brief` kickoff. */
 export function renderCitedTurnsBlock(
@@ -1315,6 +1318,7 @@ function stripTerminalControl(text: string): string {
   return text
     .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '')
     .replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, '')
+    .replace(/\x1b[@-_]/g, '')
     .replace(/\r/g, '');
 }
 
@@ -1337,6 +1341,10 @@ const LAUNCH_EXIT_LINE = /^\[papercusp\] initial terminal command exited with st
 // brief quoting the failure it asks the reviewer to investigate.
 const CONTEXT_LIMIT_LOG_RE =
   /(?:^|⎿)[ \t]*(Context limit reached\s*·\s*\/clear to continue|(?:API Error:\s*400\s+)?Prompt is too long)[ \t]*$/gi;
+// Codex renders this with its terminal error glyph, sometimes immediately before
+// psu appends the dropped-kickoff notice. A prose quotation is not a rejection.
+const MESSAGE_LIMIT_LOG_RE =
+  /^■[ \t]*(Message exceeds the maximum length of \d+ characters \(\d+ provided\))\.?(?=[ \t]*(?:$|psu:))/g;
 
 /**
  * The failure a launch log ends on: the LAST launcher failure (psu's own
@@ -1362,6 +1370,11 @@ export function launchLogFailureReason(logText: string): string | null {
     const contextFailures = [...line.matchAll(CONTEXT_LIMIT_LOG_RE)];
     if (contextFailures.length) {
       failure = contextFailures[contextFailures.length - 1][1].trim();
+      continue;
+    }
+    const messageFailures = [...line.matchAll(MESSAGE_LIMIT_LOG_RE)];
+    if (messageFailures.length) {
+      failure = messageFailures[messageFailures.length - 1][1].trim();
       continue;
     }
     for (const re of MIDLINE_FAILURES) {
@@ -2773,6 +2786,17 @@ export function consultDispatchBrief(input: {
   summary: string;
   body: string;
 }): string {
+  // The complete request is already persisted on this conversation before the
+  // delivery seam runs. Reuse that read door instead of submitting an oversized
+  // duplicate to the native client; never clip the review's actual evidence.
+  const request = input.summary.length + input.body.length <= CONSULT_INLINE_REQUEST_MAX
+    ? `${input.summary}\n\n${input.body}`
+    : `${clip(input.summary, 1_000)}\n\n` +
+      `The complete request is stored on conversation ${input.conversationId}; it is not truncated. ` +
+      `Read results[0].conversation.body and all replies before judging. If a response is truncated, ` +
+      `use capability:read with its returned cursor arguments, follow next_cursor until eof:true ` +
+      `and next_cursor:null, and recover every omitted source block before answering.\n\n` +
+      consultResponderVerbMenu({ conversationId: input.conversationId });
   const provenance =
     input.operation === 'fork'
       ? `You are a FORK of ${input.sourceOwnerId}'s session: their history is above, and you are a NEW ` +
@@ -2805,7 +2829,7 @@ export function consultDispatchBrief(input: {
     `came from, which is still its owner and was NOT notified. Do not claim work-items, ` +
     `do not arm a loop, do not start a plan, do not edit files. Your transcript is ` +
     `EVIDENCE to answer from, not an agenda to continue.\n\n` +
-    `${input.summary}\n\n${input.body}`
+    request
   );
 }
 

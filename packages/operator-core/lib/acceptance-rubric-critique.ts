@@ -21,11 +21,20 @@ export interface RubricCritiqueCandidate {
 /** A subject mention alone never establishes which version was reviewed. */
 export function critiqueCoversRubric(request: string, rubric: Rubric, revision: number | null): boolean {
   const escaped = rubric.rubricId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  if (!new RegExp(`(?<![\\w-])${escaped}(?![\\w-])`, 'i').test(request)) return false;
+  const mention = `(?<![\\w-])${escaped}(?![\\w-])`;
+  if (!new RegExp(mention, 'i').test(request)) return false;
   // Prefer the content identity: a cosmetic revision bump does not invalidate critique.
   if (rubric.criteriaHash && request.includes(rubric.criteriaHash)) return true;
   // An explicit revision is usable only when no contradictory content hash was supplied.
   if (/criteriaHash\s*[:=]?\s*[`"']?\w+/i.test(request)) return false;
+  // A rubric@revision pin belongs to this rubric, unlike a different plan's
+  // "revision" in the same request. Explicit stale or malformed pins must not
+  // fall through to that unrelated revision, nor may conflicting pins qualify.
+  const pins = [...request.matchAll(new RegExp(`${mention}@`, 'gi'))];
+  if (pins.length > 0) {
+    return revision != null && pins.every(pin =>
+      new RegExp(`^${revision}(?![\\w.@-])`).test(request.slice(pin.index! + pin[0].length)));
+  }
   // Both "rev3" and "revision 3" name the same immutable revision. Keep the
   // trailing word boundary so rev30 and rev3x cannot qualify as revision 3.
   return revision != null && new RegExp(`\\b(?:rev(?:ision)?)[\\s:=#]*${revision}\\b`, 'i').test(request);

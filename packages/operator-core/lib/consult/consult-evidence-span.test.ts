@@ -61,6 +61,12 @@ function depsFor(input: { ranks: AllowedExpertModel[]; resolved?: string[] }) {
     probeBackendAvailable: async () => ({ available: true, detail: 'headroom' }),
     mintOwnerId: () => `su-answer-${++minted}`,
     loadRanks: async () => input.ranks,
+    readCitedTurns: async (_workspaceId, sessionId, turnIndices) => turnIndices.map((turn_idx) => ({
+      turn_idx,
+      speaker: 'assistant',
+      ts: null,
+      text: `${sessionId}#${turn_idx}`,
+    })),
     // Unit tier: the default recorder writes through the real org pool (WI-10003197).
     readLaunchLogReason: async () => null,
     recordDispatchAttempts: async () => {},

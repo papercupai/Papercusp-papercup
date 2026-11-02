@@ -288,6 +288,27 @@ describe('managed R6 admission pre-check runner (WI-10006003)', () => {
     expect(persisted.admissionPrecheck?.status).toBe('failed');
   });
 
+  it('refuses a final aggregate that contradicts a per-file callback in the same run', async () => {
+    let persisted = wide(41);
+    const unavailable = persisted.admissionPrecheck!.files[0]!;
+    const outcome = await runAdmissionPrecheckWorker(input, {
+      getTask: async () => ({ state: 'running', confined: true }),
+      readQueue: async () => ({ status: 'value', queue: persisted }),
+      transition: async (_target, update) => { persisted = update(persisted); },
+      createRunner: () => async run => {
+        const results = run.files.map(path => ({ path, status: 'pass' as const }));
+        await run.onFileResult?.({ path: unavailable, status: 'unmeasured' });
+        for (const result of results.filter(result => result.path !== unavailable))
+          await run.onFileResult?.(result);
+        return { ran: true, commit: run.commit, results };
+      },
+      now: () => 30,
+    });
+    expect(outcome).toMatchObject({ status: 'settled', verdict: { ok: false, code: 'admission-precheck-unavailable' } });
+    expect(persisted.admissionPrecheck!.measurement!.results.find(result => result.path === unavailable)?.status)
+      .toBe('unmeasured');
+  });
+
   it('bounds two-plus native groups without raising the existing cap and never passes a partial aggregate', async () => {
     let persisted = wide();
     const sizes: number[] = [];
@@ -338,7 +359,7 @@ describe('managed R6 admission pre-check runner (WI-10006003)', () => {
     expect(persisted.dispatchReservation).toBeUndefined();
   });
 
-  it.each(['fail', 'unmeasured'] as const)('retains a completed %s across interruption and a replacement task', async status => {
+  it.each(['fail', 'unmeasured'] as const)('retains measured fail and retries unmeasured rows across replacement (%s)', async status => {
     let persisted = wide();
     // WI-6554700010030199: the interrupted worker must release the gate's dispatch reservation itself.
     persisted = { ...persisted, dispatchReservation: { token: input.operationId, claimedAtMs: 1, expiresAtMs: 10_000_000 } } as unknown as FrozenCandidateRepairQueue;
@@ -357,7 +378,7 @@ describe('managed R6 admission pre-check runner (WI-10006003)', () => {
     // operation whose reservation fences the gate until an unrelated status read notices it.
     expect(await runAdmissionPrecheckWorker(input, { ...deps, createRunner: () => interrupted })).toMatchObject({
       status: 'settled', verdict: { ok: false, ran: false, reason: 'runner-failed', detail: expect.stringContaining('simulated worker death') } });
-    expect(persisted.admissionPrecheck).toMatchObject({ status: 'failed', completedCount: 40 });
+    expect(persisted.admissionPrecheck).toMatchObject({ status: 'failed', completedCount: status === 'unmeasured' ? 39 : 40 });
     expect(persisted.admissionPrecheck!.measurement!.results).toHaveLength(40);
     expect(persisted.dispatchReservation).toBeUndefined();
     // retryPrecheck:true resumes the SAME operation: running again, verdict cleared, new task id
@@ -374,12 +395,55 @@ describe('managed R6 admission pre-check runner (WI-10006003)', () => {
       return { ran: true, commit: run.commit, results: run.files.map(path =>
         ({ path, status: !options.precheckRootSuffix && path === originalFiles[1] ? status : 'pass' as const })) };
     } });
-    expect(resumed).toEqual(status === 'fail' ? [...originalFiles.slice(40), originalFiles[1]] : originalFiles.slice(40));
+    expect(resumed).toEqual(status === 'fail'
+      ? [...originalFiles.slice(40), originalFiles[1]]
+      : [originalFiles[1], ...originalFiles.slice(40)]);
     // D-004: only a retained FAIL is paired with a previous-head measurement; it passed there.
     expect(baseline).toEqual(status === 'fail' ? [originalFiles[1]] : []);
     expect(persisted.admissionPrecheck!.files).toEqual(originalFiles);
     expect(persisted.admissionPrecheck!.measurement!.results[1]!.status).toBe(status);
     expect(outcome).toMatchObject({ status: 'settled', verdict: { ok: false, code: status === 'fail' ? 'admission-imports-red' : 'admission-precheck-unavailable' } });
+  });
+
+  it('retries only unavailable rows while preserving paired evidence for measured reds', async () => {
+    let persisted = wide(41);
+    const operation = persisted.admissionPrecheck!;
+    const redFile = operation.files[1]!;
+    const unavailableFile = operation.files.at(-1)!;
+    const results = operation.files.map(path => ({
+      path,
+      status: path === redFile ? 'fail' as const : path === unavailableFile ? 'unmeasured' as const : 'pass' as const,
+    }));
+    const previousHead = { commit: operation.repairHead, results: [{ path: redFile, status: 'pass' as const }] };
+    const confirmation = { commit: operation.builtCommit, results: [{ path: redFile, status: 'unmeasured' as const }] };
+    const identity = admissionPrecheckMeasurementIdentity(operation, persisted.signature);
+    persisted = { ...persisted, admissionPrecheck: { ...operation, status: 'running',
+      measurement: { schemaVersion: 1, identity, results, previousHead, confirmation } } };
+    const calls: Array<{ commit: string; files: string[]; baseline: boolean }> = [];
+    const outcome = await runAdmissionPrecheckWorker(input, {
+      getTask: async () => ({ state: 'running', confined: true }),
+      readQueue: async () => ({ status: 'value', queue: persisted }),
+      transition: async (_target, update) => { persisted = update(persisted); },
+      createRunner: options => async run => {
+        calls.push({ commit: run.commit, files: [...run.files], baseline: Boolean(options.precheckRootSuffix) });
+        const next = run.files.map(path => ({ path, status: path === redFile ? 'fail' as const : 'pass' as const }));
+        for (const result of next) await run.onFileResult?.(result);
+        return { ran: true, commit: run.commit, results: next };
+      },
+      now: () => 30,
+    });
+    expect(calls).toEqual([
+      { commit: operation.builtCommit, files: [unavailableFile], baseline: false },
+      { commit: operation.builtCommit, files: [redFile], baseline: false },
+    ]);
+    expect(outcome).toMatchObject({ status: 'settled', verdict: { ok: false, code: 'admission-imports-red' } });
+    expect(persisted.admissionPrecheck!.measurement!.results.find(result => result.path === redFile)).toEqual({
+      path: redFile, status: 'fail',
+    });
+    expect(persisted.admissionPrecheck!.measurement!.previousHead).toEqual(previousHead);
+    expect(persisted.admissionPrecheck!.measurement!.confirmation).toEqual({
+      commit: operation.builtCommit, results: [{ path: redFile, status: 'fail' }],
+    });
   });
 
   it.each(['commit', 'tree', 'population', 'partition'] as const)('refuses saved evidence under changed %s identity', async change => {

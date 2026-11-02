@@ -33,7 +33,11 @@ export interface NativeCustodyLocator {
 }
 export interface NativeCustodyFamily {
   family: 'A' | 'B' | 'C' | 'D'; state: string; producer: string; reason?: string;
-  entries: Array<{ original: string; artifact: NativeArtifactPin }>;
+  entries: Array<{ original: string; artifact: NativeArtifactPin;
+    /** An oversized OUT is reconstructed from these ordered ordinary capture objects.
+     * artifact is the first part; sha256 covers the retained prefix (the whole OUT when complete). */
+    chunked?: { byteLength: number; sha256: string; complete: boolean;
+      parts: Array<{ offset: number; artifact: NativeArtifactPin }> } }>;
 }
 export interface NativeCustodyFamilyLimit { objects: number; bytes: number; }
 export interface NativeCustodyLimits {

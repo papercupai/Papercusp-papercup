@@ -3,9 +3,9 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { appendFile, writeFile } from 'node:fs/promises';
-import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
+import { papercuspPath } from '@papercusp/host-platform/home';
 import { nativeCliCall } from './native-cli.fixture';
 import { runNativeReuseJourney, type ManagedReuseJourney } from './__fixtures__/reuse-api-journey';
 import { cleanupReuseFixture, createReuseFixture, trackReuseFixture, reuseFixtureLifecyclePorts,
@@ -118,7 +118,7 @@ export async function runStagingReuseFixture(options: ReuseStagingOptions, ports
   };
   const managed: ManagedReuseJourney = {
     root: fixture.root, harness, planSlug, sessionId: `controlled-cli-${fixture.token}`,
-    snapshotPath: join(homedir(), '.papercusp/graph-snapshot', harness, 'dependency-snapshot.json'),
+    snapshotPath: papercuspPath('graph-snapshot', harness, 'dependency-snapshot.json'),
     async register(baseline) {
       const entry = { slug: harness, path: fixture.root,
         registrationOnly: { commitSha: baseline }, hive_slug: pot };

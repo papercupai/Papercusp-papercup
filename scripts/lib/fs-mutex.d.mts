@@ -246,6 +246,12 @@ export type FsMutexIo = {
     symlink?: typeof symlink;
     readFile?: (path: string, encoding: "utf8") => Promise<string>;
     writeFile?: typeof writeFile;
+    processIdentity?: (pid: number) => ({
+        tgid?: number;
+        startTicks?: string;
+        bootId?: string;
+        kthread?: boolean;
+    } | null);
 };
 import { opendir } from "node:fs/promises";
 import { symlink } from "node:fs/promises";

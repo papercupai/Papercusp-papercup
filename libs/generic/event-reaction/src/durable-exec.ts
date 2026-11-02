@@ -42,7 +42,11 @@ export interface ExecuteDurableReactionDeps<TParent extends { workspaceId?: stri
     uncertain(dedupId: string, reason: string): Promise<void>;
   };
   /** Dispatch the reaction (host rebuilds its scope from `payload.parent`). */
-  fire: (payload: DurableReactionPayload<TParent>) => Promise<{ ok: boolean; error?: string }>;
+  fire: (payload: DurableReactionPayload<TParent>) => Promise<{
+    ok: boolean; error?: string;
+    /** Trusted executor rejected admission before attempting ANY effect. */
+    withheld?: boolean;
+  }>;
   /** Optional logger for the no-workspace skip. */
   log?: (msg: string) => void;
 }
@@ -79,6 +83,12 @@ export async function executeDurableReaction<TParent extends { workspaceId?: str
   try {
     const r = await deps.fire(payload);
     if (!r.ok) throw new Error(r.error ?? 'dispatch failed');
+    if (r.withheld === true) {
+      // This positive no-effect receipt is distinct from an ambiguous failure.
+      // Leave a later authorized execution eligible, without recording a start.
+      await deps.store.release(payload.dedupId);
+      return;
+    }
     // Persist independently of the DBOS result, covering a crash between the
     // effect's completion receipt and its step checkpoint.
     await deps.store.complete(payload.dedupId);

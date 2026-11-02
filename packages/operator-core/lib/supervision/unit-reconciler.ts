@@ -1704,18 +1704,32 @@ export async function censusUnregisteredFailedUnits(
   }
 
   const registered = new Set(registry.filter((e) => e.unit).map((e) => normalizeServiceUnit(e.unit as string)));
-  const candidates = units.filter((u) => !registered.has(normalizeServiceUnit(u.unit)));
+  // Failed units need their transience checked before residue selection. Nonfailed services
+  // need the same properties for crash-loop tracking. Other active unit types (for example,
+  // hundreds of dev-disk-by-id devices) contribute nothing to either decision and must not be
+  // appended to one unbounded `systemctl show` argv.
+  const showCandidates = units.filter(
+    (u) =>
+      !registered.has(normalizeServiceUnit(u.unit)) &&
+      (u.active === 'failed' || u.unit.endsWith('.service')),
+  );
   let selected: SystemctlUnitStatus[] = [];
   let transientById = new Map<string, string>();
   let showById = new Map<string, Record<string, string>>();
-  if (candidates.length > 0) {
+  if (showCandidates.length > 0) {
     try {
-      showById = parseSystemctlShowRecords(
-        await deps.execUser([
-          'show', '-p', 'Id', '-p', 'LoadState', '-p', 'Transient', '-p', 'NRestarts',
-          ...candidates.map((u) => u.unit),
-        ]),
-      );
+      // Keep argv bounded even when a host has a very large population of unregistered services.
+      const showBatchSize = 64;
+      for (let offset = 0; offset < showCandidates.length; offset += showBatchSize) {
+        const batch = showCandidates.slice(offset, offset + showBatchSize);
+        const batchRecords = parseSystemctlShowRecords(
+          await deps.execUser([
+            'show', '-p', 'Id', '-p', 'LoadState', '-p', 'Transient', '-p', 'NRestarts',
+            ...batch.map((u) => u.unit),
+          ]),
+        );
+        for (const [id, props] of batchRecords) showById.set(id, props);
+      }
       // A unit that is no longer LOADED vanished between `list-units` and `show` — typically a
       // failed transient unit garbage-collected by `reset-failed`. systemd answers `Transient=no`
       // for a not-found unit, so trusting that value would announce a run-scoped unit as a host

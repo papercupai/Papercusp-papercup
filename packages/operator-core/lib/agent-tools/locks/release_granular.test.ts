@@ -20,6 +20,7 @@ vi.mock('./in-workspace-txn', () => ({
 vi.mock('./su-lock-store', () => ({ releaseGranular: vi.fn() }));
 
 import { releaseGranular } from './su-lock-store';
+import { mockImplementationTyped } from '../../testing/typed-mock';
 const relM = vi.mocked(releaseGranular);
 const tool = (await import('./release_granular')).default;
 
@@ -65,9 +66,9 @@ describe('locks:release_granular handler', () => {
   it('reports zero released rows as a per-lock failure in bulk releases', async () => {
     const wrongKindId = '44444444-4444-4444-4444-444444444444';
     const granularId = '55555555-5555-5555-5555-555555555555';
-    relM.mockImplementation(async (_tx, _dom, _owner, lockId) => ({
+    mockImplementationTyped(relM, async (_tx, _dom, _owner, lockId) => ({
       released: lockId === wrongKindId ? 0 : 2,
-    }) as never);
+    }));
     const out = (await tool.handler({ lock_ids: [wrongKindId, granularId] } as never, {} as never)) as Out;
 
     expect(body(out)).toMatchObject({

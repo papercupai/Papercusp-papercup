@@ -101,6 +101,7 @@ export function buildCampaignPlan(input: CampaignPlanInput): CampaignPlan {
     `- **${b.itemId}** \`todo\` Batch ${b.id}: extract ${b.families} clone ${b.families === 1 ? 'family' : 'families'} `
     + `(redundant mass ${b.redundantMass}, score ${Number(b.score.toFixed(4))}) across ${b.targetFiles.length} `
     + `file${b.targetFiles.length === 1 ? '' : 's'}. Eject: ${b.eject}.`);
+  const planItemIds = batches.map(b => b.itemId).join(', ');
   const record = batches.map(({ itemId, id, targetFiles, eject }) => ({ itemId, id, targetFiles, eject }));
   const content = [
     `# ${title}`, '',
@@ -116,6 +117,18 @@ export function buildCampaignPlan(input: CampaignPlanInput): CampaignPlan {
     '- Make every edit under the batch\'s own file lock.',
     '- Characterization tests for uncovered members land before the refactor (the executor decides).',
     '- Close a batch only with the `refactor` change-kind proof.', '',
+    '## Requirements',
+    '',
+    '**R-1 — Every cleanup batch lands as a tested, behavior-preserving refactor.** Each listed batch removes the duplicated code it targets and passes its characterization/regression checks without changing observable behavior.', '',
+    '## Design',
+    '',
+    'Each batch item implements this requirement; verify the resulting code and tests in the source tree.',
+    '',
+    '### Bar-to-work map for this plan',
+    '',
+    '| bar | implementing plan items | evidence plane |',
+    '|---|---|---|',
+    `| R-1 | ${planItemIds} | tree |`, '',
     '## Items',
     ...items, '',
     '## Batches',

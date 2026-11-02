@@ -1,0 +1,42 @@
+const [read, health] = await Promise.all([
+  tools.capability.read({ file_path: "~/.papercusp/mcp-proxy-failures.jsonl", tail: 2000 }),
+  tools.dev.serviceHealth({
+    units: ["papercup-mcp-proxy", "papercup-mcp-proxy-staging", "papercup-bg-host"],
+    scope: "user",
+    detail: "full"
+  })
+]);
+if (!read || read.ok !== true) return { ledger: { ok: read?.ok ?? false, reason: read?.reason, message: read?.message } };
+const lines = String(read.body ?? "").split("\n").filter(Boolean);
+const records = [];
+for (const line of lines) {
+  const raw = line.replace(/^\s*\d+\s*\|\s*/, "");
+  try { records.push(JSON.parse(raw)); } catch {}
+}
+const start = Date.parse("2026-10-02T01:45:00Z");
+const now = Date.now();
+const recent = records.filter(r => Number.isFinite(Date.parse(r.ts)) && Date.parse(r.ts) >= start && Date.parse(r.ts) <= now);
+const key = r => [r.listenPort ?? "legacy", r.target ?? "?", r.kind ?? "?", r.method ?? "?", String(r.path ?? "").split("?")[0]].join("|");
+const counts = {};
+for (const r of recent) counts[key(r)] = (counts[key(r)] ?? 0) + 1;
+const at3271 = recent.filter(r => Number(r.listenPort) === 3271 || String(r.target ?? "").endsWith(":3271"));
+const currentMcp = recent.filter(r => String(r.path ?? "").includes("/api/mcp"));
+const notable = currentMcp.filter(r => r.listenPort !== 0);
+const compact = r => ({
+  ts: r.ts, kind: r.kind, status: r.status, attempts: r.attempts,
+  listenPort: r.listenPort, target: r.target, method: r.method,
+  path: r.path, elapsedMs: r.elapsedMs, connection: r.connection,
+  rpcMethods: Array.isArray(r.rpcMethods) ? r.rpcMethods : undefined
+});
+return {
+  ledger: { ok: true, totalLinesReturned: lines.length, parsedRecords: records.length, recentRecords: recent.length },
+  same3271Endpoint: { count: at3271.length, records: at3271.slice(-12).map(compact) },
+  mcpPath: { count: currentMcp.length, instanceCount: notable.length, latest: notable.slice(-20).map(compact) },
+  groupedRecent: Object.entries(counts).sort((a,b)=>b[1]-a[1]).slice(0,30).map(([key,count])=>({key,count})),
+  health: {
+    services: health?.services,
+    telemetry: health?.telemetry,
+    evidence: health?.evidence,
+    supervision: health?.supervision
+  }
+};

@@ -681,6 +681,47 @@ describe('P-012 terminal provenance writer', () => {
     expect((await store.getTask('pidseventstask'))).toMatchObject({ pidsCurrent: 2, pidsEventsMax: 17 });
   });
 
+  it('persists independent CPU and RSS sample timestamps only when each sample is present', async () => {
+    const taskId = 'metricsampletimes';
+    await liveTask(taskId);
+    await store.touchAlive([{ taskId, metrics: { cpuUsec: 100, lastMemoryBytes: 2048 } }]);
+    const sampled = (await store.getTask(taskId))!;
+    expect(sampled.cpuSampledAt).toBeTruthy();
+    expect(sampled.rssSampledAt).toBeTruthy();
+    expect(Date.parse(sampled.cpuSampledAt!)).toBe(Date.parse(sampled.lastSeenAt));
+    expect(Date.parse(sampled.rssSampledAt!)).toBe(Date.parse(sampled.lastSeenAt));
+
+    const staleSampleAt = new Date(0).toISOString();
+    await db.sql`
+      UPDATE harness_shared.task_ledger
+         SET last_seen_at = ${staleSampleAt}::timestamptz,
+             detail = jsonb_set(
+               jsonb_set(detail, '{cpuSampledAt}', to_jsonb(${staleSampleAt}::timestamptz), true),
+               '{rssSampledAt}', to_jsonb(${staleSampleAt}::timestamptz), true
+             )
+       WHERE task_id = ${taskId}
+    `;
+
+    await store.touchAlive([{ taskId, metrics: { lastMemoryBytes: 4096 } }]);
+    const rssRefresh = (await store.getTask(taskId))!;
+    expect(rssRefresh).toMatchObject({
+      cpuUsec: 100,
+      lastMemoryBytes: 4096,
+      cpuSampledAt: staleSampleAt,
+    });
+    expect(Date.parse(rssRefresh.lastSeenAt)).toBeGreaterThan(Date.parse(staleSampleAt));
+    expect(Date.parse(rssRefresh.rssSampledAt!)).toBe(Date.parse(rssRefresh.lastSeenAt));
+
+    await store.touchAlive([{ taskId, metrics: { cpuUsec: 200 } }]);
+    const cpuRefresh = (await store.getTask(taskId))!;
+    expect(cpuRefresh).toMatchObject({
+      cpuUsec: 200,
+      lastMemoryBytes: 4096,
+      rssSampledAt: rssRefresh.rssSampledAt,
+    });
+    expect(Date.parse(cpuRefresh.cpuSampledAt!)).toBe(Date.parse(cpuRefresh.lastSeenAt));
+  });
+
   function terminal(scopeUnit: string, over: Partial<TaskTerminalProvenance> = {}) {
     return {
       capturedAt: '2026-08-24T16:00:00.000Z',

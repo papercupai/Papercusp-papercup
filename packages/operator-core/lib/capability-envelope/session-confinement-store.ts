@@ -45,8 +45,11 @@ import { pinModuleState } from '@papercusp/module-singleton';
 
 import { isTransportOnlyIdentity, resolveAgentIdentity } from '../agent-tools/coordination/identity';
 import { readOperatorState, updateOperatorState } from '../operator-state-pg';
+import type { UnifiedToolContext } from '@papercusp/agent-mcp';
 import { validProductReadBoundary, validScratchPlanBoundary, validWorkItemBoundary, type SessionToolConfinement } from './session-confinement';
 import { setSessionConfinementResolver } from './session-confinement-port';
+
+type ConfinementPhases = NonNullable<UnifiedToolContext['phases']>;
 
 /** One stored confinement, with the expiry that keeps the table from accumulating dead rows. */
 export interface StoredSessionConfinement {
@@ -96,33 +99,41 @@ function effectiveConfinement(row: StoredSessionConfinement): SessionToolConfine
 /** Authoritative per-call read: a warm miss in another host process is not
  * evidence of absence. Read failures reject instead of manufacturing authority. */
 async function readStoredSessionConfinement(ownerId: string | null | undefined,
-  workspaceId?: string): Promise<StoredSessionConfinement | null> {
+  workspaceId?: string, phases?: ConfinementPhases): Promise<StoredSessionConfinement | null> {
   if (!ownerId || isTransportOnlyIdentity(ownerId)) return null;
-  const payload = await readOperatorState<SessionConfinementsPayload>(STATE_TABLE, workspaceId, { fresh: true });
-  if (payload !== null && (typeof payload !== 'object' || Array.isArray(payload) ||
-      payload.sessions !== undefined && (payload.sessions === null || typeof payload.sessions !== 'object' || Array.isArray(payload.sessions))))
-    throw new Error('Stored session confinement population is malformed');
-  const row = payload?.sessions?.[ownerId];
-  if (row === undefined) return null;
-  if (!row?.confinement || !Array.isArray(row.confinement.denyTools) ||
-      row.confinement.denyTools.some(name => typeof name !== 'string') ||
-      row.confinement.denyOutside !== undefined && (!Array.isArray(row.confinement.denyOutside) ||
-        row.confinement.denyOutside.some(name => typeof name !== 'string')) ||
-      row.confinement.denyAmbientContext !== undefined && row.confinement.denyAmbientContext !== true ||
-      row.confinement.denyWorkItemsOutside !== undefined &&
-        (row.confinement.denyOutside === undefined || !validWorkItemBoundary(row.confinement.denyWorkItemsOutside)) ||
-      row.confinement.denyProductReadsOutside !== undefined &&
-        (row.confinement.denyOutside === undefined || !validProductReadBoundary(row.confinement.denyProductReadsOutside)) ||
-      row.confinement.denyPlansOutside !== undefined &&
-        (row.confinement.denyOutside === undefined || !validScratchPlanBoundary(row.confinement.denyPlansOutside)))
-    throw new Error('Stored session confinement is malformed');
-  state.cache[ownerId] = row;
-  return row;
+  const read = () => readOperatorState<SessionConfinementsPayload>(STATE_TABLE, workspaceId, { fresh: true });
+  const payload = phases
+    ? await phases.track('capability-envelope.session-confinement.operator-state-read', read)
+    : await read();
+  const validate = (): StoredSessionConfinement | null => {
+    if (payload !== null && (typeof payload !== 'object' || Array.isArray(payload) ||
+        payload.sessions !== undefined && (payload.sessions === null || typeof payload.sessions !== 'object' || Array.isArray(payload.sessions))))
+      throw new Error('Stored session confinement population is malformed');
+    const row = payload?.sessions?.[ownerId];
+    if (row === undefined) return null;
+    if (!row?.confinement || !Array.isArray(row.confinement.denyTools) ||
+        row.confinement.denyTools.some(name => typeof name !== 'string') ||
+        row.confinement.denyOutside !== undefined && (!Array.isArray(row.confinement.denyOutside) ||
+          row.confinement.denyOutside.some(name => typeof name !== 'string')) ||
+        row.confinement.denyAmbientContext !== undefined && row.confinement.denyAmbientContext !== true ||
+        row.confinement.denyWorkItemsOutside !== undefined &&
+          (row.confinement.denyOutside === undefined || !validWorkItemBoundary(row.confinement.denyWorkItemsOutside)) ||
+        row.confinement.denyProductReadsOutside !== undefined &&
+          (row.confinement.denyOutside === undefined || !validProductReadBoundary(row.confinement.denyProductReadsOutside)) ||
+        row.confinement.denyPlansOutside !== undefined &&
+          (row.confinement.denyOutside === undefined || !validScratchPlanBoundary(row.confinement.denyPlansOutside)))
+      throw new Error('Stored session confinement is malformed');
+    state.cache[ownerId] = row;
+    return row;
+  };
+  return phases
+    ? phases.track('capability-envelope.session-confinement.policy-validation', validate)
+    : validate();
 }
 
 export async function readSessionConfinement(ownerId: string | null | undefined,
-  workspaceId?: string): Promise<SessionToolConfinement | null> {
-  const row = await readStoredSessionConfinement(ownerId, workspaceId);
+  workspaceId?: string, phases?: ConfinementPhases): Promise<SessionToolConfinement | null> {
+  const row = await readStoredSessionConfinement(ownerId, workspaceId, phases);
   return row ? effectiveConfinement(row) : null;
 }
 
@@ -318,15 +329,18 @@ export function __markSessionConfinementsPrimedForTest(): void {
 // means every session is unconfined, with nothing thrown and nothing logged — so an install
 // step that can be skipped is exactly the wrong shape. Assignment only; no IO at import.
 setSessionConfinementResolver(
-  (ctx) => {
+  async (ctx, phases) => {
     let ownerId: string | null = null;
     try {
-      ownerId = resolveAgentIdentity(ctx).ownerId ?? null;
+      const identify = () => resolveAgentIdentity(ctx).ownerId ?? null;
+      ownerId = phases
+        ? await phases.track('capability-envelope.session-confinement.identity-resolution', identify)
+        : identify();
     } catch {
       // Unattributable ctx — it cannot be the implementer, whose identity is established at
       // spawn. Nothing to look up.
       return null;
     }
-    return readSessionConfinement(ownerId, ctx.workspaceId ?? undefined);
+    return readSessionConfinement(ownerId, ctx.workspaceId ?? undefined, phases);
   },
 );

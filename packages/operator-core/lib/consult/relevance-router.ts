@@ -380,6 +380,8 @@ export interface ResponderSelectionParams {
    * BOTH floor picks and fills — a minimum that can only be filled by the
    * genuinely unusable stays unfilled, and the caller says so honestly. */
   isSelectable?: (c: RoutingCandidate) => boolean;
+  /** Exact source refs constrain minimum-fill candidates as well as floor picks. */
+  requireSupportedSubjectEvidence?: boolean;
 }
 
 /**
@@ -402,7 +404,12 @@ export function selectResponders(params: ResponderSelectionParams): SelectedResp
     allCandidates: params.allCandidates,
     bounds: { min: params.min, max: params.max },
     identity: (c) => c.ownerId,
-    ...(params.isSelectable ? { isSelectable: params.isSelectable } : {}),
+    ...((params.isSelectable || params.requireSupportedSubjectEvidence)
+      ? {
+          isSelectable: (c: RoutingCandidate) => (params.isSelectable?.(c) ?? true) &&
+            (!params.requireSupportedSubjectEvidence || c.subjectEvidenceCoverage?.status === 'supported'),
+        }
+      : {}),
   });
 }
 
@@ -583,7 +590,11 @@ export function expertiseSubject(question: string): string | null {
   // Do not treat key:boolean/null options such as `acknowledgeExisting:true`
   // as tool names when scanning the full question for a primary action.
   const tool = question.match(/\b[a-z][a-z0-9_-]*:(?!true\b|false\b|null\b|undefined\b)[a-z][a-z0-9_-]*\b/i)?.[0];
-  return tool ?? extractPathTokens(question, 1)[0] ?? null;
+  const path = extractPathTokens(question, 1)[0] ?? null;
+  // Dated plan/campaign refs are exact historical subjects when the question
+  // explicitly frames one as existing work. Bare date slugs remain ordinary prose.
+  const plan = question.match(/\b(?:existing|plan|campaign)\s+([a-z][a-z0-9-]*-\d{4}-\d{2}-\d{2})\b/i)?.[1] ?? null;
+  return tool ?? path ?? plan;
 }
 
 /** Compare the registered primary action, excluding operational notes that can

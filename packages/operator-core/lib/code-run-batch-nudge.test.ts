@@ -32,8 +32,11 @@ import {
 } from './code-run-batch-nudge';
 
 const maybeBatchNudge = (
-  input: Omit<BatchNudgeInput, 'effect'> & { effect?: BatchNudgeInput['effect'] },
-) => maybeBatchNudgeImpl({ ...input, effect: input.effect ?? 'read' });
+  input: Omit<BatchNudgeInput, 'effect' | 'callOrigin'> & {
+    effect?: BatchNudgeInput['effect'];
+    callOrigin?: BatchNudgeInput['callOrigin'];
+  },
+) => maybeBatchNudgeImpl({ ...input, callOrigin: input.callOrigin ?? 'agent', effect: input.effect ?? 'read' });
 
 const cap = { sessionKey: 's1', toolName: 'work_items:get', args: {}, canCodeRun: true };
 
@@ -730,6 +733,40 @@ describe('maybeBatchNudge — scoping guards (teeth)', () => {
     expect(maybeBatchNudge({ sessionKey: 'amb', toolName: 'work_items:get', canCodeRun: true, now: t })).toBeNull();
   });
 
+  it('excludes hook-origin calls from trigger and skeleton evidence while preserving model-call nudges', () => {
+    let t = 0;
+    for (const [turnId, toolName] of [
+      [1, 'sessions:ingestGateEvent'],
+      [2, 'flags:get'],
+      [3, 'coord:inbox'],
+    ] as const) {
+      t += TURN_GAP_MS + 1;
+      expect(maybeBatchNudge({
+        sessionKey: 'hook-origin', toolName, args: { marker: 'hook-only' },
+        canCodeRun: true, callOrigin: 'hook', turnId, now: t,
+      })).toBeNull();
+    }
+    t += TURN_GAP_MS + 1;
+    expect(maybeBatchNudge({
+      sessionKey: 'hook-origin', toolName: 'plans:get', args: { marker: 'model-plans' },
+      canCodeRun: true, callOrigin: 'agent', turnId: 4, now: t,
+    })).toBeNull();
+
+    t += TURN_GAP_MS + 1;
+    expect(maybeBatchNudge({
+      sessionKey: 'hook-origin', toolName: 'work_items:get', args: { marker: 'model-work-items' },
+      canCodeRun: true, callOrigin: 'agent', turnId: 5, now: t,
+    })).toBeNull();
+    t += TURN_GAP_MS + 1;
+    const hit = maybeBatchNudge({
+      sessionKey: 'hook-origin', toolName: 'flags:get', args: { marker: 'model-only' },
+      canCodeRun: true, callOrigin: 'agent', turnId: 6, now: t,
+    });
+    expect(hit).not.toBeNull();
+    expect(hit?.suggestedScript).toContain('model-only');
+    expect(hit?.suggestedScript).not.toContain('hook-only');
+  });
+
   it('does NOT nudge LOCK-LIFECYCLE tools — an acquire/edit/release cycle is not a batchable burst (EI-10168)', () => {
     // The agent's real work happens BETWEEN acquire and release via native (non-MCP) edits, so a
     // repeated acquire→edit→release cycle is serialized by that intervening work and can NEVER be
@@ -853,6 +890,7 @@ describe('maybeBatchNudge — isolation', () => {
       'utf8',
     );
     expect(source).toMatch(/const nudgeSessionKey = advisorySessionKey\(replayOwnerKey, transportSessionId\)/);
+    expect(source).toMatch(/callOrigin:\s*classifyCallOrigin\(\{\s*requestOrigin:\s*dispatchSpawnCtx\.requestOrigin,[\s\S]*?spawnId:\s*dispatchSpawnCtx\.spawnId/);
     expect(source).toMatch(/maybeBatchNudge\(\{[\s\S]*?sessionKey:\s*nudgeSessionKey/);
     expect(source).toMatch(/maybeListFanoutPreempt\(\{[\s\S]*?sessionKey:\s*nudgeSessionKey/);
     expect(source).toMatch(/maybeOrientDedupNudge\(\{[\s\S]*?sessionKey:\s*nudgeSessionKey/);

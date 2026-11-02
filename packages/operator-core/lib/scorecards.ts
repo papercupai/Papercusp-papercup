@@ -4111,7 +4111,7 @@ function specQualitySupersederSql(tx: OrgSql) {
     SELECT spec_superseder.issue_id, spec_superseder.created_at
       FROM harness_shared.engineer_issues AS spec_superseder
      WHERE spec_superseder.workspace_id = scorecard.workspace_id
-       AND (spec_superseder.payload -> 'observation' ->> 'rubricRef' = ${SPEC_QUALITY_RUBRIC_REF}) IS TRUE
+       AND spec_superseder.payload -> 'observation' ->> 'rubricRef' = ${SPEC_QUALITY_RUBRIC_REF}
        AND (scorecard.payload -> 'observation' ->> 'rubricRef' = ${SPEC_QUALITY_RUBRIC_REF}) IS TRUE
        AND spec_superseder.payload -> 'observation' -> 'subject' ->> 'kind' = 'plan'
        AND scorecard.payload -> 'observation' -> 'subject' ->> 'kind' = 'plan'
@@ -4123,7 +4123,10 @@ function specQualitySupersederSql(tx: OrgSql) {
        AND spec_superseder.payload -> 'observation' ->> 'sourceHive' IS NOT DISTINCT FROM scorecard.payload -> 'observation' ->> 'sourceHive'
        AND (spec_superseder.created_at, spec_superseder.issue_id) > (scorecard.created_at, scorecard.issue_id)
      ORDER BY spec_superseder.created_at DESC, spec_superseder.issue_id DESC
-     LIMIT 1`;
+     -- Keep the outer rubric/subject guard ahead of the inner scan. Without the
+     -- OFFSET barrier, EXISTS simplification can flatten this into an anti-join
+     -- whose Join Filter runs after scanning unrelated spec-quality history.
+     LIMIT 1 OFFSET 0`;
 }
 
 /**

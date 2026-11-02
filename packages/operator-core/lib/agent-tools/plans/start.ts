@@ -68,6 +68,7 @@ import { titleFromPlanItem } from '../../plan-workitem-promotion';
 import type { PromotePlanResult } from '../../plan-workitem-promotion-run';
 import type { ActivationAuditEditNotice } from '../../plan-audits';
 import { applyResultDoorAsync } from '../../result-door';
+import { readExecutionPlanRow, recordPlanExecutionStart } from './plan-execution-authority';
 import {
   planRevisionCapture,
   PlanRevisionUnavailableError,
@@ -1009,10 +1010,31 @@ export default defineTool({
           };
         }
 
+        // Authority is strict even when earlier approval/promotion committed.
+        // A failed final append must never turn those partial effects into a grant.
+        let executionStart: Awaited<ReturnType<typeof recordPlanExecutionStart>>;
+        try {
+          if (!promotion || promotionError || promotedBlockError || promotion.flagOff
+            || promotion.specTriadBlocked || promotion.specQualityBlocked || promotion.acceptanceBarBlocked)
+            throw new Error('plan_start_promotion_incomplete');
+          const scope = { workspaceId: startWorkspaceId, harnessSlug, planSlug: slug };
+          const expected = await readExecutionPlanRow(scope);
+          if (!expected) throw new Error('plan_not_found');
+          const { resolveAgentIdentity } = await import('../coordination/identity');
+          executionStart = await recordPlanExecutionStart(scope, resolveAgentIdentity(ctx), expected);
+        } catch (error) {
+          return { ok: false as const, slug, harnessSlug, error: 'plan_start_authority_unavailable',
+            message: `${promotionMessage}${promotedBlockMessage} Start authority was not issued: ${error instanceof Error ? error.message : String(error)}`,
+            autoApproved, promotion, admission, claimSpecBinding, promotedBlock,
+            ...(promotionError ? { promotionError } : {}), ...(promotedBlockError ? { promotedBlockError } : {}),
+            executionStartIssued: false, earlierSideEffectsMayHaveCommitted: true };
+        }
+
         return {
           ok: true as const,
           slug,
           harnessSlug,
+          executionStart,
           // NOT 'started' while retired — reporting a status the row does not
           // carry is precisely the "announced a start that never happened" bug
           // WI-5825 fixed one layer down.

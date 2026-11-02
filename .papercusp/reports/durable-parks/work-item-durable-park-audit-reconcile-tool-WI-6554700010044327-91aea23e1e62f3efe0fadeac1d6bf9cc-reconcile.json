@@ -1,0 +1,25 @@
+{
+  "schemaVersion": "durable-park-reconcile-v1",
+  "runId": "work-item-durable-park-audit:reconcile:tool:WI-6554700010044327:91aea23e1e62f3efe0fadeac1d6bf9cc",
+  "inputSha256": "91aea23e1e62f3efe0fadeac1d6bf9ccb44e8d5757da14010138fe189b958019",
+  "workspaceId": "papercusp-workspace",
+  "harnessSlug": "papercusp",
+  "generatedAt": "2026-11-02T10:12:13.152Z",
+  "actor": "su-6aaf9b6a-27e9-42af-95c6-e7e571bdc311",
+  "requested": 1,
+  "cleared": 1,
+  "unchanged": 0,
+  "rows": [
+    {
+      "id": "WI-6554700010044327",
+      "outcome": "cleared",
+      "expectedParkFingerprint": "e70fba8a334b997f989d529a1d4f5e3e273f2227f9cf7f559f920ba560ed3e09",
+      "observedParkFingerprint": "e70fba8a334b997f989d529a1d4f5e3e273f2227f9cf7f559f920ba560ed3e09",
+      "reasonCode": "operator-directed",
+      "evidence": "Owner-directed AUTO/self authorization (facts mode-instructions:auto) explicitly mandates startup plan execution through verified shipment. P001 WI-6554700010044326 is canonically DONE with committed authority (/tmp/startup-p001-close-final.json); current3170 plans:get confirms P002 has no unresolved blockers and is actionable. Release of this session's own P002 claim permits audited reconciliation of its migration1601 park only. No peer hold is being overridden.",
+      "preservedLease": false,
+      "takenBy": null
+    }
+  ],
+  "artifactPath": "reports/durable-parks/work-item-durable-park-audit-reconcile-tool-WI-6554700010044327-91aea23e1e62f3efe0fadeac1d6bf9cc-reconcile.json"
+}

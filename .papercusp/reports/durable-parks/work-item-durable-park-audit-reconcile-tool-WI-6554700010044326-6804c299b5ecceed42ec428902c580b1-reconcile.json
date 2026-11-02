@@ -1,0 +1,25 @@
+{
+  "schemaVersion": "durable-park-reconcile-v1",
+  "runId": "work-item-durable-park-audit:reconcile:tool:WI-6554700010044326:6804c299b5ecceed42ec428902c580b1",
+  "inputSha256": "6804c299b5ecceed42ec428902c580b1ccc8a2484788ca93b87953a76a426021",
+  "workspaceId": "papercusp-workspace",
+  "harnessSlug": "papercusp",
+  "generatedAt": "2026-11-02T07:58:30.317Z",
+  "actor": "su-6aaf9b6a-27e9-42af-95c6-e7e571bdc311",
+  "requested": 1,
+  "cleared": 1,
+  "unchanged": 0,
+  "rows": [
+    {
+      "id": "WI-6554700010044326",
+      "outcome": "cleared",
+      "expectedParkFingerprint": "6a4e2bb9e3c58736ebd0154a34b788e3ae2be831b580628f1a77bc220dd28574",
+      "observedParkFingerprint": "6a4e2bb9e3c58736ebd0154a34b788e3ae2be831b580628f1a77bc220dd28574",
+      "reasonCode": "operator-directed",
+      "evidence": "Avi's source turn6 and registered owner fact mode-instructions:auto authorize implementation of this exact startup plan through shipment. Current canonical plans:start succeeded executionStart seq22/hash496667d1e4a59cf0fe634a14316344814678797d4a4bafbc98b922c1bdb02cb1 after audit5 and exact independent/spec checks. This per-item operator-directed release enables explicitly assigned P001 using D011 audited reconcile path; P008 and its rollout-wide condition remain incomplete. Own assignment was released first; no peer claim is overridden.",
+      "preservedLease": false,
+      "takenBy": null
+    }
+  ],
+  "artifactPath": "reports/durable-parks/work-item-durable-park-audit-reconcile-tool-WI-6554700010044326-6804c299b5ecceed42ec428902c580b1-reconcile.json"
+}

@@ -15,6 +15,7 @@
  * the one that can actually catch the failure mode this system is most vulnerable to.
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { fileURLToPath } from 'node:url';
 import { runCensus } from '@papercusp/testing-shell/census';
 import type { OrgTestDb } from '../../test/_org-test-db';
 import { createPgCensusStore } from './pg-store';
@@ -30,7 +31,7 @@ const WS = `ws-census-e2e-${Math.random().toString(36).slice(2, 10)}`;
 const HARNESS = 'census-e2e-probe';
 const scope = { workspaceId: WS, harnessSlug: HARNESS };
 
-const repoRoot = process.cwd();
+const repoRoot = fileURLToPath(new URL('../../../..', import.meta.url));
 
 beforeAll(async () => {
   db = await createOrgTestDb();
@@ -86,6 +87,28 @@ describe('runCensus with the three declared providers', () => {
     `;
     expect(kinds.map((k) => k.kind).sort()).toEqual(['http-route', 'mcp-tool', 'sync-query']);
     for (const k of kinds) expect(Number(k.n)).toBeGreaterThan(0);
+
+    const [registered] = await db.adminSql<{ source_file: string; attrs: Record<string, unknown> }[]>`
+      SELECT source_file, attrs FROM harness_shared.testing_surfaces
+       WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS}
+         AND kind = 'mcp-tool' AND surface_id = 'coord:declare-intent'
+    `;
+    expect(registered?.source_file).toBe('packages/operator-core/lib/agent-tools/coordination/tools/declare-intent.ts');
+    expect(registered?.attrs).toMatchObject({
+      expose: { mcp: { name: 'coord:declare-intent' } },
+      capabilities: ['coord:write'],
+      authorization: { requirePrincipal: false },
+    });
+    expect(registered?.attrs).toHaveProperty('providerVersion');
+
+    const [disabledTimeout] = await db.adminSql<{ attrs: Record<string, unknown> }[]>`
+      SELECT attrs FROM harness_shared.testing_surfaces
+       WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND kind = 'http-route'
+         AND attrs->>'timeoutDeclared' = 'true' AND attrs->'timeoutSec' = 'null'::jsonb
+       LIMIT 1
+    `;
+    expect(disabledTimeout?.attrs).toMatchObject({ hasDefinition: true, timeoutDeclared: true, timeoutSec: null });
+    expect(disabledTimeout?.attrs).toHaveProperty('cors');
   }, 180_000);
 
   it('is idempotent — a second run retires nothing and preserves first_seen', async () => {

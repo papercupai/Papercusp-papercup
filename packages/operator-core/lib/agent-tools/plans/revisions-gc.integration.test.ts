@@ -49,6 +49,8 @@ beforeAll(async () => {
       workspace_id text NOT NULL DEFAULT 'default'
     )`);
   h.sql = rootSql;
+  await rootSql.unsafe(`CREATE TABLE harness_shared.harness_plans (
+    workspace_id text, harness_slug text, plan_slug text, execution_start_revision_seq integer)`);
 }, 90_000);
 
 afterAll(async () => {
@@ -57,6 +59,7 @@ afterAll(async () => {
 
 beforeEach(async () => {
   await rootSql`TRUNCATE harness_shared.plan_revisions RESTART IDENTITY`;
+  await rootSql`TRUNCATE harness_shared.harness_plans`;
 });
 
 async function seed(plan: string, count: number, harness = 'papercusp', ws = 'default') {
@@ -67,6 +70,17 @@ async function seed(plan: string, count: number, harness = 'papercusp', ws = 'de
 }
 
 describe('gcOldPlanRevisions (PG)', () => {
+  it('retains only the exact scoped start pin beyond the newest 100, then ages an obsolete pin', async () => {
+    await seed('chatty', 105);
+    await seed('chatty', 105, 'other-harness');
+    await rootSql`INSERT INTO harness_shared.harness_plans VALUES ('default','papercusp','chatty',1)`;
+    expect(await gcOldPlanRevisions()).toBe(9);
+    const pinned = await rootSql<{ n: number }[]>`SELECT count(*)::int AS n FROM harness_shared.plan_revisions
+      WHERE seq=1 AND harness_slug='papercusp'`;
+    expect(pinned[0]?.n).toBe(1);
+    await rootSql`UPDATE harness_shared.harness_plans SET execution_start_revision_seq=NULL`;
+    expect(await gcOldPlanRevisions()).toBe(1);
+  });
   it('keeps the newest N per plan and deletes the older tail; ≤N plans untouched', async () => {
     await seed('chatty', 10); // > keep(3) → trim to newest 3
     await seed('quiet', 2);   // ≤ keep(3) → untouched

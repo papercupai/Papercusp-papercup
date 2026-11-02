@@ -310,6 +310,13 @@ const BOOT_PROGRESS_MIN_TICKS = Number(process.env.PAPERCUSP_BGHOST_WATCHDOG_BOO
  *  reading freshness (not silently early-returning) — the operability gap that made this whole class
  *  invisible for 44h. First healthy poll logs immediately, then at most every HEARTBEAT_MS. */
 const HEARTBEAT_MS = Number(process.env.PAPERCUSP_BGHOST_WATCHDOG_HEARTBEAT_MS) || 10 * 60_000;
+// Broad backlog alert, kept above the health census's known 20m checkpoint widening.
+// The Oct 28 incident had 77 active rows overdue >45m while fresh rows kept the MAX(last_fired_at)
+// signal green. This catches selective starvation without turning it into a restart verdict.
+const SELECTIVE_ROUTINE_BACKLOG_OVERDUE_MINUTES = 30;
+const SELECTIVE_ROUTINE_BACKLOG_MIN_COUNT = 10;
+const SELECTIVE_ROUTINE_BACKLOG_MIN_RATIO = 0.1;
+const SELECTIVE_ROUTINE_BACKLOG_ALERT_COOLDOWN_MS = 30 * 60_000;
 /** EI-18133447445064828: committed routine-code activation is deliberately much less frequent than
  * freeze detection. A 30s freeze poll is useful; running two git reads and a cgroup scan every 30s is
  * not. The guard below also prevents an overlapping poll from launching a second coordinated restart. */
@@ -324,6 +331,7 @@ const VINTAGE_URL = process.env.PAPERCUSP_RUNTIME_VINTAGE_URL || 'http://127.0.0
 
 let lastRestart = 0;
 let lastHeartbeat = 0;
+let lastSelectiveRoutineBacklogAlertAtMs = 0;
 const restartTimes = []; // epoch ms, rolling 1h, for the circuit breaker
 // WI-3630: consecutive-restart strike count driving the backoff + alert. Resets to 0 the moment a poll
 // observes the ticker genuinely healthy (NOT merely "within boot grace" — a storm isn't over until a
@@ -413,6 +421,61 @@ export function parseIdleSec(stdout) {
   if (v === '' || v.toLowerCase() === 'null') return null;
   const n = Number(v);
   return Number.isFinite(n) ? n : null;
+}
+
+/** Parse the one-row psql snapshot: global fire age, overdue durable routines, eligible total. */
+export function parseRoutineLiveness(stdout) {
+  const fields = String(stdout ?? '').trim().split('|');
+  if (fields.length !== 3) return null;
+  const parseCount = (value) => {
+    const n = Number(String(value ?? '').trim());
+    return Number.isSafeInteger(n) && n >= 0 ? n : null;
+  };
+  const overdueCount = parseCount(fields[1]);
+  const activeCount = parseCount(fields[2]);
+  if (overdueCount === null || activeCount === null) return null;
+  return { idleSec: parseIdleSec(fields[0]), overdueCount, activeCount };
+}
+
+/** Broad stale backlog is an alert, never a host-restart predicate. */
+export function shouldAlertSelectiveRoutineBacklog(overdueCount, activeCount) {
+  if (
+    !Number.isSafeInteger(overdueCount) ||
+    !Number.isSafeInteger(activeCount) ||
+    overdueCount < SELECTIVE_ROUTINE_BACKLOG_MIN_COUNT ||
+    activeCount <= 0 ||
+    overdueCount > activeCount
+  ) return false;
+  return overdueCount / activeCount >= SELECTIVE_ROUTINE_BACKLOG_MIN_RATIO;
+}
+
+export function selectiveRoutineBacklogAlertMessage(snapshot) {
+  if (!snapshot || !shouldAlertSelectiveRoutineBacklog(snapshot.overdueCount, snapshot.activeCount)) return null;
+  const fireAge =
+    snapshot.idleSec == null ? 'newest routine fire age unknown' : 'newest routine fired ' + snapshot.idleSec + 's ago';
+  return (
+    '⚠ ' + UNIT + ': selective routine backlog — ' + snapshot.overdueCount + ' of ' + snapshot.activeCount +
+    ' active durable schedules are overdue >' + SELECTIVE_ROUTINE_BACKLOG_OVERDUE_MINUTES + 'm; ' + fireAge +
+    '. This alerts on backlog and does not request a bg-host restart.'
+  );
+}
+
+export async function routineLivenessSnapshot(dbUrl, deps = {}) {
+  if (!dbUrl) return null;
+  const shImpl = deps.sh ?? sh;
+  const schedulable =
+    "tier = 'durable' AND next_fire_at IS NOT NULL AND NOT (" +
+    "reschedule_interval_sec IS NOT NULL AND NOT jsonb_exists(trigger_config, 'cron') " +
+    "AND NOT jsonb_exists(trigger_config, 'rrule'))";
+  const q =
+    'SELECT EXTRACT(EPOCH FROM (now() - MAX(last_fired_at)))::int, ' +
+    'COUNT(*) FILTER (WHERE ' + schedulable +
+    " AND next_fire_at < now() - interval '" + SELECTIVE_ROUTINE_BACKLOG_OVERDUE_MINUTES + " minutes')::int, " +
+    'COUNT(*) FILTER (WHERE ' + schedulable + ')::int ' +
+    'FROM harness_shared.routines WHERE active = true';
+  const r = await shImpl('psql', [dbUrl, '-tAqc', q], { timeout: 10_000 });
+  if (r.err) return null;
+  return parseRoutineLiveness(r.stdout);
 }
 
 /** Pure freeze verdict: a NUMBER idle age over the threshold = frozen; null (unknown) is NEVER frozen. */
@@ -1357,17 +1420,6 @@ async function resolveDbUrlAsync() {
   return Number.isFinite(pid) && pid > 0 ? readProcEnvUrl(pid) : null;
 }
 
-/** Newest routine fire age (seconds) from Postgres — the bg-host's true liveness. null on any read fault. */
-async function routineIdleSec(dbUrl) {
-  if (!dbUrl) return null;
-  const q =
-    'SELECT EXTRACT(EPOCH FROM (now() - MAX(last_fired_at)))::int ' +
-    'FROM harness_shared.routines WHERE active = true AND last_fired_at IS NOT NULL';
-  const r = await sh('psql', [dbUrl, '-tAqc', q]);
-  if (r.err) return null;
-  return parseIdleSec(r.stdout);
-}
-
 /** Newest `routinesTick` SCHEDULER execution age (seconds) — the TRUE ticker-liveness signal, independent of
  *  `routines`-fire-queue saturation (the tick is a scheduled workflow, NOT enqueued on the saturable queue).
  *  A fresh tick while routine fires are stale = a busy/saturated queue, not a frozen event loop. null on any
@@ -1539,7 +1591,21 @@ async function poll() {
   const activation = await maybeActivateCommittedHotPathCode();
   if (activation.restartRequested) return;
   const dbUrl = await resolveDbUrlAsync();
-  const idleSec = await routineIdleSec(dbUrl);
+  const routineSnapshot = await routineLivenessSnapshot(dbUrl);
+  const idleSec = routineSnapshot?.idleSec ?? null;
+  if (routineSnapshot) {
+    const backlogMessage = selectiveRoutineBacklogAlertMessage(routineSnapshot);
+    if (!backlogMessage) {
+      lastSelectiveRoutineBacklogAlertAtMs = 0;
+    } else {
+      const now = Date.now();
+      if (now - lastSelectiveRoutineBacklogAlertAtMs >= SELECTIVE_ROUTINE_BACKLOG_ALERT_COOLDOWN_MS) {
+        lastSelectiveRoutineBacklogAlertAtMs = now;
+        log(backlogMessage);
+        void alertFleet(backlogMessage);
+      }
+    }
+  }
   if (idleSec == null) {
     // Liveness UNKNOWN (psql/DB unreadable) — NEVER conclude frozen from a missing signal (that was the
     // EI-2434 false-restart bug). Skip this poll.

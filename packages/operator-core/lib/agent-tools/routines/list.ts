@@ -1472,6 +1472,7 @@ const HEALTH_TRUNCATION_KEY = '__papercusp_truncated__';
 function healthTruncationMarker(reason: string, omitted?: number): Record<string, unknown> {
   return {
     [HEALTH_TRUNCATION_KEY]: true,
+    textTruncated: true,
     reason,
     ...(omitted === undefined ? {} : { omitted }),
   };
@@ -1511,6 +1512,7 @@ function clipHealthString(value: string, maxJsonChars: number): string {
 /** A private, agent-facing projection bound for nested routine health values. */
 function boundTrimmedHealth(value: unknown): unknown {
   let remaining = TRIMMED_HEALTH_JSON_CHARS;
+  let clippedText = false;
 
   const visit = (current: unknown, depth: number): unknown => {
     if (current === undefined) return null;
@@ -1518,6 +1520,7 @@ function boundTrimmedHealth(value: unknown): unknown {
     if (typeof current === 'string') {
       const available = Math.max(0, remaining - TRIMMED_HEALTH_MARKER_RESERVE);
       const clipped = clipHealthString(current, available);
+      if (clipped !== current) clippedText = true;
       remaining -= JSON.stringify(clipped).length;
       return clipped;
     }
@@ -1529,6 +1532,7 @@ function boundTrimmedHealth(value: unknown): unknown {
         remaining -= size;
         return current;
       }
+      clippedText = true;
       const clipped = '[TRUNCATED: health payload budget]';
       remaining -= JSON.stringify(clipped).length;
       return clipped;
@@ -1589,7 +1593,12 @@ function boundTrimmedHealth(value: unknown): unknown {
 
   const bounded = visit(value, 0);
   const serialized = JSON.stringify(bounded);
-  if (serialized && serialized.length <= TRIMMED_HEALTH_JSON_CHARS) return bounded;
+  if (serialized && serialized.length <= TRIMMED_HEALTH_JSON_CHARS) {
+    if (!clippedText) return bounded;
+    if (Array.isArray(bounded)) return [...bounded, healthTruncationMarker('text-clipped')];
+    if (bounded && typeof bounded === 'object') return { ...(bounded as Record<string, unknown>), healthTruncated: true };
+    return { value: bounded, healthTruncated: true };
+  }
   return healthTruncationMarker('health-json-budget', serialized?.length ?? 0);
 }
 
@@ -1848,7 +1857,11 @@ export default defineTool({
           lastFire: null,
         });
       }
-      return { count: d.count ?? d.routines.length, routines: rows };
+      return {
+        count: d.count ?? d.routines.length,
+        routines: rows,
+        ...(d.routines.length > CAP || boundedRows.truncated ? { _partial: true } : {}),
+      };
     },
   },
   async handler(args, ctx) {

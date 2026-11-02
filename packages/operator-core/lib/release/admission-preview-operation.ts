@@ -36,12 +36,16 @@ export const ADMISSION_PREVIEW_MAX_STORED_BYTES = 48 * 1024;
 export const ADMISSION_PREVIEW_MAX_OPERATIONS = 20;
 export const ADMISSION_PREVIEW_SETTLED_EVENT_PREFIX = 'release:repair-queue:admit-preview-settled:';
 
-export type AdmissionPreviewStatus = 'running' | 'settled' | 'failed';
+export type AdmissionPreviewStatus = 'running' | 'settled' | 'failed' | 'interrupted';
 
 export interface AdmissionPreviewOperation {
   schemaVersion: 1;
   operationId: string;
   status: AdmissionPreviewStatus;
+  /** Shared identity of the Hono host invocation that owns the in-process preview promise. */
+  hostInstanceId: string | null;
+  /** Listener port distinguishes the live :3070 host from :3170 over shared routine metadata. */
+  hostPort: number | null;
   startedAtMs: number;
   expiresAtMs: number;
   settledAtMs: number | null;
@@ -50,13 +54,20 @@ export interface AdmissionPreviewOperation {
   /** The dry run's own result payload (bounded); null while running or after a failure. */
   verdict: unknown;
   verdictTruncated: boolean;
-  /** The failure message when `status === 'failed'`. */
+  /** Failure or host-restart detail for terminal non-success states. */
   error: string | null;
 }
 
 export interface AdmissionPreviewStore {
   put(operation: AdmissionPreviewOperation): Promise<void>;
   get(operationId: string): Promise<AdmissionPreviewOperation | null>;
+  listRunningFromOtherHost(hostInstanceId: string, hostPort: number): Promise<AdmissionPreviewOperation[]>;
+  interruptIfStillRunning(
+    operationId: string,
+    expectedHostInstanceId: string | null,
+    expectedHostPort: number | null,
+    interruptedAtMs: number,
+  ): Promise<AdmissionPreviewOperation | null>;
 }
 
 export type AdmissionPreviewOutcome<T> =
@@ -81,6 +92,8 @@ export interface RunAdmissionPreviewOperationOptions<T> {
   ttlMs?: number;
   now?: () => number;
   operationId?: string;
+  hostInstanceId?: string;
+  hostPort?: number;
   /** Maps the run's result to the payload stored as the verdict (default: the result itself). */
   toVerdict?: (result: T) => unknown;
   /** Background settle-path failures (store/emit) — they must never become unhandled rejections. */
@@ -90,6 +103,17 @@ export interface RunAdmissionPreviewOperationOptions<T> {
 type Race<T> = { kind: 'done'; result: T } | { kind: 'error'; error: unknown } | { kind: 'budget' };
 
 const message = (error: unknown): string => (error instanceof Error ? error.message : String(error));
+const fallbackHostInstanceId = `process-${process.pid}-${randomUUID()}`;
+
+/** Resolve at call time because the Hono entrypoint injects one ID into all cluster workers. */
+export function currentAdmissionPreviewHostInstanceId(): string {
+  return process.env.PAPERCUSP_HOST_INSTANCE_ID?.trim() || fallbackHostInstanceId;
+}
+
+export function currentAdmissionPreviewHostPort(): number {
+  const port = Number(process.env.PAPERCUSP_HONO_PORT ?? process.env.PORT ?? 3070);
+  return Number.isInteger(port) && port > 0 && port <= 65_535 ? port : 3070;
+}
 
 export async function runAdmissionPreviewOperation<T>(
   opts: RunAdmissionPreviewOperationOptions<T>,
@@ -122,6 +146,8 @@ export async function runAdmissionPreviewOperation<T>(
     schemaVersion: 1,
     operationId: opts.operationId ?? `arp-${randomUUID()}`,
     status: 'running',
+    hostInstanceId: opts.hostInstanceId ?? currentAdmissionPreviewHostInstanceId(),
+    hostPort: opts.hostPort ?? currentAdmissionPreviewHostPort(),
     startedAtMs,
     expiresAtMs: startedAtMs + (opts.ttlMs ?? ADMISSION_PREVIEW_OPERATION_TTL_MS),
     settledAtMs: null,
@@ -218,7 +244,7 @@ export function parseAdmissionPreviewOperation(raw: unknown): AdmissionPreviewOp
   const status = r.status;
   if (
     typeof r.operationId !== 'string' ||
-    (status !== 'running' && status !== 'settled' && status !== 'failed') ||
+    (status !== 'running' && status !== 'settled' && status !== 'failed' && status !== 'interrupted') ||
     typeof r.startedAtMs !== 'number' ||
     typeof r.expiresAtMs !== 'number'
   ) {
@@ -228,6 +254,8 @@ export function parseAdmissionPreviewOperation(raw: unknown): AdmissionPreviewOp
     schemaVersion: 1,
     operationId: r.operationId,
     status,
+    hostInstanceId: typeof r.hostInstanceId === 'string' ? r.hostInstanceId : null,
+    hostPort: typeof r.hostPort === 'number' ? r.hostPort : null,
     startedAtMs: r.startedAtMs,
     expiresAtMs: r.expiresAtMs,
     settledAtMs: typeof r.settledAtMs === 'number' ? r.settledAtMs : null,
@@ -257,11 +285,9 @@ export interface AdmissionPreviewRead {
 const ADMISSION_PREVIEW_AWAIT_MARGIN_SEC = 30;
 
 /**
- * The events:await arguments for a running preview. The settle event is emitted only by the
- * in-process settle path, so a host restart mid-preview never emits it (blind review G-6). The
- * timeout is bounded to the operation's remaining lifetime and wakes on timeout, so an awaiter is
- * woken to re-read op:get (which then reports `expired`) instead of sleeping on an event that
- * will never fire.
+ * The events:await arguments for a running preview. A host restart recovers old-generation
+ * records and emits their settle events at startup; the bounded timeout remains a fallback if
+ * recovery or event delivery cannot complete.
  */
 export function admissionPreviewAwaitArgs(
   operation: Pick<AdmissionPreviewOperation, 'operationId' | 'expiresAtMs'>,
@@ -289,14 +315,16 @@ export function describeAdmissionPreviewOperation(
     awaitArgs
       ? `Still running. events:await { event: '${awaitArgs.event}', timeout_sec: ${awaitArgs.timeout_sec}, on_timeout: 'wake' }, ` +
         'then re-read this op:get, instead of re-issuing the dry run. Keep the bounded timeout: a host restart mid-preview ' +
-        'never emits the settle event, and op:get reports it expired once the timeout passes.'
+        'is recovered at host startup and emits the settle event.'
       : status === 'expired'
         ? 'The preview never settled before its expiry (its host most likely restarted). Re-run the dry run.'
         : status === 'failed'
           ? 'The preview failed; read `error`, then re-run the dry run.'
-          : stale
-            ? 'The repair head moved after this verdict was computed. Re-run the dry run before confirming.'
-            : 'Settled. If the verdict is a pass, confirm with the expected-identity tuple it carries.';
+          : status === 'interrupted'
+            ? 'The preview host restarted before it settled. Its settle event was emitted; re-run the dry run.'
+            : stale
+              ? 'The repair head moved after this verdict was computed. Re-run the dry run before confirming.'
+              : 'Settled. If the verdict is a pass, confirm with the expected-identity tuple it carries.';
   return { operation, status, judgedSha, stale, awaitArgs, nextAction };
 }
 
@@ -331,7 +359,7 @@ export function deferredAdmissionPreviewPayload(
     detail:
       `The read-only preview is still running after ${inlineBudgetMs}ms, so it continues in the background ` +
       'instead of holding this call. Await the settle event with events:await using `awaitArgs` exactly (its timeout ' +
-      'is bounded to the preview lifetime and wakes on timeout: a host restart mid-preview never emits the event), then read ' +
+      'is bounded to the preview lifetime and wakes on timeout: a host restart recovers the operation and emits the event), then read ' +
       "release:repair-queue { op:'get', previewOperationId } for the verdict. Nothing was admitted.",
   };
 }
@@ -396,7 +424,93 @@ export function createRoutineMetadataAdmissionPreviewStore(
       )) as Array<{ operation?: unknown }>;
       return parseAdmissionPreviewOperation(Array.isArray(rows) ? rows[0]?.operation : null);
     },
+    async listRunningFromOtherHost(hostInstanceId, hostPort) {
+      const sql = await sqlFn();
+      const rows = (await sql(
+        `SELECT entry.value AS operation
+           FROM harness_shared.routines AS routine
+           CROSS JOIN LATERAL jsonb_each(
+             COALESCE(routine.metadata->'admission_previews', '{}'::jsonb)
+           ) AS entry(key, value)
+          WHERE ${ROUTINE_ROW_FILTER}
+            AND entry.value->>'status' = 'running'
+            AND COALESCE(entry.value->>'hostPort', '') = $3::text
+            AND COALESCE(entry.value->>'hostInstanceId', '') <> $4
+          ORDER BY (entry.value->>'startedAtMs')::bigint ASC`,
+        [target.workspaceId, target.installSlug, String(hostPort), hostInstanceId],
+      )) as Array<{ operation?: unknown }>;
+      return Array.isArray(rows)
+        ? rows.map((row) => parseAdmissionPreviewOperation(row.operation)).filter(
+            (operation): operation is AdmissionPreviewOperation => operation !== null,
+          )
+        : [];
+    },
+    async interruptIfStillRunning(operationId, expectedHostInstanceId, expectedHostPort, interruptedAtMs) {
+      const sql = await sqlFn();
+      const rows = (await sql(
+        `UPDATE harness_shared.routines
+            SET metadata = jsonb_set(
+                  COALESCE(metadata, '{}'::jsonb),
+                  '{admission_previews}',
+                  jsonb_set(
+                    COALESCE(metadata->'admission_previews', '{}'::jsonb),
+                    ARRAY[$3::text],
+                    jsonb_set(
+                      jsonb_set(
+                        jsonb_set(metadata->'admission_previews'->$3::text, '{status}', to_jsonb('interrupted'::text)),
+                        '{settledAtMs}', to_jsonb($6::bigint)
+                      ),
+                      '{error}', to_jsonb('host restarted before preview settled'::text)
+                    ),
+                    '{verdict}', jsonb_build_object('verdict', 'interrupted', 'reason', 'host-restarted')
+                  ),
+                  true)
+          WHERE ${ROUTINE_ROW_FILTER}
+            AND metadata->'admission_previews'->$3::text->>'status' = 'running'
+            AND COALESCE(metadata->'admission_previews'->$3::text->>'hostInstanceId', '') = COALESCE($4::text, '')
+            AND COALESCE(metadata->'admission_previews'->$3::text->>'hostPort', '') = COALESCE($5::text, '')
+          RETURNING metadata->'admission_previews'->$3::text AS operation`,
+        [target.workspaceId, target.installSlug, operationId, expectedHostInstanceId, String(expectedHostPort), interruptedAtMs],
+      )) as Array<{ operation?: unknown }>;
+      return parseAdmissionPreviewOperation(Array.isArray(rows) ? rows[0]?.operation : null);
+    },
   };
+}
+
+/**
+ * Reconcile persisted operations whose owning host generation is gone. The list is only a
+ * candidate read; interruptIfStillRunning is the atomic compare-and-set so sibling workers
+ * can race startup safely and exactly one emits each operation's settle event.
+ */
+export async function recoverOrphanedAdmissionPreviewOperations(opts: {
+  store: AdmissionPreviewStore;
+  hostInstanceId: string;
+  hostPort: number;
+  emitSettled: (operation: AdmissionPreviewOperation) => Promise<void>;
+  nowMs?: number;
+  onEmitError?: (error: unknown, operation: AdmissionPreviewOperation) => void;
+}): Promise<AdmissionPreviewOperation[]> {
+  const candidates = await opts.store.listRunningFromOtherHost(opts.hostInstanceId, opts.hostPort);
+  const interrupted: AdmissionPreviewOperation[] = [];
+  for (const candidate of candidates) {
+    const operation = await opts.store.interruptIfStillRunning(
+      candidate.operationId,
+      candidate.hostInstanceId,
+      candidate.hostPort,
+      opts.nowMs ?? Date.now(),
+    );
+    if (!operation) continue;
+    interrupted.push(operation);
+    try {
+      await opts.emitSettled(operation);
+    } catch (error) {
+      opts.onEmitError?.(error, operation);
+      if (!opts.onEmitError) {
+        console.warn(`[release:repair-queue] failed to emit recovered preview ${operation.operationId}: ${message(error)}`);
+      }
+    }
+  }
+  return interrupted;
 }
 
 /** Default settle emitter: one awaited event per operation, keyed by its handle. */

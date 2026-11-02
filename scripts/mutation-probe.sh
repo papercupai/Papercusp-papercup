@@ -1131,12 +1131,20 @@ fi
 # A writable TMPDIR does not establish that npm's independent, host-stable
 # mutex root can allocate its metadata. Check both before spending a baseline,
 # and use the existing root resolver rather than deriving a second lock domain.
-if ! node --input-type=module - "$SCRATCH" "$FILE" "$TEST_CMD" "$(dirname -- "$MUTATION_PROBE_SOURCE_PATH")/lib/fs-mutex.mjs" <<'JS'
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+if ! node --input-type=module - "$SCRATCH" "$FILE" "$TEST_CMD" "$(dirname -- "$MUTATION_PROBE_SOURCE_PATH")/lib/fs-mutex.mjs" "$ORIGINAL_CWD" <<'JS'
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-const [scratch, subject, guard, mutexModule] = process.argv.slice(2);
+const [scratch, subject, guard, mutexModule, cwd] = process.argv.slice(2);
 let rootKind = 'scratch';
+function findImmutableArchive(root) {
+  for (;;) {
+    if (existsSync(join(root, '.verifier-source.json'))) return root;
+    const parent = dirname(root);
+    if (parent === root) return null;
+    root = parent;
+  }
+}
 function checkRoot(root, copySubject) {
   mkdirSync(root, { recursive: true });
   const probe = mkdtempSync(join(root, '.mutation-probe-preflight-'));
@@ -1148,6 +1156,20 @@ function checkRoot(root, copySubject) {
   }
 }
 try {
+  // The managed router validates the whole immutable archive. Its deliberate
+  // mutant therefore fails source custody before it can produce ledger proof.
+  // Reject this incompatible route before paying for either baseline; ordinary
+  // redirectable guards do not consume the archive through that validator.
+  const managedTestGuard = /(?:^|[\s/"'])test-files\.mjs(?=$|[\s"'])|\b(?:npm|pnpm)\s+run\s+test:file(?=$|[\s"'])/.test(guard);
+  if (managedTestGuard) {
+    const archive = [dirname(realpathSync(subject)), realpathSync(cwd)]
+      .map(findImmutableArchive).find(Boolean);
+    if (archive) {
+      console.error('MUTATION_PROBE_RESULT verdict=harness-error phase=preflight reason=immutable-verifier-archive');
+      console.error(`mutation-probe: the managed guard would reject the intentional mutant inside immutable verifier archive ${archive}. Keep archive validation strict. Prepare a Git checkout with scripts/lint-as-committed.mjs --materialize-only and run the probe there.`);
+      process.exit(2);
+    }
+  }
   // A native CommonJS import bypasses Vitest's module transforms. Propagating
   // the committed-source loader through NODE_OPTIONS therefore refuses the
   // intentional mutant before any assertion runs (EI-26005614073216227).
@@ -2109,15 +2131,16 @@ function within(parent, child) {
 }
 
 let output;
-let noticeText;
+let noticeBytes;
 try {
   output = readFileSync(outputFile, 'utf8');
-  noticeText = readFileSync(noticeFile, 'utf8');
+  noticeBytes = readFileSync(noticeFile);
 } catch {
   fail('receipt-unreadable');
 }
 
 const reportedCounts = [];
+const reportedOffsets = [];
 for (const line of output.split(/\r?\n/)) {
   if (line.startsWith('TEST_FILE_CHILD_SUBSTITUTED ')) {
     const count = line.match(/\bcount=(\d+)\b/);
@@ -2132,15 +2155,54 @@ for (const line of output.split(/\r?\n/)) {
       if (!/^\d+$/.test(value)) fail('runner-result-count-unknown');
       reportedCounts.push(Number(value));
     }
+    const offsetField = line.split(/\s+/).find((part) => part.startsWith('childNoticeOffsetBytes='));
+    if (offsetField) {
+      const value = offsetField.slice('childNoticeOffsetBytes='.length);
+      const offset = Number(value);
+      if (!/^\d+$/.test(value) || !Number.isSafeInteger(offset)) fail('runner-notice-offset-unknown');
+      reportedOffsets.push(offset);
+    }
   }
   if (line.includes('COMMITTED_SOURCE notice-unrecorded')) fail('loader-notice-write-failed');
 }
 
+const uniqueOffsets = [...new Set(reportedOffsets)];
+if (uniqueOffsets.length > 1) fail('runner-notice-offset-mismatch');
+const childNoticeOffsetBytes = uniqueOffsets[0] ?? 0;
+if (childNoticeOffsetBytes > noticeBytes.length
+  || (childNoticeOffsetBytes > 0 && noticeBytes[childNoticeOffsetBytes - 1] !== 0x0a)) {
+  fail('runner-notice-offset-invalid');
+}
+
 const repoRoot = canonical(repoRootInput);
-const rawLines = noticeText.split(/\r?\n/).filter((line) => line.length > 0);
-const parsedRecords = rawLines.map((line) => {
-  try { return JSON.parse(line); } catch { fail('malformed-jsonl'); }
-});
+function parseRecords(bytes) {
+  return bytes.toString('utf8').split(/\r?\n/).filter((line) => line.length > 0).map((line) => {
+    try { return JSON.parse(line); } catch { fail('malformed-jsonl'); }
+  });
+}
+const launcherPrefix = noticeBytes.subarray(0, childNoticeOffsetBytes);
+const childSuffix = noticeBytes.subarray(childNoticeOffsetBytes);
+const launcherRecords = parseRecords(launcherPrefix);
+const parsedRecords = parseRecords(childSuffix);
+const acceptedLauncherRecords = [];
+for (const record of launcherRecords) {
+  if (record?.schemaVersion !== 'committed-source-notice-v1'
+    || typeof record.rel !== 'string' || typeof record.top !== 'string') {
+    fail('malformed-notice-record');
+  }
+  const top = canonical(record.top);
+  if (!within(repoRoot, top)) continue;
+  const exactLauncher = isAbsolute(record.top) && record.kind === 'substituted' && record.via === 'esm'
+    && top === repoRoot && record.rel === 'scripts/test-files.mjs'
+    && record.entry === 'scripts/test-files.mjs'
+    && Number.isSafeInteger(record.pid) && record.pid > 0;
+  if (!exactLauncher) fail('launcher-entry-unverified', record);
+  const sourcePath = canonical(resolve(top, record.rel));
+  const entryPath = canonical(resolve(top, record.entry));
+  if (!within(top, sourcePath) || !within(repoRoot, entryPath)) fail('notice-path-outside-repository', record);
+  if (sourcePath === canonical(subjectInput)) fail('launcher-subject-substituted', record);
+  acceptedLauncherRecords.push(record);
+}
 const records = [];
 for (const record of parsedRecords) {
   if (record?.schemaVersion !== 'committed-source-notice-v1'
@@ -2153,7 +2215,8 @@ for (const record of parsedRecords) {
 }
 if (reportedCounts.some((count) => count !== records.length)) fail('runner-count-mismatch');
 if (records.length === 0) {
-  console.error('MUTATION_PROBE_CHILD_SOURCE_NOTICES records=0 gitReaders=0 unclassified=0');
+  console.error('MUTATION_PROBE_CHILD_SOURCE_NOTICES records=' + acceptedLauncherRecords.length
+    + ' gitReaders=0 unclassified=0 launcherNotices=' + acceptedLauncherRecords.length + ' childRecords=0');
   process.exit(0);
 }
 
@@ -2217,8 +2280,9 @@ for (const record of records) {
   if (!exactGitReader) fail('subject-dependent-or-unknown-child', record);
 }
 
-console.error('MUTATION_PROBE_CHILD_SOURCE_NOTICES records=' + records.length
-  + ' gitReaders=' + records.length + ' unclassified=0');
+console.error('MUTATION_PROBE_CHILD_SOURCE_NOTICES records=' + (acceptedLauncherRecords.length + records.length)
+  + ' gitReaders=' + records.length + ' unclassified=0'
+  + ' launcherNotices=' + acceptedLauncherRecords.length + ' childRecords=' + records.length);
 JS
 }
 
@@ -2243,11 +2307,14 @@ run_guard() {
     : > "$child_source_notice_file" || die "could not create the $label child-source notice receipt"
     # WI-6554700010018048: a partially contained leg is checked afterwards for
     # writes to the uncovered checkout entries, against this stamp.
-    rm -f "$SCRATCH/contain-abort"
+    rm -f "$SCRATCH/contain-abort" "$SCRATCH/contain-strict"
     contain_stamp=""
     if [ -n "$CONTAIN_SETUP" ] && [ "$CONTAIN_STATUS" = "partial" ] && [ "$phase" != "baseline" ]; then
       contain_stamp="$SCRATCH/contain-stamp.$phase"
       : > "$contain_stamp"
+    fi
+    if [ -n "$CONTAIN_SETUP" ] && [ "$CONTAIN_STATUS" = "contained" ] && [ "$phase" != "baseline" ]; then
+      : > "$SCRATCH/contain-strict"
     fi
     # Hold the actual output inode across the child lifetime. A pathname that
     # vanished or was replaced cannot certify the guard's result, even exit 0.
@@ -3207,6 +3274,43 @@ contain_outer_root() {
   realpath -e -- "$root" 2>/dev/null || true
 }
 
+# Cargo can write outside either checkout via CARGO_TARGET_DIR or config.toml.
+# Reuse its target resolver so those artifacts receive the same per-leg COW
+# protection as in-checkout build outputs, including on a target's first build.
+contain_cargo_targets() {
+  node --input-type=module - "$RUNNER_ROOT/scripts/lib/cargo-result.mjs" "$FILE" "$ORIGINAL_CWD" <<'JS'
+import { existsSync, mkdirSync, realpathSync } from 'node:fs';
+import { dirname, join, parse } from 'node:path';
+import { pathToFileURL } from 'node:url';
+const [helper, subject, cwd] = process.argv.slice(2);
+const manifests = new Set();
+for (const start of [dirname(subject), cwd]) {
+  for (let dir = start; ; dir = dirname(dir)) {
+    const manifest = join(dir, 'Cargo.toml');
+    if (existsSync(manifest)) { manifests.add(manifest); break; }
+    if (dirname(dir) === dir) break;
+  }
+}
+if (manifests.size) {
+  const { resolveCargoTargetDir } = await import(pathToFileURL(helper));
+  const targets = new Set();
+  for (const manifest of manifests) {
+    const target = resolveCargoTargetDir(manifest, { cwd });
+    if (target === parse(target).root || /[\r\n]/.test(target)) {
+      throw new Error('Cargo target cannot be safely covered by write containment');
+    }
+    mkdirSync(target, { recursive: true });
+    const canonical = realpathSync(target);
+    if (canonical === parse(canonical).root || /[\r\n]/.test(canonical)) {
+      throw new Error('Cargo target resolves outside safe write containment');
+    }
+    targets.add(canonical);
+  }
+  for (const target of targets) console.log(target);
+}
+JS
+}
+
 # True when path $1 is $2 or lies under it.
 contain_path_under() {
   case "$1" in
@@ -3256,14 +3360,14 @@ contain_plan_dir() {
 # contained leg: one tmpfs for every upper/work dir, a hold-bind of each
 # passthrough dir, the overlays, the passthrough re-binds, then an inner bwrap
 # that drops back to the caller's uid/gid with NO capabilities to run the guard.
-# A failed overlay is recorded in contain-failed and skipped. A failed tmpfs
-# writes contain-abort and exits, which run_guard turns into a harness error:
-# a setup failure must never be scored as the guard catching the mutant.
+# Preflight records and skips failed overlays so it can report partial
+# containment. Once preflight says contained, each leg is strict: an overlay
+# failure writes contain-abort and exits before the guard can touch the real tree.
 contain_write_setup() {
   local f="$SCRATCH/contain-setup.sh" i p
   {
     printf '#!/usr/bin/env bash\n# Generated by mutation-probe.sh (WI-6554700010018048).\nset -u\n'
-    printf 'work=%q\nfail=%q\nabort=%q\n' "$CONTAIN_WORK" "$SCRATCH/contain-failed" "$SCRATCH/contain-abort"
+    printf 'work=%q\nfail=%q\nabort=%q\nstrict=%q\n' "$CONTAIN_WORK" "$SCRATCH/contain-failed" "$SCRATCH/contain-abort" "$SCRATCH/contain-strict"
     printf ': > "$fail"\n'
     printf 'mount -t tmpfs -o mode=0700 tmpfs "$work" || { printf "%%s\\n" "tmpfs mount on $work failed" > "$abort"; exit 97; }\n'
     printf 'levels=('
@@ -3302,6 +3406,8 @@ for i in "${!levels[@]}"; do
   s="$work/s$i"
   mkdir -p "$s" || contain_abort "could not stage split directory $p"
   k=0
+  files=()
+  file_count=0
   for e in "$p"/* "$p"/.[!.]* "$p"/..?*; do
     [ -e "$e" ] || [ -L "$e" ] || continue
     if [ -d "$e" ] && [ ! -L "$e" ]; then
@@ -3319,11 +3425,26 @@ for i in "${!levels[@]}"; do
       [ "$known" -eq 1 ] || unplanned+=("$e")
       k=$((k + 1))
     elif [ -f "$e" ] || [ -L "$e" ]; then
-      cp -Pp -- "$e" "$s/" || contain_abort "could not copy split-directory entry $e"
+      # Console sentinels are transient process state, not checkout inputs.
+      # Exclude them and copy ordinary files in bounded batches instead of
+      # spawning one cp process per root entry on every contained leg.
+      case "$e" in
+        */.papercup-console-active.*) continue ;;
+      esac
+      files+=("$e")
+      file_count=$((file_count + 1))
+      if [ "$file_count" -ge 128 ]; then
+        cp -Pp -- "${files[@]}" "$s/" || contain_abort "could not copy split-directory files under $p"
+        files=()
+        file_count=0
+      fi
     else
       contain_abort "unsupported split-directory entry $e"
     fi
   done
+  if [ "$file_count" -gt 0 ]; then
+    cp -Pp -- "${files[@]}" "$s/" || contain_abort "could not copy split-directory files under $p"
+  fi
   chown --reference="$p" "$s" && chmod --reference="$p" "$s" \
     || contain_abort "could not preserve split-directory permissions for $p"
 done
@@ -3343,6 +3464,15 @@ SHALLOW
         "$i" "$i" "lowerdir=$p,upperdir=$CONTAIN_WORK/u$i,workdir=$CONTAIN_WORK/w$i" "$p" "$p"
       i=$((i + 1))
     done
+    cat <<'STRICT_OVERLAYS'
+if [ -e "$strict" ] && [ -s "$fail" ]; then
+  while IFS= read -r failed_overlay; do
+    [ -n "$failed_overlay" ] || continue
+    case "$failed_overlay" in passthrough:*) continue ;; esac
+    contain_abort "overlay mount failed for $failed_overlay"
+  done < "$fail"
+fi
+STRICT_OVERLAYS
     cat <<'LATE_CHILDREN'
 # Baseline/peer-created children were absent from the initial mount plan. A
 # bare rebind would expose their real contents to the mutant. Isolate each one
@@ -3371,13 +3501,19 @@ LATE_CHILDREN
 # only when a real leg-shaped run proved both the subject bind and a discarded
 # canary write; otherwise the probe runs the plain overlay and says so.
 contain_preflight() {
-  local cand r o p canary="" canary_dir="" err_line mounted=0 line
+  local cand r o p canary="" canary_dir="" err_line mounted=0 line cargo_targets
   local -a cands=()
   CONTAIN_STATUS="uncontained"
   cand="$(contain_outer_root "$(dirname "$FILE")")"
   [ -n "$cand" ] && cands+=("$cand")
   cand="$(contain_outer_root "$(pwd -P)")"
   [ -n "$cand" ] && cands+=("$cand")
+  if [ "${MUTATION_PROBE_CONTAIN_WRITES:-1}" != "0" ] && [ "$RELOCATION_USED" = "overlay" ] && [ "$DELETES_ACK" -eq 0 ]; then
+    cargo_targets="$(contain_cargo_targets)" || die "could not resolve Cargo targets for write containment"
+    while IFS= read -r cand; do
+      [ -n "$cand" ] && cands+=("$cand")
+    done <<< "$cargo_targets"
+  fi
   for cand in ${cands[@]+"${cands[@]}"}; do
     for r in ${CONTAIN_ROOTS[@]+"${CONTAIN_ROOTS[@]}"}; do
       contain_path_under "$cand" "$r" && continue 2

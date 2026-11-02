@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
@@ -9,6 +9,13 @@ import {
   EXTERNAL_PROCESS_TIMERS,
   SYNC_TRIGGERED_SWEEPS,
   SCHEDULE_SOURCES,
+  collectStartupActivity,
+  scheduleStartupFeature,
+  checkStartupActivityCensus,
+  STARTUP_ACTIVITY_ENTRYPOINTS,
+  type ScheduleInventoryDeps,
+  type ScheduleInventoryRow,
+  type StartupActivityFeature,
   type RoutineRow,
 } from './schedule-inventory';
 import type { DbosScheduledEntry } from './dbos/dbos-schedule-introspect';
@@ -45,6 +52,157 @@ const routine = (over: Partial<RoutineRow> = {}): RoutineRow => ({
   // predates — default to null (ungrouped), overridable via `over`.
   group_slug: null,
   ...over,
+});
+
+const emptyInventory: ScheduleInventoryDeps = {
+  getDbosSchedules: async () => [], getRoutines: async () => [], getManaged: () => [],
+  getInProcessChecks: () => ({ checks: [], armed: false }), getExternalProcess: () => [],
+  getSiblingManaged: async () => [], enrichSiblingDbos: async () => [], getSyncTriggered: () => [],
+};
+
+const startupRow = (over: Partial<ScheduleInventoryRow> = {}): ScheduleInventoryRow => ({
+  source: 'dbos', scope: 'operator', tier: 'durable', category: 'dbos-scheduled',
+  name: 'registered-work', installSlug: null, cadence: 'every minute', armed: true,
+  lastFire: null, nextFire: null, lastError: null, groupSlug: null, detail: {}, ...over,
+});
+
+describe('startup activity disclosure', () => {
+  it('distinguishes configured startup from observed running state', () => {
+    const registered = scheduleStartupFeature(startupRow({ detail: { lastStatus: 'SUCCESS', running: true } }));
+    expect(registered.observed).toBe('unknown');
+    expect(registered.desired.automatic).toBeNull();
+    const activeRoutine = scheduleStartupFeature(startupRow({ source: 'routines', armed: true }));
+    expect(activeRoutine.desired.automatic).toBe(true);
+    expect(activeRoutine.observed).toBe('unknown');
+    const managed = scheduleStartupFeature(startupRow({ source: 'managed', detail: { running: false } }));
+    expect(managed.observed).toBe('idle');
+    expect(managed.desired.automatic).toBeNull();
+    expect(scheduleStartupFeature(startupRow({ source: 'managed', detail: { running: true } })).observed).toBe('running');
+    expect(scheduleStartupFeature(startupRow({ source: 'external-process', detail: { running: true, federated: false } })).observed).toBe('unknown');
+  });
+
+  it('keeps unavailable resource and cost measurements unknown even for a free handler', () => {
+    const feature = scheduleStartupFeature(startupRow({ source: 'routines', detail: { targetRole: 'system:wake-brain' } }));
+    expect(feature.spend).toBe('none');
+    expect(feature.resources).toEqual({ cpuUsec: null, rssBytes: null, costCents: null });
+    expect(feature.network).toBe('unknown');
+    expect(scheduleStartupFeature(startupRow({ name: 'expensive-agent-looking-name' })).spend).toBe('unknown');
+  });
+
+  it('preserves required disclosure fields and source-specific feature identity', () => {
+    const feature = scheduleStartupFeature(startupRow({ source: 'routines', installSlug: 'harness-a', name: 'doc-refresh' }), { workspaceId: 'workspace-a' });
+    expect(feature).toMatchObject({ name: 'doc refresh', origin: 'routines', scope: { kind: 'workspace', id: 'workspace-a' },
+      dependencies: null, trigger: 'every minute', network: 'unknown', desired: { revision: null, pausedUntil: null } });
+    expect(feature.purpose).toContain('not been described');
+    expect(feature.id).not.toBe(scheduleStartupFeature(startupRow({ source: 'routines', installSlug: 'harness-a', name: 'doc-refresh' }), { workspaceId: 'workspace-b' }).id);
+    expect(feature.id).not.toContain('doc-refresh');
+    const row = startupRow({ source: 'routines', installSlug: 'harness-a', name: 'doc-refresh' });
+    expect(scheduleStartupFeature(row, { workspaceId: 'workspace-a', deviceId: 'desktop-a' }).id)
+      .toBe(scheduleStartupFeature(row, { workspaceId: 'workspace-a', deviceId: 'desktop-b' }).id);
+    expect(scheduleStartupFeature({ ...row, source: 'managed' }, { workspaceId: 'workspace-a', deviceId: 'desktop-a' }).id)
+      .not.toBe(scheduleStartupFeature({ ...row, source: 'managed' }, { workspaceId: 'workspace-a', deviceId: 'desktop-b' }).id);
+  });
+
+  it('retains failed sources as unavailable without leaking their errors or asserting an empty complete inventory', async () => {
+    const snapshot = await collectStartupActivity({ ...emptyInventory,
+      getRoutines: async () => { throw new Error('credential=secret'); },
+      getManaged: () => { throw new Error('private path'); },
+      getSiblingManaged: async () => { throw new Error('private URL'); },
+    });
+    expect(snapshot.unavailable).toEqual(['census', 'federation', 'history', 'managed', 'native', 'policy', 'routines']);
+    expect(JSON.stringify(snapshot)).not.toContain('secret');
+    expect(JSON.stringify(snapshot)).not.toContain('private');
+    const empty = await collectStartupActivity(emptyInventory, { native: async () => [], policy: async () => null, history: async () => [] });
+    expect(empty.unavailable).toEqual(['census']);
+    expect(empty.census.complete).toBe(false);
+    expect(empty.census.problems).toContain('missing:native-login');
+  });
+
+  it('reads saved policy independently of a measured in-flight invocation', async () => {
+    let historyId = '';
+    const snapshot = await collectStartupActivity({ ...emptyInventory, getRoutines: async () => [routine()] }, {
+      native: async () => [],
+      policy: async () => ({ automatic: false, pausedUntil: null, revision: 7 }),
+      history: async (ids, limit) => {
+        expect(ids).toHaveLength(1); historyId = ids[0]!; expect(limit).toBe(100); return [];
+      },
+    });
+    expect(snapshot.features[0]!.desired.automatic).toBe(false);
+    expect(snapshot.features[0]!.observed).toBe('unknown');
+    expect(historyId).toBe(snapshot.features[0]!.id);
+    expect(snapshot.unavailable).toEqual(['census']);
+  });
+
+  it('bounds history, excludes foreign feature records and strips undeclared nested fields', async () => {
+    const snapshot = await collectStartupActivity({ ...emptyInventory, getRoutines: async () => [routine()] }, {
+      native: async () => [], policy: async () => ({ automatic: false, pausedUntil: null, revision: 2 }),
+      history: async (ids) => [
+        { featureId: ids[0]!, operation: 'policy-change', status: 'completed', at: '2026-11-02T08:00:00.000Z',
+          actor: 'user:opaque-id', trigger: 'settings', previous: null,
+          resulting: { automatic: false, pausedUntil: null, revision: 2, command: 'secret' }, error: 'secret' },
+        { featureId: 'another-workspace', operation: 'start', status: 'running', at: '2026-11-02T08:00:00.000Z',
+          actor: 'user:opaque-id', trigger: 'timer', previous: null, resulting: null },
+      ],
+    });
+    expect(snapshot.history).toHaveLength(1);
+    expect(snapshot.history[0]!.resulting).toEqual({ automatic: false, pausedUntil: null, revision: 2 });
+    expect(JSON.stringify(snapshot.history)).not.toContain('secret');
+    expect(snapshot.unavailable).toContain('history');
+    const bounded = await collectStartupActivity({ ...emptyInventory, getRoutines: async () => [routine()] }, {
+      history: async ids => Array.from({ length: 101 }, () => ({ featureId: ids[0]!, operation: 'start', status: 'completed',
+        at: '2026-11-02T08:00:00.000Z', actor: 'system:opaque-id', trigger: 'timer', previous: null, resulting: null })),
+    });
+    expect(bounded.history).toHaveLength(100);
+  });
+});
+
+describe('startup entrypoint census', () => {
+  it('returns the versioned census with the actual snapshot and fails an omitted installed entry', async () => {
+    const native: StartupActivityFeature[] = STARTUP_ACTIVITY_ENTRYPOINTS.filter(entry => !('notApplicableReason' in entry))
+      .map(entry => ({ ...scheduleStartupFeature(startupRow()), id: entry.id, origin: 'native', entrypointIds: [entry.id] }));
+    const complete = await collectStartupActivity({ ...emptyInventory, getRoutines: async () => [routine()] }, {
+      native: async () => native,
+      census: async features => STARTUP_ACTIVITY_ENTRYPOINTS.filter(entry => !('notApplicableReason' in entry))
+        .map(entry => ({ id: entry.id, kind: 'checked', featureIds: features.filter(feature => feature.entrypointIds.includes(entry.id)).map(feature => feature.id) })),
+    });
+    expect(complete.census).toMatchObject({ version: 1, complete: true, problems: [] });
+    const omitted = await collectStartupActivity(emptyInventory, { census: async () => [] });
+    expect(omitted.census.complete).toBe(false);
+    expect(omitted.census.dispositions.filter(entry => entry.kind === 'not-applicable')).toHaveLength(3);
+    expect(omitted.census.problems).toContain('missing:managed-fire-on-arm');
+  });
+  it('pins actual native writers and consumes the existing timer and sync descriptors', () => {
+    for (const entry of STARTUP_ACTIVITY_ENTRYPOINTS) expect(sourceText(entry.writer), entry.id).toContain(entry.witness);
+    const writers = new Set(STARTUP_ACTIVITY_ENTRYPOINTS.map(entry => entry.writer));
+    for (const dir of ['systemd', 'launchd', 'deb']) {
+      const base = `papercusp-desktop/src-tauri/${dir}`;
+      for (const file of readdirSync(resolve(REPO_ROOT, base)).filter(file => /(?:\.service|\.sh|\.plist\.template)$/.test(file)))
+        expect(writers.has(`${base}/${file}`), `unregistered native startup writer ${file}`).toBe(true);
+    }
+    const population = STARTUP_ACTIVITY_ENTRYPOINTS.map(entry => entry.id);
+    const dispositions = STARTUP_ACTIVITY_ENTRYPOINTS.map(entry => 'notApplicableReason' in entry
+      ? { id: entry.id, kind: 'not-applicable' as const, reason: entry.notApplicableReason }
+      : { id: entry.id, kind: 'checked' as const, featureIds: [entry.id] });
+    const features = population.map(id => ({ id, entrypointIds: [id] }));
+    expect(checkStartupActivityCensus(population, dispositions, features).complete).toBe(true);
+    expect(checkStartupActivityCensus(population, dispositions.slice(1), features).complete).toBe(false);
+  });
+  it('requires the entire independently discovered writer population exactly once', () => {
+    const population = ['native-login', 'boot-service', 'event-dispatch', 'managed-fire-on-arm', 'sync-trigger'];
+    const dispositions = population.map(id => ({ id, kind: 'checked' as const, featureIds: [id] }));
+    const features = population.map(id => ({ id, entrypointIds: [id] }));
+    expect(checkStartupActivityCensus(population, dispositions, features).complete).toBe(true);
+    expect(checkStartupActivityCensus(population, dispositions.slice(1), features)).toEqual({ complete: false, problems: ['missing:native-login'] });
+    expect(checkStartupActivityCensus(population, [...dispositions, dispositions[0]!], features).problems).toContain('duplicate:native-login');
+    expect(checkStartupActivityCensus(population, dispositions, features.slice(1)).problems).toContain('unrepresented:native-login');
+    expect(checkStartupActivityCensus(population, dispositions, features.map(feature => ({ ...feature, entrypointIds: ['unrelated'] }))).problems).toContain('wrong-writer:native-login');
+  });
+
+  it('requires reasons and accountable residue rather than silently exempting undisclosed features', () => {
+    expect(checkStartupActivityCensus(['native'], [{ id: 'native', kind: 'not-applicable', reason: '' }], []).complete).toBe(false);
+    expect(checkStartupActivityCensus(['native'], [{ id: 'native', kind: 'residue', workItemId: 'EI-123', owner: '' }], []).complete).toBe(false);
+    expect(checkStartupActivityCensus(['native'], [{ id: 'native', kind: 'not-applicable', reason: 'Registration is not installed on the observed device.' }], []).complete).toBe(true);
+  });
 });
 
 describe('humanInterval', () => {

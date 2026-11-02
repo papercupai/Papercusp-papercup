@@ -1465,11 +1465,16 @@ export function planValue(picked: any): any;
  * `mcp_tools:papercusp` (unfiltered) + `mcp_tools:papercusp-su` (39, correct) both
  * present in OMP's own tool cache; confirmed server-side filtering itself works
  * correctly via a direct probe of the exact seeded URL). A co-located `.mcp.json`
- * is NEVER wanted for an SU launch regardless of its shape — park it, full stop.
+ * is NEVER wanted for an SU launch regardless of its shape. Preserve its old
+ * contents beside it, then atomically replace it with an empty server list.
+ * Claude's sandbox may bind the project path on every native Bash call; removing
+ * the file makes later calls fail before their command starts. Keep a valid path
+ * in place even when there was no prior file.
  *
- * No restore: role launchers recreate `.mcp.json` fresh on their next launch (they
- * back up any existing one first), so parking is safe. Returns the parked path, or
- * null when nothing was parked. Side-effects fs only; exported for tests.
+ * Role launchers recreate `.mcp.json` fresh on their next launch (they back up any
+ * existing one first). The empty stub remains after SU launch so sandbox bind mounts
+ * never race a missing project config. Returns the parked path, or null when there
+ * was no prior config. Side-effects fs only; exported for tests.
  */
 export function parkRoleScopedMcpJson(cwd: any): string | null;
 /** The OMP/codex advertised seed — DERIVED, from the same policy and the same generated

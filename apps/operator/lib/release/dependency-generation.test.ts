@@ -2213,6 +2213,35 @@ exec /bin/cp "$@"
     expect(predictionOf(predictRef(integration, candidate).stdout).verdict).toBe('prewarmed');
   }, NATIVE_SHELL_TIMEOUT_MS);
 
+  it('rejects a legacy empty cached generation for dependency-bearing exact inputs', () => {
+    const integration = makeIntegration();
+    for (const rel of ['node_modules', 'packages/a/node_modules', 'packages/b/node_modules']) {
+      rmSync(join(integration, rel), { recursive: true });
+    }
+    writeFileSync(join(integration, 'package-lock.json'), JSON.stringify({
+      name: 'fixture', lockfileVersion: 3, packages: {},
+    }));
+    const empty = publish(integration);
+    expect(empty.status, empty.stderr).toBe(0);
+    writeFileSync(join(integration, 'package-lock.json'), JSON.stringify({
+      name: 'fixture', lockfileVersion: 3, packages: { 'node_modules/pkg': { version: '1.0.0' } },
+    }));
+    const candidate = commitFixture(integration, 'legacy empty generation input');
+    const fingerprint = fingerprintRef(integration, candidate);
+    expect(fingerprint.status, fingerprint.stderr).toBe(0);
+    const input = fingerprint.stdout.match(/\binput=([0-9a-f]{64})\b/)?.[1];
+    expect(input).toBeTruthy();
+    const generationRoot = join(integration, '.papercusp/dependency-generations');
+    const selector = join(generationRoot, '.inputs', input!);
+    const legacySelector = `schema=1\ninput=${input}\nidentity=${publishedIdentity(empty.stdout)}\ntoken=${publishedToken(empty.stdout)}\n`;
+    writeFileSync(selector, legacySelector);
+    const result = ensureRef(integration, candidate);
+    expect(result.status, result.stdout + result.stderr).toBe(74);
+    expect(result.stderr).toContain('cached dependency generation does not realise exact-ref lockfiles');
+    expect(result.stdout).not.toContain('DEPENDENCY_GENERATION_RESULT');
+    expect(readFileSync(selector, 'utf8')).toBe(legacySelector);
+  }, NATIVE_SHELL_TIMEOUT_MS);
+
   it.each([
     ['malformed selector', 'invalid prewarmed dependency selector'],
     ['dangling generation', 'has an invalid publication token'],

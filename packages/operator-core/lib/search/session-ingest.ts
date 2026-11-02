@@ -51,7 +51,7 @@ import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import { recordIndexedLoopTurnStarts, type IndexedNativeLoopTurn } from '../harness/routines/loop-turn-start-stamp';
 import { listAllProjectedTools } from '@papercusp/tooldef';
-import { papercuspPath } from '@papercusp/host-platform/home';
+import { papercuspHome, papercuspPath } from '@papercusp/host-platform/home';
 import { PAPERCUSP_MCP_SERVER_NAMES } from '../papercusp-mcp-servers';
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
@@ -1163,7 +1163,7 @@ const HOME = homedir();
 
 /** psu homes created before workspace-scoped state remain live across upgrades. */
 function managedTranscriptRoots(directory: string): string[] {
-  return [...new Set([papercuspPath(directory), join(HOME, '.papercusp', directory)])];
+  return [...new Set([papercuspPath(directory), join(papercuspHome({}, HOME), directory)])];
 }
 
 export const FILE_ADAPTERS: FileAdapter[] = [

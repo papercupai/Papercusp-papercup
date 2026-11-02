@@ -25,8 +25,8 @@ import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { readdir, readFile, rename } from 'node:fs/promises';
-import { homedir } from 'node:os';
 import * as path from 'node:path';
+import { papercuspPath } from '@papercusp/host-platform/home';
 import { registerSystemAction, type SystemActionCtx } from './system-actions';
 import { appendPipelineEvent } from '../git-sync/pipeline-events';
 import {
@@ -774,7 +774,7 @@ export function buildCommittedCheckpointToolingCommand(
   relScript: string,
   args: readonly string[],
   runId: string,
-  cacheRoot = path.join(homedir(), '.papercusp', 'checkpoint-tooling-runtimes'),
+  cacheRoot = papercuspPath('checkpoint-tooling-runtimes'),
 ): string {
   if (!/^[0-9a-f]{7,64}$/i.test(buildSha)) {
     throw new Error('scheduled checkpoint tooling requires a committed build SHA');
@@ -7016,6 +7016,8 @@ export async function writeFrozenCandidateRepairQueue(
     manifested = withRepairManifest(queue, Date.now(), {
       legOutputs: evidence.legOutputs,
       workspaceDirs: npmWorkspaceDirsByName(resolveIntegrationRoot()),
+      // This root scripts project is outside npm workspaces.
+      legProjectDirs: { 'lint:tsc:scripts': 'scripts' },
     });
     // Producers attach current paths before this write. Compare against the persisted
     // manifest, not that already-updated input, so newly actionable paths are published.

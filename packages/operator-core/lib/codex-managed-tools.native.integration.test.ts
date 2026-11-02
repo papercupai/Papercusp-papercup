@@ -407,7 +407,12 @@ describe('Codex managed replacement installed-client census', () => {
   }, 30_000);
 });
 } else {
-  const workerOptions = isolatedTestFileWorkerOptions(process.env, 1);
+  // The private integration worker can spend several minutes in a nested
+  // source/dependency verification phase that reports progress server-side;
+  // this parent only observes the final worker output. The verifier owns its
+  // measured-progress watchdog, so allow a bounded 12-minute outer silence window.
+  const workerOptions = isolatedTestFileWorkerOptions(process.env, 1,
+    { executeStallWindowMs: 12 * 60_000 });
   it('retains the installed Codex removal, resume, wake and drift controls with their original runtime', async context => {
     let prepared: Awaited<ReturnType<typeof preparePrivateOperatorApiBundle>> | undefined;
     const runId = await recordIsolatedIntegrationProof({ root, filePath,

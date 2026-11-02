@@ -38,6 +38,7 @@ import {
   invokedInjectedMembers,
   partialInjectionFixtures,
   seamControlFlowRecords,
+  equivalentMovedHelperImports,
   runCli,
   EXIT_NOT_CHECKED,
   // @ts-expect-error — .mjs guard script, no type declarations by design
@@ -206,6 +207,63 @@ describe('the trigger: a seam gained call sites', () => {
       export function b(source) { source.lexical(1); }
     `;
     expect(increasedSeams(before, after, 'x.ts')).toEqual([]);
+  });
+
+  it('keeps the equivalent extractHeadings move silent and preserves callback eligibility', () => {
+    const helperBody = [
+      '  const out: Array<{ id: string; text: string; depth: number }> = [];',
+      "  for (const line of content.split('\\n')) {",
+      "    const match = /^(#{1,6})\\s+(.+?)\\s*$/.exec(line);",
+      '    if (!match) continue;',
+      '    const text = match[2].trim();',
+      '    if (!text) continue;',
+      "    const id = text.replace(/[^A-Za-z0-9]/g, '-');",
+      '    out.push({ id, text, depth: match[1].length });',
+      '    if (out.length >= 100) break;',
+      '  }',
+      '  return out;',
+    ].join('\n');
+    const genericBefore = 'function extractHeadings(content: string) {\n' + helperBody + '\n}';
+    const genericAfter = 'export ' + genericBefore;
+    const localHelper =
+      'function extractHeadings(content: string) {\n' +
+      '  // The duplicated local implementation differs only by this comment.\n' +
+      helperBody +
+      '\n}';
+    const adapterBody = [
+      'export function listPages(files, sections) {',
+      '  const direct = files.map((file) => {',
+      "    if (file) return path.join('root', file);",
+      '    return null;',
+      '  });',
+      '  const nested = [];',
+      '  for (const section of sections) {',
+      '    nested.push(...files.map((file) => path.join(section, file)));',
+      '    nested.push(extractHeadings(section));',
+      '  }',
+      '  return [direct, nested, extractHeadings(files[0])];',
+      '}',
+    ].join('\n');
+    const harnessBefore = [
+      "import * as path from 'node:path';",
+      localHelper,
+      adapterBody,
+    ].join('\n');
+    const harnessAfter = [
+      "import * as path from 'node:path';",
+      "import { extractHeadings } from './generic-fs';",
+      adapterBody,
+    ].join('\n');
+    const genericFile = 'packages/docs-engine/src/adapters/generic-fs.ts';
+    const harnessFile = 'packages/docs-engine/src/adapters/harness-fs.ts';
+    const moved = equivalentMovedHelperImports([
+      { file: genericFile, beforeText: genericBefore, afterText: genericAfter },
+      { file: harnessFile, beforeText: harnessBefore, afterText: harnessAfter },
+    ]);
+
+    expect(moved.get(harnessFile)).toEqual(new Set(['extractHeadings']));
+    expect(increasedSeams(harnessBefore, harnessAfter, harnessFile, moved.get(harnessFile))).toEqual([]);
+    expect(changedSeamControlFlow(harnessBefore, harnessAfter, harnessFile)).toEqual([]);
   });
 
   it('counts a DESTRUCTURED seam, and a directly-called parameter', () => {

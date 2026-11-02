@@ -23,6 +23,9 @@ import { dispatchWrapperMarkEnabled } from '../../telemetry-dispatch-wrapper';
 import { decodeToolsInvokeArgs } from './invoke-args';
 import { readServingGeneration } from '../../serving-generation';
 import { assertServingBuild, MCP_SERVING_BUILD_META_KEY } from '../../serving-build';
+import { managedSetInterval } from '@papercusp/scheduled-registry';
+
+const TOOL_INVOKE_PROGRESS_INTERVAL_MS = 30_000;
 
 type NestedOutcome = {
   effectiveStatus: 'ok' | 'partial' | 'error' | 'vacuous';
@@ -265,6 +268,7 @@ export function summarizeNestedToolOutcome(result: {
 
 export default defineTool({
   name: 'tools:invoke',
+  expose: { mcp: { streaming: true } },
   // The MCP host races nested dispatch against the target's effective MCP
   // deadline; the projected dispatcher also owns the target's timeout signal.
   // Keep this wrapper outside the longest known target MCP deadline. scorecards:emit
@@ -416,7 +420,23 @@ export default defineTool({
       ctx.codeMode && !('payloadTier' in targetArgs)
         ? { ...targetArgs, payloadTier: 'full' }
         : targetArgs;
-    const result = await ctx.dispatchTool(name, dispatchArgs);
+    const reportProgress = (message: string) => ctx.progress?.(undefined, message);
+    const result = await (async () => {
+      const progressTimer = typeof ctx.progress === 'function'
+        ? managedSetInterval(
+          'tools-invoke-progress',
+          TOOL_INVOKE_PROGRESS_INTERVAL_MS,
+          () => reportProgress('Still waiting for nested tool "' + name + '" to finish.'),
+          { category: 'lifecycle', instanced: true, classification: 'must-sample' },
+        )
+        : undefined;
+      try {
+        reportProgress('Dispatching nested tool "' + name + '".');
+        return await ctx.dispatchTool(name, dispatchArgs);
+      } finally {
+        progressTimer?.stop();
+      }
+    })();
     const outcome = summarizeNestedToolOutcome(result);
     // P-012 (census double-count): the inner dispatch above wrote its OWN telemetry
     // row, so this row is the wrapper overhead — mark it so tool_name censuses

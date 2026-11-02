@@ -40,6 +40,11 @@ export interface PlanSpecQualityGateVerdict {
   code?: PlanSpecQualityGateCode;
   message?: string;
   wouldBlock: string[];
+  scorecardDiagnostics?: Array<{
+    issueId: string;
+    failedChecks: string[];
+    differingCriteria: string[];
+  }>;
   candidates?: Array<{
     classRef: PlanClassRubricRef;
     verdict: PlanSpecQualityResult['verdict'];
@@ -195,6 +200,28 @@ function scorecardMatches(card: ScorecardRow, evaluation: PlanSpecQualityResult)
     scorecardStructurallyExact(card, evaluation) &&
     settledGradingAuditIsCurrent(card)
   );
+}
+
+/** Keep rejected evidence addressable instead of describing an existing card as absent. */
+function rejectedScorecardDiagnostic(card: ScorecardRow, evaluation: PlanSpecQualityResult) {
+  const checks: Record<string, boolean> = {
+    rubric: card.rubricRef === SPEC_QUALITY_RUBRIC_REF,
+    subject: card.subject?.kind === 'plan' && card.subject.ref === evaluation.scorecardDraft.subject.ref,
+    completeness: card.rubricResolved && card.missingKeys.length === 0 && card.extraKeys.length === 0,
+    organic: !card.synthesized,
+    current: !card.retracted && !card.supersededBy && card.provisional === undefined,
+    evidence: matchesSpecQualityEvidence(card, evaluation),
+    ratings: Object.values(card.ratings).every(acceptedRating),
+    audit: settledGradingAuditIsCurrent(card),
+  };
+  const differingCriteria = [...new Set([...Object.keys(card.ratings), ...Object.keys(evaluation.ratings)])]
+    .filter((key) => {
+      const stored = card.ratings[key];
+      const current = Object.entries(evaluation.ratings).find(([criterion]) => criterion === key)?.[1];
+      return !stored || !current || stored.rating !== current.rating ||
+        specQualityEvidenceWithoutReplay(stored.evidence, evaluation) !== current.evidence;
+    }).sort();
+  return { issueId: card.issueId, failedChecks: Object.keys(checks).filter((key) => !checks[key]), differingCriteria };
 }
 
 async function reservedGradingAuditorGuidance(
@@ -362,6 +389,7 @@ export async function evaluatePlanSpecQualityGate(
     };
   }
 
+  let scorecardDiagnostics: PlanSpecQualityGateVerdict['scorecardDiagnostics'] = [];
   try {
     const cards = await listCards({
       rubricRef: SPEC_QUALITY_RUBRIC_REF,
@@ -451,6 +479,7 @@ export async function evaluatePlanSpecQualityGate(
           'grading-integrity audit.',
       };
     }
+    scorecardDiagnostics = cards.map((card) => rejectedScorecardDiagnostic(card, evaluation));
   } catch (error) {
     return {
       satisfied: false,
@@ -477,6 +506,7 @@ export async function evaluatePlanSpecQualityGate(
     code: 'spec_quality_scorecard_missing',
     wouldBlock: ['exact-specSetHash-scorecard-missing'],
     candidates,
+    scorecardDiagnostics,
     message:
       `Plan '${input.planSlug}' has structurally passing clauses but no current complete terminal ` +
       `${SPEC_QUALITY_RUBRIC_REF} scorecard for exact specSetHash ${evaluation.specSetHash} under persisted ` +

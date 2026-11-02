@@ -13,7 +13,9 @@
  * rung uses no stubs for the boundary the residue crossed. It installs a real runtime (not
  * transient) user unit shaped like agenticmail.service: a start script that execs node on the
  * packaged API entry. It starts the unit on the REAL user systemd manager, and lets the census read
- * it through the production `execSystemctlUser` against the real SUPERVISED_PROCESSES registry.
+ * it through a local systemctl executor against the real SUPERVISED_PROCESSES registry.
+ * This keeps the fixture and census on the same user manager; production sidecar routing has
+ * separate coverage and is blocked by the integration runner's protected-live-Postgres guard.
  *
  *   - entry ABSENT  -> node exits on MODULE_NOT_FOUND, the unit goes `failed`, and the census
  *                      reports it and announces it once.
@@ -27,13 +29,12 @@ import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:f
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { randomBytes } from 'node:crypto';
-import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import {
-  SUPERVISION_RECONCILE_SIDECAR_VAR,
-  execSystemctlUser,
-} from '../harness/routines/supervision-reconcile-action';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { SUPERVISED_PROCESSES } from '../service-health';
-import { _resetFailedUnitCensusForTests, censusUnregisteredFailedUnits } from './unit-reconciler';
+import {
+  _resetFailedUnitCensusForTests,
+  censusUnregisteredFailedUnits,
+} from './unit-reconciler';
 
 const RUNTIME_DIR = process.env.XDG_RUNTIME_DIR;
 const UNIT_DIR = RUNTIME_DIR ? join(RUNTIME_DIR, 'systemd', 'user') : '';
@@ -46,6 +47,23 @@ const ENTRY_REL = join('agenticmail', 'node_modules', '@agenticmail', 'api', 'di
 function systemctl(...args: string[]): { status: number | null; stdout: string } {
   const r = spawnSync('systemctl', ['--user', ...args], { encoding: 'utf8' });
   return { status: r.status, stdout: r.stdout ?? '' };
+}
+
+async function execSystemctlUserLocally(args: string[]): Promise<string> {
+  const result = spawnSync('systemctl', ['--user', ...args], { encoding: 'utf8', timeout: 10_000 });
+  if (result.error) throw result.error;
+  if (result.status !== 0) {
+    const stderr = (result.stderr ?? '').trim();
+    const error = Object.assign(
+      new Error(
+        'systemctl --user ' + args.join(' ') + ' exited ' + String(result.status) +
+          (stderr ? '\n' + stderr : ''),
+      ),
+      { code: result.status, stdout: result.stdout ?? '', stderr: result.stderr ?? '' },
+    );
+    throw error;
+  }
+  return result.stdout ?? '';
 }
 
 function activeState(unit: string): string {
@@ -108,18 +126,6 @@ function installAgenticmailShapedUnit(withEntry: boolean): { unit: string; entry
 }
 
 describe.skipIf(!userSystemdReachable)('failed-unit census on the real user systemd manager (FAIL-P-001)', () => {
-  const priorSidecarVar = process.env[SUPERVISION_RECONCILE_SIDECAR_VAR];
-
-  beforeAll(() => {
-    // Force the production exec to spawn systemctl locally, so the test does not depend on a
-    // spawner sidecar being up. The systemctl call, its arguments and its parsing are unchanged.
-    process.env[SUPERVISION_RECONCILE_SIDECAR_VAR] = '0';
-    return () => {
-      if (priorSidecarVar === undefined) delete process.env[SUPERVISION_RECONCILE_SIDECAR_VAR];
-      else process.env[SUPERVISION_RECONCILE_SIDECAR_VAR] = priorSidecarVar;
-    };
-  });
-
   beforeEach(() => _resetFailedUnitCensusForTests());
 
   afterEach(() => {
@@ -135,12 +141,14 @@ describe.skipIf(!userSystemdReachable)('failed-unit census on the real user syst
     expect(systemctl('show', '-p', 'Transient', '--value', unit).stdout.trim()).toBe('no');
 
     const notes: string[] = [];
+    const censusLogs: string[] = [];
     const reported = await censusUnregisteredFailedUnits(
-      { execUser: execSystemctlUser, notify: async ({ summary }) => void notes.push(summary) },
+      { execUser: execSystemctlUserLocally, notify: async ({ summary }) => void notes.push(summary) },
       SUPERVISED_PROCESSES,
-      () => {},
+      (message) => void censusLogs.push(message),
     );
 
+    expect(censusLogs, JSON.stringify(censusLogs)).toEqual([]);
     expect(reported).toContain(unit);
     expect(notes.join('\n')).toContain(unit);
   }, 30_000);
@@ -154,12 +162,14 @@ describe.skipIf(!userSystemdReachable)('failed-unit census on the real user syst
     expect(activeState(unit)).toBe('active');
 
     const notes: string[] = [];
+    const censusLogs: string[] = [];
     const reported = await censusUnregisteredFailedUnits(
-      { execUser: execSystemctlUser, notify: async ({ summary }) => void notes.push(summary) },
+      { execUser: execSystemctlUserLocally, notify: async ({ summary }) => void notes.push(summary) },
       SUPERVISED_PROCESSES,
-      () => {},
+      (message) => void censusLogs.push(message),
     );
 
+    expect(censusLogs, JSON.stringify(censusLogs)).toEqual([]);
     expect(reported).not.toContain(unit);
     expect(notes.join('\n')).not.toContain(unit);
   }, 30_000);
@@ -170,14 +180,27 @@ describe.skipIf(!userSystemdReachable)('failed-unit census on the real user syst
     expect(await waitForState(unit, 'failed')).toBe('failed');
 
     const notes: string[] = [];
-    const deps = { execUser: execSystemctlUser, notify: async ({ summary }: { summary: string }) => void notes.push(summary) };
-    const first = await censusUnregisteredFailedUnits(deps, SUPERVISED_PROCESSES, () => {});
-    const second = await censusUnregisteredFailedUnits(deps, SUPERVISED_PROCESSES, () => {});
+    const censusLogs: string[] = [];
+    const deps = {
+      execUser: execSystemctlUserLocally,
+      notify: async ({ summary }: { summary: string }) => void notes.push(summary),
+    };
+    const first = await censusUnregisteredFailedUnits(
+      deps,
+      SUPERVISED_PROCESSES,
+      (message) => void censusLogs.push(message),
+    );
+    const second = await censusUnregisteredFailedUnits(
+      deps,
+      SUPERVISED_PROCESSES,
+      (message) => void censusLogs.push(message),
+    );
 
     // Both ticks still REPORT the unit; only the first ANNOUNCES it.
     expect(first).toContain(unit);
     expect(second).toContain(unit);
     expect(notes.filter((n) => n.includes(unit))).toHaveLength(1);
+    expect(censusLogs, JSON.stringify(censusLogs)).toEqual([]);
   }, 30_000);
 });
 

@@ -17,7 +17,7 @@ import type { ArmSubmission, BenchTask, GradeResult, OfficialGrader } from '../t
 export type ProcExec = (
   cmd: string,
   args: string[],
-  opts?: { cwd?: string; env?: Record<string, string> },
+  opts?: { cwd?: string; env?: Record<string, string>; timeoutMs?: number; signal?: AbortSignal },
 ) => Promise<{ stdout: string; stderr: string; code: number }>;
 
 /** Minimal fs the grader needs (injected for tests). */

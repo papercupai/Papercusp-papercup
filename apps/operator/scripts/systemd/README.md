@@ -1472,7 +1472,13 @@ every restart and paying the load inside the first `/rerank` caller's budget.
 
 ## Install (one-time, on a fresh machine)
 
+The CUDA ONNX Runtime provider needs `libcurand` and `libcufft` alongside the
+CUDA bundle under `/usr/local/lib/ollama/cuda_v12`. Install the distro runtime
+packages before enabling the sidecar; the unit adds the Ollama bundle to its
+loader path for `cublas` and `cudart`.
+
 ```bash
+sudo apt-get install libcurand10 libcufft11
 cd "$(git rev-parse --show-toplevel)/apps/operator/scripts/systemd"
 for f in papercup-embed-sidecar.service \
          papercup-embed-sidecar-watchdog.service papercup-embed-sidecar-watchdog.timer; do

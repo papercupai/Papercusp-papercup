@@ -1,8 +1,11 @@
 import type { ActivityRecord } from '@papercusp/activity-bridge';
 import { describe, expect, it, vi } from 'vitest';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { LOOP_TURN_START_MARKER, SESSION_END_MARKER, SESSION_START_MARKER } from '../../agent-tools/activity/lifecycle-markers';
-import { indexedLoopTurnStartRecord, isLoopFirePrompt, isLoopTurnStartCandidate, loopTurnStartRecord, readLoopFireIdentityForCurrentTurn, recordLoopTurnStart, type IndexedNativeLoopTurn } from './loop-turn-start-stamp';
-import { LOOP_FIRE_PROVENANCE_TTL_MS, type LedgerRow } from '../../turn-provenance/turn-provenance';
+import { indexedLoopTurnStartRecord, isLoopFirePrompt, isLoopTurnStartCandidate, loopTurnStartRecord, readLoopFireIdentityForCurrentTurn, recordLoopTurnStart, resolveLoopFireIdentityForLaunch, type IndexedNativeLoopTurn } from './loop-turn-start-stamp';
+import { ledgerPathForSid, LOOP_FIRE_PROVENANCE_TTL_MS, type LedgerRow } from '../../turn-provenance/turn-provenance';
 
 // EI-24791346664119438: the turn-start endpoint stamps a loop-fire turn start in real time so
 // reconcile-loop-routines can tell a long-running loop turn from a wake that never became one.
@@ -223,6 +226,35 @@ describe('loop-turn-start-stamp', () => {
     expect(await recordLoopTurnStart({ owner: 'su-1', prompt: 'hi', workspaceId: 'ws-1' }, { append })).toBeNull();
     expect(append).toHaveBeenCalledTimes(1);
     expect(append.mock.calls[0][0]).toMatchObject({ summary: LOOP_TURN_START_MARKER, owner: 'su-1' });
+  });
+
+  it('resolves authenticated self-compaction from the canonical ledger for a legacy launch spec', () => {
+    const owner = 'su-legacy-launch';
+    const nowMs = Date.now();
+    const directory = mkdtempSync(join(tmpdir(), 'loop-turn-start-legacy-'));
+    try {
+      const row: LedgerRow = {
+        sid: owner, nonce: '0123456789abcdef', origin: 'self-compaction',
+        sha256: 'authenticated-envelope', ts: nowMs - 1000,
+        loopFire: { routineId: 'loop-legacy', wakeCount: 7 },
+      };
+      writeFileSync(ledgerPathForSid(owner, directory), `${JSON.stringify(row)}\n`);
+      const legacyLaunch = {
+        workspaceId: 'ws-1',
+        agent: 'codex',
+        launchSpec: { workspaceId: 'ws-1' },
+      };
+      expect(resolveLoopFireIdentityForLaunch({
+        owner, prompt: SELF_COMPACTION_PROMPT, workspaceId: 'ws-1', client: 'codex',
+      }, legacyLaunch, { fallbackDir: directory, nowMs })).toEqual({
+        routineId: 'loop-legacy', wakeCount: 7,
+      });
+      expect(resolveLoopFireIdentityForLaunch({
+        owner, prompt: SELF_COMPACTION_PROMPT, workspaceId: 'other-workspace', client: 'codex',
+      }, legacyLaunch, { fallbackDir: directory, nowMs })).toBeNull();
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 
   it('never throws when the store fails (the hook request must not cost the turn)', async () => {

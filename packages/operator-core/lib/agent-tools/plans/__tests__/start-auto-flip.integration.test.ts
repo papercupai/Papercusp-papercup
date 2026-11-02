@@ -17,6 +17,7 @@
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
+import { readFile } from 'node:fs/promises';
 import { DEFAULT_WORKSPACE_ID } from '../../../workspace-registry';
 import { runWithWorkspace } from '../../../workspace-als';
 import type { PlanPgFixture } from './_pg-tool-fixture';
@@ -24,6 +25,9 @@ import { scorecardEvidenceFingerprint, type ScorecardRow } from '../../../scorec
 import { metadataClauseWrite } from '../coordination-metadata-fixtures';
 import { evaluatePlanSpecQuality, SPEC_QUALITY_RUBRIC_REF } from '../spec-quality';
 import { parsePlan } from '../parser';
+import { dispatchProjectedTool, type ProjectedTool } from '@papercusp/agent-mcp';
+import { toolGuardText } from '../../../endpoint-route/routes/agent-mcp/identity-hook-sinks';
+import { controlAnchorKernelResolver } from '../../../projected-tool-deps';
 
 // WI-5825: plans:start resolves its write key through resolvePlanScope — the SAME
 // authority its plan READ uses — not the ambient activeWorkspaceId(). Pin the resolver
@@ -249,6 +253,7 @@ async function revisionRows(): Promise<Array<{ seq: number; content_hash: string
     SELECT seq, content_hash, content_snapshot, rationale
       FROM harness_shared.plan_revisions
      WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND plan_slug = ${SLUG}
+       AND rationale IS DISTINCT FROM 'plans:start completed canonical promotion, admission and claim binding'
      ORDER BY seq
   `;
 }
@@ -263,6 +268,8 @@ async function persistedStartState() {
 }
 
 async function cleanupFixture() {
+  await admin`DELETE FROM harness_shared.work_items
+    WHERE workspace_id=${WS} AND harness_slug=${HARNESS} AND plan_slug=${SLUG}`;
   // Revisions are append-only, even for the test admin. Teardown on the
   // injected throwaway database suppresses triggers on THIS transaction only:
   // no shared ALTER TABLE and no changes to the production immutability guard.
@@ -280,8 +287,9 @@ async function cleanupFixture() {
 }
 
 beforeAll(async () => {
-  fx = await setupPlanPgFixture();
+  fx = await setupPlanPgFixture({ isolated: true });
   admin = fx.admin;
+  await admin.unsafe(await readFile(new URL('../../../../../../libs/papercusp/libs/db/sql/1613-plan-execution-start-revision.sql', import.meta.url), 'utf8'));
 }, 60_000);
 
 afterAll(async () => {
@@ -293,7 +301,7 @@ beforeEach(async () => {
   await cleanupFixture();
   MUG_KETTLE.on = true;
   START_GATES.activation.mockReset();
-  START_GATES.activation.mockResolvedValue({ satisfied: true, auditSeq: 1 });
+  START_GATES.activation.mockResolvedValue({ satisfied: true, auditSeq: 1, grandfathered: true });
   START_GATES.admission.mockReset();
   START_GATES.admission.mockResolvedValue({
     ready: true,
@@ -319,6 +327,17 @@ beforeEach(async () => {
 });
 
 describe('plans:start — draft auto-approve (P2-3)', () => {
+  it.each(['promotion','binding'])('issues no authority when the final %s leg fails', async leg => {
+    await seedLegacyPlan('ready');
+    if (leg === 'promotion') START_GATES.promotion.mockRejectedValueOnce(new Error('promotion unavailable'));
+    else START_GATES.claimSpec.mockRejectedValueOnce(new Error('binding unavailable'));
+    const { isError } = await runStart();
+    expect(isError).toBe(true);
+    const [row] = await admin`SELECT execution_start_revision_seq FROM harness_shared.harness_plans
+      WHERE workspace_id=${WS} AND harness_slug=${HARNESS} AND plan_slug=${SLUG}`;
+    expect(row.execution_start_revision_seq).toBeNull();
+  });
+
   it('starting a DRAFT plan flips its frontmatter to ready and reports autoApproved:true', async () => {
     await seedLegacyPlan('draft');
     expect(await frontmatterStatus()).toBe('draft');
@@ -364,7 +383,7 @@ describe('plans:start — draft auto-approve (P2-3)', () => {
     expect(await frontmatterStatus()).toBe('ready');
 
     const { data, isError } = await runStart();
-    expect(isError).toBe(false);
+    expect(isError, JSON.stringify(data)).toBe(false);
     expect(data).toMatchObject({ status: 'started', autoApproved: false, transitioned: true });
     // Frontmatter untouched — it was never a draft.
     expect(await frontmatterStatus()).toBe('ready');
@@ -398,6 +417,14 @@ describe('plans:start — refused approval leaves no persisted start (P-002)', (
       WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND plan_slug = ${SLUG}`;
     await admin`INSERT INTO harness_shared.plan_items (workspace_id, harness_slug, plan_slug, item_id, seq, item_text, status)
       VALUES (${WS}, ${HARNESS}, ${SLUG}, 'P-001', 1, 'Submit an event', 'todo')`;
+    // Source readers render work-graph nodes; this class-race fixture has no
+    // unrelated initial code-scope requirement.
+    const { writePlanLineNodes, readPlanLineNodes } = await import('../plan-line-graph');
+    await writePlanLineNodes(admin, { workspaceId: WS, harnessSlug: HARNESS, slug: SLUG }, [], [{
+      id: 'P-001', text: 'Submit an event', status: 'todo', importance: 'normal',
+      phase: 'Phase', decisionRefs: [], blockedBy: [], deliverable: 'doc',
+    }]);
+    const planItems = await readPlanLineNodes(admin, { workspaceId: WS, harnessSlug: HARNESS, slug: SLUG });
     const rubricId = `${SLUG}-acceptance`;
     const data = { kind: 'acceptance', subjectPlan: SLUG, subjectHarnessSlug: HARNESS,
       classRef: 'plan-class-feature-ship', characteristic: 'plan-acceptance',
@@ -421,7 +448,7 @@ describe('plans:start — refused approval leaves no persisted start (P-002)', (
     ).rejects.toThrow(/immutable/);
     const cardFor = (classRef: 'plan-class-feature-ship' | 'plan-class-bugfix'): ScorecardRow => {
       const evaluation = evaluatePlanSpecQuality({
-        planSlug: SLUG, harnessSlug: HARNESS, planItemIds: ['P-001'], clauses, classRef,
+        planSlug: SLUG, harnessSlug: HARNESS, planItemIds: ['P-001'], planItems, clauses, classRef,
       });
       expect(evaluation.verdict).toBe('pass');
       return {
@@ -544,7 +571,7 @@ describe('plans:start — draft auto-approve survives the retired op_status axis
     await seedLegacyPlan('draft');
 
     const { data, isError } = await runStart();
-    expect(isError).toBe(false);
+    expect(isError, JSON.stringify(data)).toBe(false);
     // The approval half is untouched...
     expect(data).toMatchObject({ autoApproved: true, opStatusRetired: true });
     expect(await frontmatterStatus()).toBe('ready');
@@ -556,6 +583,35 @@ describe('plans:start — draft auto-approve survives the retired op_status axis
        WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND plan_slug = ${SLUG}
     `;
     expect(rows[0]?.op_status ?? null).toBeNull();
+    const proof = await admin<{ content_snapshot: string }[]>`
+      SELECT r.content_snapshot FROM harness_shared.harness_plans p
+      JOIN harness_shared.plan_revisions r ON r.workspace_id=p.workspace_id AND r.harness_slug=p.harness_slug
+        AND r.plan_slug=p.plan_slug AND r.seq=p.execution_start_revision_seq
+      WHERE p.workspace_id=${WS} AND p.harness_slug=${HARNESS} AND p.plan_slug=${SLUG}`;
+    const receipt = JSON.parse(proof[0]!.content_snapshot);
+    expect(receipt.schema).toBe('plan-execution-start-v1');
+    expect(receipt.body).toContain('status: ready');
+    const { readPlanExecutionStart } = await import('../plan-execution-authority');
+    expect(await readPlanExecutionStart({ planSlug: SLUG, harnessSlug: HARNESS }, WS)).toEqual([]);
+    // Admission must consume the receipt made by canonical start, not a test-issued shortcut.
+    const ownerId = `su-${HARNESS}`;
+    await admin`INSERT INTO harness_shared.session_briefs (owner_id,workspace_id,current_plan_slug,harness_slug)
+      VALUES (${ownerId},${WS},${SLUG},${HARNESS})`;
+    try {
+      const native = await toolGuardText({ ownerId, workspaceId: WS,
+        call: { tool: 'apply_patch', input: {}, client: 'codex' } }, async () => null);
+      expect(native).toBe('');
+      const handler = vi.fn(async () => ({ content: [{ type: 'text' as const, text: 'private write admitted' }] }));
+      const tool = { pluginName: 'fixture', description: 'private write', inputSchema: { type: 'object' },
+        capabilities: [], expose: { mcp: { name: 'capability:write' } }, fn: handler } as ProjectedTool;
+      const result = await dispatchProjectedTool(tool, 'capability:write', {},
+        { workspaceId: WS, isSuperuser: true, uiClientId: ownerId, signal: new AbortController().signal,
+          log: () => {}, progress: () => {}, emit: () => {} }, { kernelEnforcement: controlAnchorKernelResolver });
+      expect(result.ok, JSON.stringify(result)).toBe(true);
+      expect(handler).toHaveBeenCalledOnce();
+    } finally {
+      await admin`DELETE FROM harness_shared.session_briefs WHERE owner_id=${ownerId}`;
+    }
   });
 });
 

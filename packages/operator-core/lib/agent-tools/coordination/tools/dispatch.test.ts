@@ -94,6 +94,33 @@ describe('public original-item recovery door (handler wiring, mocked recovery I/
     expect(result.request).toEqual({ state: 'queued', pickupConfirmed: false });
   });
 
+  it('binds admission authority to the per-call harness for an unscoped caller', async () => {
+    await call(base, { ...context, harnessSlug: null });
+
+    expect(recoveryIO.request).toHaveBeenCalledWith(expect.objectContaining({
+      workspaceId: 'ws-recovery',
+      harnessSlug: 'papercusp',
+      authority: expect.objectContaining({
+        context: expect.objectContaining({ harnessSlug: 'papercusp' }),
+      }),
+    }));
+  });
+
+  it('resolves the self selector to the authenticated caller before admission recovery', async () => {
+    const ownerId = 'su-12345678-abcd-4000-8000-1234567890ab';
+    const result = await call({ ...base, to: 'self' }, { ...context, uiClientId: ownerId });
+
+    expect(recoveryIO.target).not.toHaveBeenCalled();
+    expect(recoveryIO.request).toHaveBeenCalledWith(expect.objectContaining({
+      workspaceId: 'ws-recovery',
+      harnessSlug: 'papercusp',
+      workItemId: 'WI-original',
+      caller: ownerId,
+      target: ownerId,
+    }));
+    expect(result).toMatchObject({ ok: true, workItemId: 'WI-original' });
+  });
+
   it('passes an exact canonical owner ID directly to recovery authorization', async () => {
     const ownerId = 'su-12345678-abcd-4000-8000-1234567890ab';
     const result = await call({ ...base, to: ownerId });

@@ -555,7 +555,7 @@ export function evaluateLifecycleCandidates(input: {
     const confirmedResidue = input.confirmedResidueTaskIds.has(row.taskId);
     const prior = processLifecycleProbeFromDetail(row.detail);
     let nextProbe = prior;
-    const currentCpuSampledAtMs = parsedMs(row.lastSeenAt);
+    const currentCpuSampledAtMs = parsedMs(row.cpuSampledAt);
 
     if (row.state === 'unaccounted' && confirmedResidue) {
       const startedAtMs = parsedMs(row.startedAt);

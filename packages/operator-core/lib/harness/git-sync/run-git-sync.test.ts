@@ -2650,6 +2650,45 @@ describe('runGitSync (real git, no submodule)', () => {
     expect(git(repo, 'status', '--porcelain', '--', dependencyPath, importerPath)).toBe('');
   });
 
+  it('does not hold an importer for a clean tracked dependency protected by a live lock', async () => {
+    const exporterPath = 'exporter.ts';
+    const importerPath = 'importer.ts';
+    const controlPath = 'control.ts';
+    writeFileSync(join(repo, exporterPath), 'export const oldValue = 1;\n');
+    writeFileSync(join(repo, importerPath),
+      "import { oldValue } from './exporter';\nexport const value = oldValue;\n");
+    git(repo, 'add', '-A');
+    git(repo, 'commit', '--no-verify', '-m', 'seed clean locked exporter');
+    git(repo, 'push', 'origin', 'main');
+
+    writeFileSync(join(repo, importerPath),
+      "import { oldValue } from './exporter';\nexport const value = oldValue + 1;\n");
+    writeFileSync(join(repo, controlPath), 'export const control = true;\n');
+
+    const logs: string[] = [];
+    const first = await runGitSync('test', {
+      repoPath: repo,
+      runGit: directRunGit,
+      config: cfg,
+      liveLockHoldings: [{ path: exporterPath, owner: 'su-peer', intent: 'reviewing exporter' }],
+      log: (message) => logs.push(message),
+    });
+
+    expect(first.status).toBe('synced');
+    expect(first.contentErrors).not.toContainEqual(expect.objectContaining({
+      file: importerPath,
+      detectorKey: 'quarantined-importer',
+    }));
+    expect(logs.join('\n')).not.toContain("post-stage guard: importer.ts imports './exporter'");
+    expect(
+      git(originDir, 'show', 'main:' + importerPath).includes('oldValue + 1'),
+      JSON.stringify({ contentErrors: first.contentErrors, relevantLogs: logs.filter((line) => /import|commit|unstage|exclude/i.test(line)) }),
+    ).toBe(true);
+    expect(git(originDir, 'show', 'main:' + exporterPath)).toBe('export const oldValue = 1;');
+    expect(git(originDir, 'show', 'main:' + controlPath)).toBe('export const control = true;');
+    expect(git(repo, 'status', '--porcelain', '--', importerPath, exporterPath, controlPath)).toBe('');
+  });
+
   it('EI-24269368801794879: a locked tracked exporter holds back a dirty importer of its new symbol', async () => {
     const exporterPath = 'exporter.ts';
     const importerPath = 'importer.ts';

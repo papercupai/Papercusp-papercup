@@ -652,6 +652,8 @@ export async function inspectRetentionTrees(root: string, opts: {
    * probe cannot establish whether this operation will succeed, and must not
    * suppress the real command or discard its error. */
   requirePrivilege?: boolean;
+  /** Retain the entire first-level group when a caller removes groups atomically and any descendant is a symlink. */
+  retainSymlinkDescendants?: boolean;
 }): Promise<RetentionTreeCensus> {
   root = resolve(root);
   const result: RetentionTreeCensus = { entries: [], retained: [], inspectedNodes: 0, retainedRecentTrees: 0 };
@@ -762,7 +764,7 @@ export async function inspectRetentionTrees(root: string, opts: {
       }
       catch { malformed = true; }
       if (excluded.includes(path)) group.reason = 'protected policy root';
-      else if (type === 'l' && direct) group.reason = 'symlink boundary';
+      else if (type === 'l' && (direct || opts.retainSymlinkDescendants)) group.reason = 'symlink boundary';
       else if (type === 'l' && opts.collectBuildDirs) {
         group.buildDirsBlocked = true;
         group.entry.buildDirs = [];

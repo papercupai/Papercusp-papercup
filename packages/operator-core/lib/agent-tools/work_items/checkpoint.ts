@@ -2844,13 +2844,14 @@ export default defineTool({
             };
           }
         }
-        // EI-22386514939689944: the checkpoint body is the successor's source
-        // of truth for what landed. Reuse the `dependsOn` file resolver against
-        // paths found in narrative prose, after verify-read proves the bytes
-        // that will be handed over. Explicit null tokens are advisory only;
-        // resolver failures stay fail-open inside the helper.
+        // EI-22386514939689944: lint only narrative prose supplied by THIS write.
+        // `stored` can also contain historical prose auto-preserved by the locked
+        // transform, and warning on its paths misreports old context as a fresh
+        // handover gap. `currentProvenanceText` has this call's normalized body and
+        // checks; the verify-read above still proves the complete stored checkpoint.
+        // Explicit null tokens are advisory only; resolver failures stay fail-open.
         const prosePathLint =
-          stored !== null ? await runPhase('prose-path-advisory', () => unresolvedProsePathsInCheckpoint(stored, { workspaceId, harness })) : undefined;
+          stored !== null ? await runPhase('prose-path-advisory', () => unresolvedProsePathsInCheckpoint(currentProvenanceText, { workspaceId, harness })) : undefined;
         // ── P-017: the durable half, posted to the effort thread in this same call ──
         // Deliberately AFTER the read-back verify, and fail-soft: the checkpoint is the
         // thing a successor cannot do without, so a thread that refuses a post must

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
+import { formatIssues, validateSync } from '@papercusp/tooldef';
 import {
   asCommittedRunOf,
   bindingSchema,
@@ -18,6 +19,34 @@ describe('native compiler dependency binding input', () => {
     expect(invalid.success).toBe(false);
     if (!invalid.success) expect(invalid.error.issues.some(issue => issue.path[0] === 'dependencies')).toBe(true);
     expect(tool.args.safeParse({ ...base, binding: { workItemId: 'WI-1', specId: 'SPEC-001', fromTestRun: 42 } }).success).toBe(true);
+  });
+
+  it('reports extra keys from the selected fromTestRun branch', () => {
+    const request = {
+      harness: 'papercusp',
+      items: [{
+        workItemId: 'WI-1',
+        specId: 'SPEC-001',
+        fromTestRun: 42,
+        evidenceKind: 'test',
+        sourcePaths: ['src/reconnect.ts'],
+        evidenceRef: 'test/reconnect.test.ts',
+        measurement: {
+          schemaVersion: 1,
+          kind: 'repo-files',
+          sourcePaths: ['src/reconnect.ts'],
+          testPaths: ['test/reconnect.test.ts'],
+        },
+      }],
+    };
+    const validation = validateSync(tool.args as Parameters<typeof validateSync>[0], request);
+    expect(validation.ok).toBe(false);
+    if (validation.ok) return;
+    const refusal = formatIssues(validation.issues, request);
+    expect(refusal).toContain('"evidenceRef"');
+    expect(refusal).toContain('"measurement"');
+    expect(refusal).not.toContain('"fromTestRun"');
+    expect(refusal).not.toContain('"sourcePaths"');
   });
 });
 

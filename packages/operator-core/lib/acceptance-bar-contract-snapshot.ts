@@ -2111,13 +2111,27 @@ const DEFAULT_DEPS: AcceptanceBarSnapshotDeps = {
 export async function readAcceptanceBarContractSnapshot(
   planSlug: string,
   deps: Partial<AcceptanceBarSnapshotDeps> = {},
-  options: { current?: EvidenceCurrentInput[]; harnessSlug?: string } = {},
+  options: { current?: EvidenceCurrentInput[]; harnessSlug?: string;
+    /** Synchronous diagnostic only; observer failures cannot change the snapshot. */
+    onRead?: (source: AcceptanceBarSnapshotSource, elapsedMs: number) => void;
+  } = {},
 ): Promise<AcceptanceBarContractSnapshot> {
   const d: AcceptanceBarSnapshotDeps = { ...DEFAULT_DEPS, ...deps };
+  const capture = <T>(source: AcceptanceBarSnapshotSource, read: () => Promise<T>, fallback: T) => {
+    if (!options.onRead) return captured(source, read, fallback);
+    return captured(source, async () => {
+      const started = performance.now();
+      try { return await read(); }
+      finally {
+        try { options.onRead?.(source, Math.max(0, performance.now() - started)); }
+        catch { /* Diagnostics do not grant or refuse authority. */ }
+      }
+    }, fallback);
+  };
   const failures: Partial<Record<AcceptanceBarSnapshotSource, string>> = {};
   const [planRead, rubricRead] = await Promise.all([
-    captured('plan', () => options.harnessSlug ? d.readPlans(planSlug, { harnessSlug: options.harnessSlug }) : d.readPlans(planSlug), emptyBounded<AcceptanceBarSubjectPlanSource>(1)),
-    captured(
+    capture('plan', () => options.harnessSlug ? d.readPlans(planSlug, { harnessSlug: options.harnessSlug }) : d.readPlans(planSlug), emptyBounded<AcceptanceBarSubjectPlanSource>(1)),
+    capture(
       'rubric',
       () => options.harnessSlug ? d.readRubrics(planSlug, { harnessSlug: options.harnessSlug }) : d.readRubrics(planSlug),
       emptyBounded<Rubric>(ACCEPTANCE_BAR_SNAPSHOT_ACTIVE_RUBRIC_LIMIT),
@@ -2140,21 +2154,21 @@ export async function readAcceptanceBarContractSnapshot(
     rowLimit: ACCEPTANCE_BAR_SNAPSHOT_LINEAGE_ROW_LIMIT,
     truncated: false,
   };
-  const critique = await captured('vetting',
+  const critique = await capture('vetting',
     () => rubric && d.readCurrentCritique ? d.readCurrentCritique(rubric, rubric.revision ?? null) : Promise.resolve(null), null);
   if (critique.failure) failures[critique.failure[0]] = critique.failure[1];
   const [planItems, clauses, workContracts, evidence, lineage, scorecards, vetting] = await Promise.all([
-    captured('plan-items', () => (plan ? d.readPlanItems(plan) : Promise.resolve(emptyPlanItems)), emptyPlanItems),
-    captured('clauses', () => (plan ? d.readClauses(plan) : Promise.resolve(emptyClauses)), emptyClauses),
-    captured(
+    capture('plan-items', () => (plan ? d.readPlanItems(plan) : Promise.resolve(emptyPlanItems)), emptyPlanItems),
+    capture('clauses', () => (plan ? d.readClauses(plan) : Promise.resolve(emptyClauses)), emptyClauses),
+    capture(
       'work-contracts',
       () => (plan ? d.readWorkContracts(plan) : Promise.resolve(emptyContracts)),
       emptyContracts,
     ),
-    captured('evidence', () => (plan ? d.readEvidence(plan, options.current) : Promise.resolve(emptyEvidence)), emptyEvidence),
-    captured('lineage', () => (plan ? d.readLineage(plan) : Promise.resolve(emptyLineage)), emptyLineage),
-    captured('grading', () => (rubric ? d.readScorecards(rubric) : Promise.resolve(emptyScorecards)), emptyScorecards),
-    captured(
+    capture('evidence', () => (plan ? d.readEvidence(plan, options.current) : Promise.resolve(emptyEvidence)), emptyEvidence),
+    capture('lineage', () => (plan ? d.readLineage(plan) : Promise.resolve(emptyLineage)), emptyLineage),
+    capture('grading', () => (rubric ? d.readScorecards(rubric) : Promise.resolve(emptyScorecards)), emptyScorecards),
+    capture(
       'vetting',
       () => (rubric && !critique.value ? d.readVettingScorecards(rubric) : Promise.resolve(emptyScorecards)),
       emptyScorecards,
@@ -2170,12 +2184,12 @@ export async function readAcceptanceBarContractSnapshot(
     ...scorecards.value.rows.map((card) => card.createdBy),
   ].filter((value): value is string => Boolean(value?.trim()));
   const [parties, selectionVia] = await Promise.all([
-    captured(
+    capture(
       'lineage-parties',
       () => (plan ? d.readParties(partyIds, plan.workspaceId) : Promise.resolve(new Map<string, string>())),
       new Map<string, string>(),
     ),
-    captured(
+    capture(
       'grading',
       () => (rubric ? d.readGraderSelectionVia(rubric.workspaceId, rubric.rubricId) : Promise.resolve(new Map())),
       new Map<string, SelectionVia>(),

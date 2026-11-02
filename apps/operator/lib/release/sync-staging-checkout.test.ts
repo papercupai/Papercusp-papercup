@@ -2987,7 +2987,7 @@ describe('staging bundle failure evidence survives cleanup (EI-25202900905730650
     expect(begin).toBeGreaterThan(-1);
     expect(end).toBeGreaterThan(begin);
     try {
-      const result = runFn(['prebuild_staging_host_bundle', ...CLEANUP_FNS], [
+      const result = runFn(['write_staging_bundle_failure_log', 'prebuild_staging_host_bundle', ...CLEANUP_FNS], [
         'log() { printf "%s\\n" "$*"; }',
         'SYNC_ROOT="$FIXTURE_ROOT"; bundle_script="$FIXTURE_BUNDLE"; UNIT=fixture.service',
         'STAGING_CANDIDATE_HOME="$FIXTURE_CANDIDATE"; STAGING_CANDIDATE_ROOT="$FIXTURE_ROOT"',
@@ -3006,6 +3006,80 @@ describe('staging bundle failure evidence survives cleanup (EI-25202900905730650
       expect(readFileSync(join(logs, 'staging-bundle-fixture-invocation.log'))
         .includes(Buffer.from('PRIVATE_ERROR_MARKER\0hidden tail\n'))).toBe(true);
       expect(result.stderr).toContain('PRIVATE_ERROR_MARKER');
+    } finally { rmSync(fixture, { recursive: true, force: true }); }
+  });
+
+  it('retries the same candidate after an unknown legacy lease clears and keeps first-attempt evidence', () => {
+    const fixture = mkdtempSync(join(tmpdir(), 'staging-bundle-lock-retry-'));
+    const candidateHome = join(fixture, '.candidate-fixture');
+    const candidateRoot = join(candidateHome, 'checkout');
+    const home = join(fixture, 'private-home');
+    const bundle = join(candidateRoot, 'bundle.sh');
+    const attempts = join(fixture, 'attempts');
+    const retryLog = join(home, 'checkpoint-logs', 'staging-bundle-fixture-invocation-lock-retry-1.log');
+    mkdirSync(candidateRoot, { recursive: true });
+    writeFileSync(bundle, [
+      'attempt=$(cat "$FIXTURE_ATTEMPTS" 2>/dev/null || echo 0)',
+      'attempt=$((attempt + 1))',
+      'printf "%s" "$attempt" > "$FIXTURE_ATTEMPTS"',
+      'mkdir -p "$PAPERCUSP_INTEGRATION_ROOT/apps/operator/dist-host"',
+      'if [[ "$attempt" -eq 1 ]]; then',
+      '  printf "%s\\n" "NPM_INSTALL_SAFE_ERROR Refusing fs-mutex root migration: legacy leases active=0 unknown=1 at /tmp/pcv/fs-mutex-locks" > "$PAPERCUSP_INTEGRATION_ROOT/apps/operator/dist-host/hono-host.mjs.build-error.log"',
+      '  exit 23',
+      'fi',
+      '[[ ! -e "$PAPERCUSP_INTEGRATION_ROOT/apps/operator/dist-host/hono-host.mjs.build-error.log" ]] || exit 94',
+      'echo BUNDLE_OK',
+    ].join('\n'));
+    try {
+      const result = runFn(['write_staging_bundle_failure_log', 'prebuild_staging_host_bundle'], [
+        'log() { printf "%s\\n" "$*"; }',
+        'sleep() { printf "SLEEP:%s\\n" "$1"; }',
+        'prebuild_staging_host_bundle "$FIXTURE_ROOT" "$FIXTURE_BUNDLE"',
+        'printf "ATTEMPTS=%s\\n" "$(cat "$FIXTURE_ATTEMPTS")"',
+      ].join('\n'), { env: { PAPERCUSP_HOME: home, FIXTURE_ROOT: candidateRoot,
+        FIXTURE_BUNDLE: bundle, FIXTURE_ATTEMPTS: attempts, INVOCATION_ID: 'fixture-invocation' } });
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain('ATTEMPTS=2');
+      expect(result.stdout).toContain('SLEEP:30');
+      expect(result.stdout).toContain('BUNDLE_OK');
+      expect(existsSync(candidateHome)).toBe(true);
+      expect(readFileSync(retryLog, 'utf8')).toContain('unknown=1');
+    } finally { rmSync(fixture, { recursive: true, force: true }); }
+  });
+
+  it('stops retrying a persistent unknown lease at the bounded retry deadline', () => {
+    const fixture = mkdtempSync(join(tmpdir(), 'staging-bundle-lock-persistent-'));
+    const candidateHome = join(fixture, '.candidate-fixture');
+    const candidateRoot = join(candidateHome, 'checkout');
+    const home = join(fixture, 'private-home');
+    const bundle = join(candidateRoot, 'bundle.sh');
+    const attempts = join(fixture, 'attempts');
+    mkdirSync(candidateRoot, { recursive: true });
+    writeFileSync(bundle, [
+      'attempt=$(cat "$FIXTURE_ATTEMPTS" 2>/dev/null || echo 0)',
+      'attempt=$((attempt + 1))',
+      'printf "%s" "$attempt" > "$FIXTURE_ATTEMPTS"',
+      'mkdir -p "$PAPERCUSP_INTEGRATION_ROOT/apps/operator/dist-host"',
+      'printf "%s\\n" "NPM_INSTALL_SAFE_ERROR Refusing fs-mutex root migration: legacy leases active=0 unknown=1 at /tmp/pcv/fs-mutex-locks" > "$PAPERCUSP_INTEGRATION_ROOT/apps/operator/dist-host/hono-host.mjs.build-error.log"',
+      'exit 23',
+    ].join('\n'));
+    try {
+      const result = runFn(['write_staging_bundle_failure_log', 'prebuild_staging_host_bundle'], [
+        'log() { printf "%s\\n" "$*"; }',
+        'sleep() { SECONDS=$((SECONDS + 900)); }',
+        'status=0',
+        'prebuild_staging_host_bundle "$FIXTURE_ROOT" "$FIXTURE_BUNDLE" || status=$?',
+        'printf "BUNDLE_STATUS=%s\\nATTEMPTS=%s\\n" "$status" "$(cat "$FIXTURE_ATTEMPTS")"',
+      ].join('\n'), { env: { PAPERCUSP_HOME: home, FIXTURE_ROOT: candidateRoot,
+        FIXTURE_BUNDLE: bundle, FIXTURE_ATTEMPTS: attempts, INVOCATION_ID: 'fixture-invocation' } });
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain('BUNDLE_STATUS=23');
+      expect(result.stdout).toContain('ATTEMPTS=2');
+      expect(existsSync(candidateRoot)).toBe(true);
+      expect(readdirSync(join(home, 'checkpoint-logs')).sort()).toEqual([
+        'staging-bundle-fixture-invocation-lock-retry-1.log',
+        'staging-bundle-fixture-invocation.log',
+      ]);
     } finally { rmSync(fixture, { recursive: true, force: true }); }
   });
 });

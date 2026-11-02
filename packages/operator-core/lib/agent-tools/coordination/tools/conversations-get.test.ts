@@ -272,6 +272,85 @@ describe('conversations:get handler (bulk keyed-array)', () => {
       expect(reply.consult.result.verdict).not.toBe('no_qualified_responder');
     });
 
+    it('projects a durable current dispatch into result while retaining the initial routing receipt', async () => {
+      const routingReceipt = {
+        verdict: 'routed',
+        responder: { ownerId: 'su-source-expert' },
+        wake: { attempted: true, queued: 0, woke: 0, pickupConfirmed: false },
+      };
+      const dispatch: ConsultDispatchSummary = {
+        total_walks: 1,
+        recent: [{
+          at: '2026-10-28T18:37:01.924Z',
+          dispatched: true,
+          answering_owner_id: 'su-answering-session',
+          source_owner_id: 'su-source-expert',
+          attempts: [],
+        }],
+      };
+      getM.mockResolvedValue(detail('c-deferred', { kind: 'consult', state: 'open' }));
+      consultM.mockResolvedValue(new Map([['c-deferred', consultRow('c-deferred', {
+        state: 'awaiting_responder',
+        closed_at: null,
+        responder_id: 'su-source-expert',
+        request_result: routingReceipt,
+        dispatch,
+      })]]));
+
+      const reply = (await body({ id: 'c-deferred' })).results[0];
+
+      expect(reply.consult.routing_receipt).toEqual(routingReceipt);
+      expect(reply.consult.result).toMatchObject({
+        verdict: 'routed',
+        wake: { attempted: true, queued: 1, woke: 0, pickupConfirmed: false },
+      });
+      expect(reply.consult.dispatch).toEqual(dispatch);
+    });
+
+    it('does not derive a current queue from a different responder or an unsuccessful dispatch', async () => {
+      const routingReceipt = {
+        verdict: 'routed',
+        wake: { attempted: true, queued: 0, woke: 0, pickupConfirmed: false },
+      };
+      const cases = [
+        {
+          id: 'c-previous-responder',
+          source_owner_id: 'su-previous-expert',
+          dispatched: true,
+          answering_owner_id: 'su-previous-answerer',
+        },
+        {
+          id: 'c-failed-dispatch',
+          source_owner_id: 'su-current-expert',
+          dispatched: false,
+          answering_owner_id: null,
+        },
+      ] as const;
+
+      for (const entry of cases) {
+        getM.mockResolvedValue(detail(entry.id, { kind: 'consult', state: 'open' }));
+        consultM.mockResolvedValue(new Map([[entry.id, consultRow(entry.id, {
+          state: 'awaiting_responder',
+          closed_at: null,
+          responder_id: 'su-current-expert',
+          request_result: routingReceipt,
+          dispatch: {
+            total_walks: 1,
+            recent: [{
+              at: '2026-10-28T18:37:01.924Z',
+              dispatched: entry.dispatched,
+              answering_owner_id: entry.answering_owner_id,
+              source_owner_id: entry.source_owner_id,
+              attempts: [],
+            }],
+          },
+        })]]));
+
+        const reply = (await body({ id: entry.id })).results[0];
+        expect(reply.consult.result.wake.queued).toBe(0);
+      }
+    });
+
     it('surfaces a converted review outcome and keeps the old routing hint historical', async () => {
       const routingReceipt = {
         verdict: 'routed',

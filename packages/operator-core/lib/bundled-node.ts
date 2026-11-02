@@ -79,6 +79,8 @@ export interface ApplicationRuntimeCandidate {
   roles: string[];
   entrypoint: string;
   entrypointSha256: string;
+  /** Package-attested bootstrap code; arbitrary runtime preload arguments remain forbidden. */
+  preload?: { path: string; sha256: string };
   node: ApplicationRuntimePin;
   bun?: ApplicationRuntimePin;
 }
@@ -192,6 +194,7 @@ export async function resolveApplicationRuntimeLaunch(request: ApplicationRuntim
   // Snapshot caller data before invoking asynchronous filesystem/acceptance readers.
   const candidate = { ...request.candidate, node: { ...request.candidate.node },
     bun: request.candidate.bun ? { ...request.candidate.bun } : undefined,
+    preload: request.candidate.preload ? { ...request.candidate.preload } : undefined,
     roles: [...(request.candidate.roles ?? [])] };
   const runtimeArgs = [...(request.runtimeArgs ?? [])];
   const args = [...(request.args ?? [])];
@@ -204,6 +207,10 @@ export async function resolveApplicationRuntimeLaunch(request: ApplicationRuntim
   if (!SHA256.test(candidate.candidateSha256) || !/^[a-f0-9]{40,64}$/.test(candidate.sourceSha)
     || !path.isAbsolute(candidate.entrypoint) || !SHA256.test(candidate.entrypointSha256)) {
     throw new Error('An explicit pinned application artifact is required');
+  }
+  if (candidate.preload && (!path.isAbsolute(candidate.preload.path)
+    || !SHA256.test(candidate.preload.sha256))) {
+    throw new Error('An explicit pinned application preload is required');
   }
   if (!candidate.roles.length || candidate.roles.some(value => !/^[a-z][a-z0-9-]{0,63}$/.test(value))
     || new Set(candidate.roles).size !== candidate.roles.length || !candidate.roles.includes(role)) {
@@ -241,6 +248,9 @@ export async function resolveApplicationRuntimeLaunch(request: ApplicationRuntim
     if (sha256(await readFile(candidate.entrypoint)) !== candidate.entrypointSha256) {
       throw new Error('Application entrypoint digest mismatch');
     }
+    if (candidate.preload && sha256(await readFile(candidate.preload.path)) !== candidate.preload.sha256) {
+      throw new Error('Application preload digest mismatch');
+    }
   };
   await verifyEntrypoint();
   // A Bun selection must keep the explicitly pinned Node rollback executable usable.
@@ -248,7 +258,9 @@ export async function resolveApplicationRuntimeLaunch(request: ApplicationRuntim
   const selected = runtime === 'node' ? node : await verifyRuntimePin(candidate.bun!);
   await verifyEntrypoint();
   if (accepted) assertAcceptance();
-  return { executable: selected.executable, args: [...runtimeArgs, candidate.entrypoint, ...args], env,
+  const preloadArgs = candidate.preload
+    ? [runtime === 'bun' ? '--preload' : '--require', candidate.preload.path] : [];
+  return { executable: selected.executable, args: [...runtimeArgs, ...preloadArgs, candidate.entrypoint, ...args], env,
     runtime: selected, nodeRollback: node, candidateSha256: candidate.candidateSha256,
     role, purpose, acceptanceRef: accepted?.evidenceRef ?? null };
 }

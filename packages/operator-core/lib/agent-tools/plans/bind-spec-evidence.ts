@@ -18,7 +18,7 @@ import {
   measureAndPinRepoFilesEvidenceAtCommitForScope,
   resolveMeasurementRoot,
   listSpecEvidence,
-  retractSpecEvidence,
+  retractSpecEvidenceBatch,
   SPEC_EVIDENCE_KINDS,
   supersedeSpecEvidenceAtRevisionBatch,
   type SupersessionKeepReason,
@@ -1015,16 +1015,14 @@ export default defineTool({
       const actorId = resolveAgentIdentity(ctx).ownerId;
       const retract = args.retract;
       if (retract) {
-        const retractions = await timing.phase('retract', () =>
-          runBulk(
+        const retractions = await timing.phase('retract', async () => {
+          const results = await retractSpecEvidenceBatch({ harnessSlug, actorId, items: retract });
+          // The mutation is complete before runBulk shapes the per-row response. A database
+          // failure above aborts the shared transaction instead of committing a prefix.
+          return runBulk(
             retract,
-            async (item) => {
-              const result = await retractSpecEvidence({
-                harnessSlug,
-                bindingId: item.bindingId,
-                reason: item.reason,
-                actorId,
-              });
+            async (_item, index) => {
+              const result = results[index]!;
               // already_retracted is a SUCCESS: the repair is idempotent, so replaying it
               // must not read as a failure. Only a binding that does not exist in this
               // scope is an error — that means the caller targeted the wrong row.
@@ -1033,8 +1031,8 @@ export default defineTool({
                 : { ok: true as const, ...result };
             },
             { keyOf: (item) => ({ bindingId: item.bindingId }) },
-          ),
-        );
+          );
+        });
         // EI-24903278232142036: name any design attestation this retraction removed from its
         // clause's LAST live carrier — the silent pass→unknown flip a freshness repair causes.
         const lost = await timing.phase('retractionAdvisory', () =>

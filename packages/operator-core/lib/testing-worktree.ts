@@ -20,12 +20,15 @@ import {
 } from '@papercusp/test-config/admin-test-runs-reporter';
 import { findVerifierSourceRoot, readVerifierSourceReceiptSync } from './verifier-source';
 
+const WORKTREE_STATUS_MAX_BUFFER_BYTES = 2 * 1024 * 1024;
+const WORKTREE_STATUS_ARGS = ['status', '--porcelain', '--untracked-files=normal'] as const;
+
 export interface WorktreeGitSnapshot {
   /** `git rev-parse HEAD`, or null if it couldn't be read. */
   commit: string | null;
-  /** `git status --porcelain --untracked-files=all` output, or null if unreadable.
+  /** Bounded `git status --porcelain` summary, or null if unreadable/incomplete.
    *  Empty string means clean; non-empty means the shared worktree carries
-   *  uncommitted changes at this snapshot. */
+   *  uncommitted changes at this snapshot. Untracked directories are summarized. */
   porcelain: string | null;
   /** Archive verification failures remain visible in the reporter's diagnostics. */
   provenanceError?: string;
@@ -102,13 +105,19 @@ export function captureWorktreeSnapshot(cwd?: string): WorktreeGitSnapshot {
   }
 
   const failures: string[] = [];
+  let outputLimitExceeded = false;
   const readGit = (args: string[], gitRoot = root, timeoutMs = 2_000): string | null => {
+    // Once status exceeds the explicit output cap, retrying the same command
+    // cannot make its stdout smaller. Preserve unknown/dirty and avoid repeating
+    // a deterministic ENOBUFS read under every timeout budget.
+    if (outputLimitExceeded && args[0] === 'status') return null;
     const started = Date.now();
     try {
       const output = execFileSync('git', args, {
         cwd: gitRoot,
         encoding: 'utf8',
         timeout: timeoutMs,
+        maxBuffer: WORKTREE_STATUS_MAX_BUFFER_BYTES,
         // These snapshots only observe the shared tree. Prevent Git's optional
         // index refresh from competing with git-sync's index writer.
         env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' },
@@ -118,6 +127,8 @@ export function captureWorktreeSnapshot(cwd?: string): WorktreeGitSnapshot {
       return output.trim();
     } catch (error) {
       const failure = error as { code?: unknown; status?: unknown; signal?: unknown; stderr?: unknown } | null;
+      const code = String(failure?.code ?? '');
+      if (code === 'ENOBUFS' || code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER') outputLimitExceeded = true;
       const stderr = typeof failure?.stderr === 'string' || Buffer.isBuffer(failure?.stderr)
         ? String(failure.stderr).replace(/\s+/g, ' ').trim().slice(0, 160) : '';
       failures.push(`git ${args.join(' ')} failed after ${Date.now() - started}ms `
@@ -137,22 +148,24 @@ export function captureWorktreeSnapshot(cwd?: string): WorktreeGitSnapshot {
   // attempt here had drifted from the Vitest and mutation-exemption readers.
   const readWithPolicy = (args: string[]): string | null => {
     const failureStart = failures.length;
+    outputLimitExceeded = false;
     for (const budget of WORKTREE_SNAPSHOT_GIT_BUDGETS_MS) {
       const output = readGit(args, root, budget);
       if (output !== null) {
         failures.splice(failureStart);
         return output;
       }
+      if (outputLimitExceeded) break;
     }
     return null;
   };
   const commit = readWithPolicy(['rev-parse', 'HEAD']) || null;
-  const porcelain = readWithPolicy(['status', '--porcelain', '--untracked-files=all']);
+  const porcelain = readWithPolicy([...WORKTREE_STATUS_ARGS]);
   if (!porcelain || !isMutationProbeRun()) return snapshot(commit, porcelain);
   const exemption = resolveProbeSubjectExemptionSync(root, (cmd, gitRoot, budget) => {
     if (cmd === 'git rev-parse --show-toplevel') return readGit(['rev-parse', '--show-toplevel'], gitRoot, budget);
     if (cmd === 'git rev-parse HEAD') return readGit(['rev-parse', 'HEAD'], gitRoot, budget);
-    if (cmd === 'git status --porcelain --untracked-files=all') return readGit(['status', '--porcelain', '--untracked-files=all'], gitRoot, budget);
+    if (cmd === 'git status --porcelain --untracked-files=all') return readGit([...WORKTREE_STATUS_ARGS], gitRoot, budget);
     const pinned = cmd.match(/^git rev-parse '(HEAD:[^']+)'$/);
     return pinned ? readGit(['rev-parse', pinned[1]], gitRoot, budget) : null;
   });
@@ -178,6 +191,7 @@ export async function captureWorktreeSnapshotAsync(root: string): Promise<Worktr
         const result = await execFileViaSidecar('git', ['--no-optional-locks', ...args], {
           cwd: snapshotRoot, timeoutMs: 30_000, subsystem: 'test-source-provenance',
           env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' },
+          maxBuffer: WORKTREE_STATUS_MAX_BUFFER_BYTES,
         });
         return result.stdout.trim();
       } catch (error) {
@@ -187,7 +201,7 @@ export async function captureWorktreeSnapshotAsync(root: string): Promise<Worktr
       }
     };
     const head = await read(['rev-parse', 'HEAD']);
-    let porcelain = await read(['status', '--porcelain', '--untracked-files=all']);
+    let porcelain = await read([...WORKTREE_STATUS_ARGS]);
     const after = await read(['rev-parse', 'HEAD']);
     if (head && after && head !== after) failures.push('Git HEAD changed during provenance capture');
     if (porcelain && isMutationProbeRun()) {

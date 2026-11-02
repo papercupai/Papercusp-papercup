@@ -151,7 +151,7 @@ export function prepareVerifierSource({ repo, ref, dest, inputs, inputsFile, git
         sha256: string;
     };
 }>;
-/** @typedef {{ completedTrees: number, totalTrees: number, currentTree: string }} VerifierDependencyProgress */
+/** @typedef {{ completedTrees: number, totalTrees: number, currentTree: string, cacheHit?: boolean }} VerifierDependencyProgress */
 /** @typedef {{ copyMode: 'copy' | 'hardlink', generationSnapshotSupported: boolean,
  *   command: 'snapshot-locked' | 'snapshot-generation-locked' }} VerifierSnapshotSelection */
 /** @typedef {{ snapshotSelection?: VerifierSnapshotSelection }} VerifierPhaseMetadata */
@@ -275,7 +275,12 @@ export function prepareBgVerifierBuildRecord({ prepared, dependencies, invocatio
         sourceReceiptSha256: string;
         trees: {
             path: string;
-            files: import("@papercusp/test-config/verifier-source").VerifierSourceFile[];
+            files: {
+                path: string;
+                kind: string;
+                executable: boolean;
+                sha256: string;
+            }[];
         }[];
     };
     originalSourceReceiptSha256: string;
@@ -335,7 +340,12 @@ export function verifyBgVerifierBuildRecord(record: ReturnType<typeof prepareBgV
         sourceReceiptSha256: string;
         trees: {
             path: string;
-            files: import("@papercusp/test-config/verifier-source").VerifierSourceFile[];
+            files: {
+                path: string;
+                kind: string;
+                executable: boolean;
+                sha256: string;
+            }[];
         }[];
     };
     originalSourceReceiptSha256: string;
@@ -402,7 +412,12 @@ export function prepareBgVerifierBuildContexts({ prepared, dependencies, invocat
             sourceReceiptSha256: string;
             trees: {
                 path: string;
-                files: import("@papercusp/test-config/verifier-source").VerifierSourceFile[];
+                files: {
+                    path: string;
+                    kind: string;
+                    executable: boolean;
+                    sha256: string;
+                }[];
             }[];
         };
         originalSourceReceiptSha256: string;
@@ -543,7 +558,12 @@ export function prepareBgVerifierBuildTransaction({ prepared, dependencies, invo
                 sourceReceiptSha256: string;
                 trees: {
                     path: string;
-                    files: import("@papercusp/test-config/verifier-source").VerifierSourceFile[];
+                    files: {
+                        path: string;
+                        kind: string;
+                        executable: boolean;
+                        sha256: string;
+                    }[];
                 }[];
             };
             originalSourceReceiptSha256: string;
@@ -669,7 +689,12 @@ export function beginBgVerifierBuildTransaction({ transaction, ownerPid }: {
                     sourceReceiptSha256: string;
                     trees: {
                         path: string;
-                        files: import("@papercusp/test-config/verifier-source").VerifierSourceFile[];
+                        files: {
+                            path: string;
+                            kind: string;
+                            executable: boolean;
+                            sha256: string;
+                        }[];
                     }[];
                 };
                 originalSourceReceiptSha256: string;
@@ -774,7 +799,12 @@ export function beginBgVerifierBuildTransaction({ transaction, ownerPid }: {
                 sourceReceiptSha256: string;
                 trees: {
                     path: string;
-                    files: import("@papercusp/test-config/verifier-source").VerifierSourceFile[];
+                    files: {
+                        path: string;
+                        kind: string;
+                        executable: boolean;
+                        sha256: string;
+                    }[];
                 }[];
             };
             originalSourceReceiptSha256: string;
@@ -994,7 +1024,12 @@ export function publishBgVerifierLogicalOutputSet(args: {
                         sourceReceiptSha256: string;
                         trees: {
                             path: string;
-                            files: import("@papercusp/test-config/verifier-source").VerifierSourceFile[];
+                            files: {
+                                path: string;
+                                kind: string;
+                                executable: boolean;
+                                sha256: string;
+                            }[];
                         }[];
                     };
                     originalSourceReceiptSha256: string;
@@ -1099,7 +1134,12 @@ export function publishBgVerifierLogicalOutputSet(args: {
                     sourceReceiptSha256: string;
                     trees: {
                         path: string;
-                        files: import("@papercusp/test-config/verifier-source").VerifierSourceFile[];
+                        files: {
+                            path: string;
+                            kind: string;
+                            executable: boolean;
+                            sha256: string;
+                        }[];
                     }[];
                 };
                 originalSourceReceiptSha256: string;
@@ -1293,7 +1333,12 @@ export function verifyBgVerifierPublication(publication: ReturnType<typeof publi
                         sourceReceiptSha256: string;
                         trees: {
                             path: string;
-                            files: import("@papercusp/test-config/verifier-source").VerifierSourceFile[];
+                            files: {
+                                path: string;
+                                kind: string;
+                                executable: boolean;
+                                sha256: string;
+                            }[];
                         }[];
                     };
                     originalSourceReceiptSha256: string;
@@ -1398,7 +1443,12 @@ export function verifyBgVerifierPublication(publication: ReturnType<typeof publi
                     sourceReceiptSha256: string;
                     trees: {
                         path: string;
-                        files: import("@papercusp/test-config/verifier-source").VerifierSourceFile[];
+                        files: {
+                            path: string;
+                            kind: string;
+                            executable: boolean;
+                            sha256: string;
+                        }[];
                     }[];
                 };
                 originalSourceReceiptSha256: string;
@@ -1598,7 +1648,12 @@ export function runBgVerifierBuildRecipe(args: Parameters<typeof beginBgVerifier
                         sourceReceiptSha256: string;
                         trees: {
                             path: string;
-                            files: import("@papercusp/test-config/verifier-source").VerifierSourceFile[];
+                            files: {
+                                path: string;
+                                kind: string;
+                                executable: boolean;
+                                sha256: string;
+                            }[];
                         }[];
                     };
                     originalSourceReceiptSha256: string;
@@ -1703,7 +1758,12 @@ export function runBgVerifierBuildRecipe(args: Parameters<typeof beginBgVerifier
                     sourceReceiptSha256: string;
                     trees: {
                         path: string;
-                        files: import("@papercusp/test-config/verifier-source").VerifierSourceFile[];
+                        files: {
+                            path: string;
+                            kind: string;
+                            executable: boolean;
+                            sha256: string;
+                        }[];
                     }[];
                 };
                 originalSourceReceiptSha256: string;
@@ -1969,7 +2029,12 @@ export function prepareVerifierDependencies({ donor, dest, receipt, runPhase, si
     sourceReceiptSha256: string;
     trees: {
         path: string;
-        files: import("@papercusp/test-config/verifier-source").VerifierSourceFile[];
+        files: {
+            path: string;
+            kind: string;
+            executable: boolean;
+            sha256: string;
+        }[];
     }[];
 }>;
 /** Measure installed bytes, not lockfile intent. Reuse the release helper's
@@ -1996,7 +2061,12 @@ export function captureVerifierDependencies({ dest, receipt, env, onProgress }: 
     sourceReceiptSha256: string;
     trees: {
         path: string;
-        files: import("@papercusp/test-config/verifier-source").VerifierSourceFile[];
+        files: {
+            path: string;
+            kind: string;
+            executable: boolean;
+            sha256: string;
+        }[];
     }[];
 };
 /** Admit against the caller's disclosure ledger before leaving its checkout.
@@ -2542,6 +2612,7 @@ export type VerifierDependencyProgress = {
     completedTrees: number;
     totalTrees: number;
     currentTree: string;
+    cacheHit?: boolean;
 };
 export type VerifierSnapshotSelection = {
     copyMode: "copy" | "hardlink";

@@ -49,6 +49,15 @@ it('composes explicit per-phase maxima into an exact bounded enclosing file budg
   expect(options.testTimeoutMs).toBe(600_000);
 });
 
+it('keeps the execute stall default and carries an explicit long-verifier override', () => {
+  expect(isolatedWorkerOptions(180_000, {}).phaseTimeouts.executeStallWindowMs).toBeUndefined();
+  const stallWindowMs = 12 * 60_000;
+  const direct = isolatedWorkerOptions(180_000, {}, 900_000, { executeStallWindowMs: stallWindowMs });
+  const routed = isolatedTestFileWorkerOptions({}, 1, { executeStallWindowMs: stallWindowMs });
+  expect(direct.phaseTimeouts.executeStallWindowMs).toBe(stallWindowMs);
+  expect(routed.phaseTimeouts.executeStallWindowMs).toBe(stallWindowMs);
+});
+
 it('rejects a short enclosing proof budget before reading source or allocating a worker', async () => {
   vi.stubEnv('PAPERCUSP_TEST_FILE_TIMEOUT_MS', '');
   const execute = vi.fn();

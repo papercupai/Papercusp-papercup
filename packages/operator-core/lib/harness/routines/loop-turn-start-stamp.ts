@@ -26,7 +26,7 @@ import type { Sql } from 'postgres';
 import { isAbsolute } from 'node:path';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { LOOP_TURN_START_MARKER } from '../../agent-tools/activity/lifecycle-markers';
-import { classify, parseEnvelope, readLedgerRows, type LedgerRow } from '../../turn-provenance/turn-provenance';
+import { classify, parseEnvelope, readLedgerRows, TURN_PROVENANCE_DIR, type LedgerRow } from '../../turn-provenance/turn-provenance';
 
 export interface LoopFireIdentity {
   routineId: string;
@@ -75,6 +75,30 @@ export function resolveLoopFireIdentity(
     routineId: row.loopFire.routineId,
     wakeCount: row.loopFire.wakeCount,
   };
+}
+
+/** Resolve a turn identity using a launch-pinned directory, or the canonical
+ * operator ledger for legacy launch rows created before that pin was recorded.
+ * A custom directory is usable only when persisted on the launch record; cwd and
+ * request-provided environment values never select the ledger.
+ */
+export function resolveLoopFireIdentityForLaunch(
+  input: { owner: string; prompt: string; workspaceId: string; client?: string | null },
+  launch: { workspaceId?: unknown; agent?: unknown; launchSpec?: unknown } | null,
+  options: { fallbackDir?: string; nowMs?: number } = {},
+): LoopFireIdentity | null {
+  const owner = input.owner?.trim();
+  if (!owner || !launch || launch.workspaceId !== input.workspaceId) return null;
+  const spec = launch.launchSpec && typeof launch.launchSpec === 'object'
+    ? launch.launchSpec as Record<string, unknown> : null;
+  if (!spec || spec.workspaceId !== input.workspaceId ||
+      (input.client && launch.agent !== input.client)) return null;
+  const pinnedDir = spec.turnProvenanceDir;
+  const dir = typeof pinnedDir === 'string' && isAbsolute(pinnedDir)
+    ? pinnedDir
+    : options.fallbackDir ?? TURN_PROVENANCE_DIR;
+  if (!isAbsolute(dir)) return null;
+  return resolveLoopFireIdentity(owner, input.prompt, dir, options.nowMs);
 }
 
 function isValidLoopFireIdentity(value: unknown): value is LoopFireIdentity {
@@ -205,17 +229,17 @@ export async function recordLoopTurnStart(
       try {
         const { readAdvSessionLaunchRecordByOwner } = await import('../../adv-sessions');
         const launch = await readAdvSessionLaunchRecordByOwner(owner, input.workspaceId);
-        const spec = launch?.launchSpec && typeof launch.launchSpec === 'object'
-          ? launch.launchSpec as Record<string, unknown> : null;
-        // The hook and ingest host can serve several namespaces. Only a persisted
-        // launch pin may select the live ledger; cwd and host env are not authority.
-        if (launch?.workspaceId === input.workspaceId && spec?.workspaceId === input.workspaceId &&
-            (!input.client || launch.agent === input.client) &&
-            typeof spec.turnProvenanceDir === 'string' && isAbsolute(spec.turnProvenanceDir)) {
-          loopFire = resolveLoopFireIdentity(owner, input.prompt, spec.turnProvenanceDir, submittedAt);
-        }
+        // The hook and ingest host can serve several namespaces. A persisted launch
+        // pin selects a custom ledger; legacy rows may consult only the canonical
+        // operator directory, never cwd or request-provided environment values.
+        loopFire = resolveLoopFireIdentityForLaunch({
+          owner,
+          prompt: input.prompt,
+          workspaceId: input.workspaceId,
+          client: input.client,
+        }, launch, { nowMs: submittedAt });
       } catch {
-        // An unavailable or legacy launch stays unknown, retaining only the generic stamp.
+        // Unavailable, expired, or missing ledger proof stays unknown, retaining only the generic stamp.
       }
     }
     const record = loopTurnStartRecord({ ...input, owner, loopFire });

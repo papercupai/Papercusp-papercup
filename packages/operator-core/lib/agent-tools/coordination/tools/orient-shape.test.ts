@@ -99,6 +99,16 @@ describe('shapeOrient trimmed', () => {
     }
   });
 
+  it.each(['not-recorded', 'invalid-record', 'conflicting-records', 'resolver-failed'])(
+    'preserves unknown owner identity and its %s reason under response trimming', reason => {
+      const ownerIdentity = { status: 'unknown', displayName: null, sourceRef: null, reason };
+      for (const tier of ['trimmed', 'standard'] as const) {
+        const shaped = shapeOrient({ ...fixture(200), ownerIdentity }, tier) as Record<string, unknown>;
+        expect(shaped.ownerIdentity).toEqual(ownerIdentity);
+      }
+    },
+  );
+
   const out = shapeOrient(fixture(), 'trimmed') as Record<string, never> & Record<string, unknown>;
 
   it('projects claimable rows to placement essentials with a loud cap', () => {

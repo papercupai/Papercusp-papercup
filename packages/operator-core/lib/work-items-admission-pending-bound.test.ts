@@ -4,16 +4,20 @@ import {
   ADMISSION_CREATE_BYPASSES,
   ADMISSION_DEGRADED_RESCREEN_ATTEMPTS,
   ADMISSION_FAIL_OPEN_EXCLUSIONS,
+  ADMISSION_FAIL_OPEN_LIVENESS_STALE_SEC,
   ADMISSION_FAIL_OPEN_TICKS,
   asAdmissionFailOpenExclusion,
   DEFAULT_PROMOTER_TICK_MINUTES,
   admissionFailOpenSec,
   admissionFailOpenGuaranteedSec,
+  admissionFailOpenRetryWindow,
+  admissionPendingBackstopExplanation,
   admissionPendingCreateRemedy,
   admissionPendingExplanation,
   admissionPromoterTickSec,
   admissionPromoterStall,
   admissionStallBasis,
+  classifyAdmissionFailOpenLiveness,
   classifyAdmissionPromoterStall,
 } from './work-items-admission';
 
@@ -203,10 +207,71 @@ describe('admission-pending states a bound, derived from the promoter cadence', 
     ).toBe(DEFAULT_PROMOTER_TICK_MINUTES);
   });
 
-  it('the claim floor publishes the GUARANTEED bound, never the bare cutoff, as guaranteedWithinSec', () => {
+  it('the claim floor derives a remaining bound from fail-open liveness, never a static ceiling', () => {
     const floorSource = fs.readFileSync(new URL('./work-items.ts', import.meta.url), 'utf8');
     expect(floorSource).not.toContain('guaranteedWithinSec: admissionFailOpenSec()');
-    expect(floorSource.match(/guaranteedWithinSec: admissionFailOpenGuaranteedSec\(\)/g)?.length).toBe(2);
+    expect(floorSource).toContain('admissionFailOpenRetryWindow(');
+    expect(floorSource).not.toContain('guaranteedWithinSec: admissionFailOpenGuaranteedSec()');
+  });
+});
+
+describe('the admission-pending retry deadline follows the completed fail-open watermark', () => {
+  const nowMs = Date.parse('2026-11-02T12:00:00.000Z');
+  const healthy = (overrides: Partial<Parameters<typeof classifyAdmissionFailOpenLiveness>[0]> = {}) =>
+    classifyAdmissionFailOpenLiveness({
+      routineExists: true,
+      active: true,
+      createdAtMs: nowMs - 2 * 60 * 60_000,
+      lastSuccessAtMs: nowMs - 60_000,
+      lastAttemptAtMs: nowMs - 60_000,
+      lastAttemptStatus: 'complete',
+      pause: null,
+      nowMs,
+      ...overrides,
+    });
+
+  it('reports only the remaining portion of the per-item guarantee', () => {
+    const liveness = healthy();
+    expect(liveness).toMatchObject({ status: 'healthy', lastSuccessAtMs: nowMs - 60_000 });
+    expect(ADMISSION_FAIL_OPEN_LIVENESS_STALE_SEC).toBe(admissionFailOpenGuaranteedSec());
+    expect(admissionFailOpenRetryWindow(nowMs - 10 * 60_000, nowMs, liveness)).toMatchObject({
+      status: 'healthy',
+      remainingSec: admissionFailOpenGuaranteedSec() - 10 * 60,
+    });
+  });
+
+  it('marks the routine overdue after its successful-run watermark exceeds the threshold', () => {
+    const stale = healthy({
+      lastSuccessAtMs: nowMs - ADMISSION_FAIL_OPEN_LIVENESS_STALE_SEC * 1000 - 120_000,
+      lastAttemptAtMs: nowMs - ADMISSION_FAIL_OPEN_LIVENESS_STALE_SEC * 1000 - 120_000,
+    });
+    expect(stale).toMatchObject({ status: 'overdue', overdueBySec: 120 });
+    const window = admissionFailOpenRetryWindow(nowMs - 10 * 60_000, nowMs, stale);
+    expect(window).toMatchObject({ status: 'overdue', deadlineExpired: false });
+    expect(admissionPendingBackstopExplanation(window)).toMatch(/OVERDUE/);
+  });
+
+  it('marks an individual row overdue even when the backstop itself completed recently', () => {
+    const window = admissionFailOpenRetryWindow(
+      nowMs - admissionFailOpenGuaranteedSec() * 1000 - 60_000,
+      nowMs,
+      healthy(),
+    );
+    expect(window).toMatchObject({ status: 'overdue', deadlineExpired: true, overdueBySec: 60 });
+    expect(admissionPendingBackstopExplanation(window)).toContain('deadline is overdue');
+  });
+
+  it('withholds a deadline when the latest attempt failed or the routine is inactive', () => {
+    const failed = healthy({
+      lastAttemptAtMs: nowMs - 1_000,
+      lastAttemptStatus: 'failed',
+    });
+    expect(failed).toMatchObject({ status: 'unknown' });
+    expect(admissionFailOpenRetryWindow(nowMs - 10 * 60_000, nowMs, failed).status).toBe('unknown');
+
+    const inactive = healthy({ active: false });
+    expect(inactive).toMatchObject({ status: 'inactive' });
+    expect(admissionFailOpenRetryWindow(nowMs - 10 * 60_000, nowMs, inactive).status).toBe('inactive');
   });
 });
 

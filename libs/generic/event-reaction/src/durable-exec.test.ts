@@ -30,7 +30,7 @@ function deps() {
     complete: vi.fn(async () => {}),
     uncertain: vi.fn(async () => {}),
   };
-  const fire = vi.fn<(p: DurableReactionPayload<TestParent>) => Promise<{ ok: boolean; error?: string }>>(
+  const fire = vi.fn<(p: DurableReactionPayload<TestParent>) => Promise<{ ok: boolean; error?: string; withheld?: boolean }>>(
     async () => ({ ok: true }),
   );
   const log = vi.fn<(m: string) => void>();
@@ -59,6 +59,25 @@ describe('executeDurableReaction', () => {
   it('carries the contributor into the claim, so the ledger can attribute the fire', async () => {
     await executeDurableReaction(payload({ contributor: 'plugin:acme' }), d);
     expect(d.store.claim.mock.calls[0][0].contributor).toBe('plugin:acme');
+  });
+
+  it('releases only a positive pre-effect withholding receipt, without recording completion', async () => {
+    d.fire.mockResolvedValue({ ok: true, withheld: true });
+    await executeDurableReaction(payload(), d);
+    expect(d.store.release).toHaveBeenCalledWith('reaction:root:r1');
+    expect(d.store.complete).not.toHaveBeenCalled();
+    expect(d.store.uncertain).not.toHaveBeenCalled();
+    d.fire.mockResolvedValue({ ok: true });
+    await executeDurableReaction(payload(), d);
+    expect(d.store.complete).toHaveBeenCalledOnce();
+  });
+
+  it('retains uncertainty for a failed dispatch even if it also claims withholding', async () => {
+    d.fire.mockResolvedValue({ ok: false, withheld: true, error: 'effect outcome unknown' });
+    await expect(executeDurableReaction(payload(), d)).rejects.toThrow(/effect outcome unknown/);
+    expect(d.store.release).not.toHaveBeenCalled();
+    expect(d.store.complete).not.toHaveBeenCalled();
+    expect(d.store.uncertain).toHaveBeenCalledOnce();
   });
 
   it('claims contributor NULL — never undefined — when the rule declares no source', async () => {

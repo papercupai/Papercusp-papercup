@@ -35,10 +35,9 @@ type TraceTimeoutStage = 'pipeline_snapshot' | 'pipeline_position' | 'await_hist
 
 /**
  * release:trace composes one fixed pipeline: the operator-home integration
- * tree, green-checkpoint, and deployed :3070 state. A caller from another
- * harness must not be able to mistake those correct values for its own release
- * truth, so every returned envelope names the subject and concrete foreign
- * callers receive a warning beside it.
+ * tree, green-checkpoint, and deployed :3070 state. An explicit caller from
+ * another harness is rejected before any home-pipeline read; a warning beside
+ * someone else's release truth is too easy to mistake for scoped evidence.
  */
 function releaseTraceSubjectStamp(ctx: { harnessSlug?: string | null }) {
   const home = canonicalHarnessSlug(operatorHomeHarnessSlug());
@@ -202,6 +201,22 @@ export default defineTool({
     .passthrough(),
   async handler(args, ctx) {
     const subjectStamp = releaseTraceSubjectStamp(ctx);
+    if ('harnessMismatch' in subjectStamp) {
+      return {
+        data: {
+          ok: false,
+          harnessMismatch: subjectStamp.harnessMismatch,
+          target: { path: args.path ?? null, sha: args.sha ?? null },
+          trace: { status: 'unsupported', complete: false },
+          nextVerb: null,
+          error: {
+            code: 'unsupported_harness',
+            retryable: false,
+            message: subjectStamp.harnessMismatch.warning,
+          },
+        },
+      };
+    }
     if (!args.path && !args.sha) return { data: { ok: false, ...subjectStamp, error: 'Provide path or sha.' } };
     const identity = resolveAgentIdentity(ctx);
     const compositeDeadlineMs = Date.now() + RELEASE_TRACE_COMPOSITE_TIMEOUT_MS;

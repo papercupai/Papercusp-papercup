@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { minimatch } from "minimatch";
 import integration from "../../vitest.integration.config";
@@ -22,5 +24,14 @@ describe("maintained operator integration suite routing", () => {
     const globalSetup = integration.test?.globalSetup as string[];
     expect(globalSetup).toHaveLength(3);
     expect(globalSetup[0]).toEqual(expect.stringContaining("host-preflight-global-setup.ts"));
+  });
+  it("keeps cloud tutorial diagnostics off Playwright's machine-readable selection stdout", () => {
+    const spec = readFileSync(
+      fileURLToPath(new URL("../../e2e/cloud-tutorial.spec.ts", import.meta.url)),
+      "utf8",
+    );
+    expect(spec).toMatch(/console\.error\(`CHROMIUM_NETLOG /);
+    expect(spec).toMatch(/console\.error\(`CHROMIUM_NETLOG_CLEANUP /);
+    expect(spec).not.toMatch(/console\.(?:log|info)\(`CHROMIUM_NETLOG(?:_CLEANUP)? /);
   });
 });

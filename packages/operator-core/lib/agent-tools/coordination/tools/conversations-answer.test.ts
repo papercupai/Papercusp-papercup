@@ -10,6 +10,7 @@
  * Run: cd packages/operator-core && npx vitest run lib/agent-tools/coordination/tools/conversations-answer.test.ts
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { mockResolvedTyped } from '../../../testing/typed-mock';
 
 vi.mock('../identity', () => ({ resolveAgentIdentity: vi.fn(() => ({ ownerId: 'me' })) }));
 vi.mock('../conversations', () => ({ answerQuestion: vi.fn() }));
@@ -49,12 +50,12 @@ describe('conversations:answer handler (bulk keyed-array)', () => {
   });
 
   it('does not present an agent peer opinion as an accept-able owner answer', async () => {
-    answerM.mockResolvedValue({
+    mockResolvedTyped(answerM, {
       post: { id: 43 },
       delivered: 1,
       author_origin: 'agent',
       owner_decision_effect: 'peer-opinion',
-    } as never);
+    });
     const b = await body({ id: 'owner-question', body: 'CONTINUE' });
     expect(b.results[0]).toMatchObject({
       author_origin: 'agent',

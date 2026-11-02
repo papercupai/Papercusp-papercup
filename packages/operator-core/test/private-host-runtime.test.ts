@@ -721,6 +721,46 @@ it('allows a private build with a compatible hoisted SDK', () => {
   expect(result.sha256).toMatch(/^[a-f0-9]{64}$/);
 });
 
+it('strips unit-only controls from a private builder child without mutating its input env', () => {
+  const root = mkdtempSync(join(tmpdir(), 'private-builder-env-')); dirs.push(root);
+  const workspace = join(root, 'packages/operator-core');
+  const sdk = join(root, 'node_modules/@opentelemetry/sdk-trace');
+  mkdirSync(workspace, { recursive: true });
+  mkdirSync(sdk, { recursive: true });
+  writeFileSync(join(root, 'package.json'), '{}');
+  writeFileSync(join(workspace, 'package.json'), JSON.stringify({ dependencies: {
+    '@opentelemetry/sdk-trace': '^2.12.0' } }));
+  writeFileSync(join(sdk, 'package.json'), JSON.stringify({ version: '2.12.1' }));
+  const bundle = join(root, 'hono-host.mjs');
+  const env = {
+    PAPERCUSP_FORBID_REAL_PG: '1', VITEST: 'true', VITEST_WORKER_ID: '9', VITEST_POOL_ID: '2',
+    PAPERCUSP_RESTRICTED_HOLD_CENSUS_FILE: '/test-only-census.json', PAPERCUSP_SID: 'builder-owner',
+  };
+  const script = [
+    'const { writeFileSync } = require("node:fs");',
+    'console.log(JSON.stringify({',
+    'rail: process.env.PAPERCUSP_FORBID_REAL_PG ?? null,',
+    'vitest: process.env.VITEST ?? null,',
+    'worker: process.env.VITEST_WORKER_ID ?? null,',
+    'pool: process.env.VITEST_POOL_ID ?? null,',
+    'census: process.env.PAPERCUSP_RESTRICTED_HOLD_CENSUS_FILE ?? null,',
+    'owner: process.env.PAPERCUSP_SID ?? null',
+    '}));',
+    'writeFileSync(process.argv[1], "bundle");',
+  ].join(' ');
+  const result = buildPrivateOperatorApiBundle(root, root, {
+    command: process.execPath, args: ['-e', script, bundle], env, timeoutMs: 1000,
+  });
+
+  expect(result.path).toBe(bundle);
+  expect(JSON.parse(readFileSync(join(root, 'operator-api-build.log'), 'utf8'))).toEqual({
+    rail: null, vitest: null, worker: null, pool: null, census: null, owner: 'builder-owner',
+  });
+  expect(env).toMatchObject({ PAPERCUSP_FORBID_REAL_PG: '1', VITEST: 'true',
+    VITEST_WORKER_ID: '9', VITEST_POOL_ID: '2',
+    PAPERCUSP_RESTRICTED_HOLD_CENSUS_FILE: '/test-only-census.json' });
+});
+
 it('stops builder descendants on timeout and retains the original diagnostics', async () => {
   const evidenceDir = mkdtempSync(join(tmpdir(), 'private-builder-')); dirs.push(evidenceDir);
   const childFile = join(evidenceDir, 'descendant.pid');

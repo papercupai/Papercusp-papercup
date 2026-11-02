@@ -85,39 +85,139 @@ type FleetStatusTier = keyof typeof FLEET_STATUS_TIER_CAPS;
 const clipFleetStatus = (value: unknown, max: number): string | null =>
   typeof value === 'string' ? (value.length > max ? `${value.slice(0, max - 1)}…` : value) : null;
 
+function capFleetStatusArrays(
+  value: Record<string, unknown>,
+  fields: readonly string[],
+  max: number,
+): Record<string, unknown> {
+  let shaped = value;
+  for (const field of fields) {
+    const rows = value[field];
+    if (!Array.isArray(rows) || rows.length <= max) continue;
+    shaped = {
+      ...shaped,
+      [field]: rows.slice(0, max),
+      [`${field}Total`]: rows.length,
+      [`${field}Truncated`]: true,
+    };
+  }
+  return shaped;
+}
+
 function shapeLaunchTransaction(value: unknown, tier: FleetStatusTier): unknown {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
-  const transaction = value as Record<string, unknown>;
-  const governor = transaction.governor;
-  if (!governor || typeof governor !== 'object' || Array.isArray(governor)) return value;
-  const governorRecord = governor as Record<string, unknown>;
-  if (!Array.isArray(governorRecord.history)) return value;
-
   const caps = FLEET_STATUS_TIER_CAPS[tier];
-  const history = governorRecord.history as unknown[];
-  const retainedHistory = history.slice(-caps.launchHistory);
-  let clippedReasons = 0;
-  const shapedHistory = retainedHistory.map((event) => {
-    if (!event || typeof event !== 'object' || Array.isArray(event)) return event;
-    const record = event as Record<string, unknown>;
-    if (typeof record.reason !== 'string' || record.reason.length <= caps.launchHistoryReason) return event;
-    clippedReasons += 1;
-    return {
-      ...record,
-      reason: clipFleetStatus(record.reason, caps.launchHistoryReason),
-    };
-  });
-  const historyTruncated = history.length > retainedHistory.length;
+  let transaction = capFleetStatusArrays(value as Record<string, unknown>, [
+    'requestedMemberIds',
+    'openedMemberIds',
+    'verifiedMemberIds',
+    'unconfirmedMemberIds',
+    'workerReadyMemberIds',
+    'requestedMembers',
+    'workerAttestations',
+  ], caps.members);
 
-  return {
-    ...transaction,
-    governor: {
-      ...governorRecord,
+  const recovery = transaction.recovery;
+  if (recovery && typeof recovery === 'object' && !Array.isArray(recovery)) {
+    transaction = {
+      ...transaction,
+      recovery: capFleetStatusArrays(recovery as Record<string, unknown>, ['retryOwnerIds'], caps.members),
+    };
+  }
+
+  const failed = transaction.failed;
+  if (Array.isArray(failed)) {
+    const retained = failed.slice(-caps.launchHistory);
+    let clippedReasons = 0;
+    const shapedFailed = retained.map((entry) => {
+      if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return entry;
+      const record = entry as Record<string, unknown>;
+      if (typeof record.reason !== 'string' || record.reason.length <= caps.launchHistoryReason) return entry;
+      clippedReasons += 1;
+      return {
+        ...record,
+        reason: clipFleetStatus(record.reason, caps.launchHistoryReason),
+        reasonTotalChars: record.reason.length,
+        reasonTruncated: true,
+      };
+    });
+    transaction = {
+      ...transaction,
+      failed: shapedFailed,
+      ...(failed.length > retained.length ? { failedTotal: failed.length, failedTruncated: true } : {}),
+      ...(clippedReasons > 0 ? { failedReasonsTruncated: clippedReasons } : {}),
+    };
+  }
+
+  const waves = transaction.waves;
+  if (Array.isArray(waves)) {
+    const retained = waves.slice(-caps.launchHistory);
+    const shapedWaves = retained.map((wave) => {
+      if (!wave || typeof wave !== 'object' || Array.isArray(wave)) return wave;
+      return capFleetStatusArrays(
+        wave as Record<string, unknown>,
+        ['ownerIds', 'openedOwnerIds', 'verifiedOwnerIds'],
+        caps.members,
+      );
+    });
+    transaction = {
+      ...transaction,
+      waves: shapedWaves,
+      ...(waves.length > retained.length ? { wavesTotal: waves.length, wavesTruncated: true } : {}),
+    };
+  }
+
+  const governor = transaction.governor;
+  if (!governor || typeof governor !== 'object' || Array.isArray(governor)) return transaction;
+  const governorRecord = governor as Record<string, unknown>;
+  let shapedGovernor = capFleetStatusArrays(governorRecord, ['probeOwnerIds', 'retiredMemberIds'], caps.members);
+
+  const terminalVerdict = shapedGovernor.terminalVerdict;
+  if (terminalVerdict && typeof terminalVerdict === 'object' && !Array.isArray(terminalVerdict)) {
+    let shapedVerdict = capFleetStatusArrays(
+      terminalVerdict as Record<string, unknown>,
+      ['liveMemberIds', 'workerReadyMemberIds', 'unreadyMemberIds', 'unverifiedMemberIds'],
+      caps.members,
+    );
+    const reason = shapedVerdict.reason;
+    if (typeof reason === 'string' && reason.length > caps.launchHistoryReason) {
+      shapedVerdict = {
+        ...shapedVerdict,
+        reason: clipFleetStatus(reason, caps.launchHistoryReason),
+        reasonTotalChars: reason.length,
+        reasonTruncated: true,
+      };
+    }
+    if (shapedVerdict !== terminalVerdict) {
+      shapedGovernor = { ...shapedGovernor, terminalVerdict: shapedVerdict };
+    }
+  }
+
+  const history = shapedGovernor.history;
+  if (Array.isArray(history)) {
+    const retainedHistory = history.slice(-caps.launchHistory);
+    let clippedReasons = 0;
+    const shapedHistory = retainedHistory.map((event) => {
+      if (!event || typeof event !== 'object' || Array.isArray(event)) return event;
+      const record = event as Record<string, unknown>;
+      if (typeof record.reason !== 'string' || record.reason.length <= caps.launchHistoryReason) return event;
+      clippedReasons += 1;
+      return {
+        ...record,
+        reason: clipFleetStatus(record.reason, caps.launchHistoryReason),
+      };
+    });
+    shapedGovernor = {
+      ...shapedGovernor,
       history: shapedHistory,
-      ...(historyTruncated ? { historyTotal: history.length, historyTruncated: true } : {}),
+      ...(history.length > retainedHistory.length
+        ? { historyTotal: history.length, historyTruncated: true }
+        : {}),
       ...(clippedReasons > 0 ? { historyReasonsTruncated: clippedReasons } : {}),
-    },
-  };
+    };
+  }
+
+  return { ...transaction, governor: shapedGovernor };
 }
 
 const isNonRunnableFleetMember = (row: unknown): boolean => {
@@ -219,7 +319,7 @@ export function shapeFleetStatus(data: unknown, tier: FleetStatusTier): unknown 
     if (!source || typeof source !== 'object' || Array.isArray(source)) return undefined;
     const lifecycle = source as Record<string, unknown>;
     const compact: Record<string, unknown> = { ...lifecycle };
-    for (const key of ['currentRunnableRoster', 'relevantRoster', 'everMembers']) {
+    for (const key of ['currentRunnableRoster', 'relevantRoster', 'everMembers', 'membersLost']) {
       const population = lifecycle[key];
       if (!population || typeof population !== 'object' || Array.isArray(population)) continue;
       const row = population as Record<string, unknown>;

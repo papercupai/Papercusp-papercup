@@ -1,0 +1,13 @@
+{
+  "operationId": "c45ff126-6f02-47d2-9f7b-d9987f37cc70",
+  "prefix": "publish/verification-c45ff126-6f02-47d2-9f7b-d9987f37cc70/deployment-c45ff126-6f02-47d2-9f7b-d9987f37cc70/",
+  "sha256": "60a9ab398636e3314ba238e7e55ddfa3cea5488e22fa181ca1907b7f2cc035f4",
+  "bucket": "pc-p317-host-bundle-20260917",
+  "sourceHashesBefore": {
+    "apps/papercusp-publish/scripts/verify-archive.ts": "f07c7c8dadf09bad250b58e5b5b2a9e833914a8885abfc491db729154756f5ec",
+    "apps/papercusp-publish/src/r2-archive.ts": "b0a70f399e06288b44494af8e95de063b90460ff293272af808d7910624c49d9",
+    "libs/generic/artifact-registry/src/gcs-object-store.ts": "e10eb7ed1e13099b63f717796a5c0e6a12d0d68cda91e5fd8b21c24e7d805cd6",
+    "apps/papercusp-publish/scripts/verify-archive.test.ts": "b2f84ca48fa75dac7f747d75e5f013634ca07bdc2a94c9ef59086e1aede7f46d"
+  },
+  "at": "2026-11-02T10:41:06.258Z"
+}

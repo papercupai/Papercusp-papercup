@@ -15,16 +15,47 @@
  */
 import { registerSystemAction, type SystemActionCtx } from '../harness/routines/system-actions';
 import { getOrgPg } from '@papercusp/db-org';
-import { ingestInteractiveUsage } from './ingest-claude-transcripts';
+import { managedSetInterval } from '@papercusp/scheduled-registry';
+import { ingestInteractiveUsage, type IngestProgress } from './ingest-claude-transcripts';
 import { repriceUsageSamples } from './reprice-usage-samples';
 
 registerSystemAction('interactive-usage-ingest', async (ctx: SystemActionCtx) => {
   const cfg = ctx.triggerConfig ?? {};
   const maxFiles = Number(cfg.max_files);
-  const result = await ingestInteractiveUsage({
-    root: typeof cfg.root === 'string' && cfg.root.length > 0 ? cfg.root : undefined,
-    maxFilesPerTick: Number.isFinite(maxFiles) && maxFiles > 0 ? maxFiles : undefined,
-  });
+  let progress: IngestProgress | undefined;
+  let progressAt = Date.now();
+  const sweepStartedAt = progressAt;
+  const result = await (async () => {
+    const timer = managedSetInterval('interactive-usage-ingest-progress', 60_000, () => {
+      if (!progress) return;
+      const measuredPhase = progress.phase === 'starting' || progress.phase === 'completed' ? undefined : progress.phase;
+      const phaseTotalMs = measuredPhase ? progress.phaseMs[measuredPhase] ?? 0 : 0;
+      const sourcePhaseTotalMs = progress.source && measuredPhase
+        ? progress.sourcePhaseMs[progress.source]?.[measuredPhase] ?? 0 : 0;
+      console.info(`[interactive-usage] sweep still running ${JSON.stringify({
+        workflowId: ctx.workflowId ?? null,
+        phase: progress.phase,
+        source: progress.source ?? null,
+        filesScanned: progress.filesScanned,
+        filesIngested: progress.filesIngested,
+        samples: progress.samples,
+        bytesRead: progress.bytesRead,
+        elapsedMs: Date.now() - sweepStartedAt,
+        phaseElapsedMs: Date.now() - progressAt,
+        phaseTotalMs,
+        sourcePhaseTotalMs,
+      })}`);
+    }, { category: 'watchdog', classification: 'must-sample' });
+    try {
+      return await ingestInteractiveUsage({
+        root: typeof cfg.root === 'string' && cfg.root.length > 0 ? cfg.root : undefined,
+        maxFilesPerTick: Number.isFinite(maxFiles) && maxFiles > 0 ? maxFiles : undefined,
+        onProgress: (snapshot) => { progress = snapshot; progressAt = Date.now(); },
+      });
+    } finally {
+      timer.stop();
+    }
+  })();
   const t = result.totals;
   console.log(
     `[interactive-usage] scanned ${result.scannedFiles} transcript(s) → ` +
@@ -34,6 +65,13 @@ registerSystemAction('interactive-usage-ingest', async (ctx: SystemActionCtx) =>
       `${result.skippedUnchanged} unchanged` +
       (result.errors.length ? `, ${result.errors.length} error(s)` : ''),
   );
+  if (progress?.phase === 'completed') {
+    const workflowId = ctx.workflowId ?? null;
+    console.info(`[interactive-usage] phase-timings ${JSON.stringify({ workflowId, source: 'all', phaseMs: progress.phaseMs })}`);
+    for (const [source, phaseMs] of Object.entries(progress.sourcePhaseMs)) {
+      console.info(`[interactive-usage] phase-timings ${JSON.stringify({ workflowId, source, phaseMs })}`);
+    }
+  }
   for (const e of result.errors.slice(0, 5)) console.warn(`[interactive-usage]   ! ${e.file}: ${e.error}`);
 
   // Keep stored estimates on the running price table (WI-10004517 / agent-economy-flywheel D-018):

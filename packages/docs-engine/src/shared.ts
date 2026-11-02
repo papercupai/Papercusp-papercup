@@ -134,6 +134,55 @@ export function levenshteinNearest(
  * Returns null when the TOC entry is missing or the heading line can't
  * be located in the rendered markdown.
  */
+export interface MarkdownHeadingLine {
+  depth: number;
+  text: string;
+  line: string;
+  start: number;
+}
+
+/** Read ATX headings outside fenced code blocks, retaining offsets for slices. */
+export function scanMarkdownHeadings(md: string): MarkdownHeadingLine[] {
+  const headings: MarkdownHeadingLine[] = [];
+  let offset = 0;
+  let fenceChar: '`' | '~' | null = null;
+  let fenceLength = 0;
+
+  for (const rawLine of md.split('\n')) {
+    const line = rawLine.endsWith('\r') ? rawLine.slice(0, -1) : rawLine;
+    const lineStart = offset;
+    offset += rawLine.length + 1;
+
+    if (fenceChar) {
+      const closingFence = /^ {0,3}(`{3,}|~{3,})[ \t]*$/.exec(line);
+      if (closingFence && closingFence[1][0] === fenceChar && closingFence[1].length >= fenceLength) {
+        fenceChar = null;
+        fenceLength = 0;
+      }
+      continue;
+    }
+
+    const openingFence = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
+    if (openingFence) {
+      const marker = openingFence[1];
+      const info = openingFence[2];
+      if (marker[0] !== '`' || !info.includes('`')) {
+        fenceChar = marker[0] as '`' | '~';
+        fenceLength = marker.length;
+      }
+      continue;
+    }
+
+    const match = /^(#{1,6})\s+(.+?)\s*$/.exec(line);
+    if (!match) continue;
+    const text = match[2].trim();
+    if (!text) continue;
+    headings.push({ depth: match[1].length, text, line, start: lineStart });
+  }
+
+  return headings;
+}
+
 export function sliceByHeading(md: string, headingRef: string, toc: TocEntry[]): string | null {
   const exactRef = headingRef.trim();
   const targetById = toc.find((h) => (h.url ?? '').replace(/^#/, '') === exactRef);
@@ -156,18 +205,17 @@ export function sliceByHeading(md: string, headingRef: string, toc: TocEntry[]):
   const text = reactToText(target.title);
   if (!text) return null;
 
-  const headerRe = new RegExp(`^#{${target.depth}}\\s+${escapeRenderedHeadingText(text)}\\s*$`, 'm');
-  const startMatch = md.match(headerRe);
-  if (!startMatch || startMatch.index === undefined) return null;
+  const headerRe = new RegExp(`^#{${target.depth}}\\s+${escapeRenderedHeadingText(text)}\\s*$`);
+  const headings = scanMarkdownHeadings(md);
+  const startHeading = headings.find((heading) =>
+    heading.depth === target.depth && headerRe.test(heading.line),
+  );
+  if (!startHeading) return null;
 
-  const start = startMatch.index;
-  const afterStart = md.slice(start + startMatch[0].length);
-  const nextRe = new RegExp(`^#{1,${target.depth}}\\s+`, 'm');
-  const nextMatch = afterStart.match(nextRe);
-  const end =
-    nextMatch?.index !== undefined ? start + startMatch[0].length + nextMatch.index : md.length;
-
-  return md.slice(start, end).trim();
+  const nextHeading = headings.find((heading) =>
+    heading.start > startHeading.start && heading.depth <= target.depth,
+  );
+  return md.slice(startHeading.start, nextHeading?.start ?? md.length).trim();
 }
 
 /**

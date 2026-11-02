@@ -27,13 +27,58 @@
  */
 
 import { toJsonSchema } from '@papercusp/tooldef';
-import type { ObservedSurface, SurfaceCensusProvider } from '@papercusp/testing-shell/census';
+import type { CensusContext, ObservedSurface, SurfaceCensusProvider } from '@papercusp/testing-shell/census';
 import { routeRegistrationOrder, isCatchAll } from '../../endpoint-route/register';
 import { ALL_ROUTES } from '../../endpoint-route/routes';
 import { assertRegistryNonEmpty } from './_non-empty';
+import { loadedHandlerFingerprint } from '../../observability/runtime';
 
 /** The surface kind this provider owns — and therefore the only kind it may retire. */
 export const HTTP_ROUTE_KIND = 'http-route';
+
+/** Read the actual Hono stack, including middleware, raw routes and duplicate
+ * handlers. This supplements the declared provider; it does not broaden that
+ * provider's retirement scope. Capture each composed app separately when a
+ * handler delegates with fetch() instead of Hono's route() flattening.
+ *
+ * No handler/getter is executed. Stack metadata alone cannot prove the closure
+ * of arbitrary handler bodies or nested dispatch, so that remains an explicit
+ * reconciliation gap. The host supplies the app, never transport arguments.
+ */
+export function enumerateMountedHonoSurfaces(app: object, mountId: string): {
+  surfaces: ObservedSurface[]; unresolved: string[];
+} {
+  if (!mountId.trim()) throw new Error('security_http_mount_id_required');
+  const surfaces: ObservedSurface[] = [], unresolved: string[] = [];
+  const routes: unknown = Object.getOwnPropertyDescriptor(app, 'routes')?.value;
+  if (!Array.isArray(routes)) return { surfaces, unresolved: [`http-stack-unavailable:${mountId}`] };
+  if (!routes.length) return { surfaces, unresolved: [`http-stack-empty:${mountId}`] };
+  const occurrences = new Map<string, number>();
+  for (let index = 0; index < routes.length; index++) {
+    const route: unknown = Object.getOwnPropertyDescriptor(routes, String(index))?.value;
+    if (!route || typeof route !== 'object') {
+      unresolved.push(`http-stack-invalid-row:${mountId}:${index}`); continue;
+    }
+    const method = Object.getOwnPropertyDescriptor(route, 'method')?.value;
+    const path = Object.getOwnPropertyDescriptor(route, 'path')?.value;
+    const handler = Object.getOwnPropertyDescriptor(route, 'handler')?.value;
+    if (typeof method !== 'string' || !method.trim() || typeof path !== 'string' || !path.startsWith('/')) {
+      unresolved.push(`http-stack-invalid-route:${mountId}:${index}`); continue;
+    }
+    const routeId = identity(method, path), occurrence = (occurrences.get(routeId) ?? 0) + 1;
+    occurrences.set(routeId, occurrence);
+    if (typeof handler !== 'function') unresolved.push(`http-stack-handler-unavailable:${mountId}:${index}`);
+    surfaces.push({ kind: 'mounted-http-handler', surfaceId: JSON.stringify([mountId, routeId, occurrence]),
+      sourceFile: null, fidelity: 'observed', attrs: {
+        mountId, routeId, mountIndex: index, occurrence, method: method.toUpperCase(), path,
+        hasHandler: typeof handler === 'function', nestedDispatchCoverage: 'unknown',
+        loadedFunctionSha256: typeof handler === 'function' ? loadedHandlerFingerprint(handler as (...args: never[]) => unknown) : null,
+        functionFingerprintScope: 'loaded-function-text-only',
+      } });
+  }
+  unresolved.push(`http-stack-nested-dispatch-unverified:${mountId}`);
+  return { surfaces, unresolved };
+}
 
 function identity(method: string, path: string): string {
   return `${method.toUpperCase()} ${path}`;
@@ -53,11 +98,11 @@ function schemaOf(input: unknown): unknown {
   }
 }
 
-export const honoRoutesProvider: SurfaceCensusProvider = {
+export const honoRoutesProvider = {
   provider: 'hono-routes',
   kinds: [HTTP_ROUTE_KIND],
 
-  enumerate(): ObservedSurface[] {
+  enumerate(_ctx?: CensusContext): ObservedSurface[] {
     // Join table for per-route detail. Built from ALL_ROUTES — the same array the seam projects.
     const detail = new Map<string, (typeof ALL_ROUTES)[number]>();
     for (const def of ALL_ROUTES) detail.set(identity(def.method, def.path), def);
@@ -84,6 +129,11 @@ export const honoRoutesProvider: SurfaceCensusProvider = {
           // materially different risk from an admin-gated one.
           auth: typeof def?.auth === 'string' ? def.auth : (def?.auth ?? null),
           hasInputSchema: def?.input != null,
+          hasDefinition: def != null,
+          cors: def?.cors ?? null,
+          // null disables the watchdog; undefined selects its default. Preserve both.
+          timeoutDeclared: def?.timeoutSec !== undefined,
+          timeoutSec: def?.timeoutSec ?? null,
         },
         fidelity: 'declared',
       };
@@ -95,4 +145,4 @@ export const honoRoutesProvider: SurfaceCensusProvider = {
       'Check that lib/endpoint-route/routes/index.ts loaded and ALL_ROUTES is populated.',
     ) as ObservedSurface[];
   },
-};
+} satisfies SurfaceCensusProvider;

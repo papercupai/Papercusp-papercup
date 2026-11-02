@@ -2,9 +2,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   ADMISSION_PREVIEW_SETTLED_EVENT_PREFIX,
   boundAdmissionPreviewVerdict,
+  createRoutineMetadataAdmissionPreviewStore,
   deferredAdmissionPreviewPayload,
   describeAdmissionPreviewOperation,
   parseAdmissionPreviewOperation,
+  recoverOrphanedAdmissionPreviewOperations,
   runAdmissionPreviewOperation,
   type AdmissionPreviewOperation,
   type AdmissionPreviewStore,
@@ -22,6 +24,28 @@ function memoryStore(opts: { putDelayMs?: number; failPut?: boolean } = {}) {
     },
     async get(operationId) {
       return records.get(operationId) ?? null;
+    },
+    async listRunningFromOtherHost(hostInstanceId, hostPort) {
+      return [...records.values()].filter(
+        (operation) => operation.status === 'running' &&
+          operation.hostInstanceId !== hostInstanceId && operation.hostPort === hostPort,
+      );
+    },
+    async interruptIfStillRunning(operationId, expectedHostInstanceId, expectedHostPort, interruptedAtMs) {
+      const operation = records.get(operationId);
+      if (
+        !operation || operation.status !== 'running' ||
+        operation.hostInstanceId !== expectedHostInstanceId ||
+        operation.hostPort !== expectedHostPort
+      ) return null;
+      const interrupted: AdmissionPreviewOperation = {
+        ...operation,
+        status: 'interrupted',
+        settledAtMs: interruptedAtMs,
+        error: 'host restarted before preview settled',
+      };
+      records.set(operationId, interrupted);
+      return interrupted;
     },
   };
   return { store, puts, records };
@@ -201,6 +225,8 @@ describe('describeAdmissionPreviewOperation (op:get read)', () => {
     schemaVersion: 1,
     operationId: 'arp-1',
     status: 'running',
+    hostInstanceId: 'host-old',
+    hostPort: 3170,
     startedAtMs: 1_000,
     expiresAtMs: 2_000,
     settledAtMs: null,
@@ -247,7 +273,85 @@ describe('describeAdmissionPreviewOperation (op:get read)', () => {
 
   it('parses a stored record fail-soft', () => {
     expect(parseAdmissionPreviewOperation(base)).toEqual(base);
+    expect(parseAdmissionPreviewOperation({ ...base, hostInstanceId: undefined })?.hostInstanceId).toBeNull();
+    expect(parseAdmissionPreviewOperation({ ...base, hostPort: undefined })?.hostPort).toBeNull();
     expect(parseAdmissionPreviewOperation({ operationId: 'x' })).toBeNull();
     expect(parseAdmissionPreviewOperation(null)).toBeNull();
+  });
+});
+
+describe('recoverOrphanedAdmissionPreviewOperations (host boot)', () => {
+  it('interrupts prior generations on this listener port and emits their settle events once', async () => {
+    const { store, records } = memoryStore();
+    const previousHostOperation: AdmissionPreviewOperation = {
+      schemaVersion: 1,
+      operationId: 'arp-previous-host',
+      status: 'running',
+      hostInstanceId: 'host-before-restart',
+      hostPort: 3170,
+      startedAtMs: 100,
+      expiresAtMs: 901_000,
+      settledAtMs: null,
+      paths: ['a.ts'],
+      verdict: null,
+      verdictTruncated: false,
+      error: null,
+    };
+    const currentHostOperation = { ...previousHostOperation, operationId: 'arp-current-host', hostInstanceId: 'host-after-restart' };
+    const mainHostOperation = { ...previousHostOperation, operationId: 'arp-main-port', hostInstanceId: 'host-main', hostPort: 3070 };
+    records.set(previousHostOperation.operationId, previousHostOperation);
+    records.set(currentHostOperation.operationId, currentHostOperation);
+    records.set(mainHostOperation.operationId, mainHostOperation);
+    const emitted: AdmissionPreviewOperation[] = [];
+
+    const recovered = await recoverOrphanedAdmissionPreviewOperations({
+      store,
+      hostInstanceId: 'host-after-restart',
+      hostPort: 3170,
+      nowMs: 500,
+      emitSettled: async (operation) => { emitted.push(operation); },
+    });
+
+    expect(recovered).toHaveLength(1);
+    expect(recovered[0]).toMatchObject({
+      operationId: previousHostOperation.operationId,
+      status: 'interrupted',
+      hostInstanceId: 'host-before-restart',
+      hostPort: 3170,
+      settledAtMs: 500,
+    });
+    expect((await store.get(previousHostOperation.operationId))?.status).toBe('interrupted');
+    expect((await store.get(currentHostOperation.operationId))?.status).toBe('running');
+    expect((await store.get(mainHostOperation.operationId))?.status).toBe('running');
+    expect(emitted).toEqual(recovered);
+
+    const secondPass = await recoverOrphanedAdmissionPreviewOperations({
+      store,
+      hostInstanceId: 'host-after-restart',
+      hostPort: 3170,
+      nowMs: 600,
+      emitSettled: async (operation) => { emitted.push(operation); },
+    });
+    expect(secondPass).toEqual([]);
+    expect(emitted).toHaveLength(1);
+  });
+
+  it('scopes both the candidate query and atomic interruption to the listener port', async () => {
+    const calls: Array<{ query: string; params: unknown[] }> = [];
+    const store = createRoutineMetadataAdmissionPreviewStore(
+      { workspaceId: 'workspace', installSlug: 'install' },
+      { sql: async (query, params) => { calls.push({ query, params }); return []; } },
+    );
+
+    await store.listRunningFromOtherHost('host-after-restart', 3170);
+    await store.interruptIfStillRunning('arp-previous-host', 'host-before-restart', 3170, 500);
+
+    expect(calls).toHaveLength(2);
+    expect(calls[0].query).toContain("COALESCE(entry.value->>'hostPort', '') = $3::text");
+    expect(calls[0].query).toContain("COALESCE(entry.value->>'hostInstanceId', '') <> $4");
+    expect(calls[0].params).toEqual(['workspace', 'install', '3170', 'host-after-restart']);
+    expect(calls[1].query).toContain("COALESCE(metadata->'admission_previews'->$3::text->>'hostInstanceId', '') = COALESCE($4::text, '')");
+    expect(calls[1].query).toContain("COALESCE(metadata->'admission_previews'->$3::text->>'hostPort', '') = COALESCE($5::text, '')");
+    expect(calls[1].params).toEqual(['workspace', 'install', 'arp-previous-host', 'host-before-restart', '3170', 500]);
   });
 });

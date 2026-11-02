@@ -99,6 +99,12 @@ export interface FallbackWindow {
   dominantShare: number | null;
 }
 
+/** One durable observation row used to reconstruct historical trailing windows. */
+export interface FallbackObservationHistoryRow {
+  observedAt: Date;
+  aggregate: FallbackReasonAggregate;
+}
+
 export const FALLBACK_NAME_MAX_CHARS = 200;
 export const FALLBACK_SCOPE_MAX_CHARS = 500;
 /** Rows per INSERT; also the buffer length that triggers an immediate flush. */
@@ -547,6 +553,99 @@ export async function readFallbackWindow(
     windowMs,
     rows.map((r) => ({ reason: r.reason, samples: Number(r.samples), eligible: Number(r.eligible), applied: Number(r.applied), unknownSamples: Number(r.unknown_samples) })),
   );
+}
+
+/**
+ * Read bounded, ordered observation history for an already-open watchdog episode.
+ * The caller reconstructs only event/expiry boundary windows and sends each
+ * candidate through the canonical degradation judge.
+ */
+export async function readFallbackObservationHistory(
+  mechanism: string,
+  since: Date,
+  until: Date,
+  opts: {
+    sql?: Sql;
+    workspaceId: string;
+    scope: string | null;
+    processTag?: string;
+    sessionOwnerScope?: boolean;
+  },
+): Promise<FallbackObservationHistoryRow[]> {
+  const sql = opts.sql ?? getOrgPg().sql;
+  const name = mechanism.trim();
+  const workspaceId = opts.workspaceId;
+  const scope = opts.scope;
+  const processTag = opts.processTag ?? null;
+  const maxRows = 50_000;
+  type HistoryRow = {
+    id: number | string;
+    observed_at: Date | string;
+    reason: string;
+    samples: number | string;
+    eligible: number | string;
+    applied: number | string;
+    unknown_samples: number | string;
+  };
+  const rows = opts.sessionOwnerScope
+    ? await sql<HistoryRow[]>`
+        SELECT f.id, f.observed_at, f.reason, f.samples, f.eligible, f.applied,
+               CASE WHEN f.population_known IS FALSE OR
+                 (f.population_known IS NULL AND f.mechanism = 'gate-pass-reuse' AND f.eligible = 0)
+                 THEN f.samples ELSE 0 END::bigint AS unknown_samples
+          FROM harness_shared.fallback_observations f
+          JOIN LATERAL (
+            SELECT s.started_at
+              FROM harness_shared.adv_sessions s
+             WHERE s.workspace_id = f.workspace_id
+               AND s.coord_owner_id = f.scope
+               AND (s.session_id IS NOT NULL OR s.agent = 'codex')
+               AND s.ended_at IS NULL
+               AND s.ended_by IS NULL
+             ORDER BY s.started_at DESC, s.id DESC
+             LIMIT 1
+          ) active_session ON true
+         WHERE f.workspace_id = ${workspaceId}
+           AND f.mechanism = ${name}
+           AND f.scope IS NOT DISTINCT FROM ${scope}::text
+           AND f.observed_at >= GREATEST(${since}, active_session.started_at)
+           AND f.observed_at < ${until}
+           AND (${processTag}::text IS NULL OR f.process_tag = ${processTag}::text)
+         ORDER BY f.observed_at ASC, f.id ASC
+         LIMIT ${maxRows + 1}
+      `
+    : await sql<HistoryRow[]>`
+        SELECT id, observed_at, reason, samples, eligible, applied,
+               CASE WHEN population_known IS FALSE OR
+                 (population_known IS NULL AND mechanism = 'gate-pass-reuse' AND eligible = 0)
+                 THEN samples ELSE 0 END::bigint AS unknown_samples
+          FROM harness_shared.fallback_observations
+         WHERE workspace_id = ${workspaceId}
+           AND mechanism = ${name}
+           AND scope IS NOT DISTINCT FROM ${scope}::text
+           AND observed_at >= ${since}
+           AND observed_at < ${until}
+           AND (${processTag}::text IS NULL OR process_tag = ${processTag}::text)
+         ORDER BY observed_at ASC, id ASC
+         LIMIT ${maxRows + 1}
+      `;
+  if (rows.length > maxRows) {
+    throw new Error('recovery history exceeds the bounded read limit of ' + maxRows + ' rows for ' + name);
+  }
+  return rows.map((row) => {
+    const observedAt = row.observed_at instanceof Date ? row.observed_at : new Date(row.observed_at);
+    if (!Number.isFinite(observedAt.getTime())) throw new Error('invalid observation timestamp for ' + name);
+    return {
+      observedAt,
+      aggregate: {
+        reason: row.reason,
+        samples: Number(row.samples),
+        eligible: Number(row.eligible),
+        applied: Number(row.applied),
+        unknownSamples: Number(row.unknown_samples),
+      },
+    };
+  });
 }
 
 /** One scope's window: `scope` is null for observations recorded without one. */

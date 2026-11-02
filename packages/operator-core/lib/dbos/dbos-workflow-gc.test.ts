@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import {
   runDbosWorkflowGcOnce,
+  dbosWorkflowGcSqlDeps,
   dbosWorkflowGcEnabled,
   dbosWorkflowGcRetentionDays,
   DBOS_TERMINAL_STATUSES,
@@ -148,6 +149,84 @@ describe('env knobs', () => {
 });
 
 describe('runDbosWorkflowGcOnce', () => {
+  it('fails a completed operation observed beyond the terminal bound before reporting success', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    let clock = 0;
+    const deps: DbosGcDeps = {
+      selectTerminalVictims: async () => ['a'],
+      deleteOutputs: async () => 1,
+      deleteWorkflows: async () => { clock = 60_001; return 1; },
+    };
+    await expect(runDbosWorkflowGcOnce({ enabled: true, deps, nowClockMs: () => clock }))
+      .rejects.toThrow('60000ms terminal deadline');
+  });
+
+  it('forwards terminal cancellation to the actual SQL query handle', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const query = Object.assign(new Promise<never>(() => {}), { cancel: vi.fn() });
+    const sql = (() => query) as Parameters<typeof dbosWorkflowGcSqlDeps>[0];
+    const outcome = runDbosWorkflowGcOnce({ enabled: true, deps: dbosWorkflowGcSqlDeps(sql) }).catch(error => error);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(await outcome).toEqual(expect.objectContaining({ message: expect.stringContaining('60000ms terminal deadline') }));
+    expect(query.cancel).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it.each([29_999, 30_000])('admits deletion only before the exact 30000ms boundary (%s)', async elapsed => {
+    let clock = 0;
+    const deps: DbosGcDeps = {
+      selectTerminalVictims: async () => { clock = elapsed; return ['a']; },
+      deleteOutputs: vi.fn(async () => 1),
+      deleteWorkflows: vi.fn(async () => { clock = 30_000; return 1; }),
+    };
+    const result = await runDbosWorkflowGcOnce({ enabled: true, deps, nowClockMs: () => clock });
+    expect(result.budgetExhausted).toBe(true);
+    expect(deps.deleteOutputs).toHaveBeenCalledTimes(elapsed < 30_000 ? 1 : 0);
+    expect(result.deletedWorkflows).toBe(elapsed < 30_000 ? 1 : 0);
+  });
+
+  it.each(['selection', 'outputs', 'workflows'] as const)('fails and cancels stalled %s at the exact 60000ms terminal bound', async phase => {
+    vi.useFakeTimers();
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    let signal: AbortSignal | undefined;
+    let release!: () => void;
+    const held = new Promise<void>(resolve => { release = resolve; });
+    const pause = async (at: string, control?: AbortSignal) => {
+      if (at === phase) { signal = control; await held; }
+    };
+    const deps: DbosGcDeps = {
+      selectTerminalVictims: vi.fn(async (_cutoff, _limit, control) => { await pause('selection', control); return ['a']; }),
+      deleteOutputs: vi.fn(async (_ids, control) => { await pause('outputs', control); return 1; }),
+      deleteWorkflows: vi.fn(async (_ids, control) => { await pause('workflows', control); return 1; }),
+    };
+    let settled = false;
+    const outcome = runDbosWorkflowGcOnce({ enabled: true, deps }).then(
+      value => { settled = true; return value; }, error => { settled = true; return error; });
+    await vi.advanceTimersByTimeAsync(59_999);
+    expect(settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(settled).toBe(true);
+    expect(await outcome).toEqual(expect.objectContaining({ message: expect.stringContaining('60000ms terminal deadline') }));
+    expect(signal?.aborted).toBe(true);
+    const calls = [deps.selectTerminalVictims, deps.deleteOutputs, deps.deleteWorkflows].map(fn => vi.mocked(fn).mock.calls.length);
+    release();
+    await vi.advanceTimersByTimeAsync(1);
+    expect([deps.selectTerminalVictims, deps.deleteOutputs, deps.deleteWorkflows].map(fn => vi.mocked(fn).mock.calls.length)).toEqual(calls);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('fails and logs successful zero deletion while selected eligible history remains', async () => {
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const deps: DbosGcDeps = {
+      selectTerminalVictims: async () => ['a'],
+      deleteOutputs: async () => 0,
+      deleteWorkflows: async () => 0,
+    };
+    await expect(runDbosWorkflowGcOnce({ enabled: true, deps })).rejects.toThrow('no deletion progress');
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('no deletion progress'));
+  });
+
   it('records an observable zero-work pass with elapsed time and budget disposition', async () => {
     const log = vi.spyOn(console, 'log').mockImplementation(() => {});
     const deps: DbosGcDeps = {

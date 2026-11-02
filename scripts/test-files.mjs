@@ -13,7 +13,7 @@
  * Usage: npm run test:file -- path/to/a.test.ts [path/to/b.test.ts] [<vitest args>]
  * Vitest args may follow the file list directly or after an explicit `--` separator.
  */
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, statSync, unlinkSync, watch as watchFile, writeFileSync } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
 import { readVerifierSourceReceiptSync } from '@papercusp/test-config/verifier-source';
 import { REGISTERED_VITEST_FILE_PROJECTS } from '@papercusp/test-config/execution-details';
@@ -427,7 +427,7 @@ function registeredVitestFileRoute(rootRelative, absolute, root) {
   );
   if (!project) return null;
   const cwd = resolve(root, project.root);
-  const config = 'vitest.config.ts';
+  const config = 'config' in project ? project.config : 'vitest.config.ts';
   if (!existsSync(resolve(cwd, config))) return null;
   return { cwd, config, absolute, requested: relative(cwd, absolute) };
 }
@@ -2227,7 +2227,7 @@ export function formatProvenanceDrift(diff) {
  * (measured, nothing moved), `drifted` (a tested path changed mid-run), `unknown` (git unreadable or
  * HEAD moved beyond the named-path measurement radius — NOT a clean bill).
  */
-export function provenanceResultFields(snapshot, diff, childNotices) {
+export function provenanceResultFields(snapshot, diff, childNotices, childNoticeOffsetBytes) {
   const entries = snapshot?.entries ?? [];
   const unknown = entries.filter((e) => e.state === PROVENANCE_UNKNOWN).length;
   const uncommitted = entries.filter((e) => e.state === 'dirty' || e.state === 'untracked').length;
@@ -2247,10 +2247,14 @@ export function provenanceResultFields(snapshot, diff, childNotices) {
   // working tree? Only main()'s post-run call passes `childNotices`; the dry-run line and this
   // function's hand-built unit tests omit it, so their output is unchanged. Unreadable is
   // `unknown`, never 0.
+  // The inherited channel may already contain a committed-source notice for this launcher before
+  // main() opens its child sink. Report that sink's byte offset so consumers can compare this
+  // child-only count with the matching suffix of the shared notice file.
   const childSuffix =
     childNotices === undefined
       ? ''
-      : ` childSubstituted=${childNotices?.unreadable || !childNotices ? PROVENANCE_UNKNOWN : childNotices.records.length}`;
+      : ` childSubstituted=${childNotices?.unreadable || !childNotices ? PROVENANCE_UNKNOWN : childNotices.records.length}` +
+        ` childNoticeOffsetBytes=${Number.isSafeInteger(childNoticeOffsetBytes) ? childNoticeOffsetBytes : PROVENANCE_UNKNOWN}`;
   return (
     `head=${snapshot?.head ?? PROVENANCE_UNKNOWN} ` +
     `uncommittedPaths=${uncommitted}/${entries.length} provenance=${verdict}${startedAtSuffix}${childSuffix}`
@@ -3635,6 +3639,56 @@ export function assertCommittedTestConfigCoverageExports(root = REPO_ROOT) {
   return pinnedCommit;
 }
 
+const TEST_RUN_RECEIPT_RECONCILIATION_MAX_MS = 30_000;
+
+/**
+ * Re-read an existing test-run receipt sink when the reporter may still append
+ * the original INSERT's eventual result. This waits for file events only; it
+ * never starts or retries a measured test process.
+ */
+export function waitForTestRunReceiptUpdate(filePath, readState, {
+  timeoutMs = TEST_RUN_RECEIPT_RECONCILIATION_MAX_MS,
+  watchImpl = watchFile,
+} = {}) {
+  const read = () => {
+    try { return readState(); }
+    catch (error) { return { complete: false, retryable: false, error }; }
+  };
+  const initial = read();
+  if (initial.complete || initial.retryable === false || timeoutMs <= 0) return Promise.resolve(initial);
+
+  return new Promise((resolve) => {
+    let settled = false;
+    let watcher = null;
+    let timer = null;
+    const finish = (state) => {
+      if (settled) return;
+      settled = true;
+      if (timer !== null) clearTimeout(timer);
+      try { watcher?.close(); } catch { /* the bounded wait is already settling */ }
+      resolve(state);
+    };
+    const inspect = () => {
+      const state = read();
+      if (state.complete || state.retryable === false) finish(state);
+      return state;
+    };
+
+    try {
+      watcher = watchImpl(dirname(filePath), { persistent: true }, (_event, filename) => {
+        if (filename == null || filename.toString() === basename(filePath)) inspect();
+      });
+      watcher.on?.('error', (error) => finish({ ...read(), retryable: false, watchError: error }));
+    } catch (error) {
+      finish({ ...read(), retryable: false, watchError: error });
+      return;
+    }
+    timer = setTimeout(() => finish(inspect()), timeoutMs);
+    // Close the race between the first read and installing the directory watch.
+    inspect();
+  });
+}
+
 export async function main(
   argv = process.argv.slice(2),
   {
@@ -4683,6 +4737,7 @@ export async function main(
     let expectedPaths = [...expectedVitestReceiptPaths];
     let missingPaths = [];
     let receiptDiagnostics = [];
+    let receiptWaitEligible = false;
     let receiptIssue = receiptStartError
       ? `could not inspect receipt file before run: ${receiptStartError instanceof Error ? receiptStartError.message : String(receiptStartError)}`
       : null;
@@ -4696,26 +4751,63 @@ export async function main(
       // Count them as missing instead of emitting the misleading `missing=0`.
       if (receiptStartError?.code === 'ENOENT') missingPaths = [...expectedPaths];
       if (expectedPaths.length > 0 && !receiptIssue && receiptFile) {
-        const contents = readFileSync(receiptFile);
-        if (contents.length < receiptStartOffset) {
-          receiptIssue = 'receipt file was shortened during the run';
-        } else {
-          const receiptLog = contents.subarray(receiptStartOffset).toString('utf8');
-          missingPaths = reporter.missingTestRunReceiptPaths(receiptLog, expectedPaths, repoRoot);
+        const inspectReceiptFile = () => {
+          try {
+            const contents = readFileSync(receiptFile);
+            if (contents.length < receiptStartOffset) {
+              receiptIssue = 'receipt file was shortened during the run';
+              missingPaths = [...expectedPaths];
+              receiptWaitEligible = false;
+              return { complete: false, retryable: false };
+            }
+            const receiptLog = contents.subarray(receiptStartOffset).toString('utf8');
+            missingPaths = reporter.missingTestRunReceiptPaths(receiptLog, expectedPaths, repoRoot);
           // Preserve the reporter's failure evidence before a mutation probe
           // removes its receipt sink. Never echo serialized test rows or config.
-          receiptDiagnostics = receiptLog.split(/\r?\n/).flatMap(line => {
-            let receipt;
-            try { receipt = JSON.parse(line); } catch { return []; }
-            // Roots may differ across groups; retain bounded failure diagnostics
-            // from this run without reimplementing the reporter's path matching.
-            if (!receipt || missingPaths.length === 0
-              || !['failed', 'timeout'].includes(receipt.outcome)) return [];
-            return [{ filePath: receipt.filePath, outcome: receipt.outcome,
-              reason: typeof receipt.reason === 'string' ? receipt.reason.slice(0, 200) : 'unknown',
-              ...(typeof receipt.errorCode === 'string' ? { errorCode: receipt.errorCode.slice(0, 80) } : {}) }];
-          }).slice(-10);
-          if (missingPaths.length > 0) receiptIssue = 'one or more recordable Vitest files lack an inserted ledger receipt';
+            receiptDiagnostics = receiptLog.split(/\r?\n/).flatMap(line => {
+              let receipt;
+              try { receipt = JSON.parse(line); } catch { return []; }
+              // Roots may differ across groups; retain bounded failure diagnostics
+              // from this run without reimplementing the reporter's path matching.
+              if (!receipt || missingPaths.length === 0
+                || !['failed', 'timeout'].includes(receipt.outcome)) return [];
+              return [{ filePath: receipt.filePath, outcome: receipt.outcome,
+                reason: typeof receipt.reason === 'string' ? receipt.reason.slice(0, 200) : 'unknown',
+                ...(typeof receipt.errorCode === 'string' ? { errorCode: receipt.errorCode.slice(0, 80) } : {}) }];
+            }).slice(-10);
+            receiptWaitEligible = missingPaths.length > 0;
+            receiptIssue = receiptWaitEligible
+              ? 'one or more recordable Vitest files lack an inserted ledger receipt'
+              : null;
+            return { complete: !receiptWaitEligible, retryable: receiptWaitEligible };
+          } catch (error) {
+            receiptIssue = `could not validate Vitest ledger receipts: ${error instanceof Error ? error.message : String(error)}`;
+            if (error?.code === 'ENOENT') {
+              missingPaths = [...expectedPaths];
+              receiptWaitEligible = true;
+            } else {
+              receiptWaitEligible = false;
+            }
+            return { complete: false, retryable: receiptWaitEligible };
+          }
+        };
+
+        let receiptState = inspectReceiptFile();
+        if (receiptState.retryable && receiptWaitEligible) {
+          const configuredWaitMs = reporter.reporterWriteBudget?.(process.env)?.flushBudgetMs;
+          const receiptWaitMs = Number.isSafeInteger(configuredWaitMs) && configuredWaitMs > 0
+            ? Math.min(configuredWaitMs, TEST_RUN_RECEIPT_RECONCILIATION_MAX_MS)
+            : TEST_RUN_RECEIPT_RECONCILIATION_MAX_MS;
+          receiptState = await waitForTestRunReceiptUpdate(receiptFile, inspectReceiptFile, {
+            timeoutMs: receiptWaitMs,
+          });
+          if (receiptState.complete) {
+            receiptIssue = null;
+          } else if (receiptState.watchError) {
+            receiptIssue = `could not observe late test-run receipt updates: ${receiptState.watchError instanceof Error ? receiptState.watchError.message : String(receiptState.watchError)}`;
+          } else if (receiptState.retryable) {
+            receiptIssue = `one or more recordable Vitest files still lack an inserted ledger receipt after the bounded ${receiptWaitMs}ms reconciliation window`;
+          }
         }
       }
     } catch (error) {
@@ -4765,7 +4857,7 @@ export async function main(
       : 'unknown';
   console.log(
     `TEST_FILE_RESULT requested=${summary.requested} executed=${summary.executed} matched=${summary.matched} ` +
-      `status=${status} ${provenanceResultFields(provenanceBefore, provenanceDiff, childSourceNotices)} skippedTests=${skippedField}` +
+      `status=${status} ${provenanceResultFields(provenanceBefore, provenanceDiff, childSourceNotices, childSourceNoticeSink?.offset)} skippedTests=${skippedField}` +
       (summary.anyFinalizationError ? ' finalizationError=true' : ''),
   );
   if (summary.anyFinalizationError) return TEST_FILE_EXIT_FINALIZATION_ERROR;

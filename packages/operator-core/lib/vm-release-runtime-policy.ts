@@ -75,6 +75,8 @@ export interface VmReleaseRuntimePolicyOptions {
   sidecarDir: string;
   hostname: string;
   port: number;
+  /** Ordinary launchers bootstrap with retained Node, then replace it before owning any service. */
+  allowRuntimeHandoff?: boolean;
   /** Canonical authority is supplied by the host; package fields alone never authorize Bun. */
   verifyApplicationRuntimeAcceptance?: (request: {
     harnessSlug: string; evidenceRef: string; candidate: ApplicationRuntimeCandidate; role: string;
@@ -422,10 +424,13 @@ export async function assertVmReleaseApplicationRuntime(options: VmReleaseRuntim
     sourceSha: manifest.gitHead!, roles: ['host'], entrypoint: resolve(sidecarRoot, 'serve.mjs'),
     entrypointSha256: entryArtifact.sha256, node, ...(bun ? { bun } : {}),
   };
+  const preload = manifest.artifacts.find(artifact => artifact.name === 'sidecar-preload.js');
+  if (preload) candidate.preload = { path: resolve(sidecarRoot, preload.name), sha256: preload.sha256 };
   const launch = await resolveApplicationRuntimeLaunch({
     candidate, runtime,
     role: 'host',
     env,
+    args: options.allowRuntimeHandoff ? process.argv.slice(2) : [],
     ...(runtime === 'bun' ? {
       acceptanceRef: manifest.applicationRuntime!.acceptanceRef!,
       verifyAcceptance: (evidenceRef: string) => options.verifyApplicationRuntimeAcceptance!({
@@ -433,15 +438,26 @@ export async function assertVmReleaseApplicationRuntime(options: VmReleaseRuntim
       }),
     } : {}),
   });
-  if ((process.versions.bun ? 'bun' : 'node') !== runtime
-    || realpathSync(process.execPath) !== launch.executable
-    || (process.versions.bun ?? process.versions.node) !== launch.runtime.version
-    || process.platform !== launch.runtime.platform || process.arch !== launch.runtime.arch
-    || sha256(process.execPath) !== launch.runtime.binarySha256) {
-    fail(`ordinary host must run the package-pinned ${runtime === 'bun' ? 'Bun' : 'Node'} executable`);
-  }
+  const running = (pin: typeof node) =>
+    (process.versions.bun ? 'bun' : 'node') === pin.name
+    && realpathSync(process.execPath) === pin.executable
+    && (process.versions.bun ?? process.versions.node) === pin.version
+    && process.platform === pin.platform && process.arch === pin.arch
+    && sha256(process.execPath) === pin.binarySha256;
   if (!readFileSync(manifestPath).equals(manifestBytes)) {
     fail('build provenance changed during application runtime selection');
+  }
+  if (!running(launch.runtime)) {
+    if (runtime === 'bun' && options.allowRuntimeHandoff && running(launch.nodeRollback)) {
+      if (typeof process.execve !== 'function') fail('Bun runtime handoff requires process.execve');
+      // No child/supervisor is introduced: the launcher's PID, stdio and ownership
+      // remain attached to this process. Loader environment was scrubbed by the selector.
+      const childEnv = Object.fromEntries(Object.entries(launch.env)
+        .filter((entry): entry is [string, string] => entry[1] !== undefined));
+      process.execve(launch.executable, [launch.executable, ...launch.args], childEnv);
+      fail('Bun runtime handoff returned without replacing the process');
+    }
+    fail(`ordinary host must run the package-pinned ${runtime === 'bun' ? 'Bun' : 'Node'} executable`);
   }
   return launch;
 }

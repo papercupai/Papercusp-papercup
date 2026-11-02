@@ -123,12 +123,20 @@ export async function checkDraftItemStartGateLive(input: {
   let coverage: Promise<{ hasOpen: boolean; hasTerminal: boolean }> | undefined;
   const readCoverage = async (): Promise<{ hasOpen: boolean; hasTerminal: boolean }> => {
     coverage ??= (async () => {
-      const { findCoverageWorkItems, TERMINAL_WORK_ITEM_STATES } = await import('../../plan-items/convert');
-      const { workspaceId } = await scope();
-      const linked = await findCoverageWorkItems(input.slug, input.itemId, [workspaceId]);
+      const { findCoverageWorkItems, findConvertedWorkItemByStamp, TERMINAL_WORK_ITEM_STATES } =
+        await import('../../plan-items/convert');
+      const { workspaceId, harnessSlug } = await scope();
+      const [linked, stamped] = await Promise.all([
+        findCoverageWorkItems(input.slug, input.itemId, [workspaceId]),
+        findConvertedWorkItemByStamp(input.slug, input.itemId, harnessSlug, workspaceId),
+      ]);
       return {
-        hasOpen: linked.some((wi) => !TERMINAL_WORK_ITEM_STATES.has(wi.state)),
-        hasTerminal: linked.some((wi) => TERMINAL_WORK_ITEM_STATES.has(wi.state)),
+        hasOpen:
+          linked.some((wi) => !TERMINAL_WORK_ITEM_STATES.has(wi.state)) ||
+          Boolean(stamped && !TERMINAL_WORK_ITEM_STATES.has(stamped.state)),
+        hasTerminal:
+          linked.some((wi) => TERMINAL_WORK_ITEM_STATES.has(wi.state)) ||
+          Boolean(stamped && TERMINAL_WORK_ITEM_STATES.has(stamped.state)),
       };
     })();
     return coverage;

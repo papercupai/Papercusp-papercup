@@ -13,7 +13,13 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import * as admissionBlobs from './admission-import-completeness';
-import { ADMISSION_RADIUS_CAP, admissionRadiusEdgeCache, executeAdmissionJob, ordinaryAdmissionRadius } from './admission-jobs';
+import {
+  ADMISSION_RADIUS_CAP,
+  admissionRadiusEdgeCache,
+  executeAdmissionJob,
+  groupRadiusSourceFilesByWorkspace,
+  ordinaryAdmissionRadius,
+} from './admission-jobs';
 import { edgeCacheKey } from '../../../../scripts/lib/related-tests.mjs';
 import * as relatedTests from '../../../../scripts/lib/related-tests.mjs';
 import { evaluateFixPrecheck } from './admission-fix-precheck';
@@ -45,6 +51,50 @@ function topTree(): Array<{ mode: string; type: string; sha: string; file: strin
 
 const radiusFor = (admittedPaths: string[], extra: { signature?: Parameters<typeof ordinaryAdmissionRadius>[0]['signature']; cap?: number } = {}) =>
   ordinaryAdmissionRadius({ root, commit, top: topTree(), signature: extra.signature ?? [], admittedPaths, ...(extra.cap ? { cap: extra.cap } : {}) });
+
+describe('groupRadiusSourceFilesByWorkspace', () => {
+  it('collects multiple workspace source lists in one repository pass and keeps the existing exclusions', () => {
+    const repoRoot = '/repo-root';
+    const packageA = join(repoRoot, 'packages/a');
+    const packageB = join(repoRoot, 'packages/b');
+    const aSource = join(packageA, 'src/core.ts');
+    const bTest = join(packageB, 'test/consumer.test.ts');
+    const script = join(repoRoot, 'scripts/setup.mjs');
+    const symlink = join(packageA, 'src/link.ts');
+    const excluded = join(packageA, 'node_modules/ignored/index.ts');
+    const entries = [
+      [aSource, { mode: '100644' }] as const,
+      [bTest, { mode: '100644' }] as const,
+      [script, { mode: '100644' }] as const,
+      [symlink, { mode: '120000' }] as const,
+      [excluded, { mode: '100644' }] as const,
+      [join(packageB, 'README.md'), { mode: '100644' }] as const,
+    ];
+    const owners = new Map<string, string | null>([
+      [aSource, packageA],
+      [bTest, packageB],
+      [script, null],
+      [symlink, packageA],
+      [excluded, packageA],
+    ]);
+    let scans = 0;
+    const onePass: Iterable<(typeof entries)[number]> = {
+      *[Symbol.iterator]() {
+        scans += 1;
+        yield* entries;
+      },
+    };
+
+    const grouped = groupRadiusSourceFilesByWorkspace(onePass, repoRoot, (file) => owners.get(file) ?? null);
+
+    expect(scans).toBe(1);
+    expect([...grouped.entries()]).toEqual([
+      [packageA, [aSource]],
+      [packageB, [bTest]],
+      [null, [script]],
+    ]);
+  });
+});
 
 beforeAll(() => {
   root = mkdtempSync(join(tmpdir(), 'admission-radius-'));

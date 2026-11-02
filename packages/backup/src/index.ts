@@ -69,6 +69,8 @@ export {
   type PreDestructiveSnapshotReceiptLike,
 } from './snapshot-admission';
 export { deriveRepoPassword } from './password';
+export { readHostDumpInProgress } from './host-dump-coverage';
+export type { HostDumpInProgress } from './host-dump-coverage';
 export {
   BACKUP_APPLICATION_NAMES,
   HOST_BACKUP_APPLICATION_NAME,

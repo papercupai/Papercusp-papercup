@@ -21,6 +21,7 @@
  * always restores `<harness_dir>/.papercusp/<key>`.
  */
 import { mkdir, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import { dirname, join } from 'node:path';
 import { getOrgPg, generated, typedSql } from '@papercusp/db-org';
 import { and, eq, or, sql } from 'drizzle-orm';
@@ -44,6 +45,71 @@ function normalizeRelPath(rel: string): string {
   // Drop leading `.papercusp/` so the PG key is consistent with the bare
   // relative-to-harness-dir convention.
   return rel.replace(/^\.papercusp\//, '');
+}
+
+/** Content-addressed snapshots share the canonical artifact table, not its mirrors.
+ * Ordinary artifact mutations cannot replace, append to or delete these revisions.
+ * Raw DB/admin compromise is outside this API guarantee; reads verify bytes anew.
+ */
+const IMMUTABLE_PREFIX = 'immutable/sha256/';
+function assertMutableKey(key: string): void {
+  if (key.startsWith('immutable/')) throw new Error('text_artifact_immutable_namespace');
+}
+function immutableKey(sha256: string): string {
+  if (!/^[a-f0-9]{64}$/.test(sha256)) throw new Error('text_artifact_invalid_digest');
+  return `${IMMUTABLE_PREFIX}${sha256}.json`;
+}
+const contentSha256 = (content: string) => createHash('sha256').update(content).digest('hex');
+
+export async function loadImmutableTextArtifact(slug: string, sha256: string): Promise<string | null> {
+  const { db } = getOrgPg();
+  const rows = await db.select({ content: t.content }).from(t).where(and(
+    eq(t.harnessSlug, slug), eq(t.relPath, immutableKey(sha256)), eq(t.workspaceId, activeWorkspaceId()),
+  )).limit(1);
+  const content = rows[0]?.content ?? null;
+  if (content !== null && contentSha256(content) !== sha256) throw new Error('text_artifact_immutable_corrupt');
+  return content;
+}
+
+/** Idempotent concurrent insert; a collision/foreign scope never overwrites a row. */
+export async function saveImmutableTextArtifact(slug: string, content: string): Promise<{ sha256: string; relPath: string }> {
+  const sha256 = contentSha256(content), relPath = immutableKey(sha256);
+  const { db } = getOrgPg();
+  await db.insert(t).values({ harnessSlug: slug, relPath, content,
+    updatedAt: Date.now(), workspaceId: activeWorkspaceId() }).onConflictDoNothing();
+  if (await loadImmutableTextArtifact(slug, sha256) !== content) throw new Error('text_artifact_immutable_conflict');
+  return { sha256, relPath };
+}
+
+/** Permanent first-writer slots in the SAME canonical store. Used for execution
+ * consumption, where content addressing alone cannot exclude a second start.
+ * A crash after claiming deliberately leaves an uncertain/consumed execution;
+ * callers must inspect it, never silently retry a potentially effected run.
+ */
+function immutableClaimKey(slot: string): string {
+  if (!slot.trim()) throw new Error('text_artifact_empty_claim');
+  return `immutable/claims/${contentSha256(slot)}.json`;
+}
+export async function loadImmutableTextArtifactClaim(slug: string, slot: string): Promise<string | null> {
+  const { db } = getOrgPg();
+  const rows = await db.select({ content: t.content }).from(t).where(and(
+    eq(t.harnessSlug, slug), eq(t.relPath, immutableClaimKey(slot)), eq(t.workspaceId, activeWorkspaceId()),
+  )).limit(1);
+  if (!rows.length) return null;
+  const value = JSON.parse(rows[0].content) as { sha256: string; content: string };
+  if (typeof value.content !== 'string' || contentSha256(value.content) !== value.sha256) {
+    throw new Error('text_artifact_immutable_corrupt');
+  }
+  return value.content;
+}
+export async function claimImmutableTextArtifact(slug: string, slot: string, content: string): Promise<boolean> {
+  const { db } = getOrgPg();
+  const rows = await db.insert(t).values({ harnessSlug: slug, relPath: immutableClaimKey(slot),
+    content: JSON.stringify({ sha256: contentSha256(content), content }),
+    updatedAt: Date.now(), workspaceId: activeWorkspaceId(),
+  }).onConflictDoNothing().returning({ relPath: t.relPath });
+  if (await loadImmutableTextArtifactClaim(slug, slot) !== content) throw new Error('text_artifact_immutable_claim_conflict');
+  return rows.length === 1;
 }
 
 async function notifyTextArtifactChange(slug: string, _key: string): Promise<void> {
@@ -101,6 +167,7 @@ export interface SaveTextArtifactOpts {
 
 export async function saveTextArtifact(slug: string, relPath: string, content: string, opts: SaveTextArtifactOpts = {}): Promise<void> {
   const key = normalizeRelPath(relPath);
+  assertMutableKey(key);
   const { db } = getOrgPg();
   const now = Date.now();
   await db
@@ -131,6 +198,7 @@ export async function saveTextArtifact(slug: string, relPath: string, content: s
 export async function compareAndSwapTextArtifact(slug: string, relPath: string,
   expectedContent: string | null, content: string): Promise<boolean> {
   const key = normalizeRelPath(relPath), workspaceId = activeWorkspaceId();
+  assertMutableKey(key);
   const { db } = getOrgPg();
   const values = { content, updatedAt: Date.now(), workspaceId };
   const rows = expectedContent === null
@@ -147,6 +215,7 @@ export async function compareAndSwapTextArtifact(slug: string, relPath: string,
 
 export async function appendTextArtifact(slug: string, relPath: string, suffix: string): Promise<void> {
   const key = normalizeRelPath(relPath);
+  assertMutableKey(key);
   const { db } = getOrgPg();
   const now = Date.now();
   // PG-side `||` concat keeps the append atomic. Drizzle's `set` accepts
@@ -171,6 +240,7 @@ export async function appendTextArtifact(slug: string, relPath: string, suffix: 
 
 export async function deleteTextArtifact(slug: string, relPath: string): Promise<void> {
   const key = normalizeRelPath(relPath);
+  assertMutableKey(key);
   const { db } = getOrgPg();
   await db.delete(t).where(and(eq(t.harnessSlug, slug), eq(t.relPath, key)));
   // Don't unlink the file — the harness contract may have a different

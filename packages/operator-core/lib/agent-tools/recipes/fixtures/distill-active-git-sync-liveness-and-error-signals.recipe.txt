@@ -1,0 +1,110 @@
+
+const optional = (value, key) => value != null && typeof value === "object" && key in value ? value[key] : null;
+function routineIdentity(row) {
+  const healthValue = optional(row, "health");
+  const health = healthValue && typeof healthValue === "object" && !Array.isArray(healthValue) ? healthValue : {};
+  const marker = health.git_sync_activity && typeof health.git_sync_activity === "object" && !Array.isArray(health.git_sync_activity)
+    ? health.git_sync_activity
+    : {};
+  return {
+    active: marker.active === true,
+    phase: typeof marker.phase === "string" ? marker.phase : null,
+    ownerPid: Number.isSafeInteger(marker.owner_pid) && marker.owner_pid > 0 ? marker.owner_pid : null,
+    workflowId: typeof marker.workflow_id === "string" && marker.workflow_id.length > 0 ? marker.workflow_id : null
+  };
+}
+function processMatches(rows, identity) {
+  return rows.filter(row =>
+    (identity.ownerPid !== null && Array.isArray(row.livePids) && row.livePids.includes(identity.ownerPid)) ||
+    (identity.workflowId !== null && (row.taskId === identity.workflowId || row.rootTaskId === identity.workflowId))
+  );
+}
+const probeRows = [
+  {taskId:"workflow-probe-a",rootTaskId:"root-probe-a",livePids:[11001]},
+  {taskId:"workflow-probe-b",rootTaskId:"root-probe-b",livePids:[22002]}
+];
+const probeA = routineIdentity({health:{git_sync_activity:{active:true,owner_pid:11001,workflow_id:"workflow-probe-a"}}});
+const probeB = routineIdentity({health:{git_sync_activity:{active:true,owner_pid:22002,workflow_id:"workflow-probe-b"}}});
+const pidDriftGuard =
+  processMatches(probeRows,probeA).length === 1 &&
+  processMatches(probeRows,probeA)[0].taskId === "workflow-probe-a" &&
+  processMatches(probeRows,probeB).length === 1 &&
+  processMatches(probeRows,probeB)[0].taskId === "workflow-probe-b" &&
+  processMatches([{taskId:"unrelated",rootTaskId:"unrelated-root",livePids:[11001]}],probeB).length === 0;
+if (!pidDriftGuard) throw new Error("git-sync routine owner PID/workflow drift guard failed");
+
+const routineResult = await tools.routines.list({
+  installSlug:"papercusp",
+  name:"git-sync",
+  limit:1,
+  payloadTier:"full"
+});
+const routineRowsValue = optional(routineResult, "routines");
+const routineRows = Array.isArray(routineRowsValue) ? routineRowsValue : [];
+const routine = routineRows.find(row => optional(row, "installSlug") === "papercusp" && optional(row, "name") === "git-sync") || null;
+const identity = routineIdentity(routine);
+const grepParts = ["git-sync","local-sync","github-bridge"];
+if (identity.ownerPid !== null) grepParts.push(String(identity.ownerPid));
+
+const [logs, proc] = await Promise.all([
+  tools.logs.read({unit:"papercusp-bg-host",since:"-30 min",grep:grepParts.join("|"),limit:200}),
+  tools.processes.list({states:["running","stranded","unaccounted"],live:true,limit:200})
+]);
+const processRowsValue = optional(proc, "tasks");
+const processRows = Array.isArray(processRowsValue) ? processRowsValue : [];
+const matches = processMatches(processRows,identity);
+const processPage = optional(proc, "taskPage");
+const liveScan = optional(proc, "live");
+const taskPageTruncated = optional(processPage, "truncated");
+const liveDegraded = optional(liveScan, "degraded");
+const liveOwnedTruncated = optional(liveScan, "ownedTruncated");
+const liveForeignTruncated = optional(liveScan, "foreignTruncated");
+const coverageUnknownReasons = [];
+if (!Array.isArray(processRowsValue)) coverageUnknownReasons.push("task-rows-unavailable");
+if (taskPageTruncated !== false) coverageUnknownReasons.push(taskPageTruncated === true ? "task-page-truncated" : "task-page-truncation-unknown");
+if (liveDegraded !== false) coverageUnknownReasons.push(liveDegraded === true ? "live-scan-degraded" : "live-scan-degradation-unknown");
+if (liveOwnedTruncated !== false) coverageUnknownReasons.push(liveOwnedTruncated === true ? "owned-scan-truncated" : "owned-scan-truncation-unknown");
+if (liveForeignTruncated !== false) coverageUnknownReasons.push(liveForeignTruncated === true ? "foreign-scan-truncated" : "foreign-scan-truncation-unknown");
+const matchCoverageStatus = matches.length > 0
+  ? "match-found"
+  : coverageUnknownReasons.length > 0
+    ? "unknown"
+    : "complete-no-match";
+const keep = ["git-sync","local-sync","github-bridge","idle","timeout","error","failed","fatal","exception","lock","held_exclusive","progress","heartbeat","connection","reset","dns","auth","permission","conflict","clean","dirty","push","commit","fetch","spawn","enoent","econnreset","etimedout","429","403","401","500","502","503"];
+const entriesValue = optional(logs, "entries");
+const entries = Array.isArray(entriesValue) ? entriesValue : [];
+const signalRows = entries.map(e => {
+  const message = String(e?.message || "").toLowerCase();
+  return {
+    ts:e?.ts ?? null,
+    unit:e?.unit ?? null,
+    level:e?.level ?? null,
+    signals:[...new Set(keep.filter(k=>message.includes(k)))],
+    repeat:e?.repeat ?? null
+  };
+}).filter(e=>e.signals.length).slice(-40);
+return {
+  pidDriftGuard:{passed:pidDriftGuard,syntheticOwnerPids:[probeA.ownerPid,probeB.ownerPid]},
+  routine:{count:optional(routineResult, "count"),name:optional(routine, "name"),installSlug:optional(routine, "installSlug"),active:optional(routine, "active"),owner_pid:identity.ownerPid,workflow_id:identity.workflowId,activity_active:identity.active,phase:identity.phase,identityStatus:identity.ownerPid === null ? "owner-unavailable" : "available"},
+  processInventory:{
+    matchBasis:"tasks[].livePids plus exact taskId/rootTaskId; pids is a count",
+    taskPage:{total:optional(processPage, "total"),truncated:taskPageTruncated},
+    matchCoverage:{
+      status:matchCoverageStatus,
+      complete:coverageUnknownReasons.length === 0,
+      unknownReasons:coverageUnknownReasons,
+      taskPageTruncated,
+      liveScan:{degraded:liveDegraded,ownedTruncated:liveOwnedTruncated,foreignTruncated:liveForeignTruncated}
+    },
+    matches:matches.map(row=>({
+      taskId:row.taskId,
+      class:row.class,
+      state:row.state,
+      livePids:Array.isArray(row.livePids)?row.livePids:null,
+      pidsCount:row.pids ?? null,
+      scopeUnit:optional(row, "scopeUnit"),
+      workItemId:optional(row, "workItemId")
+    }))
+  },
+  logWindow:{backend:optional(logs, "backend"),matched:optional(logs, "matched"),collapsed:optional(logs, "collapsed"),truncated:optional(logs, "truncated"),signalRows}
+};

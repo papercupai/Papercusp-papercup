@@ -3300,6 +3300,50 @@ describe('ptool --json output-envelope unwrap (EI-22212780570913684)', () => {
     },
   );
 
+  it.each(['canonical', 'changed-cursor-path', 'changed-page-path', 'wrong-offset'])(
+    'recovers remote scratch file pages only with stable canonical custody: %s', async (mode) => {
+      const uri = 'papercusp://scratch/workspace/sessions:digest/run/result.spill';
+      const filePath = '/operator/scratch/workspace/sessions:digest/run/result.spill';
+      const result = { ok: true, digests: [{ kickoff: 'café' }], count: 1 };
+      const payload = Buffer.from(JSON.stringify({ content: [
+        { type: 'text', text: 'See also: sessions:read' },
+        { type: 'text', text: JSON.stringify(result) },
+      ] }));
+      const split = payload.indexOf(Buffer.from('é')) + 1;
+      const readReference = vi.fn(async (args: { uri?: string; file_path?: string; byte_offset: number }) => {
+        const start = args.byte_offset;
+        const end = start === 0 ? split : payload.length;
+        return {
+          ok: true, encoding: 'base64', data: payload.subarray(start, end).toString('base64'),
+          file_path: start > 0 && mode === 'changed-page-path' ? filePath + '.other' : filePath,
+          byte_offset: start, byte_length: end - start, total_bytes: payload.length,
+          eof: end === payload.length, reference: { bodyOffsetInPayload: 0 },
+          next_cursor: end === payload.length ? null : {
+            tool: 'capability:read', args: {
+              file_path: mode === 'changed-cursor-path' ? filePath + '.other' : filePath,
+              byte_offset: mode === 'wrong-offset' ? end + 1 : end, byte_limit: 3072,
+            },
+          },
+        };
+      });
+      const envelope = {
+        schemaVersion: 'papercusp.output-envelope/v1',
+        content: [{ kind: 'reference', uri, preview: '{"ok":false}' }],
+      };
+      const decoded = await unwrapOutputEnvelope(envelope, { fileExists: () => false, readReference });
+      if (mode === 'canonical') {
+        expect(decoded).toEqual(result);
+        expect(readReference.mock.calls.map(([args]) => args)).toEqual([
+          { uri, byte_offset: 0, byte_limit: 3072 },
+          { file_path: filePath, byte_offset: split, byte_limit: 3072 },
+        ]);
+      } else {
+        expect(decoded).toBe(envelope);
+        expect(readReference).toHaveBeenCalledTimes(mode === 'changed-page-path' ? 2 : 1);
+      }
+    },
+  );
+
   it('keeps a recovered release refusal as a refusal', async () => {
     const uri = 'papercusp://scratch-spool/refused-release';
     const payload = Buffer.from(JSON.stringify({ content: [{ type: 'text', text: '{"ok":false,"reason":"not_owner"}' }] }));

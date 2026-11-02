@@ -1335,24 +1335,42 @@ describe('fleet:status workspace targeting (EI-21934696112365508)', () => {
 });
 
 describe('fleet:status slow-path bounds', () => {
-  it('bounds launch governor history and long reasons in default tiers', () => {
+  it('bounds live-sized launch transaction lists, failures, governor history and reasons', () => {
     const history = Array.from({ length: 40 }, (_, index) => ({
       at: index,
       action: 'observe',
       reason: 'x'.repeat(600),
     }));
+    const memberIds = Array.from({ length: 53 }, (_, index) => `su-member-${index}`);
+    const failed = Array.from({ length: 30 }, (_, index) => ({
+      ownerId: `su-failed-${index}`,
+      phase: 'spawn',
+      reason: 'failure detail '.repeat(80),
+    }));
     const source = {
       members: [],
       launchTransaction: {
         transactionId: 'tx-history',
-        governor: { history },
+        requestedMemberIds: memberIds,
+        failed,
+        governor: {
+          history,
+          terminalVerdict: {
+            liveMemberIds: memberIds,
+            workerReadyMemberIds: memberIds.slice(0, 3),
+            unreadyMemberIds: [],
+            unverifiedMemberIds: memberIds.slice(0, 50),
+            reason: 'launch result',
+          },
+        },
       },
     };
 
     const trimmed = shapeFleetStatus(source, 'trimmed') as {
-      launchTransaction: { governor: Record<string, unknown> };
+      launchTransaction: Record<string, unknown> & { governor: Record<string, unknown> };
     };
-    const trimmedGovernor = trimmed.launchTransaction.governor;
+    const trimmedTransaction = trimmed.launchTransaction;
+    const trimmedGovernor = trimmedTransaction.governor;
     const trimmedHistory = trimmedGovernor.history as Array<Record<string, unknown>>;
     expect(trimmedHistory).toHaveLength(FLEET_STATUS_TIER_CAPS.trimmed.launchHistory);
     expect(trimmedHistory[0]?.at).toBe(28);
@@ -1360,12 +1378,34 @@ describe('fleet:status slow-path bounds', () => {
     expect(trimmedGovernor.historyTotal).toBe(40);
     expect(trimmedGovernor.historyTruncated).toBe(true);
     expect(trimmedGovernor.historyReasonsTruncated).toBe(FLEET_STATUS_TIER_CAPS.trimmed.launchHistory);
+    expect(trimmedTransaction.requestedMemberIds).toHaveLength(FLEET_STATUS_TIER_CAPS.trimmed.members);
+    expect(trimmedTransaction.requestedMemberIdsTotal).toBe(memberIds.length);
+    expect(trimmedTransaction.requestedMemberIdsTruncated).toBe(true);
+    expect(trimmedTransaction.failed).toHaveLength(FLEET_STATUS_TIER_CAPS.trimmed.launchHistory);
+    expect(trimmedTransaction.failedTotal).toBe(failed.length);
+    expect(trimmedTransaction.failedReasonsTruncated).toBe(FLEET_STATUS_TIER_CAPS.trimmed.launchHistory);
+    expect((trimmedTransaction.failed as Array<Record<string, unknown>>)[0]?.reason)
+      .toHaveLength(FLEET_STATUS_TIER_CAPS.trimmed.launchHistoryReason);
+    const trimmedVerdict = trimmedGovernor.terminalVerdict as Record<string, unknown>;
+    expect(trimmedVerdict.liveMemberIds).toHaveLength(FLEET_STATUS_TIER_CAPS.trimmed.members);
+    expect(trimmedVerdict.liveMemberIdsTotal).toBe(memberIds.length);
+    expect(trimmedVerdict.unverifiedMemberIds).toHaveLength(FLEET_STATUS_TIER_CAPS.trimmed.members);
+    expect(trimmedVerdict.unverifiedMemberIdsTotal).toBe(50);
 
     const standard = shapeFleetStatus(source, 'standard') as {
-      launchTransaction: { governor: Record<string, unknown> };
+      launchTransaction: Record<string, unknown> & { governor: Record<string, unknown> };
     };
-    const standardHistory = standard.launchTransaction.governor.history as unknown[];
+    const standardTransaction = standard.launchTransaction;
+    const standardGovernor = standardTransaction.governor;
+    const standardHistory = standardGovernor.history as unknown[];
     expect(standardHistory).toHaveLength(FLEET_STATUS_TIER_CAPS.standard.launchHistory);
+    expect(standardTransaction.requestedMemberIds).toHaveLength(FLEET_STATUS_TIER_CAPS.standard.members);
+    expect(standardTransaction.failed).toHaveLength(FLEET_STATUS_TIER_CAPS.standard.launchHistory);
+    expect((standardTransaction.failed as Array<Record<string, unknown>>)[0]?.reason)
+      .toHaveLength(FLEET_STATUS_TIER_CAPS.standard.launchHistoryReason);
+    const standardVerdict = standardGovernor.terminalVerdict as Record<string, unknown>;
+    expect(standardVerdict.liveMemberIds).toHaveLength(FLEET_STATUS_TIER_CAPS.standard.members);
+    expect(standardVerdict.unverifiedMemberIds).toHaveLength(FLEET_STATUS_TIER_CAPS.standard.members);
   });
 
   it('uses the roster liveness snapshot without a second host discovery pass', async () => {

@@ -2289,6 +2289,10 @@ export function nativeLatestExecution({ agent, env = process.env, receivedAtMs =
       : { phase: 'unknown', turnStartedAt: null, lastProgressAt: null, pendingTools: 0,
           pendingToolIds: [], completedToolIds: [], pendingGateTools: 0,
           pendingGateToolIds: [], completedGateToolIds: [] }),
+    // Identity comes from the same isolated transcript as the execution proof,
+    // including Claude/OMP children replaced by a carry. Requested argv is stale.
+    nativeSessionId: rows && transcriptPath
+      ? /([0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})\.jsonl$/i.exec(transcriptPath)?.[1] ?? null : null,
     observedAt: nowMs,
   };
 }
@@ -12283,6 +12287,7 @@ export function hostThroughPty(o) {
     // resolveRespawnNativeId; a Claude host that advertised the cap refused every
     // nonce-bound carry-respawn (session:request-compaction) as 'stale-carry-target'.
     caps: ['carry-respawn', 'control-socket-probe-v1', ...(resolveRespawnNativeId ? ['pending-carry-fence-v1'] : []), 'mcp-reconnect', 'mcp-reconnect-force', 'shutdown', 'shutdown-identity', 'quota-recovery', 'auth-recovery', 'native-turn-start', 'delivery-cancel',
+      ...(env.PAPERCUSP_AGENT === 'claude' ? ['reset-reanchor-v1'] : []),
       ...(env.PAPERCUSP_AGENT === 'codex' ? ['codex-hooks-observe-v1'] : []),
       ...(env.PAPERCUSP_AGENT === 'codex' && mintQuotaResumeArgs ? ['quota-recovery-resume', 'quota-recovery-reroute'] : [])],
     // WI-6638: WHO launched this session — `injectLaunchedByArg` (agent-launch-core)
@@ -12337,9 +12342,24 @@ export function hostThroughPty(o) {
     tempPath: `${metaPath}.${process.pid}.tmp`,
     onError: () => {},
   });
+  let recoveryObservationKey = null;
+  const publishRecoveryObservation = (execution) => {
+    const nativeSessionId = execution.nativeSessionId;
+    if (!nativeSessionId) return;
+    const key = JSON.stringify([nativeSessionId, childGeneration, execution.phase,
+      execution.turnStartedAt, execution.ownerInputPending, execution.ownerStopRequested]);
+    if (key === recoveryObservationKey) return;
+    if (appendHostEvent(ownerId, 'session-execution-observed', {
+      ownerId, nativeSessionId, hostPid: process.pid, hostStartedAt: baseMeta.startedAt,
+      advSessionId: baseMeta.advSessionId, headless: env.PAPERCUSP_PSU_HEADLESS === '1',
+      workspaceId: env.PAPERCUSP_WORKSPACE_ID || env.PAPERCUSP_WORKSPACE,
+      execution,
+    })) recoveryObservationKey = key;
+  };
   const writeMeta = () => {
     try {
       const execution = currentNativeExecution();
+      publishRecoveryObservation(execution);
       if (execution.phase === 'failed' && execution.failure) {
         const nativeSessionId = env.PAPERCUSP_AGENT === 'codex'
           ? currentNativeSessionId(child.pid, resolveRespawnNativeId) : null;
@@ -12657,22 +12677,26 @@ export function hostThroughPty(o) {
       ? currentNativeSessionId(child.pid, resolveRespawnNativeId) : undefined;
     const fence = `${childGeneration}:${receivedAtMs}:${nativeSessionId ?? ''}`;
     const observed = nativeLatestExecution({ agent: env.PAPERCUSP_AGENT, env, receivedAtMs, nativeSessionId });
+    const observedSessionId = nativeSessionId ?? observed.nativeSessionId ?? null;
     const sameNativeChild = lastNativeExecution?.childGeneration === childGeneration &&
-      (lastNativeExecution?.nativeSessionId ?? null) === (nativeSessionId ?? null);
+      (lastNativeExecution?.nativeSessionId ?? null) === observedSessionId;
     const execution = retainNativeExecutionObservation(lastNativeExecution, observed, {
       sameChild: sameNativeChild,
-      sameFence: nativeExecutionFence === fence,
+      // Stop input advances lastInputAt without starting a new native turn.
+      // Keep that child's positive running witness until native terminal proof
+      // supersedes it, so the durable interruption witness retains the stop.
+      sameFence: nativeExecutionFence === fence || (ownerStopRequested && sameNativeChild),
     });
     nativeExecutionFence = fence;
     lastNativeExecution = {
       ...execution,
       childGeneration,
-      nativeSessionId: nativeSessionId ?? null,
+      nativeSessionId: observedSessionId,
     };
     return {
       ...execution,
       ownerId, hostPid: process.pid, childPid: child.pid ?? null,
-      childGeneration, nativeSessionId: nativeSessionId ?? null, receivedAtMs,
+      childGeneration, nativeSessionId: observedSessionId, receivedAtMs,
       ownerInputPending: Boolean(ownerComposerGate?.hasPending()),
       // Loop reconciliation must not treat an idle/menu Escape as a standing
       // owner stop. Execution remains explicitly unknown when no native record
@@ -17494,6 +17518,10 @@ export function hostThroughPty(o) {
     const cleanup = (code, signal = null) => {
       hooksObservationRecovery?.close();
       if (cleaned) return;
+      // Preserve the last execution fence before discovery is removed. A deliberate
+      // shutdown is a stop witness; closing a terminal mid-turn retains its work.
+      try { publishRecoveryObservation({ ...currentNativeExecution(),
+        ...(shuttingDown ? { ownerStopRequested: true } : {}) }); } catch { /* ledger is best effort */ }
       cleaned = true;
       hostCleanedUp = true;
       if (identityAssumeTimer) clearInterval(identityAssumeTimer);

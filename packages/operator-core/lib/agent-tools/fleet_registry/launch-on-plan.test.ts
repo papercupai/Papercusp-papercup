@@ -12,7 +12,7 @@
  * therefore group it under the fleet in fleet:assignments, per
  * packages/operator-core/lib/fleet/assignments.ts's `groupByAgent`).
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -41,7 +41,7 @@ import launchOnPlan, {
   resolveRemotePlacementHive,
   isSelfPublishedSeatOffer,
   extractKickoffWorkItemIds,
-  runLaunchWavesBeforeVerification,
+  runLaunchWavesCanaryFirst,
   looksLikeInlineLaunchContextText,
   computeFleetTopUpWave,
   describeFleetFillOutcome,
@@ -1781,8 +1781,8 @@ describe('computeFleetTopUpWave (WI-40199 — target size opens only the live de
   });
 });
 
-describe('runLaunchWavesBeforeVerification (WI-39368 — slow verification cannot starve later members)', () => {
-  it('opens every bounded wave before a slow first-wave verifier is allowed to settle', async () => {
+describe('runLaunchWavesCanaryFirst', () => {
+  it('waits for canary verification, then opens the remaining waves before verifying them', async () => {
     const events: string[] = [];
     let releaseVerification!: () => void;
     let resolveVerificationStarted!: () => void;
@@ -1793,8 +1793,8 @@ describe('runLaunchWavesBeforeVerification (WI-39368 — slow verification canno
       releaseVerification = resolve;
     });
 
-    const run = runLaunchWavesBeforeVerification(
-      [[0], [1, 2, 3]],
+    const run = runLaunchWavesCanaryFirst(
+      [[0], [1], [2, 3]],
       ['member-1', 'member-2', 'member-3', 'member-4'],
       async (_waveIndex, _indices, ownerIds) => {
         events.push(`spawn:${ownerIds.join(',')}`);
@@ -1806,22 +1806,37 @@ describe('runLaunchWavesBeforeVerification (WI-39368 — slow verification canno
           resolveVerificationStarted();
           await verificationGate;
         }
+        return true;
       },
     );
 
     try {
       await verificationStarted;
-      expect(events).toEqual(['spawn:member-1', 'spawn:member-2,member-3,member-4', 'verify:member-1']);
+      expect(events).toEqual(['spawn:member-1', 'verify:member-1']);
     } finally {
       releaseVerification();
     }
     await run;
     expect(events).toEqual([
       'spawn:member-1',
-      'spawn:member-2,member-3,member-4',
       'verify:member-1',
-      'verify:member-2,member-3,member-4',
+      'spawn:member-2',
+      'spawn:member-3,member-4',
+      'verify:member-2',
+      'verify:member-3,member-4',
     ]);
+  });
+
+  it('opens no later wave when the canary fails verification', async () => {
+    const spawnWave = vi.fn(async () => ({ payload: 'canary', stopAfterSpawn: false }));
+    const verifyWave = vi.fn(async () => false);
+
+    await runLaunchWavesCanaryFirst([[0], [1]], ['member-1', 'member-2'], spawnWave, verifyWave);
+
+    expect(spawnWave).toHaveBeenCalledExactlyOnceWith(0, [0], ['member-1']);
+    expect(verifyWave).toHaveBeenCalledExactlyOnceWith({
+      waveIndex: 0, indices: [0], ownerIds: ['member-1'], payload: 'canary',
+    });
   });
 });
 

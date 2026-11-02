@@ -337,7 +337,26 @@ describe('evaluatePlanSpecQualityGate', () => {
       applicable: true,
       code: 'spec_quality_scorecard_missing',
       wouldBlock: ['exact-specSetHash-scorecard-missing'],
+      scorecardDiagnostics: [],
     });
+  });
+
+  it('identifies rejected evidence without exposing its contents or requesting a duplicate card', async () => {
+    const clauses = [clause()];
+    const card = matchingCard(clauses);
+    card.ratings.falsifiability!.evidence += ' Changed assertion.';
+    card.evidenceFingerprint = scorecardEvidenceFingerprint({ rubricRef: card.rubricRef, ratings: card.ratings });
+    const result = await evaluatePlanSpecQualityGate(
+      { harnessSlug: 'papercusp', planSlug: 'quality-plan', planItemIds: ['P-001'] },
+      gateDeps({ listClauses: vi.fn(async () => clauses), listCards: vi.fn(async () => [card]) }),
+    );
+
+    expect(result).toMatchObject({
+      satisfied: false,
+      code: 'spec_quality_scorecard_missing',
+      scorecardDiagnostics: [{ issueId: card.issueId, failedChecks: ['evidence'], differingCriteria: ['falsifiability'] }],
+    });
+    expect(JSON.stringify(result.scorecardDiagnostics)).not.toContain('Changed assertion.');
   });
 
   it('accepts only the complete scorecard matching the exact current specSetHash', async () => {

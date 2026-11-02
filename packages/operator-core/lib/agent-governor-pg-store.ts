@@ -62,6 +62,7 @@ function rowToState(row: BudgetRow, floor: GovernorLimits): GovernorState {
   s.limits = {
     maxConcurrent: floor.maxConcurrent,
     ...(l.rpm !== undefined ? { rpm: l.rpm } : floor.rpm !== undefined ? { rpm: floor.rpm } : {}),
+    ...(l.rpmFromHeaders === true ? { rpmFromHeaders: true } : {}),
     ...(l.itpm !== undefined ? { itpm: l.itpm } : {}),
     ...(l.otpm !== undefined ? { otpm: l.otpm } : {}),
   };
@@ -77,6 +78,14 @@ export class PgGovernorStore implements GovernorStore {
   async transact(key: string, floor: GovernorLimits, mutate: (s: GovernorState) => void): Promise<GovernorState> {
     const sql = this.sqlClient ?? getOrgPg().sql;
     return (await sql.begin(async (tx) => {
+      // FOR UPDATE cannot lock an absent row. Establish the bucket first so
+      // simultaneous first requests serialize instead of overwriting counters
+      // or learned feedback with independently initialized state.
+      await tx`
+        INSERT INTO harness_shared.agent_rate_budget (bucket_key)
+        VALUES (${key})
+        ON CONFLICT (bucket_key) DO NOTHING
+      `;
       const rows = (await tx`
         SELECT window_start, req_in_window, in_tok_in_window, out_tok_in_window,
                paused_until, pace_delay_ms, last_acquire_at, limits, rpm_factor, rpm_factor_at
@@ -94,6 +103,7 @@ export class PgGovernorStore implements GovernorStore {
       // /internal/docs/agent-insights/postgres-js-jsonb-binding.
       const limitsObj = {
         ...(s.limits.rpm !== undefined ? { rpm: s.limits.rpm } : {}),
+        ...(s.limits.rpmFromHeaders === true ? { rpmFromHeaders: true } : {}),
         ...(s.limits.itpm !== undefined ? { itpm: s.limits.itpm } : {}),
         ...(s.limits.otpm !== undefined ? { otpm: s.limits.otpm } : {}),
       };

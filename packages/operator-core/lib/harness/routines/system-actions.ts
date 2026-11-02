@@ -156,6 +156,8 @@ export interface SystemActionOptions {
    * input from that payload opt in; plans:set-schedule refuses any other name.
    */
   planSchedulable?: boolean;
+  /** Trusted registration only: why this action must remain available to recover/control the service during an optional-work pause. */
+  requiredForControl?: string;
 }
 
 /** How a system action's routine row is expected to exist. See `SystemActionOptions.scheduling`. */
@@ -170,6 +172,7 @@ export interface SystemActionEntry {
   executesIntegrationTreeCode: boolean;
   /** See `SystemActionOptions.planSchedulable`. */
   planSchedulable: boolean;
+  requiredForControl?: string;
 }
 
 /** The reserved `target_role` prefix that routes a routine to a system action. */
@@ -190,6 +193,7 @@ export function registerSystemAction(name: string, fn: SystemAction, opts: Syste
     planSchedulable: opts.planSchedulable === true,
   };
   if (opts.routineTimeoutMs !== undefined) entry.routineTimeoutMs = opts.routineTimeoutMs;
+  if (opts.requiredForControl?.trim()) entry.requiredForControl = opts.requiredForControl.trim();
   REGISTRY.set(name, entry);
 }
 

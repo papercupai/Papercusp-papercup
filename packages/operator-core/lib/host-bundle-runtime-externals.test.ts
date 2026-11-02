@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -46,11 +46,18 @@ describe('host runtime packages use the plain Node loader', () => {
       const commonSource = readFileSync(common, 'utf8');
       writeFileSync(stagedCommon, commonSource);
       const runPreflight = () => execFileSync('bash', ['-c',
-        `set -euo pipefail\nREPO_ROOT="$1"\nWEB_DIR="$2"\n${preflight}`, 'playwright-preflight-test', root, preflightWeb],
+        `set -euo pipefail\nREPO_ROOT="$1"\nWEB_DIR="$2"\n${preflight}\nprintf 'COPY_PACKAGE=%s\\n' "\${NATIVE_PKGS[@]}"`, 'playwright-preflight-test', root, preflightWeb],
       { encoding: 'utf8', timeout: 15_000 });
       expect(runPreflight()).toContain('PLAYWRIGHT_RUNTIME_PREFLIGHT_OK');
       writeFileSync(stagedCommon, commonSource.replace('\n  playwright-core\n', '\n'));
-      expect(runPreflight).toThrow(/external package-copy boundary/);
+      const legacyPreflight = runPreflight();
+      expect(legacyPreflight).toContain('PLAYWRIGHT_RUNTIME_PREFLIGHT_OK');
+      expect(legacyPreflight.match(/^COPY_PACKAGE=playwright-core$/gm)).toHaveLength(1);
+      expect(legacyPreflight).toContain('COPY_PACKAGE=sharp');
+      expect(readFileSync(stagedCommon, 'utf8')).not.toContain('\n  playwright-core\n');
+      renameSync(stagedPackage, `${stagedPackage}.unavailable`);
+      expect(runPreflight).toThrow(/Cannot find module 'playwright-core'/);
+      renameSync(`${stagedPackage}.unavailable`, stagedPackage);
       writeFileSync(stagedCommon, commonSource);
 
       const external: string[] = JSON.parse(execFileSync('bash', ['-c',

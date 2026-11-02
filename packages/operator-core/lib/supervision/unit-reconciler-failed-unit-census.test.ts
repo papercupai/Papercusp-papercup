@@ -113,6 +113,36 @@ describe('censusUnregisteredFailedUnits', () => {
     expect(summary.summary).not.toContain('p012-chain12');
   });
 
+  it('filters unrelated unit types and bounds property reads for a large host census', async () => {
+    const activeServices = Array.from({ length: 130 }, (_, i) =>
+      'fixture-unregistered-' + i + '.service loaded active running fixture service',
+    );
+    const activeDevices = Array.from({ length: 2_000 }, (_, i) =>
+      'dev-disk-by-id-' + String(i).padStart(4, '0') + '-fixture.device loaded active plugged fixture device',
+    );
+    const transient = {
+      ...TRANSIENT,
+      ...Object.fromEntries(activeServices.map((line) => [line.split(' ')[0], 'no'])),
+    };
+    const execUser = fakeSystemctl({
+      list: [FAILED_LIST, ...activeServices, ...activeDevices].join('\n'),
+      transient,
+    });
+    const notify = vi.fn(async () => {});
+    const result = await censusUnregisteredFailedUnits({ execUser, notify }, REGISTRY, () => {});
+
+    expect(result).toEqual(['agenticmail.service', 'llama-ornith.service']);
+    const showCalls = execUser.mock.calls
+      .map(([args]) => args)
+      .filter((args) => args[0] === 'show');
+    const showUnits = showCalls.flatMap((args) => args.slice(9));
+    expect(showCalls).toHaveLength(3);
+    expect(showCalls.every((args) => args.length - 9 <= 64)).toBe(true);
+    expect(showUnits).toHaveLength(134);
+    expect(showUnits).toContain('fixture-unregistered-0.service');
+    expect(showUnits).not.toContain('dev-disk-by-id-0000-fixture.device');
+  });
+
   it('announces once per failure episode, and again after the unit recovers and re-fails', async () => {
     const state = { list: FAILED_LIST, transient: TRANSIENT };
     const execUser = fakeSystemctl(state);

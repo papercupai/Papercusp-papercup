@@ -16,7 +16,7 @@ import { randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { getTestPg, markManagedTestDatabase } from '@papercusp/test-config/pg';
-import { RateLimitGovernor } from '@papercusp/papercusp-shared/agent';
+import { RateLimitGovernor, effectiveRpm } from '@papercusp/papercusp-shared/agent';
 import { PgGovernorStore } from './agent-governor-pg-store';
 
 let sql: postgres.Sql;
@@ -74,6 +74,47 @@ function sharedPair(key: string, limits: { maxConcurrent: number; rpm?: number }
 }
 
 describe('PgGovernorStore (RB-007)', () => {
+  it('serializes concurrent feedback on a bucket that has never existed', async () => {
+    const key = 'openai:default@first-use-feedback';
+    const limits = { maxConcurrent: 32, rpm: 45 };
+    await Promise.all(Array.from({ length: 16 }, () => store.transact(key, limits, s => {
+      s.rpmFactor = (s.rpmFactor ?? 1) + 1;
+    })));
+    const state = await store.transact(key, limits, () => {});
+    expect(state.rpmFactor).toBe(17);
+  });
+
+  it.each(['openai', 'anthropic'])('persists %s growth above the seed and provider-limit evidence across instances', async provider => {
+    const key = `${provider}:default@adaptive-rpm`;
+    const { a, b, clock } = sharedPair(key, { maxConcurrent: 10, rpm: 45 });
+    a.state.smoothRpm = true;
+    a.recordResponse({}, 200);
+    await expect.poll(async () => {
+      const rows = await sql`SELECT rpm_factor FROM harness_shared.agent_rate_budget WHERE bucket_key = ${key}`;
+      return Number(rows[0]?.rpm_factor ?? 1);
+    }).toBeGreaterThan(1);
+    b.state.smoothRpm = true;
+    const release = await b.acquire();
+    release?.();
+    expect(effectiveRpm(b.state, clock.t)).toBeGreaterThan(45);
+
+    a.recordResponse({ 'x-ratelimit-limit-requests': '120' }, 200);
+    await expect.poll(async () => {
+      const state = await store.transact(key, { maxConcurrent: 10 }, () => {});
+      return state.limits.rpmFromHeaders;
+    }).toBe(true);
+    const c = new RateLimitGovernor({ maxConcurrent: 10, rpm: 45 }, {
+      now: () => clock.t, sleep: async ms => { clock.t += ms; }, store, storeKey: key,
+    });
+    c.state.smoothRpm = true;
+    const inherited = await c.acquire({}, { maxWaitMs: 2_000 });
+    expect(inherited).not.toBeNull();
+    inherited?.();
+    c.recordResponse({}, 200);
+    expect(effectiveRpm(c.state, clock.t)).toBe(120);
+    expect(c.state.limits.rpmFromHeaders).toBe(true);
+  });
+
   it('a 429 penalty on one governor pauses the OTHER via the shared row', async () => {
     const { a, b, clock } = sharedPair('anthropic:opus', { maxConcurrent: 5 });
     a.penalize({ retryAfterMs: 30_000 });

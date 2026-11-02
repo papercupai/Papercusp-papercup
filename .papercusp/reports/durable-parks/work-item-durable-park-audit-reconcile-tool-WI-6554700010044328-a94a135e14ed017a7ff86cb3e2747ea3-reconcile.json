@@ -1,0 +1,25 @@
+{
+  "schemaVersion": "durable-park-reconcile-v1",
+  "runId": "work-item-durable-park-audit:reconcile:tool:WI-6554700010044328:a94a135e14ed017a7ff86cb3e2747ea3",
+  "inputSha256": "a94a135e14ed017a7ff86cb3e2747ea341c11f4bd8c7453ccdb5d84e2432aa42",
+  "workspaceId": "papercusp-workspace",
+  "harnessSlug": "papercusp",
+  "generatedAt": "2026-11-02T10:45:35.354Z",
+  "actor": "su-6aaf9b6a-27e9-42af-95c6-e7e571bdc311",
+  "requested": 1,
+  "cleared": 1,
+  "unchanged": 0,
+  "rows": [
+    {
+      "id": "WI-6554700010044328",
+      "outcome": "cleared",
+      "expectedParkFingerprint": "e70fba8a334b997f989d529a1d4f5e3e273f2227f9cf7f559f920ba560ed3e09",
+      "observedParkFingerprint": "e70fba8a334b997f989d529a1d4f5e3e273f2227f9cf7f559f920ba560ed3e09",
+      "reasonCode": "operator-directed",
+      "evidence": "Original owner AUTO/self mandate covers startup plan execution through shipment. Current3170 plan P003 has effectiveStatus todo, unresolvedBlockers=[] and canonical WI6554700010044328; its only dependency P001 canonically completed with committed proof. P003 currently unassigned. Reconcile its migration1601 park only; no peer holds.",
+      "preservedLease": false,
+      "takenBy": null
+    }
+  ],
+  "artifactPath": "reports/durable-parks/work-item-durable-park-audit-reconcile-tool-WI-6554700010044328-a94a135e14ed017a7ff86cb3e2747ea3-reconcile.json"
+}

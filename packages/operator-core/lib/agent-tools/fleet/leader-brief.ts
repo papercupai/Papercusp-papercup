@@ -100,7 +100,14 @@ import { buildFleetPopulationLifecycle, selectFleetPopulation, type FleetPopulat
 import { fleetEverMembers } from '../../fleet-membership-store';
 import { listLatestStrandedByCoordOwners } from '../../task-manager/store';
 import { COORD_ROLES } from '../coordination/roles';
-import { listFleetRosterDiagnosed, liveFleetMemberIds, type ListFleetRosterResult } from '../../fleet/fleet-roster';
+import {
+  listFleetRosterDiagnosed,
+  liveFleetMemberIds,
+  type FleetRosterPresenceLegTiming,
+  type FleetRosterPresenceStage,
+  type FleetRosterPresenceStageTiming,
+  type ListFleetRosterResult,
+} from '../../fleet/fleet-roster';
 import {
   executingOwnersSince,
   shouldRecoverClaimFromHealth,
@@ -357,6 +364,48 @@ export function createLeaderBriefMetadataRecorder(
     } catch {
       // Invocation diagnostics must never change the brief result.
     }
+  };
+}
+
+/** Keep the default roster reader's sub-stage timings on the existing invocation row. */
+export function createFleetRosterPresenceTimingRecorder(
+  metadata: ((value: Record<string, unknown>) => void) | undefined,
+  input: { fleet: string; harness: string | null },
+): {
+  onStageTiming: (timing: FleetRosterPresenceStageTiming) => void;
+  onLegTiming: (timing: FleetRosterPresenceLegTiming) => void;
+} {
+  const startedAtMs = performance.now();
+  const startedAt = new Date().toISOString();
+  const stages: Partial<Record<FleetRosterPresenceStage, FleetRosterPresenceStageTiming>> = {};
+  let presenceLeg: FleetRosterPresenceLegTiming | undefined;
+  const record = () => {
+    try {
+      metadata?.({
+        fleetRosterPresenceTiming: {
+          schemaVersion: 'fleet-roster-presence-timing-v1',
+          fleet: input.fleet,
+          harness: input.harness,
+          startedAt,
+          updatedAt: new Date().toISOString(),
+          elapsedMs: Math.max(0, Math.round(performance.now() - startedAtMs)),
+          stages: { ...stages },
+          ...(presenceLeg === undefined ? {} : { presenceLeg }),
+        },
+      });
+    } catch {
+      // Timing diagnostics must never change the leader brief.
+    }
+  };
+  return {
+    onStageTiming: (timing) => {
+      stages[timing.stage] = timing;
+      record();
+    },
+    onLegTiming: (timing) => {
+      presenceLeg = timing;
+      record();
+    },
   };
 }
 
@@ -4524,9 +4573,18 @@ export async function buildLeaderBrief(
     assignee: ownerId,
     metadata,
   });
+  const presenceTiming = createFleetRosterPresenceTimingRecorder(metadata, {
+    fleet,
+    harness: args.harness ?? null,
+  });
   const rosterResult = await boundedLeaderBriefRead<ListFleetRosterResult>(
     'roster',
-    () => listFleetRosterDiagnosed({ fleetSlug: fleet, workspaceId }),
+    () => listFleetRosterDiagnosed({
+      fleetSlug: fleet,
+      workspaceId,
+      onPresenceStageTiming: presenceTiming.onStageTiming,
+      onPresenceLegTiming: presenceTiming.onLegTiming,
+    }),
     {
       entries: [],
       degradedLegs: ['presence', 'tier1', 'assignments', 'wakeability', 'recorded', 'selfwake'],

@@ -423,7 +423,13 @@ describe('commitAttributedGroups (P-004 + WI-38594 diff subjects)', () => {
     expect(calls.some((c) => c[0] === 'add' || c.includes('commit-tree') || c[0] === 'read-tree')).toBe(false);
   });
 
-  it('publishes nothing while the SHARED index.lock is fresh, and never removes that lock', async () => {
+  it.each([
+    ["quoted relative path", "fatal: Unable to create '.git/index.lock': File exists"],
+    [
+      "unquoted absolute path from the bg-host incident",
+      'fatal: Unable to create /workspace/papercusp/.git/index.lock: File exists',
+    ],
+  ])('retries a fresh shared index.lock error (%s) without publishing or removing the lock', async (_form, stderr) => {
     // WI-10006519 + WI-10006705: a fresh lock is a live writer's. The private-index add and
     // commit do not need it; only the shared-index refresh does, and that retries a bounded
     // number of times without ever unlinking the lock. WI-10006850: the refresh runs BEFORE
@@ -433,7 +439,7 @@ describe('commitAttributedGroups (P-004 + WI-38594 diff subjects)', () => {
     const gitDir = await mkdtemp(join(tmpdir(), 'gs-attr-fresh-'));
     tmpDirs.push(gitDir);
     await writeFile(join(gitDir, 'index.lock'), '');
-    const lockErr = { code: 128, stderr: "fatal: Unable to create '.git/index.lock': File exists" };
+    const lockErr = { code: 128, stderr };
     const { runGit, calls } = fakeGit({
       porcelain: ' M a.ts\0 M b.ts\0',
       resetResults: Array.from({ length: 8 }, () => lockErr),

@@ -86,6 +86,7 @@ describe('independent parent oracle producer', () => {
       // re-exports @papercusp/test-config/verifier-source and self-imports operator-core by bare
       // specifier (58ede1a50e), and this tmpdir holds only typescript in node_modules.
       alias: {
+        '@papercusp/test-config/vitest-failure-classification': fileURLToPath(new URL('../../../../libs/test-config/src/vitest-failure-classification.mjs', import.meta.url)),
         '@papercusp/test-config': fileURLToPath(new URL('../../../../libs/test-config/src', import.meta.url)),
         '@papercusp/operator-core': fileURLToPath(new URL('../..', import.meta.url)),
       },

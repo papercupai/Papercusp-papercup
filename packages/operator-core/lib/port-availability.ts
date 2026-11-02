@@ -19,29 +19,37 @@ export function portAvailable(port: number, host: string): Promise<boolean> {
     return Promise.resolve(false);
   }
 
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     const probe = createServer();
     let settled = false;
 
-    const finish = (available: boolean): void => {
+    const finish = (available: boolean, failure?: Error): void => {
       if (settled) return;
       settled = true;
       probe.removeListener('error', onError);
+      const complete = (closeError?: Error): void => {
+        const error = failure ?? closeError;
+        if (error) reject(error);
+        else resolve(available);
+      };
       if (probe.listening) {
-        probe.close(() => resolve(available));
+        probe.close(complete);
       } else {
-        resolve(available);
+        complete();
       }
     };
 
-    const onError = (): void => finish(false);
+    const onError = (error: NodeJS.ErrnoException): void => {
+      if (error.code === 'EADDRINUSE') finish(false);
+      else finish(false, error);
+    };
 
-    probe.unref();
     probe.once('error', onError);
     try {
       probe.listen(port, host, () => finish(true));
-    } catch {
-      finish(false);
+    } catch (error) {
+      const probeError = error instanceof Error ? error : new Error(String(error));
+      onError(probeError as NodeJS.ErrnoException);
     }
   });
 }

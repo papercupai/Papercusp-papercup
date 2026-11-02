@@ -13,6 +13,8 @@ import './configure';
 export {
   WorkspaceBackup,
   mergeRepoStatsWithKopia,
+  readHostDumpInProgress,
+  type HostDumpInProgress,
   workspaceBackupFor,
   deriveRepoPassword,
   startKopiaServer,

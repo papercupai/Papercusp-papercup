@@ -51,6 +51,53 @@ describe('lintOwnerQuestionSlots', () => {
     expect(lintOwnerQuestionSlots("needs the owner's approval before the force-push").flagged).toBe(true);
   });
 
+  it('does not flag a general practice instruction about an already-awaited owner answer', () => {
+    const instruction =
+      'When blocked on an owner answer that already has an exact event await, widen the loop to a backstop cadence and set blockedOn rather than paying an hourly no-delta cold wake.';
+    expect(lintOwnerQuestionSlots(instruction)).toEqual({ flagged: false, matches: [] });
+
+    // An explicit request for the owner to answer remains a real blocking question.
+    expect(lintOwnerQuestionSlots('Need the owner to answer whether the schema split should ship.').flagged).toBe(true);
+
+    // Suppressing the conditional clause must not hide a separate real ask later on the line.
+    const withSeparateQuestion = `${instruction} Separately, ask the owner whether the migration should proceed.`;
+    const result = lintOwnerQuestionSlots(withSeparateQuestion);
+    expect(result.flagged).toBe(true);
+    expect(result.matches[0].matchedText).toBe('ask the owner');
+  });
+
+  it('recognizes an explicit reference to an existing conversation-answer wall', () => {
+    const conversationId = 'conv-mvp2sxfk-0000-74c389dd7f61429cbe3db1c01a69767b';
+    const eventKey = `conversation:answered:${conversationId}`;
+    const waitingLine = `Waiting for the owner's answer from ${eventKey}; the next action changes when it arrives.`;
+    const waitWall: WallEntry = {
+      id: 'owner-answer-await',
+      claim: `Existing owner question is awaited at ${eventKey}`,
+      recheck: 'recheck when the registered await resolves',
+    };
+    const withExistingWait = [
+      '## Next',
+      waitingLine,
+      `## ${CARRY_NOTE_WALLS_HEADING}`,
+      renderWallLine(waitWall),
+    ].join('\n');
+
+    expect(lintOwnerQuestionSlots(withExistingWait)).toEqual({ flagged: false, matches: [] });
+    expect(lintOwnerQuestionSlots(['## Next', waitingLine].join('\n')).flagged).toBe(true);
+
+    const withSeparateQuestion = [
+      '## Next',
+      waitingLine,
+      'Need to ask the owner whether the unrelated release scope should change.',
+      `## ${CARRY_NOTE_WALLS_HEADING}`,
+      renderWallLine(waitWall),
+    ].join('\n');
+    const result = lintOwnerQuestionSlots(withSeparateQuestion);
+    expect(result.flagged).toBe(true);
+    expect(result.matches).toHaveLength(1);
+    expect(result.matches[0].line).toContain('unrelated release scope');
+  });
+
   it.each([
     'Read any new owner answer before acting on an existing R2 wall.',
     'On the next wake, read the existing owner answer before proceeding.',

@@ -317,7 +317,6 @@ export function resetResultDoorAggregatesForTests(): void {
 // build:typecheck's public fields (errorsTruncated, byFileTruncated).
 const INNER_TRUNCATION_MARKER_REGEX =
   /(?:"((?:\w+_truncated|\w+Truncated))"|(?<![\w"])((?:\w+_truncated|\w+Truncated)))\s*:\s*true\b/g;
-const INNER_TRUNCATION_TEXT_REGEX = /(?:…|\.\.\.)\s*\[TRUNCATED[^\]]*\]/gi;
 const INNER_PARTIAL_FLAG_CANDIDATE_REGEX = /(?<!\\)"_partial"\s*:\s*true\b/;
 const SUMMARY_NOTICE_JSON_CANDIDATE_REGEX = /(?<!\\)"summaryNotice"\s*:\s*\{/;
 const SUMMARY_NOTICE_TEXT_MARKER_REGEX = /^\s*summaryNotice\s*:\s*\{\s*truncated\s*:\s*true\b/m;
@@ -489,11 +488,9 @@ function detectInnerTruncationMarkers(
     if (found.size >= 5) break;
   }
   // Work-item and other custom shapers also put the cutoff directly in the
-  // field value (`…[TRUNCATED ...]`) without a sibling boolean marker. Keep a
-  // named marker for that shape so a hard reference spill cannot promise bytes
-  // that the upstream shaper never serialized.
-  INNER_TRUNCATION_TEXT_REGEX.lastIndex = 0;
-  if (INNER_TRUNCATION_TEXT_REGEX.test(sourceText)) found.add('textTruncated');
+  // field value, but a tool payload can quote the same text as ordinary content.
+  // Do not infer truncation from marker substrings in serialized payload text;
+  // shapers must emit a structured *_truncated, *Truncated, or _partial flag.
   if (textItems.some(hasStructuredPartialFlag)) found.add('_partial');
   if (textItems.some(hasStructuredSummaryNoticeTruncation)) found.add('summaryNotice.truncated');
   return [...found];

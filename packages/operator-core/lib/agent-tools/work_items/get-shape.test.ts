@@ -18,6 +18,7 @@ import { COMPLETION_EMITTED_AT_ROW, shapeWorkItemsGet } from "./get-shape";
 
 type Envelope = {
   ok: boolean;
+  _partial?: boolean;
   results: Array<Record<string, unknown>>;
   counts: { ok: number; failed: number };
   read?: Record<string, unknown>;
@@ -86,6 +87,17 @@ function operationalBrief(subject: string, text: string): Record<string, unknown
 }
 
 describe("shapeWorkItemsGet — the checkpoint is the payload, degraded last", () => {
+  it("marks clipped work-item text as structured partial output", () => {
+    const source = row();
+    const workItem = source.workItem as Record<string, unknown>;
+    source.workItem = { ...workItem, title: "T".repeat(2_000), summary: "S".repeat(4_000) };
+
+    const out = shapeWorkItemsGet(envelope([source]), "trimmed") as Envelope;
+
+    expect(out._partial).toBe(true);
+    expect(String((out.results[0]?.workItem as Record<string, unknown>)?.title)).toContain("[TRUNCATED");
+  });
+
   it("keeps an explicitly projected nested payload leaf through a bulk work_items:get shape", () => {
     const payloads = [
       { source: "engineer", severity: "major" },
@@ -236,6 +248,8 @@ describe("shapeWorkItemsGet — the checkpoint is the payload, degraded last", (
       checkpointContentHash: "81344e6f2817",
     });
     expect(out.results[0].checkpointChecks.rows[0].claim).toMatch(/TRUNCATED/);
+    expect(out._partial).toBe(true);
+    expect(out._shapeNote?.dropped).toContain("textClip");
     expect(out.results[0]).not.toHaveProperty("workItem");
     expect(out.results[0]).not.toHaveProperty("checkpoint");
     expect(out.results[1]).toEqual({ ok: false, id: "WI-missing", error: "not found" });

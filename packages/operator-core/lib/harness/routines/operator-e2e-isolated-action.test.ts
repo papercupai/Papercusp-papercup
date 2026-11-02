@@ -113,6 +113,22 @@ describe('buildOperatorE2eInvocation', () => {
   });
 });
 
+describe('operator e2e selection preflight', () => {
+  it('holds the npm install reader lock and reports Playwright collection errors', () => {
+    const runner = readFileSync(new URL('../../../../../scripts/run-operator-e2e-isolated.sh', import.meta.url), 'utf8');
+    const start = runner.indexOf('# Collect with the SAME selection arguments');
+    const end = runner.indexOf('if [ "$selection_status" -eq 3 ]', start);
+    expect(start).toBeGreaterThanOrEqual(0);
+    expect(end).toBeGreaterThan(start);
+    const preflight = runner.slice(start, end);
+    expect(preflight).toContain('node "$ROOT/scripts/npm-install-safe.mjs" --exec-under-lock --');
+    expect(preflight).toContain('cd "$1" || exit 2; shift; exec $OPERATOR_E2E_PLAYWRIGHT');
+    expect(preflight).toContain('-- "$ROOT/apps/operator" "$@"');
+    expect(preflight).toContain('reportErrors.slice(0, 20)');
+    expect(preflight).toContain('Playwright selection error: ${message}');
+  });
+});
+
 describe('pruneOperatorE2eLogs', () => {
   let dir = '';
   afterEach(() => {

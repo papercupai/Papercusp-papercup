@@ -235,6 +235,39 @@ describe('R7 private PostgreSQL delivery contract', () => {
     expect(delivered.metadata_json).not.toHaveProperty('frictionFailureCode');
   });
 
+  it('retries a transient PostgreSQL connection closure once in the same recovery tick', async () => {
+    const ref = await seed();
+    const closed = Object.assign(new Error('connection closed'), {code:'CONNECTION_CLOSED'});
+    let attempts = 0;
+    const capture = vi.fn(async () => {
+      if (++attempts === 1) throw closed;
+      return success();
+    });
+
+    expect(await recoverInvocationFriction('ws-a', {sql:sql(),capture}))
+      .toEqual({delivered:1,pending:0,expired:0});
+    expect(capture).toHaveBeenCalledTimes(2);
+    const [delivered] = await db.sql`SELECT metadata_json FROM harness_shared.tool_invocations
+      WHERE workspace_id='ws-a' AND id=${ref.id}`;
+    expect(delivered.metadata_json).toMatchObject({frictionCapture:'delivered'});
+    expect(delivered.metadata_json).not.toHaveProperty('frictionFailureCode');
+  });
+
+  it('keeps a pending row when one transient PostgreSQL retry also fails', async () => {
+    const ref = await seed();
+    const closed = Object.assign(new Error('connection closed'), {code:'CONNECTION_CLOSED'});
+    const capture = vi.fn(async () => { throw closed; });
+
+    await expect(recoverInvocationFriction('ws-a', {sql:sql(),capture}))
+      .rejects.toThrow('failure classes: Error/CONNECTION_CLOSED=1');
+    expect(capture).toHaveBeenCalledTimes(2);
+    const [failed] = await db.sql`SELECT metadata_json FROM harness_shared.tool_invocations
+      WHERE workspace_id='ws-a' AND id=${ref.id}`;
+    expect(failed.metadata_json).toMatchObject({
+      frictionCapture:'pending', frictionFailureClass:'Error', frictionFailureCode:'CONNECTION_CLOSED',
+    });
+  });
+
   it('concurrent delivery skips the row lock and never crosses workspace scope', async () => {
     const ref = await seed();
     await seed('ws-b');

@@ -147,6 +147,7 @@ import {
   formatSelfWatchdogDuration,
   isNothingToGate,
   realCheckpointDeps,
+  EARLY_TYPECHECK_PREFLIGHT_TIMEOUT_MS,
   foldPromotedLineageIntoStaging,
   SETUP_TREE_TIMEOUT_MS,
   SETUP_TREE_HARD_TIMEOUT_MS,
@@ -7407,28 +7408,19 @@ describe("runGreenCheckpoint", () => {
     );
     const { deps, calls } = stubDeps(true);
     const logs: string[] = [];
+    let preflightOptions:
+      | { deadlineMs?: number; deferFailureInventory?: boolean }
+      | undefined;
     deps.log = (line) => logs.push(line);
     deps.changedFilesForRange = async () => ["packages/operator-core/lib/a.ts"];
-    deps.runChangedFileTypecheckPreflight = async () => ({
-      status: "failed",
-      summary: "packages/operator-core/lib/a.ts(1,14): error TS2322",
-      failingSignatures: ["lint:tsc"],
-      failureInventory: {
-        ran: true,
-        output: "POST_SUITE_RESULT status=failed\n",
-        failingSignatures: ["lint:tsc:scripts", "lint:guard-reachability"],
-        records: [
-          { id: "lint:tsc:scripts", status: "failed", durationMs: 5 },
-          { id: "lint:guard-reachability", status: "failed", durationMs: 7 },
-          {
-            id: "spa-build",
-            status: "skipped",
-            skipReason: "early changed-file typecheck failure already blocks promotion",
-            durationMs: 0,
-          },
-        ],
-      },
-    });
+    deps.runChangedFileTypecheckPreflight = async (_files, _range, options) => {
+      preflightOptions = options;
+      return {
+        status: "failed",
+        summary: "packages/operator-core/lib/a.ts(1,14): error TS2322",
+        failingSignatures: ["lint:tsc"],
+      };
+    };
 
     const r = await runGreenCheckpoint(cfg(), deps, { noPush: true });
 
@@ -7439,24 +7431,41 @@ describe("runGreenCheckpoint", () => {
       green: false,
       reason: "not-green",
       // The early red survives the merge with a passing sweep.
-      failingTests: expect.arrayContaining([
-        "lint:tsc",
-        "lint:tsc:scripts",
-        "lint:guard-reachability",
-      ]),
+      failingTests: expect.arrayContaining(["lint:tsc"]),
     });
     expect(r.summary).toContain(
       "Early changed-file typecheck failed before the affected-test sweep",
     );
-    expect(r.summary).toContain("Early non-test gate inventory");
+    expect(r.summary).not.toContain("Early non-test gate inventory");
     expect(r.summary).toContain("Affected-test sweep (P-016");
     expect(calls).toContain("runGreen");
+    expect(preflightOptions?.deferFailureInventory).toBe(true);
+    expect(preflightOptions?.deadlineMs).toBeGreaterThan(Date.now());
     expect(calls).not.toContain("advance");
     expect(
       logs.some((line) =>
         line.includes("P-016: running the affected-test sweep anyway"),
       ),
     ).toBe(true);
+  });
+
+  it("EI-27230772844519910: a time-bounded preflight skip still measures the round-one suite", async () => {
+    const c1 = await commit("packages/operator-core/lib/a.ts", "export const a = 1;\n", "c1");
+    await git(repo, ["branch", "ready", c1]);
+    const c2 = await commit("packages/operator-core/lib/a.ts", "export const a = 2;\n", "c2");
+    const { deps, calls } = stubDeps(true);
+    deps.changedFilesForRange = async () => ["packages/operator-core/lib/a.ts"];
+    deps.runChangedFileTypecheckPreflight = async () => ({
+      status: "skipped",
+      summary: `preflight exceeded ${EARLY_TYPECHECK_PREFLIGHT_TIMEOUT_MS}ms; full gate retained`,
+      checkedFiles: [],
+      failingSignatures: [],
+    });
+
+    const result = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+
+    expect(calls).toContain("runGreen");
+    expect(result).toMatchObject({ candidate: c2, green: true });
   });
 
   // The production shape: the stable-candidate queue is persisted BEFORE the early preflight
@@ -12143,6 +12152,107 @@ describe("realCheckpointDeps.runGreen — nothing-to-gate short-circuit (EI-8744
     );
     // The signaled suite must not be followed by post-suite legs or a flake-rescue rerun.
     expect(calls).toEqual(["npm run test:affected"]);
+  });
+});
+
+describe("realCheckpointDeps.runChangedFileTypecheckPreflight — bounded round-one path", () => {
+  let tree: string;
+  let logDir: string;
+
+  beforeEach(() => {
+    tree = mkdtempSync(join(tmpdir(), "gc-preflight-"));
+    logDir = mkdtempSync(join(tmpdir(), "gc-preflight-logs-"));
+    mkdirSync(join(tree, "scripts"), { recursive: true });
+    writeFileSync(
+      join(tree, "package.json"),
+      JSON.stringify({
+        name: "preflight-fixture",
+        scripts: {
+          "lint:tsc:a": "node scripts/gate-a.mjs",
+          "lint:tsc:b": "node scripts/gate-b.mjs",
+        },
+      }),
+    );
+    writeFileSync(
+      join(tree, "scripts/gate-a.mjs"),
+      'export const GATE_COVERAGE = ["packages/a/"];\n',
+    );
+    writeFileSync(
+      join(tree, "scripts/gate-b.mjs"),
+      'export const GATE_COVERAGE = ["packages/b/"];\n',
+    );
+  });
+
+  afterEach(() => {
+    rmSync(tree, { recursive: true, force: true });
+    rmSync(logDir, { recursive: true, force: true });
+  });
+
+  const fixtureConfig = () => releaseConfig({
+    checkpointRoot: tree,
+    checkpointLogDir: logDir,
+    greenCmd: "npm run test:affected",
+    spaBuildWorkspace: "",
+  });
+
+  it("EI-27230772844519910: a timed-out scoped command is skipped and leaves later routes untouched", async () => {
+    const calls: string[] = [];
+    const exec: CheckpointExec = async (_cmd, args, opts) => {
+      calls.push(args[1] ?? "");
+      expect(opts?.heavy).toBe(true);
+      expect(opts?.killProcessGroupOnTimeout).toBe(true);
+      expect(opts?.timeoutMs).toBeGreaterThan(0);
+      return new Promise<never>((_resolve, reject) => {
+        setTimeout(
+          () => reject(new Error("simulated bounded typecheck timeout")),
+          (opts?.timeoutMs ?? 0) + 5,
+        );
+      });
+    };
+    const run = realCheckpointDeps(fixtureConfig(), exec)
+      .runChangedFileTypecheckPreflight!;
+
+    const result = await run(
+      ["packages/a/a.ts", "packages/b/b.ts"],
+      undefined,
+      { deadlineMs: Date.now() + 2_000 },
+    );
+
+    expect(calls).toEqual(["lint:tsc:a"]);
+    expect(result).toMatchObject({
+      status: "skipped",
+      checkedFiles: [],
+      failingSignatures: [],
+    });
+    expect(result.summary).toMatch(/time budget/i);
+  });
+
+  it("EI-27230772844519910: round-one typecheck failure defers other preflight gates and inventory", async () => {
+    const calls: string[] = [];
+    const exec: CheckpointExec = async (_cmd, args) => {
+      calls.push(args[1] ?? "");
+      return {
+        code: 1,
+        stdout: "packages/a/a.ts(1,1): error TS2322: invalid value\n",
+        stderr: "",
+      };
+    };
+    const run = realCheckpointDeps(fixtureConfig(), exec)
+      .runChangedFileTypecheckPreflight!;
+
+    const result = await run(
+      ["packages/a/a.ts", "packages/b/b.ts"],
+      undefined,
+      {
+        deadlineMs: Date.now() + EARLY_TYPECHECK_PREFLIGHT_TIMEOUT_MS,
+        deferFailureInventory: true,
+      },
+    );
+
+    expect(calls).toEqual(["lint:tsc:a"]);
+    expect(result.status).toBe("failed");
+    expect(result.failingSignatures).toContain("lint:tsc:a");
+    expect(result.failureInventory).toBeUndefined();
   });
 });
 

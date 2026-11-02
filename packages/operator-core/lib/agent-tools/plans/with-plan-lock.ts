@@ -33,6 +33,7 @@ import {
   type ActivationAuditEditNotice,
 } from '../../plan-audits';
 import { hashPlanContent } from './content-hash';
+import { preservePlanExecutionProgress } from './plan-execution-authority';
 import {
   declaredDeliverablesChanged,
   deliverableLowerings,
@@ -938,6 +939,8 @@ export async function withPlanLock<T>(
             `repair/seed path (e.g. rubrics:propose) before it is trusted.`;
         }
       }
+      if (cur) await preservePlanExecutionProgress(tx, { workspaceId, harnessSlug, planSlug: slug },
+        cur.content, newBody, cur.content_hash, hash);
       await tx`
         INSERT INTO harness_shared.harness_plans (
           workspace_id, harness_slug, plan_slug, content, content_hash, version,

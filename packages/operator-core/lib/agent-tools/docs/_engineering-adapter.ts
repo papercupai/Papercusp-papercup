@@ -269,10 +269,16 @@ export function overlayCanonicalDocs(
       });
       return pages;
     },
-    async getPage(slug: string): Promise<DocPage | null> {
-      const canonical = await loadCanonical();
+    async getPageBySlug(slug: string): Promise<DocPage | null> {
+      const basePage = await (base.getPageBySlug?.(slug) ?? base.getPage(slug));
+      const canonical = await loadCanonical(basePage ? [basePage] : []);
       const page = canonical.get(slug)?.page;
-      return page ?? base.getPage(slug);
+      return page ?? basePage;
+    },
+    async getPage(slug: string): Promise<DocPage | null> {
+      const basePage = await (base.getPageBySlug?.(slug) ?? base.getPage(slug));
+      const canonical = await loadCanonical(basePage ? [basePage] : []);
+      return canonical.get(slug)?.page ?? basePage;
     },
     async getContent(page: DocPage, options?: { signal?: AbortSignal }): Promise<string> {
       const signal = options?.signal;

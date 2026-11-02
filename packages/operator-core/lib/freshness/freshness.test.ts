@@ -49,7 +49,7 @@ describe('computeFreshness — verdicts', () => {
     expect(r.changed).toEqual([]);
   });
 
-  it('reports stale and names WHICH dependency moved', () => {
+  it('reports stale dependencies against their recorded version stamps, not the latest note time', () => {
     const r = computeFreshness({
       deps: deps([
         ['file:a.ts', 'sha256:aaa'],
@@ -62,8 +62,13 @@ describe('computeFreshness — verdicts', () => {
     });
     expect(r.verdict).toBe('stale');
     expect(r.changed).toEqual([{ dep: 'file:b.ts', was: 'sha256:bbb', now: 'sha256:CHANGED' }]);
-    // The actionable payload no TTL can produce: the name of what moved.
+    // The actionable payload no TTL can produce: the name of what moved. The
+    // dependency stamp may predate a later checkpoint rewrite, so do not attribute
+    // the movement to the latest note's write time.
     expect(r.reason).toContain('file:b.ts');
+    expect(r.reason).toContain('1 of 2 declared dependencies no longer matches its recorded version stamp: file:b.ts');
+    expect(r.reason).toContain("not the latest note's write time");
+    expect(r.reason).not.toContain('since this note was written');
   });
 
   it('reports recomputed when nothing moved but the note was rebuilt after an invalidation', () => {

@@ -182,8 +182,6 @@ const findingKey = (f: Pick<BoundaryFinding, 'file' | 'signal' | 'text'>) => `${
  * decisions. Shrink-only: delete an entry when its site goes away; never add one.
  */
 const BASELINE: readonly string[] = [
-  // Maps a work-item kind to the issue family for lock endpoints; not a verification exemption.
-  "agent-tools/plans/with-plan-lock.ts :: task :: ['bug', 'change', 'task'].includes(row.item_kind)",
 ];
 
 function checkBoundary(overrides: ReadonlyMap<string, string> = new Map()) {

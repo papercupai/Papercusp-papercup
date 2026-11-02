@@ -52,6 +52,7 @@ import { getHarnessAdminUrlWithSource } from '../embedded-pg-discovery';
 import { runWithWorkspace } from '../workspace-als';
 import { loopbackFetch } from '../loopback-fetch';
 import { claimDueRoutine, claimedRoutineDispatchAllowed } from '../harness/routines/claim';
+import { routineBackgroundActivityAllowed } from '../device-operator-actions';
 import { routineFireProvenance, readMonitoredFireSnapshot, scheduledCensusWorkflowId, type RoutineFireProvenance } from '../harness/routines/fire-provenance';
 import {
   classifyClaimSkip,
@@ -825,6 +826,12 @@ async function routineFireImpl(
   provenance?: RoutineFireProvenance,
 ): Promise<void> {
   await runWithWorkspace(workspaceId, async () => {
+    // Outside DBOS.runStep: recovery can replay a previously true operation
+    // output after a newer disable. Read again before any dispatch effect.
+    const name = routineName ?? (await getOrgPg().sql<{ name: string }[]>`
+      SELECT name FROM harness_shared.routines WHERE id = ${routineId} AND workspace_id = ${workspaceId} LIMIT 1
+    `)[0]?.name;
+    if (!name || !await routineBackgroundActivityAllowed({ workspaceId, installSlug, name, targetRole })) return;
     // Checkpoint immediately so the executor reaper can distinguish "workflow
     // never entered user code" from a legitimate long-running first action.
     await DBOS.runStep(
@@ -1329,6 +1336,8 @@ async function routinesTickImpl(): Promise<void> {
   // shed just admitted was HELD and never fired; under ok/elevated a full window starved it alike.
   const starvedZeroCredit = createStarvedZeroCreditBudget();
   for (const r of dueByAge) {
+    // Leave withheld rows due, including one-shots. Check again after queueing.
+    if (!await routineBackgroundActivityAllowed(r)) continue;
     if (shedAdmitted && !shedAdmitted.has(r)) continue;
     if (poolCritical && !shouldFireUnderPoolShed(r.targetRole)) {
       const overdueMin = r.nextFireAt ? Math.round((shedNowMs - r.nextFireAt.getTime()) / 60_000) : null;

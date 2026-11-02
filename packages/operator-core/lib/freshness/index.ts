@@ -183,7 +183,9 @@ export function computeFreshness(input: {
       unresolvable,
       reason:
         `${changed.length} of ${declared} declared ${declared === 1 ? 'dependency' : 'dependencies'} ` +
-        `changed since this note was written: ${shown}${more}. The note predates those changes — ` +
+        `${changed.length === 1 ? 'no longer matches its recorded version stamp' : 'no longer match their recorded version stamps'}: ` +
+        `${shown}${more}. This compares current state with the recorded dependency versions, ` +
+        `not the latest note's write time; ` +
         `re-read what moved before acting on it.`,
     };
   }

@@ -54,6 +54,22 @@ describe('activation freshness', () => {
       .replace('**State:** Ready', '**State:** Implementing').replace('**Next:** Build', '**Next:** Verify').replace('`todo`', '`wip`');
     expect(planExecutionMeaning(after)).toBe(planExecutionMeaning(original));
   });
+  const promoted = '\n## Promoted\n\n<!-- plan-pipeline: do not edit this block manually -->\n- [ ] WI-123 — Persist the queue <!-- P-001 -->\n';
+  it('keeps activation current after first promotion and later receipt-only updates', () => {
+    expect(planExecutionMeaning(original + promoted)).toBe(planExecutionMeaning(original));
+    expect(planExecutionMeaning(original + promoted.replace('WI-123', 'WI-456').replace('[ ]', '[x]')))
+      .toBe(planExecutionMeaning(original));
+  });
+  it.each([
+    ['unmarked prose', promoted.replace('<!-- plan-pipeline: do not edit this block manually -->', '')],
+    ['author prose within a marked block', promoted + 'The task must retain all failures.\n'],
+    ['similar marker', promoted.replace('plan-pipeline:', 'plan-pipeline-copy:')],
+    ['different heading', promoted.replace('## Promoted', '## Requirements')],
+    ['fenced example', '\n```markdown\n' + promoted + '```\n'],
+    ['following decision', promoted + '\n## Decisions\n### D-001 Preserve evidence\nNever delete failed attempts.\n'],
+  ])('preserves activation authority for %s', (_kind, addition) => {
+    expect(planExecutionMeaning(original + addition)).not.toBe(planExecutionMeaning(original));
+  });
   it.each([['pending', 'completed'], ['P-002', 'P-003'], ['`todo`', '`dropped`']])('invalidates changed scope/dependencies: %s', (before, after) => {
     expect(planExecutionMeaning(original.replace(before, after))).not.toBe(planExecutionMeaning(original));
   });

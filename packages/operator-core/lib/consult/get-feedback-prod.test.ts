@@ -1,4 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { mockResolvedOnceTyped } from '../testing/typed-mock';
+
+type ValidateBarCritiquePlanOrigin = typeof import('./get-feedback-core').validateBarCritiquePlanOrigin;
 
 const h = vi.hoisted(() => {
   const sql = {};
@@ -14,7 +17,7 @@ const h = vi.hoisted(() => {
       conversation_id: 'accepted-conv', thread_id: 'thr-accepted-conv', request_key: 'retry-key',
       latency_contract: 'proceed' as const, park_key: null, hint: 'pending',
     })),
-    validateBarCritiquePlanOrigin: vi.fn(async (_request: unknown, _sql: unknown) => null),
+    validateBarCritiquePlanOrigin: vi.fn<ValidateBarCritiquePlanOrigin>(async () => null),
     continueFeedbackRequestCore: vi.fn(async (_workspace: string, _conversation: string, _deps: unknown) => false),
     getOrgPg: vi.fn(() => ({ sql })),
     buildQueryEmbedderResolved: vi.fn(async () => null),
@@ -169,8 +172,8 @@ describe('getFeedbackProd expert-routing settings', () => {
   });
 
   it('refuses an invalid bar-critique plan before acceptance persistence or dispatch', async () => {
-    const refusal = { error: 'bar_critique_requires_plan', hint: 'exact registered plan required' };
-    h.validateBarCritiquePlanOrigin.mockResolvedValueOnce(refusal as never);
+    const refusal = { error: 'bar_critique_requires_plan', hint: 'exact registered plan required' } as const;
+    mockResolvedOnceTyped(h.validateBarCritiquePlanOrigin, refusal);
     const result = await acceptFeedbackRequestProd({ workspaceId: 'workspace-1', requesterId: 'requester',
       question: 'review these bars', policy: 'bar-critique', originTaskRef: 'EI-incident' },
     { ownerId: 'requester' } as never, { harnessSlug: 'papercusp' });

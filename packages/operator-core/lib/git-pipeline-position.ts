@@ -6527,11 +6527,41 @@ export async function gitPipelinePosition(
   // `no-frozen-candidate` reading; a present-but-unreadable row is `unmeasured` and
   // carries its raw candidate/repairHead/phase identity. Returning null here drops the
   // cell's declared evidence paths and makes a newer writer look like "nothing frozen".
+  // Map the live run before candidateFailures so this read can distinguish an exact in-flight repairHead verification from older completed measurements.
+  const checkpointRunInFlight = mapCheckpointRunInFlight(
+    checkpointRunCached,
+    Date.now(),
+    snap.gate.inFlightRetriage,
+    checkpointRunLockLive,
+    snap.gate.inFlightCandidate,
+  );
   const persistedQueue = snap.gate.repairQueue ?? null;
   const unreadableQueue = snap.gate.repairQueueRead?.status === 'unreadable' ? snap.gate.repairQueueRead : null;
+  const candidateSha = persistedQueue?.frozenCandidate ?? persistedQueue?.candidate ?? unreadableQueue?.candidate ?? null;
+  const repairHeadSha = persistedQueue?.repairHead ?? unreadableQueue?.repairHead ?? null;
+  const candidateRunGroupId = persistedQueue?.affectedTestProofGroup ?? null;
+  const matchingRepairHeadMeasurements = [
+    snap.gate.lastSuiteMeasurement,
+    snap.gate.lastTargetedSuiteMeasurement,
+  ].filter(
+    (measurement): measurement is NonNullable<typeof measurement> =>
+      measurement != null &&
+      measurement.judgedSha === repairHeadSha &&
+      measurement.runGroupId.trim().length > 0 &&
+      Number.isFinite(measurement.completedAtMs),
+  );
+  const repairHeadRunGroupId =
+    matchingRepairHeadMeasurements.sort((a, b) => b.completedAtMs - a.completedAtMs)[0]?.runGroupId.trim() ?? null;
+  const repairHeadVerificationInFlight =
+    checkpointRunInFlight?.active === true &&
+    (snap.gate.inFlightCandidate?.candidate === repairHeadSha ||
+      snap.gate.inFlightRetriage?.refiringCandidate === repairHeadSha);
   const candidateFailures = await (deps.readGateCandidateFailures ?? readGateCandidateFailures)({
-    candidateSha: persistedQueue?.frozenCandidate ?? persistedQueue?.candidate ?? unreadableQueue?.candidate ?? null,
-    repairHeadSha: persistedQueue?.repairHead ?? unreadableQueue?.repairHead ?? null,
+    candidateSha,
+    repairHeadSha,
+    candidateRunGroupId,
+    repairHeadRunGroupId,
+    repairHeadVerificationInFlight,
     root,
     submodulePaths: persistedQueue ? await submodulePaths(git, root) : [],
     // `readGateCandidateFailures` only branches on the unreadable disposition;
@@ -6555,23 +6585,7 @@ export async function gitPipelinePosition(
     // silently instantiate their own local-fork runner inside the same multi-GB process.
     git,
   });
-  // WI-7035: `snap.gate.inFlightRetriage` is already loaded and freshness-checked by
-  // git-pipeline-stats (parseInFlightRetriage) — it was simply never consulted here, so the
-  // authoritative answer sat one field away from the inferred one. Passing it makes the
-  // re-triage window visible on the CRON path, where the log-derived provenance cannot reach.
-  // EI-19395922387569240: the LIVE liveness read that keeps `active` from being a claim about
-  // a snapshot's past. Fork-free, so it is safe on this hot path; fail-soft to null, which
-  // degrades this leg to its previous cache-only behaviour.
-  const checkpointRunInFlight = mapCheckpointRunInFlight(
-    checkpointRunCached,
-    Date.now(),
-    snap.gate.inFlightRetriage,
-    checkpointRunLockLive,
-    // EI-19931692050586322: the sibling marker, loaded and freshness-checked by the same
-    // git-pipeline-stats pass. Threading it is what lets an ordinary non-refiring run report an
-    // authoritative candidate instead of the `'run-probe'` inference.
-    snap.gate.inFlightCandidate,
-  );
+  // Reuse the mapped checkpointRunInFlight from above for gate freshness reconciliation.
   // The freshness evaluator only sees the cached gate-health timestamps. During every healthy
   // long-running suite those timestamps necessarily look writer-starved until the run completes.
   // Reconcile that one ambiguous classification with the LIVE run-lock measurement, while

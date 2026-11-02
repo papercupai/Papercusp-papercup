@@ -24,6 +24,7 @@ import { loadPlugins, type LoadedPlugin } from '@papercusp/plugin-loader';
 import { existsSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { pinModuleState } from '@papercusp/module-singleton';
+import type { ObservedSurface } from '@papercusp/testing-shell/census';
 
 import { papercuspPath } from './papercusp-root';
 interface ApiRouteHandle {
@@ -185,6 +186,43 @@ export function pluginApiRoutesStatus() {
 /** Read-only view of the registry — used by diagnostics. */
 export function pluginApiRegistryNames(): string[] {
   return Array.from(__cache.registry.keys()).sort();
+}
+
+/** Security census of the ACTUAL dispatch registry, without rediscovery or
+ * executing a plugin. Every mounted fetch handler contributes its prefix even
+ * when its inner router is opaque. A declared Hono route list is additional
+ * source evidence, never proof that arbitrary fetch code cannot dispatch more.
+ * Preserve duplicates for reconciliation; never silently infer an empty router.
+ */
+export function enumerateMountedPluginHttpSurfaces(): {
+  initialized: boolean; surfaces: ObservedSurface[]; unresolved: string[];
+} {
+  const surfaces: ObservedSurface[] = [], unresolved: string[] = [];
+  if (!__cache.counts) unresolved.push('plugin-http-registry-not-initialized');
+  for (const error of __cache.counts?.errors ?? []) unresolved.push(`plugin-http-load-error:${error}`);
+  for (const name of pluginApiRegistryNames()) {
+    const prefix = `/api/plugins/${name}`, handle = __cache.registry.get(name)!;
+    // Do not invoke a caller-defined getter during inventory.
+    const routes: unknown = Object.getOwnPropertyDescriptor(handle, 'routes')?.value;
+    surfaces.push({ kind: 'plugin-http-dispatch', surfaceId: `ANY ${prefix}/*`, fidelity: 'observed',
+      attrs: { pluginMount: name, prefix, innerRouteCoverage: 'unknown', hasDeclaredRoutes: Array.isArray(routes) } });
+    if (!Array.isArray(routes) || routes.length === 0) {
+      unresolved.push(`plugin-http-inner-routes-opaque:${name}`);
+      continue;
+    }
+    for (const route of routes as unknown[]) {
+      if (!route || typeof route !== 'object') { unresolved.push(`plugin-http-invalid-route:${name}`); continue; }
+      const method = Object.getOwnPropertyDescriptor(route, 'method')?.value;
+      const path = Object.getOwnPropertyDescriptor(route, 'path')?.value;
+      if (typeof method !== 'string' || !method.trim() || typeof path !== 'string' || !path.startsWith('/')) {
+        unresolved.push(`plugin-http-invalid-route:${name}`);
+        continue;
+      }
+      surfaces.push({ kind: 'plugin-http-route', surfaceId: `${method.toUpperCase()} ${prefix}${path}`,
+        fidelity: 'declared', attrs: { pluginMount: name, prefix, method: method.toUpperCase(), innerPath: path } });
+    }
+  }
+  return { initialized: __cache.counts !== null, surfaces, unresolved };
 }
 
 /** Resets the cache. Tests use this to re-mount with different fixtures. */

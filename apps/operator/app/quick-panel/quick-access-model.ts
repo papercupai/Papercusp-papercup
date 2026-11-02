@@ -1,11 +1,14 @@
 import type { PlanListRow } from '@/app/admin/plans/plans-api';
 import type { RosterEntry } from '@/app/adv/sessions/SessionsRosterView';
 import type { toReportFull, toReportSummary } from '@papercusp/operator-core/lib/agent-tools/reports/_shared';
+import type { AgentClaim } from '@papercusp/operator-core/lib/fleet/assignments';
 import { canFocusWindow } from '@papercusp/agent-roster/logic';
 
 export type QuickPlan = Pick<PlanListRow, 'slug' | 'harness' | 'title' | 'status' | 'updated' | 'nextAction'>;
 export type QuickAgent = Pick<RosterEntry, 'ownerId' | 'label' | 'intent' | 'agent' | 'currentPlanSlug' |
-  'sessionState' | 'advSessionId' | 'windowId' | 'pid' | 'isLocal' | 'stale' | 'revoked'>;
+  'sessionState' | 'advSessionId' | 'windowId' | 'pid' | 'isLocal' | 'stale' | 'revoked'> & {
+    claims?: ReadonlyArray<Pick<AgentClaim, 'harnessSlug' | 'planSlug' | 'active'>>;
+  };
 export type QuickReport = ReturnType<typeof toReportSummary>;
 export type FullReport = ReturnType<typeof toReportFull>;
 export type QuickScope = 'all' | 'plans' | 'agents' | 'reports';
@@ -29,7 +32,11 @@ export function quickResults(
   const results: QuickResult[] = [];
   if (scope === 'all' || scope === 'plans') {
     for (const p of plans) {
-      const people = agents.filter(a => a.currentPlanSlug === p.slug).map(quickAgentName).join(' ');
+      // Presence's currentPlanSlug is unqualified. Only canonical claims prove
+      // which identically named plan this person belongs to.
+      const people = agents.filter(a => a.claims?.some(c =>
+        c.active && c.harnessSlug === p.harness && c.planSlug === p.slug,
+      )).map(quickAgentName).join(' ');
       if (matches(p.title, p.slug, p.harness, p.nextAction, people)) {
         results.push({ key: JSON.stringify(['plans', p.harness, p.slug]), kind: 'plans',
           title: p.title || p.slug, subtitle: `${p.status} · ${p.harness}`, plan: p });

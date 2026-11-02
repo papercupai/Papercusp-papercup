@@ -184,6 +184,26 @@ describe('resolveSessionStates is TOTAL — unknown is in band, never omitted', 
     expect(unknown.signalMissing).toBe(true);
   });
 
+  it('recorded end evidence overrides a fresh heartbeat', async () => {
+    const ownerId = 'su-recorded-ended-fresh-heartbeat';
+    const subject = { ownerId, heartbeatAt: iso(5_000), stale: false };
+    const wake = new Map([[ownerId, { wakeable: true, liveTurn: false }]]);
+    const ordinary = await resolveSessionStates([subject], opts(wake));
+    const ended = await resolveSessionStates([subject], {
+      ...opts(wake),
+      fetchRecordedEndedFn: async () => new Set([ownerId]),
+    });
+
+    expect(ordinary.get(ownerId)).toMatchObject({
+      sessionState: 'parked',
+      heartbeatFresh: true,
+    });
+    expect(ended.get(ownerId)).toMatchObject({
+      sessionState: 'ended',
+      heartbeatFresh: true,
+    });
+  });
+
   it('does not turn a bare owner id with only negative wakeability into ended', async () => {
     const bare = { ownerId: 'su-never-heard-of' };
     const control = {

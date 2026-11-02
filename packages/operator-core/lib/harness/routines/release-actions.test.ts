@@ -4630,6 +4630,23 @@ describe('WI-39944: the repair queue persists on the existing routine metadata r
     expect(row.admitCommand !== null).toBe(kind === 'current');
   });
 
+  it('P037: writer roots the standalone scripts typecheck before rendering its admit command', async () => {
+    const scriptsQueue = { ...queue, failingTests: ['lint:tsc:scripts'], signature: [{ id: 'lint:tsc:scripts', kind: 'lint-leg' as const,
+      recipe: 'npm run lint:tsc:scripts', admittedRound: 1, measuredHead: queue.repairHead }] };
+    fakeSql.unsafe.mockResolvedValueOnce(sqlRows([{ legs: {
+      head: queue.repairHead.slice(0, 12),
+      legs: [{ id: 'lint:tsc:scripts', status: 'fail', outputTail: 'lib/runtime-compatibility-census.mjs(1,1): error TS2322: bad value' }],
+    } }])).mockResolvedValueOnce(sqlRows([{ written: true }]));
+    await writeFrozenCandidateRepairQueue(target, scriptsQueue, { expectedUpdatedAtMs: scriptsQueue.updatedAtMs });
+    const write = fakeSql.unsafe.mock.calls.find(([query]) => /metadata = jsonb_set/.test(String(query)));
+    const params = write?.[1];
+    if (!Array.isArray(params)) throw new Error('queue write must carry positional SQL parameters');
+    const persisted = JSON.parse(String(params[2])).repair_queue;
+    const row = persisted.manifest.rows.find((entry: { legId: string }) => entry.legId === 'lint:tsc:scripts');
+    expect(row.subjectPaths).toEqual(['scripts/lib/runtime-compatibility-census.mjs']);
+    expect(row.admitCommand).toContain('scripts/lib/runtime-compatibility-census.mjs');
+  });
+
   it('P-025: returns explicit unreadable state and makes the legacy reader throw on schema skew', async () => {
     const newer = {
       ...queue,

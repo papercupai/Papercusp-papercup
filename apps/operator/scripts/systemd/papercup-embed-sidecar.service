@@ -112,6 +112,8 @@ Environment=PAPERCUSP_RERANK_DEVICE=cuda
 # cosine 0.9999999, measured 2026-09-24). Verify what actually runs:
 #     curl -s localhost:3384/healthz | jq '.embedExecution, .embedExecutionHealth.demotion'
 Environment=PAPERCUSP_EMBED_DEVICE=auto
+# ONNX Runtime's CUDA provider also loads CUDA libraries from Ollama's runtime bundle.
+Environment=LD_LIBRARY_PATH=/usr/local/lib/ollama/cuda_v12
 # glibc otherwise grows up to 8×cores malloc arenas for the ORT/worker threads,
 # which holds freed native memory as RSS (memory audit WI-10002858, F5).
 Environment=MALLOC_ARENA_MAX=2

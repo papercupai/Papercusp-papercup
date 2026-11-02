@@ -56,6 +56,27 @@ describe('overlayCanonicalDocs', () => {
     expect(base.getContent).not.toHaveBeenCalled();
   });
 
+  it('resolves a request-scoped exact slug without listing the filesystem corpus', async () => {
+    const base = {
+      ...releaseSource(),
+      listPages: vi.fn(async () => { throw new Error('exact lookup must not list every page'); }),
+      getPageBySlug: vi.fn(async (slug: string) => slug === releasePage.slug ? releasePage : null),
+    };
+    const readCanonical = vi.fn(async (_harnessSlug: string, docIds: readonly string[]) => new Map(
+      docIds.includes('agent-insights/existing.mdx')
+        ? [['agent-insights/existing.mdx', '---\ntitle: Canonical exact title\n---\n# Heading\n\nCanonical body']]
+        : [],
+    ));
+    const source = overlayRequestedCanonicalDocs(base, readCanonical, 'papercusp', [releasePage.slug]);
+
+    const page = await source.getPageBySlug?.(releasePage.slug);
+    expect(page).toMatchObject({ slug: releasePage.slug, title: 'Canonical exact title' });
+    expect(base.getPageBySlug).toHaveBeenCalledWith(releasePage.slug);
+    expect(base.listPages).not.toHaveBeenCalled();
+    expect(readCanonical).toHaveBeenCalledOnce();
+    expect(await source.getContent(page!)).toContain('Canonical body');
+  });
+
   it('drops the canonical cache when docs:author invalidates the shared adapter', async () => {
     const base = releaseSource();
     let contents = new Map<string, string>();

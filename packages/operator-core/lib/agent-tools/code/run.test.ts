@@ -2768,6 +2768,7 @@ describe('code:run → log shaping (WI-3127)', () => {
       adjacentDuplicatesCollapsed: 1,
       truncatedLines: 1,
       droppedAfterLimit: 13,
+      textTruncated: true,
     });
   });
 

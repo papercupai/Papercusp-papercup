@@ -36,6 +36,14 @@
       "obligations": "Ship Node's LICENSE file (it lists the bundled components)."
     },
     {
+      "name": "Bun runtime",
+      "kind": "program",
+      "license": "MIT AND LGPL-2.0-only AND LGPL-2.1-only",
+      "paths": ["**/sidecar/bin/bun", "**/sidecar/bin/bun.exe"],
+      "reason": "Reviewed Bun 1.4.4 LICENSE.md at https://github.com/oven-sh/bun/blob/bun-v1.4.4/LICENSE.md on 2026-11-02 (SHA-256 362fe32c954ec829240bd7429c53d705eef08c6bfa45ffc2d02005f857cba4dd). Bun itself is MIT, but the official binary statically links JavaScriptCore/WebKit under LGPL-2.0 and tinycc under LGPL-2.1; its other linked libraries and embedded polyfills carry the permissive terms listed there. Bun is a separate runtime program invoked by the app.",
+      "obligations": "Ship Bun's pinned LICENSE.md and the linked components' license/copyright notices, including LGPL-2.0 and LGPL-2.1 texts. Provide the corresponding Bun/WebKit/tinycc source and relinking materials or offer required by those licenses; retain the pinned source references and upstream WebKit relinking instructions from LICENSE.md. An MIT-only notice does not cover the distributed binary."
+    },
+    {
       "name": "PostgreSQL client tools linked with GNU readline",
       "kind": "program",
       "license": "PostgreSQL AND GPL-3.0-or-later",
@@ -43,6 +51,30 @@
       "paths": ["**/sidecar/bin/.pg-real/**", "**/sidecar/bin/pg_dump", "**/sidecar/bin/pg_dumpall", "**/sidecar/bin/pg_restore", "**/sidecar/bin/psql"],
       "reason": "pg_dump/pg_dumpall/pg_restore/psql are PostgreSQL-licensed, but .pg-real/lib ships libreadline.so.8 (GPL-3.0-or-later) and libtinfo, so the shipped psql is a GPL-3 combination. It runs as a separate program the app invokes, not linked into the app.",
       "obligations": "Offer the corresponding source of readline (and psql) with the release, or rebuild psql against libedit to drop the GPL component."
+    },
+    {
+      "name": "macOS vendored Git",
+      "kind": "program",
+      "license": "GPL-2.0-only",
+      "aggregate": true,
+      "paths": [
+        "**/sidecar/bin/.git-vendor/bin/git",
+        "**/sidecar/bin/.git-vendor/bin/git-*",
+        "**/sidecar/bin/.git-vendor/bin/scalar",
+        "**/sidecar/bin/.git-vendor/libexec/git-core/git",
+        "**/sidecar/bin/.git-vendor/libexec/git-core/git-*",
+        "**/sidecar/bin/.git-vendor/libexec/git-core/scalar"
+      ],
+      "reason": "Reviewed the actual arm64 and x64 Homebrew Git 2.56.0 bottle COPYING files on 2026-11-02 (both SHA-256 5b2198d1645f767585e8a88ac0499b04472164c0d2da22e75ecf97ef443ab32e). Git's preamble selects GPL v2 only unless a file says otherwise. The maintained macOS producer copies these standalone executables and helpers into .git-vendor, relocates their library references and signs them; the application invokes Git as a separate program.",
+      "obligations": "Ship Git's COPYING and retain its copyright and modification notices. Provide complete corresponding Git source, including the Homebrew patches and scripts controlling compilation and installation, or a GPL v2 section 3 written source offer valid for at least three years. The reviewed bottle identifies git-2.56.0.tar.xz (SHA-256 26c56c296b38c0695b26fa95f475f1d01704d2d38e73465ca30b0b2f5dc789d3); an upstream URL alone does not establish that these obligations were fulfilled."
+    },
+    {
+      "name": "macOS Git PCRE2 library",
+      "kind": "library",
+      "license": "(BSD-3-Clause WITH PCRE2-exception) AND BSD-2-Clause",
+      "paths": ["**/sidecar/bin/.git-lib/libpcre2-8.0.dylib"],
+      "reason": "Reviewed the actual arm64 and x64 Homebrew PCRE2 10.47 bottle LICENCE.md files on 2026-11-02 (both SHA-256 197d8a73ffee0d6b09adba2f9c677b5f5aede24edf89258a68e48248d010d811). The basic library uses BSD-3-Clause with the stated binary-redistribution exception; the included optional JIT uses BSD-2-Clause. The maintained macOS Git producer separately vendors this dylib.",
+      "obligations": "Reproduce PCRE2's copyright notices, license conditions and disclaimer, including the JIT/SLJIT notices, in the distributed notices. Preserve the binary-library exception text; this inventory classification is not proof that the final package contains the notices."
     },
     {
       "name": "GitHub CLI (gh)",

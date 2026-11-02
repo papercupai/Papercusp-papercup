@@ -5,6 +5,7 @@
  * leg claims that survive a rebuild.
  */
 import { describe, expect, it } from 'vitest';
+import { execFileSync } from 'node:child_process';
 import type { FrozenCandidateRepairQueue, FrozenRepairAdmission } from './frozen-candidate-repair-queue';
 import {
   buildRepairManifest,
@@ -339,7 +340,11 @@ describe('repair manifest — leg paths and the admission ledger are joined in O
   // `@papercusp/web` → `apps/operator` is deliberate: its directory is NOT its package name's
   // last segment. 7 of this repo's 105 workspaces are like that, so a basename-derived shortcut
   // would pass a test written with a self-consistent name and still be wrong in production.
-  const WORKSPACE_DIRS = { '@papercusp/web': 'apps/operator', '@papercusp/operator-core': 'packages/operator-core' };
+  const WORKSPACE_DIRS = {
+    '@papercusp/web': 'apps/operator',
+    '@papercusp/operator-core': 'packages/operator-core',
+    '@papercusp/search': 'libs/generic/search',
+  };
   const LANE_OUTPUT = ' FAIL  lib/agent-obligation-owner-directives.test.ts > opens a real pool';
   const REPO_PATH = 'apps/operator/lib/agent-obligation-owner-directives.test.ts';
 
@@ -421,5 +426,62 @@ describe('repair manifest — leg paths and the admission ledger are joined in O
     const row = m.rows.find((r) => r.legId === 'lint:tsc')!;
     expect(row.subjectPaths).toContain('packages/operator-core/lib/release/x.ts');
     expect(row.subjectPaths).toContain('apps/operator/lib/release/green-checkpoint.ts');
+  });
+
+  it('lifts the root scripts lint leg from its explicitly registered project directory', () => {
+    const id = 'lint:tsc:scripts';
+    const candidate = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+    const m = withRepairManifest(queue({
+      candidate,
+      repairHead: candidate,
+      failingTests: [id],
+      signature: [{ kind: 'lint-leg', id, recipe: 'npm run lint:tsc:scripts', admittedRound: 1, measuredHead: candidate }],
+    }), 10, {
+      legOutputs: { [id]: [
+        'lib/runtime-compatibility-census.mjs(1,1): error TS2322: bad value',
+        'lib/workspace-host-gcs-publication.mjs(2,1): error TS2322: bad value',
+      ].join('\n') },
+      workspaceDirs: WORKSPACE_DIRS,
+      legProjectDirs: { [id]: 'scripts' },
+    }).manifest;
+    const row = m.rows[0]!;
+    expect(row.subjectPaths).toEqual([
+      'scripts/lib/runtime-compatibility-census.mjs',
+      'scripts/lib/workspace-host-gcs-publication.mjs',
+    ]);
+    expect(row.admitCommand).toContain('scripts/lib/runtime-compatibility-census.mjs');
+    for (const path of row.subjectPaths) {
+      execFileSync('git', ['rev-parse', '--verify', candidate + ':' + path], { encoding: 'utf8' });
+    }
+  });
+
+  it('lifts workspace-fanout diagnostics using their repo-relative runPackages header', () => {
+    const id = 'lint:tsc:workspaces';
+    const candidate = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+    const m = withRepairManifest(queue({
+      candidate,
+      repairHead: candidate,
+      failingTests: [id],
+      signature: [{ kind: 'lint-leg', id, recipe: 'npm run lint:tsc:workspaces', admittedRound: 1, measuredHead: candidate }],
+    }), 10, {
+      legOutputs: { [id]: [
+        '--- libs/generic/search — npx tsc -p tsconfig.json exited 2 ---',
+        'src/hybrid.test.ts(1,1): error TS2322: bad value',
+      ].join('\n') },
+      workspaceDirs: WORKSPACE_DIRS,
+    }).manifest;
+    const row = m.rows[0]!;
+    expect(row.subjectPaths).toEqual(['libs/generic/search/src/hybrid.test.ts']);
+    expect(row.admitCommand).toContain('libs/generic/search/src/hybrid.test.ts');
+    // This workspace is a superproject gitlink; resolve the file against its candidate submodule commit.
+    const repoRoot = execFileSync('git', ['rev-parse', '--show-toplevel'], { encoding: 'utf8' }).trim();
+    const submoduleSha = execFileSync('git', ['rev-parse', '--verify', candidate + ':libs/generic/search'], { encoding: 'utf8' }).trim();
+    execFileSync('git', [
+      '-C',
+      repoRoot + '/libs/generic/search',
+      'rev-parse',
+      '--verify',
+      submoduleSha + ':src/hybrid.test.ts',
+    ], { encoding: 'utf8' });
   });
 });

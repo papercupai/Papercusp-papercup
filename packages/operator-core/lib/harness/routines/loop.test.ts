@@ -1749,6 +1749,25 @@ describe('getLoopStatuses — firesSinceArm (WI-36070: the number maxFires is ac
     );
   });
 
+  it('recognizes a self-compaction continuation only when it matches the current loop wake', async () => {
+    const queries: string[] = [];
+    const sql = transactionalSql((strings) => {
+      queries.push(strings.join(''));
+      return [];
+    });
+
+    await getLoopStatuses(['su-x'], { sql: sql as unknown as Sql });
+
+    const query = queries.find((text) => text.includes('AS last_loop_turn_at'));
+    expect(query).toBeDefined();
+    expect(query).toContain("u.turn_origin IN ('loop-fire', 'self-compaction')");
+    expect(query).toContain("= COALESCE((r.metadata->>'fire_count')::int, 0)");
+    expect(query).toContain("start_stamp.detail->>'source' = 'turn-start'");
+    expect(query).toContain("start_stamp.detail->>'origin' = 'self-compaction'");
+    expect(query).toContain("start_stamp.detail->>'nonce' =");
+    expect(query).toContain("substring(u.text FROM '^[[:space:]]*⟦turn-origin:self-compaction nonce:");
+  });
+
   it('exposes the wake dispatch clock separately from its later delivery-settle clock', async () => {
     const out = await getLoopStatuses(['su-x'], {
       sql: rowSql({

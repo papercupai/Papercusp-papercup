@@ -25,6 +25,7 @@ import { STANDING_PR_BRANCH } from './decide-standing-pr';
 import {
   confirmMergeAdvance,
   decideMergeGate,
+  type MergePathAttribution,
   type MergeGateRefusalReason,
   type MergeTestRecord,
   type SubmodulePinCheck,
@@ -69,6 +70,11 @@ export interface StandingPrMergeDeps {
   readTargetTip(baseBranch: string): Promise<string>;
   /** The latest exact-merge test recorded for this PR, if any. */
   loadLastTest(prNumber: number): Promise<MergeTestRecord | null>;
+  /**
+   * Path-level admission evidence for this exact PR head and target tip. The live adapter
+   * must return `ok:false` when either the PR diff or admitted completion paths are unknown.
+   */
+  loadPathAttribution(input: { prHeadSha: string; targetTipSha: string; prUrl: string; prNumber: number }): Promise<MergePathAttribution>;
   saveTest(prNumber: number, rec: MergeTestRecord): Promise<void>;
   /**
    * D-017 §6: which submodule commits `prHeadSha` pins (relative to `targetTipSha`)
@@ -140,6 +146,13 @@ export async function stepStandingPrMerge(
   const prNumber = pr.ref.number;
   const targetTipSha = await deps.readTargetTip(pr.base_ref);
   const lastTest = await deps.loadLastTest(prNumber);
+  const pathAttribution = input.promotedSha !== null && pr.head_sha === input.promotedSha
+    ? await deps.loadPathAttribution({ prHeadSha: pr.head_sha, targetTipSha, prUrl: pr.url, prNumber })
+        .catch((err: unknown): MergePathAttribution => ({
+          ok: false,
+          reason: err instanceof Error ? err.message : String(err),
+        }))
+    : undefined;
   // Only a promoted head can merge, so the (network) pin check runs only for one.
   const submodulePins: SubmodulePinCheck | undefined =
     input.promotedSha !== null && pr.head_sha === input.promotedSha
@@ -154,6 +167,7 @@ export async function stepStandingPrMerge(
     targetTipSha,
     lastTest,
     submodulePins,
+    pathAttribution,
   });
 
   switch (decision.action) {

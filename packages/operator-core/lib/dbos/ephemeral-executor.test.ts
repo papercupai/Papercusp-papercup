@@ -52,6 +52,38 @@ function installFakeRegistry(): void {
 }
 const flush = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
 
+describe('execution policy at an armed ephemeral timer', () => {
+  it('withholds without recording a fire, then permits the next tick after resume', async () => {
+    installFakeRegistry();
+    let allowed = false;
+    const { deps, fired, recorded } = mkDeps({ admit: async () => allowed });
+    await armEphemeralExecutor(deps);
+    ticks[0]!.cb();
+    await flush();
+    expect(fired).toEqual([]);
+    expect(recorded).toEqual([]);
+    allowed = true;
+    ticks[0]!.cb();
+    await flush();
+    expect(fired).toHaveLength(1);
+    expect(recorded).toHaveLength(1);
+  });
+
+  it('does not dispatch after stop while permission is still pending', async () => {
+    installFakeRegistry();
+    let admit!: (allowed: boolean) => void;
+    const { deps, fired, recorded } = mkDeps({ admit: () => new Promise(resolve => { admit = resolve; }) });
+    await armEphemeralExecutor(deps);
+    ticks[0]!.cb();
+    await flush();
+    disarmEphemeralExecutor();
+    admit(true);
+    await flush();
+    expect(fired).toEqual([]);
+    expect(recorded).toEqual([]);
+  });
+});
+
 const mkDeps = (over: Partial<EphemeralExecutorDeps> = {}): { deps: EphemeralExecutorDeps; fired: EphemeralRoutineSpec[]; recorded: Array<{ id: string; error: string | null }> } => {
   const fired: EphemeralRoutineSpec[] = [];
   const recorded: Array<{ id: string; error: string | null }> = [];

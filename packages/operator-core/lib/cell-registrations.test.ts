@@ -468,6 +468,8 @@ describe('P-007: the four verdict cells', () => {
       'gate.candidateFailures.stillBrokenNeedsRunCount',
     );
     expect(failures!.headline).toBe('gate.candidateFailures.stillBrokenCount');
+    expect(failures!.assessment!.evidence).toContain('gate.candidateFailures.candidateRunGroupId');
+    expect(failures!.assessment!.evidence).toContain('gate.candidateFailures.repairHeadRunGroupId');
   });
 
   /**

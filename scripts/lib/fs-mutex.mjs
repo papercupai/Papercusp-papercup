@@ -35,7 +35,7 @@ import {
 } from "node:fs/promises";
 import { readFileSync } from "node:fs";
 
-/** @typedef {{ opendir?: typeof opendir, symlink?: typeof symlink, readFile?: (path: string, encoding: 'utf8') => Promise<string>, writeFile?: typeof writeFile }} FsMutexIo */
+/** @typedef {{ opendir?: typeof opendir, symlink?: typeof symlink, readFile?: (path: string, encoding: 'utf8') => Promise<string>, writeFile?: typeof writeFile, processIdentity?: (pid: number) => ({ tgid?: number, startTicks?: string, bootId?: string, kthread?: boolean } | null) }} FsMutexIo */
 
 const DEFAULT_TIMEOUT_MS = 180_000;
 const DEFAULT_STALE_MS = 10 * 60_000;
@@ -147,7 +147,7 @@ function legacyRootError(code, message, census, cause) {
   return error;
 }
 
-async function legacyLeaseState(markerDir, staleMs) {
+async function legacyLeaseState(markerDir, staleMs, io = {}) {
   let markerStat;
   try {
     markerStat = await lstat(markerDir);
@@ -174,25 +174,21 @@ async function legacyLeaseState(markerDir, staleMs) {
   }
   if (owner.host !== hostname()) return "unknown";
 
+  let processProbeDenied = false;
   try {
     process.kill(owner.pid, 0);
   } catch (error) {
-    return error?.code === "ESRCH" ? "stale" : "unknown";
+    if (error?.code === "ESRCH") return "stale";
+    if (error?.code !== "EPERM") return "unknown";
+    processProbeDenied = true;
   }
 
-  const current = processIdentity(owner.pid);
-  if (
-    current &&
-    ((Number.isInteger(current.tgid) && current.tgid !== owner.pid) ||
-      (owner.startTicks && current.startTicks && owner.startTicks !== current.startTicks) ||
-      (owner.bootId && current.bootId && owner.bootId !== current.bootId))
-  ) {
-    return "stale";
-  }
-  return "active";
+  const current = (io.processIdentity ?? processIdentity)(owner.pid);
+  if (processIdentityProvesReuse(owner, current)) return "stale";
+  return processProbeDenied ? "unknown" : "active";
 }
 
-async function censusLegacyContainer(containerPath, type, suffix, census, staleMs, openDirectory) {
+async function censusLegacyContainer(containerPath, type, suffix, census, staleMs, openDirectory, io) {
   let directory;
   try {
     directory = await openDirectory(containerPath);
@@ -214,7 +210,7 @@ async function censusLegacyContainer(containerPath, type, suffix, census, staleM
         census.otherUnknown++;
         continue;
       }
-      census[type][await legacyLeaseState(join(containerPath, entry.name), staleMs)]++;
+      census[type][await legacyLeaseState(join(containerPath, entry.name), staleMs, io)]++;
     }
   } catch {
     census.otherUnknown++;
@@ -253,11 +249,11 @@ export async function censusLegacyFsMutexRoot(legacyRoot, staleMs = staleMsFromE
       // A `.readers-staging` dir is the pre-rename half of an atomic reader-root
       // create; one left by a killed process holds reader leases or nothing.
       if ((entry.name.endsWith(".readers") || entry.name.endsWith(".readers-staging")) && entry.isDirectory()) {
-        await censusLegacyContainer(entryPath, "reader", ".lock", census, staleMs, openDirectory);
+        await censusLegacyContainer(entryPath, "reader", ".lock", census, staleMs, openDirectory, io);
       } else if (entry.name.endsWith(".queue") && entry.isDirectory()) {
-        await censusLegacyContainer(entryPath, "queue", ".ticket", census, staleMs, openDirectory);
+        await censusLegacyContainer(entryPath, "queue", ".ticket", census, staleMs, openDirectory, io);
       } else if (entry.name.endsWith(".lock")) {
-        census.writer[await legacyLeaseState(entryPath, staleMs)]++;
+        census.writer[await legacyLeaseState(entryPath, staleMs, io)]++;
       } else {
         census.otherUnknown++;
       }
@@ -612,11 +608,19 @@ function processIdentity(pid) {
   try {
     const status = readFileSync(`/proc/${pid}/status`, 'utf8');
     const tgid = Number(/^Tgid:\s*(\d+)$/m.exec(status)?.[1]);
+    const kthread = /^Kthread:\s*1$/m.test(status);
     const value = readFileSync(`/proc/${pid}/stat`, 'utf8');
     const startTicks = value.slice(value.lastIndexOf(')') + 2).trim().split(/\s+/)[19];
     const bootId = readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim();
-    return { tgid, startTicks, bootId };
+    return { tgid, startTicks, bootId, kthread };
   } catch { return null; } // Non-Linux/access failures retain the kill(0) policy.
+}
+
+function processIdentityProvesReuse(owner, current) {
+  return current && (current.kthread === true ||
+    (Number.isInteger(current.tgid) && current.tgid !== owner.pid) ||
+    (owner.startTicks && current.startTicks && owner.startTicks !== current.startTicks) ||
+    (owner.bootId && current.bootId && owner.bootId !== current.bootId));
 }
 
 async function reclaimAbandonedLock(
@@ -646,22 +650,30 @@ async function reclaimAbandonedLock(
   if (owner.host !== hostname()) return false;
   try {
     await measureSubphase("abandoned-lock.process-probe", () => process.kill(owner.pid, 0));
-    const current = await measureSubphase("abandoned-lock.process-identity", () => processIdentity(owner.pid));
-    // process.pid always names a thread-group leader. A reused nonleader TID
-    // cannot own even a legacy lease. New leases also survive leader-PID reuse
-    // and reboot safely by recording their kernel identity at publication.
-    if (current && ((Number.isInteger(current.tgid) && current.tgid !== owner.pid) ||
-        (owner.startTicks && current.startTicks && owner.startTicks !== current.startTicks) ||
-        (owner.bootId && current.bootId && owner.bootId !== current.bootId))) {
+  } catch (error) {
+    if (error?.code === "ESRCH") {
       await measureSubphase("abandoned-lock.remove", () => rm(lockDir, { recursive: true, force: true }));
       return true;
     }
-    return false;
-  } catch (error) {
-    if (!error || error.code !== "ESRCH") return false;
+    // EPERM proves the PID exists but does not establish that it is still the
+    // lease owner. Read the accessible kernel identity before conservatively
+    // retaining the marker; another errno remains unknown and fails closed.
+    if (error?.code !== "EPERM") return false;
+  }
+
+  const current = await measureSubphase(
+    "abandoned-lock.process-identity",
+    () => (io.processIdentity ?? processIdentity)(owner.pid),
+  );
+  // process.pid always names a thread-group leader. Kernel threads cannot own
+  // a user-space lease, even if PID reuse collides on the recorded start tick.
+  if (processIdentityProvesReuse(owner, current)) {
     await measureSubphase("abandoned-lock.remove", () => rm(lockDir, { recursive: true, force: true }));
     return true;
   }
+  // If kill(0) returned EPERM and identity is missing or still matches, keep the
+  // lease. New leases also survive leader-PID reuse and reboot via these fields.
+  return false;
 }
 
 /**

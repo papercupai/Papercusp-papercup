@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({
   resolveAgentIdentity: vi.fn(),
   resolveManualRunAuthority: vi.fn(async () => null),
   getFlag: vi.fn(async () => true),
+  operatorHomeHarnessSlug: vi.fn(() => 'test-home'),
 }));
 
 vi.mock('../../git-pipeline-stats', () => ({ gitPipelineSnapshot: mocks.gitPipelineSnapshot }));
@@ -30,7 +31,7 @@ vi.mock('../../release/manual-run-authority', () => ({
 vi.mock('@papercusp/flags/server', () => ({ getFlag: mocks.getFlag }));
 vi.mock('../../harness/operator-home-harness', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../harness/operator-home-harness')>()),
-  operatorHomeHarnessSlug: () => 'test-home',
+  operatorHomeHarnessSlug: mocks.operatorHomeHarnessSlug,
 }));
 
 import tool, {
@@ -159,41 +160,43 @@ describe('release:trace tool contract', () => {
     });
   });
 
-  it('stamps the operator-home subject and warns a concrete foreign-harness caller', async () => {
-    const snapshot = {
-      generatedAtMs: 123,
-      deploy: { integrationRoot: '/workspace/papercusp' },
-      gate: { verdictStale: false, consecutiveReds: 0, failingTests: [], fireStale: false },
-    };
-    mocks.gitPipelineSnapshot.mockResolvedValueOnce(snapshot);
-    mocks.gitPipelinePosition.mockResolvedValueOnce({ targetSha: 'abcd1234' });
-    mocks.computeDeployStatus.mockReturnValueOnce({ state: 'green' });
-    mocks.inspectEventKey.mockResolvedValue({ waiters: [], deliveries: [] });
-    mocks.resolveAgentIdentity.mockReturnValueOnce({ ownerId: 'test-owner' });
-    mocks.buildReleaseTrace.mockReturnValueOnce({ ok: true });
-
+  it('refuses a concrete foreign-harness caller before reading operator-home release state', async () => {
     const out = (await tool.handler(
       { sha: 'abcd1234' } as never,
       { role: 'cup', harnessSlug: 'sidestage' } as never,
     )) as {
       data: {
-        subject: { harness: string; scope: string; integrationRoot: string; note: string };
+        ok: boolean;
         harnessMismatch: { callerHarness: string; reportedHarness: string; warning: string };
+        trace: { status: string; complete: boolean };
+        nextVerb: unknown;
+        error: { code: string; retryable: boolean; message: string };
+        gate?: unknown;
+        deploy?: unknown;
+        subject?: unknown;
       };
     };
 
-    expect(out.data.subject).toMatchObject({
-      harness: 'test-home',
-      scope: 'operator-home-release-pipeline',
-      integrationRoot: '/test/integration-root',
+    expect(out.data).toMatchObject({
+      ok: false,
+      harnessMismatch: { callerHarness: 'sidestage', reportedHarness: 'test-home' },
+      trace: { status: 'unsupported', complete: false },
+      nextVerb: null,
+      error: { code: 'unsupported_harness', retryable: false },
     });
-    expect(out.data.subject.note).toContain('test-home');
-    expect(out.data.harnessMismatch).toMatchObject({
-      callerHarness: 'sidestage',
-      reportedHarness: 'test-home',
-    });
-    expect(out.data.harnessMismatch.warning).toContain('sidestage');
-    expect(out.data.harnessMismatch.warning).toContain('test-home');
+    expect(out.data.error.message).toContain('sidestage');
+    expect(out.data.error.message).toContain('test-home');
+    expect(out.data.subject).toBeUndefined();
+    expect(out.data.gate).toBeUndefined();
+    expect(out.data.deploy).toBeUndefined();
+    expect(mocks.gitPipelineSnapshot).not.toHaveBeenCalled();
+    expect(mocks.gitPipelinePosition).not.toHaveBeenCalled();
+    expect(mocks.computeDeployStatus).not.toHaveBeenCalled();
+    expect(mocks.inspectEventKey).not.toHaveBeenCalled();
+    expect(mocks.buildReleaseTrace).not.toHaveBeenCalled();
+    expect(mocks.resolveAgentIdentity).not.toHaveBeenCalled();
+    expect(mocks.resolveManualRunAuthority).not.toHaveBeenCalled();
+    expect(mocks.getFlag).not.toHaveBeenCalled();
   });
 
   it('does not invent a mismatch for same-harness, wildcard, or unknown callers', async () => {
@@ -283,6 +286,7 @@ describe('release:trace tool contract', () => {
   });
 
   it('stamps the exact target SHA with a candidate-cell re-read handle', async () => {
+    mocks.operatorHomeHarnessSlug.mockReturnValueOnce('papercusp');
     const snapshot = {
       generatedAtMs: 123,
       deploy: { integrationRoot: '/workspace/papercusp' },
@@ -493,7 +497,7 @@ describe('release:trace tool contract', () => {
 
     const pending = tool.handler(
       { sha: 'abcd1234' } as never,
-      { role: 'cup', harnessSlug: 'sidestage' } as never,
+      { role: 'cup', harnessSlug: 'test-home' } as never,
     );
     await vi.advanceTimersByTimeAsync(RELEASE_TRACE_SNAPSHOT_TIMEOUT_MS);
     const result = await pending;
@@ -506,7 +510,6 @@ describe('release:trace tool contract', () => {
           scope: 'operator-home-release-pipeline',
           integrationRoot: '/test/integration-root',
         },
-        harnessMismatch: { callerHarness: 'sidestage', reportedHarness: 'test-home' },
         trace: { status: 'unknown', complete: false },
         nextVerb: null,
         error: {

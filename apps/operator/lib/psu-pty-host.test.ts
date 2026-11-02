@@ -1210,6 +1210,16 @@ describe('deliveryDedupSettlement', () => {
   });
 });
 
+describe('EI-27174484897934826 Claude reset-reanchor capability', () => {
+  it('advertises reset-reanchor-v1 only for Claude hosts', () => {
+    const source = readFileSync(new URL('../scripts/psu-pty-host.mjs', import.meta.url), 'utf8');
+    const capsStart = source.indexOf('caps: [');
+    expect(capsStart).toBeGreaterThanOrEqual(0);
+    const caps = source.slice(capsStart, capsStart + 800);
+    expect(caps).toContain("...(env.PAPERCUSP_AGENT === 'claude' ? ['reset-reanchor-v1'] : [])");
+  });
+});
+
 describe('EI-16685 pending inbox-wake cancellation', () => {
   it('decodes the capability-gated direct ACK mode without turn text', () => {
     expect(decodeControl(encodeControl({

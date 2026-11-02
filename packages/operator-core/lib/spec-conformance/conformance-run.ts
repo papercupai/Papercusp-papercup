@@ -34,7 +34,7 @@ import { evaluateRequirementEnforcement, type RequirementEnforcement } from './c
 
 export type ConformanceCheckVerdict = RubricCheckVerdict;
 export type ConformanceCheckRole = 'falsifier' | 'done-when';
-export type ConformanceRecordedKind = 'probe' | 'instrument' | 'tests' | 'requirements';
+export type ConformanceRecordedKind = 'probe' | 'instrument' | 'tests' | 'cargo' | 'requirements';
 
 /** Results-ledger namespace of one plan's conformance verdicts. */
 export function conformanceLedgerRef(harnessSlug: string, planSlug: string): string {

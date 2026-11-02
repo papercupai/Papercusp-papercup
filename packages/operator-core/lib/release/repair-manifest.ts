@@ -112,6 +112,8 @@ export interface BuildRepairManifestInput {
    * `red-at-candidate` for the life of the queue — including legs whose fix had already landed.
    */
   workspaceDirs?: Readonly<Record<string, string>>;
+  /** Repo-relative project roots for root-level lint legs whose paths are project-relative. */
+  legProjectDirs?: Readonly<Record<string, string>>;
   /** The previous manifest, so leg claims survive a rebuild. */
   previous?: RepairManifest | null;
 }
@@ -143,15 +145,29 @@ export function extractSubjectPathsFromLegOutput(
   const out: string[] = [];
   // Trailing lookahead admits `(`: tsc's `file.ts(44,1): error` shape sits beside `file.ts:12:3`.
   const re = /(?:^|[\s"'`(\[,])((?:[A-Za-z0-9_@.-]+\/)+[A-Za-z0-9_.-]+\.[A-Za-z0-9]{1,8})(?=$|[\s:"'`()\],;])/gm;
-  for (const m of output.matchAll(re)) {
-    const raw = m[1];
-    if (!raw) continue;
-    if (raw.includes('..') || raw.startsWith('/') || raw.startsWith('node_modules/') || raw.includes('/node_modules/')) continue;
-    if (raw.startsWith('.papercusp/') || raw.startsWith('tmp/')) continue;
-    const normalized = normalizeRepoPath(raw);
-    if (!normalized || seen.has(normalized)) continue;
-    seen.add(normalized);
-    out.push(toRepoRelativeLegPath(normalized, workspaceDir, knownWorkspaceDirs));
+  let activeWorkspaceDir = workspaceDir;
+  for (const line of output.split('\n')) {
+    // The workspace fanout prints this measured repo-relative root before each package failure.
+    const trimmed = line.trimStart();
+    if (trimmed.startsWith('--- ')) {
+      const separator = trimmed.indexOf(' — ', 4);
+      if (separator > 4) {
+        const reportedRoot = normalizeRepoPath(trimmed.slice(4, separator));
+        if (knownWorkspaceDirs.includes(reportedRoot)) activeWorkspaceDir = reportedRoot;
+      }
+    }
+    for (const m of line.matchAll(re)) {
+      const raw = m[1];
+      if (!raw) continue;
+      if (raw.includes('..') || raw.startsWith('/') || raw.startsWith('node_modules/') || raw.includes('/node_modules/')) continue;
+      if (raw.startsWith('.papercusp/') || raw.startsWith('tmp/')) continue;
+      const normalized = normalizeRepoPath(raw);
+      if (!normalized) continue;
+      const repoPath = toRepoRelativeLegPath(normalized, activeWorkspaceDir, knownWorkspaceDirs);
+      if (!repoPath || seen.has(repoPath)) continue;
+      seen.add(repoPath);
+      out.push(repoPath);
+    }
   }
   return out;
 }
@@ -199,18 +215,17 @@ function resolveSubjectPaths(
     if (p) return { paths: [p], source: 'leg-id' };
   }
   if (entry.kind === 'seed') return { paths: [], source: 'none' };
-  const mined = extractSubjectPathsFromLegOutput(input.legOutputs?.[entry.id]);
+  const dirs = input.workspaceDirs;
+  const workspaceDir = (entry.workspace ? dirs?.[entry.workspace] : undefined)
+    ?? input.legProjectDirs?.[entry.id];
+  const knownDirs = Array.from(new Set([
+    ...Object.values(dirs ?? {}),
+    ...Object.values(input.legProjectDirs ?? {}),
+  ]));
+  const mined = extractSubjectPathsFromLegOutput(input.legOutputs?.[entry.id], workspaceDir, knownDirs);
   if (mined.length > 0) {
-    // WI-10002500: mined paths are in the LEG's path space; the admission ledger and the
-    // `admitCommand` this manifest renders are both repo-relative. Lift them once, here, so both
-    // consumers are fixed by the same line.
-    const dirs = input.workspaceDirs;
-    const workspaceDir = entry.workspace && dirs ? dirs[entry.workspace] : undefined;
-    const knownDirs = dirs ? Object.values(dirs) : [];
-    const lifted = Array.from(
-      new Set(mined.map((p) => toRepoRelativeLegPath(p, workspaceDir, knownDirs))),
-    );
-    return { paths: lifted, source: 'leg-output' };
+    // The extractor maps a known project root to repo-relative paths before this row is built.
+    return { paths: mined, source: 'leg-output' };
   }
   // Rebuilding a queue after an admission must not erase evidence already measured
   // for this candidate. Never inherit paths from a different candidate, kind or workspace.
@@ -357,7 +372,7 @@ export interface WithRepairManifestResult<Q extends BuildRepairManifestInput['qu
 export function withRepairManifest<Q extends BuildRepairManifestInput['queue'] & { manifest?: RepairManifest | null }>(
   queue: Q,
   nowMs: number,
-  extras: Pick<BuildRepairManifestInput, 'legOutputs' | 'subjectPaths' | 'workspaceDirs'> = {},
+  extras: Pick<BuildRepairManifestInput, 'legOutputs' | 'subjectPaths' | 'workspaceDirs' | 'legProjectDirs'> = {},
 ): WithRepairManifestResult<Q> {
   const previous = queue.manifest ?? null;
   const manifest = buildRepairManifest({ queue, nowMs, previous, ...extras });

@@ -234,7 +234,7 @@ describe('acceptance BAR amendment transaction contract', () => {
 });
 
 describe('BAR-neutral subject-plan revision synchronization', () => {
-  function legacyMaterializationFixture() {
+  function legacyMaterializationFixture(canonicalIntent?: string) {
     const before = subjectPlan();
     const seeded = buildAcceptanceBarSeed({
       planSlug: 'subject-plan', planContent: before, actorId: 'seed-author',
@@ -246,6 +246,7 @@ describe('BAR-neutral subject-plan revision synchronization', () => {
     // The reviewed rubric has superseded the original prose, as on PUI's legacy plan.
     const criterion = normalizeAcceptanceBarCriterion({
       ...seeded.criteria[0]!, model: 'The reviewed canonical outcome holds.',
+      ...(canonicalIntent ? { intent: { request: canonicalIntent } } : {}),
       driftMarkers: 'The reviewed outcome is absent.', requiredTestLayers: ['integration'],
       method: 'Run the named installed-product journey.',
       check: { kind: 'tests', files: ['packages/product.test.ts'] },
@@ -263,6 +264,7 @@ describe('BAR-neutral subject-plan revision synchronization', () => {
       throw new Error(`unexpected SQL: ${statement}`);
     });
     const sections = {
+      ...(canonicalIntent ? { intent: { request: canonicalIntent } } : {}),
       acceptance: {
         condition: criterion.model, falsifier: criterion.driftMarkers,
         requiredScope: criterion.requiredScope, evidencePlane: criterion.evidencePlane,
@@ -342,6 +344,25 @@ describe('BAR-neutral subject-plan revision synchronization', () => {
     const previous = f.render({ ...f.sections, acceptance: { ...f.sections.acceptance, condition: 'A different authored promise.' } });
     await expect(f.synchronize(f.render(), previous)).resolves.toBe(false);
     expect(f.sql).not.toHaveBeenCalled();
+  });
+
+  it('restores only an already-reviewed canonical Intent without revising the rubric', async () => {
+    const f = legacyMaterializationFixture('Original outcome plus the approved ownership clarification.');
+    const previous = f.render({ ...f.sections, intent: { request: 'Original outcome.' } });
+    await expect(f.synchronize(f.render(), previous)).resolves.toBe(true);
+    const updates = f.sql.mock.calls.map(([strings]) => strings.join(' ')).filter(s => s.includes('UPDATE '));
+    expect(updates).toHaveLength(2);
+    expect(updates[0]).toContain('{barContract,subjectPlanRevision}');
+    expect(updates[0]).not.toContain('criteria');
+    expect(updates[0]).not.toContain('SET version');
+  });
+
+  it('refuses an Intent repair that does not equal the locked canonical Intent', async () => {
+    const f = legacyMaterializationFixture('Original outcome plus the approved ownership clarification.');
+    const previous = f.render({ ...f.sections, intent: { request: 'Original outcome.' } });
+    const after = f.render({ ...f.sections, intent: { request: 'A newly invented clarification.' } });
+    await expect(f.synchronize(after, previous)).resolves.toBe(false);
+    expect(f.sql.mock.calls.some(([strings]) => strings.join(' ').includes('UPDATE '))).toBe(false);
   });
 
   it('treats Now/Decision prose as neutral but fingerprints BAR source and map changes', async () => {
@@ -1145,6 +1166,8 @@ describe('carryUnchangedBarEvidenceBindings (P-008)', () => {
 
   function storedRow(over: Record<string, unknown> = {}) {
     return {
+      id: 41,
+      verifies_binding_id: null,
       work_item_id: 'WI-1',
       evidence_kind: 'test',
       evidence_ref: 'packages/operator-core/lib/thing.test.ts',
@@ -1225,7 +1248,7 @@ describe('carryUnchangedBarEvidenceBindings (P-008)', () => {
 
   it('recomputes the binding fingerprint over the new revision instead of copying it', async () => {
     const row = storedRow();
-    const { sql, calls } = fakeSql([[row]]);
+    const { sql, calls } = fakeSql([[row], [{ id: 42 }]]);
     const carried = await carryUnchangedBarEvidenceBindings(sql, {
       ...SCOPE,
       priorRevision: 7,
@@ -1269,7 +1292,7 @@ describe('carryUnchangedBarEvidenceBindings (P-008)', () => {
 
   it('preserves the original observation time and prover, and pins the new revision', async () => {
     const row = storedRow();
-    const { sql, calls } = fakeSql([[row]]);
+    const { sql, calls } = fakeSql([[row], [{ id: 42 }]]);
     await carryUnchangedBarEvidenceBindings(sql, {
       ...SCOPE,
       priorRevision: 7,

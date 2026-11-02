@@ -43,6 +43,7 @@
  */
 import http from "node:http";
 import { createHash, randomUUID } from "node:crypto";
+import { Readable } from "node:stream";
 import { StringDecoder } from "node:string_decoder";
 import { parser as createStreamJsonParser } from "stream-json";
 import { normalizeMcpName } from "@papercusp/tooldef";
@@ -88,6 +89,7 @@ import {
   buildConflictBody,
   buildUnavailableBody,
   buildUnavailableError,
+  CURRENT_BUILD_DEFAULT_TOOLS,
   selectTargetsForBuild,
   applyMcpWorkerSelector,
   selectWorkerForTarget,
@@ -2165,6 +2167,330 @@ function forwardOnce(
     if (body.length) upstream.write(body);
     upstream.end();
   });
+}
+
+const MAX_CURRENT_BUILD_TOOL_LIST_BYTES = 8 * 1024 * 1024;
+
+type McpJsonRecord = Record<string, unknown>;
+type McpSseEvent = {
+  raw: string;
+  separator: string;
+  dataLineIndexes: number[];
+  payload?: unknown;
+  modified: boolean;
+};
+type McpResponseDocument =
+  | { kind: "json"; value: unknown }
+  | { kind: "sse"; events: McpSseEvent[] };
+
+function asMcpJsonRecord(value: unknown): McpJsonRecord | null {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? value as McpJsonRecord
+    : null;
+}
+
+function parseMcpResponseDocument(
+  body: Buffer,
+  contentType: string | string[] | undefined,
+): McpResponseDocument | null {
+  const text = body.toString("utf8");
+  const contentTypeText = Array.isArray(contentType) ? contentType.join(",") : contentType ?? "";
+  if (!/text\/event-stream/i.test(contentTypeText)) {
+    try {
+      return { kind: "json", value: JSON.parse(text) as unknown };
+    } catch {
+      return null;
+    }
+  }
+
+  const events: McpSseEvent[] = [];
+  const separatorPattern = /\r\n\r\n|\n\n|\r\r/g;
+  let start = 0;
+  let match: RegExpExecArray | null;
+  const addEvent = (raw: string, separator: string): void => {
+    const lines = raw.split(/\r\n|\n|\r/);
+    const dataLineIndexes: number[] = [];
+    const data: string[] = [];
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i]!;
+      if (!line.startsWith("data:")) continue;
+      dataLineIndexes.push(i);
+      const value = line.slice(5);
+      data.push(value.startsWith(" ") ? value.slice(1) : value);
+    }
+    let payload: unknown;
+    if (dataLineIndexes.length) {
+      try {
+        payload = JSON.parse(data.join("\n")) as unknown;
+      } catch {
+        payload = undefined;
+      }
+    }
+    events.push({ raw, separator, dataLineIndexes, payload, modified: false });
+  };
+  while ((match = separatorPattern.exec(text)) !== null) {
+    addEvent(text.slice(start, match.index), match[0]);
+    start = match.index + match[0].length;
+  }
+  if (start < text.length || events.length === 0) addEvent(text.slice(start), "");
+  return { kind: "sse", events };
+}
+
+function mcpResponseRecords(document: McpResponseDocument): Array<{ response: McpJsonRecord; event?: McpSseEvent }> {
+  const records: Array<{ response: McpJsonRecord; event?: McpSseEvent }> = [];
+  const addPayload = (payload: unknown, event?: McpSseEvent): void => {
+    const values = Array.isArray(payload) ? payload : [payload];
+    for (const value of values) {
+      const response = asMcpJsonRecord(value);
+      if (response) records.push({ response, ...(event ? { event } : {}) });
+    }
+  };
+  if (document.kind === "json") addPayload(document.value);
+  else for (const event of document.events) if (event.payload !== undefined) addPayload(event.payload, event);
+  return records;
+}
+
+function mcpToolsForResponse(response: McpJsonRecord): unknown[] | null {
+  const result = asMcpJsonRecord(response.result);
+  return result && Array.isArray(result.tools) ? result.tools : null;
+}
+
+function containsCurrentBuildDefaultTool(document: McpResponseDocument, names: ReadonlySet<string>): boolean {
+  return mcpResponseRecords(document).some(({ response }) =>
+    mcpToolsForResponse(response)?.some((tool) => {
+      const name = asMcpJsonRecord(tool)?.name;
+      return typeof name === "string" && names.has(normalizeMcpName(name));
+    }) ?? false,
+  );
+}
+
+function responseIdKey(response: McpJsonRecord): string | null {
+  if (!Object.prototype.hasOwnProperty.call(response, "id")) return null;
+  return JSON.stringify(response.id) ?? null;
+}
+
+function overlayCurrentBuildToolDefinitions(
+  releaseDocument: McpResponseDocument,
+  currentDocument: McpResponseDocument,
+  names: ReadonlySet<string>,
+): { kind: "not-applicable" } | { kind: "invalid" } | { kind: "overlaid"; body: Buffer; tools: string[] } {
+  const currentById = new Map<string, McpJsonRecord>();
+  for (const { response } of mcpResponseRecords(currentDocument)) {
+    const id = responseIdKey(response);
+    if (id !== null) currentById.set(id, response);
+  }
+
+  let matchedReleaseTool = false;
+  const overlaidNames = new Set<string>();
+  for (const { response, event } of mcpResponseRecords(releaseDocument)) {
+    const releaseTools = mcpToolsForResponse(response);
+    if (!releaseTools) continue;
+    const hasTarget = releaseTools.some((tool) => {
+      const name = asMcpJsonRecord(tool)?.name;
+      return typeof name === "string" && names.has(normalizeMcpName(name));
+    });
+    if (!hasTarget) continue;
+
+    matchedReleaseTool = true;
+    const id = responseIdKey(response);
+    const currentResponse = id === null ? undefined : currentById.get(id);
+    const currentTools = currentResponse ? mcpToolsForResponse(currentResponse) : null;
+    if (!currentTools) return { kind: "invalid" };
+
+    const currentDefinitions = new Map<string, McpJsonRecord>();
+    for (const tool of currentTools) {
+      const record = asMcpJsonRecord(tool);
+      if (typeof record?.name === "string") {
+        const name = normalizeMcpName(record.name);
+        if (names.has(name) && !currentDefinitions.has(name)) currentDefinitions.set(name, record);
+      }
+    }
+
+    const result = asMcpJsonRecord(response.result)!;
+    result.tools = releaseTools.flatMap((tool) => {
+      const record = asMcpJsonRecord(tool);
+      if (typeof record?.name !== "string") return [tool];
+      const name = normalizeMcpName(record.name);
+      if (!names.has(name)) return [tool];
+      overlaidNames.add(record.name);
+      const currentDefinition = currentDefinitions.get(name);
+      return currentDefinition ? [currentDefinition] : [];
+    });
+    if (event) event.modified = true;
+  }
+
+  if (!matchedReleaseTool) return { kind: "not-applicable" };
+  if (releaseDocument.kind === "json")
+    return { kind: "overlaid", body: Buffer.from(JSON.stringify(releaseDocument.value) ?? "null", "utf8"), tools: [...overlaidNames] };
+
+  const body = releaseDocument.events.map((event) => {
+    if (!event.modified || event.payload === undefined || event.dataLineIndexes.length === 0)
+      return event.raw + event.separator;
+    const lines = event.raw.split(/\r\n|\n|\r/);
+    const dataIndexes = new Set(event.dataLineIndexes);
+    const firstDataIndex = event.dataLineIndexes[0]!;
+    const updated = lines.flatMap((line, index) =>
+      index === firstDataIndex
+        ? [`data: ${JSON.stringify(event.payload)}`]
+        : dataIndexes.has(index)
+          ? []
+          : [line],
+    );
+    return updated.join("\n") + event.separator;
+  }).join("");
+  return { kind: "overlaid", body: Buffer.from(body, "utf8"), tools: [...overlaidNames] };
+}
+
+async function readBoundedMcpResponse(response: http.IncomingMessage): Promise<Buffer | null> {
+  const chunks: Buffer[] = [];
+  let totalBytes = 0;
+  try {
+    for await (const chunk of response) {
+      const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as Uint8Array);
+      totalBytes += bytes.length;
+      if (totalBytes > MAX_CURRENT_BUILD_TOOL_LIST_BYTES) {
+        response.destroy();
+        return null;
+      }
+      chunks.push(bytes);
+    }
+  } catch {
+    return null;
+  }
+  if (!response.complete || response.aborted) return null;
+  return Buffer.concat(chunks, totalBytes);
+}
+
+function hasNonIdentityContentEncoding(headers: http.IncomingHttpHeaders): boolean {
+  const value = headers["content-encoding"];
+  return Array.isArray(value)
+    ? value.some((encoding) => encoding.toLowerCase() !== "identity")
+    : typeof value === "string" && value.toLowerCase() !== "identity";
+}
+
+function bufferedMcpResponse(
+  source: http.IncomingMessage,
+  body: Buffer,
+  statusCode = source.statusCode ?? 200,
+  contentType?: string,
+): http.IncomingMessage {
+  const headers: http.IncomingHttpHeaders = { ...source.headers };
+  for (const key of ["content-length", "transfer-encoding", "content-encoding", "etag", "content-md5", "content-range"])
+    delete headers[key];
+  if (contentType) headers["content-type"] = contentType;
+  headers["content-length"] = String(body.length);
+  const response = Readable.from([body]) as unknown as http.IncomingMessage;
+  Object.assign(response, {
+    statusCode,
+    statusMessage: source.statusMessage,
+    headers,
+    complete: true,
+    aborted: false,
+    socket: source.socket,
+  });
+  return response;
+}
+
+function unavailableCurrentBuildToolListBody(requestBody: Buffer): Buffer {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(requestBody.toString("utf8")) as unknown;
+  } catch {
+    parsed = null;
+  }
+  const requests = Array.isArray(parsed) ? parsed : [parsed];
+  const errors = requests.flatMap((request) => {
+    const record = asMcpJsonRecord(request);
+    if (!record || record.method !== "tools/list") return [];
+    return [{
+      jsonrpc: "2.0",
+      id: Object.prototype.hasOwnProperty.call(record, "id") ? record.id : null,
+      error: { code: -32603, message: "Current-build tool definitions are unavailable" },
+    }];
+  });
+  const body = Array.isArray(parsed)
+    ? errors
+    : errors[0] ?? { jsonrpc: "2.0", id: null, error: { code: -32603, message: "Current-build tool definitions are unavailable" } };
+  return Buffer.from(JSON.stringify(body), "utf8");
+}
+
+type CurrentBuildToolListOverlay = {
+  kind: "skipped" | "applied" | "unavailable";
+  response: http.IncomingMessage;
+  tools?: string[];
+  reason?: string;
+};
+
+async function overlayCurrentBuildToolList(args: {
+  options: McpProxyOptions;
+  primaryResponse: http.IncomingMessage;
+  requestBody: Buffer;
+  method: string;
+  requestUrl: string;
+  headers: http.IncomingHttpHeaders;
+  stagingPort: number;
+  agent: http.Agent;
+}): Promise<CurrentBuildToolListOverlay> {
+  const { options, primaryResponse, requestBody, method, requestUrl, headers, stagingPort, agent } = args;
+  const unavailable = (reason: string): CurrentBuildToolListOverlay => ({
+    kind: "unavailable",
+    response: bufferedMcpResponse(
+      primaryResponse,
+      unavailableCurrentBuildToolListBody(requestBody),
+      503,
+      "application/json",
+    ),
+    reason,
+  });
+  if (hasNonIdentityContentEncoding(primaryResponse.headers)) {
+    primaryResponse.resume();
+    return unavailable("encoded-release-list");
+  }
+  const releaseBody = await readBoundedMcpResponse(primaryResponse);
+  if (!releaseBody) return unavailable("release-list-unreadable");
+  const releaseDocument = parseMcpResponseDocument(releaseBody, primaryResponse.headers["content-type"]);
+  if (!releaseDocument) return unavailable("release-list-invalid");
+
+  const names = new Set(CURRENT_BUILD_DEFAULT_TOOLS.map(normalizeMcpName));
+  if (!containsCurrentBuildDefaultTool(releaseDocument, names)) {
+    return { kind: "skipped", response: bufferedMcpResponse(primaryResponse, releaseBody) };
+  }
+
+  const currentTargets = selectTargetsForBuild(resolveTargetCandidates(options), "staging", stagingPort);
+  const currentTarget = currentTargets[0];
+  if (!currentTarget) return unavailable("staging-target-missing");
+
+  const currentOutcome = await forwardOnce(
+    options,
+    currentTarget,
+    method,
+    requestUrl,
+    headers,
+    requestBody,
+    agent,
+    options.handshakeTimeoutMs ?? HANDSHAKE_UPSTREAM_TIMEOUT_MS,
+  );
+  const currentResponse = currentOutcome.ures;
+  if (!currentResponse || currentResponse.statusCode === undefined || currentResponse.statusCode < 200 || currentResponse.statusCode >= 300) {
+    currentResponse?.resume();
+    return unavailable("staging-list-unavailable");
+  }
+  if (hasNonIdentityContentEncoding(currentResponse.headers)) {
+    currentResponse.resume();
+    return unavailable("encoded-staging-list");
+  }
+  const currentBody = await readBoundedMcpResponse(currentResponse);
+  if (!currentBody) return unavailable("staging-list-unreadable");
+  const currentDocument = parseMcpResponseDocument(currentBody, currentResponse.headers["content-type"]);
+  if (!currentDocument) return unavailable("staging-list-invalid");
+
+  const overlay = overlayCurrentBuildToolDefinitions(releaseDocument, currentDocument, names);
+  if (overlay.kind !== "overlaid") return unavailable("staging-list-mismatch");
+  return {
+    kind: "applied",
+    response: bufferedMcpResponse(primaryResponse, overlay.body),
+    tools: overlay.tools,
+  };
 }
 
 /**
@@ -5892,6 +6218,15 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
           };
           const isInitialize = fwd.rpcMethods.includes("initialize");
           const isToolsList = fwd.rpcMethods.includes("tools/list");
+          const isToolsListOnlyRequest =
+            isToolsList && fwd.rpcMethods.length > 0 && fwd.rpcMethods.every((method) => method === "tools/list");
+          const shouldOverlayCurrentBuildToolSchemas =
+            isToolsListOnlyRequest &&
+            workerRouting.kind !== "worker" &&
+            CURRENT_BUILD_DEFAULT_TOOLS.length > 0 &&
+            proxyHasStagingTarget(opts, stagingPort);
+          if (shouldOverlayCurrentBuildToolSchemas)
+            fwd.headers = { ...fwd.headers, "accept-encoding": "identity" };
           const recordInitializeStage = (
             outcome:
               | "success"
@@ -5939,6 +6274,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
           let candidateCount = 0;
           let noBuildTarget = false;
           let attemptTargetKey: string | null = null;
+          let lastResponseTarget: McpProxyTarget | null = null;
           let last: ForwardOutcome | undefined;
           // Retry loop: refused → walk ordered candidates, then replay the last candidate
           // across the window (shouldRetry); post-connect →
@@ -6022,6 +6358,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
                     : 0,
                 attemptAbort?.signal,
               );
+              if (outcome.ures) lastResponseTarget = attemptTarget;
             } finally {
               abortAttempt = null;
             }
@@ -6075,9 +6412,40 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
             }
             const elapsed = Date.now() - started;
             if (outcome.ures) {
-              const ures = outcome.ures;
-              const status = ures.statusCode ?? 502;
+              let ures = outcome.ures;
+              let status = ures.statusCode ?? 502;
+              let schemaOverlayFailed = false;
               const statusObservedAtMs = Date.now();
+              if (
+                shouldOverlayCurrentBuildToolSchemas &&
+                lastResponseTarget &&
+                selectTargetsForBuild([lastResponseTarget], "staging", stagingPort).length === 0 &&
+                status >= 200 &&
+                status < 300
+              ) {
+                const schemaOverlay = await overlayCurrentBuildToolList({
+                  options: opts,
+                  primaryResponse: ures,
+                  requestBody: fwd.body,
+                  method: req.method ?? "GET",
+                  requestUrl: req.url ?? "/",
+                  headers: fwd.headers,
+                  stagingPort,
+                  agent: upstreamAgent,
+                });
+                ures = schemaOverlay.response;
+                status = ures.statusCode ?? 503;
+                schemaOverlayFailed = schemaOverlay.kind === "unavailable";
+                if (schemaOverlay.kind !== "skipped")
+                  record({
+                    kind: "tools_list_schema_overlay",
+                    traceId,
+                    outcome: schemaOverlay.kind,
+                    status,
+                    ...(schemaOverlay.reason ? { reason: schemaOverlay.reason } : {}),
+                    ...(schemaOverlay.tools ? { tools: schemaOverlay.tools } : {}),
+                  });
+              }
               if (status >= 200 && status < 300 && attemptTargetKey) {
                 recentUpstream2xxAtMs.set(attemptTargetKey, statusObservedAtMs);
               }
@@ -6103,6 +6471,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
                 (status === 404 || status === 405) &&
                 targetRecentlyServed2xx;
               const bootAbsorbable =
+                !schemaOverlayFailed &&
                 workerRouting.kind !== 'worker' &&
                 req.method === "POST" &&
                 BOOT_WINDOW_STATUSES.has(status) &&

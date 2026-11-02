@@ -2075,7 +2075,7 @@ describe('public manual owned host lifecycle', () => {
       rmSync(join(prepared, '.bundle-stale.json'));
       await expect(ownFixtureOperator(seed)).rejects.toThrow(/manual_fixture_bundle_source_proof_missing/);
       const manifest = {
-        schemaVersion: 'bundle-host-freshness-v1',
+        schemaVersion: 'bundle-host-freshness-v2',
         repoRoot: realpathSync(proofRepo),
         headSha: '0'.repeat(40),
         entry: realpathSync(entry),

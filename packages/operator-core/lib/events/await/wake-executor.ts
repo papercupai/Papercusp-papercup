@@ -4013,13 +4013,19 @@ async function injectPsuHostWake(
             noteUpdatedAtMs = meta.updatedAtMs;
           }
         }
-        decision = decideColdWake({
+        const coldDecision = decideColdWake({
           payload: d.payload,
           coldEnabled,
           carryNote,
           classDefaultCold,
           activeInteractiveExchange,
         });
+        decision =
+          coldDecision.cold &&
+          coldDecision.mode === 'reset' &&
+          !hostSupports(host as PsuPtyHost, 'reset-reanchor-v1')
+            ? { ...coldDecision, mode: 'recycle' }
+            : coldDecision;
       }
     }
   } catch {
@@ -4977,6 +4983,21 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
       // A non-loop sibling is stripped above and proceeds independently. This
       // branch therefore represents a pure loop delivery; an inbox notice cannot
       // satisfy its turn contract or remain a retryable loop failure.
+      // A retry can reach this check after an earlier attempt was accepted by
+      // the PTY host. The loop row is ended, but that host-owned write remains
+      // live until its atomic pre-write boundary. Do not settle it as suppressed
+      // unless the host confirms cancellation before any bytes were written.
+      const cancellation = await cancelAcceptedHostDelivery(d);
+      if (cancellation === 'committed') {
+        return { kind: 'delivered', channel: 'psu-socket-inject' };
+      }
+      if (typeof cancellation === 'object') {
+        return {
+          kind: 'park',
+          reason: `psu-host accepted: superseded loop delivery ${d.id} remains host-owned; ${cancellation.pending}`,
+          hostCommitPending: true,
+        };
+      }
       return {
         kind: 'drop',
         reason:

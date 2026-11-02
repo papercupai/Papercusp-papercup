@@ -1228,6 +1228,33 @@ created: 2026-08-21
     expect(rows.map((r) => r.title)).toEqual(['Never touched']);
   });
 
+  it('does not re-promote a done legacy work-item whose summary names its plan item', async () => {
+    h.plans.set(PLAN, {
+      items: [
+        { id: 'P-001', status: 'todo', text: 'Already covered by the historical bucket' },
+        { id: 'P-0010', status: 'todo', text: 'Prefix collision stays uncovered' },
+        { id: 'P-002', status: 'todo', text: 'Never touched' },
+      ],
+    });
+    const issues = await import('./issues-engineer');
+    const legacy = await issues.createIssue({
+      kind: 'bug',
+      title: 'Completed round-8 bucket P-001',
+      body: `Historical bucket details.\n\nPlan: ${PLAN} item P-001. Owner directives #2487 #2494.`,
+      scope: `harness:${HARNESS}`,
+      createdBy: 'su-test',
+      state: 'done',
+    });
+
+    expect(legacy.state).toBe('done');
+    const result = await run.promotePlanItems(base);
+    expect(result.promoted).toBe(2);
+    expect((await features()).map((row) => row.title)).toEqual([
+      'Prefix collision stays uncovered',
+      'Never touched',
+    ]);
+  });
+
   it('a plan with ONLY done/dropped items promotes NOTHING', async () => {
     h.plans.set(PLAN, {
       items: [

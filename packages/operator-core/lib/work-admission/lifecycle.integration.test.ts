@@ -40,7 +40,8 @@ import { activeExternalBlockers, applyExternalBlockerUpdate } from '../external-
 import { setAdmissionRule } from './admission-rules';
 import { writeBacksForWorkItem } from './write-back-ledger';
 import {
-  applySourceLifecycle, sourceClosedRef, correlateAdmissionStandingPr, reconcileAdmissionLifecycle, STANDING_PR_AUDIT_REFUSED,
+  applySourceLifecycle, sourceClosedRef, correlateAdmissionStandingPr, resolveAdmissionStandingPrPaths,
+  reconcileAdmissionLifecycle, STANDING_PR_AUDIT_REFUSED,
 } from './lifecycle';
 import { auditGit } from './pr-delivery-audit';
 import type { Pr, PrHost } from '../pr-host/types';
@@ -428,6 +429,20 @@ describe('admission lifecycle (P-003)', () => {
       await sql`UPDATE harness_shared.work_items SET status = 'done' WHERE workspace_id = ${WS} AND feature_id = ${id}`;
       expect(await correlateAdmissionStandingPr(sql, input)).toEqual({ linked: [id], failed: [] });
       expect(await correlateAdmissionStandingPr(sql, input)).toEqual({ linked: [], failed: [] });
+      expect(await resolveAdmissionStandingPrPaths(sql, input)).toEqual({ ok: true, paths: ['bug.txt'], workItemIds: [id] });
+      const linkedPayload = (await item(id)).payload as Record<string, unknown>;
+      const completionEvidence = linkedPayload._completionEvidence as Record<string, unknown>;
+      const linkedManifest = completionEvidence.settlementManifest as Record<string, unknown>;
+      await sql`UPDATE harness_shared.work_items SET payload = ${sql.json({
+        ...linkedPayload,
+        _completionEvidence: { ...completionEvidence, settlementManifest: { ...linkedManifest, residualPaths: ['unresolved.txt'] } },
+      })} WHERE workspace_id = ${WS} AND feature_id = ${id}`;
+      expect(await resolveAdmissionStandingPrPaths(sql, input)).toMatchObject({
+        ok: false,
+        reason: expect.stringContaining(`work item ${id}`),
+      });
+      await sql`UPDATE harness_shared.work_items SET payload = ${sql.json(linkedPayload)}
+        WHERE workspace_id = ${WS} AND feature_id = ${id}`;
       await sync(source); await sync(source);
       expect(callsFor('PR-1').filter(([capability, text]) => capability === 'ticket.comment'
         && String(text).includes(input.url))).toHaveLength(1);
@@ -435,6 +450,8 @@ describe('admission lifecycle (P-003)', () => {
       // Sync-back has advanced the target to the fix: the next PR must not claim this old issue.
       expect(await correlateAdmissionStandingPr(sql, { ...input, targetSha: head,
         url: 'https://github.com/acme/widgets/pull/8', number: 8 })).toEqual({ linked: [], failed: [] });
+      expect(await resolveAdmissionStandingPrPaths(sql, { ...input, targetSha: head,
+        url: 'https://github.com/acme/widgets/pull/8', number: 8 })).toEqual({ ok: true, paths: [], workItemIds: [] });
       expect((await item(id)).payload).toMatchObject({ standingPr: { url: input.url } });
     } finally {
       rmSync(root, { recursive: true, force: true });

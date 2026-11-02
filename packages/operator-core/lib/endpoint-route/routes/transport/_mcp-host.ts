@@ -167,6 +167,7 @@ import {
 // hard-failure-only efficiency telemetry.
 import { maybeEmptyMappingHint } from '../../../empty-mapping-hint';
 import { recordBatchNudgeFire } from '../../../code-run-nudge-telemetry';
+import { classifyCallOrigin } from '../../../telemetry-call-origin';
 import { isLoopbackRequest, isValidSuperuserBearer } from '../../../superuser-token';
 import { isAppKeyShaped } from '../../../connected-apps/key';
 import { reportedClientAddress, resolveAppKeyToken } from '../../../connected-apps/principal';
@@ -4549,12 +4550,15 @@ export function registerMcpHost(server: McpServer): void {
           callStartedAt,
           spawnRes.nativeSessionFailure,
         );
+        const recoveryHint = spawnRes.reason === 'superuser_native_session_unverified'
+          ? ' The MCP client supplied malformed native thread metadata (expected a 1–128 character string using ASCII letters, digits, period, underscore, colon, or hyphen). Reconnect the MCP client so it resends the active thread ID.'
+          : '';
         return {
           isError: true,
           content: [
             {
               type: 'text' as const,
-              text: `request_rejected: ${spawnRes.reason}`,
+              text: `request_rejected: ${spawnRes.reason}${recoveryHint}`,
             },
           ],
         };
@@ -5994,6 +5998,10 @@ export function registerMcpHost(server: McpServer): void {
               try {
                 const hint = maybeBatchNudge({
                   sessionKey: nudgeSessionKey,
+                  callOrigin: classifyCallOrigin({
+                    requestOrigin: dispatchSpawnCtx.requestOrigin,
+                    spawnId: dispatchSpawnCtx.spawnId,
+                  }).origin,
                   toolName,
                   effect: nudgeEffect,
                   // P-001/P-003 (code-run-batch-adoption): args unwrap tools:invoke-routed calls

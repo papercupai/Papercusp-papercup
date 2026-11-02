@@ -295,7 +295,9 @@ describe('gate.greenCheckpoint.candidateFailures (P-003/P-007) — spec resolves
   const read = (opts: { failing?: Array<Record<string, unknown>>; git?: Record<string, string | null>; legs?: 'pass' | 'fail' | null } = {}) =>
     readGateCandidateFailures({
       candidateSha: CANDIDATE,
+      candidateRunGroupId: 'candidate-run-current',
       repairHeadSha: REPAIR_HEAD,
+      repairHeadRunGroupId: null,
       root: '/repo',
       sql: fakeSql(opts.failing ?? []),
       git: fakeGit(opts.git ?? {}),

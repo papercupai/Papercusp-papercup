@@ -367,6 +367,26 @@ export function foldFleetRoster(
   );
 }
 
+export type FleetRosterPresenceStage =
+  | 'coordPresence'
+  | 'fleetMembership'
+  | 'sharedSessionPresence';
+
+export interface FleetRosterPresenceStageTiming {
+  stage: FleetRosterPresenceStage;
+  status: 'running' | 'completed' | 'failed';
+  elapsedMs: number;
+  inputCount?: number;
+  resultCount?: number;
+  errorName?: string;
+}
+
+export interface FleetRosterPresenceLegTiming {
+  status: 'completed' | 'degraded';
+  elapsedMs: number;
+  reason?: 'timeout' | 'aborted' | 'error';
+}
+
 export interface ListFleetRosterOpts {
   fleetSlug: string;
   workspaceId?: string | null;
@@ -382,9 +402,55 @@ export interface ListFleetRosterOpts {
   /** DI seam: the presence source (already enriched with the fleet label). Defaults to
    *  listPresence + fetchPresenceFleet (LOCAL rows). */
   readPresence?: (opts: { workspaceId?: string | null }) => Promise<FleetFoldPresence[]>;
+  /** Optional, observational timing hooks for the default presence read. */
+  onPresenceStageTiming?: (timing: FleetRosterPresenceStageTiming) => void;
+  onPresenceLegTiming?: (timing: FleetRosterPresenceLegTiming) => void;
   /** DI seam (P-011): the host event-tail reader the host-conditions leg judges
    *  with. Defaults to the oracle's real reader (`readHostEventTailAsync`). */
   readHostTailFn?: (ownerId: string) => Promise<readonly HostTailEvent[]>;
+}
+
+function reportPresenceStageTiming(
+  onTiming: ((timing: FleetRosterPresenceStageTiming) => void) | undefined,
+  timing: FleetRosterPresenceStageTiming,
+): void {
+  try {
+    onTiming?.(timing);
+  } catch {
+    // Diagnostics must never change the roster result.
+  }
+}
+
+async function measureFleetRosterPresenceStage<T>(
+  stage: FleetRosterPresenceStage,
+  work: () => Promise<T>,
+  onTiming: ((timing: FleetRosterPresenceStageTiming) => void) | undefined,
+  options: { inputCount?: number; resultCount?: (value: T) => number } = {},
+): Promise<T> {
+  const startedAt = performance.now();
+  const input = options.inputCount === undefined ? {} : { inputCount: options.inputCount };
+  reportPresenceStageTiming(onTiming, { stage, status: 'running', elapsedMs: 0, ...input });
+  try {
+    const value = await work();
+    const resultCount = options.resultCount?.(value);
+    reportPresenceStageTiming(onTiming, {
+      stage,
+      status: 'completed',
+      elapsedMs: Math.max(0, Math.round(performance.now() - startedAt)),
+      ...input,
+      ...(resultCount === undefined ? {} : { resultCount }),
+    });
+    return value;
+  } catch (error) {
+    reportPresenceStageTiming(onTiming, {
+      stage,
+      status: 'failed',
+      elapsedMs: Math.max(0, Math.round(performance.now() - startedAt)),
+      ...input,
+      ...(error instanceof Error ? { errorName: error.name } : {}),
+    });
+    throw error;
+  }
 }
 
 /**
@@ -474,9 +540,23 @@ export function foldFederatedSessionPresence(
  *  session-grain rows (remote fleet members — see foldFederatedSessionPresence).
  *  The federated leg is best-effort: no workspace / a query error contributes
  *  nothing, so single-box behavior is unchanged. */
-async function defaultReadFleetPresence(opts: { workspaceId?: string | null }): Promise<FleetFoldPresence[]> {
-  const records = await listPresence(opts);
-  const fleetMap = await fetchPresenceFleet(records.map((r) => r.ownerId));
+async function defaultReadFleetPresence(
+  opts: { workspaceId?: string | null },
+  onStageTiming?: (timing: FleetRosterPresenceStageTiming) => void,
+): Promise<FleetFoldPresence[]> {
+  const records = await measureFleetRosterPresenceStage(
+    'coordPresence',
+    () => listPresence(opts),
+    onStageTiming,
+    { resultCount: (value) => value.length },
+  );
+  const ownerIds = records.map((r) => r.ownerId);
+  const fleetMap = await measureFleetRosterPresenceStage(
+    'fleetMembership',
+    () => fetchPresenceFleet(ownerIds),
+    onStageTiming,
+    { inputCount: ownerIds.length, resultCount: (value) => value.size },
+  );
   const local = records.map((r) => {
     const f = fleetMap.get(r.ownerId);
     return {
@@ -499,12 +579,18 @@ async function defaultReadFleetPresence(opts: { workspaceId?: string | null }): 
       pid: r.pid,
     };
   });
-  if (!opts.workspaceId) return local;
+  const workspaceId = opts.workspaceId;
+  if (!workspaceId) return local;
   try {
-    const sessionRows = await listLiveSessionPresence({
-      workspaceId: opts.workspaceId,
-      staleMs: PRESENCE_STALE_MS,
-    });
+    const sessionRows = await measureFleetRosterPresenceStage(
+      'sharedSessionPresence',
+      () => listLiveSessionPresence({
+        workspaceId,
+        staleMs: PRESENCE_STALE_MS,
+      }),
+      onStageTiming,
+      { resultCount: (value) => value.length },
+    );
     return foldFederatedSessionPresence(local, sessionRows);
   } catch {
     return local; // federated roster unavailable — the local roster always renders
@@ -580,7 +666,12 @@ export async function listFleetRosterDiagnosed(opts: ListFleetRosterOpts): Promi
   const { fleetSlug, workspaceId } = opts;
   const leaderOwnerId = opts.leaderOwnerId ?? null;
   const includeUnattributed = opts.includeUnattributed === true;
-  const readPresence = opts.readPresence ?? defaultReadFleetPresence;
+  let presenceLegSettled = false;
+  const recordPresenceStageTiming = (timing: FleetRosterPresenceStageTiming) => {
+    if (!presenceLegSettled) opts.onPresenceStageTiming?.(timing);
+  };
+  const readPresence = opts.readPresence ??
+    ((presenceOpts) => defaultReadFleetPresence(presenceOpts, recordPresenceStageTiming));
   const degradedLegs: FleetRosterDegradedLeg[] = [];
 
   // Assignments do not depend on the presence result: the fold filters them by
@@ -597,6 +688,16 @@ export async function listFleetRosterDiagnosed(opts: ListFleetRosterOpts): Promi
     timeoutMs: FLEET_ROSTER_SUBREAD_TIMEOUT_MS,
     label: 'fleet-roster:presence',
   });
+  presenceLegSettled = true;
+  try {
+    opts.onPresenceLegTiming?.({
+      status: presenceResult.degraded ? 'degraded' : 'completed',
+      elapsedMs: presenceResult.elapsedMs,
+      ...(presenceResult.reason ? { reason: presenceResult.reason } : {}),
+    });
+  } catch {
+    // Diagnostics must never change the roster result.
+  }
   if (presenceResult.degraded) degradedLegs.push('presence');
   const presenceAll = presenceResult.value;
   const presence = filterPresenceToFleet(presenceAll, fleetSlug, includeUnattributed);

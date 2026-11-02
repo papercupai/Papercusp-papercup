@@ -3592,11 +3592,12 @@ export interface PlanSessionRow {
  *      was launched without a plan binding. Deliberately excludes a session
  *      bound to a DIFFERENT plan, so it never misattributes.
  * DISTINCT ON (coord_owner_id) — one row per agent identity, preferring its
- * plan-bound session then its most recent. Best-effort → [] on any DB error.
+ * plan-bound session then its most recent. A failed read propagates so callers
+ * can distinguish an unavailable source from a plan with no sessions.
  */
 export async function listPlanSessions(
   planSlug: string,
-  opts: { workspaceId?: string | null; limit?: number } = {},
+  opts: { workspaceId?: string | null; harnessSlug?: string; limit?: number } = {},
 ): Promise<PlanSessionRow[]> {
   const ws = opts.workspaceId ?? null;
   const limit = Math.min(500, Math.max(1, opts.limit ?? 200));
@@ -3604,6 +3605,13 @@ export async function listPlanSessions(
   try {
     const { sql } = getOrgPg();
     const workspacePredicate = ws === null ? true : sql`s.workspace_id = ${ws}`;
+    // A slug is only unique within its harness. Launch records carry that
+    // binding in launch_spec; an unknown binding must not match a named harness.
+    const harnessPredicate = opts.harnessSlug === undefined ? true
+      : sql`s.launch_spec->>'harnessSlug' = ${opts.harnessSlug}`;
+    const claimWorkspacePredicate = ws === null ? true : sql`workspace_id = ${ws}`;
+    const claimHarnessPredicate = opts.harnessSlug === undefined ? true
+      : sql`harness_slug = ${opts.harnessSlug}`;
     const rows = await sql<
       Array<{
         coord_owner_id: string;
@@ -3623,10 +3631,12 @@ export async function listPlanSessions(
           SELECT terminal_owner AS owner
             FROM harness_shared.work_items
            WHERE source_plan_slug = ${planSlug} AND terminal_owner IS NOT NULL
+             AND ${claimWorkspacePredicate} AND ${claimHarnessPredicate}
           UNION
           SELECT taken_by AS owner
             FROM harness_shared.work_items
            WHERE source_plan_slug = ${planSlug} AND taken_by IS NOT NULL
+             AND ${claimWorkspacePredicate} AND ${claimHarnessPredicate}
         ) o
       ),
       candidate AS (
@@ -3636,6 +3646,7 @@ export async function listPlanSessions(
          WHERE s.plan_slug = ${planSlug}
            AND s.coord_owner_id IS NOT NULL
            AND ${workspacePredicate}
+           AND ${harnessPredicate}
         UNION ALL
         SELECT s.coord_owner_id, s.session_id, s.omp_thread_id, s.agent, s.mode,
                s.role, s.label, s.started_at, s.ended_at, 'claim'::text AS via
@@ -3671,7 +3682,7 @@ export async function listPlanSessions(
     }));
   } catch (e) {
     warnUnlessMissingTable(e, 'listPlanSessions');
-    return [];
+    throw e;
   }
 }
 

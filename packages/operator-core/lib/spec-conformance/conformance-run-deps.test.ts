@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { fileURLToPath } from 'node:url';
 import { createPhaseTracker } from '@papercusp/tooldef';
 
 const { sqlCalls, sqlMock, upsertMock } = vi.hoisted(() => {
@@ -39,7 +40,7 @@ vi.mock('../work-items', async (importOriginal) => {
 import { judgeTestsFromLedger, lifecycleOnlyAdmissionRefusal, productionConformanceDeps } from './conformance-run-deps';
 import * as testContent from './conformance-test-content';
 import { buildRubricCheckLedgerRow, type RubricCheckResult } from '../check-results-ledger';
-import type { RequirementRealizationReader } from '../rubrics-criterion-checks';
+import { evaluateCriterionCargoChecks, type CriterionCargoCheckRunner, type RequirementRealizationReader } from '../rubrics-criterion-checks';
 import { runPlanConformance } from './conformance-run';
 import { evaluateConformanceClosure } from './closure-guard';
 
@@ -136,6 +137,71 @@ ${JSON.stringify({
     const scoped = sqlCalls.filter(call => call.query.includes('harness_slug ='));
     expect(scoped).toHaveLength(2);
     for (const call of scoped) expect(call.values).toContain('realization-harness');
+  });
+});
+
+describe('native Cargo checks through conformance and discharge closure', () => {
+  const check = { kind: 'cargo' as const, manifestPath: 'apps/tui/Cargo.toml',
+    sourceFiles: ['apps/tui/src/brain_view.rs'], test: 'rules_events_r8_sse_invalidates_once' };
+  const planContent = `---
+slug: native-fixture
+status: active
+---
+## Requirements
+**R-8 — Native invalidation.**
+\`\`\`requirement
+${JSON.stringify({
+  intent: { request: 'Resolve the selected native session on invalidation.', sourceRefs: ['P-013'] },
+  acceptance: { condition: 'The native test passes.', falsifier: 'Invalidation leaves the old session attached.' },
+  verification: { method: 'Run the maintained native test.', check },
+})}
+\`\`\`
+## Design
+### Bar-to-work map for this plan
+| bar | implementing plan items | evidence plane |
+|---|---|---|
+| R-8 | P-013 | tree |
+## Build
+- **P-013** \`wip\` Native invalidation
+`;
+
+  it.each([
+    ['passing native cases', { passed: 1, failed: 0, ignored: 1 }, 'pass'],
+    ['a real native failure', { passed: 0, failed: 1, ignored: 0 }, 'fail'],
+    ['ignored-only native cases', { passed: 0, failed: 0, ignored: 1 }, 'error'],
+    ['a native runner error', { passed: 0, failed: 0, ignored: 0, error: 'cargo unavailable' }, 'error'],
+  ] as const)('records %s and enforces the discharge verdict', async (_label, outcome, verdict) => {
+    const runner = vi.fn<CriterionCargoCheckRunner>().mockResolvedValue({
+      ...outcome, runId: 'cargo-native-control', durationMs: 5,
+    });
+    const input = { workspaceId: 'workspace', harnessSlug: 'papercusp', planSlug: 'native-fixture',
+      evaluateCargo: (args: Parameters<typeof evaluateCriterionCargoChecks>[0]) => evaluateCriterionCargoChecks({
+        ...args, root: fileURLToPath(new URL('../../../../', import.meta.url)), runner,
+      }) };
+    const recorded: RubricCheckResult[] = [];
+    const run = await runPlanConformance({ ...input, planContent }, {
+      ...productionConformanceDeps(input),
+      readLatestVerdicts: async () => new Map(), listOpenDriftAlarms: async () => [],
+      approvedDeviations: async () => new Set(),
+      recordResults: async results => {
+        recorded.push(...results);
+        results.forEach(result => buildRubricCheckLedgerRow(result, input));
+        return results.map((_, i) => i + 1);
+      },
+    });
+    expect(runner).toHaveBeenCalledOnce();
+    expect(runner).toHaveBeenCalledWith(expect.objectContaining({
+      manifestPath: check.manifestPath, sourceFiles: check.sourceFiles, test: check.test,
+    }));
+    expect(run.unevaluable).toEqual([]);
+    expect(run.executed).toBe(1);
+    expect(recorded).toMatchObject([{ verdict, check: { kind: 'cargo', id: 'R-8:done-when' } }]);
+    const refusal = await evaluateConformanceClosure({ planContent, planItemIds: ['P-013'],
+      completion: { discharges: ['R-8'] } }, {
+      listOpenDriftAlarms: async () => [], readDoneWhenVerdict: async () => recorded[0]?.verdict ?? null,
+    });
+    if (verdict === 'pass') expect(refusal).toBeNull();
+    else expect(refusal).toMatchObject({ code: 'conformance_done_when_not_passing', requirements: ['R-8'] });
   });
 });
 

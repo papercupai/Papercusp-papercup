@@ -36,6 +36,7 @@ interface FakeChild {
   killed: boolean;
   _emitError: (error: Error) => void;
   _emitStdout: (chunk: string) => void;
+  _emitStderr: (chunk: string) => void;
   _emitClose: (code: number) => void;
 }
 let lastChild: FakeChild;
@@ -44,9 +45,10 @@ function makeChild(): FakeChild {
   const closeCbs: Array<(c: number) => void> = [];
   const errorCbs: Array<(error: Error) => void> = [];
   const stdoutCbs: Array<(b: Buffer) => void> = [];
+  const stderrCbs: Array<(b: Buffer) => void> = [];
   const child: FakeChild = {
     stdout: { on: (_e, cb) => stdoutCbs.push(cb) },
-    stderr: { on: () => {} },
+    stderr: { on: (_e, cb) => stderrCbs.push(cb) },
     on: (e, cb) => {
       if (e === 'close') closeCbs.push(cb as (c: number) => void);
       if (e === 'error') errorCbs.push(cb as (error: Error) => void);
@@ -56,6 +58,7 @@ function makeChild(): FakeChild {
     killed: false,
     _emitError: (error) => errorCbs.forEach((cb) => cb(error)),
     _emitStdout: (chunk) => stdoutCbs.forEach((cb) => cb(Buffer.from(chunk))),
+    _emitStderr: (chunk) => stderrCbs.forEach((cb) => cb(Buffer.from(chunk))),
     _emitClose: (code) => closeCbs.forEach((cb) => cb(code)),
   };
   return child;
@@ -101,6 +104,7 @@ const taskManagerMocks = vi.hoisted(() => ({
   finish: vi.fn(),
   scopePath: vi.fn(),
 }));
+const kernelMocks = vi.hoisted(() => ({ list: vi.fn(), tick: vi.fn() }));
 const worktreeSnapshotMocks = vi.hoisted(() => ({
   captureAsync: vi.fn(),
 }));
@@ -126,6 +130,13 @@ vi.mock('./task-manager/enroll-sync', () => ({
   completeSyncEnrolment: (...args: unknown[]) => taskManagerMocks.complete(...args),
   finishSyncEnrolment: (...args: unknown[]) => taskManagerMocks.finish(...args),
   syncEnrolmentScopePath: (...args: unknown[]) => taskManagerMocks.scopePath(...args),
+}));
+vi.mock('./task-manager/store', async (importOriginal) => ({
+  ...await importOriginal<typeof import('./task-manager/store')>(),
+  listTasks: (...args: unknown[]) => kernelMocks.list(...args),
+}));
+vi.mock('./task-manager/reconcile-tick', () => ({
+  reconcileTick: (...args: unknown[]) => kernelMocks.tick(...args),
 }));
 vi.mock('./testing-worktree', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./testing-worktree')>();
@@ -165,6 +176,10 @@ beforeEach(async () => {
   taskManagerMocks.finish.mockReset();
   taskManagerMocks.scopePath.mockReset();
   taskManagerMocks.scopePath.mockReturnValue(null);
+  kernelMocks.list.mockReset().mockResolvedValue([]);
+  kernelMocks.tick.mockReset().mockResolvedValue({ degraded: true, result: {
+    alive: [], stranded: [], endedUnobserved: [], unresolved: [], tooYoung: [],
+  } });
   taskManagerMocks.begin.mockImplementation(() => ({
     taskId: 'task-test-run',
     confined: false,
@@ -516,6 +531,26 @@ describe('task lifecycle handlers', () => {
     );
   });
 
+  it('classifies an install-reader timeout as not measured instead of a failing test run', () => {
+    const snap = store.startRun(req());
+    lastChild._emitStdout([
+      'TEST_FILE_INSTALL_READER_WAIT elapsedMs=180000 waitedSec=180 holder={"pid":17,"phase":"install"}',
+      'Error: Timed out after 180000ms waiting for fs-mutex writer ("npm-install-79e418157b6a")',
+    ].join('\n'));
+    lastChild._emitClose(2);
+
+    expect(store.getRun(snap.runId)).toMatchObject({
+      status: 'cancelled',
+      exitCode: 2,
+      output: expect.stringContaining('TEST_RUN_NOT_MEASURED reason=install-lock-timeout executed=0'),
+    });
+    expect(taskManagerMocks.finish).toHaveBeenCalledWith(
+      taskManagerMocks.begin.mock.results[0]?.value,
+      { state: 'exited', exitCode: 2 },
+      { scopeCgroupPath: null },
+    );
+  });
+
   it('ingests a detached reporter-less JSON artifact and retains a durable manifest before cleanup', async () => {
     const reportDir = await mkdtemp('/tmp/papercusp-testing-run-store-report-');
     const reportPath = join(reportDir, 'report.json');
@@ -722,6 +757,44 @@ describe('close handler', () => {
     const b = store.startRun(req());
     lastChild._emitClose(1);
     expect(store.getRun(b.runId)?.status).toBe('fail');
+  });
+
+  it('marks router-parent SIGTERM as cancelled and retains completed case output', () => {
+    const snapshot = store.startRun(req());
+    lastChild._emitStderr(
+      '✓ completed case evidence\nTEST_FILE_PROGRESS state=parent-sigterm cwd="/repo"\n',
+    );
+    lastChild._emitClose(143);
+
+    const run = store.getRun(snapshot.runId);
+    expect(run).toMatchObject({
+      status: 'cancelled',
+      exitCode: 143,
+      output: expect.stringContaining('✓ completed case evidence'),
+    });
+    expect(run?.output).toContain('TEST_FILE_PROGRESS state=parent-sigterm');
+    expect(taskManagerMocks.finish).toHaveBeenCalledWith(
+      taskManagerMocks.begin.mock.results[0]?.value,
+      { state: 'killed', exitCode: 143 },
+      { scopeCgroupPath: null },
+    );
+  });
+
+  it('keeps an unmarked SIGTERM exit as fail', () => {
+    const snapshot = store.startRun(req());
+    lastChild._emitStderr('✓ completed case evidence\n');
+    lastChild._emitClose(143);
+
+    expect(store.getRun(snapshot.runId)).toMatchObject({
+      status: 'fail',
+      exitCode: 143,
+      output: expect.stringContaining('✓ completed case evidence'),
+    });
+    expect(taskManagerMocks.finish).toHaveBeenCalledWith(
+      taskManagerMocks.begin.mock.results[0]?.value,
+      { state: 'exited', exitCode: 143 },
+      { scopeCgroupPath: null },
+    );
   });
 
   it('preserves the observed verdict when a child error arrives after close', () => {
@@ -1784,6 +1857,54 @@ describe('durable detached snapshot lifecycle', () => {
     });
   });
 
+  it.each([
+    { name: 'released scope', kind: 'endedUnobserved', expected: 'error' },
+    { name: 'live scope', kind: 'alive', expected: 'running' },
+    { name: 'stranded process', kind: 'stranded', expected: 'running' },
+    { name: 'unresolved identity', kind: 'unresolved', expected: 'running' },
+    { name: 'young process', kind: 'tooYoung', expected: 'running' },
+    { name: 'degraded scan', kind: 'degraded', expected: 'running' },
+    { name: 'failed scan', kind: 'throws', expected: 'running' },
+  ])('reconciles detached kernel liveness: $name', async ({ kind, expected }) => {
+    kernelMocks.list.mockResolvedValue([{ taskId: 'kernel-task', state: 'running' }]);
+    kernelMocks.tick.mockImplementation(async options => {
+      await options.listLive(options.workspaceId);
+      if (kind === 'throws') throw new Error('kernel unavailable');
+      const result: Record<string, Array<{ taskId: string } | string>> = {
+        alive: [], stranded: [], endedUnobserved: [], unresolved: [], tooYoung: [],
+      };
+      if (kind === 'tooYoung') result.tooYoung.push('kernel-task');
+      else if (kind !== 'degraded') result[kind].push({ taskId: 'kernel-task' });
+      return { degraded: kind === 'degraded', result };
+    });
+    const updates: unknown[][] = [];
+    const sql = vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => {
+      const statement = strings.join(' ');
+      if (statement.includes('FROM harness_shared.testing_run_snapshots AS snapshot')) return [{
+        run_id: 'kernel-run', task_id: 'kernel-task', kind: 'shell', label: 'detached',
+        file_path: null, command: ['node', 'worker.js'], status: 'running', exit_code: null,
+        started_at: new Date(), finished_at: null, output: 'retained progress', truncated: false,
+        task_state: 'running', task_deadline_at: new Date(Date.now() + 60_000),
+        task_workspace_id: 'kernel-workspace',
+      }];
+      if (statement.includes('UPDATE harness_shared.testing_run_snapshots')) {
+        updates.push(values);
+        return [{ run_id: 'kernel-run' }];
+      }
+      return [];
+    }) as unknown as Sql;
+    const recovered = await store.getRunAsync('kernel-run', sql);
+    expect(recovered).toMatchObject({ status: expected, exitCode: null });
+    expect(kernelMocks.list).toHaveBeenCalledWith({
+      workspaceId: 'kernel-workspace', taskId: 'kernel-task', includeEnded: true, limit: 2,
+    });
+    expect(kernelMocks.tick).toHaveBeenCalledWith(expect.objectContaining({
+      dryRun: true, workspaceId: 'kernel-workspace',
+    }));
+    expect(updates).toHaveLength(expected === 'error' ? 1 : 0);
+    if (expected === 'error') expect(recovered?.output).toContain('no test verdict was observed');
+  });
+
   it('reconciles a persisted running snapshot when its linked task is terminal', async () => {
     const updates: unknown[][] = [];
     const sql = vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => {
@@ -2031,7 +2152,10 @@ describe('durable detached snapshot lifecycle', () => {
       const ledgerRead = (sql as unknown as ReturnType<typeof vi.fn>).mock.calls
         .some((call) => call[0].join(' ').includes('FROM harness_shared.test_runs'));
       if (scenario.taskState === 'running') {
-        expect(ledgerRead).toBe(false);
+        // Progress may inspect the ledger, but an incomplete population must
+        // supply neither a provisional verdict nor a terminal snapshot.
+        expect(ledgerRead).toBe(true);
+        expect(recovered?.provisionalVerdict).toBeUndefined();
         expect(updates).toHaveLength(0);
         expect(recovered?.finishedAt).toBeNull();
       } else {

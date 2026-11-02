@@ -1691,21 +1691,24 @@ describe("parkRoleScopedMcpJson (P-002 / EI-10388 SU co-located-.mcp.json leak g
   const mcp = () => join(dir, ".mcp.json");
   const parked = () => join(dir, ".mcp.json.su-parked");
 
-  it("parks a role-scoped .mcp.json (signed role= URL) and removes the original", () => {
+  it("parks a role-scoped config while atomically keeping an empty project config at the shared path", () => {
+    const original = JSON.stringify({
+      mcpServers: {
+        papercusp: {
+          type: "http",
+          url: "http://127.0.0.1:9071/api/mcp?workspace=ws&role=planner&sig=abc&exp=1",
+        },
+      },
+    });
     writeFileSync(
       mcp(),
-      JSON.stringify({
-        mcpServers: {
-          papercusp: {
-            type: "http",
-            url: "http://127.0.0.1:9071/api/mcp?workspace=ws&role=planner&sig=abc&exp=1",
-          },
-        },
-      }),
+      original,
     );
     expect(parkRoleScopedMcpJson(dir)).toBe(parked());
-    expect(existsSync(mcp())).toBe(false);
+    expect(existsSync(mcp())).toBe(true);
     expect(existsSync(parked())).toBe(true);
+    expect(readFileSync(parked(), "utf8")).toBe(original);
+    expect(JSON.parse(readFileSync(mcp(), "utf8"))).toEqual({ mcpServers: {} });
   });
 
   // EI-10388 (2026-07-12): a superuser-scoped co-located .mcp.json is now ALSO parked, not
@@ -1729,12 +1732,15 @@ describe("parkRoleScopedMcpJson (P-002 / EI-10388 SU co-located-.mcp.json leak g
       }),
     );
     expect(parkRoleScopedMcpJson(dir)).toBe(parked());
-    expect(existsSync(mcp())).toBe(false);
+    expect(existsSync(mcp())).toBe(true);
     expect(existsSync(parked())).toBe(true);
+    expect(JSON.parse(readFileSync(mcp(), "utf8"))).toEqual({ mcpServers: {} });
   });
 
-  it("no-op when there is no .mcp.json", () => {
+  it("creates an empty stable project config when none existed", () => {
     expect(parkRoleScopedMcpJson(dir)).toBe(null);
+    expect(existsSync(mcp())).toBe(true);
+    expect(JSON.parse(readFileSync(mcp(), "utf8"))).toEqual({ mcpServers: {} });
   });
 
   it("overwrites a stale prior park instead of failing", () => {
@@ -1746,7 +1752,9 @@ describe("parkRoleScopedMcpJson (P-002 / EI-10388 SU co-located-.mcp.json leak g
       }),
     );
     expect(parkRoleScopedMcpJson(dir)).toBe(parked());
-    expect(existsSync(mcp())).toBe(false);
+    expect(existsSync(mcp())).toBe(true);
+    expect(readFileSync(parked(), "utf8")).toContain("role=sentinel");
+    expect(JSON.parse(readFileSync(mcp(), "utf8"))).toEqual({ mcpServers: {} });
   });
 
   // EI-10388: classification by content is gone — ANY existing .mcp.json is parked
@@ -1754,8 +1762,9 @@ describe("parkRoleScopedMcpJson (P-002 / EI-10388 SU co-located-.mcp.json leak g
   it("parks an unparseable .mcp.json too (never throws)", () => {
     writeFileSync(mcp(), "not json{");
     expect(parkRoleScopedMcpJson(dir)).toBe(parked());
-    expect(existsSync(mcp())).toBe(false);
+    expect(existsSync(mcp())).toBe(true);
     expect(existsSync(parked())).toBe(true);
+    expect(JSON.parse(readFileSync(mcp(), "utf8"))).toEqual({ mcpServers: {} });
   });
 });
 

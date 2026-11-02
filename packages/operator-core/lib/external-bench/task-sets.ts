@@ -39,6 +39,7 @@ import { gaiaTaskToBenchTask, loadGaiaValidation } from './gaia/dataset';
 import { gdpvalPilotSubset, gdpvalTaskToBenchTask, loadGdpvalTasks } from './gdpval/dataset';
 import { isSwarmBenchTaskSet, swarmbenchScenarios, swarmScenarioToBenchTask } from './swarmbench-backlog';
 import { FRONTIER_SWE_V1_TASK_SET_IDS, FRONTIER_SWE_V2_TASK_SET_IDS, frontierSweTaskSetVersion } from './frontier-swe-version';
+import { MINECRAFT_TASK_SETS, MINECRAFT_OBJECTIVES } from './minecraft-protocol';
 
 /** A SWE-bench Pro task row as persisted in the pilot JSONL. */
 interface TaskRow {
@@ -951,7 +952,36 @@ function loadGdpvalBenchTaskSet(taskSetId: string, taskIds?: string[]): BenchTas
   return tasks;
 }
 
+export function isMinecraftTaskSet(taskSetId: string): taskSetId is keyof typeof MINECRAFT_TASK_SETS {
+  return Object.hasOwn(MINECRAFT_TASK_SETS, taskSetId);
+}
+
+/** Public objective roster only. Seeds, held-out material and runtime authority
+ * still come from the host-issued frozen Minecraft assignment, never this loader. */
+export function loadMinecraftTaskSet(taskSetId: string, taskIds?: string[]): BenchTask[] {
+  if (!isMinecraftTaskSet(taskSetId)) throw Error(`Unknown Minecraft task set: ${taskSetId}`);
+  const roster: readonly (keyof typeof MINECRAFT_OBJECTIVES)[] = MINECRAFT_TASK_SETS[taskSetId];
+  if (taskIds && (taskIds.length === 0 || new Set(taskIds).size !== taskIds.length
+    || taskIds.some(id => !roster.includes(id as keyof typeof MINECRAFT_OBJECTIVES)))) {
+    throw Error('Minecraft task selection must be a nonempty distinct subset of its frozen roster');
+  }
+  const prompts = {
+    'iron-tools': 'Obtain an iron pickaxe.',
+    'nether-entry': 'Enter the Nether.',
+    'ender-dragon': 'Defeat the Ender Dragon.',
+  };
+  return roster.filter(id => !taskIds || taskIds.includes(id)).map(objective => ({
+    benchmark: 'minecraft', instanceId: objective,
+    problemStatement: `${prompts[objective]} Use the assigned Minecraft Java 1.20.4 survival world on Easy difficulty with cheats disabled. Use only the assigned gameplay tools and observations.`,
+    graderMeta: { taskSetId, objective, advancement: MINECRAFT_OBJECTIVES[objective] },
+  }));
+}
+
 export function loadBenchTaskSet(taskSetId: string, taskIds?: string[]): Promise<BenchTask[]> {
+  if (isMinecraftTaskSet(taskSetId) || taskSetId.startsWith('minecraft-')) {
+    try { return Promise.resolve(loadMinecraftTaskSet(taskSetId, taskIds)); }
+    catch (error) { return Promise.reject(error); }
+  }
   if (isVerifiedTaskSet(taskSetId)) {
     // Wrap so a synchronous validation throw surfaces as a rejected promise (the Pro branch convention).
     try {
@@ -1035,6 +1065,9 @@ export function loadBenchTaskSet(taskSetId: string, taskIds?: string[]): Promise
 /** Write the grader's sample JSONL (the raw rows, filtered to `instanceIds` when
  *  given) to `destPath` — the --raw_sample_path the official grader reads. */
 export function writeTaskSampleJsonl(taskSetId: string, instanceIds: string[] | undefined, destPath: string): number {
+  if (isMinecraftTaskSet(taskSetId) || taskSetId.startsWith('minecraft-')) {
+    throw Error('Minecraft task sets require owned live-server grading, not an offline diff sample');
+  }
   if (taskSetId === 'swe-bench-pro-full') {
     throw new Error('swe-bench-pro-full sample is not provisioned on this host');
   }

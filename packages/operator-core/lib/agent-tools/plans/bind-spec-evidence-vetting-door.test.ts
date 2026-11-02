@@ -18,6 +18,8 @@ import tool, { bindSpecEvidenceTestSeams } from './bind-spec-evidence';
 
 const mocks = vi.hoisted(() => ({
   bindSpecEvidence: vi.fn(),
+  retractSpecEvidence: vi.fn(),
+  retractSpecEvidenceBatch: vi.fn(),
   getAcceptanceRubricsForPlan: vi.fn(),
   getAcceptanceRubricVettingStatus: vi.fn(),
 }));
@@ -25,6 +27,8 @@ const mocks = vi.hoisted(() => ({
 vi.mock('./spec-evidence-store', async (orig) => ({
   ...(await orig<typeof import('./spec-evidence-store')>()),
   bindSpecEvidence: mocks.bindSpecEvidence,
+  retractSpecEvidence: mocks.retractSpecEvidence,
+  retractSpecEvidenceBatch: mocks.retractSpecEvidenceBatch,
 }));
 vi.mock('../../rubrics', async (orig) => ({
   ...(await orig<typeof import('../../rubrics')>()),
@@ -185,5 +189,41 @@ describe('plans:bind-spec-evidence — unvetted-rubric advisory at the tool door
     expect(mocks.bindSpecEvidence).toHaveBeenCalledTimes(1);
     expect(body.advisories).toBeUndefined();
     expect(mocks.getAcceptanceRubricsForPlan).not.toHaveBeenCalled();
+  });
+});
+
+describe('plans:bind-spec-evidence batch retraction boundary', () => {
+  beforeEach(() => {
+    mocks.retractSpecEvidence.mockReset().mockResolvedValue({
+      status: 'already_retracted',
+      bindingId: 701,
+      binding: null,
+    });
+    mocks.retractSpecEvidenceBatch.mockReset().mockResolvedValue([
+      { status: 'retracted', bindingId: 701, binding: { id: 701 }, cancelledAuditIssueIds: [] },
+      { status: 'already_retracted', bindingId: 702, binding: { id: 702 } },
+    ]);
+  });
+
+  it('sends the full request to one store transaction instead of retracting each row separately', async () => {
+    const items = [
+      { bindingId: 701, reason: 'replace stale evidence' },
+      { bindingId: 702, reason: 'replace stale evidence' },
+    ];
+    const ctx = { harnessSlug: 'papercusp', workspaceId: 'ws-door-test' };
+    const out = (await tool.handler({ retract: items } as never, ctx as never)) as {
+      data: { results: Array<{ ok: boolean }> };
+    };
+
+    expect(mocks.retractSpecEvidenceBatch).toHaveBeenCalledExactlyOnceWith({
+      harnessSlug: 'papercusp',
+      actorId: 'su-door-test',
+      items,
+    });
+    expect(mocks.retractSpecEvidence).not.toHaveBeenCalled();
+    expect(out.data.results).toEqual([
+      expect.objectContaining({ ok: true, bindingId: 701 }),
+      expect.objectContaining({ ok: true, bindingId: 702 }),
+    ]);
   });
 });

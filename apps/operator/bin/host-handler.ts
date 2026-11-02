@@ -43,6 +43,7 @@ import { runAsExternalIngress } from '@papercusp/operator-core/lib/auth/forwarde
 import { isServedOnExternalIngress, notServedOnExternalIngress } from './external-ingress-paths';
 import { MCP_OAUTH_WELL_KNOWN } from '@papercusp/operator-core/lib/connected-apps/mcp-oauth-discovery';
 import { createDesktopPortalLifecycle } from './desktop-portal-lifecycle';
+import { registerRuntimeSecurityCapture } from '@papercusp/operator-core/lib/observability/runtime';
 
 const host = new Hono<{ Bindings: HttpBindings | Http2Bindings }>();
 const desktopPortal = createDesktopPortalLifecycle({ operator: (request, bindings) => app.fetch(request, bindings) });
@@ -149,6 +150,36 @@ host.all('/api/*', (c) => desktopPortal.fetch(c.req.raw, c.env));
 if (process.env.PAPERCUSP_SERVE_UI !== '0') {
   host.route('/', spaRoutes);
 }
+
+/** Capture the actual composed dispatch objects without executing requests.
+ * The qualification adapter must bind these bytes to the loaded runtime and
+ * reconcile the explicit gaps before approving a complete population.
+ */
+export async function captureOperatorHttpSecurityPopulation(): Promise<import('@papercusp/operator-core/lib/observability/runtime').RuntimeSecurityPopulation & { closureAccepted: false }> {
+  const [{ enumerateMountedHonoSurfaces, honoRoutesProvider }, { enumerateMountedPluginHttpSurfaces },
+    { enumerateProjectedHandlerSurfaces }, { REPO_ROOT }, { inspectPluginHostSecurityPopulation }] = await Promise.all([
+    import('@papercusp/operator-core/lib/coverage-census/providers/hono-routes'),
+    import('@papercusp/operator-core/lib/plugin-api-mount'),
+    import('@papercusp/operator-core/lib/coverage-census/providers/mcp-tools'),
+    import('@papercusp/operator-core/lib/agent-tools/docs/_repo-paths'),
+    import('@papercusp/operator-core/lib/plugin-host-runtime'),
+  ]);
+  const outer = enumerateMountedHonoSurfaces(host, 'operator-host');
+  const inner = enumerateMountedHonoSurfaces(app, 'operator-api');
+  const plugins = enumerateMountedPluginHttpSurfaces();
+  const loader = inspectPluginHostSecurityPopulation();
+  const handlers = await enumerateProjectedHandlerSurfaces({ repoRoot: REPO_ROOT,
+    workspaceId: '', harnessSlug: '', config: {} });
+  return {
+    surfaces: [...outer.surfaces, ...inner.surfaces, ...plugins.surfaces, ...handlers, ...loader.surfaces],
+    declaredSurfaces: honoRoutesProvider.enumerate(),
+    unresolved: [...outer.unresolved, ...inner.unresolved, ...plugins.unresolved, ...loader.unresolved],
+    closureAccepted: false as const,
+  };
+}
+
+// These are the real serving objects; discovery never constructs a second app.
+registerRuntimeSecurityCapture(captureOperatorHttpSecurityPopulation);
 
 export async function handler(
   req: Request,

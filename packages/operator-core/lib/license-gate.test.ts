@@ -495,6 +495,78 @@ describe('installer leg — validateComponents', () => {
     expect(r.denied).toEqual([]);
   });
 
+  it('attributes packaged Bun binaries and their Syft records with the linked LGPL obligations', () => {
+    const file = JSON.parse(readFileSync(COMPONENTS_PATH, 'utf8'));
+    const paths = [
+      'app/sidecar/bin/bun',
+      'app/sidecar/bin/bun.exe',
+      'Papercusp Server.app/Contents/Resources/sidecar/bin/bun',
+      'squashfs-root/usr/lib/Papercusp Server/sidecar/bin/bun',
+    ];
+    const input = {
+      payloads: [...paths, 'app/sidecar/bin/unreviewed-runtime'].map((path) => ({ path, kind: 'native' })),
+      syftArtifacts: paths.map((path) => ({ type: 'binary', name: 'bun', version: '1.4.4', licenses: [], path })),
+    };
+    const r = attributeInstaller({ ...input, components: file.components });
+    expect(r.denied).toEqual([]);
+    expect(r.unreviewed.map((u: { path: string }) => u.path)).toEqual(['app/sidecar/bin/unreviewed-runtime']);
+    const bun = r.components.find((c: { name: string }) => c.name === 'Bun runtime');
+    expect(bun).toMatchObject({ kind: 'program', verdict: 'weak-copyleft', hits: paths.length * 2 });
+    expect(bun?.license).toContain('LGPL-2.0');
+    expect(bun?.license).toContain('LGPL-2.1');
+    const notices = renderThirdPartyNotices({}, { installerComponents: [bun] });
+    expect(notices).toContain('Bun runtime');
+    expect(notices).toContain('relinking');
+    expect(notices).toContain('corresponding source');
+
+    // Removing the reviewed entry must reproduce both original audit findings.
+    const missing = attributeInstaller({
+      ...input, components: file.components.filter((c: { name: string }) => c.name !== 'Bun runtime'),
+    });
+    expect(missing.unreviewed.filter((u: { what: string }) => u.what === 'binary:bun@1.4.4')).toHaveLength(paths.length);
+    expect(missing.unreviewed.filter((u: { path: string; what: string }) => paths.includes(u.path) && u.what === 'native binary')).toHaveLength(paths.length);
+  });
+
+  it('attributes the macOS Git payload without covering unrelated vendor binaries', () => {
+    const file = JSON.parse(readFileSync(COMPONENTS_PATH, 'utf8'));
+    const root = 'Papercusp Server.app/Contents/Resources/sidecar/bin';
+    const gitPaths = [
+      '.git-vendor/bin/git', '.git-vendor/bin/git-shell', '.git-vendor/bin/scalar',
+      '.git-vendor/bin/git-upload-pack', '.git-vendor/libexec/git-core/git',
+      '.git-vendor/libexec/git-core/git-remote-https', '.git-vendor/libexec/git-core/scalar',
+    ].map((path) => `${root}/${path}`);
+    const pcrePath = `${root}/.git-lib/libpcre2-8.0.dylib`;
+    const unknown = [
+      '.git-vendor/bin/unreviewed', '.git-vendor/libexec/git-core/unreviewed',
+      '.git-vendor/other/git', '.git-lib/libunreviewed.dylib', 'unreviewed',
+    ].map((path) => `${root}/${path}`);
+    const paths = [...gitPaths, pcrePath];
+    const input = {
+      payloads: [...paths, ...unknown].map((path) => ({ path, kind: 'native' })),
+      syftArtifacts: paths.map((path) => ({ type: 'binary', name: 'vendored-tool', version: '1', licenses: [], path })),
+    };
+    const r = attributeInstaller({ ...input, components: file.components });
+    expect(r.denied).toEqual([]);
+    expect(r.unreviewed.map((u: { path: string }) => u.path)).toEqual(unknown);
+    const git = r.components.find((c: { name: string }) => c.name === 'macOS vendored Git');
+    const pcre = r.components.find((c: { name: string }) => c.name === 'macOS Git PCRE2 library');
+    expect(git).toMatchObject({ kind: 'program', license: 'GPL-2.0-only', verdict: 'aggregate', hits: gitPaths.length * 2 });
+    expect(pcre).toMatchObject({ kind: 'library', verdict: 'permissive', hits: 2 });
+    expect(pcre?.license).toContain('PCRE2-exception');
+    const notices = renderThirdPartyNotices({}, { installerComponents: [git, pcre] });
+    expect(notices).toContain('at least three years');
+    expect(notices).toContain('Homebrew patches');
+    expect(notices).toContain('JIT/SLJIT notices');
+
+    // A missing inventory entry, rather than a permissive scanner or a path typo,
+    // must reproduce the actual native-payload and missing-license findings.
+    const missing = attributeInstaller({
+      ...input,
+      components: file.components.filter((c: { name: string }) => !['macOS vendored Git', 'macOS Git PCRE2 library'].includes(c.name)),
+    });
+    expect(missing.unreviewed.filter((u: { path: string }) => paths.includes(u.path))).toHaveLength(paths.length * 2);
+  });
+
   // Defect #10 (open-source-release R-15 build8): the GTK/gdk-pixbuf plugin modules were
   // listed only under usr/lib/x86_64-linux-gnu/, but linuxdeploy flattens them to usr/lib/,
   // so the finished AppImage reported 26 UNREVIEWED payloads. Both layouts must match.

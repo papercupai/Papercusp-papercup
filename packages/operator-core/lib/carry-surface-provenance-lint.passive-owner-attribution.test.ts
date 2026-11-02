@@ -46,6 +46,7 @@ describe('owner attribution — passive voice and personal names', () => {
     ['an infrastructure approver', 'Authorized by the gate once the checkpoint went green.'],
     ['a lowercase common noun', 'approved by the release script before deploy.'],
     ['a grader', 'The rubric was approved by the grader, not the implementer.'],
+    ['a schema literal naming an owner field', "Design sketch [inferred, not yet checked against the writer]: provenance {kind:'owner', turnRef} | {kind:'agent', ownerId} as plan_decisions columns."],
     ['an emphasized plan decision', '5. WI-2142667 — deferred BY DECISION (D-129b), released under claimHold.'],
     ['ordinary status prose', 'P-001 done; P-002 todo. Next: run the affected suites.'],
     ['a plain deferral with no attribution', 'Deferred until the dependency lands.'],

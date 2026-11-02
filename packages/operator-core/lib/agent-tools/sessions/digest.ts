@@ -38,7 +38,7 @@ import {
 } from './_shared';
 import { classifySessionEnd, type SessionEndReason } from '../../search/session-end-reason';
 import { classifyHistoricalSessionStop, HISTORICAL_STOP_KINDS, HISTORICAL_STOP_OPENING } from '../../search/session-end-reason';
-import { isUnenrolledMachineSurface } from '../../turn-provenance/machine-surface-catalogue';
+import { classifyRecordedTurn } from '../../turn-provenance/turn-ref';
 import { decodeSessionCursor, encodeSessionCursor, sessionCursorBoundsMatch, sessionCursorQueryFingerprint } from './cursor';
 import type { PapercuspUnifiedToolContext } from '../_tool-context';
 
@@ -116,7 +116,15 @@ function loopGoalOf(text: string | null | undefined): string | null {
 
 /** Candidate selection does not assert that an unenrolled user turn was owner-authored. */
 export function actionableTaskOf(candidates: Array<{ turn_idx: number; text: string }> | null | undefined) {
-  return candidates?.find((turn) => loopGoalOf(turn.text) || !isUnenrolledMachineSurface(turn.text)) ?? null;
+  return candidates?.find((turn) => {
+    if (loopGoalOf(turn.text)) return true;
+    const recorded = classifyRecordedTurn(turn.text);
+    // A launch can carry real work; event wakes, carry notes and peer injections
+    // are control traffic, even when their signed envelope is not in the
+    // unenrolled-machine catalogue. This selects a candidate, not owner provenance.
+    return recorded.verdict === 'owner-typed' || recorded.verdict === 'owner-dialog'
+      || (recorded.verdict === 'agent-injected' && recorded.origin === 'fleet-kickoff');
+  }) ?? null;
 }
 
 export default defineTool({

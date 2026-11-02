@@ -99,6 +99,8 @@ def validate_plan(plan):
         if pin.get('path') != artifact + suffix or len(pin.get('sha256', '')) != 64:
             raise ValueError('missing or mismatched journal fixture pin: ' + key)
     if 'adapterCapture' in plan:
+        if type(plan['adapterCapture'].get('observeRuntime', False)) is not bool:
+            raise ValueError('adapter observeRuntime must be boolean')
         for key in ['program', 'requests']:
             pin = plan['adapterCapture'].get(key, {})
             file = Path(pin.get('path', ''))
@@ -145,14 +147,14 @@ def preflight_inputs(plan, repo):
     return inputs
 
 
-def capture_adapters(plan, repo, destination, command, env):
+def capture_adapters(plan, repo, destination, command, env, output_name='adapter-captures.json'):
     """Invocation custody only; the pinned program owns actual adapter dispatch.
 
     These checks cannot authenticate its behavior or establish study acceptance.
     """
     program, pins, requests = adapter_inputs(plan, repo)
     capture = plan['adapterCapture']
-    output = destination / 'adapter-captures.json'
+    output = destination / output_name
     command('actual-adapters', ['node', '--import', 'tsx', str(program), '--requests',
             capture['requests']['path'], '--out', str(output)], env)
     rows = json.loads(output.read_bytes())
@@ -173,6 +175,46 @@ def capture_adapters(plan, repo, destination, command, env):
             raise ValueError('adapter input moved during capture')
     return {'inputs': pins, 'output': fingerprint(output), 'attempted': len(requests),
             'adapterBehaviorAuthenticated': False, 'baselineAccepted': False}
+
+
+def capture_observed_adapters(plan, repo, destination, assets_path, command, env):
+    """Separate intrusive capture; never replace uninstrumented delivery timings."""
+    program, _, _ = adapter_inputs(plan, repo)
+    maintained = repo / 'packages/operator-core/lib/search/bench/prose-adapter-capture-cli.ts'
+    if program != maintained.resolve(strict=True):
+        raise ValueError('observed capture requires the maintained prose adapter entrypoint')
+    prefix = destination / 'adapter-runtime'
+
+    def observed_command(label, arguments, environment):
+        command('observed-adapters', ['node', '--import', 'tsx',
+                'packages/operator-core/lib/memory/bench/runtime-qualification-cli.ts',
+                '--output', str(prefix), '--assets', str(assets_path),
+                '--configuration', plan['configuration']['path'], '--adapter', '--',
+                *arguments[4:]], environment)
+
+    receipt = capture_adapters(plan, repo, destination, observed_command, env,
+                               output_name='adapter-observed-captures.json')
+    report_path = Path(str(prefix) + '.report.json')
+    report = json.loads(report_path.read_bytes())
+    adapter = report.get('adapter', {})
+    request_pin = next(pin for pin in receipt['inputs']
+                       if pin['path'] == plan['adapterCapture']['requests']['path'])
+    if report.get('kind') != 'shared-search-adapter-runtime-qualification' \
+            or report.get('qualifiedComponentsOnly') is not True \
+            or report.get('result') != {'code': 0, 'signal': None} \
+            or report.get('searchAdapterExercised') is not True \
+            or report.get('completeRuntimeClosureVerified') is not False \
+            or report.get('latencyAcceptance') is not False \
+            or adapter.get('requests') != request_pin \
+            or adapter.get('artifact') != receipt['output'] \
+            or adapter.get('executed') != receipt['attempted'] \
+            or adapter.get('searchAdapterExercised') is not True \
+            or adapter.get('baselineAccepted') is not False \
+            or adapter.get('latencyAcceptance') is not False:
+        raise ValueError('observed adapter runtime or artifact custody did not qualify')
+    return {**receipt, 'runtimeReport': fingerprint(report_path),
+            'qualifiedComponentsOnly': True, 'latencyAcceptance': False,
+            'completeRuntimeClosureVerified': False}
 
 
 def runtime_preflight(plan, destination, assets_path, command, env):
@@ -342,6 +384,9 @@ def run(plan_path, preflight_only=False):
         sql('ANALYZE;', database)
         if 'adapterCapture' in plan:
             receipt['adapterCapture'] = capture_adapters(plan, repo, destination, command, env)
+            if plan['adapterCapture'].get('observeRuntime', False):
+                receipt['observedAdapterCapture'] = capture_observed_adapters(
+                    plan, repo, destination, assets_path, command, env)
             for pin in receipt['retainedInputs'] + assets:
                 if fingerprint(pin['path']) != pin:
                     raise ValueError('input moved during run: ' + pin['path'])

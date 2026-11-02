@@ -1002,6 +1002,64 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     }
   });
 
+  it('reuses dependency hashes only while full source records and manifests remain unchanged', async () => {
+    const root = join(tmp, 'dependency-census-cache-fingerprint');
+    const helper = 'papercusp-desktop/bin/lib/pinned-deps.sh';
+    write(root, helper, '#!/bin/bash\nset -eu\ntest "$1" = trees\necho node_modules\n');
+    write(root, DEPENDENCY_POLICY_PATH, DEPENDENCY_POLICY);
+    write(root, 'node_modules/example/index.mjs', 'export default 1;\n');
+    write(root, 'app/index.mjs', 'workspace app');
+    write(root, 'lib/index.mjs', 'workspace lib');
+    symlinkSync('../app', join(root, 'node_modules/workspace'));
+    const receipt = { schemaVersion: 'verifier-source-v1', sourceCommit: 'a'.repeat(40),
+      testedInputs: [{ path: 'input.mjs', sha256: 'b'.repeat(64) }], files: [], submodules: [] };
+    const capture = (currentReceipt = receipt) => {
+      const progress: Array<{ cacheHit?: boolean }> = [];
+      const result = captureVerifierDependencies({ dest: root, receipt: currentReceipt,
+        onProgress: event => progress.push(event) });
+      return { result, progress: progress[0] };
+    };
+
+    const first = capture();
+    expect(first.progress).toMatchObject({ cacheHit: false });
+    const unchanged = capture();
+    expect(unchanged.progress).toMatchObject({ cacheHit: true });
+    expect(unchanged.result).toEqual(first.result);
+
+    const dependency = join(root, 'node_modules/example/index.mjs');
+    const originalMtime = statSync(dependency).mtime;
+    writeFileSync(dependency, 'export default 2;\n');
+    await fsPromises.utimes(dependency, originalMtime, originalMtime);
+    const sameSizeEdit = capture();
+    expect(sameSizeEdit.progress).toMatchObject({ cacheHit: false });
+    expect(sameSizeEdit.result.trees[0]!.files.find(file => file.path === 'example/index.mjs')!.sha256)
+      .not.toBe(first.result.trees[0]!.files.find(file => file.path === 'example/index.mjs')!.sha256);
+    expect(capture().progress).toMatchObject({ cacheHit: true });
+
+    chmodSync(dependency, 0o755);
+    const modeEdit = capture();
+    expect(modeEdit.progress).toMatchObject({ cacheHit: false });
+    expect(modeEdit.result.trees[0]!.files.find(file => file.path === 'example/index.mjs')!.executable).toBe(true);
+    expect(capture().progress).toMatchObject({ cacheHit: true });
+
+    const link = join(root, 'node_modules/workspace');
+    rmSync(link);
+    symlinkSync('../lib', link);
+    const targetEdit = capture();
+    expect(targetEdit.progress).toMatchObject({ cacheHit: false });
+    expect(targetEdit.result.trees[0]!.files.find(file => file.path === 'workspace')!.sha256)
+      .not.toBe(modeEdit.result.trees[0]!.files.find(file => file.path === 'workspace')!.sha256);
+
+    const policyPath = join(root, DEPENDENCY_POLICY_PATH);
+    writeFileSync(policyPath, DEPENDENCY_POLICY + '\n# census policy revision\n');
+    const policyEdit = capture();
+    expect(policyEdit.progress).toMatchObject({ cacheHit: false });
+    expect(policyEdit.result.policy.sha256).not.toBe(targetEdit.result.policy.sha256);
+    const receiptEdit = capture({ ...receipt, sourceCommit: 'c'.repeat(40) });
+    expect(receiptEdit.progress).toMatchObject({ cacheHit: false });
+    expect(receiptEdit.result.sourceReceiptSha256).not.toBe(policyEdit.result.sourceReceiptSha256);
+  });
+
   it.each(['shadow-path', 'inherited-override'] as const)(
     'pins the dependency census interpreter under %s', mode => {
       const root = join(tmp, 'dependency-census-interpreter-' + mode);
@@ -2450,9 +2508,64 @@ describe('BG inherited manifest and original source boundaries', () => {
   }
 
   function expectBgChild(child: SpawnSyncReturns<string>, phases = '') {
-    expect({ status: child.status, signal: child.signal, error: child.error ?? null, stderr: child.stderr }, phases)
+    const childError = child.error as NodeJS.ErrnoException | undefined;
+    const diagnostics = {
+      status: child.status,
+      signal: child.signal,
+      error: childError ? {
+        name: childError.name,
+        message: childError.message,
+        code: childError.code ?? null,
+        errno: childError.errno ?? null,
+        syscall: childError.syscall ?? null,
+        path: childError.path ?? null,
+      } : null,
+      stderr: child.stderr,
+      phases,
+    };
+    expect({ status: child.status, signal: child.signal, error: child.error ?? null, stderr: child.stderr },
+      `BG child failure diagnostics:\n${JSON.stringify(diagnostics, null, 2)}`)
       .toEqual({ status: 0, signal: null, error: null, stderr: '' });
   }
+
+  it('BG recipe child assertion preserves spawnSync error, signal, and phase evidence', () => {
+    const phases = 'phase=bg.compiler.build event=failed';
+    const child = {
+      pid: 123,
+      output: [],
+      stdout: '',
+      stderr: '',
+      status: null,
+      signal: 'SIGTERM',
+      error: Object.assign(new Error('spawnSync bash ETIMEDOUT'), { code: 'ETIMEDOUT' }),
+    } satisfies SpawnSyncReturns<string>;
+    let failure: unknown;
+    try { expectBgChild(child, phases); } catch (error) { failure = error; }
+    const message = String(failure);
+    expect(message).toContain('"status": null');
+    expect(message).toContain('"signal": "SIGTERM"');
+    expect(message).toContain('"code": "ETIMEDOUT"');
+    expect(message).toContain('"message": "spawnSync bash ETIMEDOUT"');
+    expect(message).toContain(phases);
+  });
+
+  it('retains bounded dependency cache progress and rejects invalid extensions', async () => {
+    const path = join(tmp, 'dependency-cache-progress.phases.jsonl');
+    const run = verifierPhaseRunner(path,
+      { ...process.env, PAPERCUSP_CHECKPOINT_LOG_DIR: join(tmp, 'cache-progress-archive') }, path + '.child.json');
+    const progress = { completedTrees: 1, totalTrees: 1, currentTree: 'node_modules' };
+    await run('deps.census', () => {
+      for (const cacheHit of [false, true]) run.reportProgress?.('deps.census', { ...progress, cacheHit });
+      run.reportProgress?.('deps.census', progress);
+      expect(() => run.reportProgress?.('deps.census', { ...progress, completedTrees: 2 })).toThrow('Invalid verifier dependency progress');
+      expect(() => run.reportProgress?.('deps.census', { ...progress, cacheHit: 'yes' } as never)).toThrow('cacheHit must be boolean');
+      expect(() => run.reportProgress?.('deps.census', { ...progress, extra: 'unbounded' } as never)).toThrow('must remain bounded');
+    });
+    const rows = readFileSync(path, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+    expect(rows.filter(row => row.event === 'progress').map(row => row.progress)).toEqual([
+      { ...progress, cacheHit: false }, { ...progress, cacheHit: true }, progress,
+    ]);
+  });
 
   function bgRecipePhaseRunner(label: string) {
     const traceEnabled = Boolean(process.env.PAPERCUSP_BG_LOGICAL_TRACE);

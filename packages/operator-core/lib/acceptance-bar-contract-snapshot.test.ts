@@ -1723,6 +1723,40 @@ describe('AcceptanceBarContractSnapshot — fixed-call loader', () => {
     for (const reader of Object.values(deps)) expect(reader).toHaveBeenCalledTimes(1);
   });
 
+  it.each([false, true])('isolates timing observer failures from the verdict (source failure: %s)', async sourceFails => {
+    const source = fixture(1);
+    const deps: AcceptanceBarSnapshotDeps = {
+      readPlans: async () => source.planRows,
+      readRubrics: async () => source.rubrics,
+      readPlanItems: async () => source.planItems,
+      readClauses: async () => {
+        if (sourceFails) throw new Error('clause read down');
+        return source.clauses;
+      },
+      readWorkContracts: async () => source.workContracts,
+      readEvidence: async () => source.evidence,
+      readLineage: async () => source.lineage,
+      readScorecards: async () => source.scorecards,
+      readVettingScorecards: async () => source.vettingScorecards,
+      readCurrentCritique: async () => null,
+      readParties: async () => new Map(source.partyByIdentity),
+      readGraderSelectionVia: async () => new Map(source.graderSelectionVia),
+    };
+    const baseline = await readAcceptanceBarContractSnapshot('plan-a', deps);
+    const timings: Array<[string, number]> = [];
+    const observed = await readAcceptanceBarContractSnapshot('plan-a', deps, {
+      onRead(source, elapsedMs) {
+        timings.push([source, elapsedMs]);
+        throw new Error('diagnostic sink unavailable');
+      },
+    });
+    expect(observed.readiness).toEqual(baseline.readiness);
+    expect(observed.completeness).toEqual(baseline.completeness);
+    expect(timings).toContainEqual(['clauses', expect.any(Number)]);
+    expect(timings.every(([, elapsedMs]) => Number.isFinite(elapsedMs) && elapsedMs >= 0)).toBe(true);
+    expect(observed.completeness.complete).toBe(!sourceFails);
+  });
+
   it('turns a reader failure into an explicit unavailable source and blocked repair', async () => {
     const source = fixture(1);
     const snapshot = await readAcceptanceBarContractSnapshot('plan-a', {

@@ -198,9 +198,10 @@ export function assertIsolatedWorkerReaped(child: Pick<ChildProcess, 'exitCode' 
 
 type WorkerPhase = 'bootstrap' | 'execute' | 'finalize' | 'teardown';
 type WorkerDeadlines = { bootstrapMs: number; bootstrapMaxMs?: number; executeMs: number; finalizeMs?: number;
-  finalizeMaxMs?: number; teardownMs: number; teardownMaxMs?: number; executeMaxMs?: number };
-type WorkerPhaseMaximumOverrides = Partial<Pick<WorkerDeadlines,
-  'bootstrapMaxMs' | 'finalizeMaxMs' | 'teardownMaxMs'>>;
+  finalizeMaxMs?: number; teardownMs: number; teardownMaxMs?: number; executeMaxMs?: number;
+  executeStallWindowMs?: number };
+type WorkerPhaseOverrides = Partial<Pick<WorkerDeadlines,
+  'bootstrapMaxMs' | 'finalizeMaxMs' | 'teardownMaxMs' | 'executeStallWindowMs'>>;
 
 /** Compose the actual nested router contract; startup consumes none of its
  * collection/execution allowance. Teardown allows the router's cgroup stop,
@@ -212,7 +213,7 @@ export function isolatedWorkerOptions(
   executeMs: number,
   env: NodeJS.ProcessEnv = process.env,
   executeMaxMs = executeMs,
-  phaseMaxOverrides: WorkerPhaseMaximumOverrides = {},
+  phaseOverrides: WorkerPhaseOverrides = {},
 ) {
   const listMs = testFileListTimeoutMs(env);
   const teardownMs = TEST_FILE_SCOPE_STOP_TIMEOUT_SEC * 1000 + 5_000 + 30_000;
@@ -220,9 +221,9 @@ export function isolatedWorkerOptions(
   // Reusing that override here would grow the inner budget twice on every
   // increase, so no parent budget could ever contain it.
   const phaseMaxMs = defaultTestFileRunTimeoutMs(1);
-  const bootstrapMaxMs = phaseMaxOverrides.bootstrapMaxMs ?? Math.max(listMs, phaseMaxMs);
-  const finalizeMaxMs = phaseMaxOverrides.finalizeMaxMs ?? Math.max(teardownMs, phaseMaxMs);
-  const teardownMaxMs = phaseMaxOverrides.teardownMaxMs ?? Math.max(teardownMs, phaseMaxMs);
+  const bootstrapMaxMs = phaseOverrides.bootstrapMaxMs ?? Math.max(listMs, phaseMaxMs);
+  const finalizeMaxMs = phaseOverrides.finalizeMaxMs ?? Math.max(teardownMs, phaseMaxMs);
+  const teardownMaxMs = phaseOverrides.teardownMaxMs ?? Math.max(teardownMs, phaseMaxMs);
   const phaseTimeouts: WorkerDeadlines = {
     // Collection time is a progress checkpoint, not a maximum PG boot time.
     // Use the shared single-file default allowance as the absolute
@@ -231,6 +232,7 @@ export function isolatedWorkerOptions(
     bootstrapMaxMs,
     executeMs,
     executeMaxMs,
+    executeStallWindowMs: phaseOverrides.executeStallWindowMs,
     // Router source/receipt verification precedes runtime shutdown. Its own
     // bounded progress clock must not consume either assertions or PG cleanup.
     finalizeMs: teardownMs,
@@ -243,10 +245,12 @@ export function isolatedWorkerOptions(
       phaseTimeouts.teardownMaxMs! + teardownMs + 20_000 };
 }
 
-export function isolatedTestFileWorkerOptions(env: NodeJS.ProcessEnv, fileCount: number) {
+export function isolatedTestFileWorkerOptions(env: NodeJS.ProcessEnv, fileCount: number,
+  phaseOverrides: WorkerPhaseOverrides = {}) {
   const listMs = testFileListTimeoutMs(env);
   return { ...isolatedWorkerOptions(listMs + testFileRunTimeoutMs(env, fileCount) + TEST_FILE_KILL_GRACE_MS,
-    env, listMs + MAX_TEST_FILE_RUN_TIMEOUT_MS + TEST_FILE_KILL_GRACE_MS), testFileExecutionFromStdout: true };
+    env, listMs + MAX_TEST_FILE_RUN_TIMEOUT_MS + TEST_FILE_KILL_GRACE_MS, phaseOverrides),
+  testFileExecutionFromStdout: true };
 }
 
 /** Retain original output before termination can interrupt the fixture. A
@@ -422,8 +426,9 @@ export function captureIsolatedWorker(child: ChildProcess, evidenceDir: string, 
         progressWatchdog = createProgressAwareWatchdog({ timeoutMs: ms, maxMs: deadlines!.bootstrapMaxMs,
           stallWindowMs: ms, extensionMs: ms, onKill: terminate });
       } else if (next === 'execute' && deadlines!.executeMaxMs) {
+        const stallWindowMs = deadlines!.executeStallWindowMs ?? 5 * 60_000;
         progressWatchdog = createProgressAwareWatchdog({ timeoutMs: ms, maxMs: deadlines!.executeMaxMs,
-          stallWindowMs: 5 * 60_000, extensionMs: 5 * 60_000, onKill: terminate });
+          stallWindowMs, extensionMs: stallWindowMs, onKill: terminate });
       } else if (next === 'finalize' && deadlines!.finalizeMaxMs) {
         progressWatchdog = createProgressAwareWatchdog({ timeoutMs: ms, maxMs: deadlines!.finalizeMaxMs,
           stallWindowMs: ms, extensionMs: ms, onKill: terminate });

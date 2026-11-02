@@ -123,6 +123,23 @@ describe('classifyRecordedTurn', () => {
     ).toBe('machine-surface');
   });
 
+  it('a loop-fire followed by a Codex environment-only turn stays non-owner', () => {
+    const wake = '⟦turn-origin:loop-fire nonce:a1b2c3d4e5f60718⟧\nAUTO mode wake instructions';
+    const environmentOnly = [
+      '<environment_context>',
+      '  <current_date>2026-10-29</current_date>',
+      '  <timezone>America/New_York</timezone>',
+      '  <filesystem><workspace_roots><root>/repo</root></workspace_roots><permission_profile type="disabled"><file_system type="unrestricted" /></permission_profile></filesystem>',
+      '</environment_context>',
+    ].join('\n');
+
+    expect(classifyRecordedTurn(wake).verdict).toBe('agent-injected');
+    expect(classifyRecordedTurn(environmentOnly)).toEqual({
+      verdict: 'machine-surface',
+      origin: null,
+    });
+  });
+
   it('local-command plumbing is synthetic; a plain prompt is owner-typed', () => {
     expect(classifyRecordedTurn('<local-command-stdout>ok</local-command-stdout>').verdict).toBe('synthetic');
     expect(classifyRecordedTurn('please ship the release')).toEqual({

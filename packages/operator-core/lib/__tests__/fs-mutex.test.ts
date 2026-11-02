@@ -2,7 +2,7 @@ import { lstat, mkdir, mkdtemp, opendir, readFile, readdir, realpath, rm, symlin
 import { spawn } from 'node:child_process';
 import { join } from 'node:path';
 import { tmpdir, hostname } from 'node:os';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 // The production entrypoint deliberately stays executable by plain Node (no build step —
 // consumed directly by `node scripts/npm-install-safe.mjs`). Mirrors the suppression-comment
 // convention test-file-router.test.ts already uses for the sibling .mjs CLI import.
@@ -124,6 +124,39 @@ describe('resolveFsMutexLockRoot', () => {
 });
 
 describe('censusLegacyFsMutexRoot read-only inspection', () => {
+  it('uses readable kernel identity after EPERM without treating a matching owner as stale', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'pc-fs-mutex-census-eperm-'));
+    const reused = join(root, 'cache.readers', 'reused.lock');
+    const protectedLease = join(root, 'cache.readers', 'protected.lock');
+    const reusedPid = 410_001;
+    const protectedPid = 410_002;
+    const reusedOwner = { pid: reusedPid, host: hostname(), startTicks: 'old', bootId: 'old' };
+    const protectedOwner = { pid: protectedPid, host: hostname(), startTicks: 'same', bootId: 'boot' };
+    await mkdir(reused, { recursive: true });
+    await mkdir(protectedLease, { recursive: true });
+    await writeFile(join(reused, 'owner.json'), JSON.stringify(reusedOwner));
+    await writeFile(join(protectedLease, 'owner.json'), JSON.stringify(protectedOwner));
+    const identities = new Map([
+      [reusedPid, { tgid: reusedPid, startTicks: 'new', bootId: 'boot', kthread: false }],
+      [protectedPid, { tgid: protectedPid, startTicks: 'same', bootId: 'boot', kthread: false }],
+    ]);
+    const actualKill = process.kill.bind(process);
+    const kill = vi.spyOn(process, 'kill').mockImplementation((pid, signal) => {
+      if (pid === reusedPid || pid === protectedPid) throw Object.assign(new Error('denied'), { code: 'EPERM' });
+      return actualKill(pid, signal);
+    });
+    try {
+      expect(await censusLegacyFsMutexRoot(root, 60_000, {
+        processIdentity: (pid) => identities.get(pid) ?? null,
+      })).toMatchObject({ reader: { active: 0, unknown: 1, stale: 1 } });
+      await expect(readFile(join(reused, 'owner.json'), 'utf8')).resolves.toBe(JSON.stringify(reusedOwner));
+      await expect(readFile(join(protectedLease, 'owner.json'), 'utf8')).resolves.toBe(JSON.stringify(protectedOwner));
+    } finally {
+      kill.mockRestore();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('classifies live, unknown and stale leases while preserving every marker', async () => {
     const root = await mkdtemp(join(tmpdir(), 'pc-fs-mutex-census-'));
     const writer = join(root, 'cache.lock');
@@ -619,6 +652,80 @@ describe('withFsMutex', () => {
         expect(elapsedMs).toBeGreaterThanOrEqual(0);
       }
     } finally {
+      if (previousLockDir === undefined) delete process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR;
+      else process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = previousLockDir;
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('reclaims mismatched and kernel-thread reader identities after EPERM', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'pc-fs-mutex-reclaim-eperm-'));
+    const previousLockDir = process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR;
+    process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = dir;
+    const reusedPid = 420_001;
+    const kernelPid = 420_002;
+    const reusedLease = join(dir, 'eperm-reclaim.readers', 'reused.lock');
+    const kernelLease = join(dir, 'eperm-reclaim.readers', 'kernel.lock');
+    const reusedOwner = { pid: reusedPid, host: hostname(), startTicks: 'old', bootId: 'old' };
+    const kernelOwner = { pid: kernelPid, host: hostname(), startTicks: 'same', bootId: 'boot' };
+    await mkdir(reusedLease, { recursive: true });
+    await mkdir(kernelLease, { recursive: true });
+    await writeFile(join(reusedLease, 'owner.json'), JSON.stringify(reusedOwner));
+    await writeFile(join(kernelLease, 'owner.json'), JSON.stringify(kernelOwner));
+    const identities = new Map([
+      [reusedPid, { tgid: reusedPid, startTicks: 'new', bootId: 'boot', kthread: false }],
+      [kernelPid, { tgid: kernelPid, startTicks: 'same', bootId: 'boot', kthread: true }],
+    ]);
+    const actualKill = process.kill.bind(process);
+    const kill = vi.spyOn(process, 'kill').mockImplementation((pid, signal) => {
+      if (pid === reusedPid || pid === kernelPid) throw Object.assign(new Error('denied'), { code: 'EPERM' });
+      return actualKill(pid, signal);
+    });
+    try {
+      await expect(withFsMutex('eperm-reclaim', async () => 'recovered', {
+        timeoutMs: 1_000,
+        staleMs: 60_000,
+        retryMs: 1,
+        lockRootDir: dir,
+        io: { processIdentity: (pid) => identities.get(pid) ?? null },
+      })).resolves.toBe('recovered');
+      await expect(lstat(reusedLease)).rejects.toHaveProperty('code', 'ENOENT');
+      await expect(lstat(kernelLease)).rejects.toHaveProperty('code', 'ENOENT');
+    } finally {
+      kill.mockRestore();
+      if (previousLockDir === undefined) delete process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR;
+      else process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = previousLockDir;
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('retains an EPERM reader lease when the kernel identity still matches', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'pc-fs-mutex-retain-eperm-'));
+    const previousLockDir = process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR;
+    process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = dir;
+    const pid = 430_001;
+    const lease = join(dir, 'eperm-retain.readers', 'protected.lock');
+    const owner = { pid, host: hostname(), startTicks: 'same', bootId: 'boot' };
+    await mkdir(lease, { recursive: true });
+    await writeFile(join(lease, 'owner.json'), JSON.stringify(owner));
+    const actualKill = process.kill.bind(process);
+    const kill = vi.spyOn(process, 'kill').mockImplementation((candidate, signal) => {
+      if (candidate === pid) throw Object.assign(new Error('denied'), { code: 'EPERM' });
+      return actualKill(candidate, signal);
+    });
+    try {
+      await expect(withFsMutex('eperm-retain', async () => 'must not acquire', {
+        timeoutMs: 40,
+        staleMs: 60_000,
+        retryMs: 1,
+        lockRootDir: dir,
+        io: { processIdentity: (candidate) => candidate === pid
+          ? { tgid: pid, startTicks: 'same', bootId: 'boot', kthread: false }
+          : null },
+      })).rejects.toThrow(/Timed out after/);
+      await expect(readFile(join(lease, 'owner.json'), 'utf8')).resolves.toBe(JSON.stringify(owner));
+    } finally {
+      kill.mockRestore();
       if (previousLockDir === undefined) delete process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR;
       else process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = previousLockDir;
       await rm(dir, { recursive: true, force: true });

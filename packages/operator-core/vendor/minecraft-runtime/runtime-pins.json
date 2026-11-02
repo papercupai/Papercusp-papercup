@@ -1,0 +1,9 @@
+{
+  "serverVersion": "1.20.4",
+  "serverUrl": "https://piston-data.mojang.com/v1/objects/8dd1a28015f51b1803213892b50b7b4fc76e594d/server.jar",
+  "serverJarSha256": "c03fa6f39daa69ddf413c965a3a83084db746a7a138ce535a693293b5472d363",
+  "serverImage": "eclipse-temurin@sha256:c35794d1348777e6bc310b9b7f420098ef8f37e988199549b545fded79a895a2",
+  "nodeImage": "node@sha256:4b150b48b4116e2a22f2c39cc27025fbf4f153e2078fd3b14d159fdb5c7279da",
+  "mineflayerVersion": "4.32.0",
+  "pathfinderVersion": "2.4.5"
+}

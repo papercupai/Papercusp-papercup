@@ -59,6 +59,7 @@ vi.mock('../../scout/generation-watermark', async (importOriginal) => {
 });
 
 const { emitScorecard } = await import('./emit');
+const { listScorecards } = await import('../../scorecards');
 const { issuesScopeWorkspace } = await import('../../issues-engineer');
 const { createOrgTestDb } = await import('../../../test/_org-test-db');
 const { activeWorkspaceId } = await import('../../workspace-registry');
@@ -235,6 +236,37 @@ describe('scorecards:emit — an agent-run card carries a server-derived evidenc
     } else {
       expect(await readBackCards(db)).toEqual([]);
     }
+  });
+
+  it('preserves distinct grader and instrument uncertainty reasons through partial emit, storage and canonical readback', async () => {
+    const ratings = {
+      'never-implements': {
+        rating: 'unknown',
+        unknownReason: 'not-assessed',
+        evidence: 'The grader has not assessed implementation activity yet.',
+        nextEvidenceAction: 'Assess implementation activity in the recorded window.',
+      },
+      'settings-are-data': {
+        rating: 'unknown',
+        unknownReason: 'instrument-unavailable',
+        evidence: 'The settings measurement could not be collected.',
+        nextEvidenceAction: 'Restore the settings measurement and collect it again.',
+      },
+    };
+    const r = await emitScorecard(
+      { rubricRef: RUBRIC, subject: { kind: 'session', ref: HOLDER_RECORDED }, ratings, terminal: false } as never,
+      asGrader() as never,
+    );
+    expect(r, JSON.stringify(r)).toMatchObject({ ok: true });
+
+    const landed = await readBackCards(db);
+    expect(landed).toHaveLength(1);
+    expect(landed[0].observation.ratings).toMatchObject(ratings);
+
+    const cards = await listScorecards({ rubricRef: RUBRIC, subjectKind: 'session', subjectRef: HOLDER_RECORDED });
+    expect(cards).toHaveLength(1);
+    expect(cards[0].ratings['never-implements']).toMatchObject({ rating: 'unknown', unknownReason: 'not-assessed' });
+    expect(cards[0].ratings['settings-are-data']).toMatchObject({ rating: 'unknown', unknownReason: 'instrument-unavailable' });
   });
 
   it('a card whose subject is not an agent run carries no evidence record', async () => {

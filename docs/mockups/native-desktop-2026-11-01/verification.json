@@ -1,0 +1,438 @@
+{
+  "capturedAt": "2026-11-02T03:36:50.027Z",
+  "viewport": {
+    "width": 1440,
+    "height": 880
+  },
+  "captures": [
+    {
+      "direction": "a",
+      "surface": "launcher",
+      "file": "a-launcher.png",
+      "bounds": [
+        {
+          "title": "Panel",
+          "left": 405,
+          "top": 155,
+          "right": 1035,
+          "bottom": 736
+        }
+      ],
+      "overviewCards": null
+    },
+    {
+      "direction": "a",
+      "surface": "terminal",
+      "file": "a-terminal.png",
+      "bounds": [
+        {
+          "title": "Orders",
+          "left": 75,
+          "top": 175,
+          "right": 310,
+          "bottom": 740
+        },
+        {
+          "title": "Rowancloud-eu · native-desktoppsu",
+          "left": 319,
+          "top": 175,
+          "right": 1019,
+          "bottom": 740
+        },
+        {
+          "title": "Activity",
+          "left": 1028,
+          "top": 175,
+          "right": 1290,
+          "bottom": 740
+        }
+      ],
+      "overviewCards": null
+    },
+    {
+      "direction": "a",
+      "surface": "organizer",
+      "file": "a-organizer.png",
+      "bounds": [
+        {
+          "title": "Arrange windowsThis computer−□×",
+          "left": 210,
+          "top": 145,
+          "right": 1230,
+          "bottom": 741
+        }
+      ],
+      "overviewCards": null
+    },
+    {
+      "direction": "a",
+      "surface": "chat",
+      "file": "a-chat.png",
+      "bounds": [
+        {
+          "title": "PapercupConnected−□×",
+          "left": 800,
+          "top": 130,
+          "right": 1290,
+          "bottom": 742.828125
+        },
+        {
+          "title": "Rowancloud-eu · native-desktoppsu",
+          "left": 135,
+          "top": 225,
+          "right": 725,
+          "bottom": 645
+        }
+      ],
+      "overviewCards": null
+    },
+    {
+      "direction": "a",
+      "surface": "accounts",
+      "file": "a-accounts.png",
+      "bounds": [
+        {
+          "title": "Accounts−□×",
+          "left": 925,
+          "top": 80,
+          "right": 1365,
+          "bottom": 673
+        },
+        {
+          "title": "Rowancloud-eu · native-desktoppsu",
+          "left": 170,
+          "top": 230,
+          "right": 850,
+          "bottom": 650
+        }
+      ],
+      "overviewCards": null
+    },
+    {
+      "direction": "a",
+      "surface": "overview",
+      "file": "a-overview.png",
+      "bounds": [],
+      "overviewCards": 5
+    },
+    {
+      "direction": "b",
+      "surface": "launcher",
+      "file": "b-launcher.png",
+      "bounds": [
+        {
+          "title": "Rowancloud-eu · native-desktoppsu",
+          "left": 580,
+          "top": 205,
+          "right": 1370,
+          "bottom": 765
+        },
+        {
+          "title": "Panel",
+          "left": 0,
+          "top": 32,
+          "right": 475,
+          "bottom": 880
+        },
+        {
+          "title": "Panel",
+          "left": 475,
+          "top": 32,
+          "right": 785,
+          "bottom": 880
+        }
+      ],
+      "overviewCards": null
+    },
+    {
+      "direction": "b",
+      "surface": "terminal",
+      "file": "b-terminal.png",
+      "bounds": [
+        {
+          "title": "Orders",
+          "left": 18,
+          "top": 180,
+          "right": 243,
+          "bottom": 730
+        },
+        {
+          "title": "Rowancloud-eu · native-desktoppsu",
+          "left": 253,
+          "top": 180,
+          "right": 963,
+          "bottom": 730
+        },
+        {
+          "title": "Activity",
+          "left": 973,
+          "top": 180,
+          "right": 1228,
+          "bottom": 730
+        },
+        {
+          "title": "Fleet4",
+          "left": 1238,
+          "top": 180,
+          "right": 1422,
+          "bottom": 730
+        }
+      ],
+      "overviewCards": null
+    },
+    {
+      "direction": "b",
+      "surface": "organizer",
+      "file": "b-organizer.png",
+      "bounds": [
+        {
+          "title": "Panel",
+          "left": 0,
+          "top": 32,
+          "right": 1440,
+          "bottom": 880
+        }
+      ],
+      "overviewCards": null
+    },
+    {
+      "direction": "b",
+      "surface": "chat",
+      "file": "b-chat.png",
+      "bounds": [
+        {
+          "title": "Rowancloud-eu · native-desktoppsu",
+          "left": 110,
+          "top": 215,
+          "right": 870,
+          "bottom": 775
+        },
+        {
+          "title": "Panel",
+          "left": 940,
+          "top": 32,
+          "right": 1440,
+          "bottom": 880
+        }
+      ],
+      "overviewCards": null
+    },
+    {
+      "direction": "b",
+      "surface": "accounts",
+      "file": "b-accounts.png",
+      "bounds": [
+        {
+          "title": "Rowancloud-eu · native-desktoppsu",
+          "left": 110,
+          "top": 215,
+          "right": 870,
+          "bottom": 775
+        },
+        {
+          "title": "Panel",
+          "left": 965,
+          "top": 32,
+          "right": 1440,
+          "bottom": 880
+        }
+      ],
+      "overviewCards": null
+    },
+    {
+      "direction": "b",
+      "surface": "overview",
+      "file": "b-overview.png",
+      "bounds": [],
+      "overviewCards": 6
+    },
+    {
+      "direction": "c",
+      "surface": "launcher",
+      "file": "c-launcher.png",
+      "bounds": [
+        {
+          "title": "Panel",
+          "left": 42,
+          "top": 145,
+          "right": 427,
+          "bottom": 754
+        },
+        {
+          "title": "Panel",
+          "left": 446,
+          "top": 245,
+          "right": 746,
+          "bottom": 687.484375
+        }
+      ],
+      "overviewCards": null
+    },
+    {
+      "direction": "c",
+      "surface": "terminal",
+      "file": "c-terminal.png",
+      "bounds": [
+        {
+          "title": "Rowancloud-eu · native-desktoppsu",
+          "left": 260,
+          "top": 160,
+          "right": 1100,
+          "bottom": 750
+        },
+        {
+          "title": "Activity",
+          "left": 1170,
+          "top": 230,
+          "right": 1405,
+          "bottom": 706
+        },
+        {
+          "title": "Orders",
+          "left": 25,
+          "top": 260,
+          "right": 247,
+          "bottom": 690
+        }
+      ],
+      "overviewCards": null
+    },
+    {
+      "direction": "c",
+      "surface": "organizer",
+      "file": "c-organizer.png",
+      "bounds": [
+        {
+          "title": "SpacesThis computer−□×",
+          "left": 160,
+          "top": 235,
+          "right": 1280,
+          "bottom": 831
+        }
+      ],
+      "overviewCards": null
+    },
+    {
+      "direction": "c",
+      "surface": "chat",
+      "file": "c-chat.png",
+      "bounds": [
+        {
+          "title": "PapercupDocked−□×",
+          "left": 950,
+          "top": 80,
+          "right": 1400,
+          "bottom": 799
+        },
+        {
+          "title": "Rowancloud-eu · native-desktoppsu",
+          "left": 130,
+          "top": 165,
+          "right": 885,
+          "bottom": 755
+        }
+      ],
+      "overviewCards": null
+    },
+    {
+      "direction": "c",
+      "surface": "accounts",
+      "file": "c-accounts.png",
+      "bounds": [
+        {
+          "title": "Account drawer−□×",
+          "left": 1000,
+          "top": 119,
+          "right": 1400,
+          "bottom": 633
+        },
+        {
+          "title": "Rowancloud-eu · native-desktoppsu",
+          "left": 100,
+          "top": 180,
+          "right": 930,
+          "bottom": 760
+        }
+      ],
+      "overviewCards": null
+    },
+    {
+      "direction": "c",
+      "surface": "overview",
+      "file": "c-overview.png",
+      "bounds": [],
+      "overviewCards": 5
+    },
+    {
+      "direction": "b",
+      "surface": "goals",
+      "file": "b-goals.png"
+    },
+    {
+      "direction": "b",
+      "surface": "work-on-everything",
+      "file": "b-work-on-everything.png"
+    },
+    {
+      "direction": "b",
+      "surface": "goal-search",
+      "file": "b-goal-search.png"
+    },
+    {
+      "direction": "b",
+      "surface": "dismissed",
+      "file": "b-dismissed.png",
+      "lifecycle": true
+    },
+    {
+      "direction": "b",
+      "surface": "chat-pinned",
+      "file": "b-chat-pinned.png",
+      "lifecycle": true
+    },
+    {
+      "platform": "ubuntu",
+      "surface": "chat",
+      "file": "platform-ubuntu.png"
+    },
+    {
+      "platform": "mac",
+      "surface": "chat",
+      "file": "platform-mac.png"
+    },
+    {
+      "platform": "windows",
+      "surface": "chat",
+      "file": "platform-windows.png"
+    },
+    {
+      "surface": "launcher",
+      "file": "compare-launcher.png",
+      "comparison": true
+    },
+    {
+      "surface": "terminal",
+      "file": "compare-terminal.png",
+      "comparison": true
+    },
+    {
+      "surface": "organizer",
+      "file": "compare-organizer.png",
+      "comparison": true
+    },
+    {
+      "surface": "chat",
+      "file": "compare-chat.png",
+      "comparison": true
+    },
+    {
+      "surface": "accounts",
+      "file": "compare-accounts.png",
+      "comparison": true
+    }
+  ],
+  "browserErrors": [],
+  "networkRequests": [],
+  "windowOverflow": [],
+  "purpose": "Visual mockup rendering; not production native integration acceptance."
+}

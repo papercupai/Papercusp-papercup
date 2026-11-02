@@ -81,10 +81,13 @@ import { isCheckpointRunLockHeldCheap } from '../../release-checkpoint-lock';
 import { createAdmissionStepClock } from '../../release/admission-step-clock';
 import {
   ADMISSION_PREVIEW_INLINE_BUDGET_MS,
+  currentAdmissionPreviewHostInstanceId,
+  currentAdmissionPreviewHostPort,
   createRoutineMetadataAdmissionPreviewStore,
   deferredAdmissionPreviewPayload,
   describeAdmissionPreviewOperation,
   emitAdmissionPreviewSettled,
+  recoverOrphanedAdmissionPreviewOperations,
   runAdmissionPreviewOperation,
   type AdmissionPreviewStore,
 } from '../../release/admission-preview-operation';
@@ -2163,10 +2166,15 @@ export default defineTool({
           // so any re-confirm resumes them; it needs no retryPrecheck opt-in.
           const deferredTreeBusy = matchingPrecheck?.status === 'deferred' &&
             matchingPrecheck.verdict?.ran === false && matchingPrecheck.verdict.reason === 'checkpoint-tree-busy';
-          const resume = matchingPrecheck?.measurement && (deferredTreeBusy || (args.retryPrecheck === true &&
-            (matchingPrecheck.status === 'running' ||
-              (matchingPrecheck.status === 'failed' && matchingPrecheck.verdict?.ran === false &&
-                matchingPrecheck.verdict.reason === 'runner-failed'))))
+          const failedWithUnmeasuredRows = matchingPrecheck?.status === 'failed' &&
+            matchingPrecheck.verdict?.ran === true && matchingPrecheck.verdict.unmeasured.length > 0 &&
+            matchingPrecheck.measurement?.results.some(result => result.status === 'unmeasured') === true;
+          const retryRequested = args.retryPrecheck === true && (
+            matchingPrecheck?.status === 'running' ||
+            failedWithUnmeasuredRows ||
+            (matchingPrecheck?.status === 'failed' && matchingPrecheck.verdict?.ran === false &&
+              matchingPrecheck.verdict.reason === 'runner-failed'));
+          const resume = matchingPrecheck?.measurement && (deferredTreeBusy || retryRequested)
             ? matchingPrecheck : undefined;
           const operationId =
             resume?.operationId ??
@@ -2206,7 +2214,8 @@ export default defineTool({
             ...resume, status: 'running', verdict: undefined, runnerPid: process.pid,
             runnerPidIdentity: runnerPidIdentity ?? undefined, runnerTaskId, updatedAtMs: startedAtMs,
             expiresAtMs: admissionPrecheckDeadline(startedAtMs,
-              resume.files.filter(file => !resume.measurement!.results.some(result => result.path === file))),
+              resume.files.filter(file => !resume.measurement!.results.some(result =>
+                result.path === file && result.status !== 'unmeasured'))),
             heartbeatAtMs: startedAtMs,
           } : freshOperation;
           const pendingQueue: FrozenCandidateRepairQueue = {
@@ -2536,6 +2545,35 @@ export default defineTool({
             patchRouting = { error: { step: 'cohort-drag-route', detail: err instanceof Error ? err.message : String(err) } };
           }
         }
+        const missingAdmissionGuidance = outcome.missing
+          ? (() => {
+              const expandedPaths = [...new Set([...paths, ...outcome.missing.map((m) => m.wanted)])];
+              if (expandedPaths.length <= REPAIR_QUEUE_ADMIT_MAX_PATHS) {
+                return {
+                  missing: outcome.missing,
+                  // The same admission, widened by exactly the missing paths — and nothing else.
+                  admitCommand: renderAdmitCommand(expandedPaths),
+                  note:
+                    'P-004: an admitted file imports a path that does not exist at the proved commit. The tip is never ' +
+                    'widened for you — re-run admitCommand (your hunks for the added paths must be in the edit ledger, ' +
+                    'i.e. you authored them on staging).',
+                };
+              }
+              return {
+                missing: outcome.missing,
+                admitCommandUnavailable: {
+                  reason: 'expanded-path-limit',
+                  requiredPathCount: expandedPaths.length,
+                  maxPaths: REPAIR_QUEUE_ADMIT_MAX_PATHS,
+                },
+                note:
+                  `P-004: the complete import closure requires ${expandedPaths.length} unique paths, above the ` +
+                  `per-call cap of ${REPAIR_QUEUE_ADMIT_MAX_PATHS}. Do not retry a partial or split list; the admission ` +
+                  'requires the full closure in one call. The frozen candidate is unchanged. Follow repairQueue.nextAction; ' +
+                  'route any terminal-retirement decision to the candidate owner.',
+              };
+            })()
+          : {};
         return json({
           ok: false,
           admitted: false,
@@ -2548,17 +2586,7 @@ export default defineTool({
           ...(outcome.stray ? { stray: outcome.stray } : {}),
           ...(outcome.paths ? { invalidPaths: outcome.paths } : {}),
           ...(outcome.step ? { step: outcome.step } : {}),
-          ...(outcome.missing
-            ? {
-                missing: outcome.missing,
-                // The same admission, widened by exactly the missing paths — and nothing else.
-                admitCommand: renderAdmitCommand([...new Set([...paths, ...outcome.missing.map((m) => m.wanted)])]),
-                note:
-                  'P-004: an admitted file imports a path that does not exist at the proved commit. The tip is never ' +
-                  'widened for you — re-run admitCommand (your hunks for the added paths must be in the edit ledger, ' +
-                  'i.e. you authored them on staging).',
-              }
-            : {}),
+          ...missingAdmissionGuidance,
           judgedSha: queue.repairHead,
           containment: await containmentAt(queue.repairHead),
           ...base,
@@ -3238,6 +3266,18 @@ export function __setAdmissionPreviewDepsForTests(deps: {
 
 function admissionPreviewStoreFor(queueTarget: GateVerdictTarget): AdmissionPreviewStore {
   return admissionPreviewStoreFactory(queueTarget);
+}
+
+/** Run once after boot migrations and before this host starts accepting requests. */
+export async function recoverAdmissionPreviewsAtHostBoot(): Promise<number> {
+  const queueTarget = target();
+  const interrupted = await recoverOrphanedAdmissionPreviewOperations({
+    store: admissionPreviewStoreFor(queueTarget),
+    hostInstanceId: currentAdmissionPreviewHostInstanceId(),
+    hostPort: currentAdmissionPreviewHostPort(),
+    emitSettled: (operation) => admissionPreviewEmitter(operation, queueTarget.workspaceId),
+  });
+  return interrupted.length;
 }
 
 async function runDeferrableAdmissionPreview<T extends { data?: unknown }>(

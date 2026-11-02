@@ -8,6 +8,20 @@ describe('getDocs', () => {
     expect(out.results).toEqual([]);
   });
 
+  it('fetches canonical source for an exact slug without listing the corpus', async () => {
+    const page = makePage({ slug: 'agent-insights/release-guide', title: 'Release guide' });
+    const base = makeSource({ pages: [page] });
+    const listPages = vi.fn(async () => { throw new Error('exact lookup must not list every page'); });
+    const getPageBySlug = vi.fn(async (slug: string) => slug === page.slug ? page : null);
+    const getSource = vi.fn(async () => '---\ntitle: Release guide\n---\n# Repair steps');
+    const out = await getDocs({ ...base, listPages, getPageBySlug, getSource }, { slugs: [page.slug], source: true });
+
+    expect(out.results[0]).toMatchObject({ slug: page.slug, found: true, source: true, content: '---\ntitle: Release guide\n---\n# Repair steps' });
+    expect(getPageBySlug).toHaveBeenCalledWith(page.slug);
+    expect(getSource).toHaveBeenCalledWith(page);
+    expect(listPages).not.toHaveBeenCalled();
+  });
+
   it('fetches a single page', async () => {
     const pages = [makePage({ slug: 'a/b', title: 'AB' })];
     const out = await getDocs(makeSource({ pages, contents: { 'a/b': 'body of a/b' } }), {

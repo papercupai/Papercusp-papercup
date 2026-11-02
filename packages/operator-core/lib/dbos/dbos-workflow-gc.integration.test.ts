@@ -31,7 +31,8 @@ if (isWorker) {
   let dbosStopped = false;
 
   beforeAll(async () => {
-    org = await createOrgTestDb();
+    // The cancellation drill uses a locker, its blocked victim, and a separate observer.
+    org = await createOrgTestDb({ adminPoolMax: 3 });
     sql = org.adminSql;
     for (const key of ['HARNESS_DATABASE_URL', 'HARNESS_ADMIN_DATABASE_URL', 'DATABASE_URL']) vi.stubEnv(key, org.adminDsn);
     vi.stubEnv('PAPERCUSP_SKIP_PG_DISCOVERY', '1');
@@ -89,6 +90,51 @@ if (isWorker) {
       WHERE w.workflow_uuid LIKE 'gc-fixture-%' ORDER BY w.workflow_uuid`).map(r => r.id);
   }
 
+  it('cancels a real blocked SQL selection and releases the query before the next pass', async () => {
+    await seed('gc-fixture-locked', 'SUCCESS', 1, cutoff - 1);
+    let ready!: () => void;
+    let unlock!: () => void;
+    const locked = new Promise<void>(resolve => { ready = resolve; });
+    const release = new Promise<void>(resolve => { unlock = resolve; });
+    const blocker = sql.begin(async tx => {
+      await tx`LOCK TABLE dbos.workflow_status IN ACCESS EXCLUSIVE MODE`;
+      ready();
+      await release;
+    });
+    const control = new AbortController();
+    try {
+      await locked;
+      const outcome = deps().selectTerminalVictims(cutoff, 1, control.signal).catch(error => error);
+      await vi.waitFor(async () => {
+        const rows = await sql<{ n: number }[]>`SELECT count(*)::int AS n FROM pg_stat_activity
+          WHERE datname = current_database() AND state = 'active' AND wait_event_type = 'Lock'
+            AND query LIKE '%SELECT workflow_uuid FROM dbos.workflow_status%'`;
+        expect(rows[0]!.n).toBeGreaterThan(0);
+      }, { timeout: 5_000 });
+      control.abort(new Error('GC terminal cancellation fixture'));
+      expect(await outcome).toMatchObject({ code: '57014' });
+    } finally {
+      control.abort();
+      unlock();
+      await blocker;
+    }
+    expect(await runDbosWorkflowGcOnce({ enabled: true, nowMs, deps: deps() })).toMatchObject({ deletedWorkflows: 1 });
+    expect(await remaining()).toEqual([]);
+  }, 15_000);
+
+  it('rejects a zero-removal pass with real eligible rows and permits a later successful retry', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    await seed('gc-fixture-no-progress', 'SUCCESS', 1, cutoff - 1);
+    await expect(runDbosWorkflowGcOnce({ enabled: true, nowMs,
+      deps: { ...deps(), deleteWorkflows: async () => 0 } })).rejects.toThrow('no deletion progress');
+    expect(error).toHaveBeenCalledWith(expect.stringContaining('no deletion progress'));
+    const rows = await sql<{ n: number }[]>`SELECT count(*)::int AS n FROM dbos.workflow_status
+      WHERE workflow_uuid = 'gc-fixture-no-progress'`;
+    expect(rows[0]!.n).toBe(1);
+    expect(await runDbosWorkflowGcOnce({ enabled: true, nowMs, deps: deps() })).toMatchObject({ deletedWorkflows: 1, deletedOutputs: 0 });
+    error.mockRestore();
+  });
+
   it('orders by creation with uuid ties, preserves recovery data, and resumes after a committed budget-limited batch', async () => {
     const victims = ['gc-fixture-tie-a', 'gc-fixture-tie-z', 'gc-fixture-newer-old-update', 'gc-fixture-newest'];
     const created = [100, 100, 200, 300];
@@ -109,8 +155,23 @@ if (isWorker) {
       } } });
     expect(first).toMatchObject({ deletedWorkflows: 2, deletedOutputs: 2, batches: 1, budgetExhausted: true });
     expect(await remaining()).toEqual([...preserved, ...victims.slice(2)].sort());
-    const resumed = await runDbosWorkflowGcOnce({ enabled: true, nowMs, batchLimit: 1, deps: real });
-    expect(resumed).toMatchObject({ deletedWorkflows: 2, deletedOutputs: 2, budgetExhausted: false });
+    // Restart the registered runtime while retaining this database's original backlog.
+    await client.destroy();
+    await DBOS.shutdown();
+    await DBOS.launch();
+    const { DBOSClient } = await import('@dbos-inc/dbos-sdk');
+    client = await DBOSClient.create({ systemDatabaseUrl: org.adminDsn, systemDatabaseSchemaName: 'dbos' });
+    for (let i = 2; i < victims.length; i++) {
+      clock = 0;
+      const resumed = await runDbosWorkflowGcOnce({ enabled: true, nowMs, batchLimit: 1,
+        nowClockMs: () => clock, deps: { ...deps(), deleteWorkflows: async ids => {
+          expect(ids).toEqual([victims[i]]);
+          const count = await real.deleteWorkflows(ids); clock = 30_000; return count;
+        } } });
+      expect(resumed).toMatchObject({ deletedWorkflows: 1, deletedOutputs: 1, batches: 1, budgetExhausted: true });
+      expect(await remaining()).toEqual([...preserved, ...victims.slice(i + 1)].sort());
+    }
+    expect(await runDbosWorkflowGcOnce({ enabled: true, nowMs, deps: deps() })).toMatchObject({ deletedWorkflows: 0 });
     expect(await remaining()).toEqual(preserved);
   });
 

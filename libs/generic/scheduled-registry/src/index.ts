@@ -219,6 +219,8 @@ export interface ScheduledRegistryConfig {
   now?: () => number;
   /** category-aware shed gate for `shed: true` timers; defaults to never-shed. */
   shouldShed?: (name: string) => boolean;
+  /** Execution permission, independent of load shedding. Checked on every fire, including fireOnArm. */
+  canRun?: (entry: Readonly<ManagedEntry>) => boolean | Promise<boolean>;
   log?: (msg: string) => void;
   /** Host-owned alarm delivery. The registry itself never imports a durable executor. */
   onHungTick?: (episode: ManagedTickEpisode) => void | Promise<void>;
@@ -251,6 +253,7 @@ function defaults(): ResolvedConfig {
     setTimeoutImpl: defaultSetTimeoutImpl,
     now: () => Date.now(),
     shouldShed: () => false,
+    canRun: () => true,
     log: (m) => console.warn(`[scheduled-registry] ${m}`),
   };
 }
@@ -393,22 +396,8 @@ function makeTick(name: string, fn: () => void | Promise<void>, opts: ManagedTim
     rec.entry.runningSince = null;
     rec.episodeSkips = 0;
   };
-  return () => {
+  const run = (): void => {
     if (rec.stopped) return;
-    if (rec.running) {
-      // Re-entrancy guard: a slow tick never piles up a second run. Count the swallowed fire and
-      // report a tick that has held the guard for several intervals, since nothing else will.
-      rec.episodeSkips += 1;
-      rec.entry.skippedWhileRunning += 1;
-      if (shouldReportSkip(rec.episodeSkips) && rec.entry.runningSince !== null) {
-        state.resolved.log(
-          `${name} tick still running after ${state.resolved.now() - rec.entry.runningSince}ms ` +
-            `(${rec.episodeSkips} fire(s) skipped by the re-entrancy guard, interval ${rec.entry.intervalMs}ms)`,
-        );
-      }
-      return;
-    }
-    if (opts.shed && state.resolved.shouldShed(name)) return; // shed this cycle under load
     rec.running = true;
     rec.entry.running = true;
     rec.entry.runningSince = state.resolved.now();
@@ -466,6 +455,42 @@ function makeTick(name: string, fn: () => void | Promise<void>, opts: ManagedTim
       );
     } else {
       settle(undefined);
+    }
+  };
+  const admissionFailed = (): void => {
+    rec.running = false;
+    rec.entry.lastError = 'Execution eligibility unavailable';
+    state.resolved.log(`${name} execution eligibility unavailable; tick withheld`);
+  };
+  return () => {
+    if (rec.stopped) return;
+    if (rec.running) {
+      // A permission read reserves admission but is not an executing invocation.
+      if (!rec.entry.running) return;
+      rec.episodeSkips += 1;
+      rec.entry.skippedWhileRunning += 1;
+      if (shouldReportSkip(rec.episodeSkips) && rec.entry.runningSince !== null) {
+        state.resolved.log(
+          `${name} tick still running after ${state.resolved.now() - rec.entry.runningSince}ms ` +
+            `(${rec.episodeSkips} fire(s) skipped by the re-entrancy guard, interval ${rec.entry.intervalMs}ms)`,
+        );
+      }
+      return;
+    }
+    if (opts.shed && state.resolved.shouldShed(name)) return;
+    try {
+      const allowed = state.resolved.canRun(Object.freeze({ ...rec.entry }));
+      if (allowed && typeof (allowed as Promise<boolean>).then === 'function') {
+        rec.running = true;
+        void Promise.resolve(allowed).then(value => {
+          rec.running = false;
+          if (value === true) run();
+        }, admissionFailed);
+      } else if (allowed === true) {
+        run();
+      }
+    } catch {
+      admissionFailed();
     }
   };
 }

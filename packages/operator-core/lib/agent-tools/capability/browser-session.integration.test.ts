@@ -48,6 +48,49 @@ describe('managed browser process enrollment and loss (real PG/Chromium)', () =>
     if (opened.body.ok) handles.push({ id: opened.body.browser.id, ctx });
     return opened;
   }
+  type StartupPhase = { event: string; elapsedMs: number; childElapsedMs?: number };
+  const startupReadyTimeoutMs = 15_000;
+  function forkOwnerWorker() {
+    return fork(fileURLToPath(new URL('./__fixtures__/browser-owner-worker.mts', import.meta.url)), [], {
+      execArgv: [
+        '--require', fileURLToPath(new URL('./__fixtures__/browser-owner-worker-startup.cjs', import.meta.url)),
+        '--import', 'tsx', '--import', fileURLToPath(new URL('./__fixtures__/browser-owner-worker-tsx-ready.mjs', import.meta.url)),
+      ], stdio: ['ignore', 'inherit', 'inherit', 'ipc'],
+      env: { ...process.env, HARNESS_ADMIN_DATABASE_URL: db.adminDsn, HARNESS_DATABASE_URL: db.appDsn },
+    });
+  }
+  async function waitForOwnerWorkerReady(child: ChildProcess, startedAt: bigint): Promise<StartupPhase[]> {
+    const phases: StartupPhase[] = [];
+    let childStartedAtNs: bigint | undefined;
+    const describePhases = () => phases.map(phase =>
+      `${phase.event}=parent:${phase.elapsedMs.toFixed(1)}ms${phase.childElapsedMs === undefined ? '' : `/child:${phase.childElapsedMs.toFixed(1)}ms`}`)
+      .join(', ') || 'none';
+    await new Promise<void>((resolve, reject) => {
+      const finish = (error?: Error) => {
+        clearTimeout(timer);
+        child.off('message', onMessage);
+        child.off('exit', onExit);
+        if (error) reject(error); else resolve();
+      };
+      const timer = setTimeout(() => finish(new Error(
+        `real browser worker startup timed out after ${startupReadyTimeoutMs}ms; observed phases: ${describePhases()}`)),
+      startupReadyTimeoutMs);
+      const onMessage = (message: any) => {
+        if (!['fixture:process-started', 'fixture:tsx-loaded', 'fixture:imports-loaded',
+          'fixture:rpc-started', 'fixture:ready'].includes(message.type)) return;
+        const childAtNs = typeof message.startupAtNs === 'string' ? BigInt(message.startupAtNs) : undefined;
+        childStartedAtNs ??= childAtNs;
+        phases.push({ event: message.type, elapsedMs: Number(process.hrtime.bigint() - startedAt) / 1e6,
+          ...(childStartedAtNs !== undefined && childAtNs !== undefined
+            ? { childElapsedMs: Number(childAtNs - childStartedAtNs) / 1e6 } : {}) });
+        if (message.type === 'fixture:ready') finish();
+      };
+      const onExit = () => finish(new Error(`real browser worker exited before ready; observed phases: ${describePhases()}`));
+      child.on('message', onMessage);
+      child.once('exit', onExit);
+    });
+    return phases;
+  }
   beforeAll(async () => {
     db = await createOrgTestDb(); h.sql = db.adminSql;
     // Preserve real terminal-event persistence; host delivery is outside this
@@ -107,21 +150,16 @@ describe('managed browser process enrollment and loss (real PG/Chromium)', () =>
       on: (_event, listener) => listeners.add(listener), off: (_event, listener) => listeners.delete(listener) } });
     const children: ChildProcess[] = []; let row: Awaited<ReturnType<typeof getTask>> = null;
     let seq = 0;
+    const startupSamples: StartupPhase[][] = [];
     async function start() {
-      const child = fork(fileURLToPath(new URL('./__fixtures__/browser-owner-worker.mts', import.meta.url)), [], {
-        execArgv: ['--import', 'tsx'], stdio: ['ignore', 'inherit', 'inherit', 'ipc'],
-        env: { ...process.env, HARNESS_ADMIN_DATABASE_URL: db.adminDsn, HARNESS_DATABASE_URL: db.appDsn },
-      });
+      const startedAt = process.hrtime.bigint();
+      const child = forkOwnerWorker();
       children.push(child);
       const worker: OwnerRpcWorkerLike = { process: { pid: child.pid }, send: message => child.send(message as never),
         isDead: () => child.exitCode !== null || child.signalCode !== null, isConnected: () => child.connected };
       workers[String(child.pid)] = worker;
       child.on('message', message => { for (const listener of listeners) listener(worker, message); });
-      await new Promise<void>((resolve, reject) => {
-        const timer = setTimeout(() => reject(new Error('real browser worker startup timed out')), 15_000);
-        child.on('message', (message: any) => { if (message.type === 'fixture:ready') { clearTimeout(timer); resolve(); } });
-        child.once('exit', () => { clearTimeout(timer); reject(new Error('real browser worker exited before ready')); });
-      });
+      startupSamples.push(await waitForOwnerWorkerReady(child, startedAt));
       return child;
     }
     async function request(child: ChildProcess, args: Record<string, unknown>) {
@@ -140,6 +178,11 @@ describe('managed browser process enrollment and loss (real PG/Chromium)', () =>
     }
     try {
       const owner = await start(); const sibling = await start();
+      expect(startupSamples.map(sample => sample.map(phase => phase.event))).toEqual([
+        ['fixture:process-started', 'fixture:tsx-loaded', 'fixture:imports-loaded', 'fixture:rpc-started', 'fixture:ready'],
+        ['fixture:process-started', 'fixture:tsx-loaded', 'fixture:imports-loaded', 'fixture:rpc-started', 'fixture:ready'],
+      ]);
+      process.stderr.write(`BROWSER_WORKER_STARTUP_PHASES ${JSON.stringify(startupSamples)}\n`);
       const opened = await request(owner, { args: { op: 'open', selector: '#ready' }, url: base });
       expect(opened.ok, JSON.stringify(opened)).toBe(true);
       row = await getTask(opened.browser.task_id);

@@ -982,6 +982,8 @@ describe('work_items:burn_down', () => {
     expect(shaped.inFlight).toHaveLength(10);
     expect((shaped.inFlight as unknown[]).every((row) => row && typeof row === 'object')).toBe(true);
     expect((shaped.inFlight as unknown[]).some((row) => typeof row === 'string')).toBe(false);
+    expect(shaped.textTruncated).toBe(true);
+    expect((shaped.inFlight as Array<{ title: string }>)[0]?.title).toContain('[TRUNCATED');
     expect(shaped.presentation).toEqual(expect.objectContaining({
       tier: 'trimmed',
       rowCap: 10,

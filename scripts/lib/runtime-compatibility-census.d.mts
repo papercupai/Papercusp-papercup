@@ -5,14 +5,29 @@
  * Exact blobs and pinned gitlinks, with unavailable checkouts explicitly retained.
  * @param {string} root
  * @param {string} [revision]
- * @param {{ runGit?: (root: string, args: string[], options?: any) => any }} [options]
+ * Path selection is explicit discovery scope, never population closure. Budgets
+ * are checked against pinned tree metadata BEFORE asking Git for blob bytes.
+ * Unavailable/over-budget requested paths remain addressable in unresolved.
+ * @param {{ runGit?: (root: string, args: string[], options?: any) => any,
+ *   includePaths?: string[], maxBytes?: number, maxFiles?: number }} [options]
  */
-export function readCommittedSources(root: string, revision?: string, { runGit }?: {
+export function readCommittedSources(root: string, revision?: string, { runGit, includePaths, maxBytes, maxFiles }?: {
     runGit?: (root: string, args: string[], options?: any) => any;
+    includePaths?: string[];
+    maxBytes?: number;
+    maxFiles?: number;
 }): {
     sources: any[];
     repositories: any[];
-    unresolved: any[];
+    unresolved: Record<string, any>[];
+    selection: {
+        paths: string[] | null;
+        maxBytes: number | null;
+        maxFiles: number | null;
+        bytesRead: number;
+        filesRead: number;
+        populationComplete: boolean;
+    };
 };
 /**
  * @typedef {{ section: string, key: string, value: string, firstLine: number, lastLine: number }} SystemdDirective
@@ -35,14 +50,15 @@ export function readCommittedSources(root: string, revision?: string, { runGit }
 export function collectSystemdDirectives(path: string, text: string): LaunchControl | null;
 /** Candidate leads require explicit reachability classification before the population is frozen. */
 export function inventorySources(snapshot: any): {
-    schema: string;
-    repositories: any;
     sourceFingerprint: string;
     files: InventoryFile[];
     groups: Record<string, InventoryLead[]>;
     unresolved: any[];
     closureAccepted: boolean;
     limitations: string[];
+    selection?: any;
+    schema: string;
+    repositories: any;
 };
 /** Read static ELF metadata without loading the candidate into this process. */
 export function parseElfDependencies(text: any): {

@@ -1734,7 +1734,7 @@ describe("MCP proxy serving-generation affinity", () => {
       vi.useRealTimers();
       fakeTimers = false;
       expect(timeoutWarning).toHaveBeenCalledWith(
-        expect.stringContaining("[bounded-timeout] result-door scratch spill write exceeded 30000ms"),
+        expect.stringContaining("[bounded-timeout] result-door scratch spill write exceeded 20000ms"),
       );
 
       const spillText = spillResult.content.find((item: { type: string; text?: string }) => item.type === "text")?.text ?? "";

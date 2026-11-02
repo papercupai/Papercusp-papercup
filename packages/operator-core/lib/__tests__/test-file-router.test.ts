@@ -243,6 +243,15 @@ afterEach(() => {
 });
 
 describe('test-files router', () => {
+  it('routes the DB-free PTY process fixture through its maintained integration config', () => {
+    expect(discoverVitestRoute('apps/operator/lib/psu-pty-host-assume-fence.integration.test.ts'))
+      .toMatchObject({
+        cwd: resolve(REPO_ROOT, 'apps/operator'),
+        config: 'vitest.pty-process.integration.config.ts',
+        requested: 'lib/psu-pty-host-assume-fence.integration.test.ts',
+      });
+  });
+
   it('routes the maintained desktop portal assertion to its native e2e evidence config', () => {
     expect(discoverVitestRoute('apps/operator/bin/desktop-portal-native.test.ts')).toMatchObject({
       cwd: resolve(REPO_ROOT, 'apps/operator'),

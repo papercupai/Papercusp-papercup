@@ -151,6 +151,13 @@ describe('describeUnreadRun', () => {
     expect(naiveUnreadRun(body, 0)).not.toBeNull();
   });
 
+  it('does not borrow a completed classifier log across an although clause to a pending git-sync command', () => {
+    const body = 'Read the classifier test result at /tmp/assume94-classifier-red.log ' +
+      '(2 failed/3 passed and exit1), although the separate canonical git-sync command was launched.';
+    expect(describeUnreadRun(body, 0)).toBeNull();
+    expect(naiveUnreadRun(body, 0)).not.toBeNull();
+  });
+
   it('keeps a separately launched publisher command tied to its own output', () => {
     const body = 'Read /tmp/unit.log (73 passed), and a separate publisher command was ' +
       'launched at /tmp/publish.log.';

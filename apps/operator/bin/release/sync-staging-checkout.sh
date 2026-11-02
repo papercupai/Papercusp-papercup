@@ -844,23 +844,13 @@ prepare_staging_candidate() {
   copy_staging_runtime_environment "$STAGING_CANDIDATE_ROOT" "$target_sha" || return 1
 }
 
-prebuild_staging_host_bundle() {
-  local candidate_root="$1" bundle_script="$2" bundle_status build_log found=0
-  local log_root="${PAPERCUSP_HOME:-$HOME/.papercusp}/checkpoint-logs"
-  local attempt="${INVOCATION_ID:-$$}" failure_log
-  if PAPERCUSP_INTEGRATION_ROOT="$candidate_root" PAPERCUSP_BUNDLE_REUSE_FRESH=1 \
-    timeout --kill-after=10s 900s bash "$bundle_script"; then
-    return 0
-  else
-    bundle_status=$?
-  fi
-  # Reuse the durable checkpoint-log directory. The EXIT trap removes a failed
-  # generation, and journal output alone cannot retain arbitrary raw build bytes.
-  [[ "$attempt" =~ ^[a-zA-Z0-9_-]+$ ]] || attempt="$$"
-  failure_log="$log_root/staging-bundle-$attempt.log"
+write_staging_bundle_failure_log() {
+  local bundle_status="$1" candidate_root="$2" failure_log="$3" disposition="${4:-final}"
+  local build_log found=0 log_root
+  log_root="$(dirname "$failure_log")"
   if ! mkdir -p -- "$log_root"; then
     log "FATAL: bundle failed (exit $bundle_status); cannot create failure log directory $log_root"
-    return "$bundle_status"
+    return 1
   fi
   if ! {
     printf 'bundle exit status: %s\ncandidate: %s\n' "$bundle_status" "$candidate_root"
@@ -873,10 +863,68 @@ prebuild_staging_host_bundle() {
     if [[ "$found" -eq 0 ]]; then printf 'no build-error log was produced\n'; fi
   } > "$failure_log"; then
     log "FATAL: bundle failed (exit $bundle_status); could not retain failure logs at $failure_log"
-    return "$bundle_status"
+    return 1
   fi
-  log "FATAL: bundle failed (exit $bundle_status); raw build evidence retained at $failure_log"
+  if [[ "$disposition" == "retry" ]]; then
+    log "WARN: staging bundle attempt failed; raw build evidence retained at $failure_log"
+  else
+    log "FATAL: bundle failed (exit $bundle_status); raw build evidence retained at $failure_log"
+  fi
   tail -n 80 -- "$failure_log" >&2 || true
+}
+
+prebuild_staging_host_bundle() {
+  local candidate_root="$1" bundle_script="$2" bundle_status build_log
+  local log_root="${PAPERCUSP_HOME:-$HOME/.papercusp}/checkpoint-logs"
+  local attempt="${INVOCATION_ID:-$$}" failure_log retry_log retry_count=0 retryable_lock_refusal retry_wait_sec
+  local retry_deadline=$((SECONDS + 900))
+  # Only the exact fail-closed unknown-lease refusal is retryable: its package
+  # manager child never starts, so the same candidate is safe to try again.
+  # Keep the candidate for at most the same 900s budget as one bundle attempt.
+  while true; do
+    if PAPERCUSP_INTEGRATION_ROOT="$candidate_root" PAPERCUSP_BUNDLE_REUSE_FRESH=1 \
+      timeout --kill-after=10s 900s bash "$bundle_script"; then
+      if ((retry_count > 0)); then
+        log "INFO: staging bundle succeeded after $retry_count legacy lock-root retry attempt(s)"
+      fi
+      return 0
+    else
+      bundle_status=$?
+    fi
+
+    retryable_lock_refusal=0
+    for build_log in "$candidate_root/apps/operator/dist-host/"*.build-error.log; do
+      [[ -f "$build_log" ]] || continue
+      if grep -aEq 'NPM_INSTALL_SAFE_ERROR Refusing fs-mutex root migration: legacy leases active=[0-9]+ unknown=[1-9][0-9]*' "$build_log"; then
+        retryable_lock_refusal=1
+        break
+      fi
+    done
+    if [[ "$retryable_lock_refusal" -ne 1 ]] || ((SECONDS >= retry_deadline)); then
+      break
+    fi
+
+    retry_count=$((retry_count + 1))
+    [[ "$attempt" =~ ^[a-zA-Z0-9_-]+$ ]] || attempt="$$"
+    retry_log="$log_root/staging-bundle-$attempt-lock-retry-$retry_count.log"
+    if ! write_staging_bundle_failure_log "$bundle_status" "$candidate_root" "$retry_log" retry; then
+      break
+    fi
+    if ! rm -f -- "$candidate_root/apps/operator/dist-host/"*.build-error.log; then
+      log "FATAL: could not clear the prior bundle error marker before retrying $candidate_root"
+      break
+    fi
+    log "WARN: retrying staging bundle on the same candidate after unknown legacy lock refusal; retry budget 900s"
+    retry_wait_sec=$((retry_deadline - SECONDS))
+    ((retry_wait_sec > 30)) && retry_wait_sec=30
+    ((retry_wait_sec > 0)) && sleep "$retry_wait_sec"
+  done
+
+  # Reuse the durable checkpoint-log directory. The EXIT trap removes a failed
+  # generation, and journal output alone cannot retain arbitrary raw build bytes.
+  [[ "$attempt" =~ ^[a-zA-Z0-9_-]+$ ]] || attempt="$$"
+  failure_log="$log_root/staging-bundle-$attempt.log"
+  write_staging_bundle_failure_log "$bundle_status" "$candidate_root" "$failure_log" final || true
   return "$bundle_status"
 }
 

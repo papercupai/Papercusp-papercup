@@ -88,6 +88,47 @@ describe('pinned application runtime selection', () => {
     }
   });
 
+  it('runs only the byte-pinned preload before application code under the real interpreter', async () => {
+    const preload = join(root, 'preload with spaces.cjs');
+    const bytes = 'globalThis.packagePreloaded = "verified";';
+    await writeFile(preload, bytes);
+    candidate.preload = { path: preload, sha256: digest(bytes) };
+    const source = 'process.stdout.write(JSON.stringify({preloaded:globalThis.packagePreloaded,args:process.argv.slice(2)}))';
+    await writeFile(candidate.entrypoint, source);
+    candidate.entrypointSha256 = digest(source);
+    const configuredBun = process.env.PAPERCUSP_RUNTIME_TEST_BUN;
+    if (configuredBun) {
+      const executable = await realpath(configuredBun);
+      const { stdout } = await exec(executable, ['-e', 'process.stdout.write(JSON.stringify({version:process.versions.bun,platform:process.platform,arch:process.arch}))'],
+        { env: {}, timeout: 5000 });
+      candidate.bun = { name: 'bun', executable, binarySha256: digest(await readFile(executable)), ...JSON.parse(stdout) };
+    }
+    for (const runtime of configuredBun ? ['node', 'bun'] as const : ['node'] as const) {
+      const launch = await resolveApplicationRuntimeLaunch({ candidate, role: 'request', runtime,
+        purpose: 'isolated-candidate', args: ['literal arg', '--eval'], env: {} });
+      const { stdout } = await exec(launch.executable, launch.args, { env: launch.env, timeout: 5000 });
+      expect(JSON.parse(stdout)).toEqual({ preloaded: 'verified', args: ['literal arg', '--eval'] });
+    }
+    await writeFile(preload, 'throw new Error("changed preload must never execute")');
+    await expect(resolveApplicationRuntimeLaunch({ candidate, role: 'request' }))
+      .rejects.toThrow('Application preload digest mismatch');
+  });
+
+  it('rejects an incomplete preload pin and snapshots it before consulting acceptance', async () => {
+    candidate.preload = { path: 'relative.cjs', sha256: 'a'.repeat(64) };
+    await expect(resolveApplicationRuntimeLaunch({ candidate, role: 'request' }))
+      .rejects.toThrow('An explicit pinned application preload is required');
+    const preload = join(root, 'preload.cjs');
+    await writeFile(preload, '');
+    candidate.preload = { path: preload, sha256: digest('') };
+    pretendBun();
+    await expect(resolveApplicationRuntimeLaunch({ candidate, role: 'request', runtime: 'bun',
+      acceptanceRef: 'accepted:fixture', verifyAcceptance: async () => {
+        candidate.preload!.path = join(root, 'missing.cjs');
+        return acceptance();
+      } })).rejects.toThrow('Runtime identity does not match its pin');
+  });
+
   it('rejects a well-formed role outside the explicit candidate population', async () => {
     await expect(resolveApplicationRuntimeLaunch({ candidate, role: 'not-in-this-candidate' }))
       .rejects.toThrow(/role census/);

@@ -68,7 +68,7 @@ beforeAll(async () => {
   await rootSql.unsafe(`
     CREATE TABLE harness_shared.harness_plans (
       workspace_id text NOT NULL, harness_slug text NOT NULL, plan_slug text NOT NULL,
-      op_status text, op_updated_at timestamptz,
+      op_status text, op_updated_at timestamptz, execution_start_revision_seq integer,
       PRIMARY KEY (workspace_id, harness_slug, plan_slug)
     )`);
   h.sql = rootSql;
@@ -91,6 +91,17 @@ beforeEach(async () => {
 });
 
 describe('plans:pause handler (PG)', () => {
+  it('revokes modern start proof while keeping the retired op_status null', async () => {
+    await rootSql`UPDATE harness_shared.harness_plans SET execution_start_revision_seq=1
+      WHERE workspace_id=${SEED_WS} AND plan_slug='never-started'`;
+    const res = await call('never-started');
+    expect(res.data.results[0]).toMatchObject({ ok: true });
+    expect(res.data.results[0]).not.toHaveProperty('notStarted');
+    const [row] = await rootSql`SELECT op_status,execution_start_revision_seq FROM harness_shared.harness_plans
+      WHERE workspace_id=${SEED_WS} AND plan_slug='never-started'`;
+    expect(row).toMatchObject({ op_status: null, execution_start_revision_seq: null });
+  });
+
   it('pauses a STARTED plan', async () => {
     const res = await call('started-plan');
     expect(res.data.results[0]).toMatchObject({ slug: 'started-plan', status: 'paused' });

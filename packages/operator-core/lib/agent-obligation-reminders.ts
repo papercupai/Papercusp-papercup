@@ -195,6 +195,8 @@ export async function reconcileAgentObligationReminders(
         wakeHandle: handle,
         timeoutBehavior: 'wake',
         timeoutSec: desired.timeoutSec,
+        // Keep an explicit retry's deadline and predicate when adding a reminder.
+        preserveExplicitWait: true,
         once: true,
         minSleepSec: AGENT_OBLIGATION_REMINDER_MIN_SLEEP_SEC,
         boundTo: desired.binding,

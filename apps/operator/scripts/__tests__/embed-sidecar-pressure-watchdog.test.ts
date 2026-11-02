@@ -130,6 +130,14 @@ describe('embed sidecar pressure supervision contract', () => {
     expect(unit).toContain('Restart=always');
   });
 
+  it('provides the CUDA provider loader path and documents its distro dependencies', () => {
+    const unit = readFileSync(SIDECAR_UNIT, 'utf8');
+    const setup = readFileSync(resolve(SYSTEMD_DIR, 'README.md'), 'utf8');
+
+    expect(unit).toContain('Environment=LD_LIBRARY_PATH=/usr/local/lib/ollama/cuda_v12');
+    expect(setup).toContain('sudo apt-get install libcurand10 libcufft11');
+  });
+
   it('runs the tracked watchdog script through the snapshot launcher', () => {
     const unit = readFileSync(WATCHDOG_UNIT, 'utf8');
     const execStart = unit.split('\n').find((line) => line.startsWith('ExecStart='));

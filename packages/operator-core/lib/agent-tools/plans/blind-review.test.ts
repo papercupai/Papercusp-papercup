@@ -67,7 +67,8 @@ describe('plans:blind-review typed recruiter replacement', () => {
       delete missing[key as keyof typeof missing];
       expect(tool.args.safeParse(missing).success).toBe(false);
     }
-    expect(tool.args.safeParse({ slug: args.slug, op: 'mint', requestKey: args.requestKey }).success).toBe(false);
+    expect(tool.args.safeParse({ slug: args.slug, op: 'mint', requestKey: args.requestKey }).success).toBe(true);
+    expect(tool.args.safeParse({ slug: args.slug, op: 'resume', requestKey: args.requestKey }).success).toBe(false);
   });
   it('forwards only authenticated context and exact request fields to the recovery operation', async () => {
     replaceBlindGapReviewer.mockResolvedValue({ ok: true, attempt: { id: 9, status: 'uncertain' } });
@@ -296,24 +297,26 @@ describe('plans:blind-review op mint', () => {
   it('passes nominated product reads only on the mint operation', async () => {
     runBlindReviewMintOp.mockResolvedValue({ isError: false, payload: { ok: true } });
     const productReads = { docsHarness: 'engineering', docsSlugs: ['agent-insights/product-guide'], testFiles: ['lib/probe.test.ts'] };
-    await call({ slug: SLUG, op: 'mint', productReads });
-    expect(runBlindReviewMintOp).toHaveBeenCalledWith(expect.objectContaining({ productReads }));
+    const requestKey = 'mint-retry-v1';
+    await call({ slug: SLUG, op: 'mint', productReads, requestKey });
+    expect(runBlindReviewMintOp).toHaveBeenCalledWith(expect.objectContaining({ productReads, requestKey }));
     for (const op of ['brief', 'post', 'dispose', 'resume']) {
       const extra = op === 'post' ? { gaps: [] } : op === 'dispose' ? { dispositions: [{ reviewId: 1, gapId: 'G-1', itemId: 'P-001' }] } : {};
-      expect(tool.args.safeParse({ slug: SLUG, op, productReads, ...extra }).success).toBe(false);
+      expect(tool.args.safeParse({ slug: SLUG, op, productReads, requestKey, ...extra }).success).toBe(false);
     }
   });
 
   it('routes to runBlindReviewMintOp with the resolved harness and workspace, and returns its payload', async () => {
     runBlindReviewMintOp.mockResolvedValue({ isError: false, payload: { ok: true, reviewerOwnerId: 'su-r1' } });
 
-    const { body, isError } = await call({ slug: SLUG, op: 'mint', howToRun: 'npm run dev' });
+    const { body, isError } = await call({ slug: SLUG, op: 'mint', howToRun: 'npm run dev', requestKey: 'mint-retry-v1' });
 
     expect(isError).toBe(false);
     expect(body).toEqual({ ok: true, reviewerOwnerId: 'su-r1' });
     expect(runBlindReviewMintOp).toHaveBeenCalledTimes(1);
     expect(runBlindReviewMintOp).toHaveBeenCalledWith(
-      expect.objectContaining({ slug: SLUG, harness: 'papercusp', workspaceId: 'ws-resolved', howToRun: 'npm run dev', ctx: CTX }),
+      expect.objectContaining({ slug: SLUG, harness: 'papercusp', workspaceId: 'ws-resolved',
+        howToRun: 'npm run dev', requestKey: 'mint-retry-v1', ctx: CTX }),
     );
     expect(loadBlindReviewBrief).not.toHaveBeenCalled();
   });

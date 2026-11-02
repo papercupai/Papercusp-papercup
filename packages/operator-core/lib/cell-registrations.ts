@@ -753,6 +753,9 @@ export const GATE_CANDIDATE_FAILURES_CELL: CellSpec = {
       },
     },
     evidence: [
+      'gate.candidateFailures.candidateRunGroupId',
+      'gate.candidateFailures.repairHeadRunGroupId',
+      'gate.candidateFailures.unavailable',
       // EI-22260078732220798: `repairs-outstanding` INSTRUCTS the reader to compare this
       // against the headline ("when it equals `stillBrokenCount`, nothing here is confirmed
       // work yet") — so it has to be reachable as evidence, not just named in prose. It was
@@ -791,7 +794,7 @@ export const GATE_CANDIDATE_FAILURES_CELL: CellSpec = {
   callerRelativity: { kind: 'global' },
   provenance: {
     obtainedBy:
-      "harness_shared.test_runs scoped to source='ci' AND worktree_dirty=false AND commit_sha=<frozen candidate>, joined per-file to a git blob (or gitlink) comparison against repairHead",
+      "harness_shared.test_runs scoped to source='ci', worktree_dirty=false, commit_sha=<frozen candidate>, and run_group_id=<queue affectedTestProofGroup>; repairHead verdict rows use a completed suite measurement's exact run_group_id for that judgedSha; per-file blob/gitlink comparison against repairHead",
     liveExercised: true,
     evidence:
       'The method was run by hand against candidate adbf2753 on 2026-08-31: 223 files judged, 1 distinct failing file (LearningTab.lens-guard.test.tsx), blob ab5e43a6 at the candidate vs 36734ba9 at repairHead — i.e. already fixed. Re-running that blob on a clean tree passed 28/28.',
@@ -805,7 +808,7 @@ export const GATE_CANDIDATE_FAILURES_CELL: CellSpec = {
     path: 'gate.candidateFailures.stillBrokenCount',
   },
   shape:
-    '{ gate: { candidateFailures: { candidateSha, repairHeadSha, filesJudged, distinctFailingFiles: [{ path, attempts, status, fixInRepairHead, comparison, candidateBlob, repairHeadBlob, reading }], failingFileCount, alreadyFixedCount, stillBrokenCount, stillBrokenNeedsRunCount, changedBetweenRefs: { count, sample }, nonTestLegsMeasured, nonTestLegs: { current, head, atMs, all: [{ id, status, durationMs }], failing: [...], reading, perLeg: [{ id, measuredNow, lifecycle, fixedAtHead, admittedRound, reading }], outstanding: [id], shrink: { measured, admittedLegs, fixedLegs, failingLegs, failingLegIds, fixedLegIds, shrinkTotal, regressedLegs, lastMeasuredAtMs, scope } }, scope, unavailable, truncated } } }',
+    '{ gate: { candidateFailures: { candidateSha, repairHeadSha, candidateRunGroupId, repairHeadRunGroupId, filesJudged, distinctFailingFiles: [{ path, attempts, status, fixInRepairHead, comparison, candidateBlob, repairHeadBlob, reading }], failingFileCount, alreadyFixedCount, stillBrokenCount, stillBrokenNeedsRunCount, changedBetweenRefs: { count, sample }, nonTestLegsMeasured, nonTestLegs: { current, head, atMs, all: [{ id, status, durationMs }], failing: [...], reading, perLeg: [{ id, measuredNow, lifecycle, fixedAtHead, admittedRound, reading }], outstanding: [id], shrink: { measured, admittedLegs, fixedLegs, failingLegs, failingLegIds, fixedLegIds, shrinkTotal, regressedLegs, lastMeasuredAtMs, scope } }, scope, unavailable, truncated } } }',
 };
 
 /**

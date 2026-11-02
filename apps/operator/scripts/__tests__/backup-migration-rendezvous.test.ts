@@ -69,7 +69,7 @@ describe('papercusp-db-backup.sh migration rendezvous (EI-22634893804237362)', (
     // Every dump of the migration database goes through the guard: the state and
     // transcript tiers, and the undifferentiated fallback used when tiers are off.
     expect(stripped).toContain('guarded_dump_one "$db" "$db-state" "${ex[@]}"');
-    expect(stripped).toContain('guarded_dump_one "$db" "$db-transcript" "${inc[@]}"');
+    expect(stripped).toContain('guarded_dump_one "$db" "$db-transcript" --compress=zstd:level=1 "${inc[@]}"');
     expect(stripped).toContain('if guarded_dump_one "$db" "$db"; then');
     expect(stripped).not.toMatch(/(?<!guarded_)dump_one "\$db" "\$db(-state|-transcript)?"/);
 

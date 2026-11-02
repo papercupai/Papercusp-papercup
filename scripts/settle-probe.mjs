@@ -72,11 +72,15 @@ export const DEFAULT_TIMEOUT_SEC = 20;
  * missing, and catches everything — an evaluation that blows up must arrive as
  * `unknown`, never as an absent-and-therefore-idle reading.
  */
-export const SETTLE_EVAL_EXPRESSION = [
+const SETTLE_READY_SELECTOR_TOKEN = "__SETTLE_READY_SELECTOR__";
+const SETTLE_EVAL_EXPRESSION_TEMPLATE = [
   "(() => {",
   "  var takenAtMs = Date.now();",
   "  try {",
   "    var doc = (typeof document !== 'undefined') ? document : null;",
+  "    var readySelector = __SETTLE_READY_SELECTOR__;",
+  "    var readySelectorPresent = !readySelector;",
+  "    if (readySelector) readySelectorPresent = !!(doc && doc.querySelector(readySelector));",
   '    var domNodes = doc ? doc.getElementsByTagName("*").length : null;',
   "    var domSignature = (doc && doc.body)",
   '      ? (domNodes + ":" + doc.body.innerHTML.length)',
@@ -85,6 +89,7 @@ export const SETTLE_EVAL_EXPRESSION = [
   "    if (!g || typeof g.snapshot !== 'function') {",
   "      return JSON.stringify({",
   "        metricsPresent: false, transport: null,",
+  "        readySelector: readySelector, readySelectorPresent: readySelectorPresent,",
   "        domNodes: domNodes, domSignature: domSignature, takenAtMs: takenAtMs",
   "      });",
   "    }",
@@ -92,6 +97,7 @@ export const SETTLE_EVAL_EXPRESSION = [
   "    var t = (snap && snap.transport) ? snap.transport : null;",
   "    return JSON.stringify({",
   "      metricsPresent: true,",
+  "      readySelector: readySelector, readySelectorPresent: readySelectorPresent,",
   "      transport: t ? {",
   "        inFlight: (t.inFlight === undefined ? null : t.inFlight),",
   "        queued: (t.queued === undefined ? null : t.queued),",
@@ -103,11 +109,28 @@ export const SETTLE_EVAL_EXPRESSION = [
   "    return JSON.stringify({",
   "      metricsPresent: false, transport: null,",
   "      error: String((e && e.message) || e),",
+  "      readySelector: readySelector, readySelectorPresent: readySelectorPresent,",
   "      domNodes: null, domSignature: null, takenAtMs: takenAtMs",
   "    });",
   "  }",
   "})()",
 ].join("\n");
+
+export const SETTLE_EVAL_EXPRESSION = SETTLE_EVAL_EXPRESSION_TEMPLATE.replace(
+  SETTLE_READY_SELECTOR_TOKEN,
+  "null",
+);
+
+export function buildSettleEvalExpression(readySelector) {
+  const normalizedSelector =
+    typeof readySelector === "string" && readySelector.trim()
+      ? readySelector
+      : null;
+  return SETTLE_EVAL_EXPRESSION_TEMPLATE.replace(
+    SETTLE_READY_SELECTOR_TOKEN,
+    JSON.stringify(normalizedSelector),
+  );
+}
 
 export const SETTLE_USAGE = `Usage: node scripts/settle-probe.mjs [options]
 
@@ -118,6 +141,8 @@ race async data and report a guarded component's absence as a missing feature.
   --port <n>         dev-bridge port             (default: $VERIFY_TAURI_PORT)
   --token <t>        dev-bridge token            (default: $VERIFY_TAURI_TOKEN)
   --window-label <l> webview window label
+  --ready-selector <css> wait for this route element before settling
+                         (default: $VERIFY_TAURI_READY_SELECTOR)
   --timeout <sec>    how long to wait            (default: $VERIFY_TAURI_SETTLE_TIMEOUT,
                                                    else $VERIFY_TAURI_DOM_TIMEOUT,
                                                    else ${DEFAULT_TIMEOUT_SEC})
@@ -157,7 +182,7 @@ export function normaliseCount(value) {
  * quiet forever never settles. `nextQuietAnchor` maintains it.
  *
  * @param sample  parsed page reading, or null/garbage
- * @param opts    { previous?: sample, quietMs?: number }
+ * @param opts    { previous?: sample, quietMs?: number, readySelector?: string }
  */
 export function evaluateSettleSample(sample, opts = {}) {
   const quietMs = normaliseCount(opts.quietMs) ?? 0;
@@ -176,6 +201,16 @@ export function evaluateSettleSample(sample, opts = {}) {
       SETTLE_VERDICTS.UNKNOWN,
       "probe-threw",
       `the page probe threw: ${String(sample.error)}`,
+    );
+  }
+  if (opts.readySelector && sample.readySelectorPresent !== true) {
+    return makeVerdict(
+      SETTLE_VERDICTS.BUSY,
+      "route-not-ready",
+      "the route readiness selector " +
+        JSON.stringify(opts.readySelector) +
+        " is not present yet",
+      { readySelector: opts.readySelector },
     );
   }
   if (sample.metricsPresent !== true) {
@@ -277,6 +312,7 @@ export function nextQuietAnchor(anchor, sample, verdictObj) {
   // The gate was busy AT this sample, so the quiet streak starts no earlier than
   // the NEXT idle reading — not at this one.
   if (reason === "requests-in-flight") return null;
+  if (reason === "route-not-ready") return null;
   if (!anchor || typeof anchor !== "object") return sample;
   if (anchor.domSignature !== sample.domSignature) return sample;
   return anchor;
@@ -400,7 +436,7 @@ export function buildEvalArgs(target = {}) {
   if (target.token) args.push("--token", String(target.token));
   if (target.windowLabel)
     args.push("--window-label", String(target.windowLabel));
-  args.push(SETTLE_EVAL_EXPRESSION);
+  args.push(buildSettleEvalExpression(target.readySelector));
   return args;
 }
 
@@ -439,6 +475,7 @@ export function parseSettleCliArgs(argv, env = {}) {
     port: "",
     token: env.VERIFY_TAURI_TOKEN || "",
     windowLabel: "",
+    readySelector: env.VERIFY_TAURI_READY_SELECTOR || "",
     timeoutSec: resolveSettleTimeoutSec(env),
     quietMs: numberFrom(env.VERIFY_TAURI_SETTLE_QUIET_MS, DEFAULT_QUIET_MS),
     intervalMs: numberFrom(
@@ -467,6 +504,15 @@ export function parseSettleCliArgs(argv, env = {}) {
       case "--window-label":
         opts.windowLabel = next();
         break;
+      case "--ready-selector": {
+        const selector = next();
+        if (!selector || !selector.trim()) {
+          opts.error = "--ready-selector requires a non-empty CSS selector";
+          return opts;
+        }
+        opts.readySelector = selector;
+        break;
+      }
       case "--timeout":
         opts.timeoutSec = numberFrom(next(), opts.timeoutSec);
         break;
@@ -558,7 +604,11 @@ export function main(argv = process.argv.slice(2), env = process.env) {
   let current = evaluateSettleSample(null, { quietMs });
   for (;;) {
     const sample = takeSample(opts);
-    current = evaluateSettleSample(sample, { previous: anchor, quietMs });
+    current = evaluateSettleSample(sample, {
+      previous: anchor,
+      quietMs,
+      readySelector: opts.readySelector,
+    });
     anchor = nextQuietAnchor(anchor, sample, current);
     if (current.verdict === SETTLE_VERDICTS.SETTLED) break;
     if (Date.now() >= deadline) break;

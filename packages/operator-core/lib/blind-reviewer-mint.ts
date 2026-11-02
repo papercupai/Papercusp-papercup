@@ -32,12 +32,14 @@ import { briefTurnCount, type BlindReviewBrief } from './blind-review-brief';
 import {
   acquireBlindReviewSessionResume,
   createBlindReviewSessionBinding,
+  findBlindReviewSessionBinding,
   releaseBlindReviewSessionResume,
   BLIND_GAP_REVIEW_ACTOR,
   INTERNAL_BLIND_REVIEW_RESUME,
   type BlindReviewResumePermit,
   type BlindReviewSessionBinding,
 } from './blind-review-session-bindings';
+import type { ControlOutcome } from './task-manager/control';
 
 export { BLIND_GAP_REVIEW_ACTOR } from './blind-review-session-bindings';
 
@@ -117,11 +119,23 @@ export function blindReviewLaunchReceipt(value: unknown): BlindReviewLaunchRecei
   return { kind: 'native', ownerId, advSessionId, sessionId };
 }
 
+function blindReviewLaunchTaskId(value: unknown): string | null {
+  const env = receiptRecord(value);
+  const data = receiptRecord(env?.data) ?? receiptRecord(env?.structuredContent);
+  const launch = receiptRecord(data?.launch) ?? receiptRecord(env?.launch) ?? env;
+  const tasks = launch?.tasks;
+  if (!Array.isArray(tasks) || tasks.length !== 1) return null;
+  const taskId = receiptRecord(tasks[0])?.taskId;
+  return typeof taskId === 'string' && taskId.trim() ? taskId.trim() : null;
+}
+
 function blindReviewMintIdempotencyKey(input: {
-  workspaceId: string; harnessSlug: string; planSlug: string; activationAuditSeq: number;
+  workspaceId: string; harnessSlug: string; planSlug: string; activationAuditSeq: number; requestKey?: string | null;
 }): string {
-  const scope = JSON.stringify([input.workspaceId, input.harnessSlug, input.planSlug, input.activationAuditSeq]);
-  return `blind-review-mint:${createHash('sha256').update(scope).digest('hex')}`;
+  const identity = [input.workspaceId, input.harnessSlug, input.planSlug, input.activationAuditSeq];
+  const requestKey = input.requestKey?.trim();
+  const scope = JSON.stringify(requestKey ? [...identity, 'request', requestKey] : identity);
+  return 'blind-review-mint:' + createHash('sha256').update(scope).digest('hex');
 }
 
 /**
@@ -268,9 +282,11 @@ type LaunchHandler = (args: Record<string, unknown>, ctx: never) => Promise<unkn
 
 export interface MintBlindGapReviewerDeps {
   loadBrief?: typeof loadBlindReviewBrief;
+  findSessionBinding?: typeof findBlindReviewSessionBinding;
   /** The launch-agent handler plus its confinement symbol; injected in tests. */
   launcher?: () => Promise<{ handler: LaunchHandler; confinementKey: symbol }>;
   createSessionBinding?: typeof createBlindReviewSessionBinding;
+  killTask?: (taskId: string) => Promise<ControlOutcome>;
   acquireSessionResume?: typeof acquireBlindReviewSessionResume;
   releaseSessionResume?: typeof releaseBlindReviewSessionResume;
   /** Registered tool names for the howToRun ceiling check; injected in tests. */
@@ -292,7 +308,8 @@ async function defaultLauncher(): Promise<{ handler: LaunchHandler; confinementK
 }
 
 export async function mintBlindGapReviewer(
-  input: { slug: string; harness: string; howToRun?: string | null; productReads?: BlindReviewerProductReads; ctx: Record<string, unknown> },
+  input: { slug: string; harness: string; howToRun?: string | null; requestKey?: string | null;
+    productReads?: BlindReviewerProductReads; ctx: Record<string, unknown> },
   deps: MintBlindGapReviewerDeps = {},
 ): Promise<MintBlindGapReviewerResult> {
   const workspaceId = typeof input.ctx.workspaceId === 'string' ? input.ctx.workspaceId.trim() : '';
@@ -332,6 +349,29 @@ export async function mintBlindGapReviewer(
       message: howToRunOutsideCeilingMessage(refusedTools, confinement) };
   }
   const kickoff = buildBlindReviewerKickoff(brief, input.howToRun, productReads, scratchPlans);
+  let existingBinding: BlindReviewSessionBinding | null;
+  try {
+    existingBinding = await (deps.findSessionBinding ?? findBlindReviewSessionBinding)({
+      workspaceId, planSlug: input.slug, activationAuditSeq: brief.activationAuditSeq,
+    });
+  } catch (error) {
+    return { ok: false, code: 'session_binding_failed',
+      message: 'Could not verify whether this activation already has a reviewer binding; no new reviewer was launched. ' +
+        (error instanceof Error ? error.message : String(error)) };
+  }
+  if (existingBinding && (existingBinding.status === 'ready' || existingBinding.status === 'resuming')) {
+    return {
+      ok: true,
+      launch: { data: { deduped: true, launch: {
+        deduped: true, opened: 0, failed: 0, mode: 'deduped', ownerIds: [existingBinding.reviewerOwnerId], tasks: [],
+      } } },
+      kickoff,
+      activationAuditSeq: brief.activationAuditSeq,
+      scratchPrefix: scratchPlans?.scratchPrefix ?? null,
+      binding: existingBinding,
+      launchStatus: 'bound',
+    };
+  }
   const { handler, confinementKey } = await (deps.launcher ?? defaultLauncher)();
   // A SYSTEM effect, not the caller's personal launch: the reviewer must descend from this
   // actor, or the door's lineage check rejects it as the author's child. Same pattern as
@@ -353,7 +393,7 @@ export async function mintBlindGapReviewer(
   // second reviewer starts.
   let launch: unknown = null;
   const idempotencyKey = blindReviewMintIdempotencyKey({ workspaceId, harnessSlug: input.harness,
-    planSlug: input.slug, activationAuditSeq: brief.activationAuditSeq });
+    planSlug: input.slug, activationAuditSeq: brief.activationAuditSeq, requestKey: input.requestKey });
   for (const backend of BLIND_REVIEWER_BACKENDS) {
     try {
       launch = await handler(
@@ -406,9 +446,29 @@ export async function mintBlindGapReviewer(
       scratchPrefix: scratchPlans?.scratchPrefix ?? null, binding: null, launchStatus: 'uncertain' };
   }
   if (!bindingResult.ok) {
+    const refusalMessage = 'The reviewer launched, but its exact session binding was refused (' + bindingResult.code +
+      '): ' + bindingResult.message + '. Do not mint or repost again until the binding is reconciled.';
+    if (bindingResult.code === 'binding_conflict') {
+      const taskId = blindReviewLaunchTaskId(launch);
+      if (!taskId) {
+        return { ok: false, code: 'session_binding_failed',
+          message: refusalMessage + ' The launch receipt lacked one exact task id, so automatic cleanup was not attempted.' };
+      }
+      try {
+        const killTask = deps.killTask ?? (await import('./task-manager/control')).killTask;
+        const cleanup = await killTask(taskId);
+        const cleanupMessage = cleanup.ok || cleanup.error === 'already_gone' || cleanup.error === 'not_live'
+          ? `The just-launched duplicate task ${taskId} is no longer running.`
+          : `Termination was not confirmed for just-launched task ${taskId} (${cleanup.error}): ${cleanup.detail ?? 'no detail'}.`;
+        return { ok: false, code: 'session_binding_failed', message: refusalMessage + ' ' + cleanupMessage };
+      } catch (error) {
+        return { ok: false, code: 'session_binding_failed',
+          message: refusalMessage + ` Cleanup of just-launched task ${taskId} failed: ` +
+            (error instanceof Error ? error.message : String(error)) };
+      }
+    }
     return { ok: false, code: 'session_binding_failed',
-      message: 'The reviewer launched, but its exact session binding was refused (' + bindingResult.code +
-        '): ' + bindingResult.message + '. Do not mint or repost again until the binding is reconciled.' };
+      message: refusalMessage };
   }
   const launchData = receiptRecord(receiptRecord(launch)?.data)?.launch;
   const launchSummary = receiptRecord(launchData) ?? receiptRecord(receiptRecord(launch)?.launch);

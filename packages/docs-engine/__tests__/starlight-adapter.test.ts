@@ -3,7 +3,7 @@
  * the real apps/operator-docs/ tree.
  */
 
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { promises as fs } from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
@@ -46,6 +46,39 @@ describe('starlightContentAdapter — synthetic fixture', () => {
 
   afterAll(async () => {
     await fs.rm(tmp, { recursive: true, force: true });
+  });
+
+  it('resolves an exact slug directly without walking the content tree', async () => {
+    const readdir = vi.spyOn(fs, 'readdir');
+    try {
+      const src = starlightContentAdapter({ contentRoot: tmp, baseUrl: '/internal/docs' });
+      const page = await src.getPageBySlug?.('agents/operator');
+      expect(page).toMatchObject({
+        slug: 'agents/operator',
+        title: 'Operator agent',
+        toc: [{ id: 'voice', text: 'Voice', depth: 2 }, { id: 'pi', text: 'Pi', depth: 2 }],
+      });
+      expect(await src.getContent(page!)).toContain('Voice');
+      expect(await src.getSource?.(page!)).toContain('## Voice');
+      expect(readdir).not.toHaveBeenCalled();
+    } finally {
+      readdir.mockRestore();
+    }
+  });
+
+  it('reuses the parsed section index during outline construction', async () => {
+    const readFile = vi.spyOn(fs, 'readFile');
+    try {
+      const src = starlightContentAdapter({ contentRoot: tmp, baseUrl: '/internal/docs' });
+      const outline = await buildOutline(src);
+      const agents = outline.sections.find((section) => section.slug === 'agents');
+      expect(agents).toMatchObject({ title: 'Agents', description: 'Section intro' });
+      // Four corpus files are read once by listPages; getSectionMeta reuses the
+      // already parsed index page instead of reading agents/index.mdx again.
+      expect(readFile).toHaveBeenCalledTimes(4);
+    } finally {
+      readFile.mockRestore();
+    }
   });
 
   it('lists all pages with correct slugs and urls', async () => {

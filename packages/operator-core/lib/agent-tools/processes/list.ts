@@ -34,6 +34,27 @@ function ageSec(startedAt: string): number {
   return Number.isFinite(t) ? Math.max(0, Math.round((Date.now() - t) / 1000)) : 0;
 }
 
+function sampleTimestampMs(sampledAt: string | null | undefined): number | null {
+  if (sampledAt == null) return null;
+  const ms = Date.parse(sampledAt);
+  return Number.isFinite(ms) ? ms : null;
+}
+
+function sampleAgeSec(sampledAt: string | null | undefined, nowMs: number): number | null {
+  const sampledAtMs = sampleTimestampMs(sampledAt);
+  return sampledAtMs === null ? null : Math.max(0, Math.round((nowMs - sampledAtMs) / 1000));
+}
+
+function sampleFreshness(
+  sampledAt: string | null | undefined,
+  lastSeenAt: string,
+): 'current' | 'stale' | 'unknown' {
+  const sampledAtMs = sampleTimestampMs(sampledAt);
+  const lastSeenAtMs = sampleTimestampMs(lastSeenAt);
+  if (sampledAtMs === null || lastSeenAtMs === null) return 'unknown';
+  return sampledAtMs < lastSeenAtMs ? 'stale' : 'current';
+}
+
 function safeDiagnosticText(text: string, maxChars?: number, knownSecrets: readonly string[] = []): string {
   const redacted = redactSensitiveText(text, knownSecrets);
   return maxChars === undefined ? redacted : redacted.slice(0, maxChars);
@@ -84,8 +105,13 @@ function pruneCpuSamples(nowMs: number): void {
   }
 }
 
-function currentCpuBusyPercent(taskId: string, cpuUsec: number | null | undefined, sampledAtMs: number): number | null {
-  if (cpuUsec == null || !Number.isFinite(sampledAtMs) || sampledAtMs <= 0) return null;
+function currentCpuBusyPercent(
+  taskId: string,
+  cpuUsec: number | null | undefined,
+  sampledAt: string | null | undefined,
+): number | null {
+  const sampledAtMs = sampleTimestampMs(sampledAt);
+  if (cpuUsec == null || sampledAtMs === null || !Number.isFinite(sampledAtMs) || sampledAtMs <= 0) return null;
   const next = { cpuUsecTotal: cpuUsec, sampledAtMs };
   const previous = cpuSamples.get(taskId);
   cpuSamples.set(taskId, next);
@@ -127,6 +153,12 @@ const taskResultSchema = z.object({
       peakRssMb: z.number().int().nonnegative().nullable(),
       cpuSec: z.number().int().nonnegative().nullable(),
       cpuBusyPercent: z.number().nonnegative().nullable(),
+      cpuSampledAt: z.string().nullable(),
+      cpuSampleAgeSec: z.number().int().nonnegative().nullable(),
+      cpuSampleFreshness: z.enum(['current', 'stale', 'unknown']),
+      rssSampledAt: z.string().nullable(),
+      rssSampleAgeSec: z.number().int().nonnegative().nullable(),
+      rssSampleFreshness: z.enum(['current', 'stale', 'unknown']),
       pids: z.number().int().nonnegative().nullable(),
       livePids: z.array(z.number().int().positive()).nullable(),
       confined: z.boolean(),
@@ -185,7 +217,7 @@ export default defineTool({
     chaining:
       'Pass `taskId`, `scopeUnit`, `invocationId` or `dispatchCallId` for one exact ledger row (matched before the limit). Lost a capability:bash launch response? Pass its `dispatchCallId` with `includeEnded:true` instead of relaunching. Then `processes:kill { taskId }` (whole cgroup subtree), or `{ scopeUnit }` for a `live.unaccountedGroups` entry; `processes:freeze` pauses without losing work; `processes:limit` retunes the budget live. Check `taskPage.truncated` before treating a task missing from `tasks[]` as absent; `live.ownedTruncated` and `live.foreignTruncated` only describe the kernel scan.',
     returns:
-      '{ ok, counts:{ byState, byClass }, tasks:[{ taskId, class, title, state, launchedBy, workItemId, planSlug, ageSec, rssMb, peakRssMb, cpuSec, cpuBusyPercent, pids, confined, scopeUnit, confinement, deadlineAt, logPath }], live? } — `confinement` answers "what confines this task, and therefore what can kill it": `{ confined, cgroupPath, scopeUnit, source, insideOperatorCgroup?, reason? }`. Read `source` before the path. `derived-from-scope-unit` is the trustworthy case — the path is DERIVED, because the stored `cgroup_path` column holds the SPAWNER cgroup on ~1300 historical rows and would answer "would restarting the operator kill this agent?" with the pre-EI-9748 YES (D-111). `insideOperatorCgroup` IS that answer, and is absent — never false — when unknown. `not-derivable` means confined but no scope unit was recorded: that is UNKNOWN, not unconfined, so `confined` stays true. `recorded-at-spawn` is the unconfined case, where the /proc read is correct. `observed-at-reconcile` means an unaccounted residue had an exact `pc-<taskId>` scope and matching kernel-scanned path; it uses that observed path because its original task class is unknown. To find your OWN row pass `coordOwnerId` (your coord owner id) — `launchedBy` is whoever spawned you, and `pgrep -f <ownerId>` self-matches your own command line. `cpuSec` is cumulative CPU time; `cpuBusyPercent` is derived from two cumulative samples (100% = one saturated core) and is null until a second valid sample exists. Unfiltered `live:true` reads include `live.verifierGroups` and other reconciler groups; a task-filtered live read keeps the compact reconciliation summary but omits unrelated global group samples. `confined:false` means the task is ledgered but NOT cgroup-isolated, so a kill falls back to a pid signal and freeze is unavailable. An exact-identity lookup (`dispatchCallId` especially) that finds nothing is not proof no command ran: legacy jobs may lack that identity.',
+      '{ ok, counts:{ byState, byClass }, tasks:[{ taskId, class, title, state, launchedBy, workItemId, planSlug, ageSec, rssMb, peakRssMb, cpuSec, cpuBusyPercent, pids: number|null (PID count), livePids: number[]|null (PID array for live unaccounted tasks; null otherwise), confined, scopeUnit, confinement, deadlineAt, logPath }], live?: { unaccountedGroups?: Array<{ pids: number[] (PID array) }> } } — `confinement` answers "what confines this task, and therefore what can kill it": `{ confined, cgroupPath, scopeUnit, source, insideOperatorCgroup?, reason? }`. Read `source` before the path. `derived-from-scope-unit` is the trustworthy case — the path is DERIVED, because the stored `cgroup_path` column holds the SPAWNER cgroup on ~1300 historical rows and would answer "would restarting the operator kill this agent?" with the pre-EI-9748 YES (D-111). `insideOperatorCgroup` IS that answer, and is absent — never false — when unknown. `not-derivable` means confined but no scope unit was recorded: that is UNKNOWN, not unconfined, so `confined` stays true. `recorded-at-spawn` is the unconfined case, where the /proc read is correct. `observed-at-reconcile` means an unaccounted residue had an exact `pc-<taskId>` scope and matching kernel-scanned path; it uses that observed path because its original task class is unknown. To find your OWN row pass `coordOwnerId` (your coord owner id) — `launchedBy` is whoever spawned you, and `pgrep -f <ownerId>` self-matches your own command line. `cpuSec` is cumulative CPU time; `cpuBusyPercent` is derived from two cumulative samples (100% = one saturated core) and is null until a second valid sample exists. Unfiltered `live:true` reads include `live.verifierGroups` and other reconciler groups; a task-filtered live read keeps the compact reconciliation summary but omits unrelated global group samples. `confined:false` means the task is ledgered but NOT cgroup-isolated, so a kill falls back to a pid signal and freeze is unavailable. An exact-identity lookup (`dispatchCallId` especially) that finds nothing is not proof no command ran: legacy jobs may lack that identity.',
   },
   requirePrincipal: false,
   // Release-fixer must inspect the managed task ledger when classifying a
@@ -414,6 +446,9 @@ export default defineTool({
               ...(live ? { live } : {}),
               tasks: displayRows.map((r) => {
                 const confinement = resolveTaskConfinement(r);
+                const nowMs = Date.now();
+                const cpuSampledAt = r.cpuSampledAt ?? null;
+                const rssSampledAt = r.rssSampledAt ?? null;
                 return {
                 taskId: r.taskId,
                 class: r.class,
@@ -426,13 +461,17 @@ export default defineTool({
                 rootTaskId: r.rootTaskId,
                 ageSec: ageSec(r.startedAt),
                 rssMb: mb(r.lastMemoryBytes),
+                rssSampledAt,
+                rssSampleAgeSec: sampleAgeSec(rssSampledAt, nowMs),
+                rssSampleFreshness: sampleFreshness(rssSampledAt, r.lastSeenAt),
                 peakRssMb: mb(r.peakMemoryBytes),
                 cpuSec: r.cpuUsec == null ? null : Math.round(r.cpuUsec / 1_000_000),
-                // cpuUsec is the last persisted cgroup sample. Using the request time
-                // here makes repeated reads of that same snapshot look like a new idle
-                // interval, producing a confident 0. lastSeenAt is written alongside
-                // the metric refresh, so identical snapshots share the same sample time.
-                cpuBusyPercent: currentCpuBusyPercent(r.taskId, r.cpuUsec, Date.parse(r.lastSeenAt)),
+                cpuSampledAt,
+                cpuSampleAgeSec: sampleAgeSec(cpuSampledAt, nowMs),
+                cpuSampleFreshness: sampleFreshness(cpuSampledAt, r.lastSeenAt),
+                // A partial scan can advance liveness without refreshing this counter.
+                // Use its sample time so that scan is not mistaken for a quiet interval.
+                cpuBusyPercent: currentCpuBusyPercent(r.taskId, r.cpuUsec, cpuSampledAt),
                 pids: r.state === 'unaccounted' && args.live
                   ? unaccountedPids.get(r.taskId)?.length ?? null
                   : r.pidsCurrent,

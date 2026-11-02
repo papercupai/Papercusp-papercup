@@ -120,6 +120,33 @@ describe('readRestrictedEditHoldings', () => {
     expect(err).toBeInstanceOf(DisclosureRefused);
     expect((err as DisclosureRefused).code).toBe('disclosure_ledger_unavailable');
   });
+
+  it('recovers a one-time ECONNREFUSED on the read-only census query', async () => {
+    let calls = 0;
+    const { sql } = fakeSql(() => {
+      calls++;
+      if (calls === 1) {
+        throw Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:6432'), { code: 'ECONNREFUSED' });
+      }
+      return [ROW];
+    });
+
+    await expect(readRestrictedEditHoldings(sql)).resolves.toHaveLength(1);
+    expect(calls).toBe(2);
+  });
+
+  it('still fails closed after bounded ECONNREFUSED retries', async () => {
+    let calls = 0;
+    const { sql } = fakeSql(() => {
+      calls++;
+      throw Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:6432'), { code: 'ECONNREFUSED' });
+    });
+
+    await expect(readRestrictedEditHoldings(sql)).rejects.toMatchObject({
+      code: 'disclosure_ledger_unavailable',
+    });
+    expect(calls).toBe(3);
+  });
 });
 
 // git-sync-turn-scoped-commit-hold-2026-10-11 P-002/P-005. The SQL's boundaries run

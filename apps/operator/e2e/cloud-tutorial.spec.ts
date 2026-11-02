@@ -21,9 +21,9 @@ import { join } from 'node:path';
 // Preserve Chromium's network-service events across a failed cold first load.
 // The default capture mode omits sensitive values. Each worker owns its log.
 const chromiumNetLog = prepareCloudTutorialNetlog(tmpdir());
-console.info(`CHROMIUM_NETLOG ${chromiumNetLog.path}`);
+console.error(`CHROMIUM_NETLOG ${chromiumNetLog.path}`);
 if (chromiumNetLog.cleanup.removed > 0 || chromiumNetLog.cleanup.overBudget) {
-  console.info(`CHROMIUM_NETLOG_CLEANUP ${JSON.stringify(chromiumNetLog.cleanup)}`);
+  console.error(`CHROMIUM_NETLOG_CLEANUP ${JSON.stringify(chromiumNetLog.cleanup)}`);
 }
 test.use({ launchOptions: { args: [
   chromiumNetLog.chromiumArg,

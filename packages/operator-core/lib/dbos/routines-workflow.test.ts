@@ -35,6 +35,7 @@ const state = vi.hoisted(() => ({
   slowLoopRebaseMs: 0,
   probe: { rawMs: 3000, admissionMs: 2500, discountMs: 500 },
   recordPoolShedEvent: vi.fn(),
+  policyAllowed: vi.fn(async (_routine: unknown) => true),
 }));
 
 vi.mock('@dbos-inc/dbos-sdk', () => {
@@ -102,6 +103,7 @@ vi.mock('@papercusp/db-org', async (importOriginal) => {
       sql: Object.assign(
         vi.fn(async (strings: unknown, ...values: unknown[]) => {
           state.sqlCalls.push({ text: Array.isArray(strings) ? strings.join('?') : String(strings), values });
+          if (String(strings).includes('SELECT name FROM harness_shared.routines')) return [{ name: 'legacy-routine-name' }];
           return { count: 0 };
         }),
         { begin: vi.fn() },
@@ -120,6 +122,8 @@ vi.mock('../harness/routines/claim', () => ({
   claimDueRoutine: vi.fn(),
   claimedRoutineDispatchAllowed: vi.fn(async () => true),
 }));
+
+vi.mock('../device-operator-actions', () => ({ routineBackgroundActivityAllowed: state.policyAllowed }));
 
 vi.mock('../harness/routines/loop-fire', () => ({
   fireLoopWake: vi.fn(async () => state.loopResult),
@@ -199,6 +203,7 @@ beforeEach(() => {
   state.executeLoopRebaseOperation = false;
   state.slowLoopRebaseMs = 0;
   state.dbosStarted = true;
+  state.policyAllowed.mockResolvedValue(true);
   state.createDbosClient.mockResolvedValue({ enqueue: state.clientEnqueue });
   state.clientEnqueue.mockResolvedValue({ workflowID: 'routine:rt_home_git_sync' });
 });
@@ -1105,6 +1110,20 @@ describe('staleRoutineExecutorSweepDbosStep — durable output', () => {
 });
 
 describe('routineFireWorkflow — durable loop:wake output', () => {
+  it('withholds an already queued fire on a newer policy and rechecks on recovery', async () => {
+    const action = vi.fn(async () => undefined);
+    registerSystemAction('policy-queued-test', action, { scheduling: 'on-demand' });
+    state.policyAllowed.mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+    const args = ['policy-queued', 'workspace-a', 'home', 'system:policy-queued-test', {}, null, 'optional-sweep'] as const;
+    await routineFireWorkflow(...args);
+    expect(action).not.toHaveBeenCalled();
+    expect(state.stepNames).toEqual([]);
+    await routineFireWorkflow(...args);
+    expect(action).toHaveBeenCalledTimes(1);
+    expect(state.policyAllowed).toHaveBeenCalledTimes(2);
+    expect(state.stepNames).not.toContain('background-policy');
+  });
+
   it('registers every isolated routine lane at boot', () => {
     // Every lane queueForRoutine can return MUST be registered here, or a fire enqueued
     // onto it is never consumed (WI-41662 added routines-triggers).

@@ -16,6 +16,7 @@ import { psuLaunchLogPath } from '../lib/psu-launch-log.mjs';
 import { startFrontierSweLaunchAdapter, type FrontierSweNativeLaunchAdapter } from '../lib/external-bench/frontier-swe-launch-adapter';
 import { startCodexHookBridge, type CodexHookBridge } from '../lib/external-bench/codex-hook-bridge';
 import { startBenchEgress, sweepBenchEgress } from '../lib/external-bench/bench-egress';
+import { liveProcExec, type ProcExec } from '../lib/external-bench/grader';
 import type { FrontierSweEnvHandle } from '../lib/external-bench/frontier-swe-seam';
 import { currentProtocolFixture } from '../lib/external-bench/reproducibility/_protocol-test-fixture';
 import { preregister } from '../lib/external-bench/reproducibility/prereg';
@@ -281,6 +282,19 @@ export async function measureCurrentSuNativeScenario(input: { workspace: string;
   const ctx = { workspaceId: workspace, isSuperuser: true, uiClientId: `su-private-native-${randomUUID()}`,
     principal: { slug: 'system:superuser' } } as PapercuspUnifiedToolContext;
   const phase = (name: string) => { progress(name); console.log('CURRENT_SU_NATIVE_PHASE ' + name); };
+  const egressExec: ProcExec = async (cmd, args, options) => {
+    const startedAt = Date.now();
+    progress('egress-command-start', { cmd, args, timeoutMs: options?.timeoutMs });
+    try {
+      const result = await liveProcExec(cmd, args, options);
+      progress('egress-command-ended', { cmd, args, code: result.code,
+        elapsedMs: Date.now() - startedAt, timeoutMs: options?.timeoutMs });
+      return result;
+    } catch (error) {
+      progress('egress-command-failed', { cmd, args, elapsedMs: Date.now() - startedAt, error: String(error) });
+      throw error;
+    }
+  };
   let adapter: FrontierSweNativeLaunchAdapter | undefined;
   let bridge: CodexHookBridge | undefined;
   let handle: FrontierSweEnvHandle | undefined;
@@ -306,11 +320,11 @@ export async function measureCurrentSuNativeScenario(input: { workspace: string;
         phase('egress-start');
         writeFileSync(join(evidenceDir, CURRENT_SU_NATIVE_EGRESS_RUN_ID_MANIFEST), options.runId + '\n',
           { mode: 0o600, flag: 'wx' });
-        const egress = await startBenchEgress(options);
+        const egress = await startBenchEgress({ ...options, exec: egressExec });
         phase('egress-ready');
         return egress;
       },
-      sweep: sweepBenchEgress,
+      sweep: runId => sweepBenchEgress(runId, egressExec),
       createDriver: (options, context, observations) => {
         phase('driver-start');
         const ports = liveCurrentSuBenchPorts(context, observations, options);

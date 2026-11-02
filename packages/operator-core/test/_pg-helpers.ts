@@ -110,7 +110,11 @@ export async function applyMigrationForTest(sql: postgres.Sql, filePath: string)
 
 /** The canonical anchor store and its change-notification writer, for plan consumers. */
 export async function applyPlanItemAnchorMigrationsForTest(sql: postgres.Sql): Promise<void> {
-  for (const file of ['1436-emit-change-notify-row-workspace.sql', '1559-plan-item-code-anchors.sql']) {
+  for (const file of [
+    '1436-emit-change-notify-row-workspace.sql',
+    '1559-plan-item-code-anchors.sql',
+    '1610-plan-anchor-change-intent.sql',
+  ]) {
     await applyMigrationForTest(sql, resolve(SQL_DIR, file));
   }
 }

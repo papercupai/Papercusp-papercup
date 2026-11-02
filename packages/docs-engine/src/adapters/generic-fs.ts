@@ -23,7 +23,7 @@
 
 import { promises as fs } from 'node:fs';
 import * as path from 'node:path';
-import { humanize } from '../shared.js';
+import { humanize, scanMarkdownHeadings } from '../shared.js';
 import { raceWithAbort, renderMdxToMarkdown, throwIfAborted } from '../render-mdx.js';
 import { forEachBoundedBatch } from './file-batches.js';
 import type { DocContentOptions, DocListPagesOptions, DocPage, DocSource, SectionMeta } from '../types.js';
@@ -47,17 +47,11 @@ interface FsPage extends DocPage {
 }
 
 export function extractHeadings(content: string): DocPage['toc'] {
-  const out: DocPage['toc'] = [];
-  for (const line of content.split('\n')) {
-    const m = /^(#{1,6})\s+(.+?)\s*$/.exec(line);
-    if (!m) continue;
-    const text = m[2].trim();
-    if (!text) continue;
-    const id = text.replace(/[^A-Za-z0-9]/g, '-');
-    out.push({ id, text, depth: m[1].length });
-    if (out.length >= 100) break;
-  }
-  return out;
+  return scanMarkdownHeadings(content).slice(0, 100).map(({ depth, text }) => ({
+    id: text.replace(/[^A-Za-z0-9]/g, '-'),
+    text,
+    depth,
+  }));
 }
 
 function extractTitle(content: string, fallback: string): string {

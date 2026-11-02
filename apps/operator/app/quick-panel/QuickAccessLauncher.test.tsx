@@ -65,6 +65,8 @@ describe('Quick Access launcher', () => {
       args: expect.objectContaining({ workspaceWide: true, compact: true }) }));
     expect(mocks.queries).toHaveBeenCalledWith(expect.objectContaining({ queryName: 'advRoster.list',
       args: { workspaceId: 'workspace-one', endedLimit: 50 } }));
+    expect(mocks.queries).toHaveBeenCalledWith(expect.objectContaining({ queryName: 'planSessions.list',
+      args: { planSlug: 'launch', harnessSlug: 'alpha', workspaceId: 'workspace-one' } }));
     fireEvent.click(screen.getByRole('button', { name: 'Talk to Maya' }));
     expect(await screen.findByRole('dialog', { name: 'Agent conversation' })).toBeTruthy();
     expect(within(screen.getByRole('dialog', { name: 'Agent conversation' })).getByText('su-precise')).toBeTruthy();

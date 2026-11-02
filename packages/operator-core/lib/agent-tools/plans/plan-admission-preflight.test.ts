@@ -50,6 +50,7 @@ import {
 } from './plan-admission-preflight';
 import { validateClaimSpec } from '../../scheduler/claim-spec';
 import { stopTheLineExplanation } from '../../work-items-admission';
+import { ISSUE_FAMILY_KINDS } from '../../work-items';
 
 const item = (id: string, storedStatus: PlanItem['storedStatus'] = 'todo', blockedBy: string[] = []): PlanItem => ({
   id,
@@ -121,6 +122,45 @@ const lane = (args: {
 };
 
 describe('evaluateExactPlanAdmission', () => {
+  it('counts reconciled live parent and child coverage as one execution lane', () => {
+    const result = evaluateExactPlanAdmission({
+      planSlug: 'plan-a', planItems: [item('P-001')],
+      workItems: [
+        { id: 'WI-node', family: 'feature', state: 'open', sourcePlanItemIds: ['P-001'], payload: null },
+        { id: 'WI-legacy', family: 'issue', state: 'open', parent: 'WI-node', sourcePlanItemIds: ['P-001'], payload: null },
+      ],
+      laneHealth: lane({ feature: 1, issue: 0 }),
+    });
+    expect(result).toMatchObject({ ready: true, promotion: { rows: 2, duplicateActionable: [] },
+      actionableRows: [{ planItemId: 'P-001', workItemId: 'WI-node' }] });
+  });
+
+  it('retains an unfinished child when its parent is settled', () => {
+    expect(evaluateExactPlanAdmission({
+      planSlug: 'plan-a', planItems: [item('P-001')],
+      workItems: [
+        { id: 'WI-node', family: 'feature', state: 'done', sourcePlanItemIds: ['P-001'], payload: null },
+        { id: 'WI-residue', family: 'issue', state: 'open', parent: 'WI-node', sourcePlanItemIds: ['P-001'], payload: null },
+      ],
+      laneHealth: lane({ issue: 1 }),
+    })).toMatchObject({ ready: true,
+      actionableRows: [{ planItemId: 'P-001', workItemId: 'WI-residue' }] });
+  });
+
+  it('still rejects unrelated competing rows even when one has a parent', () => {
+    expect(evaluateExactPlanAdmission({
+      planSlug: 'plan-a', planItems: [item('P-001'), item('P-002')],
+      workItems: [
+        { id: 'WI-node', family: 'feature', sourcePlanItemIds: ['P-001'], payload: null },
+        { id: 'WI-other', family: 'feature', sourcePlanItemIds: ['P-002'], payload: null },
+        { id: 'WI-competing', family: 'issue', parent: 'WI-other', sourcePlanItemIds: ['P-001'], payload: null },
+      ],
+      laneHealth: lane({ feature: 2, issue: 1 }),
+    })).toMatchObject({ ready: false, reason: 'duplicate-coverage', promotion: {
+      duplicateActionable: [{ planItemId: 'P-001', workItemIds: ['WI-node', 'WI-competing'] }],
+    } });
+  });
+
   it('checks only targeted coverage while resolving dependencies against the whole plan', () => {
     const args = {
       planSlug: 'plan-a',
@@ -257,7 +297,7 @@ describe('evaluateExactPlanAdmission', () => {
         { family: 'issue', state: 'open' },
         { family: 'issue', state: 'done' },
       ]),
-    ).toEqual(['bug', 'change', 'task']);
+    ).toEqual(ISSUE_FAMILY_KINDS);
     expect(
       deriveExactPlanClaimKinds([
         { family: 'issue', state: 'open' },
@@ -796,6 +836,22 @@ describe('preflightExactPlanAdmission IO wiring', () => {
     })).toMatchObject({ ready: false, reason: 'plan-not-found' });
   });
 
+  it('uses the normalized execution tree for the scheduler family filter too', async () => {
+    mocks.planItemsForRow.mockReturnValue([item('P-001')]);
+    mocks.listWorkItems.mockResolvedValue([
+      { id: 'WI-node', family: 'feature', state: 'open', sourcePlanItemIds: ['P-001'], payload: null },
+      { id: 'WI-legacy', family: 'issue', state: 'open', parent: 'WI-node', sourcePlanItemIds: ['P-001'], payload: null },
+    ]);
+    mocks.readClaimSpecLaneHealth.mockResolvedValueOnce(lane({ feature: 1, issue: 0 }));
+    expect(await preflightExactPlanAdmission({ workspaceId: 'ws-1', harnessSlug: 'papercusp',
+      planSlug: 'plan-a', actor: 'su-test', specId: 'canonical-line',
+    })).toMatchObject({ ready: true, claimKinds: ['feature'] });
+    expect(mocks.readClaimSpecLaneHealth.mock.calls.at(-1)?.[0].spec.view.filter).toEqual({ all: [
+      { field: 'plan', op: '=', value: 'plan-a' },
+      { field: 'kind', op: 'in', value: ['feature'] },
+    ] });
+  });
+
   it('narrows both coverage and the scheduler floor read to exactly the targeted items', async () => {
     mocks.planItemsForRow.mockReturnValue([item('P-001'), item('P-002')]);
     mocks.listWorkItems.mockResolvedValue([
@@ -807,7 +863,7 @@ describe('preflightExactPlanAdmission IO wiring', () => {
       expect(spec.view.filter).toEqual({ all: [
         { field: 'plan', op: '=', value: 'plan-a' },
         { field: 'plan_item', op: 'in', value: ['P-001'] },
-        { field: 'kind', op: 'in', value: ['bug', 'change', 'task'] },
+        { field: 'kind', op: 'in', value: [...ISSUE_FAMILY_KINDS] },
       ] });
       expect(validateClaimSpec(spec)).toMatchObject({ ok: true });
       return lane({ issue: 0, issueMatchedByFilter: 1, issueExcluded: { stopTheLine: 1 },
@@ -815,7 +871,7 @@ describe('preflightExactPlanAdmission IO wiring', () => {
     });
     expect(await preflightExactPlanAdmission({ workspaceId: 'ws-1', harnessSlug: 'papercusp',
       planSlug: 'plan-a', actor: 'su-test', specId: 'scoped', planItemIds: ['P-001'],
-    })).toMatchObject({ ready: false, reason: 'floor-gated', claimKinds: ['bug', 'change', 'task'],
+    })).toMatchObject({ ready: false, reason: 'floor-gated', claimKinds: [...ISSUE_FAMILY_KINDS],
       promotion: { duplicateActionable: [] }, actionableRows: [{ planItemId: 'P-001', workItemId: 'WI-1' }] });
   });
 
@@ -894,11 +950,11 @@ describe('preflightExactPlanAdmission IO wiring', () => {
       specId: 'plans-start-plan-a',
     });
 
-    expect(issueOnly).toMatchObject({ claimKinds: ['bug', 'change', 'task'] });
+    expect(issueOnly).toMatchObject({ claimKinds: [...ISSUE_FAMILY_KINDS] });
     expect(mocks.readClaimSpecLaneHealth.mock.calls.at(-1)?.[0].spec.view.filter).toEqual({
       all: [
         { field: 'plan', op: '=', value: 'plan-a' },
-        { field: 'kind', op: 'in', value: ['bug', 'change', 'task'] },
+        { field: 'kind', op: 'in', value: [...ISSUE_FAMILY_KINDS] },
       ],
     });
 

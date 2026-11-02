@@ -920,7 +920,7 @@ describe('gitPipelinePosition (P-002)', () => {
     expect(res.gate.candidateFailures?.nonTestLegs).toBeDefined();
   });
 
-  it('WI-6554700010009052: passes the persisted queue signature into candidateFailures', async () => {
+  it('threads the queue run group and newest exact-sha measurement into candidateFailures', async () => {
     const signature: RepairSignatureEntry[] = [{
       kind: 'lint-leg',
       id: 'lint:tsc:workspaces',
@@ -929,11 +929,26 @@ describe('gitPipelinePosition (P-002)', () => {
       measuredHead: 'c'.repeat(40),
     }];
     const repairQueue = diagnoseFrozenCandidateRepairQueue({
-      ...createFrozenCandidateRepairQueue({ candidate: 'c'.repeat(40), base: null, nowMs: 0, signature }),
+      ...createFrozenCandidateRepairQueue({
+        candidate: 'c'.repeat(40), base: null, nowMs: 0, signature, affectedTestProofGroup: 'candidate-run-current',
+      }),
       repairHead: 'd'.repeat(40),
       fixerSpawnId: 'fixer',
     }, { nowMs: 1, fixerAlive: true });
     if (!repairQueue) throw new Error('The frozen queue diagnostic must exist');
+    const measurement = (runGroupId: string, completedAtMs: number) => ({
+      schemaVersion: 1 as const,
+      kind: 'candidate-suite' as const,
+      judgedSha: repairQueue.repairHead,
+      runGroupId,
+      command: 'npm run test:affected',
+      startedAtMs: completedAtMs - 1000,
+      completedAtMs,
+      resume: null,
+      reuse: null,
+    });
+    const activeRun = activeCandidateDeps(repairQueue.repairHead);
+    const activeSnapshot = await activeRun.loadSnapshot();
     const readCandidateFailures = vi.fn(async () => null as unknown as GateCandidateFailures);
 
     await gitPipelinePosition(
@@ -941,9 +956,14 @@ describe('gitPipelinePosition (P-002)', () => {
       {
         git: fakeGit({}),
         loadDeploy: async () => deploy(),
-        loadSnapshot: async () => snap({ repairQueue }),
-        readCheckpointRunSnapshot: async () => null,
-        readCheckpointRunLock: async () => null,
+        loadSnapshot: async () => snap({
+          ...activeSnapshot.gate,
+          repairQueue,
+          lastSuiteMeasurement: measurement('repair-head-older', 10_000),
+          lastTargetedSuiteMeasurement: measurement('repair-head-newest', 20_000),
+        }),
+        readCheckpointRunSnapshot: activeRun.readCheckpointRunSnapshot,
+        readCheckpointRunLock: activeRun.readCheckpointRunLock,
         readGateOwnership: async () => unownedCell('test'),
         loadRuntimeVintage: async () => [],
         readGateCandidateFailures: readCandidateFailures,
@@ -955,6 +975,9 @@ describe('gitPipelinePosition (P-002)', () => {
       expect.objectContaining({
         candidateSha: repairQueue.candidate,
         repairHeadSha: repairQueue.repairHead,
+        candidateRunGroupId: 'candidate-run-current',
+        repairHeadRunGroupId: 'repair-head-newest',
+        repairHeadVerificationInFlight: true,
         queueSignature: signature,
       }),
     );

@@ -443,38 +443,59 @@ async function runBoundedAdmissionPrecheck(
   try { validateAdmissionPrecheckResults(operation.files, saved?.results ?? []); }
   catch (error) { return unavailable(String(error)); }
   let completed = [...(saved?.results ?? [])];
+  const measuredCount = (results: readonly FixPrecheckFileResult[]) =>
+    results.filter(result => result.status !== 'unmeasured').length;
+  const mergeDetail = (...details: Array<string | undefined>): string | undefined => {
+    const unique = [...new Set(details.map(detail => detail?.trim()).filter((detail): detail is string => Boolean(detail)))];
+    return unique.length ? unique.join('; ') : undefined;
+  };
   try {
     await deps.transition(input.queueTarget, fresh => {
       const current = assertFresh(fresh);
-      if (!isDeepStrictEqual(current.measurement?.results ?? [], completed))
+      if (!isDeepStrictEqual(current.measurement ?? null, saved ?? null))
         throw new Error('saved measurement moved before resume');
-      return { ...fresh, admissionPrecheck: { ...current, measurement: { schemaVersion: 1, identity, results: completed } } };
+      const measurement = saved
+        ? { ...saved, results: completed }
+        : { schemaVersion: 1 as const, identity, results: completed };
+      return { ...fresh, admissionPrecheck: { ...current, measurement } };
     });
-    const pending = operation.files.filter(file => !completed.some(result => result.path === file));
+    const pending = operation.files.filter(file =>
+      !completed.some(result => result.path === file && result.status !== 'unmeasured'));
     const groupSize = Math.min(ADMISSION_RADIUS_CAP, ADMISSION_PRECHECK_MAX_FILES);
     for (let start = 0; start < pending.length; start += groupSize) {
       if (now() >= operation.expiresAtMs) return unavailable('bounded pre-check deadline expired before complete aggregation');
       const files = pending.slice(start, start + groupSize);
-      const before = completed.length;
+      const before = measuredCount(completed);
+      const observedThisRun = new Map<string, FixPrecheckFileResult>();
       const record = async (result: FixPrecheckFileResult): Promise<void> => {
         validateAdmissionPrecheckResults(files, [result]);
-        if (completed.some(prior => prior.path === result.path)) throw new Error('duplicate per-file measurement');
+        const previousIndex = completed.findIndex(prior => prior.path === result.path);
+        if (previousIndex >= 0 && completed[previousIndex]!.status !== 'unmeasured')
+          throw new Error('duplicate measured per-file result');
         await deps.transition(input.queueTarget, fresh => {
           const current = assertFresh(fresh);
           const prior = current.measurement;
           if (!prior || prior.identity !== identity || !isDeepStrictEqual(prior.results, completed))
             throw new Error('persisted measurement moved while recording a file');
-          const results = [...completed, result];
+          const results = previousIndex < 0
+            ? [...completed, result]
+            : completed.map((row, index) => index === previousIndex ? result : row);
           const at = now();
           return { ...fresh, updatedAtMs: Math.max(fresh.updatedAtMs + 1, at), admissionPrecheck: { ...current,
-            measurement: { schemaVersion: 1, identity, results }, completedCount: results.length, totalCount: operation.files.length,
+            measurement: { ...prior, results }, completedCount: measuredCount(results), totalCount: operation.files.length,
             currentFile: result.path, heartbeatAtMs: at, updatedAtMs: Math.max(current.updatedAtMs + 1, at) } };
         });
-        completed = [...completed, result];
+        completed = previousIndex < 0
+          ? [...completed, result]
+          : completed.map((row, index) => index === previousIndex ? result : row);
       };
       let run: FixPrecheckRunResult;
       try {
-        run = await runner({ commit: operation.builtCommit, expectedTree: operation.builtTree, files, onFileResult: record,
+        run = await runner({ commit: operation.builtCommit, expectedTree: operation.builtTree, files,
+          onFileResult: async result => {
+            await record(result);
+            observedThisRun.set(result.path, result);
+          },
           onProgress: async progress => {
             await deps.transition(input.queueTarget, fresh => {
               assertFresh(fresh);
@@ -483,7 +504,7 @@ async function runBoundedAdmissionPrecheck(
           } });
       } catch (error) {
         // retryPrecheck:true resumes this SAME operation from its durable per-file rows.
-        // No failed or unmeasured completed file is ever rerun into a pass.
+        // Measured rows stay fixed; only missing or unmeasured rows are retried.
         return interrupted(String(error));
       }
       if (!run.ran) return run.reason === 'checkpoint-tree-busy' ? deferred(run) : interrupted(run.detail);
@@ -491,9 +512,16 @@ async function runBoundedAdmissionPrecheck(
       try { validateAdmissionPrecheckResults(files, run.results, true); }
       catch (error) { return unavailable(String(error)); }
       for (const result of run.results) {
+        const observed = observedThisRun.get(result.path);
+        if (observed) {
+          if (!isDeepStrictEqual(observed, result))
+            return unavailable('native final result disagrees with persisted per-file evidence');
+          continue;
+        }
         const prior = completed.find(item => item.path === result.path);
-        if (prior && !isDeepStrictEqual(prior, result)) return unavailable('native final result disagrees with persisted per-file evidence');
-        if (!prior) await record(result);
+        if (prior?.status === 'unmeasured' || !prior) await record(result);
+        else if (!isDeepStrictEqual(prior, result))
+          return unavailable('native final result disagrees with persisted per-file evidence');
       }
     }
     if (now() >= operation.expiresAtMs) return unavailable('bounded pre-check deadline expired before settlement');
@@ -502,10 +530,24 @@ async function runBoundedAdmissionPrecheck(
       removedTestFiles: operation.removedTestFiles, ...(operation.radius ? { radius: operation.radius } : {}) });
     const ordered = operation.files.map(file => completed.find(result => result.path === file)!);
     // D-004 ruling 1: pair every guarded red with a MEASURED previous-head verdict while the
-    // operation's own test environment is still running, and persist it beside the aggregate.
-    const previousHead = await measurePreviousHeadBaseline({
-      population, results: ordered, previousHead: operation.repairHead, runner: baselineRunner,
-      deadlineAtMs: operation.expiresAtMs, now,
+    // operation's own test environment is still running. Reuse valid paired rows from the same
+    // immutable operation and measure only rows that are new or still unavailable.
+    const baselineFiles = previousHeadBaselineFiles(population, ordered);
+    const savedBaseline = saved?.previousHead?.commit === operation.repairHead ? saved.previousHead : undefined;
+    let savedBaselineRows = (savedBaseline?.results ?? []).filter(result => baselineFiles.includes(result.path));
+    try { validateAdmissionPrecheckResults(baselineFiles, savedBaselineRows); }
+    catch { savedBaselineRows = []; }
+    const baselineRows = new Map(savedBaselineRows.map(result => [result.path, result]));
+    const measuredBaselineFiles = new Set(savedBaselineRows
+      .filter(result => result.status !== 'unmeasured').map(result => result.path));
+    const baselineMissing = baselineFiles.filter(file => !measuredBaselineFiles.has(file));
+    const baselineAttempt = baselineMissing.length ? await measurePreviousHeadBaseline({
+      population,
+      results: ordered.filter(result => baselineMissing.includes(result.path)),
+      previousHead: operation.repairHead,
+      runner: baselineRunner,
+      deadlineAtMs: operation.expiresAtMs,
+      now,
       onProgress: async file => {
         await deps.transition(input.queueTarget, fresh => {
           assertFresh(fresh);
@@ -513,24 +555,58 @@ async function runBoundedAdmissionPrecheck(
             completedCount: operation.files.length, totalCount: operation.files.length, heartbeatAtMs: now() });
         });
       },
+    }) : undefined;
+    for (const result of baselineAttempt?.results ?? []) baselineRows.set(result.path, result);
+    const previousHead = baselineFiles.length ? {
+      commit: operation.repairHead,
+      results: baselineFiles.flatMap(file => {
+        const result = baselineRows.get(file);
+        return result ? [result] : [];
+      }),
+      ...(baselineFiles.some(file => {
+        const result = baselineRows.get(file);
+        return !result || result.status === 'unmeasured';
+      }) && mergeDetail(savedBaseline?.detail, baselineAttempt?.detail)
+        ? { detail: mergeDetail(savedBaseline?.detail, baselineAttempt?.detail)! } : {}),
+    } : undefined;
+    await deps.transition(input.queueTarget, fresh => {
+      const current = assertFresh(fresh);
+      const prior = current.measurement;
+      if (!prior || prior.identity !== identity || !isDeepStrictEqual(prior.results, completed))
+        throw new Error('persisted measurement moved while recording the paired baseline');
+      const measurement = { ...prior };
+      if (previousHead) measurement.previousHead = {
+        commit: previousHead.commit, results: [...previousHead.results],
+        ...(previousHead.detail ? { detail: previousHead.detail } : {}),
+      };
+      else delete measurement.previousHead;
+      return { ...fresh, admissionPrecheck: { ...current, measurement } };
     });
-    if (previousHead) {
-      await deps.transition(input.queueTarget, fresh => {
-        const current = assertFresh(fresh);
-        const prior = current.measurement;
-        if (!prior || prior.identity !== identity || !isDeepStrictEqual(prior.results, completed))
-          throw new Error('persisted measurement moved while recording the paired baseline');
-        return { ...fresh, admissionPrecheck: { ...current, measurement: { ...prior, previousHead: {
-          commit: previousHead.commit, results: [...previousHead.results],
-          ...(previousHead.detail ? { detail: previousHead.detail } : {}) } } } };
-      });
-    }
     // EI-27083585698781986: confirm each would-be-attributed guarded red with ONE re-run at the SAME
     // built commit while the operation's test environment is still up, and persist it beside the
     // baseline so a re-judged wide measurement sees the same confirmation.
-    const confirmation = await measureConfirmationRerun({
-      population, results: ordered, previousHead, builtCommit: operation.builtCommit, expectedTree: operation.builtTree,
-      runner, deadlineAtMs: operation.expiresAtMs, now,
+    const confirmationFiles = confirmationRerunFiles(population, ordered, previousHead);
+    const savedConfirmation = saved?.confirmation?.commit === operation.builtCommit ? saved.confirmation : undefined;
+    let savedConfirmationRows = (savedConfirmation?.results ?? []).filter(result => confirmationFiles.includes(result.path));
+    try { validateAdmissionPrecheckResults(confirmationFiles, savedConfirmationRows); }
+    catch { savedConfirmationRows = []; }
+    const confirmationRows = new Map(savedConfirmationRows.map(result => [result.path, result]));
+    const confirmationMissing = confirmationFiles.filter(file => confirmationRows.get(file)?.status === 'unmeasured' ||
+      !confirmationRows.has(file));
+    const confirmationPreviousHead = previousHead && confirmationMissing.length ? {
+      commit: previousHead.commit,
+      results: previousHead.results.filter(result => confirmationMissing.includes(result.path)),
+      ...(previousHead.detail ? { detail: previousHead.detail } : {}),
+    } : undefined;
+    const confirmationAttempt = confirmationMissing.length ? await measureConfirmationRerun({
+      population,
+      results: ordered.filter(result => confirmationMissing.includes(result.path)),
+      previousHead: confirmationPreviousHead,
+      builtCommit: operation.builtCommit,
+      expectedTree: operation.builtTree,
+      runner,
+      deadlineAtMs: operation.expiresAtMs,
+      now,
       onProgress: async file => {
         await deps.transition(input.queueTarget, fresh => {
           assertFresh(fresh);
@@ -538,18 +614,30 @@ async function runBoundedAdmissionPrecheck(
             completedCount: operation.files.length, totalCount: operation.files.length, heartbeatAtMs: now() });
         });
       },
+    }) : undefined;
+    for (const result of confirmationAttempt?.results ?? []) confirmationRows.set(result.path, result);
+    const confirmation = confirmationFiles.length ? {
+      commit: operation.builtCommit,
+      results: confirmationFiles.flatMap(file => {
+        const result = confirmationRows.get(file);
+        return result ? [result] : [];
+      }),
+      ...(mergeDetail(savedConfirmation?.detail, confirmationAttempt?.detail)
+        ? { detail: mergeDetail(savedConfirmation?.detail, confirmationAttempt?.detail)! } : {}),
+    } : undefined;
+    await deps.transition(input.queueTarget, fresh => {
+      const current = assertFresh(fresh);
+      const prior = current.measurement;
+      if (!prior || prior.identity !== identity || !isDeepStrictEqual(prior.results, completed))
+        throw new Error('persisted measurement moved while recording the confirmation re-run');
+      const measurement = { ...prior };
+      if (confirmation) measurement.confirmation = {
+        commit: confirmation.commit, results: [...confirmation.results],
+        ...(confirmation.detail ? { detail: confirmation.detail } : {}),
+      };
+      else delete measurement.confirmation;
+      return { ...fresh, admissionPrecheck: { ...current, measurement } };
     });
-    if (confirmation) {
-      await deps.transition(input.queueTarget, fresh => {
-        const current = assertFresh(fresh);
-        const prior = current.measurement;
-        if (!prior || prior.identity !== identity || !isDeepStrictEqual(prior.results, completed))
-          throw new Error('persisted measurement moved while recording the confirmation re-run');
-        return { ...fresh, admissionPrecheck: { ...current, measurement: { ...prior, confirmation: {
-          commit: confirmation.commit, results: [...confirmation.results],
-          ...(confirmation.detail ? { detail: confirmation.detail } : {}) } } } };
-      });
-    }
     if (now() >= operation.expiresAtMs) return unavailable('bounded pre-check deadline expired before settlement');
     await finalize();
     const verdict = evaluateFixPrecheck(population, { ran: true, commit: operation.builtCommit, results: ordered },

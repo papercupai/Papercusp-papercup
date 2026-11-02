@@ -505,6 +505,8 @@ async function withHolderLiveness(
 export async function resolveGoalsList(args: {
   workspaceId: string;
   status?: string | null;
+  /** Literal, case-insensitive terms for native and GUI goal discovery. */
+  query?: string;
   limit?: number;
   /** Exact pot set inherited from /adv; omitted means workspace-wide. */
   harnessSlugs?: readonly string[];
@@ -533,6 +535,16 @@ export async function resolveGoalsList(args: {
   const { getOrgPg } = await import('@papercusp/db-org');
   const { sql } = getOrgPg();
   const { workspaceId, status = null, limit = 100, harnessSlugs } = args;
+  const queryTerms = [...new Set((args.query ?? '').toLowerCase().trim().split(/\s+/).filter(Boolean))];
+  // Reuse the exact predicate for rows and their unbounded count. strpos keeps
+  // %, _ and backslashes literal. Package identity stays searchable even when
+  // an owner renames a Work on everything instance.
+  const searchPredicate = queryTerms.length ? sql`NOT EXISTS (
+    SELECT 1 FROM unnest(${queryTerms}::text[]) AS search_term(value)
+     WHERE strpos(lower(concat_ws(' ', g.id, g.title, g.body,
+       g.metadata->>'goalPackageRef', replace(g.metadata->>'goalPackageRef', '-', ' '))),
+       search_term.value) = 0
+  )` : sql`TRUE`;
   // Cut ONCE for the whole page, so two rows in the same render can never be
   // measured over windows that differ by the query's own duration.
   const recentSinceMs = Date.now() - SPEND_RECENT_WINDOW_MS;
@@ -647,6 +659,7 @@ export async function resolveGoalsList(args: {
         FROM harness_shared.goals g
        WHERE g.workspace_id = ${workspaceId}
          AND (${status}::text IS NULL OR g.status = ${status}::text)
+         AND ${searchPredicate}
          AND ${
            harnessSlugs
              ? sql`(
@@ -677,6 +690,7 @@ export async function resolveGoalsList(args: {
         FROM harness_shared.goals g
        WHERE g.workspace_id = ${workspaceId}
          AND (${status}::text IS NULL OR g.status = ${status}::text)
+         AND ${searchPredicate}
          AND ${
            harnessSlugs
              ? sql`(

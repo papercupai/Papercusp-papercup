@@ -14,6 +14,7 @@ import {
   dispatchPluginApiRoute,
   mountPluginApiRoutes,
   pluginApiRegistryNames,
+  enumerateMountedPluginHttpSurfaces,
   pluginApiRoutesStatus,
   _resetPluginApiRoutesForTests,
 } from './plugin-api-mount';
@@ -23,6 +24,35 @@ beforeEach(() => {
 });
 
 describe('dispatchPluginApiRoute', () => {
+  it('captures actual mounted prefixes and declared subroutes without dropping opaque handlers', async () => {
+    expect(enumerateMountedPluginHttpSurfaces()).toMatchObject({ initialized: false,
+      unresolved: ['plugin-http-registry-not-initialized'] });
+    const fakePlugin = { routes: [{ method: 'get', path: '/health' }, { method: 'POST', path: '/write' }],
+      async fetch() { return new Response('ok'); } };
+    const tmp = await makeTempPlugin('census-http', fakePlugin);
+    await mountPluginApiRoutes({ globalPluginsDir: tmp.dir, harnessSlugs: [] });
+    const first = enumerateMountedPluginHttpSurfaces();
+    expect(first.surfaces.map(s => s.surfaceId)).toEqual([
+      'ANY /api/plugins/census-http/*', 'GET /api/plugins/census-http/health', 'POST /api/plugins/census-http/write',
+    ]);
+    expect(first.surfaces[0].attrs?.innerRouteCoverage).toBe('unknown');
+    fakePlugin.routes.push({ method: 'DELETE', path: '/late' });
+    expect(enumerateMountedPluginHttpSurfaces().surfaces.map(s => s.surfaceId)).toContain('DELETE /api/plugins/census-http/late');
+    expect(first.surfaces).toHaveLength(3);
+  });
+
+  it('preserves an opaque fetch prefix and refuses to run a route-list getter', async () => {
+    let inspected = false;
+    const fakePlugin = { get routes() { inspected = true; throw new Error('must not execute'); },
+      async fetch() { return new Response('ok'); } };
+    const tmp = await makeTempPlugin('opaque-http', fakePlugin);
+    await mountPluginApiRoutes({ globalPluginsDir: tmp.dir, harnessSlugs: [] });
+    const census = enumerateMountedPluginHttpSurfaces();
+    expect(census.surfaces.map(s => s.surfaceId)).toEqual(['ANY /api/plugins/opaque-http/*']);
+    expect(census.unresolved).toContain('plugin-http-inner-routes-opaque:opaque-http');
+    expect(inspected).toBe(false);
+  });
+
   it('returns null when the requested plugin is not registered', async () => {
     // Empty registry — first dispatch triggers a lazy rebuild with no
     // discovery sources, so the registry stays empty.

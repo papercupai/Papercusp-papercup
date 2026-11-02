@@ -456,12 +456,7 @@ export interface CheckpointEvidence {
 export type CheckpointTypecheckDiagnostic = TscDiagnostic;
 
 /** Structured evidence for a completed early changed-file typecheck failure. */
-export interface CheckpointTypecheckPreflight {
-  status: "failed";
-  checkedFiles: string[];
-  failingFiles: string[];
-  diagnostics: CheckpointTypecheckDiagnostic[];
-}
+export type { CheckpointTypecheckPreflight } from "@papercusp/operator-core/lib/harness/routines/release-actions";
 
 const EARLY_TYPECHECK_DIAGNOSTIC_MAX = 100;
 
@@ -1327,11 +1322,13 @@ export interface CheckpointDeps {
    *  candidate; the real dep routes every changed file through a discovered owning
    *  `lint:tsc:* --files` gate in the isolated checkpoint tree. `skipped` means no changed
    *  file had a resolvable owning gate, not green. Optional so older/test deps keep their
-   *  current behaviour; a failed scoped result carries the real dep's independent non-test
-   *  gate inventory, while clean candidates still receive the normal post-suite assurance. */
+   *  current behaviour; `deadlineMs` bounds this provisional pass, and `deferFailureInventory`
+   *  lets round one measure the affected-test sweep before collecting the remaining post-suite
+   *  gates. Clean candidates still receive the normal post-suite assurance. */
   runChangedFileTypecheckPreflight?(
     files: string[],
     range?: { from: string; to: string },
+    options?: { deadlineMs?: number; deferFailureInventory?: boolean },
   ): Promise<{
     status: "passed" | "failed" | "skipped";
     summary: string;
@@ -3020,9 +3017,14 @@ export const CHECKPOINT_LOCK_STALE_MS = 190 * 60_000;
  *  HEAVY_SLOT_WAIT_SEC=120s and fails OPEN. A healthy run clears all of it in single-digit
  *  minutes, so crossing 20m means something in there is genuinely blocked — and the one
  *  unbounded call on that path is setupTree's `bash setup-release-checkout.sh`, which takes
- *  no timeout (see runCmd: adding one to a `heavy` call would silently disable the pc-heavy
- *  wrapper, so bounding it needs a process-GROUP kill, not a timeoutMs). */
+ *  no timeout. `runCmd` can preserve the pc-heavy wrapper under a timeout when it kills the
+ *  opted-in child process group. */
 export const CANDIDATE_SELECTION_TO_SUITE_WARN_MS = 20 * 60_000;
+
+/** Keep the provisional scoped typecheck from consuming the round-one test budget. The full
+ *  suite and post-suite gates remain authoritative; when this cap is reached, the scoped pass
+ *  is skipped and the candidate still reaches those normal checks. */
+export const EARLY_TYPECHECK_PREFLIGHT_TIMEOUT_MS = 15 * 60_000;
 
 /** WI-7069 root-fix (the run-bounding half): `setupTree`'s `bash setup-release-checkout.sh`
  *  (git checkout + an isolated node_modules copy + a forced dependency re-copy) was the ONE
@@ -15448,6 +15450,9 @@ async function runGreenCheckpointInner(
     }
   }
   const earlyTypecheckStartedAtMs = Date.now();
+  const deferEarlyFailureInventory = shouldRunSuiteAfterEarlyTypecheckFailure({
+    verifyingRepairHead: repairVerification,
+  });
   // WI-38422: reject a candidate-scoped type regression BEFORE paying for
   // the full affected-test sweep. This deliberately reuses BOTH existing seams:
   // `changedFilesForRange` is the exact committed initial-candidate or repair diff
@@ -15524,10 +15529,14 @@ async function runGreenCheckpointInner(
               await deps.runChangedFileTypecheckPreflight(files, {
                 from: earlyTypecheckBase,
                 to: candidate,
+              }, {
+                deadlineMs:
+                  earlyTypecheckStartedAtMs + EARLY_TYPECHECK_PREFLIGHT_TIMEOUT_MS,
+                deferFailureInventory: deferEarlyFailureInventory,
               });
-            const checkedFiles = preflight.checkedFiles?.length
-              ? [...new Set(preflight.checkedFiles)]
-              : files;
+              const checkedFiles = preflight.checkedFiles !== undefined
+                ? [...new Set(preflight.checkedFiles)]
+                : files;
             if (preflight.status === "failed") {
               const failureInventory = preflight.failureInventory;
               const failingSignatures = [
@@ -15552,7 +15561,9 @@ async function runGreenCheckpointInner(
               deps.log(
                 `early changed-file typecheck preflight: FAILED in ${elapsed()} across ${checkedFiles.length} file(s) ` +
                   `(${files.length} total changed file(s)) — ` +
-                  `rejecting before the affected-test sweep; the full post-suite checks remain required for every later passing candidate`,
+                  (deferEarlyFailureInventory
+                    ? "retaining the red and deferring remaining preflight gates until after the round-one affected-test sweep"
+                    : "rejecting the repair head before its suite; full post-suite checks remain required for every later passing candidate"),
               );
               if (preflight.summary.trim())
                 deps.log(
@@ -15570,7 +15581,9 @@ async function runGreenCheckpointInner(
                     : "")
                 : "";
               const earlySummary =
-                "Early changed-file typecheck failed before the affected-test sweep (" +
+                (deferEarlyFailureInventory
+                  ? "Early changed-file typecheck failed; its red is retained while the round-one affected-test sweep measures the candidate ("
+                  : "Early changed-file typecheck failed before the repair-head suite (") +
                 elapsed() +
                 ").\n\n" +
                 preflight.summary +
@@ -15631,7 +15644,7 @@ async function runGreenCheckpointInner(
   // queue: the queue is persisted above, before this preflight, on a candidate's first run.
   const roundOneMeasuresSuite =
     earlyPreflightFailure !== null &&
-    shouldRunSuiteAfterEarlyTypecheckFailure({ verifyingRepairHead: repairVerification });
+    deferEarlyFailureInventory;
   if (roundOneMeasuresSuite)
     deps.log(
       "early changed-file typecheck failed on the candidate's own round (not a repair head) — " +
@@ -22377,7 +22390,20 @@ export function realCheckpointDeps(
     execution: createCheckpointQualificationExecution,
   },
 ): CheckpointDeps {
+  const progressLockDir = checkpointRunLockDir(cfg.checkpointLogDir, cfg.integrationRoot);
   const notifyProgress = (detail?: string) => {
+    // Child stdout is buffered until completion, so readers cannot use its log
+    // mtime as progress during a long repair verification. Publish actual command
+    // activity through the existing marker, retaining its phase/activity/leg.
+    // Selection helpers also construct real deps before acquiring the run lock;
+    // they must never refresh another process's marker or create a new one.
+    try {
+      const owner = JSON.parse(readFileSync(path.join(progressLockDir, "owner.json"), "utf8"));
+      if (owner.pid === process.pid) {
+        const marker = readCheckpointRunPhaseMarker(progressLockDir);
+        if (marker) writeCheckpointRunPhase(progressLockDir, marker.phase, marker);
+      }
+    } catch { /* diagnostic-only: an absent/unreadable marker stays unmeasured */ }
     try {
       reportProgress?.(detail);
     } catch {
@@ -22492,7 +22518,6 @@ export function realCheckpointDeps(
    */
   const exec: CheckpointExec = async (cmd, args, opts) => {
     notifyProgress(`command:start:${cmd}`);
-    if (!reportProgress) return execRaw(cmd, args, opts);
     const forwarded = {
       ...opts,
       onProgress: () => {
@@ -23768,7 +23793,9 @@ export function realCheckpointDeps(
     // release-gate env isolation and sequential-leg heap. The only difference is scope:
     // `--files-from` attributes each verdict to the committed last-green..candidate diff.
     // A pass is provisional; runGreen still runs the unscoped post-suite legs later.
-    async runChangedFileTypecheckPreflight(files, range) {
+    async runChangedFileTypecheckPreflight(files, range, options = {}) {
+      const preflightDeadlineMs =
+        options.deadlineMs ?? Date.now() + EARLY_TYPECHECK_PREFLIGHT_TIMEOUT_MS;
       let discovered: Awaited<ReturnType<typeof discoverSiblingTypecheckGates>>;
       try {
         discovered = await discoverSiblingTypecheckGates(cfg.checkpointRoot);
@@ -23842,16 +23869,23 @@ export function realCheckpointDeps(
         };
       }
 
-      const checkedFiles = [
-        ...new Set(routes.routes.flatMap((route) => route.files)),
-      ];
+      const checkedFiles = new Set<string>();
       const summaries: string[] = [];
       const failingSignatures: string[] = [];
       const diagnostics: CheckpointTypecheckDiagnostic[] = [];
       const failingFilePaths: string[] = [];
+      let deadlineReached = false;
 
       for (const route of routes.routes) {
         if (!route.npmScript) continue;
+        const timeoutMs = preflightDeadlineMs - Date.now();
+        if (timeoutMs <= 0) {
+          deadlineReached = true;
+          summaries.push(
+            "early changed-file typecheck preflight reached its candidate time budget — full gate retained",
+          );
+          break;
+        }
         const env = buildGreenCheckpointEnv(
           null,
           process.env,
@@ -23880,9 +23914,12 @@ export function realCheckpointDeps(
               cwd: cfg.checkpointRoot,
               env,
               allowNonZero: true,
+              timeoutMs,
+              killProcessGroupOnTimeout: true,
               heavy: true,
             },
           );
+          for (const file of route.files) checkedFiles.add(file);
           const output = result.stdout + result.stderr;
           const summary =
             summarizeSuiteOutput(output).trim() ||
@@ -23897,12 +23934,38 @@ export function realCheckpointDeps(
             );
             diagnostics.push(...evidence.diagnostics);
             failingFilePaths.push(...evidence.failingFiles);
+            if (options.deferFailureInventory) {
+              summaries.push(
+                "remaining scoped typecheck gates and non-test failure inventory deferred until after the round-one affected-test sweep",
+              );
+              break;
+            }
+          }
+          if (Date.now() >= preflightDeadlineMs) {
+            deadlineReached = true;
+            summaries.push(
+              "early changed-file typecheck preflight reached its candidate time budget — full gate retained",
+            );
+            break;
           }
         } catch (error) {
+          if (Date.now() >= preflightDeadlineMs) {
+            deadlineReached = true;
+            summaries.push(
+              `${route.npmScript}: early typecheck exceeded the candidate time budget — full gate retained`,
+            );
+            break;
+          }
           failingSignatures.push(route.npmScript);
           summaries.push(
             `${route.npmScript}: execution errored (${error instanceof Error ? error.message : error})`,
           );
+          if (options.deferFailureInventory) {
+            summaries.push(
+              "remaining scoped typecheck gates and non-test failure inventory deferred until after the round-one affected-test sweep",
+            );
+            break;
+          }
         } finally {
           try {
             unlinkSync(responseFile);
@@ -23912,12 +23975,14 @@ export function realCheckpointDeps(
         }
       }
 
-      // A scoped red currently short-circuits runGreen, so the full-project typechecks and
-      // downstream blocking lints would otherwise stay unmeasured until another gate cycle.
-      // Reuse the existing non-test bundle to capture that failure inventory now. It continues
-      // through soft failures by design; only an unreadable candidate manifest hard-stops it.
+      // Repair-head reds still short-circuit runGreen, so capture their non-test failure inventory
+      // here. Round-one candidates defer it until after the affected-test sweep (P-016), avoiding
+      // duplicate unscoped work before that sweep. The bundle continues through soft failures;
+      // only an unreadable candidate manifest hard-stops it.
       const failureInventory =
-        failingSignatures.length > 0
+        failingSignatures.length > 0 &&
+        !options.deferFailureInventory &&
+        !deadlineReached
           ? await runPostSuiteLegs(
               cfg.checkpointRoot,
               buildGreenCheckpointEnv(
@@ -23948,7 +24013,7 @@ export function realCheckpointDeps(
       return failingSignatures.length > 0
         ? {
             status: "failed",
-            checkedFiles,
+            checkedFiles: [...checkedFiles],
             summary: summaries.join("\n"),
             failingSignatures: [
               ...new Set([
@@ -23969,9 +24034,18 @@ export function realCheckpointDeps(
                 }
               : {}),
           }
+        : deadlineReached
+        ? {
+            status: "skipped",
+            checkedFiles: [...checkedFiles],
+            summary:
+              summaries.join("\n") ||
+              "early changed-file typecheck preflight exceeded its candidate time budget — full gate retained",
+            failingSignatures: [],
+          }
         : {
             status: "passed",
-            checkedFiles,
+            checkedFiles: [...checkedFiles],
             summary: summaries.join("\n"),
             failingSignatures: [],
           };
@@ -25568,7 +25642,28 @@ export function realCheckpointDeps(
         let workspacePassed = true;
         let workspaceErrored = false;
         for (const invocation of invocations) {
-          const r = await exec(invocation.cmd, invocation.args, {
+          // Targeted repair runs do not inherit the full suite's private product database.
+          // An integration file that opens the canonical admin handle would otherwise hit the
+          // protected live operator DB and report a deterministic false red (the persistence-
+          // venue leg exposed this on frozen candidate 63442ecf6f53). Reuse the maintained
+          // private-PG wrapper rather than weakening the live-DB guard or teaching individual
+          // integration tests a second fixture path. A mixed batch can safely share the same
+          // wrapper; unit files do not depend on the product database.
+          const needsPrivatePg = vitestFiles.some((file) =>
+            /\.integration\.test\.[cm]?[jt]sx?$/.test(file),
+          );
+          const command = needsPrivatePg
+            ? {
+                cmd: process.execPath,
+                args: [
+                  path.join(cfg.checkpointRoot, "scripts", "with-test-pg.mjs"),
+                  "--",
+                  invocation.cmd,
+                  ...invocation.args,
+                ],
+              }
+            : invocation;
+          const r = await exec(command.cmd, command.args, {
             cwd: invocation.cwd,
             env,
             allowNonZero: true,
@@ -26593,18 +26688,16 @@ export function runCmd(
     // EI-78: de-prioritise the heavy legs so an hourly gate run stops competing head-on with
     // the live operator + the running fleet on the shared box.
     //
-    // ⚠ DELIBERATELY SKIPPED when `timeoutMs` is set, and that is a CORRECTNESS constraint,
-    // not a preference. pc-heavy.sh intentionally does NOT `exec` its command ("so the fd/lock
-    // stays with us" — it must outlive the child to hold the flock), so wrapping inserts a real
-    // shell process: gate -> sh(pc-heavy) -> nice -> npm -> vitest. The timeout path below does
-    // `child.kill('SIGKILL')`, which signals ONLY the direct child — it would kill the wrapper
-    // shell and ORPHAN the vitest workers it was supposed to stop. (The process-GROUP kill at
-    // the top of this file is unaffected: pc-heavy never setsid/detaches, so every wrapped
-    // descendant still inherits this process's pgid and `kill(-pid)` reaches all of them.)
-    // The two timeoutMs callers are the isolation + workspace re-runs, which are single-file /
-    // single-fork by construction — light enough that leaving them unthrottled costs nothing.
+    // A timed heavy command may use pc-heavy.sh only with process-group timeout killing enabled.
+    // The wrapper intentionally does NOT `exec` its command (it holds the flock), so a direct
+    // child.kill() would orphan npm's descendants. With killProcessGroupOnTimeout the wrapper is
+    // spawned detached as its own group leader, and the timeout kills the wrapper + every child.
+    // Without that opt-in, keep the historical safe behavior and skip pc-heavy on timed calls.
     const wrapper =
-      opts.heavy && (!opts.timeoutMs || opts.qualification) ? resolveHeavyWrapper() : null;
+      opts.heavy &&
+      (!opts.timeoutMs || opts.qualification || opts.killProcessGroupOnTimeout)
+        ? resolveHeavyWrapper()
+        : null;
     if (wrapper) {
       argsToRun = [cmdToRun, ...argsToRun];
       cmdToRun = wrapper;

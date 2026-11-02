@@ -38,10 +38,28 @@ function git(root, args, options = {}) {
  * Exact blobs and pinned gitlinks, with unavailable checkouts explicitly retained.
  * @param {string} root
  * @param {string} [revision]
- * @param {{ runGit?: (root: string, args: string[], options?: any) => any }} [options]
+ * Path selection is explicit discovery scope, never population closure. Budgets
+ * are checked against pinned tree metadata BEFORE asking Git for blob bytes.
+ * Unavailable/over-budget requested paths remain addressable in unresolved.
+ * @param {{ runGit?: (root: string, args: string[], options?: any) => any,
+ *   includePaths?: string[], maxBytes?: number, maxFiles?: number }} [options]
  */
-export function readCommittedSources(root, revision = 'HEAD', { runGit = git } = {}) {
-  const sources = [], repositories = [], unresolved = [];
+export function readCommittedSources(root, revision = 'HEAD', { runGit = git, includePaths, maxBytes, maxFiles } = {}) {
+  const canonicalPath = (path) => typeof path === 'string' && !!path && !isAbsolute(path)
+    && !path.includes('\\') && !path.includes('\0') && path.split('/').every((part) => !!part && part !== '.' && part !== '..');
+  if (includePaths !== undefined && (!Array.isArray(includePaths) || !includePaths.length
+      || includePaths.some((path) => !canonicalPath(path)) || new Set(includePaths).size !== includePaths.length)) {
+    throw new Error('Explicit unique canonical source paths required');
+  }
+  if ([maxBytes, maxFiles].some((value) => value !== undefined && (!Number.isSafeInteger(value) || value < 1))) {
+    throw new Error('Positive safe-integer source budgets required');
+  }
+  const requested = includePaths === undefined ? null : new Set(includePaths);
+  const missing = new Set(requested ?? []);
+  const sources = [], repositories = [];
+  /** @type {Array<Record<string, any>>} */
+  const unresolved = [];
+  let bytesRead = 0, filesRead = 0;
   const visit = (checkout, rev, prefix) => {
     let commit, entries;
     try {
@@ -63,11 +81,17 @@ export function readCommittedSources(root, revision = 'HEAD', { runGit = git } =
     const candidates = entries.filter((entry) => entry.type === 'blob'
       && (entry.mode === '100755' || entry.mode === '120000' || SOURCE.test(entry.path)
         || CONTROL_FILE.test(entry.path) || CONTROL_DIRECTORY.test(entry.path)));
-    const selected = candidates.filter((entry) => /^(?:100644|100755)$/.test(entry.mode)
-      && Number.isSafeInteger(entry.size) && entry.size <= 2 * 1024 * 1024);
-    for (const entry of candidates.filter((entry) => !selected.includes(entry))) {
-      unresolved.push({ path: prefix ? `${prefix}/${entry.path}` : entry.path,
-        commit, blobOid: entry.oid, reason: 'nonregular-or-over-budget-source' });
+    const selected = [];
+    for (const entry of candidates) {
+      const path = prefix ? `${prefix}/${entry.path}` : entry.path;
+      if (requested && !requested.has(path)) continue;
+      missing.delete(path);
+      const reason = !/^(?:100644|100755)$/.test(entry.mode) || !Number.isSafeInteger(entry.size)
+          || entry.size < 0 || entry.size > 2 * 1024 * 1024 ? 'nonregular-or-over-budget-source'
+        : maxFiles !== undefined && filesRead >= maxFiles ? 'source-reader-file-budget'
+        : maxBytes !== undefined && bytesRead + entry.size > maxBytes ? 'source-reader-byte-budget' : null;
+      if (reason) { unresolved.push({ path, commit, blobOid: entry.oid, bytes: entry.size, reason }); continue; }
+      selected.push(entry); bytesRead += entry.size; filesRead++;
     }
     // Each blob is bounded above; sixteen blobs keep the actual batch below
     // 32MiB rather than buffering the entire repository in a single child call.
@@ -79,7 +103,7 @@ export function readCommittedSources(root, revision = 'HEAD', { runGit = git } =
       for (const entry of chunk) {
         const end = batch.indexOf(10, offset);
         const [oid, type, size] = batch.subarray(offset, end).toString().split(' '); const length = Number(size);
-        if (end < 0 || oid !== entry.oid || type !== 'blob' || !Number.isSafeInteger(length) || length < 0
+        if (end < 0 || oid !== entry.oid || type !== 'blob' || !Number.isSafeInteger(length) || length !== entry.size
             || end + 1 + length >= batch.length || batch[end + 1 + length] !== 10) throw new Error('Git object stream mismatch');
         const bytes = batch.subarray(end + 1, end + 1 + length); offset = end + 2 + length;
         sources.push({ path: prefix ? `${prefix}/${entry.path}` : entry.path,
@@ -92,7 +116,11 @@ export function readCommittedSources(root, revision = 'HEAD', { runGit = git } =
     }
   };
   visit(resolve(root), revision, '');
-  return { sources, repositories, unresolved };
+  for (const path of missing) unresolved.push({ path, revision, reason: 'selected-source-unavailable' });
+  return { sources, repositories, unresolved, selection: {
+    paths: requested ? [...requested].sort() : null, maxBytes: maxBytes ?? null, maxFiles: maxFiles ?? null,
+    bytesRead, filesRead, populationComplete: false,
+  } };
 }
 
 function syntaxTokens(text, file) {
@@ -165,6 +193,7 @@ export function collectSystemdDirectives(path, text) {
 
 /** Candidate leads require explicit reachability classification before the population is frozen. */
 export function inventorySources(snapshot) {
+  const selection = snapshot.selection ? structuredClone(snapshot.selection) : null;
   /** @type {Record<string, InventoryLead[]>} */
   const groups = Object.fromEntries(INVENTORY_GROUPS.map((name) => [name, []]));
   /** @type {InventoryFile[]} */
@@ -206,7 +235,9 @@ export function inventorySources(snapshot) {
     }
   }
   return { schema: 'papercusp-runtime-migration-inventory-v1', repositories: snapshot.repositories,
+    ...(selection ? { selection } : {}),
     sourceFingerprint: hash(JSON.stringify({ repositories: snapshot.repositories, unresolved,
+      ...(selection ? { selection } : {}),
       files: files.map((file) => [file.path, file.commit, file.sourceSha256]) })),
     files, groups, unresolved, closureAccepted: false,
     limitations: ['Discovery only: classify required/unreachable/external using source reachability proof.',

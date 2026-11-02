@@ -27,6 +27,7 @@ import {
   resumeBlindGapReviewer,
 } from './blind-reviewer-mint';
 import { INTERNAL_BLIND_REVIEW_RESUME } from './blind-review-session-bindings';
+import type { createBlindReviewSessionBinding } from './blind-review-session-bindings';
 import { replacementFixture } from './__tests__/_blind-review-replacement-fixture';
 
 const REPO = resolve(__dirname, '../../..');
@@ -471,6 +472,7 @@ describe('mintBlindGapReviewer', () => {
       opened: 1,
       ownerIds: ['su-reviewer-1'],
       freshVerdict: { sessions: [{ ownerId: 'su-reviewer-1', advSessionId: 42, sessionId: 'native-review-1' }] },
+      tasks: [{ taskId: 'task-reviewer-1' }],
     } } }));
     const loadBrief = vi.fn(async () => brief);
     const launcher = vi.fn(async () => ({ handler, confinementKey: KEY }));
@@ -481,14 +483,18 @@ describe('mintBlindGapReviewer', () => {
       confinementSnapshot: CONFINEMENT, status: 'ready' as const, resumeLeaseId: null,
       resumeLeaseExpiresAt: null, reviewId: null,
     };
-    const createSessionBinding = vi.fn(async (input: { reviewerOwnerId: string; confinement: typeof CONFINEMENT }) => ({
+    const createSessionBinding = vi.fn<typeof createBlindReviewSessionBinding>(async (input) => ({
       ok: true as const, created: true, binding: { ...binding, reviewerOwnerId: input.reviewerOwnerId, confinementSnapshot: input.confinement },
     }));
+    const findSessionBinding = vi.fn(async () => null as typeof binding | null);
+    const killTask = vi.fn(async (taskId: string) => ({ ok: true as const, taskId, action: 'kill' }));
     const acquireSessionResume = vi.fn(async () => ({ ok: true as const, binding: { ...binding, status: 'resuming' as const, resumeLeaseId: 'lease-1' }, leaseId: 'lease-1' }));
     const releaseSessionResume = vi.fn(async () => true);
     const knownTools = async () => new Set(['capability:bash', 'testing:run', 'work_items:create', 'coord:send', 'events:emit']);
-    return { handler, loadBrief, launcher, createSessionBinding, acquireSessionResume, releaseSessionResume,
-      deps: { loadBrief, launcher, createSessionBinding, acquireSessionResume, releaseSessionResume, knownTools } };
+    return { handler, loadBrief, launcher, binding, findSessionBinding, createSessionBinding, killTask,
+      acquireSessionResume, releaseSessionResume,
+      deps: { loadBrief, launcher, findSessionBinding, createSessionBinding, killTask,
+        acquireSessionResume, releaseSessionResume, knownTools } };
   }
 
   // EI-27120299877087815: review #109 was told to call tools its ceiling refuses.
@@ -591,6 +597,67 @@ describe('mintBlindGapReviewer', () => {
     await mintBlindGapReviewer({ slug: SLUG, harness: 'papercusp', ctx: { workspaceId: 'ws-1' } }, nextActivation.deps);
     const nextKey = (nextActivation.handler.mock.calls[0] as unknown as [{ idempotencyKey: string }])[0].idempotencyKey;
     expect(nextKey).not.toBe(keys[0]);
+  });
+
+  it('reuses the active activation binding before launch', async () => {
+    const d = deps();
+    d.findSessionBinding.mockResolvedValue(d.binding);
+
+    const result = await mintBlindGapReviewer({
+      slug: SLUG, harness: 'papercusp', requestKey: 'mint-retry-v1', ctx: { workspaceId: 'ws-1' },
+    }, d.deps);
+
+    expect(result).toMatchObject({
+      ok: true, launchStatus: 'bound', binding: d.binding,
+      launch: { data: { deduped: true, launch: { deduped: true, opened: 0, mode: 'deduped' } } },
+    });
+    expect(d.findSessionBinding).toHaveBeenCalledWith({ workspaceId: 'ws-1', planSlug: SLUG, activationAuditSeq: 7 });
+    expect(d.launcher).not.toHaveBeenCalled();
+    expect(d.handler).not.toHaveBeenCalled();
+    expect(d.createSessionBinding).not.toHaveBeenCalled();
+  });
+
+  it('fails closed if the existing-binding lookup is unavailable', async () => {
+    const d = deps();
+    d.findSessionBinding.mockRejectedValue(new Error('binding store unavailable'));
+
+    const result = await mintBlindGapReviewer({ slug: SLUG, harness: 'papercusp', ctx: { workspaceId: 'ws-1' } }, d.deps);
+
+    expect(result).toMatchObject({ ok: false, code: 'session_binding_failed' });
+    expect(result.ok && result.launch).toBeFalsy();
+    expect(d.launcher).not.toHaveBeenCalled();
+    expect(d.handler).not.toHaveBeenCalled();
+  });
+
+  it('terminates the exact new task when an activation binding conflicts', async () => {
+    const d = deps();
+    d.handler.mockResolvedValue({ data: { launch: {
+      opened: 1,
+      ownerIds: ['su-reviewer-1'],
+      freshVerdict: { sessions: [{ ownerId: 'su-reviewer-1', advSessionId: 42, sessionId: 'native-review-1' }] },
+      tasks: [{ taskId: 'task-duplicate-reviewer' }],
+    } } });
+    d.createSessionBinding.mockResolvedValue({
+      ok: false, code: 'binding_conflict', message: 'A different reviewer session is already bound to this plan activation.',
+    });
+
+    const result = await mintBlindGapReviewer({ slug: SLUG, harness: 'papercusp', ctx: { workspaceId: 'ws-1' } }, d.deps);
+
+    expect(result).toMatchObject({ ok: false, code: 'session_binding_failed' });
+    expect(result.ok === false && result.message).toContain('no longer running');
+    expect(d.killTask).toHaveBeenCalledWith('task-duplicate-reviewer');
+  });
+
+  it('uses requestKey to distinguish mint retries while preserving the default activation key', async () => {
+    const d = deps();
+    const input = { slug: SLUG, harness: 'papercusp', ctx: { workspaceId: 'ws-1' } };
+    await mintBlindGapReviewer({ ...input, requestKey: 'mint-request-v1' }, d.deps);
+    await mintBlindGapReviewer({ ...input, requestKey: 'mint-request-v1' }, d.deps);
+    await mintBlindGapReviewer({ ...input, requestKey: 'mint-request-v2' }, d.deps);
+    const keys = d.handler.mock.calls.map(call =>
+      (call as unknown as [{ idempotencyKey: string }])[0].idempotencyKey);
+    expect(keys[0]).toBe(keys[1]);
+    expect(keys[2]).not.toBe(keys[0]);
   });
 
   it('uses the exact ADV row to bind a delayed native session id', async () => {

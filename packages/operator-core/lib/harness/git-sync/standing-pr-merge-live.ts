@@ -61,7 +61,7 @@ export interface LiveStandingPrMergeResolvers {
   /** The pot's suite command, or null when it has none. */
   suiteCommand(installSlug: string, workspaceId: string): Promise<string | null>;
   runSuite(command: string): RunSuite;
-  buildDeps(args: { repoDir: string; installSlug: string; prNumber: number; runSuite: RunSuite }): StandingPrMergeDeps;
+  buildDeps(args: { workspaceId: string; repoDir: string; installSlug: string; prNumber: number; runSuite: RunSuite }): StandingPrMergeDeps;
 }
 
 export function makeLiveStandingPrMerge(opts: {
@@ -85,8 +85,36 @@ export function makeLiveStandingPrMerge(opts: {
     suiteCommand: async (slug, ws) =>
       (await import('../routines/hive-release-env')).resolvePotSuiteCommand(slug, ws),
     runSuite: (command) => makeWorktreeSuiteRunner(command),
-    buildDeps: ({ repoDir, installSlug, prNumber, runSuite }) =>
-      createDefaultStandingPrMergeDeps({ repoDir, installSlug, prNumber, store: opts.store, runSuite, onError: opts.onError }),
+    buildDeps: ({ workspaceId, repoDir, installSlug, prNumber, runSuite }) =>
+      createDefaultStandingPrMergeDeps({
+        repoDir,
+        installSlug,
+        prNumber,
+        store: opts.store,
+        runSuite,
+        onError: opts.onError,
+        resolveAdmittedFixPaths: async ({ prHeadSha, targetTipSha, prUrl, prNumber: resolvedPrNumber }) => {
+          const [{ getOrgPg }, { loadHarnessRegistry }, { resolveAdmissionStandingPrPaths }] = await Promise.all([
+            import('@papercusp/db-org'),
+            import('../../harness-registry'),
+            import('../../work-admission/lifecycle'),
+          ]);
+          const registry = await loadHarnessRegistry(workspaceId);
+          const harnesses = registry.projects
+            .filter((project) => project.slug === installSlug || project.hive_slug === installSlug)
+            .map((project) => project.slug);
+          const resolved = await resolveAdmissionStandingPrPaths(getOrgPg().sql, {
+            workspaceId,
+            harnesses,
+            repositoryRoot: repoDir,
+            testedSha: prHeadSha,
+            targetSha: targetTipSha,
+            url: prUrl,
+            number: resolvedPrNumber,
+          });
+          return resolved.ok ? { ok: true as const, paths: resolved.paths } : resolved;
+        },
+      }),
     ...opts.resolvers,
   };
 
@@ -108,6 +136,7 @@ export function makeLiveStandingPrMerge(opts: {
       }
       await opts.store.ensureRecordRow?.(args.installSlug, args.workspaceId);
       const deps = r.buildDeps({
+        workspaceId: args.workspaceId,
         repoDir,
         installSlug: args.installSlug,
         prNumber: args.pr.ref.number,

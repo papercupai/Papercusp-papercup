@@ -375,6 +375,29 @@ export async function readFileDelta(filePath: string, offset: number, capBytes: 
   }
 }
 
+export type IngestMeasuredPhase =
+  | 'root-discovery'
+  | 'watermark-read'
+  | 'directory-scan'
+  | 'file-stat'
+  | 'decode'
+  | 'write-transaction'
+  | 'account-reconciliation'
+  | 'completion-settlement';
+
+export interface IngestProgress {
+  phase: IngestMeasuredPhase | 'starting' | 'completed';
+  /** Coarse source label only; never a path or session identifier. */
+  source?: string;
+  filesScanned: number;
+  filesIngested: number;
+  samples: number;
+  bytesRead: number;
+  elapsedMs: number;
+  phaseMs: Partial<Record<IngestMeasuredPhase, number>>;
+  sourcePhaseMs: Record<string, Partial<Record<IngestMeasuredPhase, number>>>;
+}
+
 export interface IngestOptions {
   /** Explicit, snapshot-backed replacement of ONE previously dry-run legacy prefix. Never used by the routine. */
   historical?: HistoricalUsageApproval;
@@ -409,6 +432,8 @@ export interface IngestOptions {
    *  `codexSessionRoots()`). Swept under the same `includeIsolationRoots`
    *  switch as the Claude isolation roots. Test seam only. */
   codexIsolationBase?: string;
+  /** Optional, path-free phase snapshots for diagnosing a long routine sweep. */
+  onProgress?: (progress: IngestProgress) => void;
 }
 
 export interface IngestResult {
@@ -499,6 +524,47 @@ export async function ingestInteractiveUsage(opts: IngestOptions = {}, scope: { 
   const capBytes = opts.maxBytesPerFile ?? DEFAULT_MAX_BYTES_PER_FILE;
   const sql = scope.sql ?? getOrgPg().sql;
   const ws = scope.workspaceId ?? activeWorkspaceId();
+  const progressStartedAt = performance.now();
+  const phaseMs: IngestProgress['phaseMs'] = {};
+  const sourcePhaseMs: IngestProgress['sourcePhaseMs'] = {};
+  let currentResult: IngestResult | undefined;
+  let bytesRead = 0;
+  let currentPhase: IngestProgress['phase'] = 'starting';
+  let currentSource: string | undefined;
+  let phaseStartedAt = progressStartedAt;
+  const flushCurrentPhase = (at: number): void => {
+    if (currentPhase === 'starting' || currentPhase === 'completed') return;
+    const elapsed = at - phaseStartedAt;
+    phaseMs[currentPhase] = (phaseMs[currentPhase] ?? 0) + elapsed;
+    if (currentSource) {
+      const sourceTimes = sourcePhaseMs[currentSource] ?? (sourcePhaseMs[currentSource] = {});
+      sourceTimes[currentPhase] = (sourceTimes[currentPhase] ?? 0) + elapsed;
+    }
+  };
+  const reportProgress = (phase: IngestProgress['phase'], source?: string): void => {
+    const now = performance.now();
+    flushCurrentPhase(now);
+    currentPhase = phase;
+    currentSource = source;
+    phaseStartedAt = now;
+    if (!opts.onProgress) return;
+    try {
+      opts.onProgress({
+        phase,
+        ...(source ? { source } : {}),
+        filesScanned: currentResult?.scannedFiles ?? 0,
+        filesIngested: currentResult?.ingestedFiles ?? 0,
+        samples: currentResult?.samples ?? 0,
+        bytesRead,
+        elapsedMs: Math.round(now - progressStartedAt),
+        phaseMs: { ...phaseMs },
+        sourcePhaseMs: Object.fromEntries(Object.entries(sourcePhaseMs).map(([key, value]) => [key, { ...value }])),
+      });
+    } catch {
+      // Diagnostics must never change the ingest result.
+    }
+  };
+  reportProgress('starting');
   if (opts.historical && (opts.adapters?.length !== 1 || opts.includeIsolationRoots === true ||
     !Number.isSafeInteger(opts.historical.backupSnapshotId) || opts.historical.backupSnapshotId <= 0 ||
     !/^[a-f0-9]{64}$/.test(opts.historical.sourceSha256) || !/^[a-f0-9]{32}$/.test(opts.historical.legacyFingerprint))) {
@@ -508,6 +574,7 @@ export async function ingestInteractiveUsage(opts: IngestOptions = {}, scope: { 
     await requireHistoricalBackup(sql, ws, opts.historical.backupSnapshotId);
   }
 
+  reportProgress('root-discovery');
   // Lazy import avoids a require cycle (ingest-adapters imports this module's
   // parseTranscriptChunk for the claude adapter).
   const { defaultAdapters, providerForModel } = await import('./ingest-adapters');
@@ -595,7 +662,9 @@ export async function ingestInteractiveUsage(opts: IngestOptions = {}, scope: { 
     totals: emptyDelta(),
     errors: [],
   };
+  currentResult = result;
 
+  reportProgress('watermark-read');
   const wmRows = await sql<Array<{ file_path: string; byte_offset: string; parser_state: TranscriptParserState }>>`
     SELECT file_path, byte_offset, parser_state FROM harness_shared.interactive_usage_files
      WHERE workspace_id = ${ws}
@@ -604,8 +673,19 @@ export async function ingestInteractiveUsage(opts: IngestOptions = {}, scope: { 
     offset: Number(r.byte_offset), parserState: r.parser_state ?? {},
   }]));
 
+  const sourceForAdapter = (name: string): string => {
+    if (name.startsWith('claude-iso-')) return 'claude-isolation';
+    if (name.startsWith('codex-iso-')) return 'codex-isolation';
+    if (name.startsWith('claude')) return 'claude';
+    if (name.startsWith('codex')) return 'codex';
+    if (name.startsWith('omp')) return 'omp';
+    return 'other';
+  };
+
   for (const adapter of adapters) {
+    const source = sourceForAdapter(adapter.name);
     let entries: Array<{ parentPath?: string; path?: string; name: string; isFile(): boolean }>;
+    reportProgress('directory-scan', source);
     try {
       if (opts.historical) {
         const relative = path.relative(adapter.root, opts.historical.filePath);
@@ -648,6 +728,7 @@ export async function ingestInteractiveUsage(opts: IngestOptions = {}, scope: { 
 
     for (const file of files) {
       result.scannedFiles += 1;
+      reportProgress('file-stat', source);
       try {
         const { size } = await fs.stat(file).catch(async (error: NodeJS.ErrnoException) => {
           if (error.code !== 'ENOENT' || !opts.historical) throw error;
@@ -677,7 +758,9 @@ export async function ingestInteractiveUsage(opts: IngestOptions = {}, scope: { 
           // all historical usage. Persist progress without advancing its paid
           // frontier; never infer a legacy model from the current launcher.
           const replayOffset = fileState.bootstrapOffset ?? 0;
+          reportProgress('decode', source);
           const prefix = await readFileDelta(file, replayOffset, Math.min(capBytes, offset - replayOffset));
+          bytesRead += Buffer.byteLength(prefix);
           const replay = adapter.parse(prefix, fileState);
           if (replay.consumedBytes === 0) throw new Error('Legacy parser-state replay cannot advance within maxBytesPerFile');
           fileState = { ...fileState, ...replay.parserState, bootstrapSource: 'transcript-prefix' };
@@ -705,6 +788,7 @@ export async function ingestInteractiveUsage(opts: IngestOptions = {}, scope: { 
             throw new Error('Historical frontier changed, source has unread bytes, or file generation is ambiguous; repeat dry run');
           }
           const { replayTranscriptPrefix } = await import('./replay-transcripts');
+          reportProgress('decode', source);
           const replay = await replayTranscriptPrefix({ filePath: file, byteOffset: stored.offset, adapter, chunkBytes: capBytes });
           if (replay.status !== 'available' || replay.sourceSha256 !== approval.sourceSha256 || replay.events.length === 0) {
             throw new Error('Historical source unavailable, empty or changed since dry run');
@@ -715,7 +799,9 @@ export async function ingestInteractiveUsage(opts: IngestOptions = {}, scope: { 
           parsed = { perModel: new Map(), events: replay.events.map(event => ({ ...event, relativeOffset: event.byteOffset })),
             consumedBytes: replay.byteOffset, parserState: { ...replay.parserState, initialized: true } };
         } else {
+          reportProgress('decode', source);
           const chunk = await readFileDelta(file, offset, capBytes);
+          bytesRead += Buffer.byteLength(chunk);
           parsed = adapter.parse(chunk, fileState);
         }
         const { perModel, consumedBytes, parserState, events } = parsed;
@@ -729,6 +815,7 @@ export async function ingestInteractiveUsage(opts: IngestOptions = {}, scope: { 
           throw new Error('Historical session has an ambiguous file-to-ledger mapping');
         }
 
+        reportProgress('write-transaction', source);
         const committedDeltas = await sql.begin(async (tx) => {
           if (opts.historical) {
             // Serialize the rare maintenance transaction with all legacy INSERT writers,
@@ -945,6 +1032,7 @@ export async function ingestInteractiveUsage(opts: IngestOptions = {}, scope: { 
       }
     }
   }
+  reportProgress('account-reconciliation');
   try {
     result.attributedAccounts = await reconcileTranscriptAccounts(sql, ws, opts.sessionIds);
   } catch (error) {
@@ -955,11 +1043,13 @@ export async function ingestInteractiveUsage(opts: IngestOptions = {}, scope: { 
   if (!opts.adapters && !opts.historical) {
     try {
       const { settleDeferredOperationCompletions } = await import('../blueprint/operation-service');
+      reportProgress('completion-settlement');
       const settled = await settleDeferredOperationCompletions(sql, ws);
       for (const error of settled.errors) result.errors.push({ file: 'operation-completion-settlement', error });
     } catch (error) {
       result.errors.push({ file: 'operation-completion-settlement', error: error instanceof Error ? error.message : String(error) });
     }
   }
+  reportProgress('completed');
   return result;
 }

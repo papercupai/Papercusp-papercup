@@ -89,7 +89,7 @@ function PlanPreview({ plan, agents, onChat }: {
   const query = usePlan(plan.slug, { live: true, harnessSlug: plan.harness });
   const workspaceId = useWorkspaceId();
   const sessions = useSyncQuery<PlanSession>({ queryName: 'planSessions.list',
-    args: { planSlug: plan.slug, workspaceId: workspaceId ?? null } });
+    args: { planSlug: plan.slug, harnessSlug: plan.harness, workspaceId: workspaceId ?? null } });
   const doc = query.data?.slug === plan.slug ? query.data : null;
   const items = doc?.items ?? [];
   const completed = items.filter(i => i.effectiveStatus === 'done').length;

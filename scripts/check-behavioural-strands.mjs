@@ -727,16 +727,133 @@ export function seamCallCounts(text, fileName = 'file.ts') {
  * `toHaveBeenCalledTimes` assertion pass by accident, but it very commonly has a
  * `expect(x).not.toHaveBeenCalled()` — the same class, same blast radius.
  */
-export function increasedSeams(beforeText, afterText, fileName = 'file.ts') {
+export function increasedSeams(beforeText, afterText, fileName = 'file.ts', ignoredImportedBindings = new Set()) {
   const before = seamCallCounts(beforeText, fileName);
   const after = seamCallCounts(afterText, fileName);
   const rows = [];
   for (const [key, count] of after) {
+    if (ignoredImportedBindings.has(key.replace(/\(\)$/, ''))) continue;
     const was = before.get(key) ?? 0;
     if (count > was) rows.push({ seam: key, before: was, after: count });
   }
   rows.sort((a, b) => b.after - b.before - (a.after - a.before) || a.seam.localeCompare(b.seam));
   return rows;
+}
+
+function parseSource(text, fileName) {
+  try {
+    return ts.createSourceFile(fileName, text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  } catch {
+    return null;
+  }
+}
+
+function structuralFingerprint(node) {
+  let value = '';
+  if (ts.isIdentifier(node) || ts.isStringLiteralLike(node) || ts.isNumericLiteral(node)) value = node.text;
+  const children = [];
+  ts.forEachChild(node, (child) => children.push(structuralFingerprint(child)));
+  return String(node.kind) + ':' + JSON.stringify(value) + '[' + children.join(',') + ']';
+}
+
+function topLevelFunctionDeclarations(source) {
+  const functions = new Map();
+  for (const statement of source.statements) {
+    if (!ts.isFunctionDeclaration(statement) || !statement.name || !statement.body) continue;
+    const parameters = statement.parameters.map(structuralFingerprint).join('|');
+    functions.set(statement.name.text, {
+      exported: (statement.modifiers ?? []).some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword),
+      fingerprint: parameters + '=>' + structuralFingerprint(statement.body),
+      node: statement,
+    });
+  }
+  return functions;
+}
+
+function namedImportBindings(source) {
+  const imports = [];
+  for (const statement of source.statements) {
+    if (!ts.isImportDeclaration(statement) || !ts.isStringLiteral(statement.moduleSpecifier)) continue;
+    const clause = statement.importClause;
+    if (!clause || clause.isTypeOnly || !clause.namedBindings || !ts.isNamedImports(clause.namedBindings)) continue;
+    for (const specifier of clause.namedBindings.elements) {
+      if (specifier.isTypeOnly) continue;
+      imports.push({
+        localName: specifier.name.text,
+        importedName: specifier.propertyName?.text ?? specifier.name.text,
+        moduleSpecifier: statement.moduleSpecifier.text,
+      });
+    }
+  }
+  return imports;
+}
+
+function directNamedCallTexts(source, name, excludedNode = null) {
+  const calls = [];
+  const visit = (node) => {
+    if (node === excludedNode) return;
+    if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === name) {
+      calls.push(node.getText(source));
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  return calls;
+}
+
+function sourceWithoutExtension(file) {
+  return file.replace(/\.(?:[cm]?[jt]sx?)$/i, '');
+}
+
+function importedFilePair(callerFile, moduleSpecifier, filePairs) {
+  if (!moduleSpecifier.startsWith('.')) return null;
+  const requested = sourceWithoutExtension(resolve(resolve(ROOT, callerFile), '..', moduleSpecifier));
+  const indexRequest = resolve(requested, 'index');
+  return filePairs.find((pair) => {
+    const candidate = sourceWithoutExtension(resolve(ROOT, pair.file));
+    return candidate === requested || candidate === indexRequest;
+  }) ?? null;
+}
+
+/**
+ * Names an import as a relocated local helper only when its call sites did not change,
+ * the removed local declaration is structurally equivalent to the provider's existing
+ * implementation, and that provider implementation itself stayed unchanged and became
+ * exported. Unknown or partial moves keep the ordinary seam warning.
+ */
+export function equivalentMovedHelperImports(filePairs) {
+  const byCaller = new Map();
+  for (const caller of filePairs) {
+    const before = parseSource(caller.beforeText, caller.file);
+    const after = parseSource(caller.afterText, caller.file);
+    if (!before || !after) continue;
+    const beforeFunctions = topLevelFunctionDeclarations(before);
+    const afterFunctions = topLevelFunctionDeclarations(after);
+
+    for (const binding of namedImportBindings(after)) {
+      const local = beforeFunctions.get(binding.localName);
+      if (!local || local.exported || afterFunctions.has(binding.localName)) continue;
+      const callsBefore = directNamedCallTexts(before, binding.localName, local.node);
+      const callsAfter = directNamedCallTexts(after, binding.localName);
+      if (callsBefore.length === 0 || JSON.stringify(callsBefore) !== JSON.stringify(callsAfter)) continue;
+
+      const provider = importedFilePair(caller.file, binding.moduleSpecifier, filePairs);
+      if (!provider) continue;
+      const providerBefore = parseSource(provider.beforeText, provider.file);
+      const providerAfter = parseSource(provider.afterText, provider.file);
+      if (!providerBefore || !providerAfter) continue;
+      const previousImplementation = topLevelFunctionDeclarations(providerBefore).get(binding.importedName);
+      const currentImplementation = topLevelFunctionDeclarations(providerAfter).get(binding.importedName);
+      if (!currentImplementation?.exported) continue;
+      if (previousImplementation && previousImplementation.fingerprint !== currentImplementation.fingerprint) continue;
+      const implementation = previousImplementation ?? currentImplementation;
+      if (implementation.fingerprint !== local.fingerprint) continue;
+
+      if (!byCaller.has(caller.file)) byCaller.set(caller.file, new Set());
+      byCaller.get(caller.file).add(binding.localName);
+    }
+  }
+  return byCaller;
 }
 
 // ── the injected-member trigger: a Deps-shaped member gained an invoker (EI-23824032487848760) ──
@@ -1018,6 +1135,23 @@ function controlFlowToken(node, sourceFile, fileName) {
   if (ts.isThrowStatement(node)) return 'throw';
   if (ts.isCatchClause(node)) return 'catch';
   return null;
+}
+
+function anonymousCallableAnchor(node, sourceFile) {
+  const parent = node.parent;
+  if (ts.isCallExpression(parent)) {
+    const argumentIndex = parent.arguments.indexOf(node);
+    if (argumentIndex >= 0) return 'call:' + parent.expression.getText(sourceFile) + ':arg:' + argumentIndex;
+  }
+  if (ts.isNewExpression(parent)) {
+    const argumentIndex = parent.arguments?.indexOf(node) ?? -1;
+    if (argumentIndex >= 0) return 'new:' + parent.expression.getText(sourceFile) + ':arg:' + argumentIndex;
+  }
+  if (ts.isArrayLiteralExpression(parent)) {
+    const elementIndex = parent.elements.indexOf(node);
+    if (elementIndex >= 0) return 'array-element:' + elementIndex;
+  }
+  return 'parent:' + (ts.SyntaxKind[parent.kind] ?? 'unknown');
 }
 
 function callableIdentity(node, sourceFile, anonymousOrdinal) {
@@ -1368,17 +1502,26 @@ export function seamControlFlowRecords(text, fileName = 'file.ts') {
   const functionStack = [];
   const callableScope = [];
   const records = [];
-  let anonymousOrdinal = 0;
+  const anonymousOrdinals = new Map();
   const visit = (node) => {
     const isFunctionLike = isCallableNode(node);
     if (isFunctionLike) {
-      const name = callableIdentity(node, source, anonymousOrdinal++);
+      const scopeKey = callableScope.join('/');
+      const anchor = anonymousCallableAnchor(node, source);
+      const ordinalKey = scopeKey + '\0' + anchor;
+      const anonymousOrdinal = anonymousOrdinals.get(ordinalKey) ?? 0;
+      const name = callableIdentity(node, source, anonymousOrdinal);
+      const isAnonymous = name.startsWith('<anonymous:');
+      if (isAnonymous) anonymousOrdinals.set(ordinalKey, anonymousOrdinal + 1);
+      const identity = isAnonymous
+        ? 'callback:' + anchor + ':' + anonymousOrdinal
+        : 'function:' + name;
       const record = {
         function: name,
         // A display name alone is not unique: separate injected-search sources all
         // have a `lexical` method. Include stable named containers so a harmless
         // edit cannot compare one sibling's flow against another's.
-        identity: [...callableScope, `function:${name}`].join('/'),
+        identity: [...callableScope, identity].join('/'),
         seams: [],
         controlFlow: [],
         seamContexts: [],
@@ -2504,6 +2647,7 @@ function main() {
   const examined = [];
   const identical = [];
   const usedSubmoduleHead = new Set();
+  const filePairs = [];
   for (const file of candidates) {
     const { submodule, cwd, relPath } = repoForPath(file, submodules);
     // A superproject revision does not name submodule content, so `--base <sha>` is only
@@ -2529,17 +2673,22 @@ function main() {
     }
     const afterText = readFileSync(abs, 'utf8');
     examined.push(file);
-    if (afterText === beforeText) {
-      identical.push(file);
-      continue;
-    }
+    filePairs.push({ file, beforeText, afterText });
+    if (afterText === beforeText) identical.push(file);
+  }
+
+  const movedHelperImports = equivalentMovedHelperImports(filePairs);
+  for (const { file, beforeText, afterText } of filePairs) {
+    if (afterText === beforeText) continue;
     const isPackageManifest = PACKAGE_JSON_RE.test(file);
     const scriptValues = isPackageManifest ? diffPackageScriptValues(beforeText, afterText) : [];
     if (scriptValues === null) {
       skipped.push({ file, reason: 'invalid-package-json' });
       continue;
     }
-    const seams = isPackageManifest ? [] : increasedSeams(beforeText, afterText, file);
+    const seams = isPackageManifest
+      ? []
+      : increasedSeams(beforeText, afterText, file, movedHelperImports.get(file));
     const controlFlow = isPackageManifest ? [] : changedSeamControlFlow(beforeText, afterText, file);
     const values = isPackageManifest ? [] : diffOutputValues(beforeText, afterText, file);
     const injections = isPackageManifest ? [] : invokedInjectedMembers(beforeText, afterText, file);

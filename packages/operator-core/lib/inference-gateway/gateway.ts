@@ -3200,7 +3200,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
     status: number,
   ): void => {
     const governor = governorForAccount(model || SERVICEABLE_CLAMP_MODEL, accountId, 'codex');
-    governor.recordResponse(headers);
+    governor.recordResponse(headers, status);
     if (status !== 429) return;
     const parsed = parseCodexRateReset(headers);
     const pausedBefore = governor.state.pausedUntil;
@@ -7622,7 +7622,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
                 const hobj = response.metadata.headers;
                 const status = response.status;
                 const accountGov = governorForAccount(model, account.accountId);
-                accountGov.recordResponse(hobj);
+                accountGov.recordResponse(hobj, status);
                 recordClaudeBilling(account, hobj as Record<string, string | undefined>);
                 // A served response proves the account is past its credit wall (e.g. an operator readmit
                 // after a top-up), so stats stop reporting a wall that no longer holds.
@@ -9035,6 +9035,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
             // must describe the WIRE, which is what the client actually got.
             stageSpan?.setStreaming(wantsStream);
             providerAdmission.recordSuccess('codex');
+            governorForAccount(model, metadata.accountId, 'codex').recordResponse({}, 200);
             const headers: Record<string, string> = { [ROUTED_ACCOUNT_HEADER]: metadata.accountId };
             if (metadata.pinYieldedFrom) {
               headers[PIN_YIELDED_HEADER] = `${metadata.pinYieldedFrom}->${metadata.accountId}`;

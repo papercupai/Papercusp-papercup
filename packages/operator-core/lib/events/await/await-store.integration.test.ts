@@ -20,6 +20,8 @@ const store = await import('./store');
 const { HOST_ACCEPTED_CANCELLED_DELIVERY_MARKER } = await import('./cancel-reasons');
 const { lastLoopFireParked } = await import('../../agent-tools/loop/next-wake');
 const { reconcileInterestEventAwaits } = await import('../../interest-auto-arm');
+const { reconcileAgentObligationReminders } = await import('../../agent-obligation-reminders');
+const { defineAgentObligation, evaluateAgentObligations } = await import('../../agent-obligations');
 const { createOrgTestDb } = await import('../../../test/_org-test-db');
 
 describe('event_awaits + event_wake_deliveries (real PG)', () => {
@@ -209,6 +211,38 @@ describe('event_awaits + event_wake_deliveries (real PG)', () => {
     );
     expect(out.await_ids).toEqual([manual!.id]);
     expect(await store.listActiveAwaits(subscriberId)).toEqual([manual!]);
+  });
+
+  it.each([
+    ['unfiltered', null],
+    ['filtered', { result: { equals: 'ready' } }],
+  ])('obligation reconciliation preserves an explicit bounded %s retry across turns', async (name, payloadFilter) => {
+    const subscriberId = `su-obligation-bounded-${name}`;
+    const eventKey = `plan:acceptance:bounded-${name}`;
+    const manual = await store.registerAwait({
+      subscriberId, eventKey, timeoutSec: 3600, timeoutBehavior: 'wake', payloadFilter,
+      note: 'explicit audit retry', wakeHandle: { kind: 'plan-run', runId: 9 },
+    });
+    const entry = defineAgentObligation({
+      ruleId: 'goal-owner-report', ruleRevision: 'v1', family: 'owner-report',
+      title: 'Audit is pending', scope: { workspaceId: DEFAULT_COORD_WORKSPACE, ownerId: subscriberId },
+      responsibleOwnerId: subscriberId, episode: 'audit-pending', status: 'due',
+      authority: { kind: 'policy', sourceRef: 'audit-reader', revision: 'v1' },
+      reason: 'independent audit is pending', priority: 'high', causalRank: 1,
+      applicableDemand: 1, sourceGeneration: 'audit-pending', evidence: [],
+      action: { kind: 'report', summary: 're-evaluate the audit' },
+      clearsWhen: { id: 'audit-settled', summary: 'audit settles', evidenceKind: 'delivery', sourceRef: 'audit-reader' },
+      changeSignal: { event: eventKey },
+    });
+    const agenda = evaluateAgentObligations([entry], new Date().toISOString());
+    for (let turn = 0; turn < 2; turn++) {
+      const receipt = await reconcileAgentObligationReminders({ ownerId: subscriberId, agenda }, {
+        captureHandle: async () => ({ handle: { kind: 'plan-run', runId: 10 }, note: 'reachable' }),
+        listHistory: store.listLifecycleBoundAwaits, register: store.registerAwait, cancel: store.cancelAwait,
+      });
+      expect(receipt.error).toBeUndefined();
+      expect(await store.listActiveAwaits(subscriberId)).toEqual([manual]);
+    }
   });
 
   it('concurrent preservation registrations reuse the original deadline without inserting replacements', async () => {

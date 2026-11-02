@@ -16,6 +16,7 @@
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { CHECKPOINT_BODY_CAP_CHARS } from './carry-note';
+import * as fallbackObservations from './degradation/fallback-observations';
 
 const getWorkItemCheckpointWithMeta = vi.fn();
 const setWorkItemCheckpointWithPrior = vi.fn();
@@ -71,6 +72,7 @@ vi.mock('./agent-tools/coordination/inbox-wake', () => ({
 const {
   autoCheckpointStaleHeldItems,
   checkpointOnRelease,
+  TURN_END_SWEEP_BUDGET_MS,
   readCurrentOpenTaskReminderFreshness,
   readCurrentOpenTaskReminderSignature,
   sweepOpenTaskReminder,
@@ -180,6 +182,28 @@ describe('checkpointOnRelease (EI-18734870651452334)', () => {
     const result = await checkpointOnRelease(REF);
 
     expect(result).toEqual({ written: false });
+  });
+
+  it('returns the fallback and warns when the release checkpoint exceeds its bounded budget', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const fallbackSpy = vi.spyOn(fallbackObservations, 'observeFallback').mockReturnValue(true);
+    getWorkItemCheckpointWithMeta.mockReturnValue(new Promise(() => {}));
+    vi.useFakeTimers();
+    try {
+      const resultPromise = checkpointOnRelease(REF);
+      await vi.advanceTimersByTimeAsync(TURN_END_SWEEP_BUDGET_MS);
+      await expect(resultPromise).resolves.toEqual({ written: false });
+      expect(warnSpy).toHaveBeenCalledWith(
+        '[bounded-timeout] release-time-mechanical-checkpoint exceeded ' +
+          TURN_END_SWEEP_BUDGET_MS +
+          'ms — degrading to fallback',
+      );
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+      warnSpy.mockRestore();
+      fallbackSpy.mockRestore();
+    }
   });
 
   it('preserves a checkpoint authored after the missing-checkpoint read', async () => {

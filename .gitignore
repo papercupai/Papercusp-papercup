@@ -69,6 +69,8 @@ apps/operator/scripts/hooks/cc/*.tmp*
 # ignoring it meant CI had no lockfile and `npm ci` could never run.
 package-lock.json
 !/package-lock.json
+# The isolated Minecraft image is a standalone npm project built with npm ci.
+!/packages/operator-core/vendor/minecraft-runtime/package-lock.json
 *.tsbuildinfo
 .DS_Store
 *.log
@@ -107,6 +109,8 @@ test-results/
 # Cloudflare wrangler local secrets (JWT_SECRET, CF tokens). Was tracked until
 # 2026-09-30 (open-source-release P-013); never commit it again.
 **/.dev.vars
+# Wrangler's per-bundle middleware output is transient build scratch, not source.
+apps/operator-public/.wrangler/tmp/
 .source/
 
 # Rust/Tauri build artifacts — accidentally committed before; never again.

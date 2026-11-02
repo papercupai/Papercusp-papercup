@@ -50,6 +50,7 @@ function fakeDeps(
   const deps: StandingPrMergeDeps = {
     readTargetTip: async () => opts.tip ?? TIP,
     loadLastTest: async () => opts.last ?? null,
+    loadPathAttribution: async () => ({ ok: true, prDiffPaths: [], admittedFixPaths: [] }),
     saveTest: async (_n, rec) => void calls.saved.push(rec),
     findUnpublishedGitlinks: async (head, tip) => {
       calls.pinChecks.push({ head, tip });

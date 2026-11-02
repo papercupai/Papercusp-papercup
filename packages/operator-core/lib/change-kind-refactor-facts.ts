@@ -20,15 +20,33 @@
  *   - semantic (non-structural) clone families cannot be re-scanned here, so a finding that names
  *     one is reported as not re-scannable.
  */
+import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
-import type { RefactorFacts, RefactorFactsResolver, RefactorRunRow } from './change-kind-refactor-proof';
+import * as ts from 'typescript';
+import {
+  NON_EXECUTABLE_HUNK_CLASSIFIER_VERSION,
+  type NonExecutableRefactorHunkProof,
+  type RefactorDiffSide,
+  type RefactorFacts,
+  type RefactorFactsResolver,
+  type RefactorRunRow,
+  type RefactorTouchedMember,
+} from './change-kind-refactor-proof';
 import { CloneIndex, classifyClonePath } from './code-intelligence/clone-index';
 import { cloneFamilyArea, rankCloneSweep } from './code-intelligence/clone-sweep';
 
 export interface LineRange {
+  start: number;
+  end: number;
+}
+
+export interface RefactorDiffHunk {
+  old: RefactorDiffSide;
+  new: RefactorDiffSide;
+  /** Compatibility range for the new side; pure deletion maps to its adjacent line. */
   start: number;
   end: number;
 }
@@ -52,7 +70,7 @@ export interface FiledRefactorFinding {
 }
 
 export interface TouchedCoverage {
-  members: RefactorFacts['touchedMembers'];
+  members: ReadonlyArray<RefactorTouchedMember> | null;
   errors: readonly string[];
 }
 
@@ -65,7 +83,9 @@ export interface RefactorFactsIo {
    * Covering test files for each touched source hunk. `staleSince` lists paths whose working-tree
    * content differs from the landing commit, so their landing line numbers cannot be mapped.
    */
-  coverage(hunks: ReadonlyMap<string, readonly LineRange[]>, staleSince: ReadonlySet<string>): Promise<TouchedCoverage>;
+  coverage(hunks: ReadonlyMap<string, readonly RefactorDiffHunk[]>, staleSince: ReadonlySet<string>): Promise<TouchedCoverage>;
+  /** Exact source bytes read from a named immutable repository commit. */
+  readCommitSource?(commit: string, path: string): Promise<string | null>;
   readFiled(finding: ParsedRefactorFinding): Promise<FiledRefactorFinding | null>;
   /** Current-tree source for a repo-relative path; null when the file does not exist. */
   readSource(path: string): Promise<string | null>;
@@ -93,8 +113,8 @@ export function isCloneScannable(path: string): boolean {
  * (`+N,0`) maps to the single line it sits beside. Deleted files are omitted: they have no
  * new-side lines to cover.
  */
-export function parseDiffHunks(diff: string): Map<string, LineRange[]> {
-  const out = new Map<string, LineRange[]>();
+export function parseDiffHunks(diff: string): Map<string, RefactorDiffHunk[]> {
+  const out = new Map<string, RefactorDiffHunk[]>();
   let current: string | null = null;
   for (const line of diff.split('\n')) {
     if (line.startsWith('diff --git ')) {
@@ -108,14 +128,259 @@ export function parseDiffHunks(diff: string): Map<string, LineRange[]> {
       continue;
     }
     if (!current) continue;
-    const m = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/.exec(line);
+    const m = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/.exec(line);
     if (!m) continue;
-    const start = Number(m[1]);
-    const count = m[2] === undefined ? 1 : Number(m[2]);
-    const first = Math.max(start, 1);
-    out.get(current)!.push({ start: first, end: count === 0 ? first : start + count - 1 });
+    const old = { start: Number(m[1]), count: m[2] === undefined ? 1 : Number(m[2]) };
+    const newSide = { start: Number(m[3]), count: m[4] === undefined ? 1 : Number(m[4]) };
+    const start = Math.max(1, newSide.start);
+    out.get(current)!.push({
+      old,
+      new: newSide,
+      start,
+      end: newSide.count === 0 ? start : newSide.start + newSide.count - 1,
+    });
   }
   return out;
+}
+
+interface SourceToken {
+  kind: ts.SyntaxKind;
+  text: string;
+  pos: number;
+  end: number;
+}
+
+interface SourceInterval {
+  start: number;
+  end: number;
+}
+
+function scriptKind(path: string): ts.ScriptKind {
+  if (path.endsWith('.tsx')) return ts.ScriptKind.TSX;
+  if (path.endsWith('.jsx')) return ts.ScriptKind.JSX;
+  if (path.endsWith('.js') || path.endsWith('.mjs') || path.endsWith('.cjs')) return ts.ScriptKind.JS;
+  return ts.ScriptKind.TS;
+}
+
+function sourceFile(path: string, text: string): ts.SourceFile | null {
+  const file = ts.createSourceFile(path, text, ts.ScriptTarget.Latest, true, scriptKind(path));
+  return file.parseDiagnostics.length === 0 ? file : null;
+}
+
+function lineOffsets(text: string): number[] {
+  const offsets = [0];
+  for (let i = 0; i < text.length; i++) if (text.charCodeAt(i) === 10) offsets.push(i + 1);
+  return offsets;
+}
+
+function lineCount(text: string): number {
+  if (!text) return 0;
+  return text.endsWith('\n') ? lineOffsets(text).length - 1 : lineOffsets(text).length;
+}
+
+function sourceBounds(text: string, side: RefactorDiffSide): SourceInterval | null {
+  if (!Number.isSafeInteger(side.start) || !Number.isSafeInteger(side.count) || side.start < 0 || side.count < 0) return null;
+  if (side.count > 0 && (side.start < 1 || side.start + side.count - 1 > lineCount(text))) return null;
+  if (side.count === 0 && side.start > lineCount(text) + 1) return null;
+  const offsets = lineOffsets(text);
+  const firstLine = side.count === 0 ? side.start : side.start - 1;
+  const start = side.count === 0 && side.start >= lineCount(text)
+    ? text.length
+    : (offsets[Math.min(firstLine, offsets.length - 1)] ?? text.length);
+  const endLine = firstLine + side.count;
+  const end = side.count === 0 ? start : (offsets[endLine] ?? text.length);
+  return { start, end };
+}
+
+function scanTokens(path: string, text: string, skipTrivia: boolean): SourceToken[] {
+  const variant = path.endsWith('.tsx') || path.endsWith('.jsx') ? ts.LanguageVariant.JSX : ts.LanguageVariant.Standard;
+  const scanner = ts.createScanner(ts.ScriptTarget.Latest, skipTrivia, variant, text);
+  const tokens: SourceToken[] = [];
+  while (true) {
+    const kind = scanner.scan();
+    if (kind === ts.SyntaxKind.EndOfFileToken) break;
+    if (skipTrivia || kind === ts.SyntaxKind.SingleLineCommentTrivia || kind === ts.SyntaxKind.MultiLineCommentTrivia) {
+      tokens.push({ kind, text: scanner.getTokenText(), pos: scanner.getTokenPos(), end: scanner.getTextPos() });
+    }
+  }
+  return tokens;
+}
+
+function tokensIn(tokens: readonly SourceToken[], bounds: SourceInterval): SourceToken[] {
+  return tokens.filter((token) => token.pos >= bounds.start && token.end <= bounds.end);
+}
+
+function commentsIn(tokens: readonly SourceToken[], bounds: SourceInterval): SourceToken[] {
+  return tokens.filter((token) => token.pos < bounds.end && token.end > bounds.start);
+}
+
+function equalTokens(a: SourceToken, b: SourceToken): boolean {
+  return a.kind === b.kind && a.text === b.text;
+}
+
+function changedTokenSides(oldTokens: readonly SourceToken[], newTokens: readonly SourceToken[]): {
+  removed: SourceToken[];
+  added: SourceToken[];
+} {
+  let prefix = 0;
+  while (prefix < oldTokens.length && prefix < newTokens.length && equalTokens(oldTokens[prefix]!, newTokens[prefix]!)) prefix++;
+  let suffix = 0;
+  while (suffix < oldTokens.length - prefix && suffix < newTokens.length - prefix
+    && equalTokens(oldTokens[oldTokens.length - suffix - 1]!, newTokens[newTokens.length - suffix - 1]!)) suffix++;
+  return {
+    removed: oldTokens.slice(prefix, oldTokens.length - suffix),
+    added: newTokens.slice(prefix, newTokens.length - suffix),
+  };
+}
+
+function syntaxIntervals(file: ts.SourceFile): { safe: SourceInterval[]; forbidden: SourceInterval[] } {
+  const safe: SourceInterval[] = [];
+  const forbidden: SourceInterval[] = [];
+  const visit = (node: ts.Node): void => {
+    const start = node.getStart(file);
+    const end = node.end;
+    if (ts.isTypeAliasDeclaration(node) || ts.isInterfaceDeclaration(node) || ts.isTypeNode(node)
+      || ts.isTypeParameterDeclaration(node)) safe.push({ start, end });
+    if (ts.isImportDeclaration(node) || ts.isExportDeclaration(node) || ts.isEnumDeclaration(node)
+      || ts.isModuleDeclaration(node) || (ts.canHaveDecorators(node) && (ts.getDecorators(node)?.length ?? 0) > 0)) {
+      forbidden.push({ start, end });
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(file);
+  return { safe, forbidden };
+}
+
+function contains(intervals: readonly SourceInterval[], pos: number): boolean {
+  return intervals.some((interval) => pos >= interval.start && pos < interval.end);
+}
+
+function changedTokenIsTypeSyntax(
+  token: SourceToken,
+  allTokens: readonly SourceToken[],
+  intervals: { safe: readonly SourceInterval[]; forbidden: readonly SourceInterval[] },
+): boolean {
+  if (contains(intervals.forbidden, token.pos)) return false;
+  if (contains(intervals.safe, token.pos)) return true;
+  if (token.kind !== ts.SyntaxKind.ColonToken && token.kind !== ts.SyntaxKind.AsKeyword
+    && token.kind !== ts.SyntaxKind.SatisfiesKeyword) return false;
+  const next = allTokens.find((candidate) => candidate.pos >= token.end);
+  return Boolean(next && contains(intervals.safe, next.pos) && !contains(intervals.forbidden, next.pos));
+}
+
+const NON_EXECUTABLE_DIRECTIVE_RE =
+  /(?:\/\/\/\s*<reference\b|\/\/[#@]\s*(?:sourceMappingURL|sourceURL)|@ts-(?:ignore|expect-error|nocheck|check)|eslint-(?:disable|enable)|\b(?:istanbul|c8|v8)\s+ignore\b|\/\/[#@]\s*(?:region|endregion))/i;
+
+function emittedJavaScript(path: string, text: string): string | null {
+  if (!sourceFile(path, text)) return null;
+  const result = ts.transpileModule(text, {
+    fileName: path,
+    reportDiagnostics: true,
+    compilerOptions: {
+      target: ts.ScriptTarget.ESNext,
+      module: ts.ModuleKind.ESNext,
+      jsx: ts.JsxEmit.Preserve,
+      removeComments: true,
+      isolatedModules: true,
+      verbatimModuleSyntax: true,
+      preserveConstEnums: true,
+    },
+  });
+  return result.diagnostics?.length ? null : result.outputText;
+}
+
+function sideLabel(side: RefactorDiffSide): string {
+  const start = Math.max(1, side.start);
+  return start + '-' + (side.count === 0 ? start : side.start + side.count - 1);
+}
+
+function memberForHunk(
+  path: string,
+  hunk: RefactorDiffHunk,
+  coveringFiles: readonly string[],
+  suffix = '',
+): RefactorTouchedMember {
+  return {
+    member: path + ':' + sideLabel(hunk.new) + suffix,
+    path,
+    oldRange: { ...hunk.old },
+    newRange: { ...hunk.new },
+    coveringFiles,
+  };
+}
+
+function sha256(text: string): string {
+  return createHash('sha256').update(text, 'utf8').digest('hex');
+}
+
+export type NonExecutableRefactorHunkClassifier = (hunk: RefactorDiffHunk) => NonExecutableRefactorHunkProof | null;
+
+/** Classifies only comments or erased TS type syntax whose isolated compiler output is unchanged. */
+export function createNonExecutableRefactorHunkClassifier(input: {
+  path: string;
+  parentSource: string;
+  landingSource: string;
+  parentCommit: string;
+  landingCommit: string;
+}): NonExecutableRefactorHunkClassifier | null {
+  if (!isCoverableSource(input.path) || !/^[a-f0-9]{40,64}$/.test(input.parentCommit)
+    || !/^[a-f0-9]{40,64}$/.test(input.landingCommit)) return null;
+  const parentFile = sourceFile(input.path, input.parentSource);
+  const landingFile = sourceFile(input.path, input.landingSource);
+  const parentEmit = emittedJavaScript(input.path, input.parentSource);
+  if (!parentFile || !landingFile || parentEmit === null) return null;
+  const parentTokens = scanTokens(input.path, input.parentSource, true);
+  const landingTokens = scanTokens(input.path, input.landingSource, true);
+  const parentComments = scanTokens(input.path, input.parentSource, false);
+  const landingComments = scanTokens(input.path, input.landingSource, false);
+  const allComments = [...parentComments, ...landingComments];
+  if (allComments.some((comment) => NON_EXECUTABLE_DIRECTIVE_RE.test(comment.text))) return null;
+  const parentSyntax = syntaxIntervals(parentFile);
+  const landingSyntax = syntaxIntervals(landingFile);
+  const parentSourceSha256 = sha256(input.parentSource);
+  const landingSourceSha256 = sha256(input.landingSource);
+  const parentEmitSha256 = sha256(parentEmit);
+
+  return (hunk) => {
+    const oldBounds = sourceBounds(input.parentSource, hunk.old);
+    const newBounds = sourceBounds(input.landingSource, hunk.new);
+    if (!oldBounds || !newBounds) return null;
+    const oldHunk = input.parentSource.slice(oldBounds.start, oldBounds.end);
+    const newHunk = input.landingSource.slice(newBounds.start, newBounds.end);
+    if (oldHunk === newHunk) return null;
+    const oldTokens = tokensIn(parentTokens, oldBounds);
+    const newTokens = tokensIn(landingTokens, newBounds);
+    const changed = changedTokenSides(oldTokens, newTokens);
+    const oldComments = commentsIn(parentComments, oldBounds);
+    const newComments = commentsIn(landingComments, newBounds);
+    const isCommentOnly = changed.removed.length === 0 && changed.added.length === 0
+      && oldComments.length + newComments.length > 0;
+    const isErasedType = changed.removed.length + changed.added.length > 0
+      && changed.removed.every((token) => changedTokenIsTypeSyntax(token, parentTokens, parentSyntax))
+      && changed.added.every((token) => changedTokenIsTypeSyntax(token, landingTokens, landingSyntax));
+    if (!isCommentOnly && !isErasedType) return null;
+
+    const isolatedSource = input.parentSource.slice(0, oldBounds.start) + newHunk + input.parentSource.slice(oldBounds.end);
+    const isolatedEmit = emittedJavaScript(input.path, isolatedSource);
+    if (isolatedEmit === null || isolatedEmit !== parentEmit) return null;
+    return {
+      version: 1,
+      classifierVersion: NON_EXECUTABLE_HUNK_CLASSIFIER_VERSION,
+      classification: isCommentOnly ? 'comment' : 'erased-type',
+      path: input.path,
+      member: input.path + ':' + sideLabel(hunk.new),
+      parentCommit: input.parentCommit,
+      landingCommit: input.landingCommit,
+      oldRange: { ...hunk.old },
+      newRange: { ...hunk.new },
+      parentSourceSha256,
+      landingSourceSha256,
+      oldHunkSha256: sha256(oldHunk),
+      newHunkSha256: sha256(newHunk),
+      parentEmitSha256,
+      isolatedEmitSha256: sha256(isolatedEmit),
+    };
+  };
 }
 
 const GUARD_FINDING_PREFIX = 'sync-delta-guard:lint:guard-reachability:';
@@ -310,7 +575,47 @@ export function createRefactorFactsResolver(io: RefactorFactsIo): RefactorFactsR
               errors: [],
             } as TouchedCoverage);
             errors.push(...coverage.errors);
-            touchedMembers = coverage.members;
+            if (coverage.members && io.readCommitSource) {
+              const sourcePairs = new Map<string, Promise<{ parentSource: string | null; landingSource: string | null }>>();
+              const classifiers = new Map<string, NonExecutableRefactorHunkClassifier | null>();
+              touchedMembers = await Promise.all(coverage.members.map(async (member) => {
+                if (member.coveringFiles.length || !member.path || !member.oldRange || !member.newRange
+                  || staleSince.has(member.path)) return member;
+                const hunk = source.get(member.path)?.find((candidate) =>
+                  candidate.old.start === member.oldRange!.start && candidate.old.count === member.oldRange!.count
+                  && candidate.new.start === member.newRange!.start && candidate.new.count === member.newRange!.count);
+                if (!hunk) return member;
+                try {
+                  let sourcePair = sourcePairs.get(member.path);
+                  if (!sourcePair) {
+                    sourcePair = Promise.all([
+                      io.readCommitSource!(parent, member.path),
+                      io.readCommitSource!(landing, member.path),
+                    ]).then(([parentSource, landingSource]) => ({ parentSource, landingSource }));
+                    sourcePairs.set(member.path, sourcePair);
+                  }
+                  const exact = await sourcePair;
+                  if (exact.parentSource === null || exact.landingSource === null) return member;
+                  let classifier = classifiers.get(member.path);
+                  if (!classifiers.has(member.path)) {
+                    classifier = createNonExecutableRefactorHunkClassifier({
+                      path: member.path,
+                      parentSource: exact.parentSource,
+                      landingSource: exact.landingSource,
+                      parentCommit: parent,
+                      landingCommit: landing,
+                    });
+                    classifiers.set(member.path, classifier);
+                  }
+                  const proof = classifier?.(hunk) ?? null;
+                  return proof ? { ...member, nonExecutableProof: proof } : member;
+                } catch {
+                  return member;
+                }
+              }));
+            } else {
+              touchedMembers = coverage.members;
+            }
           }
         }
       }
@@ -355,6 +660,16 @@ export function nativeRefactorFactsResolver(scope: { root: string; workspaceId: 
     async git(args) {
       const { stdout } = await execFileAsync('git', ['-C', root, ...args], { maxBuffer: 64 * 1024 * 1024, timeout: 30_000 });
       return stdout;
+    },
+    async readCommitSource(commit, path) {
+      try {
+        const { stdout } = await execFileAsync('git', ['-C', root, 'show', commit + ':' + path], {
+          maxBuffer: 64 * 1024 * 1024, timeout: 30_000,
+        });
+        return stdout;
+      } catch {
+        return null;
+      }
     },
     async readRuns(ids) {
       if (!ids.length) return [];
@@ -420,11 +735,11 @@ export function nativeRefactorFactsResolver(scope: { root: string; workspaceId: 
         import('./code-intelligence/test-coverage-map'),
       ]);
       const mappable = [...hunks.keys()].filter((p) => !staleSince.has(p));
-      const members: Array<{ member: string; coveringFiles: string[] }> = [];
+      const members: RefactorTouchedMember[] = [];
       for (const path of hunks.keys()) {
         if (!staleSince.has(path)) continue;
         for (const r of hunks.get(path)!) {
-          members.push({ member: `${path}:${r.start}-${r.end} (changed again after the landing commit; coverage cannot be mapped)`, coveringFiles: [] });
+          members.push(memberForHunk(path, r, [], ' (changed again after the landing commit; coverage cannot be mapped)'));
         }
       }
       if (!mappable.length) return { members, errors: [] };
@@ -444,7 +759,12 @@ export function nativeRefactorFactsResolver(scope: { root: string; workspaceId: 
         },
         AbortSignal.timeout(30_000),
       );
-      if (!scopeData) return { members: null, errors: ['the coverage map has no source-bound scope for the touched files'] };
+      if (!scopeData) {
+        for (const path of mappable) {
+          for (const hunk of hunks.get(path)!) members.push(memberForHunk(path, hunk, []));
+        }
+        return { members, errors: [] };
+      }
       for (const path of mappable) {
         for (const r of hunks.get(path)!) {
           const answer = queryTestCoverage({
@@ -454,11 +774,7 @@ export function nativeRefactorFactsResolver(scope: { root: string; workspaceId: 
             currentHashes: scopeData.currentHashes,
             currentPopulation: scopeData.population,
           });
-          members.push(
-            answer.basis === 'execution'
-              ? { member: `${path}:${r.start}-${r.end}`, coveringFiles: answer.tests }
-              : { member: `${path}:${r.start}-${r.end} (${answer.reason})`, coveringFiles: [] },
-          );
+          members.push(memberForHunk(path, r, answer.basis === 'execution' ? answer.tests : []));
         }
       }
       return { members, errors: [] };

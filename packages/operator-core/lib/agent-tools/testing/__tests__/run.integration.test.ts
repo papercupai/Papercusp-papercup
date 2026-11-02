@@ -1961,6 +1961,111 @@ describe('testing:run (integration)', () => {
     }
   });
 
+  it('attributes a mixed Vitest environment failure to the requested file beside passing reports', async () => {
+    const passingFile = 'packages/x/passing.test.tsx';
+    const collectionFile = 'packages/x/operator-machine-sync.test.tsx';
+    const root = await makeScratchTestCheckout('papercusp-testing-run-mixed-collection-', passingFile);
+    await mkdir(join(root, 'scripts'), { recursive: true });
+    await writeFile(join(root, 'scripts', 'test-files.mjs'), 'export {};\n');
+    await writeFile(join(root, collectionFile), 'export {};\n');
+    await sealScratchTestCheckout(root);
+
+    const logDir = await mkdtemp(join(tmpdir(), 'papercusp-testing-run-mixed-collection-logs-'));
+    const stdoutPath = join(logDir, 'router.stdout.log');
+    const stderrPath = join(logDir, 'router.stderr.log');
+    const diagnostic = 'Error: Failed to load environment jsdom; Cannot find package jsdom for ' + collectionFile;
+    const runRouterFn = vi.fn(async (args: string[]) => {
+      const outputArg = args.find((arg) => arg.startsWith('--outputFile='));
+      if (!outputArg) throw new Error('fixture router did not receive --outputFile');
+      const reportPath = outputArg.slice('--outputFile='.length);
+      await writeFile(reportPath, JSON.stringify({
+        testResults: [{
+          name: join(root, passingFile),
+          status: 'passed',
+          startTime: 0,
+          endTime: 1,
+          assertionResults: [{ fullName: 'renders the passing fixture', status: 'passed' }],
+        }],
+      }));
+      await writeFile(join(dirname(reportPath), 'report.1.json'), JSON.stringify({ testResults: [] }));
+      await writeFile(stdoutPath, 'JSON report written to ' + reportPath + '\n');
+      await writeFile(stderrPath, diagnostic + '\n');
+      return {
+        code: 1, signal: null, timedOut: false, aborted: false,
+        output: 'JSON report written to ' + reportPath,
+        outputLogPaths: [stdoutPath, stderrPath],
+      };
+    });
+
+    try {
+      const out = await runTestFilesCore(
+        { root, files: [passingFile, collectionFile] },
+        { runRouterFn },
+      );
+      expect(out).toMatchObject({
+        ok: false,
+        passed: 1,
+        failed: 1,
+        files: 2,
+        byFile: {
+          [passingFile]: { passed: 1, failed: 0, collectionFailed: false },
+          [collectionFile]: { passed: 0, failed: 1, collectionFailed: true },
+        },
+      });
+      expect(out.failures).toContainEqual(expect.objectContaining({
+        file: collectionFile,
+        test: '(file failed to collect)',
+        message: expect.stringContaining('Cannot find package jsdom'),
+      }));
+    } finally {
+      await rm(logDir, { recursive: true, force: true });
+    }
+  });
+
+  it('reports a zero-suite environment failure as a per-file collection failure', async () => {
+    const file = 'packages/x/operator-machine-sync.test.tsx';
+    const root = await makeScratchTestCheckout('papercusp-testing-run-zero-suite-collection-', file);
+    await mkdir(join(root, 'scripts'), { recursive: true });
+    await writeFile(join(root, 'scripts', 'test-files.mjs'), 'export {};\n');
+    await sealScratchTestCheckout(root);
+
+    const logDir = await mkdtemp(join(tmpdir(), 'papercusp-testing-run-zero-suite-logs-'));
+    const stdoutPath = join(logDir, 'router.stdout.log');
+    const stderrPath = join(logDir, 'router.stderr.log');
+    const diagnostic = 'Error: Failed to load environment jsdom; Cannot find package jsdom for ' + file;
+    const runRouterFn = vi.fn(async (args: string[]) => {
+      const outputArg = args.find((arg) => arg.startsWith('--outputFile='));
+      if (!outputArg) throw new Error('fixture router did not receive --outputFile');
+      const reportPath = outputArg.slice('--outputFile='.length);
+      await writeFile(reportPath, JSON.stringify({ testResults: [] }));
+      await writeFile(stdoutPath, 'JSON report written to ' + reportPath + '\n');
+      await writeFile(stderrPath, diagnostic + '\n');
+      return {
+        code: 1, signal: null, timedOut: false, aborted: false,
+        output: 'JSON report written to ' + reportPath,
+        outputLogPaths: [stdoutPath, stderrPath],
+      };
+    });
+
+    try {
+      const out = await runTestFilesCore({ root, files: [file] }, { runRouterFn });
+      expect(out).toMatchObject({
+        ok: false,
+        passed: 0,
+        failed: 1,
+        files: 1,
+        byFile: { [file]: { passed: 0, failed: 1, collectionFailed: true } },
+      });
+      expect(out.failures?.[0]).toMatchObject({
+        file,
+        test: '(file failed to collect)',
+      });
+      expect(out.failures?.[0]?.message).toContain('Cannot find package jsdom');
+    } finally {
+      await rm(logDir, { recursive: true, force: true });
+    }
+  });
+
   it('retains the original router log and source/cleanup packet after a measured successful verdict', async () => {
     const root = await makeScratchTestCheckout('papercusp-testing-run-success-log-');
     await mkdir(join(root, 'scripts'), { recursive: true });

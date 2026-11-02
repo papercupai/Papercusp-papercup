@@ -71,7 +71,7 @@ function numberOrNull(value: unknown): number | null {
   return typeof value === 'number' && Number.isFinite(value) ? value : null;
 }
 
-function projectQueueControl(value: unknown, textCap: number): JsonObject | undefined {
+function projectQueueControl(value: unknown, textCap: number, tracker?: ClipTracker): JsonObject | undefined {
   const source = object(value);
   if (!source) return undefined;
   const active = object(source.activeClaim);
@@ -87,18 +87,18 @@ function projectQueueControl(value: unknown, textCap: number): JsonObject | unde
   return {
     activeClaim: active ? { owner: stringOrNull(active.owner), claimedAt: stringOrNull(active.claimedAt) } : null,
     holdOpenLease: lease ? {
-      holder: stringOrNull(lease.holder), reason: clip(lease.reason, textCap),
+      holder: stringOrNull(lease.holder), reason: clip(lease.reason, textCap, tracker),
       heldAt: stringOrNull(lease.heldAt), age: age(lease.age),
     } : null,
     durablePark: park ? {
-      parker: stringOrNull(park.parker), reason: clip(park.reason, textCap),
+      parker: stringOrNull(park.parker), reason: clip(park.reason, textCap, tracker),
       parkedAt: stringOrNull(park.parkedAt), age: age(park.age),
-      unparkCondition: condition ? { status: stringOrNull(condition.status), text: clip(condition.text, textCap) } : null,
+      unparkCondition: condition ? { status: stringOrNull(condition.status), text: clip(condition.text, textCap, tracker) } : null,
       releaseLiveness: release ? {
         status: stringOrNull(release.status), contractPresent: release.contractPresent === true,
         condition: stringOrNull(release.condition), owner: stringOrNull(release.owner),
-        trigger: clip(release.trigger, textCap), reachability: stringOrNull(release.reachability),
-        evidence: clip(release.evidence, textCap),
+        trigger: clip(release.trigger, textCap, tracker), reachability: stringOrNull(release.reachability),
+        evidence: clip(release.evidence, textCap, tracker),
         findings: Array.isArray(release.findings) ? release.findings.map(String) : [],
       } : null,
     } : null,
@@ -110,23 +110,26 @@ function projectQueueControl(value: unknown, textCap: number): JsonObject | unde
   };
 }
 
-function clip(value: unknown, max: number): string {
+type ClipTracker = { textTruncated: boolean };
+
+function clip(value: unknown, max: number, tracker?: ClipTracker): string {
   const text = requiredString(value);
   if (text.length <= max) return text;
+  if (tracker) tracker.textTruncated = true;
   const marker = `…[TRUNCATED +${text.length - max} chars — re-read with payloadTier:'full']`;
   return text.slice(0, Math.max(0, max - marker.length)) + marker;
 }
 
-function projectRow(value: unknown, titleCap: number): JsonObject | null {
+function projectRow(value: unknown, titleCap: number, tracker?: ClipTracker): JsonObject | null {
   const row = object(value);
   if (!row || typeof row.id !== 'string' || typeof row.kind !== 'string') return null;
-  const queueControl = projectQueueControl(row.queueControl, titleCap);
+  const queueControl = projectQueueControl(row.queueControl, titleCap, tracker);
   return {
     id: row.id,
     kind: requiredString(row.kind),
     family: requiredString(row.family),
     harness: stringOrNull(row.harness),
-    title: clip(row.title, titleCap),
+    title: clip(row.title, titleCap, tracker),
     state: requiredString(row.state),
     assignee: stringOrNull(row.assignee),
     ...(typeof row.assigneeLive === 'boolean' ? { assigneeLive: row.assigneeLive } : {}),
@@ -140,55 +143,55 @@ function projectRow(value: unknown, titleCap: number): JsonObject | null {
   };
 }
 
-function projectRows(value: unknown, cap: number, titleCap: number): JsonObject[] {
+function projectRows(value: unknown, cap: number, titleCap: number, tracker?: ClipTracker): JsonObject[] {
   if (!Array.isArray(value)) return [];
   return value
-    .map((row) => projectRow(row, titleCap))
+    .map((row) => projectRow(row, titleCap, tracker))
     .filter((row): row is JsonObject => row !== null)
     .slice(0, cap);
 }
 
-function projectParkedRow(value: unknown, titleCap: number, reasonCap: number): JsonObject | null {
-  const row = projectRow(value, titleCap);
+function projectParkedRow(value: unknown, titleCap: number, reasonCap: number, tracker?: ClipTracker): JsonObject | null {
+  const row = projectRow(value, titleCap, tracker);
   const source = object(value);
   if (!row || !source || typeof source.reason !== 'string' || !PARKED_MECHANISMS.has(String(source.mechanism))) {
     return null;
   }
   return {
     ...row,
-    reason: clip(source.reason, reasonCap),
+    reason: clip(source.reason, reasonCap, tracker),
     mechanism: source.mechanism,
     ...(typeof source.aliasedState === 'string' ? { aliasedState: source.aliasedState } : {}),
   };
 }
 
-function projectParkedRows(value: unknown, cap: number, titleCap: number, reasonCap: number): JsonObject[] {
+function projectParkedRows(value: unknown, cap: number, titleCap: number, reasonCap: number, tracker?: ClipTracker): JsonObject[] {
   if (!Array.isArray(value)) return [];
   return value
-    .map((row) => projectParkedRow(row, titleCap, reasonCap))
+    .map((row) => projectParkedRow(row, titleCap, reasonCap, tracker))
     .filter((row): row is JsonObject => row !== null)
     .slice(0, cap);
 }
 
-function projectDeltaRow(value: unknown, titleCap: number): JsonObject | null {
+function projectDeltaRow(value: unknown, titleCap: number, tracker?: ClipTracker): JsonObject | null {
   const row = object(value);
   if (!row || typeof row.id !== 'string' || typeof row.kind !== 'string') return null;
   return {
     id: row.id,
     kind: row.kind,
-    title: clip(row.title, titleCap),
+    title: clip(row.title, titleCap, tracker),
     state: requiredString(row.state),
     harness: stringOrNull(row.harness),
     ts: requiredString(row.ts),
   };
 }
 
-function projectDelta(value: unknown, rowCap: number, titleCap: number): JsonObject | undefined {
+function projectDelta(value: unknown, rowCap: number, titleCap: number, tracker?: ClipTracker): JsonObject | undefined {
   const source = object(value);
   if (!source) return undefined;
   const rawRows = Array.isArray(source.rows) ? source.rows : [];
   const rows = rawRows
-    .map((row) => projectDeltaRow(row, titleCap))
+    .map((row) => projectDeltaRow(row, titleCap, tracker))
     .filter((row): row is JsonObject => row !== null)
     .slice(0, rowCap);
   const total = numberOrZero(source.total) || rawRows.length;
@@ -199,7 +202,7 @@ function projectDelta(value: unknown, rowCap: number, titleCap: number): JsonObj
   };
 }
 
-function projectTerminal(value: unknown, noteCap: number): JsonObject {
+function projectTerminal(value: unknown, noteCap: number, tracker?: ClipTracker): JsonObject {
   const source = object(value) ?? {};
   const terminal: JsonObject = {
     total: numberOrZero(source.total),
@@ -232,7 +235,7 @@ function projectTerminal(value: unknown, noteCap: number): JsonObject {
             : null,
         membership: basis.membership === 'ever-members' ? 'ever-members' : null,
         memberCount: numberOrNull(basis.memberCount),
-        note: clip(basis.note, noteCap),
+        note: clip(basis.note, noteCap, tracker),
       },
     };
   }
@@ -253,7 +256,7 @@ function projectTerminal(value: unknown, noteCap: number): JsonObject {
   return terminal;
 }
 
-function projectCohortAudit(value: unknown, cap: number, titleCap: number, reasonCap: number): JsonObject | undefined {
+function projectCohortAudit(value: unknown, cap: number, titleCap: number, reasonCap: number, tracker?: ClipTracker): JsonObject | undefined {
   const source = object(value);
   if (!source) return undefined;
   const rawRows = Array.isArray(source.rows) ? source.rows : [];
@@ -269,7 +272,7 @@ function projectCohortAudit(value: unknown, cap: number, titleCap: number, reaso
         : 'not-applicable';
       return {
         id: row.id,
-        title: stringOrNull(row.title) == null ? null : clip(row.title, titleCap),
+        title: stringOrNull(row.title) == null ? null : clip(row.title, titleCap, tracker),
         state: stringOrNull(row.state),
         bucket,
         closureKind: stringOrNull(row.closureKind),
@@ -277,7 +280,7 @@ function projectCohortAudit(value: unknown, cap: number, titleCap: number, reaso
         completionRef: stringOrNull(row.completionRef),
         terminalOwner: stringOrNull(row.terminalOwner),
         reopenRecommended: row.reopenRecommended === true,
-        recommendation: stringOrNull(row.recommendation) == null ? null : clip(row.recommendation, reasonCap),
+        recommendation: stringOrNull(row.recommendation) == null ? null : clip(row.recommendation, reasonCap, tracker),
       };
     })
     .filter((row): row is JsonObject => row !== null)
@@ -292,7 +295,7 @@ function projectCohortAudit(value: unknown, cap: number, titleCap: number, reaso
   };
 }
 
-function projectFence(value: unknown, noteCap: number): JsonObject | undefined {
+function projectFence(value: unknown, noteCap: number, tracker?: ClipTracker): JsonObject | undefined {
   const source = object(value);
   if (!source || source.lane !== 'p2p-lane') return undefined;
   return {
@@ -300,11 +303,11 @@ function projectFence(value: unknown, noteCap: number): JsonObject | undefined {
     candidates: numberOrZero(source.candidates),
     counted: numberOrZero(source.counted),
     excluded: numberOrZero(source.excluded),
-    note: clip(source.note, noteCap),
+    note: clip(source.note, noteCap, tracker),
   };
 }
 
-function projectDrainFlow(value: unknown, noteCap: number): JsonObject | undefined {
+function projectDrainFlow(value: unknown, noteCap: number, tracker?: ClipTracker): JsonObject | undefined {
   const source = object(value);
   if (!source || source.exact !== true) return undefined;
   const projectCount = (value: unknown): JsonObject => {
@@ -333,8 +336,8 @@ function projectDrainFlow(value: unknown, noteCap: number): JsonObject | undefin
     breaker: {
       tripped: breaker.tripped === true,
       blocksNewBugs: breaker.blocksNewBugs === true,
-      rule: clip(breaker.rule, noteCap),
-      reason: clip(breaker.reason, noteCap),
+      rule: clip(breaker.rule, noteCap, tracker),
+      reason: clip(breaker.reason, noteCap, tracker),
     },
   };
 }
@@ -410,6 +413,7 @@ export function shapeBurnDown(
   const source = object(data);
   if (!source) return data;
   const caps = TIER_CAPS[tier];
+  const clipTracker: ClipTracker = { textTruncated: false };
   const requestedLimit = typeof args.limit === 'number' && Number.isFinite(args.limit) ? args.limit : caps.rowsPerBucket;
   const rowCap = Math.max(0, Math.min(caps.rowsPerBucket, Math.floor(requestedLimit)));
   const rawInFlight = Array.isArray(source.inFlight) ? source.inFlight : [];
@@ -417,14 +421,14 @@ export function shapeBurnDown(
   const rawUnclaimed = Array.isArray(source.unclaimed) ? source.unclaimed : [];
   const counts = object(source.counts) ?? {};
   const totalFor = (key: string, raw: unknown[]) => numberOrZero(counts[key]) || raw.length;
-  const inFlight = projectRows(rawInFlight, rowCap, caps.title);
-  const parked = projectParkedRows(rawParked, rowCap, caps.title, caps.reason);
-  const unclaimed = projectRows(rawUnclaimed, rowCap, caps.title);
+  const inFlight = projectRows(rawInFlight, rowCap, caps.title, clipTracker);
+  const parked = projectParkedRows(rawParked, rowCap, caps.title, caps.reason, clipTracker);
+  const unclaimed = projectRows(rawUnclaimed, rowCap, caps.title, clipTracker);
   const out: JsonObject = {
     ok: source.ok === true,
     harness: requiredString(source.harness),
     generatedAt: requiredString(source.generatedAt),
-    terminal: projectTerminal(source.terminal, caps.note),
+    terminal: projectTerminal(source.terminal, caps.note, clipTracker),
     inFlight,
     parked,
     unclaimed,
@@ -447,13 +451,13 @@ export function shapeBurnDown(
     },
   };
 
-  const closedSince = projectDelta(source.closedSince, caps.deltaRows, caps.title);
+  const closedSince = projectDelta(source.closedSince, caps.deltaRows, caps.title, clipTracker);
   if (closedSince) out.closedSince = closedSince;
-  const openedSince = projectDelta(source.openedSince, caps.deltaRows, caps.title);
+  const openedSince = projectDelta(source.openedSince, caps.deltaRows, caps.title, clipTracker);
   if (openedSince) out.openedSince = openedSince;
-  const fence = projectFence(source.fence, caps.note);
+  const fence = projectFence(source.fence, caps.note, clipTracker);
   if (fence) out.fence = fence;
-  const drainFlow = projectDrainFlow(source.drainFlow, caps.note);
+  const drainFlow = projectDrainFlow(source.drainFlow, caps.note, clipTracker);
   if (drainFlow) out.drainFlow = drainFlow;
   const issueOccurrences = projectIssueOccurrences(source.issueOccurrences);
   if (issueOccurrences) out.issueOccurrences = issueOccurrences;
@@ -461,7 +465,8 @@ export function shapeBurnDown(
   if (fleetMetrics.success) out.fleetMetrics = fleetMetrics.data;
   const countEvidence = projectCountEvidence(source.countEvidence);
   if (countEvidence) out.countEvidence = countEvidence;
-  const cohortAudit = projectCohortAudit(source.cohortAudit, caps.cohortRows, caps.title, caps.reason);
+  const cohortAudit = projectCohortAudit(source.cohortAudit, caps.cohortRows, caps.title, caps.reason, clipTracker);
   if (cohortAudit) out.cohortAudit = cohortAudit;
+  if (clipTracker.textTruncated) out.textTruncated = true;
   return out;
 }

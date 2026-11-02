@@ -39,14 +39,7 @@ export function readNativeArtifactBytes(file, byteLength, byteLimit, recordRead 
   if (!Number.isSafeInteger(byteLength) || byteLength < 0 ||
       !Number.isSafeInteger(byteLimit) || byteLimit < byteLength)
     throw new Error('native artifact byte limit');
-  const directory = dirname(file), root = lstatSync(directory);
-  if (!root.isDirectory() || root.isSymbolicLink() || realpathSync(directory) !== resolve(directory))
-    throw new Error('redirected native artifact directory');
-  const fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
-  try {
-    const stat = fstatSync(fd);
-    if (!stat.isFile() || stat.size !== byteLength)
-      throw new Error('native artifact length or file type mismatch');
+  return withNativeArtifactFile(file, byteLength, fd => {
     const buffer = Buffer.alloc(Math.min(byteLength + 1, byteLimit));
     let length = 0;
     while (length < buffer.length) {
@@ -55,15 +48,30 @@ export function readNativeArtifactBytes(file, byteLength, byteLimit, recordRead 
       length += count;
       recordRead(count); // Rejected captures consume the same IO budget.
     }
+    if (length !== byteLength) throw new Error('native artifact changed during capture');
+    return buffer.subarray(0, length);
+  });
+}
+
+function withNativeArtifactFile(file, byteLength, consume) {
+  const directory = dirname(file), root = lstatSync(directory);
+  if (!root.isDirectory() || root.isSymbolicLink() || realpathSync(directory) !== resolve(directory))
+    throw new Error('redirected native artifact directory');
+  const fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  try {
+    const stat = fstatSync(fd);
+    if (!stat.isFile() || stat.size !== byteLength)
+      throw new Error('native artifact length or file type mismatch');
+    const result = consume(fd);
     const after = fstatSync(fd), current = lstatSync(file), rootAfter = lstatSync(directory);
-    if (length !== byteLength || after.size !== stat.size || after.mtimeMs !== stat.mtimeMs ||
+    if (after.size !== stat.size || after.mtimeMs !== stat.mtimeMs ||
         after.ctimeMs !== stat.ctimeMs || !current.isFile() || current.isSymbolicLink() ||
         current.dev !== stat.dev || current.ino !== stat.ino ||
         !rootAfter.isDirectory() || rootAfter.isSymbolicLink() ||
         rootAfter.dev !== root.dev || rootAfter.ino !== root.ino ||
         realpathSync(directory) !== resolve(directory))
       throw new Error('native artifact changed during capture');
-    return buffer.subarray(0, length);
+    return result;
   } finally { closeSync(fd); }
 }
 
@@ -279,6 +287,7 @@ const custodyFamilies = Object.freeze({
 const custodyLimits = Object.freeze({ ...legacyCustodyLimits, referenceOccurrences: 65536, families: custodyFamilies });
 // v3 keeps each segment under the existing IO/family limits. The archive has
 // an independent finite population bound; rollover never admits a larger object.
+// Oversized OUT files use multiple ordinary objects, with one sealed logical entry.
 const custodyArchiveLimits = Object.freeze({ segments: 64, objects: custodyLimits.objects });
 const custodyFamilyKeys = ['A', 'B', 'C', 'D', 'auxiliary'];
 function custodyProcessSourcesRequested(expected) {
@@ -399,6 +408,31 @@ function custodyPopulation(expected) {
       new Set(expected.map(group => group.id)).size !== expected.length) throw new Error('custody expected population missing');
 }
 
+function custodyOutBytes(entry, read, allowPartial = false) {
+  if (!entry.chunked) return read(entry.artifact);
+  const { byteLength, sha256, complete, parts } = entry.chunked;
+  if (!Number.isSafeInteger(byteLength) || byteLength < custodyFamilies.A.bytes ||
+      byteLength > custodyFamilies.A.bytes * custodyArchiveLimits.segments ||
+      !comparisonDigest(sha256) || typeof complete !== 'boolean' || !complete && !allowPartial ||
+      !Array.isArray(parts) || !parts.length || parts.length > custodyArchiveLimits.objects ||
+      JSON.stringify(entry.artifact) !== JSON.stringify(parts[0]?.artifact))
+    throw new Error('custody OUT chunk population mismatch');
+  let offset = 0;
+  const hash = createHash('sha256'), chunks = [];
+  for (const part of parts) {
+    if (part.offset !== offset || !Number.isSafeInteger(part.artifact?.byteLength) ||
+        part.artifact.byteLength <= 0 || part.artifact.byteLength > custodyLimits.objectBytes ||
+        offset + part.artifact.byteLength > byteLength)
+      throw new Error('custody OUT chunk offset or length mismatch');
+    const bytes = read(part.artifact);
+    if (bytes.length !== part.artifact.byteLength) throw new Error('custody OUT chunk length mismatch');
+    offset += bytes.length; hash.update(bytes); chunks.push(bytes);
+  }
+  if (complete && offset !== byteLength || hash.digest('hex') !== sha256)
+    throw new Error('custody OUT reassembly mismatch');
+  return Buffer.concat(chunks, offset);
+}
+
 /** Publish an immutable edition; failures preserve useful bytes and explicit gaps.
  * `expected` is the independent routing contract, including conditional objects.
  * Every auxiliary object needs a role and a producer-backed applicability state. */
@@ -411,8 +445,8 @@ export function retainNativeProofPacket(directory, input) {
   custodyDirectory(objectRoot, true);
   const store = createNativeArtifactPersister(objectRoot), budget = custodyBudget(), gaps = [];
   const segments = [];
-  const capture = (path, suffix = 'bytes', family = null) => {
-    const size = lstatSync(path).size, limit = custodyLimits.families[family];
+  const capture = (path, suffix = 'bytes', family = null, source = null) => {
+    const size = source?.byteLength ?? lstatSync(path).size, limit = custodyLimits.families[family];
     if (size > custodyLimits.objectBytes) throw new Error('custody object byte limit');
     if (size + 1 > limit.bytes) throw new Error('custody ' + family + ' byte limit');
     if (budget.objects === custodyArchiveLimits.objects) throw new Error('custody archive object limit');
@@ -427,7 +461,8 @@ export function retainNativeProofPacket(directory, input) {
     }
     const before = custodyAccounting(segment.budget);
     try {
-      const pin = { ...store.persist(custodyRead(path, segment.budget, family), suffix), segment: segment.index };
+      const bytes = source ? source.read(segment.budget) : custodyRead(path, segment.budget, family);
+      const pin = { ...store.persist(bytes, suffix), segment: segment.index };
       segment.entries.push({ family, artifact: pin });
       return pin;
     } finally {
@@ -438,6 +473,44 @@ export function retainNativeProofPacket(directory, input) {
         budget.objectsByFamily[key] += segment.budget.objectsByFamily[key] - before.objectsReadByFamily[key];
       }
     }
+  };
+  const captureOut = (path, entry) => {
+    const size = lstatSync(path).size;
+    if (size <= custodyLimits.objectBytes && size + 1 <= custodyFamilies.A.bytes) {
+      entry.entries.push({ original: path, artifact: capture(path, 'out.json', 'A') });
+      return;
+    }
+    if (!Number.isSafeInteger(size) || size > custodyFamilies.A.bytes * custodyArchiveLimits.segments)
+      throw new Error('custody OUT archive byte limit');
+    const chunked = { byteLength: size, sha256: '', complete: false, parts: [] };
+    const hash = createHash('sha256');
+    try {
+      withNativeArtifactFile(path, size, fd => {
+        for (let offset = 0; offset < size;) {
+          const byteLength = Math.min(8 * 1024 * 1024 - 1, size - offset);
+          let retainedBytes;
+          const artifact = capture(path, 'out-chunk', 'A', { byteLength, read(budget) {
+            budget.objects++; budget.objectsByFamily.A++;
+            const bytes = Buffer.alloc(byteLength);
+            let length = 0;
+            while (length < byteLength) {
+              const count = readSync(fd, bytes, length, Math.min(64 * 1024, byteLength - length), null);
+              budget.bytes += count; budget.bytesByFamily.A += count;
+              if (!count) throw new Error('native artifact changed during capture');
+              length += count;
+            }
+            retainedBytes = bytes;
+            return bytes;
+          } });
+          // Keep successfully retained prefixes visible even if a later chunk fails.
+          hash.update(retainedBytes);
+          chunked.parts.push({ offset, artifact });
+          if (chunked.parts.length === 1) entry.entries.push({ original: path, artifact, chunked });
+          offset += byteLength;
+        }
+      });
+      chunked.complete = true;
+    } finally { chunked.sha256 = hash.digest('hex'); }
   };
   const observations = input.observations ?? [];
   if (observations.length !== input.expected.length || new Set(observations.map(row => row.id)).size !== observations.length)
@@ -466,10 +539,10 @@ export function retainNativeProofPacket(directory, input) {
         if (!observed || !expected.out || !isAbsolute(expected.out)) throw new Error('producer-unavailable');
         const path = expected.out + suffix;
         if (family === 'A') {
-          const artifact = capture(path, 'out.json', family);
-          entry.entries.push({ original: path, artifact });
-          const payload = JSON.parse(readNativeArtifactBytes(join(objectRoot, artifact.ref), artifact.byteLength,
-            custodyLimits.objectBytes).toString('utf8'));
+          captureOut(path, entry);
+          const payload = JSON.parse(custodyOutBytes(entry.entries[0], artifact =>
+            readNativeArtifactBytes(join(objectRoot, artifact.ref), artifact.byteLength,
+              custodyLimits.objectBytes)).toString('utf8'));
           const refs = custodyReferences(payload);
           group.references = refs.occurrences;
           group.referenceArtifacts = refs.artifacts;
@@ -660,7 +733,11 @@ export function verifyNativeProofPacket(directory, locator, contract) {
            family.entries[0]?.original !== expected.out))
         throw new Error('custody produced OUT inventory mismatch');
       for (const [index, entry] of family.entries.entries()) {
-        const bytes = read(entry.artifact, budget, family.family);
+        if (entry.chunked && (!segmented || family.family !== 'A' || index !== 0 || family.entries.length !== 1))
+          throw new Error('custody unsupported chunked entry');
+        const bytes = entry.chunked
+          ? custodyOutBytes(entry, pin => read(pin, budget, family.family), family.state !== 'produced')
+          : read(entry.artifact, budget, family.family);
         if (family.family === 'A' && index === 0) reporter = bytes;
       }
       const processNotRequested = segmented && expected.armed && expected.runner === 'vitest' &&

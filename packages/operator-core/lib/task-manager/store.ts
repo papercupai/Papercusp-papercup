@@ -84,6 +84,12 @@ function toRow(r: any): TaskRow {
   // drops detail.bashJobId and makes a known terminal bash task look like an
   // unrelated, non-attachable task to capability:bash_output.
   const detail = jsonObject(r.detail);
+  const detailTimestamp = (key: string): string | null => {
+    const value = detail[key];
+    if (typeof value !== 'string') return null;
+    const sampledAtMs = Date.parse(value);
+    return Number.isFinite(sampledAtMs) ? new Date(sampledAtMs).toISOString() : null;
+  };
   return {
     taskId: r.task_id,
     workspaceId: r.workspace_id,
@@ -115,6 +121,8 @@ function toRow(r: any): TaskRow {
     startedAt: iso(r.started_at) ?? new Date(0).toISOString(),
     endedAt: iso(r.ended_at),
     lastSeenAt: iso(r.last_seen_at) ?? new Date(0).toISOString(),
+    cpuSampledAt: detailTimestamp('cpuSampledAt'),
+    rssSampledAt: detailTimestamp('rssSampledAt'),
     lastMemoryBytes: num(r.last_memory_bytes),
     peakMemoryBytes: num(r.peak_memory_bytes),
     cpuUsec: num(r.cpu_usec),
@@ -851,24 +859,26 @@ export async function touchAlive(
            ),
            cpu_usec = COALESCE(u.cpu_usec, t.cpu_usec),
            pids_current = COALESCE(u.pids_current, t.pids_current),
-           -- pids.events is cumulative, so preserve the largest observed value
-           -- in the existing detail bag rather than adding a schema column.
+           -- Liveness advances on every scan; metric clocks advance only with samples.
            detail = CASE
-             WHEN u.pids_events_max IS NULL THEN detail
-             ELSE jsonb_set(
-               detail,
-               '{pidsEventsMax}',
-               to_jsonb(GREATEST(
-                 CASE
-                   WHEN jsonb_typeof(detail->'pidsEventsMax') = 'number'
-                        AND (detail->>'pidsEventsMax') ~ '^[0-9]+$'
-                     THEN (detail->>'pidsEventsMax')::bigint
-                   ELSE 0::bigint
-                 END,
-                 u.pids_events_max
-               )),
-               true
-             )
+             WHEN u.pids_events_max IS NULL AND u.cpu_usec IS NULL
+                  AND u.last_memory_bytes IS NULL THEN t.detail
+             ELSE COALESCE(t.detail, '{}'::jsonb) || jsonb_strip_nulls(jsonb_build_object(
+               'pidsEventsMax', CASE
+                 WHEN u.pids_events_max IS NULL THEN NULL
+                 ELSE GREATEST(
+                   CASE
+                     WHEN jsonb_typeof(t.detail->'pidsEventsMax') = 'number'
+                          AND (t.detail->>'pidsEventsMax') ~ '^[0-9]+$'
+                       THEN (t.detail->>'pidsEventsMax')::bigint
+                     ELSE 0::bigint
+                   END,
+                   u.pids_events_max
+                 )
+               END,
+               'cpuSampledAt', CASE WHEN u.cpu_usec IS NULL THEN NULL ELSE now() END,
+               'rssSampledAt', CASE WHEN u.last_memory_bytes IS NULL THEN NULL ELSE now() END
+             ))
            END
       FROM (
         SELECT (x->>'task_id')::text AS task_id,

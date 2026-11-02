@@ -23,7 +23,7 @@ import { IMPROVEMENT_TOPIC, OBSERVATION_TOPIC } from './read-items';
 import { markLeaderTriage, type CreateIssueInput, type EngineerIssue } from '../../issues-engineer';
 import { assessIssueAdmissionPressure, type RecordIssueOccurrenceInput } from '../../issue-occurrence-ledger';
 import { metadataToolFailure, metadataWorkflowTargets } from '../../agent-tools/plans/coordination-metadata-fixtures';
-import { normalizeSuspectedToolFailure, type SuspectedToolFailure } from './tool-error-classifier';
+import { normalizeSuspectedToolFailure, toolFailureSignatureKey, type SuspectedToolFailure } from './tool-error-classifier';
 
 afterEach(() => {
   vi.mocked(findRecentLexicalDupes).mockReset().mockResolvedValue(null);
@@ -902,6 +902,47 @@ describe('captureImprovement — correlated tool-failure probation (P-013)', () 
     expect(prior).toEqual(original);
     expect(d.created).toHaveLength(0);
     expect(d.occurrences).toHaveLength(1);
+  });
+
+  it('keeps unknown-dimension structural reports separate despite a shared class key', async () => {
+    const priorReport: SuspectedToolFailure = {
+      toolName: 'consult:get_feedback', status: 'error',
+      message: 'Rubric archive lookup returned a voice rubric from the wrong corpus',
+    };
+    const incomingReport: SuspectedToolFailure = {
+      toolName: 'consult:get_feedback', status: 'error',
+      message: 'Consult fork failed because the native turn exceeded its prompt context limit',
+    };
+    const priorNormalized = normalizeSuspectedToolFailure(priorReport);
+    const incomingNormalized = normalizeSuspectedToolFailure(incomingReport);
+    expect(priorNormalized.class).toBe('structural');
+    expect(incomingNormalized.classKey).toBe(priorNormalized.classKey);
+    expect(incomingNormalized.watchdogKey).toBe(priorNormalized.watchdogKey);
+    const priorFiledSignature = toolFailureSignatureKey(
+      { ...priorReport, errorCode: `message-${priorNormalized.messageFingerprint}` }, priorNormalized.class,
+    );
+    const incomingFiledSignature = toolFailureSignatureKey(
+      { ...incomingReport, errorCode: `message-${incomingNormalized.messageFingerprint}` }, incomingNormalized.class,
+    );
+    expect(incomingFiledSignature).not.toBe(priorFiledSignature);
+    const prior = existing({ id: 'EI-UNRELATED-UNKNOWN-DIMENSION', title: 'Rubric archive returns the wrong corpus',
+      scope: 'harness:papercusp', payload: { lane: 'improvement', watchdogKey: priorFiledSignature,
+        toolFailureProbation: { ...priorNormalized, state: 'promoted', reporters: ['su-a'], report: priorReport } } });
+    const d = { ...deps(), findIssuesByToolFailureClassKeys: async () => [prior] };
+
+    const result = await captureImprovement({
+      title: 'Consult fork exceeded the prompt context limit',
+      body: incomingReport.message,
+      kind: 'bug', lane: 'observation', scope: 'harness:papercusp', workspaceId: 'ws',
+      createdBy: 'su-b', watchdogKey: incomingFiledSignature,
+      payloadExtra: { toolFailureProbation: {
+        ...incomingNormalized, state: 'probation', reporters: ['su-b'], report: incomingReport,
+      } },
+    }, d);
+
+    expect(result).toMatchObject({ created: true });
+    expect(result.issue?.id).not.toBe(prior.id);
+    expect(d.created).toHaveLength(1);
   });
 
   it('R-7 strips direct-evidence assertions and leaves missing dimensions explicitly unknown', async () => {

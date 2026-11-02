@@ -1745,6 +1745,14 @@ describe('launchLogFailureReason (the launcher’s own words, from a real log)',
       expect(launchLogFailureReason(`The request quotes ${failure} for investigation.\n`)).toBeNull();
     });
 
+  it('reports a native Codex message-size rejection without mistaking quoted evidence for a rejection', () => {
+    const failure = 'Message exceeds the maximum length of 1048576 characters (1056581 provided)';
+    expect(launchLogFailureReason(`\r\n■ ${failure}. \x1bM\r\n`)).toBe(failure);
+    expect(launchLogFailureReason(`■ ${failure}. psu: kickoff DROPPED — native-turn-marker-timeout.\n`))
+      .toBe(failure);
+    expect(launchLogFailureReason(`The request quotes ${failure} for investigation.\n`)).toBeNull();
+  });
+
   it.each([
     'psu: V1 targetBackend must be codex|omp',
     'psu: consult evidence refs are not all present in the exact source session (0/1)',
@@ -2335,6 +2343,33 @@ describe('makeConsultReachDispatcher (D-010: the seam shape survives, its meanin
 });
 
 describe('consultDispatchBrief', () => {
+  it.each(['fork', 'convert', 'brief'] as const)('delivers an oversized request by its durable conversation on %s', async (operation) => {
+    const body = 'FULL-REQUEST-BEGIN\n' + 'x'.repeat(1_056_581) + '\nFULL-REQUEST-END';
+    const brief = consultDispatchBrief({
+      conversationId: 'conv-large-review', sourceOwnerId: 'su-expert', operation,
+      summary: 'Review the complete request', body,
+    });
+    expect(brief.length).toBeLessThan(64_000);
+    expect(brief).toContain("conversations:get { id: 'conv-large-review' }");
+    expect(brief).toContain('results[0].conversation.body');
+    expect(brief).toContain('next_cursor');
+    expect(brief).toContain('eof:true');
+    expect(brief).toContain('ANSWER-ONLY');
+    expect(brief).toContain('consult:reply');
+    expect(brief).not.toContain('FULL-REQUEST-BEGIN');
+    expect(brief).not.toContain('FULL-REQUEST-END');
+    expect(body.endsWith('FULL-REQUEST-END')).toBe(true);
+  });
+
+  it('keeps the full ordinary request inline', () => {
+    const body = 'Read the current patch; verify its independent negative control.';
+    const brief = consultDispatchBrief({
+      conversationId: 'conv-small-review', sourceOwnerId: 'su-expert', operation: 'brief',
+      summary: 'Small review', body,
+    });
+    expect(brief).toContain(`Small review\n\n${body}`);
+  });
+
   it('tells a fork it is a fork, and says the source was NOT notified', () => {
     const brief = consultDispatchBrief({
       conversationId: 'conv-1',

@@ -33,6 +33,7 @@ import { restoreBenchmarkContext, readRestoredBenchmarkContext, readContainedBen
 import { REPO_ROOT } from '../agent-tools/docs/_repo-paths';
 import { openAiCacheGeneration } from '../inference-gateway/cache-policy';
 import { CONTAINER_CODEX_BIN_PATH, materializeDockerExecWrapper, validateDockerExecTarget, type DockerExecTarget } from './container-exec-target';
+import type { PsuPtyHost } from '../events/await/psu-pty-discovery';
 
 interface NativeCostParticipant {
   taskId: string; ownerId: string; terminal: boolean;
@@ -1530,6 +1531,29 @@ export function currentBenchGatewayController(input: {
 type LaunchArgs = Parameters<typeof launchAgentTool.handler>[0];
 export type CurrentBenchTask = Pick<TaskRow, 'taskId' | 'workspaceId' | 'state' | 'exitCode' | 'detail'> &
   Partial<Pick<TaskRow, 'sessionId' | 'startedAt'>>;
+/** A living CLI can have a terminally failed turn. Only its current, fresh
+ * host observation can retire a pending benchmark; older children stay unknown. */
+export function currentBenchNativeFailure(task: CurrentBenchTask, host: PsuPtyHost | null,
+  nowMs = Date.now()): string | null {
+  const owner = task.detail.coordOwnerId, execution = host?.execution, failure = execution?.failure;
+  const startedAt = Date.parse(task.startedAt ?? '');
+  if (!host || !execution || !failure || !['pending', 'running'].includes(task.state) ||
+      typeof owner !== 'string' || !owner.trim() || !task.sessionId || !Number.isFinite(startedAt) ||
+      host.ownerId !== owner || host.nativeSessionId !== task.sessionId ||
+      !Number.isSafeInteger(host.pid) || host.pid <= 0 || !host.ptyPid ||
+      !Number.isSafeInteger(host.childGeneration) || host.childGeneration! < 0 ||
+      execution.ownerId !== owner || execution.hostPid !== host.pid || execution.childPid !== host.ptyPid ||
+      execution.childGeneration !== host.childGeneration ||
+      !('nativeSessionId' in execution) || execution.nativeSessionId !== task.sessionId ||
+      execution.phase !== 'failed' || failure.retryable !== false ||
+      typeof failure.code !== 'string' || !/^[A-Za-z0-9_.-]{1,120}$/.test(failure.code) ||
+      !Number.isFinite(host.startedAt) || host.startedAt < startedAt ||
+      !Number.isFinite(execution.receivedAtMs) || execution.receivedAtMs! < host.startedAt ||
+      !Number.isFinite(failure.atMs) || failure.atMs < execution.receivedAtMs! ||
+      !Number.isFinite(execution.observedAt) || execution.observedAt < failure.atMs ||
+      !Number.isFinite(nowMs) || execution.observedAt > nowMs || nowMs - execution.observedAt > 15_000) return null;
+  return `Native benchmark turn failed: ${failure.code} (nonretryable).`;
+}
 export interface CurrentBenchIdentity {
   measuredBy: 'runtime-observation';
   runtimeRevision: string;
@@ -2131,8 +2155,8 @@ function currentBenchHarnessDriver(lifecycle: BenchHarnessOps, ports: CurrentSuB
           const task = await ports.getTask(taskId);
           if (!task || task.taskId !== taskId || task.workspaceId !== workspaceId || task.detail.label !== `${labelPrefix}solver` ||
               pendingStart && task.detail.coordOwnerId !== launched.ownerId) throw new Error('Native benchmark task identity/scope could not be verified.');
-          if (typeof task.detail.nativeStreamError === 'string') throw new Error(task.detail.nativeStreamError);
           record.terminalReceipt = task;
+          if (typeof task.detail.nativeStreamError === 'string') throw new Error(task.detail.nativeStreamError);
           const identity = measuredIdentity(await ports.readIdentity(task));
           record.measured = identity;
           record.identityStatus = identity ? 'measured' : 'unknown';
@@ -3300,7 +3324,15 @@ export function liveCurrentSuBenchPorts(
         [module.INTERNAL_SCOPED_SESSION_CONFINEMENT]: confinement,
         ...(backendBinOverride ? { [module.INTERNAL_BACKEND_BIN_OVERRIDE]: backendBinOverride } : {}) } as PapercuspUnifiedToolContext);
     },
-    getTask: async id => (await import('../task-manager/store')).getTask(id),
+    getTask: async id => {
+      const task = await (await import('../task-manager/store')).getTask(id);
+      if (!task || task.workspaceId !== workspaceId || typeof task.detail.coordOwnerId !== 'string' ||
+          !task.sessionId || !['pending', 'running'].includes(task.state)) return task;
+      const { findLiveHostAsync } = await import('../events/await/psu-pty-discovery');
+      const failure = currentBenchNativeFailure(task,
+        await findLiveHostAsync(task.detail.coordOwnerId, undefined, { workspaceId }));
+      return failure ? { ...task, detail: { ...task.detail, nativeStreamError: failure } } : task;
+    },
     listTasks: async filter => (await import('../task-manager/store')).listTasks(filter),
     killTask: async id => (await import('../task-manager/control')).killTask(id, { includeSubtree: true, reapTerminalResidue: true, escalateAfterMs: 5000 }),
     sleep: ms => new Promise(resolve => setTimeout(resolve, ms)),

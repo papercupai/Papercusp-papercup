@@ -126,6 +126,38 @@ describe('sliceByHeading', () => {
     expect(sliceByHeading(md, 'section-a', toc)).toBe('## Section A\n\ncontent A');
   });
 
+  it('does not treat headings inside a fenced example as section boundaries', () => {
+    const content = [
+      '## Invocation forms',
+      '',
+      'Use this command.',
+      '',
+      '```bash',
+      '## Example comment',
+      '# Another example comment',
+      '```',
+      '',
+      '## Recovery',
+      '',
+      'Follow this section.',
+    ].join('\n');
+    const headings: TocEntry[] = [
+      { url: '#invocation-forms', title: 'Invocation forms', depth: 2 },
+      { url: '#recovery', title: 'Recovery', depth: 2 },
+    ];
+
+    expect(sliceByHeading(content, 'invocation-forms', headings)).toBe([
+      '## Invocation forms',
+      '',
+      'Use this command.',
+      '',
+      '```bash',
+      '## Example comment',
+      '# Another example comment',
+      '```',
+    ].join('\n'));
+  });
+
   it('slices the last section to EOF', () => {
     expect(sliceByHeading(md, 'section-b', toc)).toBe('## Section B\n\ncontent B');
   });

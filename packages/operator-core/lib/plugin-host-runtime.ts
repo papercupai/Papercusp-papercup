@@ -1471,6 +1471,42 @@ export async function firePluginLifecycle<K extends keyof PluginHooks>(
 
 }
 
+/** Inspect host-owned loader metadata only. Unlike pluginHostStatus(), this
+ * must not discover/import/init plugins, read plugin objects, or call hooks.
+ * Loaded records include plugins with no projected tools. Configured inputs
+ * and module effects still need independent reconciliation; this grants none.
+ */
+export function inspectPluginHostSecurityPopulation() {
+  const state = __cache.state;
+  const unresolved = ['plugin-runtime-configured-inputs-unverified', 'plugin-runtime-module-effects-unverified'];
+  const phase = state ? 'loaded' : __cache.promise ? 'loading' : 'uninitialized';
+  if (!state) unresolved.push(`plugin-runtime-host-${phase}`);
+  const occurrences = new Map<string, number>();
+  const surfaces = (state?.loaded ?? []).map((record, index) => {
+    // The loader creates these records and parsed runtime descriptors. The
+    // plugin object itself can be hostile and is deliberately never touched.
+    const path = Object.getOwnPropertyDescriptor(record, 'path')?.value;
+    const source = Object.getOwnPropertyDescriptor(record, 'source')?.value;
+    const runtime = Object.getOwnPropertyDescriptor(record, 'runtime')?.value;
+    const runtimeKind = runtime && typeof runtime === 'object'
+      ? Object.getOwnPropertyDescriptor(runtime, 'kind')?.value : undefined;
+    const loadedPath = typeof path === 'string' && path ? path : null;
+    if (loadedPath === null) unresolved.push(`plugin-runtime-path-unavailable:${index}`);
+    const key = loadedPath ?? `unknown:${index}`, occurrence = (occurrences.get(key) ?? 0) + 1;
+    occurrences.set(key, occurrence);
+    if (occurrence > 1) unresolved.push(`plugin-runtime-duplicate-path:${key}`);
+    return { kind: 'loaded-plugin-module', surfaceId: JSON.stringify(['plugin-runtime', key, occurrence]),
+      sourceFile: null, fidelity: 'observed' as const, attrs: {
+        loaderId: 'plugin-runtime', loaderRoot: __cache.rootAtCache, phase, path: loadedPath,
+        source: typeof source === 'string' ? source : null,
+        runtimeKind: typeof runtimeKind === 'string' ? runtimeKind : null,
+        loadedArtifactCoverage: 'unknown', initializationEffectCoverage: 'unknown',
+      } };
+  });
+  if (state?.loadErrors.length) unresolved.push('plugin-runtime-load-errors-present');
+  return { surfaces, unresolved, phase };
+}
+
 export async function pluginHostStatus(): Promise<PluginHostStatus & {
   plugins: Array<{ name: string; version: string; source: string }>;
   loadErrors: Array<{ error: string; path: string }>;

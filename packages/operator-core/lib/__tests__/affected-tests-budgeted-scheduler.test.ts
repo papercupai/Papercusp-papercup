@@ -231,6 +231,96 @@ describe('private native proof custody (P002)', () => {
     expect(verifyNativeProofPacket(f.directory, saved.locator, f.contract).status).toBe('complete');
   });
 
+  function largeOutFixture() {
+    const f = fixture(), out = f.contract.expected[0]!.out!;
+    const payload = JSON.parse(readFileSync(out, 'utf8'));
+    // Multi-byte code points cross chunk boundaries: decode only after reassembly.
+    payload.padding = '☃'.repeat(6 * 1024 * 1024);
+    const bytes = Buffer.from(JSON.stringify(payload));
+    writeFileSync(out, bytes);
+    return { ...f, bytes };
+  }
+
+  it('retains an oversized OUT in bounded chunks and verifies exact bytes after producer retirement', () => {
+    const f = largeOutFixture(), saved = f.save();
+    const entry = saved.manifest.groups[0]!.families.find(row => row.family === 'A')!.entries[0]!;
+    expect(saved.status).toBe('complete');
+    expect(entry.chunked).toMatchObject({ complete: true, byteLength: f.bytes.length,
+      sha256: createHash('sha256').update(f.bytes).digest('hex') });
+    expect(entry.chunked!.parts.length).toBeGreaterThan(1);
+    for (const segment of saved.manifest.segments!) {
+      expect(segment.bytesReadByFamily.A).toBeLessThanOrEqual(saved.manifest.limits.families!.A.bytes);
+      expect(segment.bytesRead).toBeLessThanOrEqual(saved.manifest.limits.bytes);
+    }
+    rmSync(f.producer, { recursive: true });
+    const retained = entry.chunked!.parts.map(part => {
+      expect(part.artifact.byteLength).toBeLessThanOrEqual(saved.manifest.limits.objectBytes);
+      const path = join(f.directory, 'objects', part.artifact.ref);
+      expect(fs.statSync(path).mode & 0o777).toBe(0o600);
+      return readFileSync(path);
+    });
+    expect(Buffer.concat(retained).equals(f.bytes)).toBe(true);
+    const child = spawnSync(process.execPath, ['--input-type=module', '-e',
+      'import { verifyNativeProofPacket } from ' + JSON.stringify(resolve(REPO_ROOT, 'scripts/lib/budgeted-task-scheduler.mjs')) + ';' +
+      'console.log(verifyNativeProofPacket(...JSON.parse(process.argv[1])).status)',
+      JSON.stringify([f.directory, saved.locator, f.contract])], { encoding: 'utf8', timeout: 30_000 });
+    expect({ status: child.status, stderr: child.stderr }).toEqual({ status: 0, stderr: '' });
+    expect(child.stdout.trim()).toBe('complete');
+    expect(saved.manifest.verdicts).toMatchObject({ nativeProof: 'unqualified', acceptance: 'unmeasured' });
+  }, 60_000);
+
+  it('rejects missing, reordered or altered OUT chunks even with a newly sealed manifest', () => {
+    const f = largeOutFixture(), saved = f.save();
+    rmSync(f.producer, { recursive: true });
+    for (const fault of ['omit', 'reorder', 'offset', 'length', 'digest', 'first-pin', 'erase-layout']) {
+      const manifest = structuredClone(saved.manifest);
+      const entry = manifest.groups[0]!.families.find(row => row.family === 'A')!.entries[0]!;
+      const chunks = entry.chunked!;
+      if (fault === 'omit') chunks.parts.pop();
+      if (fault === 'reorder') [chunks.parts[1], chunks.parts[2]] = [chunks.parts[2]!, chunks.parts[1]!];
+      if (fault === 'offset') chunks.parts[1]!.offset++;
+      if (fault === 'length') chunks.byteLength++;
+      if (fault === 'digest') chunks.sha256 = '0'.repeat(64);
+      if (fault === 'first-pin') entry.artifact = chunks.parts[1]!.artifact;
+      if (fault === 'erase-layout') delete entry.chunked;
+      const pin = createNativeArtifactPersister(join(f.directory, 'objects'))
+        .persist(Buffer.from(JSON.stringify(manifest)), 'native-proof.json');
+      const inventoryHash = createHash('sha256').update(JSON.stringify({ groups: manifest.groups,
+        gaps: manifest.gaps, segments: manifest.segments })).digest('hex');
+      expect(() => verifyNativeProofPacket(f.directory, { ...saved.locator, manifest: pin, inventoryHash }, f.contract), fault)
+        .toThrow();
+    }
+    const entry = saved.manifest.groups[0]!.families.find(row => row.family === 'A')!.entries[0]!;
+    const path = join(f.directory, 'objects', entry.chunked!.parts[1]!.artifact.ref);
+    const original = readFileSync(path), altered = Buffer.from(original);
+    altered[0] = altered[0]! ^ 1;
+    writeFileSync(path, altered);
+    expect(() => verifyNativeProofPacket(f.directory, saved.locator, f.contract)).toThrow('custody retained bytes differ');
+    writeFileSync(path, original);
+    expect(verifyNativeProofPacket(f.directory, saved.locator, f.contract).status).toBe('complete');
+    rmSync(path);
+    expect(() => verifyNativeProofPacket(f.directory, saved.locator, f.contract)).toThrow();
+  }, 60_000);
+
+  it('keeps oversized malformed OUT diagnostics partial and preserves the archive byte bound', () => {
+    const f = fixture(), out = f.contract.expected[0]!.out!;
+    writeFileSync(out, '{' + ' '.repeat(17 * 1024 * 1024));
+    const saved = f.save(), family = saved.manifest.groups[0]!.families.find(row => row.family === 'A')!;
+    expect(saved.status).toBe('partial');
+    expect(family.state).toBe('partial');
+    expect(family.entries[0]!.chunked!.complete).toBe(true);
+    rmSync(f.producer, { recursive: true });
+    expect(verifyNativeProofPacket(f.directory, saved.locator, f.contract).status).toBe('partial');
+
+    const bounded = fixture(), large = bounded.contract.expected[0]!.out!;
+    fs.truncateSync(large, 64 * 16 * 1024 * 1024 + 1);
+    const partial = bounded.save();
+    expect(partial.status).toBe('partial');
+    expect(partial.manifest.gaps).toContain('group-0:A:custody OUT archive byte limit');
+    expect(partial.manifest.bytesReadByFamily!.A).toBe(0);
+    expect(verifyNativeProofPacket(bounded.directory, partial.locator, bounded.contract).status).toBe('partial');
+  }, 60_000);
+
   it('retains more than 64MiB across segments in a fresh consumer and rejects segment loss or replacement', () => {
     const f = fixture(), group = f.contract.expected[0]!;
     for (let index = 0; index < 9; index++)

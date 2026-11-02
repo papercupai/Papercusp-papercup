@@ -2192,6 +2192,7 @@ async function checkCapabilityEnvelopeImpl(input: {
   capabilities: readonly string[];
   ctx: UnifiedToolContext;
   args: unknown;
+  phases?: UnifiedToolContext['phases'];
 }): Promise<CapabilityEnvelopeVerdict | null> {
   // P-003 / D-015 (directed-pair): the launch-declared SESSION confinement runs FIRST and is
   // deliberately NOT subject to the exemptions below it. evaluateCapabilityEnvelope returns
@@ -2200,7 +2201,11 @@ async function checkCapabilityEnvelopeImpl(input: {
   // This gate is a self-imposed narrowing declared by the LAUNCHER, not a privilege ceiling,
   // so privilege is irrelevant to it. It is inert (null) for any session with no declared
   // confinement, i.e. every session until a paired fleet launches one.
-  const confined = await checkSessionConfinement({ toolName: input.toolName, ctx: input.ctx, args: input.args });
+  const checkConfinement = () => checkSessionConfinement({ toolName: input.toolName, ctx: input.ctx,
+    args: input.args, phases: input.phases });
+  const confined = input.phases
+    ? await input.phases.track('capability-envelope.session-confinement', checkConfinement)
+    : await checkConfinement();
   if (confined) return confined;
 
   // WI-2140596: AUDIT mode's read-only-toward-subject clause, mechanically. Same seat and
@@ -2208,7 +2213,10 @@ async function checkCapabilityEnvelopeImpl(input: {
   // exemption below (evaluateCapabilityEnvelope exempts isSuperuser||isPowerUser before it
   // even reads role), because the whole point is binding an su-tier session's own declared
   // AUDIT contract, not just a fleet role's envelope.
-  const auditBlocked = await checkAuditModeMutationGuard({ toolName: input.toolName, ctx: input.ctx });
+  const auditGuard = () => checkAuditModeMutationGuard({ toolName: input.toolName, ctx: input.ctx });
+  const auditBlocked = input.phases
+    ? await input.phases.track('capability-envelope.audit-mode-guard', auditGuard)
+    : await auditGuard();
   if (auditBlocked) return auditBlocked;
 
   // P-009 (D-010): merge the runtime per-role overrides OVER the baked ROLE_ENVELOPES (per-role
@@ -2216,16 +2224,22 @@ async function checkCapabilityEnvelopeImpl(input: {
   // return empty unless papercusp-capability-envelope-overrides is ON ⇒ off = byte-identical.
   const roleOverrides = envelopeRoleOverrides();
   const protectedAdditions = envelopeProtectedAdditions();
-  const decision = evaluateCapabilityEnvelope({
+  const evaluate = () => evaluateCapabilityEnvelope({
     toolName: input.toolName,
     capabilities: input.capabilities,
     ctx: input.ctx,
     envelopes: Object.keys(roleOverrides).length > 0 ? { ...ROLE_ENVELOPES, ...roleOverrides } : undefined,
     protectedAdditions: protectedAdditions.length > 0 ? protectedAdditions : undefined,
   });
+  const decision = input.phases
+    ? await input.phases.track('capability-envelope.role-envelope-evaluation', evaluate)
+    : evaluate();
   if (!decision.applied) return null; // exempt — no verdict; ledger records posture 'auto'
   if (decision.withinEnvelope) return { decision: 'allow', posture: 'auto', applied: true };
-  const enforce = await getFlag(FLAGS.CAPABILITY_ENVELOPE, 'system');
+  const readEnforceFlag = () => getFlag(FLAGS.CAPABILITY_ENVELOPE, 'system');
+  const enforce = input.phases
+    ? await input.phases.track('capability-envelope.enforcement-flag', readEnforceFlag)
+    : await readEnforceFlag();
   return enforce
     ? {
         decision: 'deny',

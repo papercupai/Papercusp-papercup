@@ -18,6 +18,41 @@
  */
 import type { ChangeKindEvidence } from './change-kind-catalog';
 
+export interface RefactorDiffSide {
+  /** One-based line number; zero is only valid for an empty side at the start of a file. */
+  start: number;
+  count: number;
+}
+
+export const NON_EXECUTABLE_HUNK_CLASSIFIER_VERSION = 'refactor-nonexec-v1';
+
+export interface NonExecutableRefactorHunkProof {
+  version: 1;
+  classifierVersion: string;
+  classification: 'comment' | 'erased-type';
+  path: string;
+  member: string;
+  parentCommit: string;
+  landingCommit: string;
+  oldRange: RefactorDiffSide;
+  newRange: RefactorDiffSide;
+  parentSourceSha256: string;
+  landingSourceSha256: string;
+  oldHunkSha256: string;
+  newHunkSha256: string;
+  parentEmitSha256: string;
+  isolatedEmitSha256: string;
+}
+
+export interface RefactorTouchedMember {
+  member: string;
+  coveringFiles: readonly string[];
+  path?: string;
+  oldRange?: RefactorDiffSide;
+  newRange?: RefactorDiffSide;
+  nonExecutableProof?: NonExecutableRefactorHunkProof;
+}
+
 /** One test_runs row the close cites, as the resolver read it. */
 export interface RefactorRunRow {
   id: number;
@@ -46,8 +81,8 @@ export interface RefactorFacts {
   afterRuns: readonly RefactorRunRow[];
   /** Repo-relative paths the landing change touched (git diff parent..landing). */
   changedFiles: readonly string[] | null;
-  /** Source members the landing change touched, each with the test files that cover it. */
-  touchedMembers: ReadonlyArray<{ member: string; coveringFiles: readonly string[] }> | null;
+  /** Source members/hunks the landing change touched, with coverage or a bound non-executable proof. */
+  touchedMembers: ReadonlyArray<RefactorTouchedMember> | null;
   /** Whether the detector still reports the targeted finding after the change. */
   findingStillReported: boolean | null;
   /** Resolver-side failures worth surfacing verbatim (a failed git call, a failed query). */
@@ -64,6 +99,41 @@ const PASS_STATUS = 'pass';
 
 const sameSha = (a: string | null | undefined, b: string | null | undefined): boolean =>
   Boolean(a && b) && (a!.startsWith(b!) || b!.startsWith(a!)) && Math.min(a!.length, b!.length) >= 7;
+
+function validDiffSide(side: RefactorDiffSide | undefined): side is RefactorDiffSide {
+  return Boolean(side && Number.isSafeInteger(side.start) && Number.isSafeInteger(side.count)
+    && side.start >= 0 && side.count >= 0 && (side.count === 0 || side.start >= 1)
+    && !(side.start === 0 && side.count > 0));
+}
+
+function diffSideLabel(side: RefactorDiffSide): string {
+  const start = Math.max(1, side.start);
+  return start + '-' + (side.count === 0 ? start : side.start + side.count - 1);
+}
+
+function validNonExecutableProof(member: RefactorTouchedMember, facts: RefactorFacts): boolean {
+  const proof = member.nonExecutableProof;
+  if (!proof || !member.path || !validDiffSide(member.oldRange) || !validDiffSide(member.newRange)) return false;
+  const hash = /^[a-f0-9]{64}$/;
+  return proof.version === 1
+    && proof.classifierVersion === NON_EXECUTABLE_HUNK_CLASSIFIER_VERSION
+    && (proof.classification === 'comment' || proof.classification === 'erased-type')
+    && proof.path === member.path
+    && proof.member === member.member
+    && member.member === member.path + ':' + diffSideLabel(member.newRange)
+    && proof.parentCommit === facts.landingParent
+    && proof.landingCommit === facts.landingCommit
+    && proof.oldRange.start === member.oldRange.start
+    && proof.oldRange.count === member.oldRange.count
+    && proof.newRange.start === member.newRange.start
+    && proof.newRange.count === member.newRange.count
+    && hash.test(proof.parentSourceSha256)
+    && hash.test(proof.landingSourceSha256)
+    && hash.test(proof.oldHunkSha256)
+    && hash.test(proof.newHunkSha256)
+    && hash.test(proof.parentEmitSha256)
+    && proof.parentEmitSha256 === proof.isolatedEmitSha256;
+}
 
 /** The proof fields a 'refactor' entry must name, before any facts are resolved. */
 export function refactorEvidenceGaps(e: Partial<ChangeKindEvidence>): string[] {
@@ -145,7 +215,11 @@ export function refactorFactGaps(e: Partial<ChangeKindEvidence>, facts: Refactor
   } else {
     const covering = new Set<string>();
     for (const m of facts.touchedMembers) {
-      if (m.coveringFiles.length === 0) gaps.push(`touched member ${m.member} has no covering test`);
+      const sourceProofValid = validNonExecutableProof(m, facts);
+      if (m.nonExecutableProof && !sourceProofValid) {
+        gaps.push('non-executable source proof for ' + m.member + ' is not bound to the exact commits, hunk and compiler output');
+      }
+      if (m.coveringFiles.length === 0 && !sourceProofValid) gaps.push('touched member ' + m.member + ' has no covering test');
       for (const f of m.coveringFiles) covering.add(f);
     }
     const unrun = [...covering].filter((f) => !beforeFiles.has(f) || !afterFiles.has(f));

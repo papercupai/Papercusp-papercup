@@ -1591,6 +1591,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     argsSchema: z.object({
       workspaceId: z.string().default('default'),
       status: z.string().nullish(),
+      query: z.string().max(500).optional(),
       limit: clampedLimit(500, 100),
       harnessSlugs: z.array(z.string().min(1)).max(500).optional(),
     }),
@@ -1599,6 +1600,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
         args as {
           workspaceId: string;
           status?: string | null;
+          query?: string;
           limit?: number;
           harnessSlugs?: string[];
         },
@@ -2022,20 +2024,23 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     argsSchema: z.object({
       planSlug: z.string().min(1),
       workspaceId: z.string().nullable().optional(),
+      harnessSlug: z.string().min(1).optional(),
       limit: clampedLimit(500, 200).optional(),
     }),
     resolve: async (args) => {
       const {
         planSlug,
         workspaceId = null,
+        harnessSlug,
         limit = 200,
       } = args as {
         planSlug: string;
         workspaceId?: string | null;
+        harnessSlug?: string;
         limit?: number;
       };
       const { listPlanSessions } = await import('../adv-sessions');
-      return (await listPlanSessions(planSlug, { workspaceId, limit })) as unknown[];
+      return (await listPlanSessions(planSlug, { workspaceId, harnessSlug, limit })) as unknown[];
     },
   },
 

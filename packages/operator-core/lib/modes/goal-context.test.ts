@@ -293,15 +293,30 @@ describe('setInheritedGoalContext', () => {
     expect(await getInheritedGoalContext(WS, 'member-1', sql)).toBe('goal-new');
   });
 
+  it('clears obsolete inherited context when an explicit launcher has no goal', async () => {
+    const { sql, briefs } = mockSql({ briefs: [{ owner_id: 'member-1', workspace_id: WS, goal_id: 'goal-paused' }] });
+    expect(await setInheritedGoalContext(WS, 'member-1', null, sql)).toBe(true);
+    expect(briefs).toEqual([{ owner_id: 'member-1', workspace_id: WS, goal_id: null }]);
+    expect(await resolveGoalContext(WS, 'member-1', sql)).toBeNull();
+  });
+
+  it('clearing inherited context preserves the target own GOAL authority', async () => {
+    const { sql } = mockSql({ modes: [goalMode('manager', 'goal-owned')],
+      briefs: [{ owner_id: 'manager', workspace_id: WS, goal_id: 'goal-parent' }] });
+    expect(await setInheritedGoalContext(WS, 'manager', null, sql)).toBe(true);
+    expect(await getInheritedGoalContext(WS, 'manager', sql)).toBeNull();
+    expect(await resolveGoalContext(WS, 'manager', sql)).toBe('goal-owned');
+  });
+
   it('reports failure instead of throwing, so a launch is never blocked', async () => {
     const { sql } = mockSql({ failOn: /INSERT INTO harness_shared.session_briefs/ });
     await expect(setInheritedGoalContext(WS, 'member-1', 'goal-42', sql)).resolves.toBe(false);
   });
 
-  it('refuses an empty goal id rather than writing a blank stamp', async () => {
-    const { sql, briefs } = mockSql();
-    expect(await setInheritedGoalContext(WS, 'member-1', '', sql)).toBe(false);
-    expect(briefs).toEqual([]);
+  it.each(['', '   ', undefined])('refuses a missing or blank goal id %s without clearing context', async (goal) => {
+    const { sql, briefs } = mockSql({ briefs: [{ owner_id: 'member-1', workspace_id: WS, goal_id: 'goal-paused' }] });
+    expect(await setInheritedGoalContext(WS, 'member-1', goal as never, sql)).toBe(false);
+    expect(briefs).toEqual([{ owner_id: 'member-1', workspace_id: WS, goal_id: 'goal-paused' }]);
   });
 });
 

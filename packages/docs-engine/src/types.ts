@@ -93,6 +93,8 @@ export interface DocSource {
   listPages(options?: DocListPagesOptions): Promise<DocPage[]>;
   /** Look up by slash-joined slug. Return null if not found. */
   getPage(slug: string): Promise<DocPage | null>;
+  /** Optional indexed or direct exact-slug lookup; avoids enumerating the corpus. */
+  getPageBySlug?(slug: string): Promise<DocPage | null>;
   /** Render the page's MDX/markdown body to clean markdown (no JSX). */
   getContent(page: DocPage, options?: DocContentOptions): Promise<string>;
   /**

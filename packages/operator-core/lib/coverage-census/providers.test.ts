@@ -19,14 +19,16 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { listAllProjectedTools } from '@papercusp/tooldef';
+import { Hono } from 'hono';
+import { listAllProjectedTools, projectedToolProviderVersion, registerProjectedTool, unregisterProjectedToolsForPlugin } from '@papercusp/tooldef';
 import type { CensusContext, ObservedSurface } from '@papercusp/testing-shell/census';
 import { censusProviders } from './provider-registry';
 import { assertRegistryNonEmpty } from './providers/_non-empty';
-import { honoRoutesProvider, HTTP_ROUTE_KIND } from './providers/hono-routes';
-import { mcpToolsProvider, MCP_TOOL_KIND } from './providers/mcp-tools';
+import { enumerateMountedHonoSurfaces, honoRoutesProvider, HTTP_ROUTE_KIND } from './providers/hono-routes';
+import { enumerateProjectedHandlerSurfaces, mcpToolsProvider, MCP_TOOL_KIND } from './providers/mcp-tools';
 import { syncQueriesProvider, SYNC_QUERY_KIND } from './providers/sync-queries';
 import { routeRegistrationOrder } from '../endpoint-route/register';
+import { ALL_ROUTES } from '../endpoint-route/routes';
 import { knownQueryNamesV2 } from '../sync-resolver';
 
 const repoRoot = fileURLToPath(new URL('../../../..', import.meta.url));
@@ -112,6 +114,55 @@ describe.each([
 });
 
 describe('hono-routes population', () => {
+  it('detects loaded handler replacement at the same stable HTTP route', () => {
+    const first = new Hono(), second = new Hono();
+    first.get('/same', c => c.text('first implementation'));
+    second.get('/same', c => c.text('second implementation'));
+    const a = enumerateMountedHonoSurfaces(first, 'same-host').surfaces[0]!;
+    const b = enumerateMountedHonoSurfaces(second, 'same-host').surfaces[0]!;
+    expect(a.surfaceId).toBe(b.surfaceId);
+    expect(a.attrs?.loadedFunctionSha256).toMatch(/^[a-f0-9]{64}$/);
+    expect(a.attrs?.loadedFunctionSha256).not.toBe(b.attrs?.loadedFunctionSha256);
+    expect(a.attrs?.functionFingerprintScope).toBe('loaded-function-text-only');
+  });
+  it('captures actual raw and nested Hono routes, middleware and duplicate handlers without dispatch', async () => {
+    let calls = 0;
+    const app = new Hono(), nested = new Hono();
+    app.use('*', async (_c, next) => { calls++; await next(); });
+    app.post('/raw', c => { calls++; return c.text('raw'); });
+    nested.get('/probe', async (_c, next) => { calls++; await next(); });
+    nested.get('/probe', c => { calls++; return c.text('nested'); });
+    app.route('/prefix', nested);
+    const captured = enumerateMountedHonoSurfaces(app, 'actual-host');
+    expect(calls).toBe(0);
+    expect(captured.surfaces.map(s => s.attrs?.routeId)).toEqual(['ALL /*', 'POST /raw', 'GET /prefix/probe', 'GET /prefix/probe']);
+    expect(new Set(captured.surfaces.map(s => s.surfaceId)).size).toBe(4);
+    expect(captured.surfaces.map(s => s.attrs?.mountIndex)).toEqual([0, 1, 2, 3]);
+    expect(captured.surfaces.map(s => s.attrs?.occurrence)).toEqual([1, 1, 1, 2]);
+    expect(captured.unresolved).toEqual(['http-stack-nested-dispatch-unverified:actual-host']);
+    // Later registration cannot silently change an already captured snapshot.
+    app.get('/later', c => c.text('later'));
+    expect(captured.surfaces).toHaveLength(4);
+    expect(enumerateMountedHonoSurfaces(app, 'actual-host').surfaces).toHaveLength(5);
+    expect((await app.request('/prefix/probe')).status).toBe(200);
+    expect(calls).toBe(3);
+  });
+
+  it('retains opaque/malformed stack entries as gaps without invoking getters', () => {
+    const trap = { get routes() { throw new Error('must not execute'); } };
+    expect(enumerateMountedHonoSurfaces(trap, 'opaque').unresolved).toEqual(['http-stack-unavailable:opaque']);
+    const routes = [null, { get method() { throw new Error('must not execute'); }, path: '/' },
+      { method: 'GET', path: '/missing-handler' }];
+    Object.defineProperty(routes, '3', { get() { throw new Error('must not execute'); } });
+    const captured = enumerateMountedHonoSurfaces({ routes }, 'broken');
+    expect(captured.surfaces).toHaveLength(1);
+    expect(captured.surfaces[0].attrs).toMatchObject({ hasHandler: false, nestedDispatchCoverage: 'unknown' });
+    expect(captured.unresolved).toEqual(['http-stack-invalid-row:broken:0', 'http-stack-invalid-route:broken:1',
+      'http-stack-handler-unavailable:broken:2', 'http-stack-invalid-row:broken:3', 'http-stack-nested-dispatch-unverified:broken']);
+    expect(enumerateMountedHonoSurfaces({ routes: [] }, 'empty').unresolved).toEqual(['http-stack-empty:empty']);
+    expect(() => enumerateMountedHonoSurfaces({}, ' ')).toThrow('mount_id_required');
+  });
+
   it('is exactly the mounted route table — no invented or dropped routes', async () => {
     const surfaces = await honoRoutesProvider.enumerate(ctx);
     const mounted = routeRegistrationOrder().map((r) => `${r.method.toUpperCase()} ${r.path}`);
@@ -128,9 +179,53 @@ describe('hono-routes population', () => {
       expect((s.attrs as Record<string, unknown>).hasInputSchema).toBe(true);
     }
   });
+
+  it('retains each mounted route auth, CORS and disabled-versus-default timeout', async () => {
+    const surfaces = await honoRoutesProvider.enumerate(ctx);
+    const definitions = new Map(ALL_ROUTES.map((route) => [`${route.method.toUpperCase()} ${route.path}`, route]));
+    for (const surface of surfaces) {
+      const def = definitions.get(surface.surfaceId);
+      expect(def, surface.surfaceId).toBeDefined();
+      expect(surface.attrs).toMatchObject({
+        auth: def!.auth,
+        hasDefinition: true,
+        cors: def!.cors ?? null,
+        timeoutDeclared: def!.timeoutSec !== undefined,
+        timeoutSec: def!.timeoutSec ?? null,
+      });
+    }
+    expect(ALL_ROUTES.some((route) => route.timeoutSec === null)).toBe(true);
+    expect(ALL_ROUTES.some((route) => route.timeoutSec === undefined)).toBe(true);
+  });
 });
 
 describe('mcp-tools population', () => {
+  it('security inventory retains HTTP-only handlers, every transport and composition edges', async () => {
+    const pluginName = 'security-census-http-only-fixture';
+    registerProjectedTool({ pluginName, description: 'HTTP-only inventory fixture',
+      inputSchema: { type: 'object', properties: {} }, capabilities: [],
+      expose: { http: { path: '/__security_census_fixture', methods: ['GET', 'POST'] }, ipc: true },
+      replaces: ['coord:declare-intent'], fn: async () => ({ content: [] }),
+    });
+    try {
+      const surfaces = await enumerateProjectedHandlerSurfaces(ctx);
+      expect(surfaces.find(s => s.surfaceId === 'http:/__security_census_fixture')!.attrs).toMatchObject({
+        loadedFunctionSha256: expect.stringMatching(/^[a-f0-9]{64}$/), actualEffectCoverage: 'unknown',
+      });
+      expect(surfaces.map(s => s.surfaceId).sort()).toEqual(listAllProjectedTools().map(def =>
+        def.expose.mcp ? `mcp:${def.expose.mcp.name}` : `http:${def.expose.http!.path}`).sort());
+      expect(surfaces.find(s => s.surfaceId === 'http:/__security_census_fixture')).toMatchObject({
+        sourceFile: null, fidelity: 'declared', attrs: { replaces: ['coord:declare-intent'], dispatchRoutes: [
+          { channel: 'http', route: 'GET /__security_census_fixture' },
+          { channel: 'http', route: 'POST /__security_census_fixture' },
+          { channel: 'ipc', route: '/__security_census_fixture' },
+        ] },
+      });
+      // The same fixture must not leak into the MCP-only population/retirement scope.
+      expect((await mcpToolsProvider.enumerate(ctx)).some(s => s.surfaceId.includes('__security_census_fixture'))).toBe(false);
+    } finally { unregisterProjectedToolsForPlugin(pluginName); }
+  });
+
   it('is exactly the live tool catalog', async () => {
     const surfaces = await mcpToolsProvider.enumerate(ctx);
     const catalog = listAllProjectedTools()
@@ -160,6 +255,35 @@ describe('mcp-tools population', () => {
         fs.existsSync(path.join(repoRoot, s.sourceFile as string)),
         `fabricated sourceFile for ${s.surfaceId}: ${s.sourceFile}`,
       ).toBe(true);
+    }
+  });
+
+  it('attributes a nested registration to its captured module rather than its tool name', async () => {
+    const surfaces = await mcpToolsProvider.enumerate(ctx);
+    expect(surfaces.find((surface) => surface.surfaceId === 'coord:declare-intent')?.sourceFile).toBe(
+      'packages/operator-core/lib/agent-tools/coordination/tools/declare-intent.ts',
+    );
+  });
+
+  it('retains provider, alternate exposure and authority declarations for every registered handler', async () => {
+    const surfaces = new Map((await mcpToolsProvider.enumerate(ctx)).map((surface) => [surface.surfaceId, surface]));
+    for (const def of listAllProjectedTools().filter((tool) => tool.expose.mcp != null)) {
+      const surface = surfaces.get(def.expose.mcp!.name)!;
+      expect(surface.attrs).toMatchObject({
+        pluginName: def.pluginName,
+        providerVersion: projectedToolProviderVersion(def),
+        builtinProvider: def.builtinProvider ?? null,
+        installationSource: def.pluginInstallation?.source ?? null,
+        expose: def.expose,
+        hasArgumentSensitiveEffect: typeof def.effectForCall === 'function',
+        authorization: {
+          requirePrincipal: def.requirePrincipal ?? null,
+          agentRoles: def.agentRoles ?? null,
+          requireRoles: def.requireRoles ?? null,
+          hasResourceAuthorizer: typeof def.authorize === 'function',
+        },
+      });
+      expect(surface.fidelity).toBe('declared');
     }
   });
 });

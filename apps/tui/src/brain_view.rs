@@ -988,6 +988,39 @@ mod tests {
             before,
             "irrelevant/malformed frames must not resolve"
         );
+
+        // Refetch counts alone do not prove that the pane applies the new roster.
+        // Freeze repair time and drive a real old-to-new transcript selection.
+        f.pause();
+        f.write_turn("old", "selected old wake");
+        f.write_turn("new", "selected new wake");
+        f.api.lock().unwrap().rosters.insert(
+            "a".into(),
+            roster(&[entry("queen", 1, Some("old"))], &[]),
+        );
+        f.frame("roster", serde_json::json!({"workspaceId":"a"}));
+        f.wait_for(|| f.latest().current_uuid.as_deref() == Some("old"))
+            .await;
+        assert_eq!(f.latest().messages[0].content, "selected old wake");
+
+        f.api.lock().unwrap().rosters.insert(
+            "a".into(),
+            roster(&[entry("queen", 2, Some("new"))], &[]),
+        );
+        f.settle().await;
+        assert_eq!(f.latest().current_uuid.as_deref(), Some("old"));
+        let before = f.count("/api/workspaces");
+        f.frame("roster", serde_json::json!({"workspaceId":"a"}));
+        f.wait_for(|| f.latest().current_uuid.as_deref() == Some("new"))
+            .await;
+        assert_eq!(f.count("/api/workspaces"), before + 1);
+        assert_eq!(f.latest().messages[0].content, "selected new wake");
+        let rendered: String = transcript_lines(&f.latest())
+            .iter()
+            .flat_map(|line| line.spans.iter().map(|span| span.content.as_ref()))
+            .collect();
+        assert!(rendered.contains("selected new wake"), "{rendered}");
+        assert!(!rendered.contains("selected old wake"), "{rendered}");
     }
 
     #[tokio::test]

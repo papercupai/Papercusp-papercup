@@ -12,6 +12,22 @@ const timestamp = new Date(1000).toISOString();
 const ctx = { receivedAtMs: 900, nowMs: 2000 };
 
 describe('native execution observations', () => {
+  it.each(['claude', 'omp', 'codex'])('binds %s recovery identity to the observed isolated transcript', agent => {
+    const root = mkdtempSync(join(tmpdir(), 'native-recovery-identity-'));
+    const id = '30c49db4-e1e3-4ac7-9bec-960c500b46ea';
+    const env = agent === 'claude' ? { CLAUDE_CONFIG_DIR: root }
+      : agent === 'codex' ? { CODEX_HOME: root } : { PI_CODING_AGENT_DIR: root };
+    const dir = join(root, agent === 'claude' ? 'projects' : 'sessions');
+    try {
+      mkdirSync(dir, { recursive: true });
+      const row = agent === 'codex'
+        ? { type: 'event_msg', timestamp, payload: { type: 'task_started' } }
+        : { type: 'user', timestamp, message: { role: 'user', content: 'continue existing task' } };
+      writeFileSync(join(dir, `${id}.jsonl`), JSON.stringify(row) + '\n');
+      expect(nativeLatestExecution({ agent, env, ...ctx })).toMatchObject({ nativeSessionId: id });
+      expect(nativeLatestExecution({ agent, env: {}, ...ctx })).toMatchObject({ nativeSessionId: null });
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
   it.each(['codex', 'claude', 'omp'])('reports missing evidence as unknown for %s', agent => {
     expect(nativeExecutionFromRows([], { agent, ...ctx }).phase).toBe('unknown');
   });

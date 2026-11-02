@@ -11,12 +11,14 @@
  *     loaded through the hook's own repo-root resolution. Only file I/O is injected
  *     (`readFile` / `showHead` / `exists` for a fixture that does not exist on disk), so a
  *     change to the guard's registry or finding shapes breaks these cases, not just the
- *     fake-detector self-test. Nothing is written to disk: no temp fixture, no tree mutation.
+ *     fake-detector self-test. Snapshot tests use a private temp directory and never mutate
+ *     the repo tree.
  */
 import { describe, it, expect } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
+import { join, resolve } from 'node:path';
+import { tmpdir } from 'node:os';
 
 // __dirname = <repo>/apps/operator/scripts/hooks/cc/__tests__ — six levels down.
 const ROOT = resolve(__dirname, '../../../../../..');
@@ -27,12 +29,24 @@ type NudgeDeps = {
   readFile?: (p: string) => string;
   sizeOf?: (p: string) => number;
   showHead?: (root: string, rel: string) => string | null;
+  beforeFindings?: string[];
+  beforeRelPath?: string;
+  snapshotRoot?: string;
 };
 
 async function loadHook() {
   return (await import(`file://${HOOK}`)) as {
     isCandidateFile: (p: string) => boolean;
     nudgeFor: (p: string, deps?: NudgeDeps) => Promise<string | null>;
+    capturePreEditBaseline: (
+      p: string,
+      deps?: NudgeDeps,
+    ) => Promise<{ filePath: string; relPath: string; findings: string[] } | null>;
+    recordPreEditSnapshot: (payload: any, deps?: NudgeDeps) => Promise<boolean>;
+    consumePreEditSnapshot: (
+      payload: any,
+      deps?: NudgeDeps,
+    ) => { filePath: string; relPath: string; findings: string[] } | null;
   };
 }
 
@@ -106,6 +120,75 @@ describe('posttooluse-resource-governor-nudge', () => {
 
   it('does not re-nudge a finding already present at HEAD', async () => {
     expect(await nudge(AGENT_FIXTURE, RAW_SPAWN, `${RAW_SPAWN}// unrelated tweak\n`)).toBeNull();
+  });
+
+  it('compares against the pre-edit dirty worktree and still fires for a new finding', async () => {
+    const { recordPreEditSnapshot, consumePreEditSnapshot, nudgeFor } = await loadHook();
+    const filePath = resolve(ROOT, REVIEWED);
+    const src = real(REVIEWED);
+    const dirty = src + "\nexport const extra = () => spawn('ls', []);\n";
+    const afterHarmlessEdit = dirty + '\n// harmless follow-up\n';
+    const snapshotRoot = mkdtempSync(join(tmpdir(), 'resource-governor-nudge-'));
+    const pre = {
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Edit',
+      tool_use_id: 'dirty-baseline-test',
+      session_id: 'resource-governor-test-session',
+      tool_input: { file_path: filePath },
+    };
+    try {
+      expect(
+        await recordPreEditSnapshot(pre, {
+          snapshotRoot,
+          exists: existsWithFixture,
+          sizeOf: () => dirty.length,
+          readFile: () => dirty,
+        }),
+      ).toBe(true);
+
+      const sessionDir = join(snapshotRoot, readdirSync(snapshotRoot)[0]);
+      const snapshotFile = join(sessionDir, readdirSync(sessionDir)[0]);
+      expect(readFileSync(snapshotFile, 'utf8')).not.toContain('export const extra');
+
+      const baseline = consumePreEditSnapshot({ ...pre, hook_event_name: 'PostToolUse' }, { snapshotRoot });
+      expect(baseline?.findings.length).toBeGreaterThan(0);
+      if (!baseline) throw new Error('pre-edit baseline snapshot was not readable');
+      const falseAlarm = await nudgeFor(filePath, {
+        exists: existsWithFixture,
+        sizeOf: () => afterHarmlessEdit.length,
+        readFile: () => afterHarmlessEdit,
+        showHead: () => src,
+        beforeFindings: baseline.findings,
+        beforeRelPath: baseline.relPath,
+      });
+      expect(falseAlarm).toBeNull();
+      expect(consumePreEditSnapshot({ ...pre, hook_event_name: 'PostToolUse' }, { snapshotRoot })).toBeNull();
+
+      const cleanPre = { ...pre, tool_use_id: 'new-finding-test' };
+      expect(
+        await recordPreEditSnapshot(cleanPre, {
+          snapshotRoot,
+          exists: existsWithFixture,
+          sizeOf: () => src.length,
+          readFile: () => src,
+        }),
+      ).toBe(true);
+      const cleanBaseline = consumePreEditSnapshot(
+        { ...cleanPre, hook_event_name: 'PostToolUse' },
+        { snapshotRoot },
+      );
+      if (!cleanBaseline) throw new Error('clean pre-edit baseline snapshot was not readable');
+      const introduced = await nudgeFor(filePath, {
+        exists: existsWithFixture,
+        sizeOf: () => dirty.length,
+        readFile: () => dirty,
+        beforeFindings: cleanBaseline.findings,
+        beforeRelPath: cleanBaseline.relPath,
+      });
+      expect(introduced).toContain('a reviewed row exists, but its matchesSource pin rejects the edited source');
+    } finally {
+      rmSync(snapshotRoot, { recursive: true, force: true });
+    }
   });
 
   it('is silent outside every enforced lane and for files the gate does not scan', async () => {

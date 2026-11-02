@@ -9,9 +9,16 @@ import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const mocks = vi.hoisted(() => ({ evaluatePlanAcceptanceGate: vi.fn() }));
+const mocks = vi.hoisted(() => ({
+  evaluatePlanAcceptanceGate: vi.fn(),
+  reconcileStaleAcceptanceBarSubjectPin: vi.fn(),
+}));
 vi.mock('../../../plan-acceptance-gate', () => ({
   evaluatePlanAcceptanceGate: mocks.evaluatePlanAcceptanceGate,
+  messageWithAdditionalBlockers: (message?: string) => message ?? '',
+}));
+vi.mock('../../../acceptance-bar-pin-reconcile', () => ({
+  reconcileStaleAcceptanceBarSubjectPin: mocks.reconcileStaleAcceptanceBarSubjectPin,
 }));
 
 import setPlanStatusTool from '../set-plan-status';
@@ -64,11 +71,12 @@ function makeCtx() {
   } as never;
 }
 
-async function runStatus() {
+async function runStatus(options: { dryRun?: boolean } = {}) {
   const res = (await setPlanStatusTool.handler({
     harness: HARNESS,
     slug: SLUG,
     status: 'shipped',
+    ...(options.dryRun ? { dryRun: true } : {}),
   } as never, makeCtx())) as {
     data: { results: Record<string, unknown>[]; counts?: { failed?: number } };
   };
@@ -109,7 +117,11 @@ beforeEach(async () => {
        SET status = 'ready'
      WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND plan_slug = ${SLUG}
   `;
-  mocks.evaluatePlanAcceptanceGate.mockResolvedValue({ satisfied: true });
+  mocks.evaluatePlanAcceptanceGate.mockReset().mockResolvedValue({ satisfied: true });
+  mocks.reconcileStaleAcceptanceBarSubjectPin.mockReset().mockResolvedValue({
+    reconciled: false,
+    reason: 'no_witness',
+  });
 });
 
 describe('plans:set-plan-status — database acceptance receipt', () => {
@@ -134,5 +146,56 @@ describe('plans:set-plan-status — database acceptance receipt', () => {
       status: 'shipped',
       content: expect.stringContaining('status: shipped'),
     });
+  });
+
+  it('reconciles a stale pre-grading subject pin and re-evaluates before returning the next blocker', async () => {
+    mocks.evaluatePlanAcceptanceGate
+      .mockResolvedValueOnce({
+        satisfied: false,
+        code: 'acceptance_bar_contract_not_ready',
+        blockingPhase: 'pre-grading',
+        blockingPhaseLifecycle: { codes: ['bar_snapshot_rubric_revision_mismatch'] },
+      })
+      .mockResolvedValueOnce({
+        satisfied: false,
+        code: 'acceptance_bar_contract_not_ready',
+        acceptanceBarLifecycle: { codes: ['bar_snapshot_method_missing'] },
+      });
+    mocks.reconcileStaleAcceptanceBarSubjectPin.mockResolvedValueOnce({
+      reconciled: true,
+      fromRevision: 1,
+      toRevision: 2,
+      witness: 'pinned_revision',
+    });
+
+    const { data, isError } = await runStatus();
+
+    expect(isError).toBe(true);
+    expect(mocks.reconcileStaleAcceptanceBarSubjectPin).toHaveBeenCalledWith({
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      planSlug: SLUG,
+    });
+    expect(mocks.evaluatePlanAcceptanceGate).toHaveBeenCalledTimes(2);
+    expect(data).toMatchObject({
+      ok: false,
+      error: 'acceptance_bar_contract_not_ready',
+      acceptanceBarLifecycle: { codes: ['bar_snapshot_method_missing'] },
+    });
+    await expect(storedPlan()).resolves.toMatchObject({ status: 'ready' });
+  });
+
+  it('keeps dry-run ship checks read-only when the BAR pin is stale', async () => {
+    mocks.evaluatePlanAcceptanceGate.mockResolvedValue({
+      satisfied: false,
+      code: 'acceptance_bar_contract_not_ready',
+      blockingPhase: 'pre-grading',
+      blockingPhaseLifecycle: { codes: ['bar_snapshot_rubric_revision_mismatch'] },
+    });
+
+    await runStatus({ dryRun: true });
+
+    expect(mocks.reconcileStaleAcceptanceBarSubjectPin).not.toHaveBeenCalled();
+    await expect(storedPlan()).resolves.toMatchObject({ status: 'ready' });
   });
 });

@@ -248,8 +248,8 @@
     },
     "@azure/identity": {
       "severity": "high",
-      "disposition": "deferred-semver-major",
-      "reason": "ADDED 2026-10-27 (WI-10006055 gate repair; fix tracked on WI-6554700010030253). New advisory published after frozen candidate 8c03b5dcd156 was cut; npm routes the fix through @azure/identity@4.13.0, semver-major. Accepted only to keep a dependency upgrade off the frozen-candidate repair.",
+      "disposition": "patch-eligible",
+      "reason": "ADDED 2026-10-27 (WI-10006055 gate repair; fix tracked on WI-6554700010030253). The 2026-11-02 strict checker derives patch-eligible: installed 4.13.1 is affected, but the declared ^4.13.1 range is not wholly within the vulnerable range 4.13.1 - 4.14.0 || >=4.15.0-beta.1. Re-adjudicate the package target on staging before removing this accepted entry.",
       "owners": ["@papercusp/web"]
     },
     "@azure/msal-node": {

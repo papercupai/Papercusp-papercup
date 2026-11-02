@@ -1617,6 +1617,7 @@ async function readReferencePayload(part, envelope, readReference) {
   if (cursor.byte_offset !== 0) return null;
   const chunks = [];
   let offset = 0, total, bodyOffset = 0;
+  let canonicalFilePath;
   for (let pageNumber = 0; pageNumber < 8192; pageNumber++) {
     const response = await readReference(cursor);
     if (response?.isError) return null;
@@ -1625,6 +1626,13 @@ async function readReferencePayload(part, envelope, readReference) {
       || page.byte_offset !== offset || !Number.isSafeInteger(page.total_bytes)
       || page.total_bytes < 0 || page.total_bytes > 24 * 1024 * 1024
       || (total !== undefined && total !== page.total_bytes)) return null;
+    // The authenticated reader resolves a scratch URI to its canonical file
+    // and emits file_path cursors thereafter. Keep that exact identity pinned.
+    if (page.file_path !== undefined) {
+      if (typeof page.file_path !== 'string' || !page.file_path
+        || (canonicalFilePath !== undefined && canonicalFilePath !== page.file_path)) return null;
+      canonicalFilePath = page.file_path;
+    } else if (canonicalFilePath !== undefined) return null;
     total = page.total_bytes;
     const bytes = Buffer.from(page.data, 'base64');
     if (bytes.toString('base64') !== page.data || bytes.length !== page.byte_length
@@ -1646,7 +1654,10 @@ async function readReferencePayload(part, envelope, readReference) {
       return tryParseJsonObject(lastLine);
     }
     const next = page.next_cursor;
-    if (next?.tool !== 'capability:read' || next.args?.uri !== uri || next.args.byte_offset !== offset) return null;
+    const sameUri = next?.args?.uri === uri && next.args.file_path === undefined;
+    const sameFile = canonicalFilePath !== undefined && next?.args?.file_path === canonicalFilePath
+      && next.args.uri === undefined;
+    if (next?.tool !== 'capability:read' || !(sameUri || sameFile) || next.args.byte_offset !== offset) return null;
     cursor = next.args;
   }
   return null;

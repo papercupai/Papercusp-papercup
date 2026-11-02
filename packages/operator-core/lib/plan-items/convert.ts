@@ -299,6 +299,7 @@ export async function findConvertedWorkItemByStamp(
   planSlug: string,
   itemId: string,
   harnessSlug: string,
+  workspaceId?: string,
 ): Promise<WorkItem | null> {
   const { sql } = getOrgPg();
   // The stamp is identical across families — match plan_slug + item_id (harness is in
@@ -321,7 +322,11 @@ export async function findConvertedWorkItemByStamp(
   const stampMatch = () =>
     sql`payload->'plan_item' IS NOT NULL
     AND payload->'plan_item'->>'plan_slug' = ${planSlug}
-    AND payload->'plan_item'->>'item_id' = ${itemId}`;
+    AND payload->'plan_item'->>'item_id' = ${itemId}
+    AND payload->'plan_item'->>'harness_slug' = ${harnessSlug}`;
+  const workspaceMatch = workspaceId
+    ? sql`workspace_id = ${workspaceId}`
+    : sql`TRUE`;
   // Same live-record preference as findImplementingWorkItem (EI-21213528544407590):
   // recency is only a tie-break, so a newer TERMINAL stamped row can never mask an
   // older stamped row that is still open. The newest terminal row remains the answer
@@ -330,7 +335,9 @@ export async function findConvertedWorkItemByStamp(
   const featureRows = await sql<{ feature_id: string; harness_slug: string }[]>`
     SELECT feature_id, harness_slug
       FROM harness_shared.harness_features_consolidated
-     WHERE harness_slug = ${harnessSlug} AND ${stampMatch()}
+     WHERE ${workspaceMatch}
+       AND harness_slug = ${harnessSlug}
+       AND ${stampMatch()}
      ORDER BY updated_ts DESC NULLS LAST`;
   for (const r of featureRows) {
     const wi = await getWorkItem(r.feature_id, r.harness_slug);
@@ -347,6 +354,7 @@ export async function findConvertedWorkItemByStamp(
     SELECT feature_id AS issue_id
       FROM harness_shared.work_items
      WHERE item_kind = ANY(${[...ISSUE_FAMILY_KINDS]}::text[])
+       AND ${workspaceMatch}
        AND ${stampMatch()}
      ORDER BY updated_ts DESC NULLS LAST`;
   for (const r of issueRows) {
@@ -561,6 +569,44 @@ export async function listCoveredPlanItemRefs(
        AND ${stampMatch()}`;
   for (const r of issueRows) out.add(planItemRef(planSlug, r.item_id));
 
+  // Before source_plan_item_ids and plan_item stamps were consistently written,
+  // completed work-items carried the exact textual reference "Plan: <slug> item
+  // <id>" in their summary. They still count as coverage: re-promoting the open
+  // plan item creates a second execution record even though the old item is done.
+  const textCoversItem = (text: string, itemId: string): boolean => {
+    const normalized = text.replace(/\s+/g, ' ').toLowerCase();
+    const marker = ('plan: ' + planSlug + ' item ' + itemId).toLowerCase();
+    let offset = normalized.indexOf(marker);
+    while (offset >= 0) {
+      const before = normalized[offset - 1];
+      const after = normalized[offset + marker.length];
+      if ((!before || !/[a-z0-9_-]/.test(before)) && (!after || !/[a-z0-9-]/.test(after))) return true;
+      offset = normalized.indexOf(marker, offset + 1);
+    }
+    return false;
+  };
+  const [legacyFeatureRows, legacyIssueRows] = await Promise.all([
+    sql<{ title: string | null; summary: string | null; payload: unknown }[]>`
+      SELECT title, summary, payload
+        FROM harness_shared.harness_features_consolidated
+       WHERE workspace_id = ANY(${scopes})
+         AND harness_slug = ${harnessSlug}
+         AND strpos(lower(concat_ws(' ', title, summary, payload::text)), lower(${planSlug})) > 0`,
+    sql<{ title: string | null; summary: string | null; payload: unknown }[]>`
+      SELECT title, summary, payload
+        FROM harness_shared.work_items
+       WHERE workspace_id = ANY(${scopes})
+         AND harness_slug = ${harnessSlug}
+         AND item_kind = ANY(${[...ISSUE_FAMILY_KINDS]}::text[])
+         AND strpos(lower(concat_ws(' ', title, summary, payload::text)), lower(${planSlug})) > 0`,
+  ]);
+  for (const row of [...legacyFeatureRows, ...legacyIssueRows]) {
+    const searchable = [row.title ?? '', row.summary ?? '', JSON.stringify(row.payload ?? '')].join('\n');
+    for (const itemId of itemIds) {
+      if (textCoversItem(searchable, itemId)) out.add(planItemRef(planSlug, itemId));
+    }
+  }
+
   return out;
 }
 
@@ -757,10 +803,20 @@ export async function convertPlanItem(opts: ConvertPlanItemOpts): Promise<Conver
   // in that state produces the duplicate this bug was filed for. A stamped record is
   // adopted over a terminal edge answer only when it is itself non-terminal; when nothing
   // live exists anywhere the terminal record stands and step 3 mints, as before.
-  let existing = await findImplementingWorkItem(opts.planSlug, opts.itemId);
-  let edgeMissing = false;
+  // The line IS its execution record after migration 1601. Older records may
+  // still carry implements edges or payload stamps, while a new node has neither.
+  // Resolve the canonical identity first, scoped to this tenant and harness, so
+  // pickup cannot mint another record or resume a preserved legacy child.
+  const { sql } = getOrgPg();
+  const [node] = await sql<{ feature_id: string }[]>`
+    SELECT feature_id FROM harness_shared.work_items
+     WHERE workspace_id = ${opts.workspaceId} AND harness_slug = ${opts.harnessSlug}
+       AND plan_slug = ${opts.planSlug} AND plan_line_id = ${opts.itemId}`;
+  let existing = node ? await getWorkItem(node.feature_id, opts.harnessSlug)
+    : await findImplementingWorkItem(opts.planSlug, opts.itemId);
+  let edgeMissing = Boolean(node);
   if (!existing || TERMINAL_WORK_ITEM_STATES.has(existing.state)) {
-    const stamped = await findConvertedWorkItemByStamp(opts.planSlug, opts.itemId, opts.harnessSlug);
+    const stamped = await findConvertedWorkItemByStamp(opts.planSlug, opts.itemId, opts.harnessSlug, opts.workspaceId);
     if (stamped && (!existing || !TERMINAL_WORK_ITEM_STATES.has(stamped.state))) {
       // Adopted from the stamp ⇒ this record carries no live implements edge
       // (one would have been returned above), so re-link it below.

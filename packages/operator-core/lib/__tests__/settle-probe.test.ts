@@ -26,6 +26,7 @@ import {
   SETTLE_EXIT_CODES,
   SETTLE_USAGE,
   SETTLE_VERDICTS,
+  buildSettleEvalExpression,
   buildEvalArgs,
   evaluateSettleSample,
   formatSettleNote,
@@ -47,6 +48,8 @@ type Sample = {
   transport?: { inFlight: number | null; queued: number | null; limit: number | null } | null;
   domNodes?: number | null;
   domSignature?: string | null;
+  readySelector?: string | null;
+  readySelectorPresent?: boolean;
   takenAtMs?: number;
   error?: string;
 };
@@ -161,6 +164,53 @@ describe('settle-probe — the DOM quiet window', () => {
     expect(verdict.reason).toBe('quiet-window-pending');
   });
 
+  it('starts the quiet window only after the route selector appears and its sync request starts', () => {
+    const readySelector = '[data-testid="plan-provenance-audit"]';
+    const beforeRoute = idle({ takenAtMs: 1_000, readySelectorPresent: false });
+    const routeNotReady = evaluateSettleSample(beforeRoute, {
+      readySelector,
+      quietMs: 400,
+    });
+    expect(routeNotReady.verdict).toBe(SETTLE_VERDICTS.BUSY);
+    expect(routeNotReady.reason).toBe('route-not-ready');
+    expect(nextQuietAnchor(null, beforeRoute, routeNotReady)).toBeNull();
+
+    const mounted = idle({ takenAtMs: 2_000, readySelectorPresent: true });
+    const mountedVerdict = evaluateSettleSample(mounted, {
+      previous: null,
+      readySelector,
+      quietMs: 400,
+    });
+    expect(mountedVerdict.reason).toBe('quiet-window-pending');
+    const mountedAnchor = nextQuietAnchor(null, mounted, mountedVerdict);
+
+    const requestStarts = idle({
+      takenAtMs: 2_100,
+      readySelectorPresent: true,
+      transport: { inFlight: 1, queued: 0, limit: 6 },
+    });
+    const requestVerdict = evaluateSettleSample(requestStarts, {
+      previous: mountedAnchor,
+      readySelector,
+      quietMs: 400,
+    });
+    expect(requestVerdict.reason).toBe('requests-in-flight');
+    expect(nextQuietAnchor(mountedAnchor, requestStarts, requestVerdict)).toBeNull();
+
+    const idleAgain = idle({ takenAtMs: 2_200, readySelectorPresent: true });
+    const firstQuiet = evaluateSettleSample(idleAgain, {
+      previous: null,
+      readySelector,
+      quietMs: 400,
+    });
+    expect(firstQuiet.reason).toBe('quiet-window-pending');
+    const settled = evaluateSettleSample(
+      idle({ takenAtMs: 2_600, readySelectorPresent: true }),
+      { previous: idleAgain, readySelector, quietMs: 400 },
+    );
+    expect(settled.verdict).toBe(SETTLE_VERDICTS.SETTLED);
+  });
+
   it('drops the anchor when the streak breaks — a busy gate, an unknown reading, or a bad sample', () => {
     const anchor = idle();
     expect(nextQuietAnchor(anchor, idle(), { reason: 'requests-in-flight' })).toBeNull();
@@ -229,12 +279,22 @@ describe('settle-probe — page-side expression and CLI plumbing', () => {
     expect(SETTLE_EVAL_EXPRESSION).not.toMatch(/inFlight[^,\n]*\?\?\s*0/);
   });
 
+  it('embeds an escaped readiness selector in the page-side probe', () => {
+    const selector = '[data-testid="plan-provenance-audit"]';
+    const expression = buildSettleEvalExpression(selector);
+    expect(expression).toContain(JSON.stringify(selector));
+    expect(expression).toContain('doc.querySelector(readySelector)');
+  });
+
   it('puts tauri-agent-tools flags AFTER the subcommand', () => {
     const args = buildEvalArgs({ pid: '4242' });
     expect(args[0]).toBe('eval');
     expect(args.indexOf('--pid')).toBeGreaterThan(0);
     expect(args[args.indexOf('--pid') + 1]).toBe('4242');
     expect(args[args.length - 1]).toBe(SETTLE_EVAL_EXPRESSION);
+    const selector = '[data-testid="plan-provenance-audit"]';
+    const guardedArgs = buildEvalArgs({ pid: '4242', readySelector: selector });
+    expect(guardedArgs[guardedArgs.length - 1]).toBe(buildSettleEvalExpression(selector));
   });
 
   it('LIVE REGRESSION: never sends --pid and --port together, and never defaults the port from VERIFY_TAURI_PORT', () => {
@@ -305,19 +365,37 @@ describe('settle-probe — page-side expression and CLI plumbing', () => {
   });
 
   it('parses CLI args and falls back to the verifier environment', () => {
-    const fromEnv = parseSettleCliArgs([], { VERIFY_TAURI_PID: '77', VERIFY_TAURI_PORT: '3199' });
+    const selector = '[data-testid="plan-provenance-audit"]';
+    const fromEnv = parseSettleCliArgs([], {
+      VERIFY_TAURI_PID: '77',
+      VERIFY_TAURI_PORT: '3199',
+      VERIFY_TAURI_READY_SELECTOR: selector,
+    });
     expect(fromEnv.pid).toBe('77');
     // The pid is the only target taken from the environment — see the port
     // regression test above for why VERIFY_TAURI_PORT is deliberately ignored.
     expect(fromEnv.port).toBe('');
+    expect(fromEnv.readySelector).toBe(selector);
     expect(parseSettleCliArgs(['--port', '3199'], {}).port).toBe('3199');
 
     const explicit = parseSettleCliArgs(
-      ['--pid', '99', '--timeout', '5', '--quiet-ms', '150', '--note-only', '--json'],
+      [
+        '--pid',
+        '99',
+        '--ready-selector',
+        selector,
+        '--timeout',
+        '5',
+        '--quiet-ms',
+        '150',
+        '--note-only',
+        '--json',
+      ],
       {},
     );
     expect(explicit).toMatchObject({
       pid: '99',
+      readySelector: selector,
       timeoutSec: 5,
       quietMs: 150,
       noteOnly: true,
@@ -325,6 +403,7 @@ describe('settle-probe — page-side expression and CLI plumbing', () => {
     });
 
     expect(parseSettleCliArgs(['--nope'], {}).error).toMatch(/unknown option/);
+    expect(parseSettleCliArgs(['--ready-selector'], {}).error).toMatch(/non-empty CSS selector/);
   });
 
   it('inherits the guarded DOM budget unless a settle-specific timeout overrides it', () => {
@@ -346,5 +425,6 @@ describe('settle-probe — page-side expression and CLI plumbing', () => {
     expect(SETTLE_USAGE).toMatch(/UNKNOWN/);
     expect(SETTLE_USAGE).toMatch(/--note-only/);
     expect(SETTLE_USAGE).toMatch(/VERIFY_TAURI_DOM_TIMEOUT/);
+    expect(SETTLE_USAGE).toMatch(/--ready-selector/);
   });
 });

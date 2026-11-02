@@ -46,6 +46,7 @@ import { isHookReleasedOperationContinuationCall } from '../released-operation-c
  */
 export type SessionConfinementResolver = (
   ctx: UnifiedToolContext,
+  phases?: UnifiedToolContext['phases'],
 ) => SessionToolConfinement | null | undefined | Promise<SessionToolConfinement | null | undefined>;
 
 const state = pinModuleState('@papercusp/operator-core.session-confinement-port', () => ({
@@ -122,6 +123,7 @@ export async function checkSessionConfinement(input: {
   toolName: string;
   ctx: UnifiedToolContext;
   args?: unknown;
+  phases?: UnifiedToolContext['phases'];
 }): Promise<CapabilityEnvelopeVerdict | null> {
   const resolver = state.resolver;
   if (!resolver) return null;
@@ -130,7 +132,9 @@ export async function checkSessionConfinement(input: {
   if (ensureReady) {
     try {
       // Memoized by the host: one await per process, not one per dispatch.
-      await ensureReady();
+      const prepare = () => ensureReady();
+      if (input.phases) await input.phases.track('capability-envelope.session-confinement.ensure-ready', prepare);
+      else await prepare();
     } catch {
       return { decision: 'deny', posture: 'rejected', applied: true,
         reason: 'Session confinement policy is unavailable; refusing the call until its authority can be read.' };
@@ -139,7 +143,9 @@ export async function checkSessionConfinement(input: {
 
   let confinement: SessionToolConfinement | null | undefined;
   try {
-    confinement = await resolver(input.ctx);
+    const resolve = () => resolver(input.ctx, input.phases);
+    if (input.phases) confinement = await input.phases.track('capability-envelope.session-confinement.resolver', resolve);
+    else confinement = await resolve();
   } catch {
     // Unknown confinement is unknown authority. A rejected read must never turn
     // a confined caller into an ordinary unconfined session, including on restart.

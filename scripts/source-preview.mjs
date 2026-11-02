@@ -690,7 +690,7 @@ export async function prepareVerifierSource({ repo, ref, dest, inputs = [], inpu
   }
 }
 
-/** @typedef {{ completedTrees: number, totalTrees: number, currentTree: string }} VerifierDependencyProgress */
+/** @typedef {{ completedTrees: number, totalTrees: number, currentTree: string, cacheHit?: boolean }} VerifierDependencyProgress */
 /** @typedef {{ copyMode: 'copy' | 'hardlink', generationSnapshotSupported: boolean,
  *   command: 'snapshot-locked' | 'snapshot-generation-locked' }} VerifierSnapshotSelection */
 /** @typedef {{ snapshotSelection?: VerifierSnapshotSelection }} VerifierPhaseMetadata */
@@ -748,11 +748,13 @@ export function verifierPhaseRunner(path, env, childDiagnosticsPath) {
   const reportProgress = (phase, progress) => {
     assert.ok(active.has(phase) && ['deps.census', 'deps.postverify'].includes(phase),
       'Verifier dependency progress requires an active census phase');
-    assert.deepEqual(Object.keys(progress ?? {}).sort(), ['completedTrees', 'currentTree', 'totalTrees'],
+    assert.deepEqual(Object.keys(progress ?? {}).filter(key => key !== 'cacheHit').sort(), ['completedTrees', 'currentTree', 'totalTrees'],
       'Verifier dependency progress must remain bounded');
+    assert.ok(!Object.hasOwn(progress, 'cacheHit') || typeof progress.cacheHit === 'boolean',
+      'Verifier dependency cacheHit must be boolean');
     assert.ok(Number.isSafeInteger(progress.completedTrees) && Number.isSafeInteger(progress.totalTrees) &&
       progress.totalTrees > 0 && progress.totalTrees <= 1000 &&
-      progress.completedTrees >= 0 && progress.completedTrees < progress.totalTrees &&
+      progress.completedTrees >= 0 && progress.completedTrees <= progress.totalTrees &&
       typeof progress.currentTree === 'string' && progress.currentTree.length > 0 &&
       progress.currentTree.length <= 256, 'Invalid verifier dependency progress');
     record(phase, 'progress', { progress });
@@ -2202,6 +2204,45 @@ function verifierDependencyEnv(env) {
   return { ...env, NODE_OPTIONS: '', NODE_PATH: '', DEPENDENCY_GENERATION_NODE: process.execPath };
 }
 
+const VERIFIER_DEPENDENCY_CACHE_MAX_BYTES = 16 * 1024 * 1024;
+const VERIFIER_DEPENDENCY_CACHE_MAX_ENTRIES = 64;
+/** @type {Map<string, { fingerprint: string, files: Array<{ path: string, kind: string, executable: boolean, sha256: string }>, bytes: number }>} */
+const verifierDependencyCensusCache = new Map();
+let verifierDependencyCensusCacheBytes = 0;
+
+/** @param {string} cacheKey @param {string} fingerprint */
+function readVerifierDependencyCache(cacheKey, fingerprint) {
+  const cached = verifierDependencyCensusCache.get(cacheKey);
+  if (!cached || cached.fingerprint !== fingerprint) return null;
+  verifierDependencyCensusCache.delete(cacheKey);
+  verifierDependencyCensusCache.set(cacheKey, cached);
+  return cached.files.map(file => ({ ...file }));
+}
+
+/** @param {string} cacheKey @param {string} fingerprint
+ * @param {Array<{ path: string, kind: string, executable: boolean, sha256: string }>} files */
+function rememberVerifierDependencyCache(cacheKey, fingerprint, files) {
+  const previous = verifierDependencyCensusCache.get(cacheKey);
+  if (previous) {
+    verifierDependencyCensusCache.delete(cacheKey);
+    verifierDependencyCensusCacheBytes -= previous.bytes;
+  }
+  const bytes = files.reduce((total, file) => total + Buffer.byteLength(file.path)
+    + Buffer.byteLength(file.sha256) + 48, 0);
+  if (bytes > VERIFIER_DEPENDENCY_CACHE_MAX_BYTES) return;
+  const cachedFiles = files.map(file => Object.freeze({ ...file }));
+  verifierDependencyCensusCache.set(cacheKey, { fingerprint, files: cachedFiles, bytes });
+  verifierDependencyCensusCacheBytes += bytes;
+  while (verifierDependencyCensusCache.size > VERIFIER_DEPENDENCY_CACHE_MAX_ENTRIES
+    || verifierDependencyCensusCacheBytes > VERIFIER_DEPENDENCY_CACHE_MAX_BYTES) {
+    const oldestKey = verifierDependencyCensusCache.keys().next().value;
+    if (oldestKey === undefined) break;
+    const oldest = verifierDependencyCensusCache.get(oldestKey);
+    verifierDependencyCensusCache.delete(oldestKey);
+    if (oldest) verifierDependencyCensusCacheBytes -= oldest.bytes;
+  }
+}
+
 /** @param {Parameters<typeof captureVerifierDependencies>[0]} options
  * @param {string} output */
 function captureVerifierDependencyPopulation({ dest, receipt, env = process.env, onProgress }, output) {
@@ -2212,6 +2253,7 @@ function captureVerifierDependencyPopulation({ dest, receipt, env = process.env,
   const policyPath = 'apps/operator/bin/release/dependency-generation.sh';
   const policy = { path: policyPath,
     sha256: createHash('sha256').update(readFileSync(join(root, policyPath))).digest('hex') };
+  const sourceReceiptSha256 = createHash('sha256').update(JSON.stringify(receipt)).digest('hex');
   const trees = [];
   for (const [treeIndex, path] of paths.entries()) {
     assert.ok(!isAbsolute(path) && !path.includes('\\') &&
@@ -2221,7 +2263,6 @@ function captureVerifierDependencyPopulation({ dest, receipt, env = process.env,
     const tree = join(root, path);
     assert.ok(lstatSync(tree).isDirectory() && realpathSync(tree) === tree,
       `Verifier dependency tree must be independent: ${path}`);
-    onProgress?.({ completedTrees: treeIndex, totalTrees: paths.length, currentTree: path.slice(0, 256) });
     // Use the generation writer's population, including its exact ephemeral
     // output policy. A second cache-name list would eventually disagree with
     // the immutable install whose bytes this verifier is meant to measure.
@@ -2237,15 +2278,28 @@ function captureVerifierDependencyPopulation({ dest, receipt, env = process.env,
     const population = records.stdout.split('\n').filter(Boolean).map(line => line.split('\t'));
     assert.ok(population.every(row => row.length === 10 && ['d', 'f', 'l'].includes(row[1])),
       'Invalid verifier dependency generation records');
-    const files = verifierSourceFiles(tree, { symlinkRoot: root,
+    // Source records carry mode, size, mtime, inode, ctime and link target.
+    // Include policy and receipt manifests so any of those changes invalidates
+    // the byte hashes without trusting size/mtime as content proof.
+    const cacheKey = root + '\0' + path;
+    const fingerprint = createHash('sha256').update('verifier-dependency-census-v1\0')
+      .update(root).update('\0').update(path).update('\0')
+      .update(policy.path).update('\0').update(policy.sha256).update('\0')
+      .update(sourceReceiptSha256).update('\0').update(records.stdout).digest('hex');
+    const cachedFiles = readVerifierDependencyCache(cacheKey, fingerprint);
+    const cacheHit = cachedFiles !== null;
+    onProgress?.({ completedTrees: treeIndex + 1, totalTrees: paths.length,
+      currentTree: path.slice(0, 256), cacheHit });
+    const files = cachedFiles ?? verifierSourceFiles(tree, { symlinkRoot: root,
       includedPaths: new Set(population.map(row => row[0])) });
     assert.equal(files.length, population.filter(row => row[1] !== 'd').length,
       'Verifier dependency population changed during census');
+    if (!cacheHit) rememberVerifierDependencyCache(cacheKey, fingerprint, files);
     trees.push({ path, files });
   }
   return { schemaVersion: 'verifier-dependencies-v1', scope: 'materialized-dependency-files',
     root, sourceCommit: receipt.sourceCommit, policy,
-    sourceReceiptSha256: createHash('sha256').update(JSON.stringify(receipt)).digest('hex'), trees };
+    sourceReceiptSha256, trees };
 }
 
 /** Admit against the caller's disclosure ledger before leaving its checkout.

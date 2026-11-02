@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  createNonExecutableRefactorHunkClassifier,
   createRefactorFactsResolver,
   filedFindingFromPayload,
   filedGuardFindingFromPayload,
@@ -35,7 +36,7 @@ const cloneBody = (name: string) => `export function ${name}(items: number[], li
 `;
 
 describe('parseDiffHunks', () => {
-  it('maps new-side ranges, single-line hunks and pure deletions, and omits deleted files', () => {
+  it('retains both sides of single-line, multi-line and pure-deletion hunks, and omits deleted files', () => {
     const diff = [
       'diff --git a/src/x.ts b/src/x.ts',
       '--- a/src/x.ts',
@@ -55,11 +56,72 @@ describe('parseDiffHunks', () => {
     const hunks = parseDiffHunks(diff);
     expect([...hunks.keys()]).toEqual(['src/x.ts', 'src/new.ts']);
     expect(hunks.get('src/x.ts')).toEqual([
-      { start: 10, end: 12 },
-      { start: 41, end: 41 },
-      { start: 61, end: 61 },
+      { old: { start: 10, count: 2 }, new: { start: 10, count: 3 }, start: 10, end: 12 },
+      { old: { start: 40, count: 1 }, new: { start: 41, count: 1 }, start: 41, end: 41 },
+      { old: { start: 60, count: 4 }, new: { start: 61, count: 0 }, start: 61, end: 61 },
     ]);
-    expect(hunks.get('src/new.ts')).toEqual([{ start: 1, end: 20 }]);
+    expect(hunks.get('src/new.ts')).toEqual([
+      { old: { start: 0, count: 0 }, new: { start: 1, count: 20 }, start: 1, end: 20 },
+    ]);
+  });
+});
+
+describe('source-bound non-executable hunk proof', () => {
+  const classify = (
+    path: string,
+    parentSource: string,
+    landingSource: string,
+    old: { start: number; count: number },
+    next: { start: number; count: number },
+  ) => createNonExecutableRefactorHunkClassifier({
+    path, parentSource, landingSource, parentCommit: PARENT, landingCommit: LANDING,
+  })?.({
+    old,
+    new: next,
+    start: Math.max(1, next.start),
+    end: next.count === 0 ? Math.max(1, next.start) : next.start + next.count - 1,
+  }) ?? null;
+
+  it('proves a comment replacement and erased interface/type annotation changes', () => {
+    const comment = classify(
+      'src/x.ts',
+      'export const value = 1;\n// old note\n',
+      'export const value = 1;\n// new note\n',
+      { start: 2, count: 1 },
+      { start: 2, count: 1 },
+    );
+    expect(comment).toMatchObject({ classification: 'comment', parentCommit: PARENT, landingCommit: LANDING });
+
+    const annotation = classify(
+      'src/x.ts',
+      'export const value: string | undefined = "ok";\n',
+      'export const value: string = "ok";\n',
+      { start: 1, count: 1 },
+      { start: 1, count: 1 },
+    );
+    expect(annotation).toMatchObject({ classification: 'erased-type' });
+
+    const interfaceAddition = classify(
+      'src/x.ts',
+      'export const value = 1;\n',
+      'interface Metadata { value: string; }\nexport const value = 1;\n',
+      { start: 0, count: 0 },
+      { start: 1, count: 1 },
+    );
+    expect(interfaceAddition).toMatchObject({ classification: 'erased-type' });
+  });
+
+  it('refuses executable edits, executable deletions, imports, directives and parse ambiguity', () => {
+    expect(classify('src/x.ts', 'export const value = 1;\n', 'export const value = 2;\n',
+      { start: 1, count: 1 }, { start: 1, count: 1 })).toBeNull();
+    expect(classify('src/x.ts', 'export const value = 1;\n', '',
+      { start: 1, count: 1 }, { start: 0, count: 0 })).toBeNull();
+    expect(classify('src/x.ts', 'import { type Alpha } from "./types";\n',
+      'import { type Beta } from "./types";\n', { start: 1, count: 1 }, { start: 1, count: 1 })).toBeNull();
+    expect(classify('src/x.ts', '// @ts-nocheck\nexport const value = 1;\n',
+      '// @ts-check\nexport const value = 1;\n', { start: 1, count: 1 }, { start: 1, count: 1 })).toBeNull();
+    expect(classify('src/x.ts', 'export const value: string = "ok";\n',
+      'export const value: string = ;\n', { start: 1, count: 1 }, { start: 1, count: 1 })).toBeNull();
   });
 });
 

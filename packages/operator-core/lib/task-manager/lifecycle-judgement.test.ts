@@ -36,6 +36,7 @@ const NOW = Date.parse('2026-09-24T06:00:00.000Z');
 const HARNESS_DIR = fileURLToPath(new URL('../../../../libs/papercusp/packages/harness', import.meta.url));
 
 function row(over: Partial<TaskRow> = {}): TaskRow {
+  const lastSeenAt = over.lastSeenAt ?? new Date(NOW).toISOString();
   return {
     taskId: 'task-a',
     workspaceId: 'ws-1',
@@ -62,7 +63,9 @@ function row(over: Partial<TaskRow> = {}): TaskRow {
     terminalProvenance: null,
     startedAt: new Date(NOW - 12 * 60 * 60_000).toISOString(),
     endedAt: null,
-    lastSeenAt: new Date(NOW).toISOString(),
+    lastSeenAt,
+    cpuSampledAt: over.cpuSampledAt === undefined ? lastSeenAt : over.cpuSampledAt,
+    rssSampledAt: over.rssSampledAt === undefined ? lastSeenAt : over.rssSampledAt,
     deadlineAt: null,
     logPath: '/logs/task-a.log',
     lastMemoryBytes: 1024,
@@ -242,6 +245,27 @@ describe('evaluateLifecycleCandidates', () => {
       previous: null,
       current: { cpuUsec: 100, sampledAtMs: firstAt },
     });
+
+    const partial = evaluate({
+      rows: [row({
+        taskId,
+        rootTaskId: taskId,
+        state: 'unaccounted',
+        logPath: null,
+        cpuUsec: 100,
+        lastSeenAt: new Date(NOW).toISOString(),
+        cpuSampledAt: new Date(firstAt).toISOString(),
+        detail: { processLifecycleProbe: baseline },
+      })],
+      residue: [taskId],
+      nowMs: NOW,
+    });
+    expect(partial.candidates[0]!.metrics.cpuActivity).toEqual({
+      state: 'unknown',
+      previous: { cpuUsec: 100, sampledAtMs: firstAt },
+      current: { cpuUsec: 100, sampledAtMs: firstAt },
+    });
+    expect(partial.probeUpdates).toEqual([]);
 
     const idleAt = NOW;
     const idle = evaluate({

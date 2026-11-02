@@ -3275,16 +3275,25 @@ export function mergeClaudeHookSettings(
       matcher: 'Edit|Write|MultiEdit',
       hooks: cmd('posttooluse-cli-entry-nudge.mjs'),
     });
-  // merge_resource_governor_nudge_hook — PostToolUse, matcher 'Edit|Write|MultiEdit'
-  // (WI-10007553). Advisory only, and it MUST stay advisory: PostToolUse cannot block, and
-  // check-resource-governor-enforcement.mjs remains the authority. This only moves the
-  // SIGNAL from the fleet gate to the edit that caused it. Fires only for a finding the HEAD
-  // version did not already have, so an unrelated edit to an already-red file is silent.
-  if (has('posttooluse-resource-governor-nudge.mjs'))
+  // merge_resource_governor_nudge_hook — PreToolUse + PostToolUse, matcher 'Edit|Write|MultiEdit'
+  // (WI-10007553, EI-27255323167612700). PreToolUse captures the current working-file
+  // findings; PostToolUse compares against that exact baseline, so an unrelated edit does
+  // not claim an older dirty hunk caused the guard failure. Advisory only: the lint remains
+  // the authority and PostToolUse cannot block.
+  if (has('posttooluse-resource-governor-nudge.mjs')) {
+    hooks.PreToolUse = replaceOurHookEntries(
+      ev('PreToolUse'),
+      ours('posttooluse-resource-governor-nudge.mjs'),
+      {
+        matcher: 'Edit|Write|MultiEdit',
+        hooks: cmd('posttooluse-resource-governor-nudge.mjs'),
+      },
+    );
     hooks.PostToolUse = replaceOurHookEntries(ev('PostToolUse'), ours('posttooluse-resource-governor-nudge.mjs'), {
       matcher: 'Edit|Write|MultiEdit',
       hooks: cmd('posttooluse-resource-governor-nudge.mjs'),
     });
+  }
   // merge_tsc_verdict_stale_nudge_hook — PostToolUse, matcher 'Edit|Write|MultiEdit'.
   // Advisory only: an Edit/Write landing AFTER the session's last `lint:tsc` run invalidates
   // that run's "clean" verdict (vitest never typechecks, so a green suite cannot stand in for

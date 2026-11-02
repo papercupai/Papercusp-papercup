@@ -17,6 +17,7 @@ import {
   buildPapercuspContext,
   resolveBundledPluginsParent,
   bundledPluginsSkewError,
+  inspectPluginHostSecurityPopulation,
 } from './plugin-host-runtime';
 
 // EI-25701594650317389: a retained bundle launched from the live tree read that
@@ -70,6 +71,34 @@ function makePlugin(overrides: Partial<LoadedPlugin['plugin']> = {}): LoadedPlug
 
 beforeEach(() => {
   _resetPluginHostForTests();
+});
+
+describe('plugin host security discovery', () => {
+  it('preserves an uninitialized host without discovering or initializing it', () => {
+    const first = inspectPluginHostSecurityPopulation(), second = inspectPluginHostSecurityPopulation();
+    expect(first).toEqual(second);
+    expect(first.phase).toBe('uninitialized'); expect(first.surfaces).toEqual([]);
+    expect(first.unresolved).toContain('plugin-runtime-host-uninitialized');
+    expect(first.unresolved).toContain('plugin-runtime-configured-inputs-unverified');
+  });
+
+  it('captures tool-less loaded records without reading plugin code and preserves duplicate paths', () => {
+    const record = makePlugin(), original = record.plugin;
+    let pluginReads = 0;
+    Object.defineProperty(record, 'plugin', { configurable: true, get() { pluginReads++; throw Error('plugin-object-read'); } });
+    _injectPluginHostForTests([record, record]);
+    try {
+      const captured = inspectPluginHostSecurityPopulation();
+      expect(captured.phase).toBe('loaded'); expect(captured.surfaces).toHaveLength(2);
+      expect(captured.surfaces[0]!.attrs).toMatchObject({ path: '/fake/fixture', source: 'global',
+        loadedArtifactCoverage: 'unknown', initializationEffectCoverage: 'unknown' });
+      expect(captured.unresolved).toContain('plugin-runtime-duplicate-path:/fake/fixture');
+      expect(captured.surfaces[0]!.surfaceId).not.toBe(captured.surfaces[1]!.surfaceId);
+      record.path = '/fake/changed';
+      expect(captured.surfaces[0]!.attrs.path).toBe('/fake/fixture');
+      expect(pluginReads).toBe(0);
+    } finally { Object.defineProperty(record, 'plugin', { configurable: true, value: original }); }
+  });
 });
 
 describe('buildPapercuspContext', () => {

@@ -1,5 +1,5 @@
 diff --git a/node_modules/postgres/cf/src/connection.js b/node_modules/postgres/cf/src/connection.js
-index 8e79170..9afca0c 100644
+index 8e79170..5f30906 100644
 --- a/node_modules/postgres/cf/src/connection.js
 +++ b/node_modules/postgres/cf/src/connection.js
 @@ -88,6 +88,7 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
@@ -218,7 +218,7 @@ index 8e79170..9afca0c 100644
        }
      } else if (errorResponse) {
 diff --git a/node_modules/postgres/cf/src/index.js b/node_modules/postgres/cf/src/index.js
-index ffbe7ae..929b6a8 100644
+index ffbe7ae..b373647 100644
 --- a/node_modules/postgres/cf/src/index.js
 +++ b/node_modules/postgres/cf/src/index.js
 @@ -108,13 +108,23 @@ function Postgres(a, b) {
@@ -423,7 +423,7 @@ index 0d44a15..6929fbe 100644
  
    execute() {
 diff --git a/node_modules/postgres/cjs/src/connection.js b/node_modules/postgres/cjs/src/connection.js
-index 07f6716..c6bf17d 100644
+index 07f6716..6c5f77d 100644
 --- a/node_modules/postgres/cjs/src/connection.js
 +++ b/node_modules/postgres/cjs/src/connection.js
 @@ -86,6 +86,7 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
@@ -642,7 +642,7 @@ index 07f6716..c6bf17d 100644
        }
      } else if (errorResponse) {
 diff --git a/node_modules/postgres/cjs/src/index.js b/node_modules/postgres/cjs/src/index.js
-index f09c61c..a874fff 100644
+index f09c61c..c3f6643 100644
 --- a/node_modules/postgres/cjs/src/index.js
 +++ b/node_modules/postgres/cjs/src/index.js
 @@ -107,13 +107,23 @@ function Postgres(a, b) {
@@ -847,7 +847,7 @@ index 45327f2..246ebab 100644
  
    execute() {
 diff --git a/node_modules/postgres/src/connection.js b/node_modules/postgres/src/connection.js
-index 1b1cccd..feb611e 100644
+index 1b1cccd..3ce4688 100644
 --- a/node_modules/postgres/src/connection.js
 +++ b/node_modules/postgres/src/connection.js
 @@ -86,6 +86,7 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
@@ -1066,7 +1066,7 @@ index 1b1cccd..feb611e 100644
        }
      } else if (errorResponse) {
 diff --git a/node_modules/postgres/src/index.js b/node_modules/postgres/src/index.js
-index c7fba3d..32fae94 100644
+index c7fba3d..a83d9fa 100644
 --- a/node_modules/postgres/src/index.js
 +++ b/node_modules/postgres/src/index.js
 @@ -107,13 +107,23 @@ function Postgres(a, b) {
@@ -1271,7 +1271,7 @@ index 0d44a15..6929fbe 100644
  
    execute() {
 diff --git a/node_modules/postgres/types/index.d.ts b/node_modules/postgres/types/index.d.ts
-index 13c3432..ef2a2fb 100644
+index 13c3432..be2afbd 100644
 --- a/node_modules/postgres/types/index.d.ts
 +++ b/node_modules/postgres/types/index.d.ts
 @@ -74,8 +74,23 @@ interface BaseOptions<T extends Record<string, postgres.PostgresType>> {

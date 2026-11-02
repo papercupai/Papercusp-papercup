@@ -73,6 +73,15 @@ export interface PerfSignalsV1 {
   schemaVersion: string;
   capturedAt: string; // ISO 8601
   hostState: 'stable' | 'wedge-active' | string;
+  captureRuntime?: {
+    sourceSha256: string;
+    hostname: string;
+    bootId: string | null;
+    pid: number;
+    euid: number;
+    kernelRelease: string;
+    pythonVersion: string;
+  };
   signals: {
     loadavg?: { l1: number; l5: number; l15: number; cores: number } | null;
     operatorWorkers?: Array<{ pid: number; cpuPct: number; rssKb: number; etimeSec: number }> | null;
@@ -111,6 +120,71 @@ export interface PerfSignalsV1 {
          *  now also read by the budget evaluator. */
         full?: { avg60?: number | null } | null;
       } | null;
+    } | null;
+    /** P-001 host-memory-right-sizing: these are overlapping views, never a
+     * sum. PSS is proportional attribution; unknown population/page identity
+     * deliberately prevents a unique-physical-total claim. Byte units only. */
+    memoryViews?: {
+      host: {
+        available: boolean;
+        reason?: string;
+        unit?: 'bytes';
+        partition?: {
+          memTotalBytes: number | null;
+          memFreeBytes: number | null;
+          hugeTlbPoolBytes: number | null;
+          ordinaryNonFreeBytes: number | null;
+        };
+        partitionComplete?: boolean;
+        hugeTlb?: {
+          freeBytes: number | null;
+          usedBytes: number | null;
+          reservedSubsetOfFreeBytes: number | null;
+        };
+        overlappingViews?: Record<string, number | null>;
+        accounting?: string;
+      };
+      processes: {
+        available: boolean;
+        reason?: string;
+        unit?: 'bytes';
+        scope?: 'captured-processes';
+        accounting?: string;
+        capturedAt?: string;
+        captureDurationSec?: number;
+        populationCount?: number;
+        scannedProcesses?: number;
+        measuredProcesses?: number;
+        unmeasuredProcesses?: number;
+        kernelThreadsInHostView?: number;
+        unmeasuredReasons?: Record<string, number>;
+        notScannedProcesses?: number;
+        maxScanned?: number;
+        maxRows?: number;
+        budgetSec?: number;
+        populationFingerprint?: string;
+        identityFingerprint?: string;
+        partial?: boolean;
+        ordinaryPssBytesAttributed?: number | null;
+        ordinaryPrivateBytes?: number | null;
+        swapPssBytes?: number | null;
+        uniquePhysicalBytes?: null;
+        uniquePhysicalReason?: string;
+        explicitHugeTlbBytesAttributed?: number;
+        hugeTlbBytesInUnresolvedMappings?: number;
+        hugeTlbAttributionComplete?: boolean;
+        unmeasured?: Array<{ pid: number; reason: string }>;
+        top?: Array<{
+          pid: number;
+          startTimeTicks: number;
+          ordinaryPssBytes: number;
+          ordinaryPrivateBytes: number;
+          swapPssBytes: number;
+          rssBytes: number | null;
+          explicitHugeTlbMappedBytes: number;
+        }>;
+        rowsTruncated?: boolean;
+      };
     } | null;
     /** Bounded cgroup-v2 memory attribution captured alongside PSI. `memoryBytes`
      *  is inclusive of descendants, so rows identify ownership hierarchies and

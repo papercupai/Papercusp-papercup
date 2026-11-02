@@ -32,12 +32,14 @@ import './boot-flag-store';
 // bootstrap, native-addon, and cluster import graph evaluates.
 import './hono-host-port-preflight';
 import { observeFallback } from '@papercusp/operator-core/lib/degradation/fallback-observations';
+import { randomUUID } from 'node:crypto';
 import cluster from 'node:cluster';
 import { createAdaptorServer } from '@hono/node-server';
 import { listenWithEaddrinuseRetry } from '@papercusp/operator-core/lib/listen-with-eaddrinuse-retry';
 import { BOOT_INTEGRITY_EXIT_CODE } from '@papercusp/operator-core/lib/boot-integrity-preflight';
 import { runBootstrap, waitForBootMigrationGate } from './host-bootstrap';
 import { externalIngressHandler, handler, stopDesktopPortalHost } from './host-handler';
+import { recoverAdmissionPreviewsAtHostBoot } from '@papercusp/operator-core/lib/agent-tools/release/repair-queue';
 import { externalIngressPort } from '@papercusp/operator-core/lib/auth/forwarded-request-trust';
 import { configureIngressListener } from '@papercusp/operator-core/lib/own-tunnel/runtime';
 import { markOwnTunnelListenerSeamConfigured } from '@papercusp/operator-core/lib/own-tunnel/service';
@@ -286,6 +288,13 @@ process.on('uncaughtException', (err) => {
 const port = Number(
   process.env.PAPERCUSP_HONO_PORT ?? process.env.PORT ?? 3070,
 );
+// All workers in this host invocation share one identity. Admission previews execute
+// in-process, so a later host generation can distinguish abandoned promises from work
+// still running in a sibling request worker.
+const hostInstanceId = cluster.isWorker
+  ? process.env.PAPERCUSP_HOST_INSTANCE_ID ?? randomUUID()
+  : randomUUID();
+process.env.PAPERCUSP_HOST_INSTANCE_ID = hostInstanceId;
 const hostname = resolveBindHost();
 // P-016 / D-025: an off-loopback listener is never allowed to become reachable
 // before its exact HTTPS origin policy exists. This runs before any listen().
@@ -885,6 +894,7 @@ const clusterHandle = sidecarMode ? null : startCluster({
   workers: clusterWorkers,
   workerEnv: {
     PAPERCUSP_BACKGROUND_WORKERS: '0',
+    PAPERCUSP_HOST_INSTANCE_ID: hostInstanceId,
     PAPERCUSP_EXPECTED_OPERATOR_PROCS: String(expectedOperatorProcs),
     ...substrateSocketWorkerEnv,
     ...spawnerSocketWorkerEnv,
@@ -926,7 +936,16 @@ const clusterHandle = sidecarMode ? null : startCluster({
     // off — so a write could land on a table whose federation-capture trigger
     // a slow/large migration set hadn't created yet, permanently and silently
     // never federating (su-72ce40f2's diagnosis, WI-5441, post 53143).
-    void waitForBootMigrationGate().then(() => {
+    void waitForBootMigrationGate().then(async () => {
+      try {
+        const recovered = await recoverAdmissionPreviewsAtHostBoot();
+        if (recovered > 0) console.warn(`[hono-host] recovered ${recovered} orphaned admission preview(s)`);
+      } catch (error) {
+        console.warn(
+          '[hono-host] admission preview recovery did not complete; request handling will continue:',
+          error instanceof Error ? error.message : error,
+        );
+      }
       startRequestServers();
       // external-app-access P-009 + P-008: open this process's own-tunnel listener now
       // (idempotent). A single-process host (one HTTP worker, e.g. the desktop app) never

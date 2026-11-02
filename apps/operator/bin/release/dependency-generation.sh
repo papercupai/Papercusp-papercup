@@ -3223,6 +3223,20 @@ dependency_generation_remove_build() {
 # One attempt either builds (holding the identity's in-flight lock) or joins a
 # live peer's build of the same identity; a join is followed by a fresh attempt,
 # which is a cache hit when the peer published (WI-10004094).
+# A publication token proves immutable bytes, not their completeness for a later
+# exact input selector. Legacy empty generations can carry valid tokens. Audit
+# the selected bytes against a snapshot of the requested ref's committed locks.
+dependency_generation_audit_selected_ref() (
+  local integration_root="$1" ref="$2" locks
+  locks="$(mktemp -d)" || return 1
+  trap 'rm -rf -- "$locks"' EXIT
+  dependency_generation_input_manifest_ref "$integration_root" "$ref" '' "$locks" >/dev/null || return $?
+  if ! dependency_generation_audit_lock_tree "$DEPENDENCY_GENERATION_TREE" "$locks"; then
+    dependency_generation_log 'FATAL: cached dependency generation does not realise exact-ref lockfiles'
+    return 74
+  fi
+)
+
 dependency_generation_ensure() {
   local rc joins=0 max_joins
   max_joins="${DEPENDENCY_GENERATION_MAX_JOINS:-4}"
@@ -4190,6 +4204,7 @@ dependency_generation_main() {
       # Match --ensure-ref's existing-selector path exactly: a filename hit alone
       # is not a valid prewarm when the selector or immutable publication is corrupt.
       dependency_generation_select_input_fingerprint "$exact_input" "$generation_root" || return $?
+      dependency_generation_audit_selected_ref "$integration_root" "$predict_ref" || return $?
       predict_verdict='prewarmed'
     elif [ "$live_input" = "$exact_input" ]; then
       predict_verdict='live-match'
@@ -4255,6 +4270,7 @@ dependency_generation_main() {
       # not a cache miss to hide by republishing a replacement.
       dependency_generation_select_input_fingerprint \
         "$exact_input" "$generation_root" || return $?
+      dependency_generation_audit_selected_ref "$integration_root" "$ensure_ref" || return $?
       dependency_generation_retain_ensured_ref "$generation_root" "$integration_root" \
         "$retain_as" "$DEPENDENCY_GENERATION_ID" "$ensure_ref" || return $?
       printf 'DEPENDENCY_GENERATION_RESULT schema=1 identity=%s source=%s input=%s scope=full reused=true token=%s path=%s\n' \

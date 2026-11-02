@@ -91,6 +91,12 @@ interface RubricTrend {
   sample: { limit: number; inputCount: number };
   window: { since?: string; from?: string; to?: string };
   criteria: CriterionTrend[];
+  unknownBreakdown?: {
+    total: number;
+    graderIncomplete: number;
+    instrumentUnavailable: number;
+    byReason: Record<string, number>;
+  };
   // WI-4607 governance provenance (D-012): the same author≠ratifier story the
   // RubricsPanel list surfaces, threaded through the rubrics.trend resolver.
   status?: string;
@@ -556,6 +562,10 @@ function RubricDetailPanelBody({ rubricId, onBack }: RubricDetailPanelProps) {
     scorecardSummary.loading,
   );
   const trendRow = trend.data?.[0];
+  const unknownBreakdown =
+    !trend.error && !trend.loading && !trend.fetching
+      ? trendRow?.unknownBreakdown
+      : undefined;
   const corpusEvidence = useMemo<CountEvidence>(() => {
     if (scorecardSummary.error) return { kind: "unknown", reason: "failed" };
     if (pairedFetching) return { kind: "unknown", reason: "updating" };
@@ -838,6 +848,24 @@ function RubricDetailPanelBody({ rubricId, onBack }: RubricDetailPanelProps) {
         aria-label={trendSampleLabel.ariaLabel}
       >
         {trendSampleLabel.summary}
+      </p>
+      <p
+        className="pc-rubric-detail__scope"
+        aria-label="Unknown rating breakdown"
+        aria-live="polite"
+        data-evidence={unknownBreakdown ? "window" : "unknown"}
+      >
+        {unknownBreakdown ? (
+          <>
+            Grader incomplete: {unknownBreakdown.graderIncomplete} · Instrument
+            unavailable: {unknownBreakdown.instrumentUnavailable}. Criterion
+            ratings in this trend window.
+          </>
+        ) : !trend.error && (trend.loading || trend.fetching) ? (
+          "Updating unknown rating breakdown…"
+        ) : (
+          "Unknown rating breakdown unavailable."
+        )}
       </p>
       {trend.loading ? (
         <div role="status">Loading trend…</div>

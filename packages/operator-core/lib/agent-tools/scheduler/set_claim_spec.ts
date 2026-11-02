@@ -112,6 +112,8 @@ export interface ClaimSpecAdmissionPreview {
   /** Scope can also include admissible work already held by a verified target-fleet member. */
   scopeAdmissibleIds?: string[];
   alreadyHeldIds?: string[];
+  /** Fixed-cohort issue ids whose only current claim floor is admission-pending. */
+  deferredAdmissionIds?: string[];
   floored?: ClaimFloorAttribution[];
   effectiveStates?: readonly string[];
   reason?: string;
@@ -240,6 +242,7 @@ export async function previewClaimSpecAdmission(args: {
       ? await explain(args.harness, issueIds, {
           assignee: previewAssignee,
           states: effectiveStates,
+          includeAllFloors: true,
         })
       : [];
   const unknownRows: ClaimFloorAttribution[] = unknownIds.map((id) => ({
@@ -283,6 +286,7 @@ export async function previewClaimSpecAdmission(args: {
           assignee: holder,
           states: effectiveStates,
           scopeHeldBy: [holder],
+          includeAllFloors: true,
           ...(args.fleet
             ? {
                 claimantFleetSlug: args.fleet,
@@ -308,6 +312,17 @@ export async function previewClaimSpecAdmission(args: {
   }
   const scopeAdmissibleIds = rows.filter((row) => scopeRows.get(row.id)?.admissible).map((row) => row.id);
   const floored = [...scopeRows.values()].filter((row) => !row.admissible).concat(unknownRows);
+  // Store a pending-only cohort as deferred intent, not as currently claimable work.
+  // Require the complete floor set to be exactly admission-pending; held, unknown,
+  // or otherwise floored rows do not become deferred candidates.
+  const deferredAdmissionRows = rows.filter(
+    (row) =>
+      row.refusedBy === 'admission-pending' &&
+      row.heldBy == null &&
+      row.failedFloors?.length === 1 &&
+      row.failedFloors[0] === 'admission-pending',
+  );
+  const deferredAdmissionIds = deferredAdmissionRows.map((row) => row.id);
   const preview: ClaimSpecAdmissionPreview = {
     mode: 'fixed-cohort',
     checked: featureIds.length === 0,
@@ -318,6 +333,7 @@ export async function previewClaimSpecAdmission(args: {
     admissibleIds,
     scopeAdmissibleIds,
     alreadyHeldIds,
+    ...(deferredAdmissionIds.length > 0 ? { deferredAdmissionIds } : {}),
     floored,
     effectiveStates,
     ...(heldPreviewError ? { previewError: heldPreviewError } : {}),
@@ -325,7 +341,11 @@ export async function previewClaimSpecAdmission(args: {
   };
   const floorSummary = floored.map((row) => `${row.id}:${row.refusedBy ?? 'unknown'}`).join(', ');
   const noUncheckedFeatureCandidate = featureIds.length === 0;
-  if (noUncheckedFeatureCandidate && scopeAdmissibleIds.length === 0) {
+  if (
+    noUncheckedFeatureCandidate &&
+    scopeAdmissibleIds.length === 0 &&
+    deferredAdmissionIds.length === 0
+  ) {
     return {
       preview,
       errors: [
@@ -348,6 +368,32 @@ export async function previewClaimSpecAdmission(args: {
     );
   }
   if (heldPreviewError) warningParts.push(heldPreviewError);
+  if (deferredAdmissionRows.length > 0) {
+    const boundedIds = deferredAdmissionRows
+      .filter((row) => row.retry?.clearsOnItsOwn === true)
+      .map((row) => row.id);
+    const failOpenIds = deferredAdmissionRows
+      .filter((row) => row.failOpenExclusion != null)
+      .map((row) => row.id);
+    const unboundedUnknownIds = deferredAdmissionRows
+      .filter((row) => row.retry == null && row.failOpenExclusion == null)
+      .map((row) => row.id);
+    warningParts.push(
+      'Admission-pending id(s) are stored as deferred and remain unclaimable until the claim floor clears: ' +
+        deferredAdmissionIds.join(',') +
+        (boundedIds.length > 0 ? ' Retry bounds are included in admissibilityPreview.floored.' : '') +
+        (failOpenIds.length > 0
+          ? ' No automatic retry bound is available for ' +
+            failOpenIds.join(',') +
+            '; re-screening or adjudication must clear those exclusions.'
+          : '') +
+        (unboundedUnknownIds.length > 0
+          ? ' No retry bound is advertised for ' +
+            unboundedUnknownIds.join(',') +
+            '; do not assume a time-based clearing.'
+          : ''),
+    );
+  }
   if (floored.length > 0) {
     warningParts.push(
       `${floored.length}/${issueIds.length + unknownIds.length} checked issue/unknown id(s) are currently floored ` +
@@ -618,11 +664,14 @@ export default defineTool({
             payloadFilter: claimablePayloadFilterForSpec(res.spec, resolvedHarness),
           })
         : { woken: 0 };
+      const warnings = [res.warning, admission?.warning, wake.warning].filter(
+        (warning): warning is string => typeof warning === 'string' && warning.length > 0,
+      );
       return { data: {
         ...res,
         ...(admission ? { admissibilityPreview: admission.preview } : {}),
         claimableAwaitersWoken: wake.woken,
-        ...(wake.warning ? { warning: [res.warning, wake.warning].filter(Boolean).join('\n') } : {}),
+        ...(warnings.length > 0 ? { warning: warnings.join('\n') } : {}),
       } };
     }
     const validated = validateClaimSpec(args.spec);

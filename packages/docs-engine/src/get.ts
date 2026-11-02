@@ -147,18 +147,25 @@ export async function getDocs(source: DocSource, args: GetArgs, ctx: EngineCtx =
     return { results: slugs.map((slug) => ({ slug, found: false as const, error: sourceRefusal, detail })) };
   }
 
-  const allPages = await source.listPages();
-  if (ctx.signal?.aborted) throw new Error('cancelled');
-  const allSlugs = allPages.map((p) => p.slug);
+  let allPagesPromise: Promise<DocPage[]> | undefined;
+  const getAllPages = async (): Promise<DocPage[]> => {
+    allPagesPromise ??= source.listPages();
+    const pages = await allPagesPromise;
+    if (ctx.signal?.aborted) throw new Error('cancelled');
+    return pages;
+  };
 
   const results: GetEntry[] = await Promise.all(
     slugs.map(async (slug): Promise<GetEntry> => {
       if (ctx.signal?.aborted) throw new Error('cancelled');
-      // Exact source lookup wins. If a search result supplied only a bare leaf,
-      // use the listed canonical page only when that leaf is unambiguous; never
-      // guess across sections.
-      const page = (await source.getPage(slug)) ?? uniqueBareLeafPage(slug, allPages);
-      if (!page) {
+      // Exact indexed lookups avoid enumerating a large filesystem corpus. Bare
+      // leaves still need the complete list so ambiguity is never guessed away;
+      // a miss also lists once to preserve the existing suggestion behavior.
+      const exactPage = await (source.getPageBySlug?.(slug) ?? source.getPage(slug));
+      let allPages: DocPage[] | undefined;
+      const resolvedPage = exactPage ?? uniqueBareLeafPage(slug, (allPages = await getAllPages()));
+      if (!resolvedPage) {
+        const allSlugs = (allPages ?? (allPages = await getAllPages())).map((p) => p.slug);
         return {
           slug,
           found: false,
@@ -166,6 +173,7 @@ export async function getDocs(source: DocSource, args: GetArgs, ctx: EngineCtx =
           suggestions: levenshteinNearest(slug, allSlugs),
         };
       }
+      const page = resolvedPage;
 
       // In source mode a null answer is a REFUSAL for this page (unreadable file,
       // oversize, no canonical row) — never a silent fall-through to getContent.

@@ -233,6 +233,51 @@ describe('mutation-probe.sh — copy-out mode (the default)', () => {
     expect(retained.every((entry: { path: string }) => !existsSync(entry.path))).toBe(true);
   });
 
+  it.each([
+    ['direct', 'subject'], ['direct', 'cwd'],
+    ['npm', 'subject'], ['npm', 'cwd'],
+    ['pnpm', 'subject'], ['pnpm', 'cwd'],
+  ])('refuses a %s guard with an immutable archive above the %s before baseline', (route, location) => {
+    const archive = join(dir, 'immutable archive');
+    const nested = join(archive, 'nested', 'fixture');
+    mkdirSync(nested, { recursive: true });
+    const archiveMarker = join(archive, '.verifier-source.json');
+    const receipt = JSON.stringify({ source: 'immutable fixture' });
+    writeFileSync(archiveMarker, receipt);
+    const file = location === 'subject' ? join(nested, 'subject.txt') : subject;
+    writeFileSync(file, ORIGINAL);
+    const cwd = location === 'cwd' ? nested : dir;
+    const marker = join(dir, 'guard-started');
+    const launcher = join(dir, route === 'direct' ? 'test-files.mjs' : 'guard-marker.mjs');
+    writeFileSync(launcher, `import { writeFileSync } from 'node:fs'; writeFileSync(${JSON.stringify(marker)}, 'started');\n`);
+    const guard = route === 'direct'
+      ? `node ${JSON.stringify(launcher)} {}`
+      : `node ${JSON.stringify(launcher)} {} && ${route} run test:file -- provider.test.ts`;
+    const { code, out } = runProbeIO([
+      '--file', file, '--mutate', 's/beta/BROKEN/', '--test', guard,
+    ], process.env, cwd);
+    expect(code, out).toBe(2);
+    expect(out).toContain('reason=immutable-verifier-archive');
+    expect(out).toContain('--materialize-only');
+    expect(out).not.toContain('running baseline guard');
+    expect(existsSync(marker)).toBe(false);
+    expect(readFileSync(file, 'utf8')).toBe(ORIGINAL);
+    expect(readFileSync(archiveMarker, 'utf8')).toBe(receipt);
+  });
+
+  it('keeps ordinary redirectable guards usable inside an immutable archive', () => {
+    writeFileSync(join(dir, '.verifier-source.json'), '{}\n');
+    const marker = join(dir, 'guard-phases');
+    const { code, out } = runProbeIO([
+      '--file', subject, '--mutate', 's/beta/BROKEN/',
+      '--test', `printf '%s\\n' "$PAPERCUSP_MUTATION_PHASE" >> ${JSON.stringify(marker)}; grep -q beta {}`,
+    ]);
+    expect(code, out).toBe(0);
+    expect(out).toContain('verdict=caught');
+    expect(readFileSync(marker, 'utf8').trim().split('\n')).toEqual(['baseline', 'copy-baseline', 'mutant']);
+    expect(read()).toBe(ORIGINAL);
+  });
+
   it('refuses a CommonJS npm guard that propagates the committed loader before starting its baseline', () => {
     const repo = join(dir, 'cjs-npm-guard');
     mkdirSync(repo);
@@ -1840,6 +1885,47 @@ describe('mutation-probe.sh — copy-out overlay reaches the mutant through ever
     return { repo, subject: subjectPath, guard };
   }
 
+  it.skipIf(!containWorks).each(['absolute env', 'relative env', 'metadata'])
+  ('keeps external Cargo target artifacts clean across consecutive probes (%s)', (configuration) => {
+    const repo = join(dir, 'cargo-repo');
+    const target = join(dir, 'external-target');
+    mkdirSync(join(repo, 'src'), { recursive: true });
+    git(repo, ['init', '-q']);
+    writeFileSync(join(repo, 'Cargo.toml'), '[package]\nname="containment-fixture"\nversion="0.1.0"\n');
+    const source = join(repo, 'src', 'subject.rs');
+    writeFileSync(source, 'keep\n');
+    const artifact = join(target, 'cached-build');
+    const env: NodeJS.ProcessEnv = { ...process.env, MUTATION_PROBE_CONTAIN_WRITES: '1' };
+    if (configuration === 'metadata') {
+      delete env.CARGO_TARGET_DIR;
+      const bin = join(dir, 'cargo-bin');
+      mkdirSync(bin);
+      writeFileSync(join(bin, 'cargo'), '#!/usr/bin/env node\nconsole.log(JSON.stringify({target_directory: process.env.PROBE_FIXTURE_CARGO_TARGET}));\n', { mode: 0o755 });
+      Object.assign(env, { PATH: `${bin}:${env.PATH}`, PROBE_FIXTURE_CARGO_TARGET: target });
+    } else {
+      env.CARGO_TARGET_DIR = configuration === 'absolute env' ? target : '../external-target';
+    }
+    // Model a reusable native artifact: the initial baseline builds only on a
+    // cache miss; subsequent phases compile their subject into the same target.
+    const quotedArtifact = JSON.stringify(artifact);
+    const guard = `mkdir -p ${JSON.stringify(target)} && if [ "$PAPERCUSP_MUTATION_PHASE" != baseline ] || [ ! -f ${quotedArtifact} ]; then cp {} ${quotedArtifact}; fi && grep -q '^keep$' ${quotedArtifact}`;
+    const args = ['--file', source, '--relocation', 'overlay', '--mutate', 's/keep/KEEP/', '--test', guard];
+    const calibration = runProbeIO(args, { ...env, MUTATION_PROBE_CONTAIN_WRITES: '0' }, repo);
+    expect(calibration.code, calibration.out).toBe(0);
+    expect(readFileSync(artifact, 'utf8')).toBe('KEEP\n');
+    // Remove only this fixture's known leaked artifact, then prove both the
+    // first-build target and the next probe remain free of mutant output.
+    rmSync(target, { recursive: true });
+    for (let probe = 0; probe < 2; probe++) {
+      const result = runProbeIO(args, env, repo);
+      expect(result.code, result.out).toBe(0);
+      expect(result.out).toContain('write containment: CONTAINED');
+      expect(result.out).toContain('MUTATION_PROBE_RESULT verdict=caught');
+      expect(readFileSync(artifact, 'utf8')).toBe('keep\n');
+    }
+    expect(readFileSync(source, 'utf8')).toBe('keep\n');
+  }, 120_000);
+
   it.skipIf(!containWorks)('preserves reporter Git readings and caller identity through contained mutation legs', () => {
     // EI-26900834772734276: a root-mapped bind is not the runner's nested,
     // caller-mapped namespace. Exercise the real setup and worker together.
@@ -1930,6 +2016,43 @@ describe('mutation-probe.sh — copy-out overlay reaches the mutant through ever
     expect(out).not.toMatch(/verdict=(caught|survived)/);
     expect(code).toBe(2);
     // No contained leg ran its guard, so nothing past the baseline reached the real tree.
+    expect(existsSync(join(repo, 'rootlevel-copy-baseline'))).toBe(false);
+    expect(existsSync(join(repo, 'rootlevel-mutant'))).toBe(false);
+    expect(readFileSync(join(repo, 'out', 'index.html'), 'utf8')).toBe('keep\n');
+    expect(readFileSync(s, 'utf8')).toBe('keep\n');
+  });
+
+  it.skipIf(!containWorks)('refuses a verdict when a post-preflight overlay mount fails', () => {
+    const { repo, subject: s, guard } = makeBuildOutputRepo('build-output-leg-overlay-failure-repo');
+    const fakeBin = join(dir, 'mount-failure-bin');
+    const mountCount = join(dir, 'overlay-mount-count');
+    mkdirSync(fakeBin);
+    writeFileSync(join(fakeBin, 'mount'), [
+      '#!/usr/bin/env bash',
+      'if [ "$1" = "-t" ] && [ "$2" = "overlay" ]; then',
+      '  count="$(cat "$MUTATION_PROBE_TEST_OVERLAY_COUNT_FILE" 2>/dev/null || printf 0)"',
+      '  count=$((count + 1))',
+      '  printf "%s\\n" "$count" > "$MUTATION_PROBE_TEST_OVERLAY_COUNT_FILE"',
+      '  if [ "$count" -eq 2 ]; then exit 32; fi',
+      'fi',
+      'exec /usr/bin/mount "$@"',
+      '',
+    ].join('\n'), { mode: 0o755 });
+    const env = {
+      ...process.env,
+      PATH: fakeBin + ':' + (process.env.PATH ?? ''),
+      MUTATION_PROBE_TEST_OVERLAY_COUNT_FILE: mountCount,
+    };
+    const { code, out } = runProbeIO([
+      '--file', s, '--mutate', 's/keep/KEEP/', '--test', guard,
+    ], env, repo);
+
+    expect(readFileSync(mountCount, 'utf8').trim()).toBe('2');
+    expect(out).toContain('MUTATION_PROBE_CONTAINMENT status=contained overlays=1 uncovered=0 failed=0');
+    expect(out).toContain('overlay mount failed for');
+    expect(out).toMatch(/MUTATION_PROBE_RESULT verdict=harness-error .*containment_setup_failed=yes/);
+    expect(out).not.toMatch(/verdict=(caught|survived)/);
+    expect(code).toBe(2);
     expect(existsSync(join(repo, 'rootlevel-copy-baseline'))).toBe(false);
     expect(existsSync(join(repo, 'rootlevel-mutant'))).toBe(false);
     expect(readFileSync(join(repo, 'out', 'index.html'), 'utf8')).toBe('keep\n');
@@ -3768,6 +3891,70 @@ fi
     expect(read()).toBe(ORIGINAL);
   });
 
+  it('separates the launcher notice prefix from test-child substitutions', () => {
+    const guard = join(dir, 'launcher-substituted-router.sh');
+    const top = resolve(__dirname, '../../../');
+    const launcherNotice = JSON.stringify({
+      schemaVersion: 'committed-source-notice-v1',
+      kind: 'substituted',
+      via: 'esm',
+      rel: 'scripts/test-files.mjs',
+      top,
+      pid: 42,
+      entry: 'scripts/test-files.mjs',
+    });
+    const launcherOffset = Buffer.byteLength(launcherNotice + '\n');
+    const lines = [
+      '#!/usr/bin/env bash',
+      `printf '%s\\n' '${launcherNotice}' >> "$PAPERCUSP_COMMITTED_SOURCE_NOTICES"`,
+      'if [ "$PAPERCUSP_MUTATION_PHASE" = baseline ] || [ "$PAPERCUSP_MUTATION_PHASE" = copy-baseline ]; then',
+      `  printf 'TEST_FILE_RESULT requested=1 status=passed childSubstituted=0 childNoticeOffsetBytes=${launcherOffset} skippedTests=0\\n'`,
+      '  exit 0',
+      'fi',
+      `printf 'TEST_FILE_RESULT requested=1 status=failed childSubstituted=0 childNoticeOffsetBytes=${launcherOffset} skippedTests=0\\n'`,
+      "printf 'TEST_FILE_ASSERTION_FAILURE file=\"fixture.test.ts\" name=\"behavior\" message=\"AssertionError\"\\n'",
+      'exit 1',
+    ];
+    writeFileSync(guard, lines.join('\n'));
+    const { code, out } = runProbeIO([
+      '--file', subject, '--mutate', 's/beta/BETA/', '--test', `bash ${guard} {}`,
+    ]);
+    expect(code, out).toBe(0);
+    expect(out).toContain('MUTATION_PROBE_CHILD_SOURCE_NOTICES records=1 gitReaders=0 unclassified=0 launcherNotices=1 childRecords=0');
+    expect(out).toContain('verdict=caught');
+    expect(read()).toBe(ORIGINAL);
+  });
+
+  it('refuses a notice prefix that does not come from the test-files launcher', () => {
+    const guard = join(dir, 'unverified-launcher-router.sh');
+    const top = resolve(__dirname, '../../../');
+    const notice = JSON.stringify({
+      schemaVersion: 'committed-source-notice-v1',
+      kind: 'substituted',
+      via: 'esm',
+      rel: 'scripts/affected-tests.mjs',
+      top,
+      pid: 42,
+      entry: 'scripts/affected-tests.mjs',
+    });
+    const noticeOffset = Buffer.byteLength(notice + '\n');
+    const guardSource = [
+      '#!/usr/bin/env bash',
+      `printf '%s\\n' '${notice}' >> "$PAPERCUSP_COMMITTED_SOURCE_NOTICES"`,
+      `printf 'TEST_FILE_RESULT requested=1 status=passed childSubstituted=0 childNoticeOffsetBytes=${noticeOffset} skippedTests=0\\n'`,
+    ].join('\n');
+    writeFileSync(guard, guardSource);
+    const { code, out } = runProbeIO([
+      '--file', subject, '--mutate', 's/beta/BETA/', '--test', `bash ${guard} {}`,
+    ]);
+    expect(code, out).toBe(2);
+    expect(out).toContain('launcher-entry-unverified');
+    expect(out).toContain('verdict=harness-error');
+    expect(out).not.toContain('VERDICT: MUTANT CAUGHT');
+    expect(out).not.toContain('VERDICT: MUTANT SURVIVED');
+    expect(read()).toBe(ORIGINAL);
+  });
+
   it('accepts only the verified built-ins-only Git reader receipt while still catching the mutant', () => {
     const guard = join(dir, 'git-reader-router.sh');
     const top = resolve(__dirname, '../../../libs/test-config');
@@ -3783,7 +3970,7 @@ fi
     const lines = [
       '#!/usr/bin/env bash',
       "printf '%s\\n' '" + readerNotice + "' >> \"$PAPERCUSP_COMMITTED_SOURCE_NOTICES\"",
-      "printf 'TEST_FILE_RESULT requested=1 status=passed childSubstituted=1 skippedTests=0\\n'",
+      "printf 'TEST_FILE_RESULT requested=1 status=passed childSubstituted=1 childNoticeOffsetBytes=0 skippedTests=0\\n'",
       'if [ "$PAPERCUSP_MUTATION_PHASE" = mutant ]; then',
       "  printf 'TEST_FILE_ASSERTION_FAILURE file=\"fixture.test.ts\" name=\"behavior\" message=\"AssertionError\"\\n'",
       '  exit 1',

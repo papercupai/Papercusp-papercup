@@ -77,6 +77,26 @@ function sharpRoot(): string {
 }
 
 describe('auditTree', () => {
+  it('rejects a missing root install when the root lock requires packages', () => {
+    const root = makeRoot();
+    writeJson(join(root, 'package-lock.json'), lock({
+      'node_modules/pkg': { version: '1.0.0' },
+    }));
+    const summary = mod.auditTree({ treeRoot: root, lockRoot: root, lockfiles: ['package-lock.json'] });
+    expect(summary.defects).toEqual([
+      { kind: 'missing', path: 'node_modules/pkg', detail: 'locked 1.0.0' },
+    ]);
+    expect(summary.audited).toBe(1);
+  });
+
+  it.each([{}, { 'node_modules/platform-only': { version: '1.0.0', optional: true } }])(
+    'permits an absent root install with no required locked packages: %j', (packages) => {
+      const root = makeRoot();
+      writeJson(join(root, 'package-lock.json'), lock(packages));
+      expect(mod.auditTree({ treeRoot: root, lockRoot: root, lockfiles: ['package-lock.json'] }).defects).toEqual([]);
+    },
+  );
+
   it('rejects extra packages in a partially locked template tree without dropping its locked packages', () => {
     const root = makeRoot(), tree = 'apps/fixture/template-kit/node_modules';
     writeJson(join(root, 'package-lock.json'), lock({}));

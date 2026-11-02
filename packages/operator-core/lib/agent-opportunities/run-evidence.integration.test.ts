@@ -1,10 +1,11 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
-import { afterAll, beforeAll, beforeEach, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, expect, it, vi } from 'vitest';
 import { createOrgTestDb } from '../../test/_org-test-db';
 import { readMonitoredFireSnapshot } from '../harness/routines/fire-provenance';
 import { MONITORED_FAMILIES, assessMonitoredRun } from './pipeline';
 import { miningScopeId } from './privacy';
+import { appendAuthorizedNativeDispatch, verifyNativeDispatchReceipt } from './native-capture';
 import { monitoredTestRunGroup, readMonitoredRunEvidence, type MonitoredRunReadOptions,
   type MonitoredWorkflowReader } from './run-evidence';
 
@@ -18,12 +19,14 @@ const sha = 'a'.repeat(40), runtime = 'reader-fixture:123:456', candidate = 'b'.
 const file = 'packages/operator-core/lib/agent-opportunities/pipeline.deployed.integration.test.ts';
 const source = { workspaceId: ws, sourceBoundary: 'tool-ledger', epoch: 'reader-v1', key: new Uint8Array(32).fill(73) };
 const workflow: MonitoredWorkflowReader = { status: async () => status, steps: async () => steps };
+const readNativeContinuity = vi.fn(async (_window: { since: string; until: string }) => 'complete' as 'complete' | 'gap' | 'unknown');
 beforeAll(async () => {
   db = await createOrgTestDb();
   await db.adminSql.unsafe(readFileSync(new URL('../../../../libs/papercusp/libs/db/sql/1583-sql-intent-monitored-family-runs.sql', import.meta.url), 'utf8'));
 }, 120_000);
 afterAll(async () => { await db?.cleanup(); });
 beforeEach(async () => {
+  readNativeContinuity.mockReset().mockResolvedValue('complete');
   await db.adminSql`DELETE FROM harness_shared.sql_intent_runs WHERE workspace_id=${ws}`;
   await db.adminSql`DELETE FROM harness_shared.routines WHERE workspace_id=${ws}`;
   await db.adminSql`DELETE FROM harness_shared.work_items WHERE workspace_id=${ws}`;
@@ -53,10 +56,14 @@ beforeEach(async () => {
       ${started}::timestamptz,${finished}::timestamptz)`;
   for (const family of MONITORED_FAMILIES) await db.adminSql`INSERT INTO harness_shared.sql_intent_family_runs
     (workspace_id,run_id,family,coverage,scanned,qualifying,diagnostics)
-    VALUES (${ws},${opts.runId}::uuid,${family},'measured',2,1,${JSON.stringify({ candidates:
+    VALUES (${ws},${opts.runId}::uuid,${family},'measured',2,1,${JSON.stringify({
+      window: { since: new Date(Date.parse(due) - 7 * 86400_000).toISOString(), until: due },
+      sourceCoverage: { matrix: ['claude', 'codex', 'omp'].flatMap(provider =>
+        ['shell', 'browser'].map(kind => ({ provider, kind, source: 'transcript', status: 'measured' }))) }, candidates:
       family === 'search-reformulation' ? [{ id: candidate, reviewEligible: true }] : [] })}::jsonb)`;
 });
-const read = (over: Partial<MonitoredRunReadOptions> = {}) => readMonitoredRunEvidence({ ...opts, ...over }, { workflow });
+const read = (over: Partial<MonitoredRunReadOptions> = {}) =>
+  readMonitoredRunEvidence({ ...opts, ...over }, { workflow, readNativeContinuity });
 async function seedReviewAndTest() {
   const pointer = { runId: opts.runId, family: 'search-reformulation', candidateId: candidate,
     lifecycleId: 'c'.repeat(64), editionId: 'd'.repeat(64) };
@@ -97,6 +104,57 @@ it('joins canonical review grade, applied round and exact native passed test cas
   expect(result.evidence.testRuns).toMatchObject([{ caseName: 'R13-DEPLOYED', sha, runtime }]);
   expect(assessMonitoredRun(result.evidence).status).toBe('pass');
   // This fixture is a reader/assessor control. It never executes or certifies a deployed run.
+});
+it('cannot certify stored measured coverage after the native signing authority is revoked', async () => {
+  await seedReviewAndTest();
+  await db.adminSql`CREATE TABLE IF NOT EXISTS harness_shared.operator_secrets
+    (name text PRIMARY KEY,value_b64 text NOT NULL)`;
+  await db.adminSql`INSERT INTO harness_shared.operator_secrets (name,value_b64)
+    VALUES ('spawn-signing-key',${Buffer.alloc(32, 73).toString('base64')})
+    ON CONFLICT (name) DO UPDATE SET value_b64=EXCLUDED.value_b64`;
+  expect(await appendAuthorizedNativeDispatch({ workspaceId: ws, harnessSlug: harness,
+    ownerId: 'su-reader-authority', advSessionId: 7, nativeSessionId: 'reader-native-session',
+    callId: 'reader-native-call', toolName: 'native-proof:inspect',
+    argsFingerprint: createHash('sha256').update('{}').digest('hex'),
+    principal: { slug: 'system:superuser', kind: 'system', authMethod: 'bearer-token', trust: 'trusted' },
+  }, async () => true, db.adminSql)).toBe(true);
+  const [activity] = await db.adminSql`SELECT detail FROM harness_shared.agent_activity
+    WHERE workspace_id=${ws} ORDER BY id DESC LIMIT 1`;
+  const receipt = activity!.detail.nativeDispatch;
+  expect(await verifyNativeDispatchReceipt(receipt, db.adminSql)).toBe(true);
+  const families = () => db.adminSql`SELECT family,coverage,diagnostics
+    FROM harness_shared.sql_intent_family_runs WHERE workspace_id=${ws} ORDER BY family`;
+  const before = await families();
+  await db.adminSql`UPDATE harness_shared.operator_secrets
+    SET value_b64=${Buffer.alloc(32, 74).toString('base64')} WHERE name='spawn-signing-key'`;
+  expect(await verifyNativeDispatchReceipt(receipt, db.adminSql)).toBe(false);
+  expect(await families()).toEqual(before);
+  // A genuine per-call receipt is still not whole-window continuity. This
+  // fixture proves revocation cannot be hidden by unchanged normalized rows;
+  // it never claims an earned production window or a complete native roster.
+  expect((await readMonitoredRunEvidence(opts, { workflow })).status).toBe('UNKNOWN');
+});
+it.each(['gap', 'unknown'] as const)('fails closed when current native source authority is %s', async authority => {
+  await seedReviewAndTest();
+  readNativeContinuity.mockResolvedValue(authority);
+  expect(await read()).toEqual({ status: 'UNKNOWN', reasons: ['native-source-authority-unavailable'] });
+});
+it('renews the exact original window after hydration rather than caching the first source grant', async () => {
+  await seedReviewAndTest();
+  readNativeContinuity.mockResolvedValueOnce('complete').mockResolvedValueOnce('gap');
+  expect(await read()).toEqual({ status: 'UNKNOWN', reasons: ['native-source-authority-unavailable'] });
+  const [row] = await db.adminSql`SELECT diagnostics FROM harness_shared.sql_intent_family_runs
+    WHERE workspace_id=${ws} AND family='native-operation'`;
+  expect(readNativeContinuity).toHaveBeenCalledTimes(2);
+  expect(readNativeContinuity.mock.calls.map(([window]) => window)).toEqual([row!.diagnostics.window, row!.diagnostics.window]);
+});
+it.each(['window', 'matrix'] as const)('does not renew a fabricated measured native %s', async kind => {
+  await seedReviewAndTest();
+  await db.adminSql`UPDATE harness_shared.sql_intent_family_runs
+    SET diagnostics=diagnostics - ${kind === 'window' ? 'window' : 'sourceCoverage'}
+    WHERE workspace_id=${ws} AND family='native-operation'`;
+  expect(await read()).toEqual({ status: 'UNKNOWN', reasons: ['native-window-or-coverage-invalid'] });
+  expect(readNativeContinuity).not.toHaveBeenCalled();
 });
 it('rejects wrong scope, denied authority and revocation during asynchronous hydration', async () => {
   expect((await read({ harnessSlug: 'other' })).status).toBe('UNKNOWN');

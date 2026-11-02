@@ -214,9 +214,10 @@ type Row = Record<string, unknown>;
  * (payload-tier.ts `truncationMarker`). A bare `…` is indistinguishable from
  * content — the whole defect this file and that one were filed for.
  */
-function clip(value: unknown, max: number): unknown {
+function clip(value: unknown, max: number, dropped?: Set<string>): unknown {
   if (typeof value !== "string") return value ?? null;
   if (value.length <= max) return value;
+  dropped?.add("textClip");
   if (max <= 0) return null;
   return `${value.slice(0, max)}…[TRUNCATED +${value.length - max} chars — re-read with payloadTier:'full']`;
 }
@@ -612,7 +613,7 @@ function projectWorkItem(
     family: w.family ?? null,
     harness: w.harness ?? null,
     state: w.state ?? null,
-    title: clip(w.title, caps.title),
+    title: clip(w.title, caps.title, dropped),
     severity: w.severity ?? null,
     // Provenance is part of the reduced identity: callers need to know whether a
     // locally impossible mutation will be refused before acting on this row.
@@ -639,7 +640,7 @@ function projectWorkItem(
     createdAt: w.createdAt ?? null,
     updatedAt: w.updatedAt ?? null,
     closedAt: w.closedAt ?? null,
-    ...(summaryChars > 0 ? { summary: clip(w.summary, summaryChars) } : {}),
+    ...(summaryChars > 0 ? { summary: clip(w.summary, summaryChars, dropped) } : {}),
     // Per-row attribution: `dropped` is payload-level, so across 100 rows it
     // cannot say WHICH item has the 7 unread comments. Mirrors the existing
     // `citedTruncated` / `eventsTruncated` convention in this file.
@@ -795,7 +796,7 @@ function compactSingleRow(
     // reading the clamp was allowed to exist only because it avoids. It is a
     // two-number object, so it never meaningfully competes for that budget.
     ...(r.threadLimitClamped !== undefined ? { threadLimitClamped: r.threadLimitClamped } : {}),
-    checkpoint: clip(checkpoint, checkpointCap),
+    checkpoint: clip(checkpoint, checkpointCap, dropped),
     ...(typeof checkpoint === "string" && checkpoint.length > checkpointCap
       ? { checkpointTruncated: true }
       : {}),
@@ -841,8 +842,8 @@ function compactSingleRow(
       : {}),
     ...(r.checkpointFreshness ? { checkpointFreshness: r.checkpointFreshness } : {}),
     ...(r.checkpointStale ? { checkpointStale: r.checkpointStale } : {}),
-    ...(r.checkpointBgJobWarning ? { checkpointBgJobWarning: clip(r.checkpointBgJobWarning, caps.warning) } : {}),
-    ...(r.priorWorkWarning ? { priorWorkWarning: clip(r.priorWorkWarning, caps.warning) } : {}),
+    ...(r.checkpointBgJobWarning ? { checkpointBgJobWarning: clip(r.checkpointBgJobWarning, caps.warning, dropped) } : {}),
+    ...(r.priorWorkWarning ? { priorWorkWarning: clip(r.priorWorkWarning, caps.warning, dropped) } : {}),
     ...(r.planItemBlocked ? { planItemBlocked: r.planItemBlocked } : {}),
     ...(r.planItemClaimCollision ? { planItemClaimCollision: r.planItemClaimCollision } : {}),
     ...(r.planItemTextDrift ? { planItemTextDrift: r.planItemTextDrift } : {}),
@@ -1398,7 +1399,7 @@ function projectRow(
     // checkpoint above should be read. Kept whole.
     ...(r.checkpointFreshness ? { checkpointFreshness: r.checkpointFreshness } : {}),
     ...(r.checkpointStale ? { checkpointStale: r.checkpointStale } : {}),
-    ...(r.checkpointBgJobWarning ? { checkpointBgJobWarning: clip(r.checkpointBgJobWarning, caps.warning) } : {}),
+    ...(r.checkpointBgJobWarning ? { checkpointBgJobWarning: clip(r.checkpointBgJobWarning, caps.warning, dropped) } : {}),
     // EI-19454477695046958: the sharpest member of this group — it says the checkpoint
     // above WITHDRAWS something, and it stays true when that checkpoint clips. Needed
     // most exactly when the clip hides the retraction and the summary still reads as the
@@ -1407,7 +1408,7 @@ function projectRow(
       ? { checkpointRetractions: projectCheckpointRetractions(r.checkpointRetractions, caps, dropped) }
       : {}),
     // Conditional "read before acting" warnings this tool's `returns` promises.
-    ...(r.priorWorkWarning ? { priorWorkWarning: clip(r.priorWorkWarning, caps.warning) } : {}),
+    ...(r.priorWorkWarning ? { priorWorkWarning: clip(r.priorWorkWarning, caps.warning, dropped) } : {}),
     ...(r.citedFacts ? { citedFacts: projectCitedFacts(r.citedFacts, caps, dropped) } : {}),
     ...projectAssumptionFlags(r.assumptionFlags, caps, dropped, false),
     ...(r.planItemBlocked ? { planItemBlocked: r.planItemBlocked } : {}),
@@ -1558,44 +1559,18 @@ function jsonLen(v: unknown): number {
  */
 function shapeChecksOnly(data: Row, tier: WorkItemsGetTier): unknown {
   const { __checksOnly: _marker, ...envelope } = data;
-  const results = Array.isArray(data.results) ? data.results : [];
-  return {
-    ...envelope,
-    results: results.map((raw) => {
-      if (!raw || typeof raw !== 'object') return raw;
-      const row = raw as Row;
-      if (row.ok === false) return row;
-      const checks = row.checkpointChecks;
-      if (!checks || typeof checks !== 'object' || Array.isArray(checks)) {
-        return {
-          ok: row.ok ?? true,
-          id: row.id ?? null,
-          checkpointChecks: checks ?? null,
-          ...(row.checkpointBody !== undefined ? { checkpointBody: row.checkpointBody } : {}),
-          checkpointAgeMs: row.checkpointAgeMs ?? null,
-          checkpointUpdatedAtMs: row.checkpointUpdatedAtMs ?? null,
-          ...(row.checkpointContentHash !== undefined
-            ? { checkpointContentHash: row.checkpointContentHash }
-            : {}),
-          ...(row.checkpointSubjectFingerprint !== undefined
-            ? { checkpointSubjectFingerprint: row.checkpointSubjectFingerprint }
-            : {}),
-          ...(row.checkpointReadFailed ? { checkpointReadFailed: true } : {}),
-        };
-      }
-      const checkEnvelope = checks as Row;
-      const checkRows: unknown[] = Array.isArray(checkEnvelope.rows) ? checkEnvelope.rows : [];
-      const claimCap = FIELD_CAPS[tier].checkpointMin;
-      const rows = checkRows.slice(0, CARRY_NOTE_MAX_CHECKS).flatMap((entry) => {
-        if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return [];
-        const value = entry as Row;
-        const claim = typeof value.claim === 'string' ? value.claim.trim() : '';
-        return claim ? [{ ...(value.id ? { id: value.id } : {}), claim: clip(claim, claimCap) }] : [];
-      });
+  const dropped = new Set<string>();
+  const rows = Array.isArray(data.results) ? data.results : [];
+  const results = rows.map((raw) => {
+    if (!raw || typeof raw !== 'object') return raw;
+    const row = raw as Row;
+    if (row.ok === false) return row;
+    const checks = row.checkpointChecks;
+    if (!checks || typeof checks !== 'object' || Array.isArray(checks)) {
       return {
         ok: row.ok ?? true,
         id: row.id ?? null,
-        checkpointChecks: { ...checkEnvelope, rows },
+        checkpointChecks: checks ?? null,
         ...(row.checkpointBody !== undefined ? { checkpointBody: row.checkpointBody } : {}),
         checkpointAgeMs: row.checkpointAgeMs ?? null,
         checkpointUpdatedAtMs: row.checkpointUpdatedAtMs ?? null,
@@ -1607,10 +1582,40 @@ function shapeChecksOnly(data: Row, tier: WorkItemsGetTier): unknown {
           : {}),
         ...(row.checkpointReadFailed ? { checkpointReadFailed: true } : {}),
       };
-    }),
+    }
+    const checkEnvelope = checks as Row;
+    const checkRows: unknown[] = Array.isArray(checkEnvelope.rows) ? checkEnvelope.rows : [];
+    const claimCap = FIELD_CAPS[tier].checkpointMin;
+    const boundedRows = checkRows.slice(0, CARRY_NOTE_MAX_CHECKS).flatMap((entry) => {
+      if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return [];
+      const value = entry as Row;
+      const claim = typeof value.claim === 'string' ? value.claim.trim() : '';
+      return claim ? [{ ...(value.id ? { id: value.id } : {}), claim: clip(claim, claimCap, dropped) }] : [];
+    });
+    return {
+      ok: row.ok ?? true,
+      id: row.id ?? null,
+      checkpointChecks: { ...checkEnvelope, rows: boundedRows },
+      ...(row.checkpointBody !== undefined ? { checkpointBody: row.checkpointBody } : {}),
+      checkpointAgeMs: row.checkpointAgeMs ?? null,
+      checkpointUpdatedAtMs: row.checkpointUpdatedAtMs ?? null,
+      ...(row.checkpointContentHash !== undefined
+        ? { checkpointContentHash: row.checkpointContentHash }
+        : {}),
+      ...(row.checkpointSubjectFingerprint !== undefined
+        ? { checkpointSubjectFingerprint: row.checkpointSubjectFingerprint }
+        : {}),
+      ...(row.checkpointReadFailed ? { checkpointReadFailed: true } : {}),
+    };
+  });
+  return {
+    ...envelope,
+    ...(dropped.size > 0 ? { _partial: true } : {}),
+    results,
     _shapeNote: {
       tier,
       checksOnly: true,
+      ...(dropped.size > 0 ? { dropped: [...dropped].sort() } : {}),
       next: 'This is a checkpoint-ledger identity read; re-read without checksOnly for the checkpoint narrative.',
     },
   };
@@ -1875,6 +1880,9 @@ export function shapeWorkItemsGet(data: unknown, tier: WorkItemsGetTier, sourceP
       ? `Fields were dropped or clipped for the '${tier}' tier. Re-read with payloadTier:'full' — it is FRAMEWORK-RESERVED and absent from this tool's published schema, so route it through your host's raw-args dispatch path (papercusp: tools:invoke { name:'work_items:get', args:{ …, payloadTier:'full' } }).`
       : "";
 
+    const reportedDrops = [...dropped]
+      .filter((entry) => entry !== "textClip" || (dropped.size === 1 && stubbedCount === 0))
+      .sort();
     out = {
       ...d,
       ...(readInfo
@@ -1887,6 +1895,7 @@ export function shapeWorkItemsGet(data: unknown, tier: WorkItemsGetTier, sourceP
           }
         : {}),
       results: projected,
+      ...(dropped.size > 0 ? { _partial: true } : {}),
       ...(dropped.size > 0
         ? {
             _shapeNote: {
@@ -1898,12 +1907,12 @@ export function shapeWorkItemsGet(data: unknown, tier: WorkItemsGetTier, sourceP
               ...(checkpointChars > 0 ? { checkpointCharsPerRow: checkpointChars } : {}),
               ...(summaryChars > 0 ? { summaryCharsPerRow: summaryChars } : {}),
               ...(lifecycleChars > 0 ? { lifecycleCharsPerRow: lifecycleChars } : {}),
-              dropped: [...dropped].sort(),
+              ...(reportedDrops.length > 0 ? { dropped: reportedDrops } : {}),
               ...(stubbedCount > 0
                 ? {
                     stubbed: {
                       count: stubbedCount,
-                      note: "stub rows preserve only id + _stub; re-read an id alone for detail",
+                      note: "stub rows keep only id + _stub; re-read an id alone for detail",
                       ...(stubCompletionEvidence ? { completionEvidence: stubCompletionEvidence } : {}),
                     },
                   }

@@ -9,7 +9,11 @@
  * self-improvement backlog.)
  */
 import { notifySyncInvalidate } from './sync-sse';
-import { readOperatorState, writeOperatorState } from './operator-state-pg';
+import { readOperatorState, updateOperatorState } from './operator-state-pg';
+import { savedBackgroundActivitySchema, savedStartupActivityStateSchema, startupPauseIsActive } from './startup-activity';
+import { startupActivityFeatureId } from './schedule-inventory';
+import { getSystemActionEntry, SYSTEM_TARGET_PREFIX } from './harness/routines/system-actions';
+import type { z } from 'zod';
 
 // ── Pause / resume sentinel (PG-backed, migration 029) ─────────────────
 //
@@ -25,29 +29,101 @@ interface PauseState {
   paused: boolean;
   by?: string;
   at?: string;
+  backgroundActivity?: z.infer<typeof savedBackgroundActivitySchema>;
+  [key: string]: unknown;
 }
 
-export async function setPaused(by: string): Promise<void> {
-  await writeOperatorState<PauseState>('operator_paused', {
-    paused: true,
-    by,
-    at: new Date().toISOString(),
+/** All pause writers share the row lock with automatic-start preference writers. */
+async function changePauseState(
+  change: (current: PauseState, policy: NonNullable<PauseState['backgroundActivity']>) => PauseState,
+  expectedRevision?: number,
+): Promise<PauseState> {
+  const result = await updateOperatorState<PauseState>('operator_paused', { paused: false }, current => {
+    savedStartupActivityStateSchema.parse(current);
+    const policy = savedBackgroundActivitySchema.parse(current.backgroundActivity ?? {
+      version: 1, revision: 0, automatic: true, pausedUntil: null, features: {},
+    });
+    if (expectedRevision !== undefined && expectedRevision !== policy.revision)
+      throw new Error('Startup policy changed; refresh before retrying');
+    if (!Number.isSafeInteger(policy.revision + 1)) throw new Error('Startup policy revision unavailable');
+    return change(current, { ...policy, revision: policy.revision + 1 });
   });
   void notifySyncInvalidate('operatorPauseFlag').catch(() => {});
+  return result;
 }
 
-export async function setResumed(): Promise<void> {
-  await writeOperatorState<PauseState>('operator_paused', { paused: false });
-  void notifySyncInvalidate('operatorPauseFlag').catch(() => {});
+export async function setPaused(by: string, until: string | null = null, expectedRevision?: number): Promise<void> {
+  if (until !== null && (!Number.isFinite(Date.parse(until)) || Date.parse(until) <= Date.now()))
+    throw new Error('Pause must end at a future time');
+  // Validate the same wire format used by persisted policy before entering the transaction.
+  savedBackgroundActivitySchema.shape.pausedUntil.parse(until);
+  await changePauseState((current, policy) => ({
+    ...current, paused: true, by, at: new Date().toISOString(),
+    backgroundActivity: { ...policy, pausedUntil: until },
+  }), expectedRevision);
+}
+
+export async function setResumed(expectedRevision?: number): Promise<void> {
+  await changePauseState((current, policy) => ({
+    ...current, paused: false, backgroundActivity: { ...policy, pausedUntil: null },
+  }), expectedRevision);
+}
+
+/** Internal workspace lifecycle seam; the exposing route must authorize its workspace principal. */
+export async function setBackgroundActivityAutomatic(automatic: boolean, expectedRevision?: number): Promise<void> {
+  if (typeof automatic !== 'boolean') throw new Error('Automatic activity preference must be boolean');
+  await changePauseState((current, policy) => ({
+    ...current, backgroundActivity: { ...policy, automatic },
+  }), expectedRevision);
 }
 
 export async function isPaused(): Promise<boolean> {
   const s = await readOperatorState<PauseState>('operator_paused');
-  return s?.paused === true;
+  const parsed = savedStartupActivityStateSchema.parse(s ?? {});
+  return startupPauseIsActive(parsed.paused, parsed.backgroundActivity?.pausedUntil ?? null);
 }
 
-export async function getPauseInfo(): Promise<{ paused: boolean; by?: string; at?: string }> {
+export async function getPauseInfo(): Promise<{ paused: boolean; by?: string; at?: string; pausedUntil?: string | null; revision?: number }> {
   const s = await readOperatorState<PauseState>('operator_paused');
-  if (!s?.paused) return { paused: false };
-  return { paused: true, by: s.by, at: s.at };
+  const parsed = savedStartupActivityStateSchema.parse(s ?? {});
+  const policy = parsed.backgroundActivity;
+  const paused = startupPauseIsActive(parsed.paused, policy?.pausedUntil ?? null);
+  return {
+    paused, ...(paused ? { by: s?.by, at: s?.at } : {}),
+    ...(policy ? { pausedUntil: paused ? policy.pausedUntil : null, revision: policy.revision } : {}),
+  };
+}
+
+/** Fresh execution fence. A queued/replayed dispatch must not reuse a cached permission. */
+export async function routineBackgroundActivityAllowed(routine: {
+  workspaceId: string; installSlug: string; name: string; targetRole: string;
+}): Promise<boolean> {
+  if (!routine.workspaceId.trim() || routine.workspaceId === '*' || !routine.name.trim()) return false;
+  // Queue priority, load-shed class and caller payload never grant this exemption.
+  if (routine.targetRole.startsWith(SYSTEM_TARGET_PREFIX)
+    && getSystemActionEntry(routine.targetRole.slice(SYSTEM_TARGET_PREFIX.length))?.requiredForControl) return true;
+  const id = startupActivityFeatureId({
+    source: 'routines', installSlug: routine.installSlug, name: routine.name, detail: {},
+  }, { workspaceId: routine.workspaceId });
+  return workspaceBackgroundActivityAllowed(routine.workspaceId, id);
+}
+
+/** Shared fresh policy fence for optional effects in one explicitly identified workspace. */
+export async function workspaceBackgroundActivityAllowed(workspaceId: string, featureId?: string): Promise<boolean> {
+  if (!workspaceId.trim() || workspaceId === '*'
+    || (featureId !== undefined && !/^activity-[a-f0-9]{64}$/.test(featureId))) return false;
+  try {
+    const state = savedStartupActivityStateSchema.parse(
+      await readOperatorState('operator_paused', workspaceId, { fresh: true }) ?? {},
+    );
+    const policy = state.backgroundActivity;
+    const feature = featureId === undefined ? undefined : policy?.features[featureId];
+    return policy?.automatic !== false && feature?.automatic !== false
+      && !startupPauseIsActive(state.paused, policy?.pausedUntil ?? null)
+      && !startupPauseIsActive(feature?.paused, feature?.pausedUntil ?? null);
+  } catch {
+    // Do not log policy values, driver errors, paths or credentials.
+    console.warn('[background-activity] optional work withheld: policy unavailable');
+    return false;
+  }
 }

@@ -8,10 +8,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+type ReadHeldWorkItems = typeof import('../../carry-brief').readHeldWorkItems;
+
 const h = vi.hoisted(() => ({
   value: 'saved-integration-secret-0123456789' as string | undefined,
   read: vi.fn(async () => h.value),
-  readHeldWorkItems: vi.fn(async () => []),
+  readHeldWorkItems: vi.fn<ReadHeldWorkItems>(async () => []),
 }));
 
 // The shell fixture has no live claims. Inject the reader while retaining the
@@ -39,6 +41,7 @@ vi.mock('./exec-sandbox', async (importOriginal) => ({
 }));
 
 import bashTool from './bash';
+import { mockResolvedTyped } from '../../testing/typed-mock';
 import {
   CAPABILITY_BASH_FOREGROUND_ENV,
   CAPABILITY_BASH_FOREGROUND_TIMEOUT_ENV,
@@ -136,7 +139,15 @@ describe('capability:bash integration_env', () => {
     vi.stubEnv('PAPERCUSP_SID', 'stale-parent-sid');
     vi.stubEnv('PAPERCUSP_TEST_RUN_WORK_ITEM', 'EI-stale');
     vi.stubEnv('PAPERCUSP_TEST_RUN_GROUP', 'stale-group');
-    h.readHeldWorkItems.mockResolvedValue([{ id: workItemId }] as never);
+    mockResolvedTyped(h.readHeldWorkItems, [
+      {
+        id: workItemId,
+        title: null,
+        body: null,
+        harness: 'papercusp',
+        checkpoint: null,
+      },
+    ]);
     const { ctx } = makeCtx({
       uiClientId: callerSid,
       isSuperuser: true,

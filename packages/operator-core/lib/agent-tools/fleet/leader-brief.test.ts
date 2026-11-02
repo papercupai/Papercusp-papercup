@@ -68,6 +68,7 @@ import {
   runLeaderBriefWithinDeadline,
   bindLeaderBriefResult,
   createLeaderBriefMetadataRecorder,
+  createFleetRosterPresenceTimingRecorder,
   runLeaderBriefReads,
   resolveLeaderBriefFleet,
   selectLeaderBriefMembers,
@@ -211,6 +212,41 @@ describe('P-004 identity binding at the existing fleet brief sink', () => {
     expect(metadata).toHaveBeenLastCalledWith({
       fleetMetricReadTiming: metricTiming,
       identityContribution: expect.objectContaining({ status: 'bound' }),
+    });
+  });
+});
+
+describe('fleet-roster presence invocation timing', () => {
+  it('keeps versioned stage snapshots cumulative with existing invocation metadata', () => {
+    const metadata = vi.fn();
+    const recordMetadata = createLeaderBriefMetadataRecorder(metadata);
+    const metricTiming = {
+      schemaVersion: 'fleet-metric-read-timing-v1',
+      phases: { readFleetMetricSource: { status: 'completed', elapsedMs: 18 } },
+    };
+    recordMetadata({ fleetMetricReadTiming: metricTiming });
+    const presenceTiming = createFleetRosterPresenceTimingRecorder(recordMetadata, {
+      fleet: 'alpha',
+      harness: 'papercusp',
+    });
+
+    presenceTiming.onStageTiming({ stage: 'coordPresence', status: 'running', elapsedMs: 0 });
+    presenceTiming.onStageTiming({
+      stage: 'coordPresence', status: 'completed', elapsedMs: 7, resultCount: 2,
+    });
+    presenceTiming.onLegTiming({ status: 'degraded', elapsedMs: 8_000, reason: 'timeout' });
+
+    expect(metadata).toHaveBeenLastCalledWith({
+      fleetMetricReadTiming: metricTiming,
+      fleetRosterPresenceTiming: expect.objectContaining({
+        schemaVersion: 'fleet-roster-presence-timing-v1',
+        fleet: 'alpha',
+        harness: 'papercusp',
+        stages: {
+          coordPresence: { stage: 'coordPresence', status: 'completed', elapsedMs: 7, resultCount: 2 },
+        },
+        presenceLeg: { status: 'degraded', elapsedMs: 8_000, reason: 'timeout' },
+      }),
     });
   });
 });

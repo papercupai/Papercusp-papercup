@@ -32,6 +32,7 @@ import { applyMigrationForTest, applyPlanItemAnchorMigrationsForTest } from '../
 import { fileURLToPath } from 'node:url';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { PLAN_ITEM_KIND, planItemRef } from '../issue-blocks-merge';
+import { checkDraftItemStartGateLive } from '../agent-tools/plans/draft-item-start-gate';
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
 vi.mock('@papercusp/db-org', async (orig) => {
@@ -70,6 +71,7 @@ const {
   findCoverageWorkItems,
   findConvertedWorkItemByStamp,
   listConvertedPlanItemRefs,
+  listCoveredPlanItemRefs,
   IMPLEMENTS_REL,
   convertPlanItem,
   stampPromotedWorkItemProvenance,
@@ -104,6 +106,9 @@ beforeAll(async () => {
   // P-010 unification: work_items base + hfc/ei compat views (replaces hand-rolled hfc + ei).
   await rootSql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
   await applyPlanItemAnchorMigrationsForTest(rootSql);
+  await applyMigrationForTest(rootSql, fileURLToPath(new URL(
+    '../../../../libs/papercusp/libs/db/sql/832-plan-audits.sql', import.meta.url,
+  )));
   // WI-6993 / EI-19342686955096692 / migration 725: the shared fixture DDL deliberately
   // omits check constraints (see _work-items-schema.ts's doc comment — "add it in the
   // specific test, not here"). This test's whole point is proving the production
@@ -195,6 +200,33 @@ describe('listConvertedPlanItemRefs (PG)', () => {
     await edge({ plan: 'p5', item: 'I-5', srcRef: 'EI-6', ws: 'other-ws' }); // wrong workspace — excluded
     const refs = await listConvertedPlanItemRefs([WS]);
     expect([...refs].sort()).toEqual([planItemRef('p1', 'I-1'), planItemRef('p2', 'I-2')].sort());
+  });
+});
+
+describe('listCoveredPlanItemRefs (PG, legacy text coverage)', () => {
+  it('reads legacy feature and issue coverage across both workspace partitions', async () => {
+    cs.scope = 'papercusp-workspace';
+    await rootSql`INSERT INTO harness_shared.work_items
+      (workspace_id, harness_slug, feature_id, item_kind, summary)
+      VALUES (${WS}, 'web', 'F-legacy', 'feature', 'Plan: legacy-plan item P-001'),
+             ('papercusp-workspace', 'web', 'EI-legacy', 'bug', 'Plan: legacy-plan item P-002')`;
+
+    expect([...(await listCoveredPlanItemRefs('legacy-plan', 'web', ['P-001', 'P-002']))].sort())
+      .toEqual([planItemRef('legacy-plan', 'P-001'), planItemRef('legacy-plan', 'P-002')]);
+  });
+
+  it('keeps legacy coverage within its tenant, harness and exact plan/item references', async () => {
+    await rootSql`INSERT INTO harness_shared.work_items
+      (workspace_id, harness_slug, feature_id, item_kind, summary)
+      VALUES (${WS}, 'web', 'EI-positive', 'bug', 'Plan: legacy-plan item P-001'),
+             (${WS}, 'other-harness', 'EI-wrong-harness', 'bug', 'Plan: legacy-plan item P-002'),
+             ('other-workspace', 'web', 'EI-wrong-tenant', 'bug', 'Plan: legacy-plan item P-003'),
+             (${WS}, 'web', 'EI-long-item', 'bug', 'Plan: legacy-plan item P-0040'),
+             (${WS}, 'web', 'EI-long-plan', 'bug', 'Plan: legacy-plan-extra item P-005')`;
+
+    expect([...(await listCoveredPlanItemRefs('legacy-plan', 'web',
+      ['P-001', 'P-002', 'P-003', 'P-004', 'P-005']))])
+      .toEqual([planItemRef('legacy-plan', 'P-001')]);
   });
 });
 
@@ -312,6 +344,36 @@ describe('findCoverageWorkItems (PG)', () => {
   });
 });
 
+describe('draft item-start gate recognizes stamped execution coverage (PG)', () => {
+  it('lets an implements-only stamped work-item continue through an unaudited draft plan', async () => {
+    const id = 'EI-draft-gate-stamped';
+    const slug = 'p-draft-gate-stamped';
+    const itemId = 'P-008';
+    const content =
+      '---\ntitle: T\nstatus: draft\n---\n\n## Phase 1 — Work\n\n- **P-008** `todo` implementation\n';
+    await rootSql`INSERT INTO harness_shared.work_items (harness_slug, feature_id, item_kind, workspace_id, payload)
+                  VALUES ('web', ${id}, 'bug', ${WS},
+                          ${rootSql.json({ plan_item: { plan_slug: slug, item_id: itemId, harness_slug: 'web' } })})`;
+    await edge({ plan: slug, item: itemId, srcKind: 'issue', srcRef: id, rel: IMPLEMENTS_REL });
+
+    // The residual-coverage helper intentionally remains relates-only. The start
+    // gate also consults the durable conversion stamp for existing execution work.
+    expect(await findCoverageWorkItems(slug, itemId, [WS])).toEqual([]);
+    const input = {
+      workspaceId: WS,
+      harnessSlug: 'web',
+      slug,
+      itemId,
+      toStatus: 'done',
+      planContent: content,
+    };
+    expect(await checkDraftItemStartGateLive(input)).toBeNull();
+
+    wiState.states[id] = 'done';
+    expect(await checkDraftItemStartGateLive(input)).toBeNull();
+  });
+});
+
 describe('findConvertedWorkItemByStamp (PG, jsonb object-only payload)', () => {
   const stamp = (plan: string, item: string) => ({ plan_item: { plan_slug: plan, item_id: item, harness_slug: 'web' } });
 
@@ -342,6 +404,20 @@ describe('findConvertedWorkItemByStamp (PG, jsonb object-only payload)', () => {
     await rootSql`INSERT INTO harness_shared.engineer_issues (workspace_id, issue_id, payload)
                   VALUES (${WS}, 'EI-9', ${rootSql.json(stamp('p3', 'I-3'))})`;
     expect(await findConvertedWorkItemByStamp('p3', 'I-3', 'web')).toMatchObject({ id: 'EI-9' });
+  });
+
+  it('scopes stamped issue matches to the requested workspace and harness', async () => {
+    const plan = 'p-stamp-scope';
+    const item = 'P-002';
+    await rootSql`INSERT INTO harness_shared.work_items (harness_slug, feature_id, item_kind, workspace_id, payload)
+                  VALUES ('web', 'EI-stamp-foreign', 'bug', 'other-workspace', ${rootSql.json(stamp(plan, item))})`;
+    await rootSql`INSERT INTO harness_shared.work_items (harness_slug, feature_id, item_kind, workspace_id, payload)
+                  VALUES ('web', 'EI-stamp-wrong-harness', 'bug', ${WS},
+                          ${rootSql.json({ plan_item: { plan_slug: plan, item_id: item, harness_slug: 'other' } })})`;
+
+    expect(await findConvertedWorkItemByStamp(plan, item, 'web', WS)).toBeNull();
+    expect(await findConvertedWorkItemByStamp(plan, item, 'web', 'other-workspace'))
+      .toMatchObject({ id: 'EI-stamp-foreign' });
   });
 
   it('returns null when no stamp matches', async () => {
@@ -425,7 +501,7 @@ describe('convertPlanItem step 2: terminal records must not mask a live one (EI-
   const givenPlanItem = (itemId: string) =>
     readPlanM.mockResolvedValue({
       row: { items: [{ id: itemId, status: 'todo', text: 'Provision the thing' }] },
-      parsed: { items: [], frontmatter: null, now: null },
+      parsed: { items: [], frontmatter: {}, now: null },
     });
 
   const convert = (itemId: string) =>
@@ -462,6 +538,25 @@ describe('convertPlanItem step 2: terminal records must not mask a live one (EI-
 
     expect(await convert('P-030')).toMatchObject({ status: 'resumed', workItem: { id: 'WI-stamped-live' } });
     expect(createWorkItemM).not.toHaveBeenCalled();
+  });
+
+  it('resumes the canonical line node without stamps instead of its legacy child', async () => {
+    givenPlanItem('P-031');
+    await rootSql`INSERT INTO harness_shared.work_items
+      (workspace_id, harness_slug, feature_id, item_kind, plan_slug, plan_line_id)
+      VALUES (${WS}, ${HARNESS}, 'WI-node', 'feature', 'pz', 'P-031')`;
+    await edge({ plan: 'pz', item: 'P-031', srcKind: 'issue', srcRef: 'WI-child' });
+    expect(await convert('P-031')).toMatchObject({ status: 'resumed', workItem: { id: 'WI-node' } });
+    expect(createWorkItemM).not.toHaveBeenCalled();
+  });
+
+  it('does not adopt a line node from another workspace', async () => {
+    givenPlanItem('P-032');
+    await rootSql`INSERT INTO harness_shared.work_items
+      (workspace_id, harness_slug, feature_id, item_kind, plan_slug, plan_line_id)
+      VALUES ('other-workspace', ${HARNESS}, 'WI-foreign-node', 'feature', 'pz', 'P-032')`;
+    createWorkItemM.mockResolvedValue({ id: 'WI-local', harness: HARNESS, state: 'open' });
+    expect(await convert('P-032')).toMatchObject({ status: 'converted', workItem: { id: 'WI-local' } });
   });
 
   it('still MINTS when every implementing record is genuinely terminal', async () => {
@@ -622,7 +717,7 @@ describe('stampPromotedWorkItemProvenance + promotion wiring (P-003 / D-005 obli
     await givenInheritedGoal('member-9', 'goal-77');
     readPlanM.mockResolvedValue({
       row: { items: [{ id: 'P-007', status: 'todo', text: 'Do the thing' }] },
-      parsed: { items: [], frontmatter: null, now: null },
+      parsed: { items: [], frontmatter: {}, now: null },
     });
     claimPlanItemM.mockResolvedValue({ status: 'claimed', claim: { claimId: 'c1' }, mode: 'solo', viaAssignment: false });
     createWorkItemM.mockImplementation(async (input: { title: string }) => {
@@ -652,7 +747,7 @@ describe('stampPromotedWorkItemProvenance + promotion wiring (P-003 / D-005 obli
     await givenRunsGoal('healer-1', 'goal-88');
     readPlanM.mockResolvedValue({
       row: { items: [{ id: 'P-003', status: 'wip', text: 'Old promoted work' }] },
-      parsed: { items: [], frontmatter: null, now: null },
+      parsed: { items: [], frontmatter: {}, now: null },
     });
     claimPlanItemM.mockResolvedValue({ status: 'claimed', claim: { claimId: 'c2' }, mode: 'solo', viaAssignment: false });
 

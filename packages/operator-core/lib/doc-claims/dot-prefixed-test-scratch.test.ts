@@ -152,3 +152,10 @@ describe('dot-prefixed test scratch is gitignored (EI-19319605650500051)', () =>
     ).toEqual([]);
   });
 });
+
+describe('Wrangler local output is gitignored', () => {
+  it('ignores generated public-app middleware bundles', () => {
+    const relPath = 'apps/operator-public/.wrangler/tmp/dev-fixture/index.js.map';
+    expect(isIgnored(relPath), `${relPath} should be ignored but is not`).toBe(true);
+  });
+});

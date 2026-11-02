@@ -149,10 +149,30 @@ function scratchQuotaMutexLockRoot(): string | undefined {
   return runtimeDir ? join(runtimeDir, 'papercusp', 'fs-mutex-locks') : undefined;
 }
 
+/**
+ * Quota state is a rebuildable cross-process ledger. Keep its hot read/write path on the same
+ * per-user runtime filesystem as quota-mutex tickets when the operator uses the defaults.
+ * A missing runtime ledger is safe: reservations refresh actual scratch usage before proceeding.
+ * Explicit scratch/mutex roots retain the colocated state path for isolated/custom deployments.
+ */
+export function resolveScratchQuotaStateRoot(
+  env: Pick<NodeJS.ProcessEnv, 'XDG_RUNTIME_DIR' | 'PAPERCUSP_SCRATCH_ROOT' | 'PAPERCUSP_FS_MUTEX_LOCK_DIR'> = process.env,
+  scratchRootPath = scratchRoot(),
+): string {
+  const runtimeDir = env.XDG_RUNTIME_DIR?.trim();
+  const hasExplicitRoot = Boolean(
+    env.PAPERCUSP_SCRATCH_ROOT?.trim() || env.PAPERCUSP_FS_MUTEX_LOCK_DIR?.trim(),
+  );
+  if (runtimeDir && !hasExplicitRoot) {
+    return join(runtimeDir, 'papercusp', 'scratch-quota-state');
+  }
+  return join(dirname(scratchRootPath), 'scratch-quota-state');
+}
+
 function sharedScratchQuotaStatePath(workspaceId: string): string {
   const workspaceRoot = resolve(scratchRootForWorkspace(workspaceId));
   const digest = createHash('sha256').update(workspaceRoot).digest('hex');
-  const path = join(dirname(scratchRoot()), 'scratch-quota-state', digest + '.json');
+  const path = join(resolveScratchQuotaStateRoot(), digest + '.json');
   usageState.sharedStatePaths.add(path);
   return path;
 }

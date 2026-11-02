@@ -189,6 +189,7 @@ export async function loadRunResult(runDir: string): Promise<HarnessRunResult> {
 }
 
 const PNG_SELECTION = '/**/*.png';
+const TRACE_SELECTION = '/**/trace.zip';
 // Expand declared phase identities, never a filesystem glob: missing passing receipts
 // must still fail, and undeclared directories must never enter proof custody.
 const PHASE_ARTIFACT_SELECTION = /^phases\/\*\/([^/*]+)$/;
@@ -196,17 +197,22 @@ const RETAINED_MANIFEST = 'retained-artifacts.json';
 const MAX_RETAINED_FILES = 128;
 const MAX_RETAINED_BYTES = 64 * 1024 * 1024;
 
+function isTraceSelection(file: string): boolean {
+  return file.endsWith(TRACE_SELECTION) && !file.slice(0, -TRACE_SELECTION.length).includes('*');
+}
+
 function validateRetainedArtifacts(files: readonly string[]): void {
   if (files.length > 32 || files.some(file => !file || file.includes('\\') || path.isAbsolute(file)
     || file.split('/').some(part => !part || part === '.' || part === '..')
     || (file.includes('*') && !PHASE_ARTIFACT_SELECTION.test(file)
+      && !isTraceSelection(file)
       && (!file.endsWith(PNG_SELECTION) || file.slice(0, -PNG_SELECTION.length).includes('*')))
     || file === 'result.json' || file === RETAINED_MANIFEST)) {
     throw new Error('invalid retained harness artifact path');
   }
 }
 
-/** Expand only the explicit PNG selection; never follow links or sweep arbitrary diagnostics. */
+/** Expand only explicit PNG and trace selections; never follow links or sweep arbitrary diagnostics. */
 async function expandRetainedArtifacts(runRoot: string, selectors: readonly string[], phases: HarnessRunResult['phases']): Promise<string[]> {
   const files = new Set<string>();
   let visited = 0;
@@ -214,7 +220,7 @@ async function expandRetainedArtifacts(runRoot: string, selectors: readonly stri
     files.add(file);
     if (files.size > MAX_RETAINED_FILES) throw new Error('retained harness artifact file limit exceeded');
   };
-  const walk = async (relative: string, depth: number): Promise<void> => {
+  const walk = async (relative: string, depth: number, includeFile: (name: string) => boolean): Promise<void> => {
     if (++visited > 4096 || depth > 32) throw new Error('retained harness artifact scan limit exceeded');
     const directory = path.join(runRoot, relative);
     const info = await lstat(directory);
@@ -227,8 +233,8 @@ async function expandRetainedArtifacts(runRoot: string, selectors: readonly stri
       if (++visited > 4096) throw new Error('retained harness artifact scan limit exceeded');
       const file = `${relative}/${entry.name}`;
       if (entry.isSymbolicLink()) throw new Error('invalid retained harness artifact symlink');
-      if (entry.isDirectory()) await walk(file, depth + 1);
-      else if (entry.name.endsWith('.png')) add(file);
+      if (entry.isDirectory()) await walk(file, depth + 1, includeFile);
+      else if (includeFile(entry.name)) add(file);
     }
   };
   for (const selector of selectors) {
@@ -242,6 +248,16 @@ async function expandRetainedArtifacts(runRoot: string, selectors: readonly stri
       }
       continue;
     }
+    if (isTraceSelection(selector)) {
+      const directory = selector.slice(0, -TRACE_SELECTION.length);
+      try { await lstat(path.join(runRoot, directory)); }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue;
+        throw error;
+      }
+      await walk(directory, 0, name => name === 'trace.zip');
+      continue;
+    }
     if (!selector.endsWith(PNG_SELECTION)) { add(selector); continue; }
     const directory = selector.slice(0, -PNG_SELECTION.length);
     // A non-browser assertion or a blocked phase need not produce any PNGs.
@@ -250,7 +266,7 @@ async function expandRetainedArtifacts(runRoot: string, selectors: readonly stri
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue;
       throw error;
     }
-    await walk(directory, 0);
+    await walk(directory, 0, name => name.endsWith('.png'));
   }
   return [...files].sort();
 }

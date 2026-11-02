@@ -5,7 +5,10 @@ import type { BrowserDeps } from '../browser-session.ts';
 import type { UnifiedToolContext } from '@papercusp/agent-mcp';
 import { fetchWithCapabilityPolicy } from '../fetch-policy.ts';
 
+const markStartup = (type: string) => process.send?.({ type, pid: process.pid, startupAtNs: process.hrtime.bigint().toString() });
+markStartup('fixture:imports-loaded');
 startWorkerOwnerRpc();
+markStartup('fixture:rpc-started');
 const controllers = new Map<number, AbortController>();
 process.on('message', async (message: any) => {
   if (message?.type !== 'fixture:call') return;
@@ -86,4 +89,4 @@ process.on('message', async (message: any) => {
   } catch (error) { controllers.delete(seq); process.send!({ type: 'fixture:result', seq, error: String(error) }); }
 });
 process.on('disconnect', () => process.exit(0));
-process.send!({ type: 'fixture:ready', pid: process.pid });
+markStartup('fixture:ready');

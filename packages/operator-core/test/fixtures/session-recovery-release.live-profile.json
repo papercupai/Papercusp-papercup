@@ -1,0 +1,4 @@
+{
+  "runtimeUnits": ["hono-host:3070"],
+  "requiredEnv": ["PAPERCUSP_OPERATOR_URL", "PAPERCUSP_SID", "PAPERCUSP_TEST_RUN_WORKSPACE"]
+}

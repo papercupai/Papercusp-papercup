@@ -25,13 +25,15 @@ export const SESSION_END_MARKER = '■ session ended';
 
 /**
  * EI-24791346664119438: written by the turn-start endpoint (UserPromptSubmit,
- * real time) when the submitted prompt opens with a `loop-fire` turn-origin
- * envelope. It is the only per-fire signal that exists while a loop turn is
- * still running: `session_turns` is ingested after the turn (measured 500-600s
- * after the reconciler's grace on long turns), and the Stop-hook journal lands
- * only at turn end. `reconcile-loop-routines` reads it as "this fire became a
- * turn" so a long loop turn is not settled as 'delivered-wake-no-loop-turn'.
- * Not a session phase: lifecycle readers that compare against the two markers
- * above ignore it by construction (exact match).
+ * real time) for a direct `loop-fire` prompt and for a `self-compaction`
+ * continuation whose nonce resolves to a server-written loop-fire identity.
+ * Transcript ingestion writes the same marker after validating that nonce
+ * against its ledger. The live row is the only per-fire signal while a loop
+ * turn is still running: `session_turns` is ingested after the turn (measured
+ * 500-600s after the reconciler's grace on long turns), and the Stop-hook
+ * journal lands only at turn end. `reconcile-loop-routines` reads it as "this
+ * fire became a turn" so a long loop turn is not settled as
+ * 'delivered-wake-no-loop-turn'. Not a session phase: lifecycle readers that
+ * compare against the two markers above ignore it by construction (exact match).
  */
 export const LOOP_TURN_START_MARKER = '▷ loop-fire turn started';

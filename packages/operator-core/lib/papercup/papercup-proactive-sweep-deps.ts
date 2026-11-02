@@ -183,7 +183,8 @@ export function buildSentinelSweepDeps(broadcast: (frame: Uint8Array) => void): 
   return {
     flagEnabled: () => getFlag(FLAGS.PAPERCUP_PROACTIVE, 'system'),
     isSilenced: async () => (await loadVoicePrefs().catch(() => null))?.silenceVoice ?? false,
-    isPaused: () => isPaused().catch(() => false),
+    // An unreadable pause/consent row is not permission to start optional LLM work.
+    isPaused: () => isPaused(),
     proactiveTicksEnabled: async () => (await loadVoicePrefs().catch(() => null))?.proactiveTicksEnabled ?? true,
     overBudget: async () => {
       const b = await checkBudget().catch(() => null);

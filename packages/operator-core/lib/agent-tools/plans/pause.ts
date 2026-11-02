@@ -106,11 +106,12 @@ export default defineTool({
         const rows = await withWorkspace(workspaceId, async (tx) => {
           return tx<{ op_status: string; op_updated_at: string }[]>`
             UPDATE harness_shared.harness_plans
-               SET op_status = 'paused', op_updated_at = ${now}
+               SET op_status = CASE WHEN op_status IN ('started','paused') THEN 'paused' ELSE op_status END,
+                   op_updated_at = ${now}, execution_start_revision_seq = NULL
              WHERE workspace_id = ${workspaceId}
                AND harness_slug  = ${harnessSlug}
                AND plan_slug     = ${slug}
-               AND op_status IN ('started', 'paused')
+               AND (op_status IN ('started', 'paused') OR execution_start_revision_seq IS NOT NULL)
             RETURNING op_status, op_updated_at
           `;
         });

@@ -1528,6 +1528,27 @@ validate_runtime_dependency_toolchains() {
 
 # Source-verification preparation must satisfy the same committed-input binding
 # as dependency-generation-proof.ts, even when the caller supplied an explicit ID.
+select_dependencies_only_generation() {
+  [ "${DEPENDENCIES_ONLY:-0}" = "1" ] || return 0
+  [ -z "${NODE_MODULES_GENERATION_ID:-}" ] || return 0
+  local input selector identity token
+  input="$(dependency_generation_input_fingerprint_ref "$RELEASE_ROOT" "$TARGET_SHA")" || return 1
+  selector="$DEPENDENCY_GENERATION_ROOT/.inputs/$input"
+  if [ ! -r "$selector" ]; then
+    log "FATAL: dependencies-only needs a published generation for target inputs $input in $DEPENDENCY_GENERATION_ROOT; select its --dependency-generation-root and --node-modules-generation-id before preparation"
+    return 1
+  fi
+  identity="$(dependency_generation_read_field "$selector" identity)" || return 1
+  token="$(dependency_generation_read_field "$selector" token)" || return 1
+  if [ "$(dependency_generation_read_field "$selector" input)" != "$input" ] \
+    || [ -z "$identity" ] || [ -z "$token" ]; then
+    log "FATAL: dependencies-only needs a published generation for target inputs $input in $DEPENDENCY_GENERATION_ROOT; select its --dependency-generation-root and --node-modules-generation-id before preparation"
+    return 1
+  fi
+  NODE_MODULES_GENERATION_ID="$identity"
+  NODE_MODULES_GENERATION_TOKEN="$token"
+}
+
 validate_dependencies_only_input() {
   [ "${DEPENDENCIES_ONLY:-0}" = "1" ] || return 0
   local input selector
@@ -1588,6 +1609,9 @@ if need_node_modules || [ "$DEPENDENCIES_ONLY" = "1" ]; then
   NODE_MODULES_SOURCE_ROOT="$INTEGRATION_ROOT"
   if [ "$NODE_MODULES_COPY_MODE" = "copy" ] && [ "$NODE_MODULES_GENERATION_MODE" = "required" ]; then
     DEPENDENCY_GENERATION_ROOT="$(dependency_generation_resolve_root "$INTEGRATION_ROOT" "$DEPENDENCY_GENERATION_ROOT")"
+    # Frozen preparation consumes its committed-input selector. Publishing the
+    # live integration tree first can spend minutes capturing an unrelated set.
+    select_dependencies_only_generation
     configure_release_dependency_workspace_dirs
     if [ -n "$NODE_MODULES_GENERATION_ID" ]; then
       # Lease BEFORE the full validation walk. Otherwise a retention pass can

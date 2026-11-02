@@ -1536,6 +1536,37 @@ describe('getFeedbackCore — routed', () => {
     expect((await stateRow(result.conversation_id)).routing).toMatchObject({ reviewerModel });
   });
 
+  it('includes decision-park context in the reviewer-facing persisted consult body', async () => {
+    const fixture = makeDeps(routeOf([cand('decision-park-reviewer')]));
+    const workItemId = 'EI-27142685879939701';
+    const blockerRef = 'native-repository-plan-declarations-2026-10-23#D-001';
+    const evidence = 'Live plan read confirms D-001 names P-001 as owner and forbids reassignment.';
+    const defaultAction = 'resume P-001 unless a reviewer supplies a superseding decision';
+    const decisionAtStake = [
+      `Parked work item: ${workItemId}`,
+      `Blocker reference: ${blockerRef}`,
+      `Default if no reviewer objects by 2026-11-02T03:00:00.000Z: ${defaultAction}`,
+    ].join('\n');
+
+    const result = asOk(await getFeedbackCore({
+      ...baseReq,
+      question: 'Should the named P-001 owner resume P-001, or supersede D-001?',
+      originTaskRef: workItemId,
+      observed: evidence,
+      decisionAtStake,
+    }, fixture.deps));
+
+    expect(result.conversation_id).toBeTruthy();
+    expect(fixture.opened).toHaveLength(1);
+    expect(fixture.opened[0].body).toContain('Should the named P-001 owner resume P-001, or supersede D-001?');
+    expect(fixture.opened[0].body).toContain('## Observed');
+    expect(fixture.opened[0].body).toContain(evidence);
+    expect(fixture.opened[0].body).toContain('## Decision at stake');
+    expect(fixture.opened[0].body).toContain(workItemId);
+    expect(fixture.opened[0].body).toContain(blockerRef);
+    expect(fixture.opened[0].body).toContain(defaultAction);
+  });
+
   it('routes to the top live candidate, persists the snapshot VERBATIM, wakes with evidence', async () => {
     const top = cand('agent-a');
     const second = cand('agent-b', { score: 0.6 });
@@ -1935,6 +1966,23 @@ describe('getFeedbackCore — honest no_qualified_responder', () => {
     expect(row.responder_id).toBeNull();
     expect(row.wakes_used).toBe(0);
     expect(row.expires_at).toBeNull();
+  });
+
+  it('does not minimum-fill a transcript that fails a required source reference', async () => {
+    const subject = 'code-cleanup-campaigns-2026-10-26';
+    const unrelated = cand('unrelated', { subjectEvidenceCoverage: {
+      status: 'mismatch', required: [subject],
+      evidence: [{ subject, status: 'mismatch', score: 0.1 }], unresolved: [],
+    } });
+    const { deps, opened, reached } = makeDeps(routeOf([], { all: [unrelated] }));
+    const r = asOk(await getFeedbackCore({ ...baseReq, resolvedSubjectRefs: [subject] }, deps));
+    expect(r.verdict).toBe('no_qualified_responder');
+    expect(r.reason).toBe('below_floor');
+    expect(r.hint).toContain('unrelated transcripts were not dispatched');
+    expect(opened[0].direct_to).toEqual([]);
+    expect(reached).toHaveLength(0);
+    const row = await stateRow(r.conversation_id);
+    expect(row).toMatchObject({ state: 'no_qualified_responder', responder_id: null, wakes_used: 0 });
   });
 
   it('an all-dead qualified pool ROUTES (the no_live_responder verdict is retired with the wake)', async () => {

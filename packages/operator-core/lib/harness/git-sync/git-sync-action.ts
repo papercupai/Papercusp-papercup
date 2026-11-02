@@ -33,7 +33,7 @@
  */
 import { createHash, randomUUID } from 'node:crypto';
 import { contentReportPreviewText, CONTENT_REPORT_PREVIEW_LIMIT, gitSyncContentEscalationBody, gitSyncContentPreview, gitSyncContentSignature, persistGitSyncContentReport } from './git-sync-content-report';
-import { readFile, realpath } from 'node:fs/promises';
+import { readFile, realpath, lstat, open, rename, unlink } from 'node:fs/promises';
 import { performance } from 'node:perf_hooks';
 import { join } from 'node:path';
 import { resolve } from 'node:path';
@@ -123,6 +123,7 @@ import {
   loadHiveEffectAuthority,
   nextHivePublicationTerm,
   requireHiveEffectAuthority,
+  type HiveEffectAuthority,
 } from '../../sync/pot-git/hive-effect-authority';
 import {
   runRefAnnouncePublishTick,
@@ -5523,6 +5524,75 @@ export function githubBridgeErrorTransitionLine(
   return null;
 }
 
+/**
+ * Recover only the measured empty-loose-ref failure. Git's ordinary update-ref
+ * refuses this malformed shadow even when packed-refs and the accepted object
+ * are intact. Use Git's own lockfile protocol, retain the packed FF floor, and
+ * require a fresh owning-hive proof. Never delete a ref or alter member heads.
+ */
+export async function recoverEmptyCanonicalRef(input: {
+  repoPath: string;
+  acceptedSha: string;
+  scope: { hive_id: string; repo_key: string };
+  authority: HiveEffectAuthority | null;
+  runGit?: PotGitRunGit;
+}): Promise<{ recovered: boolean; detail?: string }> {
+  const git = input.runGit ?? defaultRunGit;
+  const refused = (detail: string) => ({ recovered: false, detail });
+  if (!FULL_COMMIT_SHA.test(input.acceptedSha)) return refused('invalid accepted watermark');
+  const refPath = join(input.repoPath, BRIDGE_CANONICAL_REF);
+  const lockPath = `${refPath}.lock`;
+  let lock: Awaited<ReturnType<typeof open>> | undefined;
+  let ownsLock = false;
+  let installed = false;
+  try {
+    const before = await lstat(refPath);
+    if (!before.isFile() || before.size !== 0) return refused('loose canonical is not an empty regular file');
+    lock = await open(lockPath, 'wx', 0o600);
+    ownsLock = true;
+    const current = await lstat(refPath);
+    if (!current.isFile() || current.size !== 0 || current.ino !== before.ino || current.ctimeMs !== before.ctimeMs) {
+      return refused('loose canonical changed before lock acquisition');
+    }
+    const commit = await git(['cat-file', '-t', input.acceptedSha], input.repoPath);
+    if (commit.code !== 0 || commit.stdout.trim() !== 'commit') return refused('accepted commit unavailable');
+    let packed = '';
+    try { packed = await readFile(join(input.repoPath, 'packed-refs'), 'utf8'); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+    const entries = packed.split('\n').filter(line => line.endsWith(` ${BRIDGE_CANONICAL_REF}`));
+    if (entries.length > 1) return refused('ambiguous packed canonical');
+    const floor = entries[0]?.split(' ')[0];
+    if (floor) {
+      if (!FULL_COMMIT_SHA.test(floor)) return refused('invalid packed canonical');
+      const ff = await git(['merge-base', '--is-ancestor', floor, input.acceptedSha], input.repoPath);
+      if (ff.code !== 0) return refused('accepted watermark does not fast-forward packed canonical');
+    }
+    // A signing/serving refusal leaves the original empty shadow untouched.
+    await requireHiveEffectAuthority(input.authority, input.scope,
+      ['recover-empty-canonical', input.repoPath, BRIDGE_CANONICAL_REF, input.acceptedSha]);
+    const latest = await lstat(refPath);
+    if (!latest.isFile() || latest.size !== 0 || latest.ino !== current.ino || latest.ctimeMs !== current.ctimeMs) {
+      return refused('loose canonical changed during validation');
+    }
+    await lock.writeFile(`${input.acceptedSha}\n`);
+    await lock.sync();
+    await lock.close();
+    lock = undefined;
+    await rename(lockPath, refPath);
+    installed = true;
+    const verified = await git(['rev-parse', '--verify', '--quiet', BRIDGE_CANONICAL_REF], input.repoPath);
+    return verified.code === 0 && verified.stdout.trim() === input.acceptedSha
+      ? { recovered: true }
+      : refused('canonical recovery readback failed');
+  } catch (error) {
+    return refused(error instanceof Error ? error.message : String(error));
+  } finally {
+    // Only remove a lock that THIS invocation acquired; never a peer's lock.
+    if (lock) await lock.close().catch(() => {});
+    if (ownsLock && !installed) await unlink(lockPath).catch(() => {});
+  }
+}
+
 export async function runGithubBridgeLeg(
   slug: string,
   workspaceId: string,
@@ -5627,7 +5697,19 @@ export async function runGithubBridgeLeg(
       if (await pathExists(join(bareRepoPath, 'HEAD'))) {
         const existing = await runGit(['rev-parse', '--verify', '--quiet', BRIDGE_CANONICAL_REF], bareRepoPath);
         if (existing.code !== 0) {
-          const pinned = await runGit(['update-ref', BRIDGE_CANONICAL_REF, wbSha], bareRepoPath);
+          let pinned = await runGit(['update-ref', BRIDGE_CANONICAL_REF, wbSha], bareRepoPath);
+          if (pinned.code !== 0 && /broken ref|reference broken/i.test(`${existing.stderr}\n${pinned.stderr}`)) {
+            const recovered = await recoverEmptyCanonicalRef({
+              repoPath: bareRepoPath, acceptedSha: wbSha, scope: protocolScope,
+              authority: effectAuthority, runGit,
+            });
+            if (recovered.recovered) {
+              console.warn(`[git-sync] ${slug}: recovered empty loose canonical ref from accepted watermark ${wbSha}`);
+              pinned = { code: 0, stdout: '', stderr: '' };
+            } else {
+              pinned = { ...pinned, stderr: `${pinned.stderr.trim()}; guarded recovery refused: ${recovered.detail}` };
+            }
+          }
           if (pinned.code !== 0) {
             // Name the PATH: `pinned.stderr` alone produced a message with no
             // path in it, which is why the original report could not tell a
@@ -8799,5 +8881,8 @@ registerSystemAction(
   // `scheduling: 'on-demand'` (EI-18752496371939475): one row per HARNESS, ensured by
   // `git-sync-routine.ts` as harnesses are registered — not a standing workspace-wide row a
   // seed script creates. A workspace with no harnesses yet legitimately has zero rows.
-  { ownSteps: true, scheduling: 'on-demand' },
+  {
+    ownSteps: true, scheduling: 'on-demand',
+    requiredForControl: 'Preserves shared uncommitted work and transports recovery fixes while optional work is paused.',
+  },
 );

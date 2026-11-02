@@ -19,6 +19,12 @@ const sync = vi.hoisted(() => {
       scorecardCount: 497,
       sample: { limit: 500, inputCount: 500 },
       window: {},
+      unknownBreakdown: {
+        total: 12,
+        graderIncomplete: 7,
+        instrumentUnavailable: 2,
+        byReason: { "not-assessed": 7, "instrument-unavailable": 2, unspecified: 3 },
+      },
       criteria: [
         {
           criterion: "Stable evidence",
@@ -181,9 +187,61 @@ vi.mock("@papercusp/sync", () => ({
   useSyncQuery: sync.useSyncQuery,
 }));
 
+const defaultSyncQuery = sync.useSyncQuery.getMockImplementation()!;
+
 afterEach(() => {
   cleanup();
   sync.useSyncQuery.mockClear();
+  sync.useSyncQuery.mockImplementation(defaultSyncQuery);
+});
+
+describe("RubricDetailPanel unknown rating breakdown", () => {
+  function overrideTrend(overrides: Record<string, unknown>) {
+    sync.useSyncQuery.mockImplementation((options) => ({
+      ...defaultSyncQuery(options),
+      ...(options.queryName === "rubrics.trend" ? overrides : {}),
+    }));
+  }
+
+  it("keeps grader incompleteness distinct from instrument failure in the trend window", () => {
+    render(<RubricDetailPanel rubricId="rubric-quality" />);
+    const breakdown = screen.getByLabelText("Unknown rating breakdown");
+    expect(breakdown.textContent).toContain("Grader incomplete: 7");
+    expect(breakdown.textContent).toContain("Instrument unavailable: 2");
+    expect(breakdown.textContent).toContain("Criterion ratings in this trend window");
+    expect(breakdown.getAttribute("data-evidence")).toBe("window");
+  });
+
+  it("shows measured zeros explicitly", () => {
+    const row = defaultSyncQuery({ queryName: "rubrics.trend" }).data[0];
+    overrideTrend({
+      data: [{ ...row, unknownBreakdown: { total: 0, graderIncomplete: 0, instrumentUnavailable: 0, byReason: {} } }],
+    });
+    render(<RubricDetailPanel rubricId="rubric-quality" />);
+    const breakdown = screen.getByLabelText("Unknown rating breakdown");
+    expect(breakdown.textContent).toContain("Grader incomplete: 0");
+    expect(breakdown.textContent).toContain("Instrument unavailable: 0");
+    expect(breakdown.getAttribute("data-evidence")).toBe("window");
+  });
+
+  it.each(["missing breakdown", "missing trend row"])("does not turn %s into measured zeros", (state) => {
+    const row = defaultSyncQuery({ queryName: "rubrics.trend" }).data[0];
+    overrideTrend({ data: state === "missing breakdown" ? [{ ...row, unknownBreakdown: undefined }] : [] });
+    render(<RubricDetailPanel rubricId="rubric-quality" />);
+    const breakdown = screen.getByLabelText("Unknown rating breakdown");
+    expect(breakdown.textContent).toBe("Unknown rating breakdown unavailable.");
+    expect(breakdown.getAttribute("data-evidence")).toBe("unknown");
+  });
+
+  it.each(["loading", "fetching", "error"])("hides cached counts while the trend is %s", (state) => {
+    overrideTrend(state === "error" ? { error: new Error("offline") } : { [state]: true });
+    render(<RubricDetailPanel rubricId="rubric-quality" />);
+    const breakdown = screen.getByLabelText("Unknown rating breakdown");
+    expect(breakdown.textContent).toBe(state === "error" ? "Unknown rating breakdown unavailable." : "Updating unknown rating breakdown…");
+    expect(breakdown.textContent).not.toContain("Grader incomplete: 7");
+    expect(breakdown.textContent).not.toContain("Instrument unavailable: 2");
+    expect(breakdown.getAttribute("data-evidence")).toBe("unknown");
+  });
 });
 
 describe("RubricDetailPanel focused evidence", () => {

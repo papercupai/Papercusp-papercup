@@ -560,9 +560,9 @@ export function buildConsoleOneliner(
     ...envExports,
     ...(includeLivenessSentinel ? [buildConsoleIdentityExport()] : []),
   ].join(' && ');
-  // Visible launches run the greeting in a subshell, then ALWAYS exec an
-  // interactive login shell — `;` (not `&&`) on BOTH sides of the greeting, so
-  // a command that exits non-zero still leaves the window open. Headless
+  // Visible launches run the greeting in a subshell, then run an
+  // interactive login shell under the trapping supervisor. Semicolons around
+  // the greeting ensure a failed command still leaves the window open. Headless
   // launches use the same escaped eval but exit with the greeting's status
   // instead of retaining a detached login shell.
   //
@@ -586,13 +586,27 @@ export function buildConsoleOneliner(
         receiptPath: bootReceiptPath,
         terminalPidReceiptPath,
         interactivePrelude: includeLivenessSentinel
-          ? `touch .papercup-console-active.$$; ` +
-            `trap 'rm -f .papercup-console-active.$$' EXIT`
+          ? `${LEGACY_SENTINEL_CLEANUP}; ` +
+            `mkdir -p ${CONSOLE_SENTINEL_DIR} && ` +
+            `printf '%s\\n' "$PAPERCUSP_CONSOLE_IDENTITY" > ${CONSOLE_SENTINEL_DIR}/.papercup-console-active.$$; ` +
+            `trap 'rm -f ${CONSOLE_SENTINEL_DIR}/.papercup-console-active.$$' EXIT`
           : null,
       })
     : runCommandAndExit(greeting, { receiptPath: bootReceiptPath });
   return `${prelude} ; ${greetingScript}`;
 }
+
+const CONSOLE_SENTINEL_DIR = '.papercusp/scratch/console-active';
+const LEGACY_SENTINEL_CLEANUP = [
+  'stale_markers=();',
+  'for marker in .papercup-console-active.* .papercusp/scratch/console-active/.papercup-console-active.*; do',
+  '[ -f "$marker" ] || continue;',
+  'marker_pid="$' + '{marker##*.}";',
+  'case "$marker_pid" in ""|0|*[!0-9]*) continue ;; esac;',
+  'kill -0 "$marker_pid" 2>/dev/null || stale_markers+=( "$marker" );',
+  'done;',
+  'rm -f "${stale_markers[@]}" 2>/dev/null || true',
+].join(' ');
 
 /**
  * Run a headless greeting and terminate with its status. A detached headless
@@ -644,18 +658,19 @@ function runCommandAndExit(command: string, opts?: { receiptPath?: string | null
  * Wrap a command so that when it FAILS the window stays open showing why,
  * instead of closing the instant the command dies.
  *
- * The shape — `(eval '<cmd>'); <banner> ; exec "$SHELL" -l` — is load-bearing
+ * The shape — `(eval '<cmd>'); <banner>; "$SHELL" -l; exit $?` — is load-bearing
  * in three separate ways, which is exactly why this is a shared helper and not
  * a string every caller retypes:
  *
  *  - `;` (never `&&`) on BOTH sides of the command, so a non-zero exit still
- *    reaches the banner and the trailing `exec`. An `&& exec` closes the window
+ *    reaches the banner and the login shell. An `&&` closes the window
  *    on precisely the failure the user needed to read.
  *  - the command travels as a shellEscape'd LITERAL that a subshell `eval`s at
  *    runtime, never spliced in as bare syntax — so a command containing quotes
  *    cannot produce an unparseable one-liner, and a MALFORMED one errors
  *    visibly inside the open window instead of aborting at parse time.
- *  - the final `exec "$SHELL" -l` is what actually holds the window open.
+ *  - the login shell runs as a foreground child; after it exits, the wrapper
+ *    exits too and runs its marker cleanup trap.
  *
  * WI-37743: `/adv/sessions/launch-su` (the HUD "+ New session" button) did NOT
  * use this — it emitted a bare `exec <psu …>`, so psu replaced the shell and
@@ -694,7 +709,7 @@ export function keepWindowOpenOnFailure(
     opts?.interactivePrelude,
     greetingWithBootDiagnostics(command, opts?.receiptPath),
     banner,
-    `exec "\${SHELL:-/bin/bash}" -l`,
+    `"\${SHELL:-/bin/bash}" -l; __papercusp_login_rc=$?; exit "$__papercusp_login_rc"`,
   ]
     .filter(Boolean)
     .join('; ');

@@ -1996,6 +1996,8 @@ describe('background job deadlines (WI-6677)', () => {
 
   it.each([
     ['env-wrapped isolated e2e', 'env REF=committed npm run test:e2e:isolated -- e2e/chat-streaming.spec.ts', true],
+    ['npm --prefix isolated e2e', 'npm --prefix apps/operator run test:e2e:isolated -- apps/operator/e2e/reports-work-fullscreen.native.spec.mts', true],
+    ['npm equals-prefix isolated e2e', 'npm --prefix=apps/operator run test:e2e:isolated -- apps/operator/e2e/reports-work-fullscreen.native.spec.mts', true],
     ['env-wrapped direct runner', 'env READY=1 npx vitest run', true],
     ['env with quoted assignments', 'env READY="two words" pnpm exec playwright test', true],
     ['assignments before env', 'OUTER=1 env -- INNER=1 npm run test:file -- example.test.ts', true],

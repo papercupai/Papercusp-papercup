@@ -1,3 +1,5 @@
+import type { CallOrigin } from './telemetry-call-origin';
+
 /**
  * code-run-batch-nudge.ts — the INLINE "you're firing tool round-trips one at a time; bundle them
  * into one code:run" nudge (code-run-token-frugality, owner directive 2026-06-23; fan-out + felt-cost
@@ -827,6 +829,8 @@ export interface BatchNudgeResult {
 export interface BatchNudgeInput {
   /** Advisory session key — stable owner plus the MCP transport identity when available. */
   sessionKey: string;
+  /** Declared or conservatively derived caller origin; only model-originated calls are behavior evidence. */
+  callOrigin: CallOrigin;
   /** The tool just called (MCP or verb form). */
   toolName: string;
   /** Canonical per-call effect from the tool registry. */
@@ -878,7 +882,7 @@ const ACTIVATE_PATH_NOTE =
  */
 export function maybeBatchNudge(input: BatchNudgeInput): BatchNudgeResult | null {
   const { sessionKey, canCodeRun } = input;
-  if (!canCodeRun || !sessionKey || !input.toolName) return null;
+  if (!canCodeRun || !sessionKey || !input.toolName || input.callOrigin !== 'agent') return null;
   // P-001: unwrap a tools:invoke-routed call to its INNER tool BEFORE exclusion + recording, so a
   // wrapper-routed burst trips the same triggers a direct burst would (and tools:invoke{name:
   // 'code:run'} stays excluded exactly like a direct code:run call).

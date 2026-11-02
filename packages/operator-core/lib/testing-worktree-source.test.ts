@@ -6,7 +6,7 @@ import { verifierSourceFiles, type VerifierSourceReceipt } from './verifier-sour
 import { WORKTREE_SNAPSHOT_GIT_BUDGETS_MS } from '@papercusp/test-config/admin-test-runs-reporter';
 import { captureTestSourceSnapshot, captureTestSourceSnapshotAsync, captureWorktreeSnapshotAsync, computeWorktreeDirty, resolveReporterSourceRoot } from './testing-worktree';
 
-const gitProbe = vi.hoisted(() => vi.fn((_command: string, _args: string[], _options: { timeout?: number }): string => {
+const gitProbe = vi.hoisted(() => vi.fn((_command: string, _args: string[], _options: { timeout?: number; maxBuffer?: number }): string => {
   throw new Error('Git probe must not run for an archive');
 }));
 const asyncGit = vi.hoisted(() => vi.fn());
@@ -120,9 +120,11 @@ describe('receipt-backed test source snapshots', () => {
 });
 
 describe('synchronous reporter snapshot policy', () => {
-  it.each(['', ' M source.ts'])('recovers slow status without hiding dirty source: %j', porcelain => {
+  it.each(['', ' M source.ts', '?? generated/'])('recovers slow status without hiding dirty source: %j', porcelain => {
     gitProbe.mockImplementation((_command, args, options) => {
       if (!args.includes('status')) return 'a'.repeat(40);
+      expect(args).toEqual(['status', '--porcelain', '--untracked-files=normal']);
+      expect(options.maxBuffer).toBe(2 * 1024 * 1024);
       if (options.timeout === WORKTREE_SNAPSHOT_GIT_BUDGETS_MS[0]) {
         throw Object.assign(new Error('status timed out'), { code: 'ETIMEDOUT', signal: 'SIGTERM' });
       }
@@ -133,6 +135,25 @@ describe('synchronous reporter snapshot policy', () => {
     expect(gitProbe.mock.calls.filter(([, args]) => args.includes('status')).map(([, , options]) => options.timeout))
       .toEqual([...WORKTREE_SNAPSHOT_GIT_BUDGETS_MS]);
     expect(computeWorktreeDirty({ commit: 'a'.repeat(40), porcelain: '' }, snapshot)).toBe(Boolean(porcelain));
+  });
+
+  it('fails closed without retrying when status exceeds the explicit output cap', () => {
+    let statusCalls = 0;
+    gitProbe.mockImplementation((_command, args, options) => {
+      if (!args.includes('status')) return 'a'.repeat(40);
+      statusCalls += 1;
+      expect(args).toEqual(['status', '--porcelain', '--untracked-files=normal']);
+      expect(options.maxBuffer).toBe(2 * 1024 * 1024);
+      throw Object.assign(new Error('stdout maxBuffer length exceeded'), { code: 'ENOBUFS' });
+    });
+    const snapshot = captureTestSourceSnapshot('/retained-checkout');
+    expect(snapshot).toMatchObject({
+      commit: 'a'.repeat(40),
+      porcelain: null,
+      provenanceError: expect.stringContaining('ENOBUFS'),
+    });
+    expect(statusCalls).toBe(1);
+    expect(computeWorktreeDirty({ commit: 'a'.repeat(40), porcelain: '' }, snapshot)).toBe(true);
   });
 
   it('retains terminal diagnostics and refuses unknown source after every bounded attempt fails', () => {
@@ -157,6 +178,23 @@ describe('async worktree snapshots', () => {
     expect(computeWorktreeDirty({ commit: receipt.sourceCommit, porcelain: '' }, after)).toBe(true);
     expect(asyncGit).not.toHaveBeenCalled();
     expect(gitProbe).not.toHaveBeenCalled();
+  });
+
+  it('uses a bounded untracked-directory summary for async snapshots too', async () => {
+    let statusArgs: string[] | undefined;
+    let statusMaxBuffer: number | undefined;
+    asyncGit.mockImplementation(async (_command: string, args: string[], options: { maxBuffer?: number }) => {
+      if (args.includes('status')) {
+        statusArgs = args;
+        statusMaxBuffer = options.maxBuffer;
+        return { stdout: '?? generated/', stderr: '' };
+      }
+      return { stdout: 'a'.repeat(40), stderr: '' };
+    });
+    const snapshot = await captureWorktreeSnapshotAsync('/retained-checkout');
+    expect(snapshot).toEqual({ commit: 'a'.repeat(40), porcelain: '?? generated/' });
+    expect(statusArgs).toEqual(['--no-optional-locks', 'status', '--porcelain', '--untracked-files=normal']);
+    expect(statusMaxBuffer).toBe(2 * 1024 * 1024);
   });
 
   it('uses async Git reads, honors mutation-probe origin roots, and stays responsive while they settle', async () => {

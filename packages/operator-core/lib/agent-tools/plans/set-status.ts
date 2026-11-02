@@ -1865,7 +1865,7 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
     if (isBlockEdge || isUnblockEdge) {
       try {
         const scope = await resolvePlanScope(harnessSlug ? { harnessSlug } : {});
-        const linked = await findConvertedWorkItemByStamp(it.slug, it.itemId, scope.harnessSlug);
+        const linked = await findConvertedWorkItemByStamp(it.slug, it.itemId, scope.harnessSlug, scope.workspaceId);
         if (linked && !TERMINAL_WORK_ITEM_STATES.has(linked.state)) {
           const target = planSyncWorkItemState(result.value.oldStatus, it.status, linked.state);
           if (target && target !== linked.state) {

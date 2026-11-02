@@ -32,7 +32,6 @@ import { getOrgPg, withWorkspace } from '@papercusp/db-org';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { managedSetInterval } from '@papercusp/scheduled-registry';
 import { lookupByMcpName, dispatchProjectedTool, type ProjectedTool, type UnifiedToolContext } from '@papercusp/agent-mcp';
-import { PROJECTED_DEPS } from '../../projected-tool-deps';
 import { emitAwaitedEvent } from './engine';
 import { listCellsUnchecked, canReadCell } from '../../cell-registry';
 import { assertLifecycleBinding, withLifecycleBindingProvenance } from './store';
@@ -801,6 +800,10 @@ export async function dispatchReadOnlyTool(
    * (EI-25342644580478656). Keep the role/capability dispatch identical; only the
    * unnecessary transaction acquisition is skipped for tools that opt out.
    */
+  // Liveness and await helpers also import this module. Load the product/tool
+  // graph only for a real dispatch, so those imports cannot load mutation
+  // subjects through the runner's committed-source loader before tests run.
+  const { PROJECTED_DEPS } = await import('../../projected-tool-deps');
   const dispatch = async (tx?: unknown) => {
     if (caller) {
       // Never inherit an internal caller's bypass flags, nor replace the wearer

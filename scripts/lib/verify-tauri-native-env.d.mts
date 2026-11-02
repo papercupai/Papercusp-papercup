@@ -33,9 +33,7 @@ export function nativeVerifierEnv(env: NodeJS.ProcessEnv, launch?: {
     timeoutMs?: number;
     nowMs?: number;
     repoRoot?: string;
-}): {
-    [key: string]: string | undefined;
-};
+}): any;
 export function preflightNativeVerifier(repoRoot: any, env: any, spawn?: typeof spawnSync): void;
 /**
  * Own a short-lived service for the exact tested checkout. The caller runs this helper in

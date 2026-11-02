@@ -124,11 +124,144 @@ function standingPrOf(payload: unknown): AdmissionStandingPr | null {
  * and the exact tested PR tree. A fix already present in the target is excluded,
  * so sync-back cannot attach yesterday's issue to tomorrow's standing PR.
  */
+type AdmissionStandingPrRow = {
+  feature_id: string;
+  harness_slug: string;
+  payload: Record<string, JSONValue>;
+};
+
+type AdmissionStandingPrInput = {
+  workspaceId: string;
+  harnesses: string[];
+  repositoryRoot: string;
+  testedSha: string;
+  targetSha: string;
+  url: string;
+  number: number;
+};
+
+type AdmissionStandingPrPathInspection =
+  | { kind: 'linked'; paths: string[] }
+  | { kind: 'unlinked' }
+  | { kind: 'unverified'; reason: string };
+
+async function readStandingPrAdmissionRows(
+  sql: AdmissionDb,
+  input: AdmissionStandingPrInput & {
+    workItemId?: string;
+    workItemHarness?: string;
+    expectedPayload?: Record<string, JSONValue>;
+  },
+): Promise<AdmissionStandingPrRow[]> {
+  return sql<AdmissionStandingPrRow[]>`
+    SELECT DISTINCT w.feature_id, w.harness_slug, w.payload
+      FROM harness_shared.work_admissions a
+      JOIN harness_shared.work_items w ON w.workspace_id = a.workspace_id
+       AND w.feature_id = a.work_item_id AND w.harness_slug = COALESCE(${input.workItemHarness ?? null}, a.harness_slug)
+     WHERE a.workspace_id = ${input.workspaceId} AND a.harness_slug = ANY(${input.harnesses}::text[])
+       AND (${input.workItemId ?? null}::text IS NULL OR w.feature_id = ${input.workItemId ?? null})
+       AND (${input.expectedPayload ? sql.json(input.expectedPayload) : null}::jsonb IS NULL
+         OR w.payload IS NOT DISTINCT FROM ${input.expectedPayload ? sql.json(input.expectedPayload) : null}::jsonb)
+       AND w.item_kind = 'bug' AND w.status = ANY(${[...COMPLETED_STATES]}::text[])
+       AND w.authority = 'committed'
+     ORDER BY w.feature_id LIMIT ${LIFECYCLE_RECONCILE_MAX}`;
+}
+
+async function inspectAdmissionStandingPrPaths(
+  row: AdmissionStandingPrRow,
+  input: Pick<AdmissionStandingPrInput, 'repositoryRoot' | 'testedSha' | 'targetSha'>,
+  deps: { headBlobs?: typeof completionHeadBlobMap; git?: SettlementScopeGit },
+): Promise<AdmissionStandingPrPathInspection> {
+  const evidence = row.payload[TERMINAL_COMPLETION_EVIDENCE_KEY] as Record<string, unknown> | undefined;
+  const parsed = CompletionSettlementManifestSchema.safeParse(evidence?.settlementManifest);
+  if (!parsed.success) return { kind: 'unverified', reason: 'terminal settlement manifest is missing or invalid' };
+
+  try {
+    // WI-6554700010018378: a superproject-closed receipt is read in the pot repository.
+    const manifest = await scopeSettlementManifestToRepository(parsed.data, input.repositoryRoot, deps.git);
+    if (!manifest || manifest.residualPaths?.length) {
+      return { kind: 'unverified', reason: 'settlement manifest is not fully scoped to the target repository' };
+    }
+    const identities = manifest.contentIdentity;
+    if (manifest.normalizedPaths.some((path) => !identities.some((entry) => entry.path === path))) {
+      return { kind: 'unverified', reason: 'settlement manifest has a path without content identity' };
+    }
+    if (identities.some((entry) => !entry.workingTreeBlobSha && !entry.deletion)) {
+      return { kind: 'unverified', reason: 'settlement manifest has incomplete content identity' };
+    }
+    const paths = identities.map((entry) => entry.path);
+    if (paths.length === 0) return { kind: 'unlinked' };
+    const read = deps.headBlobs ?? completionHeadBlobMap;
+    const [head, base] = await Promise.all([
+      read(input.repositoryRoot, input.testedSha, paths), read(input.repositoryRoot, input.targetSha, paths),
+    ]);
+    if (!head || !base || paths.some((path) => !head.get(path) || !base.get(path)
+      || head.get(path)?.status === 'unresolvable' || base.get(path)?.status === 'unresolvable')) {
+      return { kind: 'unverified', reason: 'PR content identity could not be resolved' };
+    }
+    const matchesHead = identities.every((entry) => {
+      const actual = head.get(entry.path);
+      return entry.deletion ? actual?.status === 'absent'
+        : actual?.status === 'resolved' && actual.sha === entry.workingTreeBlobSha;
+    });
+    if (!matchesHead) return { kind: 'unlinked' };
+    const changedPaths = identities.filter((entry) => {
+      const actual = base.get(entry.path);
+      return entry.deletion ? actual?.status === 'resolved'
+        : actual?.status === 'absent' || (actual?.status === 'resolved' && actual.sha !== entry.workingTreeBlobSha);
+    }).map((entry) => entry.path);
+    return changedPaths.length > 0
+      ? { kind: 'linked', paths: [...new Set(changedPaths)].sort() }
+      : { kind: 'unlinked' };
+  } catch (error) {
+    return { kind: 'unverified', reason: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+/**
+ * Resolve the allowed paths for this exact standing PR from admitted work and its committed
+ * completion evidence. The PR tree is evidence to compare against, never the source of admission.
+ */
+export async function resolveAdmissionStandingPrPaths(
+  sql: AdmissionDb,
+  input: AdmissionStandingPrInput,
+  deps: { headBlobs?: typeof completionHeadBlobMap; git?: SettlementScopeGit } = {},
+): Promise<{ ok: true; paths: string[]; workItemIds: string[] } | { ok: false; reason: string }> {
+  if (input.harnesses.length === 0) return { ok: false, reason: 'no target pot harnesses were resolved' };
+  if (!standingPrOf({ standingPr: {
+    schemaVersion: 'admission-standing-pr-v1', url: input.url, number: input.number,
+    testedSha: input.testedSha, targetSha: input.targetSha,
+  } })) return { ok: false, reason: 'invalid standing PR identity' };
+
+  try {
+    const rows = await readStandingPrAdmissionRows(sql, input);
+    const paths = new Set<string>();
+    const workItemIds: string[] = [];
+    for (const row of rows) {
+      const receipt = standingPrOf(row.payload);
+      if (!receipt || receipt.url !== input.url || receipt.number !== input.number || receipt.testedSha !== input.testedSha) continue;
+      const inspected = await inspectAdmissionStandingPrPaths(row, input, deps);
+      if (inspected.kind === 'unverified') {
+        return { ok: false, reason: `work item ${row.feature_id}: ${inspected.reason}` };
+      }
+      if (inspected.kind !== 'linked') continue;
+      workItemIds.push(row.feature_id);
+      for (const path of inspected.paths) paths.add(path);
+    }
+    return { ok: true, paths: [...paths].sort(), workItemIds: workItemIds.sort() };
+  } catch (error) {
+    return { ok: false, reason: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+/**
+ * Extend the admission's existing payload, using completion content identities
+ * and the exact tested PR tree. A fix already present in the target is excluded,
+ * so sync-back cannot attach yesterday's issue to tomorrow's standing PR.
+ */
 export async function correlateAdmissionStandingPr(
   sql: AdmissionDb,
-  input: {
-    workspaceId: string; harnesses: string[]; repositoryRoot: string;
-    testedSha: string; targetSha: string; url: string; number: number;
+  input: AdmissionStandingPrInput & {
     mergedSha?: string;
     /** Late reconciliation keeps the admission's repo route separate from its physical item. */
     workItemId?: string; workItemHarness?: string; expectedPayload?: Record<string, JSONValue>;
@@ -141,73 +274,37 @@ export async function correlateAdmissionStandingPr(
     ...(input.mergedSha ? { mergedSha: input.mergedSha } : {}),
   };
   if (!standingPrOf({ standingPr: pr })) throw new Error('invalid tested standing PR correlation');
-  const rows = await sql<{ feature_id: string; harness_slug: string; payload: Record<string, JSONValue> }[]>`
-    SELECT DISTINCT w.feature_id, w.harness_slug, w.payload
-      FROM harness_shared.work_admissions a
-      JOIN harness_shared.work_items w ON w.workspace_id = a.workspace_id
-       AND w.feature_id = a.work_item_id AND w.harness_slug = COALESCE(${input.workItemHarness ?? null}, a.harness_slug)
-     WHERE a.workspace_id = ${input.workspaceId} AND a.harness_slug = ANY(${input.harnesses}::text[])
-       AND (${input.workItemId ?? null}::text IS NULL OR w.feature_id = ${input.workItemId ?? null})
-       AND (${input.expectedPayload ? sql.json(input.expectedPayload) : null}::jsonb IS NULL
-         OR w.payload IS NOT DISTINCT FROM ${input.expectedPayload ? sql.json(input.expectedPayload) : null}::jsonb)
-       AND w.item_kind = 'bug' AND w.status = ANY(${[...COMPLETED_STATES]}::text[])
-       AND w.authority = 'committed'
-     ORDER BY w.feature_id LIMIT ${LIFECYCLE_RECONCILE_MAX}`;
+  const rows = await readStandingPrAdmissionRows(sql, input);
   const result: { linked: string[]; failed: Array<{ workItemId: string; error: string }> } = { linked: [], failed: [] };
   for (const row of rows) {
-    const evidence = row.payload[TERMINAL_COMPLETION_EVIDENCE_KEY] as Record<string, unknown> | undefined;
-    const parsed = CompletionSettlementManifestSchema.safeParse(evidence?.settlementManifest);
-    if (!parsed.success) continue;
-    // WI-6554700010018378: a superproject-closed receipt is read in the pot repository.
-    const manifest = await scopeSettlementManifestToRepository(parsed.data, input.repositoryRoot, deps.git);
-    if (!manifest || manifest.residualPaths?.length) continue;
-    const identities = manifest.contentIdentity;
-    if (manifest.normalizedPaths.some((path) => !identities.some((entry) => entry.path === path))) continue;
-    if (identities.some((entry) => !entry.workingTreeBlobSha && !entry.deletion)) continue;
-    try {
-      const read = deps.headBlobs ?? completionHeadBlobMap;
-      const paths = identities.map((entry) => entry.path);
-      const [head, base] = await Promise.all([
-        read(input.repositoryRoot, input.testedSha, paths), read(input.repositoryRoot, input.targetSha, paths),
-      ]);
-      if (!head || !base || paths.some((path) => !head.get(path) || !base.get(path)
-        || head.get(path)?.status === 'unresolvable' || base.get(path)?.status === 'unresolvable')) {
-        result.failed.push({ workItemId: row.feature_id, error: 'PR content identity could not be resolved' });
-        continue;
-      }
-      const matchesHead = identities.every((entry) => {
-        const actual = head.get(entry.path);
-        return entry.deletion ? actual?.status === 'absent'
-          : actual?.status === 'resolved' && actual.sha === entry.workingTreeBlobSha;
-      });
-      const differsFromTarget = identities.some((entry) => {
-        const actual = base.get(entry.path);
-        return entry.deletion ? actual?.status === 'resolved'
-          : actual?.status === 'absent' || (actual?.status === 'resolved' && actual.sha !== entry.workingTreeBlobSha);
-      });
-      if (!matchesHead || !differsFromTarget) continue;
-      const existing = standingPrOf(row.payload);
-      // A merged receipt is final for its PR. An unmerged one is replaced only by a
-      // newer tested head or by the verified merge of that same PR.
-      if (existing?.url === pr.url && (existing.mergedSha
-        || (!pr.mergedSha && existing.testedSha === pr.testedSha && existing.targetSha === pr.targetSha))) continue;
-      const receipt: AdmissionStandingPr = existing?.url === pr.url && pr.mergedSha ? { ...pr, mergeAfterTested: true } : pr;
-      // Git reads happen outside a DB transaction. Fence the exact completion
-      // snapshot in the write so a reopened or re-completed issue cannot inherit
-      // the earlier fix's PR during that window.
-      const merged = await sql<{ feature_id: string }[]>`
-        UPDATE harness_shared.work_items
-           SET payload = payload || ${sql.json({ standingPr: receipt })}, updated_ts = ${Date.now()}
-         WHERE workspace_id = ${input.workspaceId} AND feature_id = ${row.feature_id}
-           AND harness_slug = ${row.harness_slug} AND item_kind = 'bug'
-           AND status = ANY(${[...COMPLETED_STATES]}::text[]) AND authority = 'committed'
-           AND payload IS NOT DISTINCT FROM ${sql.json(row.payload)}
-         RETURNING feature_id`;
-      if (!merged[0]) throw new Error('source completion changed while linking PR; retry against the current completion');
-      result.linked.push(row.feature_id);
-    } catch (error) {
-      result.failed.push({ workItemId: row.feature_id, error: error instanceof Error ? error.message : String(error) });
+    const inspected = await inspectAdmissionStandingPrPaths(row, input, deps);
+    if (inspected.kind === 'unverified') {
+      result.failed.push({ workItemId: row.feature_id, error: inspected.reason });
+      continue;
     }
+    if (inspected.kind !== 'linked') continue;
+    const existing = standingPrOf(row.payload);
+    // A merged receipt is final for its PR. An unmerged one is replaced only by a
+    // newer tested head or by the verified merge of that same PR.
+    if (existing?.url === pr.url && (existing.mergedSha
+      || (!pr.mergedSha && existing.testedSha === pr.testedSha && existing.targetSha === pr.targetSha))) continue;
+    const receipt: AdmissionStandingPr = existing?.url === pr.url && pr.mergedSha ? { ...pr, mergeAfterTested: true } : pr;
+    // Git reads happen outside a DB transaction. Fence the exact completion
+    // snapshot in the write so a reopened or re-completed issue cannot inherit
+    // the earlier fix's PR during that window.
+    const merged = await sql<{ feature_id: string }[]>`
+      UPDATE harness_shared.work_items
+         SET payload = payload || ${sql.json({ standingPr: receipt })}, updated_ts = ${Date.now()}
+       WHERE workspace_id = ${input.workspaceId} AND feature_id = ${row.feature_id}
+         AND harness_slug = ${row.harness_slug} AND item_kind = 'bug'
+         AND status = ANY(${[...COMPLETED_STATES]}::text[]) AND authority = 'committed'
+         AND payload IS NOT DISTINCT FROM ${sql.json(row.payload)}
+       RETURNING feature_id`;
+    if (!merged[0]) {
+      result.failed.push({ workItemId: row.feature_id, error: 'source completion changed while linking PR; retry against the current completion' });
+      continue;
+    }
+    result.linked.push(row.feature_id);
   }
   return result;
 }

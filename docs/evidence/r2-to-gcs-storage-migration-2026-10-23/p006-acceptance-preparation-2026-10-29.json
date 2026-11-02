@@ -7,6 +7,35 @@
   "shipped": false,
   "observationDateUtc": "2026-10-29",
   "preparationUpdateUtc": "2026-10-29T03:53:55.291525Z",
+  "currentPrerequisites": {
+    "observedAtUtc": "2026-10-31T23:05:13Z",
+    "migrationPlanVersion": 31,
+    "migrationPlanContentHash": "3ae3c9673dc39bebda4696f0c25e9040f15a1f6867b9c0c7925ea3b46f2fc64b",
+    "ownWorkItems": ["WI-6554700010025564", "WI-6554700010025565", "WI-6554700010025592"],
+    "sourceException": {
+      "record": "p005-census-preparation-2026-10-29.json#inaccessibleSourceDispositions.integrationExceptions",
+      "scope": "Every pinned integration with a sourceBucket has a structured exception row; source counts/high-water marks/deltas remain null and continuous retention unverified",
+      "accessWorkItem": "WI-6554700010022667",
+      "conversation": "conv-mvkxyaso-0000-73d49fff8b9c4893930607df2d23052a",
+      "conversationReadback": { "state": "open", "accepted_answer": null },
+      "providerRequeried": false
+    },
+    "releaseSourceChoice": {
+      "ownerWorkItem": "WI-6554700010025562",
+      "owner": "su-24b08564-911f-4221-ac22-89f3e2ff33c1",
+      "checkpointContentHash": "325d742a7726",
+      "pinnedSource": "22fedce4804d063b72d0a06c792a3f1a858b3958",
+      "proposedSource": "744b960bd1192e118f6cc2852e8b47827c149040",
+      "proposalVersion": "0.0.33",
+      "conversation": "conv-mvwuh3rr-0000-d55506f6a2804dffacf2a9e8f29863ae",
+      "conversationReadback": { "state": "open", "accepted_answer": null },
+      "sourceChangeApproved": false,
+      "scope": "Peer prepared an all-platform source-choice proposal after the frozen Windows input failed. Neither proposal nor AUTO is evidence of source-choice or publication approval. No cut, tag, upload or duplicate question by this acceptance lane."
+    },
+    "savedEvidenceCurrentness": "Existing binding and test references below retain their dated scopes. This preparation update does not revalidate them; changed measured preparation inputs require fresh canonical currentness/binding before acceptance. Original test receipts, artifact bytes and production observations remain unchanged.",
+    "migrationAccepted": false,
+    "p544QualifiedOrShipped": false
+  },
   "subsequentPreparation": {
     "dateUtc": "2026-10-29",
     "copyClause": "R2GCS-COPY-P-005@1",
@@ -49,7 +78,39 @@
         "assignee": "su-bbfd627f-1859-4ffe-aa04-8c96b24955ea",
         "observation": "Maintained staging-sync candidate b5ad445cd4 failed its SPA build at2026-10-29T05:08:17Z: HarnessSyncProvider imports getSyncQueryClient, absent from committed sync gitlink7f1edfa0. Canonical submodulec561b55 already exports it.",
         "remedy": "Record the existing compatible submodule through maintained git-sync, then prepare a fresh staging generation and verify exact served-reader acceptance of the same retained receipt. Restarting the old pinned generation does not advance its source.",
-        "currentReaderVerified": false
+      "currentReaderVerified": true,
+      "verifiedAtUtc": "2026-10-29T08:22:36.668Z",
+      "committedEvent": {
+        "awaitId": 387368,
+        "deliveryId": 1028937,
+        "sha": "8cee31366ec349ee1c8985c6ac77e005b802eef7",
+        "installSlug": "papercusp",
+        "workspaceId": "papercusp-workspace",
+        "committedAtMs": 1793252764929,
+        "syncGitlink": "c561b55c806de034f99a5aedb60b292902156245"
+      },
+      "servingAcceptance": {
+        "route": "http://127.0.0.1:3170",
+        "buildShaBeforeAndAfter": "45a5ff026e",
+        "pipelineContainment": "operator-api route ready; staging-operator containsChange=true by blob for libs/test-config/src/execution-details.ts",
+        "servedSyncGitlink": "c561b55c806de034f99a5aedb60b292902156245",
+        "testRunId": 22606981,
+        "runGroupId": "f84b8368-d411-4119-88c9-82eff290bc6a",
+        "status": "pass",
+        "filePath": "packages/operator-core/lib/agent-tools/dev/restart.test.ts",
+        "root": "$PAPERCUSP_ROOT",
+        "passed": 138,
+        "failed": 0,
+        "skipped": 0,
+        "collectionFailed": false,
+        "testTimingRuntimeIdentity": "node:25.9.0 linux/x64 vitest:4.1.8",
+        "runtimeEnvironmentBeforeCaptureStatus": "not-configured",
+        "runtimeEnvironmentAfterCaptureStatus": "not-configured",
+        "executionDetailsUnavailableReason": null,
+        "metadataRewritten": false,
+        "originalSuiteRerun": false,
+        "scope": "Current-build retained-receipt reader acceptance only. This does not establish final-release shipment, R2 source retention, P003 publication or P544 qualification."
+      }
       }
     },
     "migrationAccepted": false,

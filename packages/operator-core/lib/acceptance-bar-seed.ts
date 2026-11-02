@@ -35,6 +35,7 @@ import {
 import type { PlanClassRubricRef } from './agent-tools/plans/spec-test-adequacy';
 import { ensureExistingWorkItemSpecRevisionEdgesInTransaction } from './agent-tools/plans/spec-evidence-store';
 import { hashPlanContent } from './agent-tools/plans/content-hash';
+import { overlayLiveRequirementVerification } from './acceptance-live-requirements';
 import {
   buildRubricPlanBody,
   computeAcceptanceBarSetHash,
@@ -1330,7 +1331,14 @@ export async function seedAcceptanceBarsInTransaction(
 
   // All seed paths (including previews) share this pre-write guard. Do not run
   // source validation in the pure builder or after the first persisted mutation.
-  const citationProblems = acceptanceBarTestCitationProblems(built.criteria, undefined, {
+  // Grading reads verification from meaning-preserving live requirement blocks.
+  // A preserved rubric deliberately retains its historical METHOD, so checking
+  // that frozen selector here would refuse even a valid live selector repair.
+  // Reuse grading's guarded overlay without revising the rubric or its BAR pins.
+  const requirements = parseRequirementBars(input.planContent);
+  if (!requirements.ok) return refusal(requirements.problems);
+  const liveVerification = overlayLiveRequirementVerification(built.criteria, requirements.bars);
+  const citationProblems = acceptanceBarTestCitationProblems(liveVerification.criteria, undefined, {
     allowPlannedPaths: subjectPlanAllowsPlannedPaths(input.planStatus),
   });
   if (citationProblems.length > 0) return refusal(citationProblems) as Exclude<AcceptanceBarSeedBuildResult, { ok: true }>;

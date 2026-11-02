@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { IngestProgress } from './ingest-claude-transcripts';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -83,6 +84,28 @@ describe('persistent transcript accounting', () => {
     expect((await ingestInteractiveUsage({ adapters: adapter(),
       sessionIds: ['z-accepted'], maxFilesPerTick: 1 })).samples).toBe(0);
     expect((await ingestInteractiveUsage({ adapters: adapter(), sessionIds: [] })).scannedFiles).toBe(0);
+  });
+
+  it('reports path-free stage progress for a long ingest diagnostic', async () => {
+    const file = path.join(root, 'progress.jsonl');
+    const transcript = context('gpt-6-sol') + usage(1000);
+    await fs.writeFile(file, transcript);
+    const progress: IngestProgress[] = [];
+    const result = await ingestInteractiveUsage({ adapters: adapter(), onProgress: (snapshot) => progress.push(snapshot) });
+
+    expect(result.errors).toEqual([]);
+    expect(progress.map((snapshot) => snapshot.phase)).toEqual(expect.arrayContaining([
+      'starting', 'root-discovery', 'watermark-read', 'directory-scan', 'file-stat',
+      'decode', 'write-transaction', 'account-reconciliation', 'completed',
+    ]));
+    expect(progress.at(-1)).toMatchObject({
+      phase: 'completed', filesScanned: 1, filesIngested: 1, samples: 1,
+      bytesRead: Buffer.byteLength(transcript),
+    });
+    expect(progress.at(-1)?.phaseMs).toHaveProperty('decode');
+    expect(progress.at(-1)?.sourcePhaseMs.codex).toHaveProperty('decode');
+    expect(JSON.stringify(progress)).not.toContain(root);
+    expect(JSON.stringify(progress)).not.toContain(file);
   });
 
   it('persists source-start ordinals and compaction generations through incremental ingestion', async () => {

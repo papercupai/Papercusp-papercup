@@ -52,9 +52,10 @@ function deps(launchResult: unknown, brief: BlindReviewBrief | null = BRIEF) {
       resumeLeaseExpiresAt: null, reviewId: null,
     },
   }));
+  const findSessionBinding = vi.fn(async () => null);
   return {
-    handler, loadBrief, createSessionBinding,
-    deps: { loadBrief, launcher: async () => ({ handler, confinementKey: KEY }), createSessionBinding },
+    handler, loadBrief, createSessionBinding, findSessionBinding,
+    deps: { loadBrief, launcher: async () => ({ handler, confinementKey: KEY }), createSessionBinding, findSessionBinding },
   };
 }
 
@@ -81,6 +82,15 @@ describe('readLaunchEnvelope', () => {
 });
 
 describe('runBlindReviewMintOp', () => {
+  it('threads requestKey into the activation launch idempotency key', async () => {
+    const d = deps(launched({ ok: true, ownerId: 'su-reviewer-1' }));
+    await runBlindReviewMintOp({ ...INPUT, requestKey: 'mint-request-v1' }, d.deps);
+    const first = (d.handler.mock.calls[0] as unknown as [{ idempotencyKey: string }])[0].idempotencyKey;
+
+    expect(first).toMatch(/^blind-review-mint:[a-f0-9]{64}$/);
+    expect(d.findSessionBinding).toHaveBeenCalledWith({ workspaceId: 'ws-1', planSlug: SLUG, activationAuditSeq: 7 });
+  });
+
   it('threads exact nominated product reads through the adapter into the launch confinement', async () => {
     const d = deps(launched({ ok: true, ownerId: 'su-reviewer-1' }));
     const productReads = { docsHarness: 'engineering', docsSlugs: ['agent-insights/product-guide'], testFiles: ['lib/probe.test.ts'] };

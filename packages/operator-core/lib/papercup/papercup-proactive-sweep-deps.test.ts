@@ -44,13 +44,20 @@ vi.mock('./papercup-context', async (importActual) => {
   };
 });
 
-import { gatherFleetStatus } from './papercup-proactive-sweep-deps';
+import { buildSentinelSweepDeps, gatherFleetStatus } from './papercup-proactive-sweep-deps';
+import { isPaused } from '../device-operator-actions';
 
 beforeEach(() => {
+  vi.mocked(isPaused).mockReset().mockResolvedValue(false);
   h.workspaceCoordOn = false;
   h.buildSentinelContextDeps.mockClear();
   h.gatherSentinelContext.mockClear();
   h.renderSentinelContext.mockClear();
+});
+
+it('withholds optional work when the durable pause policy cannot be read', async () => {
+  vi.mocked(isPaused).mockRejectedValue(new Error('Startup policy unavailable'));
+  await expect(buildSentinelSweepDeps(vi.fn()).isPaused()).rejects.toThrow('Startup policy unavailable');
 });
 
 describe('gatherFleetStatus scope label', () => {

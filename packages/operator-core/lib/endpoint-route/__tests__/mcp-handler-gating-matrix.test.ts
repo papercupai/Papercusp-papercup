@@ -2028,12 +2028,16 @@ describe('P006 full dispatcher semantics over real HTTP and authenticated UDS', 
 
   it('applies fleet:status tiers at the actual CallToolRequestSchema boundary', async () => {
     const handlerContexts: Array<Record<string, unknown>> = [];
+    const memberIds = (count: number, first = 0) => Array.from({ length: count }, (_, index) => {
+      const id = String(first + index);
+      return `su-${id.padStart(8, '0')}-0000-0000-0000-${id.padStart(12, '0')}`;
+    });
     const source = {
       ok: true,
       slug: 'rocket',
       leaderId: 'su-tier-leader',
-      memberCount: 20,
-      members: Array.from({ length: 20 }, (_, index) => ({
+      memberCount: 59,
+      members: Array.from({ length: 59 }, (_, index) => ({
         agentId: index === 0 ? 'su-tier-leader' : `su-tier-member-${index}`,
         label: `Member ${index}`,
         fleetRole: index === 0 ? 'leader' : 'member',
@@ -2046,12 +2050,75 @@ describe('P006 full dispatcher semantics over real HTTP and authenticated UDS', 
         lastToolCallAt: '2026-11-01T12:00:00Z',
       })),
       launchTransaction: {
+        requestedMemberIds: memberIds(53, 10000),
+        failed: [],
         governor: {
           history: Array.from({ length: 32 }, (_, index) => ({
             at: index,
             action: 'observe',
-            reason: `event ${index}`,
+            reason: `event ${index} ${'x'.repeat(500)}`,
           })),
+          terminalVerdict: {
+            outcome: 'unknown',
+            action: 'maintain',
+            decidedAt: 1,
+            target: 50,
+            productiveCapacityFloor: 1,
+            liveMemberIds: memberIds(53, 20000),
+            workerReadyMemberIds: memberIds(3, 21000),
+            unreadyMemberIds: [],
+            unverifiedMemberIds: memberIds(50, 22000),
+            reason: 'live members without typed worker attestation remain unknown',
+          },
+        },
+      },
+      populationLifecycle: {
+        schemaVersion: 'fleet-population-lifecycle.v1',
+        fleet: 'rocket',
+        currentRunnableRoster: { census: { total: 52 }, ownerIds: memberIds(52, 30000) },
+        relevantRoster: { census: { total: 54 }, ownerIds: memberIds(54, 31000) },
+        everMembers: {
+          population: 'ever-members',
+          basis: 'membership events',
+          writer: 'harness_shared.fleet_membership_events',
+          available: true,
+          counted: 2705,
+          ownerIds: memberIds(2705, 40000),
+        },
+        membersLost: {
+          population: 'ever-members-absent-from-roster',
+          basis: 'ever members minus every identity still present on the fleet roster',
+          writer: 'harness_shared.fleet_membership_events',
+          available: true,
+          count: 2646,
+          ownerIds: memberIds(2646, 43000),
+          timing: {
+            status: 'not-measured',
+            reason: 'current roster read does not provide last activity for membersLost',
+            insteadRead: 'coord_presence.last_active_at per member',
+          },
+        },
+        target: { count: 50 },
+        liveness: { status: 'measured' },
+        claimFlow: { status: 'measured' },
+      },
+    };
+    expect(JSON.stringify(source).length).toBeGreaterThan(250_000);
+    const fullSource = {
+      ...source,
+      memberCount: 20,
+      members: source.members.slice(0, 20),
+      populationLifecycle: undefined,
+      launchTransaction: {
+        ...source.launchTransaction,
+        requestedMemberIds: memberIds(20, 10000),
+        governor: {
+          ...source.launchTransaction.governor,
+          terminalVerdict: {
+            ...source.launchTransaction.governor.terminalVerdict,
+            liveMemberIds: memberIds(20, 20000),
+            unverifiedMemberIds: memberIds(20, 22000),
+          },
         },
       },
     };
@@ -2083,19 +2150,35 @@ describe('P006 full dispatcher semantics over real HTTP and authenticated UDS', 
       const memberCap = tier === 'standard' ? 12 : 8;
       const historyCap = tier === 'standard' ? 24 : 12;
       const members = out!.members as Array<Record<string, unknown>>;
-      const governor = (out!.launchTransaction as { governor: Record<string, unknown> }).governor;
+      const transaction = out!.launchTransaction as Record<string, unknown> & { governor: Record<string, unknown> };
+      const governor = transaction.governor;
       expect(members).toHaveLength(memberCap + 1);
       expect(members.at(-1)?.agentId).toBe('(truncated)');
       expect(governor.history as unknown[]).toHaveLength(historyCap);
       expect(governor.historyTotal).toBe(32);
+      expect(transaction.requestedMemberIds).toHaveLength(memberCap);
+      expect(transaction.requestedMemberIdsTotal).toBe(53);
+      const verdict = governor.terminalVerdict as Record<string, unknown>;
+      expect(verdict.liveMemberIds).toHaveLength(memberCap);
+      expect(verdict.liveMemberIdsTotal).toBe(53);
+      expect(verdict.unverifiedMemberIds).toHaveLength(memberCap);
+      expect(verdict.unverifiedMemberIdsTotal).toBe(50);
+      const lifecycle = out!.populationLifecycle as Record<string, unknown>;
+      const lost = lifecycle.membersLost as Record<string, unknown>;
+      expect(lost.count).toBe(2646);
+      expect(lost.ownerIds).toHaveLength(memberCap);
+      expect(lost.ownerIdsTruncated).toBe(2646);
+      expect(JSON.stringify(out).length).toBeLessThan(30_000);
     };
 
     await withSdkHost(
       superuserExtra('&workspace=ws-test&client=su-tier-shaping&harness=papercup&role=operator'),
       async client => {
-        await client.listTools();
-        const statusDefinition = getCatalog().find(tool => tool.name === 'fleet:status');
-        if (!statusDefinition) throw new Error('Expected the production fleet:status definition after tools/list');
+        const listing = await client.listTools();
+        expect(listing.tools.some(tool => tool.name === 'fleet:status')).toBe(true);
+        // Role-gated tools (requirePrincipal:false) register in the projected
+        // registry, not the legacy principal-gated getCatalog() list.
+        const statusDefinition = (await import('../../agent-tools/fleet_registry/status')).default;
         const mutableStatus = statusDefinition as unknown as {
           handler: (args: unknown, ctx: UnifiedToolContext) => Promise<unknown>;
           shape?: { standard?: unknown; trimmed?: unknown };
@@ -2111,7 +2194,11 @@ describe('P006 full dispatcher semantics over real HTTP and authenticated UDS', 
             requestedStructured: context.requestedStructured,
             payloadTierOverride: context.payloadTierOverride,
           });
-          return { content: [{ type: 'text' as const, text: JSON.stringify(source) }] };
+          // fleet:status's production handler returns a ToolResponse `{ data }`
+          // envelope. Exercise that real registration path here: a raw JSON
+          // ToolResult takes a separate MCP-only re-encoding branch and can
+          // pass this boundary without proving the production data shaper ran.
+          return { data: context.payloadTierOverride === 'full' ? fullSource : source };
         };
 
         try {
@@ -2139,6 +2226,19 @@ describe('P006 full dispatcher semantics over real HTTP and authenticated UDS', 
             _meta: { format: 'json' },
           }) as CallResult;
           assertTier(directTrimmed, 'trimmed');
+
+          const directFull = await client.callTool({
+            name: 'fleet:status',
+            arguments: { fleet: 'rocket', payloadTier: 'full' },
+            _meta: { format: 'json' },
+          }) as CallResult;
+          expect(directFull.isError).not.toBe(true);
+          const full = findStatusPayload(directFull);
+          expect(full).not.toBeNull();
+          expect(full!.members).toHaveLength(20);
+          expect(full!.members_note).toBeUndefined();
+          expect((full!.launchTransaction as { governor: { history: unknown[] } }).governor.history)
+            .toHaveLength(32);
         } finally {
           mutableStatus.handler = originalHandler;
         }
@@ -2150,6 +2250,7 @@ describe('P006 full dispatcher semantics over real HTTP and authenticated UDS', 
       { transport: 'mcp', requestedStructured: false, payloadTierOverride: 'standard' },
       { transport: 'mcp', requestedStructured: false, payloadTierOverride: 'standard' },
       { transport: 'mcp', requestedStructured: false, payloadTierOverride: 'trimmed' },
+      { transport: 'mcp', requestedStructured: false, payloadTierOverride: 'full' },
     ]);
   });
 
@@ -6088,8 +6189,20 @@ describe('su identity precedence (EI-7066: explicit SID before Mcp-Session-Id)',
     const res = await callTool('gatingtest:scoped', {}, extra, meta);
     expect(res.isError).toBe(true);
     expect(textOf(res)).toContain('superuser_native_session_unverified');
+    expect(textOf(res)).toContain('Reconnect the MCP client so it resends the active thread ID.');
     expect(h.nativeSessionCalls).toHaveLength(0);
     expect(seen).toHaveLength(0);
+    expect(h.invocations[0]).toMatchObject({
+      status: 'error',
+      errorCode: 'mcp_auth_failed',
+      errorMessage: 'superuser_native_session_unverified',
+      metadataJson: {
+        mcpAuthFailure: {
+          reason: 'superuser_native_session_unverified',
+          contextVerified: false,
+        },
+      },
+    });
   });
 
   it('fails closed with a retryable verifier reason when per-call verification throws despite a matching inherited SID', async () => {

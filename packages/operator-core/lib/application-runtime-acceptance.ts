@@ -2,6 +2,8 @@ import { z } from 'zod';
 import { readAcceptanceBarContractSnapshot, type AcceptanceBarTrace } from './acceptance-bar-contract-snapshot';
 import { readCurrentOperationalArtifacts } from './agent-tools/plans/spec-evidence-store';
 import type { ApplicationRuntimeAcceptance, ApplicationRuntimeCandidate } from './bundled-node';
+import { envelopeSchema } from './application-runtime-acceptance-offline';
+export { readSignedApplicationRuntimeAcceptance } from './application-runtime-acceptance-offline';
 
 export const BUN_MIGRATION_PLAN = 'node-to-bun-staged-migration-2026-10-22';
 const ELIGIBILITY_BARS = ['R-1', 'R-2', 'R-3', 'R-4', 'R-5', 'R-6', 'R-7'];
@@ -27,13 +29,15 @@ export const applicationRuntimeCandidateReceiptSchema = z.object({
   validUntil: z.number().int().positive(),
 }).strict();
 
-/** Pre-cutover eligibility projection; final R-8 shipment remains a separate gate. */
-export async function readApplicationRuntimeAcceptance(request: {
+export interface ApplicationRuntimeAcceptanceRequest {
   harnessSlug: string;
   evidenceRef: string;
   candidate: ApplicationRuntimeCandidate;
   role: string;
-}): Promise<ApplicationRuntimeAcceptance | null> {
+}
+
+async function readApplicationRuntimeAcceptanceRecord(request: ApplicationRuntimeAcceptanceRequest)
+  : Promise<{ acceptance: ApplicationRuntimeAcceptance; snapshotHash: string } | null> {
   const { harnessSlug, evidenceRef, role } = request;
   const candidate = structuredClone(request.candidate);
   if (!harnessSlug || !evidenceRef || !candidate.bun || !candidate.roles.includes(role)) return null;
@@ -101,5 +105,30 @@ export async function readApplicationRuntimeAcceptance(request: {
       validUntil: receipt.validUntil };
   }
   const current = await readAcceptanceBarContractSnapshot(BUN_MIGRATION_PLAN, {}, { harnessSlug });
-  return current.contentHash === snapshot.contentHash ? accepted : null;
+  return accepted && current.contentHash === snapshot.contentHash
+    ? { acceptance: accepted, snapshotHash: snapshot.contentHash } : null;
+}
+
+/** Pre-cutover eligibility projection; final R-8 shipment remains a separate gate. */
+export async function readApplicationRuntimeAcceptance(request: ApplicationRuntimeAcceptanceRequest)
+  : Promise<ApplicationRuntimeAcceptance | null> {
+  return (await readApplicationRuntimeAcceptanceRecord(request))?.acceptance ?? null;
+}
+
+/**
+ * Prepare exact bytes for the existing release signer, ONLY from canonical
+ * eligibility. Keep this detached from the final packages it approves. This
+ * unsigned return value is never authority at an installed host.
+ */
+export async function prepareApplicationRuntimeAcceptanceEnvelope(request: ApplicationRuntimeAcceptanceRequest)
+  : Promise<string | null> {
+  const frozen = structuredClone(request);
+  const record = await readApplicationRuntimeAcceptanceRecord(frozen);
+  if (!record) return null;
+  const issuedAt = Date.now();
+  if (record.acceptance.validUntil <= issuedAt) return null;
+  const envelope = envelopeSchema.safeParse({ schemaVersion: 'application-runtime-acceptance/v1',
+    planSlug: BUN_MIGRATION_PLAN, harnessSlug: frozen.harnessSlug,
+    canonicalSnapshotHash: record.snapshotHash, issuedAt, acceptance: record.acceptance });
+  return envelope.success ? JSON.stringify(envelope.data) + '\n' : null;
 }

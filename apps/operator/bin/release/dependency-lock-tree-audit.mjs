@@ -16,8 +16,9 @@
 //   - a `link: true` entry needs a path (usually a symlink) at <tree>/<lockdir>/<key>;
 //   - an `optional: true` entry may be absent (npm skips optional deps that do not fit the
 //     platform or fail to build), but if present its version must still match.
-// A lockfile whose <lockdir>/node_modules is absent from the tree is reported as
-// not-installed and skipped: the generation never claimed to contain it. A lockfile whose
+// A nested lockfile whose node_modules is absent is reported as not-installed:
+// the generation never claimed that standalone install. Required root lock entries
+// must still be checked when the entire root install is missing. A lockfile whose
 // directory is a WORKSPACE of an enclosing audited lockfile (the enclosing lock has a
 // `<member dir>` package key) is skipped as workspace-member: the enclosing install owns
 // that node_modules, and the member's own lockfile is never installed standalone.
@@ -106,7 +107,10 @@ function defaultFs() {
  */
 export function auditLockfile({ lock, lockDir, treeRoot, fs = defaultFs() }) {
   const base = lockDir ? join(treeRoot, lockDir) : treeRoot;
-  if (!fs.exists(join(base, 'node_modules'))) return { installed: false, entries: 0, defects: [] };
+  if (!fs.exists(join(base, 'node_modules')) && (lockDir || !Object.entries(lock?.packages ?? {})
+    .some(([key, entry]) => key.startsWith('node_modules/') && entry?.optional !== true))) {
+    return { installed: false, entries: 0, defects: [] };
+  }
   const defects = [];
   let entries = 0;
   for (const [key, raw] of Object.entries(lock?.packages ?? {})) {

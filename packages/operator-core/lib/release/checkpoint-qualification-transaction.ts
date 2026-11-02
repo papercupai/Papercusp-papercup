@@ -368,8 +368,20 @@ export interface PreparedCheckpointSelectionRecord {
   freezeCut: FreezeCutRecord | null;
   generation: { candidate: string; identity: string; token: string; inputFingerprint: string; reused: boolean; root: string };
   carry: FrozenRepairCarryRecord | null;
-  /** Captured queue authority, including its version, for restart validation. */
+  /** Legacy/transient full queue snapshot. New persisted selections use queueAuthority. */
   queue?: FrozenCandidateRepairQueue | null;
+  /** Selection authority plus phase, kept compact for restart validation. */
+  queueAuthority?: PreparedSelectionQueueAuthority | null;
+}
+
+export interface PreparedSelectionQueueAuthority {
+  candidate: string;
+  openedAtMs: number;
+  qualificationAttemptId: string | null;
+  base: string | null;
+  repairHead: string;
+  judgesCandidate: boolean;
+  phase: FrozenCandidateRepairQueue['phase'];
 }
 
 export function isPreparedCheckpointSelectionRecord(value: unknown): value is PreparedCheckpointSelectionRecord {
@@ -383,6 +395,18 @@ export function isPreparedCheckpointSelectionRecord(value: unknown): value is Pr
     freeze.candidate === r.candidate && freeze.tip === r.tip &&
     (freeze.knownGood === null || (typeof freeze.knownGood === 'string' && freeze.knownGood.length > 0)));
   const carry = parseFrozenRepairCarryRecord(r.carry);
+  const queueAuthority = r.queueAuthority;
+  const validQueueAuthority = queueAuthority === undefined || queueAuthority === null || (
+    typeof queueAuthority === 'object' && !Array.isArray(queueAuthority) &&
+    typeof queueAuthority.candidate === 'string' && queueAuthority.candidate.length > 0 &&
+    Number.isFinite(queueAuthority.openedAtMs) &&
+    (queueAuthority.qualificationAttemptId === null ||
+      (typeof queueAuthority.qualificationAttemptId === 'string' && queueAuthority.qualificationAttemptId.length > 0)) &&
+    (queueAuthority.base === null || typeof queueAuthority.base === 'string') &&
+    typeof queueAuthority.repairHead === 'string' && queueAuthority.repairHead.length > 0 &&
+    typeof queueAuthority.judgesCandidate === 'boolean' &&
+    typeof queueAuthority.phase === 'string' && queueAuthority.phase.length > 0
+  );
   return r.schemaVersion === 1 && [r.attemptId, r.integrationRoot, r.checkpointRoot,
     r.candidate, r.tip, r.candidateSource, r.generation?.root, r.generation?.identity,
     r.generation?.token].every(v => typeof v === 'string' && v.length > 0) &&
@@ -391,7 +415,9 @@ export function isPreparedCheckpointSelectionRecord(value: unknown): value is Pr
     r.generation.candidate === r.candidate && /^[a-f0-9]{64}$/.test(r.generation.inputFingerprint) &&
     typeof r.generation.reused === 'boolean' &&
     Boolean(validFreeze) &&
+    !(r.queue !== undefined && r.queueAuthority !== undefined) &&
     (r.queue === undefined || r.queue === null || parseFrozenCandidateRepairQueue(r.queue) !== null) &&
+    validQueueAuthority &&
     (r.carry === null || (carry !== null && isDeepStrictEqual(carry, r.carry) && carry.judgedCandidate === r.candidate));
 }
 
@@ -413,6 +439,35 @@ function preparedSelectionQueueAuthority(queue: FrozenCandidateRepairQueue) {
     repairHead: queue.repairHead,
     judgesCandidate: queue.phase === 'ready-to-test',
   };
+}
+
+function preparedSelectionQueueSnapshot(queue: FrozenCandidateRepairQueue): PreparedSelectionQueueAuthority {
+  return { ...preparedSelectionQueueAuthority(queue), phase: queue.phase };
+}
+
+function capturedPreparedSelectionQueue(
+  record: PreparedCheckpointSelectionRecord,
+): PreparedSelectionQueueAuthority | null | undefined {
+  if (record.queueAuthority !== undefined) return record.queueAuthority;
+  if (record.queue === undefined || record.queue === null) return record.queue;
+  const queue = parseFrozenCandidateRepairQueue(record.queue);
+  return queue ? preparedSelectionQueueSnapshot(queue) : null;
+}
+
+function compactPreparedCheckpointSelectionRecord(
+  record: PreparedCheckpointSelectionRecord,
+): PreparedCheckpointSelectionRecord {
+  if (record.queueAuthority !== undefined || record.queue === undefined) return record;
+  const { queue, ...rest } = record;
+  if (queue === null) return { ...rest, queueAuthority: null };
+  const parsed = parseFrozenCandidateRepairQueue(queue);
+  if (!parsed) throw new Error('invalid prepared selection queue authority');
+  return { ...rest, queueAuthority: preparedSelectionQueueSnapshot(parsed) };
+}
+
+function selectionQueueAuthorityFromSnapshot(snapshot: PreparedSelectionQueueAuthority) {
+  const { phase: _phase, ...authority } = snapshot;
+  return authority;
 }
 
 /**
@@ -437,14 +492,14 @@ export function preparedCheckpointQueueMatches(
   record: PreparedCheckpointSelectionRecord,
   queue: FrozenCandidateRepairQueue | null,
 ): boolean {
-  if (record.queue === undefined || isDeepStrictEqual(record.queue, queue)) return true;
-  if (record.queue !== null) {
+  const captured = capturedPreparedSelectionQueue(record);
+  if (captured === undefined) return true;
+  if (captured !== null) {
     // A captured queue never takes the fresh-cut exception below; it must still select the same candidate.
-    const captured = parseFrozenCandidateRepairQueue(record.queue);
-    return captured !== null && queue !== null && isDeepStrictEqual(
-      preparedSelectionQueueAuthority(captured), preparedSelectionQueueAuthority(queue));
+    return queue !== null && isDeepStrictEqual(
+      selectionQueueAuthorityFromSnapshot(captured), preparedSelectionQueueAuthority(queue));
   }
-  if (queue === null) return false;
+  if (queue === null) return true;
   // Reconstruct exactly the initial queue this attempt is allowed to publish.
   // An admission, verdict, version change, or another attempt still invalidates it.
   const initial = createFrozenCandidateQueue({
@@ -459,13 +514,14 @@ export function preparedSelectionQueueRepairHeadOnlyAdvanced(
   record: PreparedCheckpointSelectionRecord,
   queue: FrozenCandidateRepairQueue | null,
 ): queue is FrozenCandidateRepairQueue {
-  if (!queue || !record.queue || record.carry !== null || !frozenRepairHeadAwaitsVerification(queue)) return false;
-  const captured = parseFrozenCandidateRepairQueue(record.queue);
+  if (!queue || record.carry !== null || !frozenRepairHeadAwaitsVerification(queue)) return false;
+  const captured = capturedPreparedSelectionQueue(record);
+  if (!captured) return false;
+  const { repairHead: _capturedRepairHead, ...capturedAuthority } = selectionQueueAuthorityFromSnapshot(captured);
+  const { repairHead: _liveRepairHead, ...liveAuthority } = preparedSelectionQueueAuthority(queue);
   return Boolean(captured && captured.phase === 'ready-to-verify' && queue.phase === captured.phase &&
-    captured.repairHead !== queue.repairHead && captured.candidate === queue.candidate &&
-    captured.openedAtMs === queue.openedAtMs &&
-    (captured.qualificationAttemptId ?? null) === (queue.qualificationAttemptId ?? null) &&
-    captured.base === queue.base);
+    captured.repairHead !== queue.repairHead &&
+    isDeepStrictEqual(capturedAuthority, liveAuthority));
 }
 
 /**
@@ -537,6 +593,7 @@ export async function commitPreparedCheckpointSelection(
   expected: { queue: FrozenCandidateRepairQueue | null; pendingCarry: FrozenRepairPendingCarry | null },
 ): Promise<boolean> {
   if (!isPreparedCheckpointSelectionRecord(record)) throw new Error('invalid prepared selection authority');
+  const compactRecord = compactPreparedCheckpointSelectionRecord(record);
   return boundedOrgTxn(async tx => {
     const rows = await tx<{ metadata: Record<string, unknown> }[]>`
       SELECT metadata FROM harness_shared.routines
@@ -559,22 +616,23 @@ export async function commitPreparedCheckpointSelection(
     // runner's post-preflight refresh refuses it anyway. Publishing it would also hand this
     // record to every later fire of the attempt. Without an attached runner the refresh re-pins
     // the attempt to the selection, so that case may still commit.
-    if (current.currentPhysicalRunner && !preparedSelectionNamesAttemptCandidate(current, record)) {
+    if (current.currentPhysicalRunner && !preparedSelectionNamesAttemptCandidate(current, compactRecord)) {
       throw new Error(`prepared selection candidate-mismatch: selected ${record.candidate} but attempt ` +
         `${current.attemptId} is pinned to ${current.candidate} by an attached runner (WI-6554700010029754)`);
     }
     const voided = current.preparedSelection &&
       !preparedSelectionNamesAttemptCandidate(current, current.preparedSelection) ? current.preparedSelection : null;
-    if (current.preparedSelection && !voided) return isDeepStrictEqual(current.preparedSelection, record);
-    if (record.carry && (!pending || record.carry.fromCandidate !== pending.fromCandidate ||
-        record.carry.fromRepairHead !== pending.fromRepairHead)) return false;
+    if (current.preparedSelection && !voided)
+      return isDeepStrictEqual(compactPreparedCheckpointSelectionRecord(current.preparedSelection), compactRecord);
+    if (compactRecord.carry && (!pending || compactRecord.carry.fromCandidate !== pending.fromCandidate ||
+        compactRecord.carry.fromRepairHead !== pending.fromRepairHead)) return false;
     const nextMetadata: Record<string, unknown> = { ...metadata, [CHECKPOINT_QUALIFICATION_METADATA_KEY]: {
-      ...current, preparedSelection: record, updatedAtMs: Date.now(),
+      ...current, preparedSelection: compactRecord, updatedAtMs: Date.now(),
       ...(voided ? { evidenceRefs: uniqueStrings([...current.evidenceRefs, `prepared-selection-voided:${voided.candidate}`]) } : {}),
     } };
-    if (record.carry) {
+    if (compactRecord.carry) {
       delete nextMetadata[FROZEN_REPAIR_CARRY_METADATA_KEY];
-      nextMetadata[FROZEN_REPAIR_CARRY_LAST_METADATA_KEY] = record.carry;
+      nextMetadata[FROZEN_REPAIR_CARRY_LAST_METADATA_KEY] = compactRecord.carry;
     }
     await tx`UPDATE harness_shared.routines SET metadata = ${JSON.stringify(nextMetadata)}::jsonb, updated_at = now()
       WHERE workspace_id = ${target.workspaceId} AND install_slug = ${target.installSlug}
@@ -611,7 +669,9 @@ export async function replacePreparedSelectionAfterRepairHeadAdvance(
     if ((queueRaw !== null && !queue) || !queue) throw new Error('unreadable prepared selection queue authority');
     if (current.attemptId !== previous.attemptId || current.phase !== 'running' || current.runId !== runId ||
         current.continuation || current.candidate !== previous.candidate ||
-        !isDeepStrictEqual(current.preparedSelection, previous) || !runner || runner.id.length === 0 ||
+        !current.preparedSelection ||
+        !isDeepStrictEqual(compactPreparedCheckpointSelectionRecord(current.preparedSelection!),
+          compactPreparedCheckpointSelectionRecord(previous)) || !runner || runner.id.length === 0 ||
         runner.phase !== 'materializing' || runner.candidate !== previous.candidate ||
         !runner.evidenceRefs.includes(`checkpoint-run:${runId}`) ||
         !checkpointSelectionQueueAuthorityMatches(queue, expectedQueue) ||
@@ -621,7 +681,7 @@ export async function replacePreparedSelectionAfterRepairHeadAdvance(
       candidate: replacement.candidate,
       repairHead: replacement.candidate,
       currentPhysicalRunner: { ...runner, candidate: replacement.candidate },
-      preparedSelection: replacement,
+      preparedSelection: compactPreparedCheckpointSelectionRecord(replacement),
       updatedAtMs: Date.now(),
       evidenceRefs: uniqueStrings([...current.evidenceRefs,
         `prepared-selection-replanned:${previous.candidate}:${replacement.candidate}`]),
@@ -655,7 +715,9 @@ export function supersedePreparedSelectionBeforeStart(
     const queue = rawQueue === null ? null : parseFrozenCandidateRepairQueue(rawQueue);
     if (rawQueue !== null && !queue) return { status: 'unreadable', error: 'prepared selection queue authority is unreadable' };
     if (current.attemptId !== previous.attemptId || current.phase !== 'running' || current.runId !== runId ||
-        current.candidate !== previous.candidate || !isDeepStrictEqual(current.preparedSelection, previous) ||
+        current.candidate !== previous.candidate || !current.preparedSelection ||
+        !isDeepStrictEqual(compactPreparedCheckpointSelectionRecord(current.preparedSelection!),
+          compactPreparedCheckpointSelectionRecord(previous)) ||
         !runner || runner.phase !== 'materializing' || runner.candidate !== previous.candidate ||
         !runner.evidenceRefs.includes(`checkpoint-run:${runId}`) ||
         !checkpointSelectionQueueAuthorityMatches(queue, expectedQueue) || preparedCheckpointQueueMatches(previous, queue))
@@ -1659,6 +1721,9 @@ export function parseCheckpointQualificationTransaction(value: unknown): Checkpo
     : null;
   const eligibilitySnapshot =
     row.eligibilitySnapshot == null ? null : parseCheckpointEligibilitySnapshot(row.eligibilitySnapshot);
+  const preparedSelection = row.preparedSelection === undefined
+    ? undefined
+    : compactPreparedCheckpointSelectionRecord(row.preparedSelection);
   return {
     ...(row as CheckpointQualificationTransaction),
     repairHead: typeof row.repairHead === 'string' ? row.repairHead.trim() : null,
@@ -1669,6 +1734,7 @@ export function parseCheckpointQualificationTransaction(value: unknown): Checkpo
     currentPhysicalRunner,
     consumedPhysicalRuns,
     eligibilitySnapshot,
+    preparedSelection,
   };
 }
 

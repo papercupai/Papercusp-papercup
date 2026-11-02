@@ -314,9 +314,12 @@ selection_report="$VH_PHASE_DIR/selection.json"
 selection_stdout="$VH_PHASE_DIR/selection.stdout.log"
 selection_errors="$VH_PHASE_DIR/selection.stderr.log"
 (
-  cd "$ROOT/apps/operator" || exit 2
-  PLAYWRIGHT_JSON_OUTPUT_FILE="$selection_report" timeout --signal=TERM --kill-after=5s 60s bash -c \
-    'exec $OPERATOR_E2E_PLAYWRIGHT "$@" --list --reporter=json' -- "$@"
+  # npm-install-safe runs reader commands from the repository root, so restore
+  # the operator cwd inside the locked child before invoking Playwright.
+  PLAYWRIGHT_JSON_OUTPUT_NAME="$selection_report" node "$ROOT/scripts/npm-install-safe.mjs" --exec-under-lock -- \
+    timeout --signal=TERM --kill-after=5s 60s bash -c \
+    'cd "$1" || exit 2; shift; exec $OPERATOR_E2E_PLAYWRIGHT "$@" --list --reporter=json' \
+    -- "$ROOT/apps/operator" "$@"
 ) >"$selection_stdout" 2>"$selection_errors"
 selection_status=$?
 if [ "$selection_status" -ne 0 ]; then
@@ -344,7 +347,15 @@ function visit(suites, parents = []) {
   }
 }
 visit(report.suites);
-if (report.errors?.length || !selected.length) {
+const reportErrors = Array.isArray(report.errors) ? report.errors : [];
+for (const error of reportErrors.slice(0, 20)) {
+  const message = typeof error?.message === 'string' ? error.message : JSON.stringify(error);
+  console.error(`run-operator-e2e-isolated: Playwright selection error: ${message}`);
+}
+if (reportErrors.length > 20) {
+  console.error(`run-operator-e2e-isolated: ${reportErrors.length - 20} additional Playwright selection error(s) omitted`);
+}
+if (reportErrors.length || !selected.length) {
   console.error('run-operator-e2e-isolated: empty or invalid selection; refusing native rig');
   process.exit(2);
 }

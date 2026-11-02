@@ -18,10 +18,13 @@ import { embedViaWorker, shutdownLocalEmbedder, getWorkerState, validNativeRunti
   type WorkerNativeInferenceTrace } from '../../../../../libs/generic/memory/src/local-embedder-worker';
 import { GEMMA_MODEL, gemmaPrompt, mrlTruncate } from '../../../../../libs/generic/memory/src/gemma-embedder';
 import { benchmarkRuntimeArguments, readBenchmarkRuntimeEvidence } from './runtime-benchmark-evidence';
+import { adapterRuntimeArguments, readAdapterRequestPin, readAdapterRuntimeEvidence } from './runtime-adapter-evidence';
 
 const digest = (bytes: string | Buffer) => crypto.createHash('sha256').update(bytes).digest('hex');
 const args = process.argv.slice(2);
 const benchmarkArgs = args.includes('--benchmark') ? benchmarkRuntimeArguments(args) : undefined;
+const adapterArgs = args.includes('--adapter') ? adapterRuntimeArguments(args) : undefined;
+if (adapterArgs && benchmarkArgs) throw new Error('choose one runtime invocation boundary');
 function argument(name: string) {
   const index = args.indexOf(name);
   if (index < 0 || !args[index + 1] || args[index + 1].startsWith('--')) throw new Error('missing ' + name);
@@ -39,8 +42,14 @@ async function child(output: string) {
   const stopObserving = observeWorkerNativeInference(event => native.push(event));
   let vector: number[] = [], failure: string | undefined;
   let benchmark: ReturnType<typeof readBenchmarkRuntimeEvidence> | undefined;
+  let adapter: ReturnType<typeof readAdapterRuntimeEvidence> | undefined;
   try {
-    if (benchmarkArgs) {
+    if (adapterArgs) {
+      const requestPin = readAdapterRequestPin(adapterArgs);
+      const { runProseAdapterCapture } = await import('../../search/bench/prose-adapter-capture-cli');
+      await runProseAdapterCapture(adapterArgs);
+      adapter = readAdapterRuntimeEvidence(adapterArgs, requestPin);
+    } else if (benchmarkArgs) {
       // Keep argv[1] on this driver: importing the benchmark must not trigger its
       // process.exit entrypoint before cleanup and terminal evidence are saved.
       const priorArgv = process.argv;
@@ -70,7 +79,7 @@ async function child(output: string) {
       } catch (error) { failure = 'benchmark database cleanup: '+String(error); process.exitCode = 1; }
     }
     write(output, { processId: process.pid, native,
-      ...(benchmark ? {benchmark} : {vector: {dimensions:vector.length,sha256:digest(JSON.stringify(vector))}}), worker, failure });
+      ...(adapter ? {adapter} : benchmark ? {benchmark} : {vector: {dimensions:vector.length,sha256:digest(JSON.stringify(vector))}}), worker, failure });
   }
 }
 async function parent() {
@@ -80,6 +89,7 @@ async function parent() {
     .map(suffix => [suffix, prefix + '.' + suffix]));
   for (const file of Object.values(outputs)) if (fs.existsSync(file)) throw new Error('runtime output already exists: ' + file);
   const configBytes = fs.readFileSync(configPath), config = JSON.parse(configBytes.toString());
+  const adapterRequestPin = adapterArgs ? readAdapterRequestPin(adapterArgs) : undefined;
   const assetsBytes = fs.readFileSync(assetsPath), assets = JSON.parse(assetsBytes.toString()).assets;
   if (config.configuration.profile.model !== GEMMA_MODEL || config.configuration.profile.targetDims !== 768
     || !Array.isArray(assets) || !assets.length) throw new Error('preserved Gemma identity invalid');
@@ -100,7 +110,7 @@ async function parent() {
     const processChild = spawn('/usr/bin/strace',runtimeFileTraceArguments(outputs['file-opens.log'],[
       process.execPath,'--import',fileURLToPath(new URL('./runtime-source-capture.mjs',import.meta.url)),
       '--import','tsx',fileURLToPath(import.meta.url),'--child',outputs['native.json'],
-      ...(benchmarkArgs ? ['--benchmark','--',...benchmarkArgs] : [])]),{env,stdio:['ignore','pipe','pipe']});
+      ...(adapterArgs ? ['--adapter','--',...adapterArgs] : benchmarkArgs ? ['--benchmark','--',...benchmarkArgs] : [])]),{env,stdio:['ignore','pipe','pipe']});
     processChild.stdout.on('data',bytes => fs.writeSync(outFd,bytes));
     processChild.stderr.on('data',bytes => {stderr.push(bytes); fs.writeSync(errFd,bytes);});
     processChild.stderr.on('end',()=>{eof=true;});
@@ -108,7 +118,7 @@ async function parent() {
     processChild.on('close',(code,signal)=>resolve({code,signal}));
   }).finally(()=>{fs.fsyncSync(outFd);fs.fsyncSync(errFd);fs.closeSync(outFd);fs.closeSync(errFd);});
   const report: Record<string,unknown> = { schemaVersion:1,
-    kind:benchmarkArgs ? 'shared-search-benchmark-runtime-qualification' : 'shared-search-runtime-only-qualification',
+    kind:adapterArgs ? 'shared-search-adapter-runtime-qualification' : benchmarkArgs ? 'shared-search-benchmark-runtime-qualification' : 'shared-search-runtime-only-qualification',
     workItemId:process.env.PAPERCUSP_WORK_ITEM_ID ?? 'WI-6554700010022135',
     configuration:{path:configPath,sha256:digest(configBytes)},assets:{path:assetsPath,sha256:digest(assetsBytes)},
     outputs,result,baselineRun:false,searchAdapterExercised:false,completeRuntimeClosureVerified:false,
@@ -116,7 +126,8 @@ async function parent() {
     excluded:['other processes not captured by the inspector','JIT machine-code bytes','untaken runtime paths','retrieval population and budgets'] };
   const check = (key: string, action: () => unknown) => {try {report[key]=action();}catch(error){report[key]={error:String(error)};process.exitCode=1;}};
   let runtime: {processId:number;native:WorkerNativeInferenceTrace[];failure?:string;
-    benchmark?:ReturnType<typeof readBenchmarkRuntimeEvidence>} = {processId:0,native:[]};
+    benchmark?:ReturnType<typeof readBenchmarkRuntimeEvidence>;
+    adapter?:ReturnType<typeof readAdapterRuntimeEvidence>} = {processId:0,native:[]};
   check('childReceipt',()=>{
     runtime=JSON.parse(fs.readFileSync(outputs['native.json'],'utf8'));
     if (!Number.isSafeInteger(runtime.processId) || runtime.processId<=0 || !Array.isArray(runtime.native) || runtime.failure)
@@ -127,6 +138,13 @@ async function parent() {
     if (!runtime.benchmark) throw new Error('actual benchmark evidence missing');
     const actual = readBenchmarkRuntimeEvidence(benchmarkArgs,runtime.benchmark.exitCode);
     if (JSON.stringify(actual)!==JSON.stringify(runtime.benchmark)) throw new Error('benchmark artifacts moved after child readback');
+    report.searchAdapterExercised = true;
+    return actual;
+  });
+  if (adapterArgs) check('adapter',()=>{
+    if (!runtime.adapter || !adapterRequestPin) throw new Error('actual adapter evidence missing');
+    const actual = readAdapterRuntimeEvidence(adapterArgs, adapterRequestPin);
+    if (JSON.stringify(actual)!==JSON.stringify(runtime.adapter)) throw new Error('adapter artifacts moved after child readback');
     report.searchAdapterExercised = true;
     return actual;
   });

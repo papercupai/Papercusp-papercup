@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // apps/operator/scripts/hooks/cc/posttooluse-resource-governor-nudge.mjs
 //
-// PostToolUse (Edit|Write|MultiEdit) ADVISORY nudge for the capless resource-governor
+// PreToolUse/PostToolUse (Edit|Write|MultiEdit) ADVISORY nudge for the capless resource-governor
 // policy guard (scripts/check-resource-governor-enforcement.mjs). WI-10007553.
 //
 // THE TRAP
@@ -22,7 +22,7 @@
 //   author has open. The detector is imported, never re-implemented, so the nudge
 //   cannot drift quiet on a shape the gate still reports.
 //
-// WHAT IT REPORTS (each only when THIS edit introduced it — see the HEAD diff below)
+// WHAT IT REPORTS (each only when THIS edit introduced it — see the pre-edit baseline below)
 //   - an UNREVIEWED finding: a policy violation with no BYPASS_REGISTRY row;
 //   - a PIN BREAK: a reviewed row exists, but its `matchesSource` pin no longer
 //     accepts the edited source (the row reviewed different code than is there now);
@@ -33,16 +33,19 @@
 //   - ADVISORY ONLY. PostToolUse cannot block and must not try to.
 //   - REPORTS ONLY WHAT THE GATE WOULD REPORT: it calls the gate's scanInventory with
 //     the gate's registry, so a nudge here is a red there, not a suspicion.
-//   - Only NEW findings fire. A finding already present in the HEAD version was
-//     reported on the edit that introduced it; re-nudging trains the reader to ignore
-//     the hook. Keyed by the exact finding string, so a SECOND violation still fires.
+//   - Only NEW findings fire. PreToolUse records findings from the current working
+//     file and PostToolUse compares against them, so older uncommitted changes are not
+//     attributed to this edit. Keyed by the exact finding string, so a SECOND violation
+//     still fires.
 //   - FAILS OPEN on every internal error — bad JSON, missing file, no git, an
 //     unloadable detector. A bug here must never disturb an edit that already succeeded.
 //   - `--self-test` runs the embedded cases (no stdin) and exits non-zero on failure.
 //
 import { execFileSync } from 'node:child_process';
-import { existsSync, readFileSync, statSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join, relative, resolve, sep } from 'node:path';
+import { tmpdir } from 'node:os';
 import process from 'node:process';
 
 /** Detector location, relative to the repo root — also how the root is identified. */
@@ -52,6 +55,9 @@ const DETECTOR_REL = join('scripts', 'check-resource-governor-enforcement.mjs');
 const MAX_BYTES = 600_000;
 
 const STALE_PREFIX = 'stale-bypass-registry:';
+const SNAPSHOT_ROOT = join(tmpdir(), 'papercusp-resource-governor-nudge');
+const SNAPSHOT_TTL_MS = 24 * 60 * 60 * 1000;
+const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit']);
 
 /** One-line remedy per detector code. Unknown codes fall back to the generic remedy. */
 export const REMEDY = Object.freeze({
@@ -90,11 +96,25 @@ async function main() {
   try {
     const hook = JSON.parse(await readStdin(250));
     const tool = hook.tool_name || '';
-    if (tool !== 'Edit' && tool !== 'Write' && tool !== 'MultiEdit') return done();
+    const event = hook.hook_event_name || 'PostToolUse';
+    if (!EDIT_TOOLS.has(tool)) return done();
     const filePath = (hook.tool_input || {}).file_path || '';
     if (!filePath) return done();
 
-    const msg = await nudgeFor(filePath);
+    if (event === 'PreToolUse') {
+      await recordPreEditSnapshot(hook);
+      return done();
+    }
+    if (event !== 'PostToolUse') return done();
+
+    // Missing/invalid snapshots mean the edit's contribution is unknown. Do not
+    // fall back to HEAD: that is how pre-existing dirty hunks were blamed.
+    const before = consumePreEditSnapshot(hook);
+    if (!before) return done();
+    const msg = await nudgeFor(filePath, {
+      beforeFindings: before.findings,
+      beforeRelPath: before.relPath,
+    });
     if (msg) {
       process.stdout.write(
         JSON.stringify({
@@ -218,23 +238,20 @@ export function formatNudge(relPath, items, { p016Lane, laneIds }) {
   return lines.join('\n');
 }
 
-/**
- * The whole check for one edited file. Returns the advisory string, or null.
- * `deps` is injected by the tests; production passes nothing.
- */
-export async function nudgeFor(filePath, deps = {}) {
+/** Read and scan one file in an active enforced lane. */
+async function inspectFile(filePath, deps = {}, allowMissing = false) {
   const {
     exists = existsSync,
     readFile = (p) => readFileSync(p, 'utf8'),
     sizeOf = (p) => statSync(p).size,
-    showHead = defaultShowHead,
     loadDetector = defaultLoadDetector,
   } = deps;
 
   if (!isCandidateFile(filePath)) return null;
   const abs = resolve(filePath);
-  if (!exists(abs)) return null;
-  if (sizeOf(abs) > MAX_BYTES) return null;
+  const fileExists = exists(abs);
+  if (!fileExists && !allowMissing) return null;
+  if (fileExists && sizeOf(abs) > MAX_BYTES) return null;
 
   const root = findRepoRoot(abs, exists);
   if (!root) return null;
@@ -255,25 +272,135 @@ export async function nudgeFor(filePath, deps = {}) {
   const lanes = lanesFor(detector, relPath).filter((row) => row.enforcement === 'active');
   if (!lanes.length) return null;
 
-  const afterText = readFile(abs);
-  // A brand-new file has no HEAD version; treat that as an empty "before" so a file
-  // born with a violation still fires.
-  const beforeText = showHead(root, relPath) ?? '';
-  if (beforeText === afterText) return null;
+  const text = fileExists ? readFile(abs) : '';
+  const findings = text
+    ? detector.scanInventory([[relPath, text]], { validateRegistry: true })
+    : [];
+  return { abs, root, relPath, lanes, detector, text, findings };
+}
 
-  // validateRegistry:true (not 'strict') reports stale rows only for SCANNED paths,
-  // which here is exactly the one edited file. 'strict' would also report every other
-  // path's rows as path-not-scanned — true of a one-file scan, and pure noise.
-  const scan = (text) =>
-    text ? detector.scanInventory([[relPath, text]], { validateRegistry: true }) : [];
-  const after = scan(afterText);
+export async function capturePreEditBaseline(filePath, deps = {}) {
+  const inspected = await inspectFile(filePath, deps, true);
+  if (!inspected) return null;
+  return {
+    filePath: inspected.abs,
+    relPath: inspected.relPath,
+    findings: inspected.findings,
+  };
+}
+
+function snapshotPath(payload, root = SNAPSHOT_ROOT) {
+  const toolUseId = String(payload?.tool_use_id ?? payload?.tool_call_id ?? '');
+  if (!toolUseId) return null;
+  const sessionId = String(payload?.session_id ?? process.env.PAPERCUSP_SID ?? 'unknown');
+  const sessionKey = createHash('sha256').update(sessionId).digest('hex').slice(0, 24);
+  const toolKey = createHash('sha256').update(toolUseId).digest('hex');
+  return join(root, sessionKey, toolKey + '.json');
+}
+
+function pruneExpiredSnapshots(directory, nowMs = Date.now()) {
+  try {
+    for (const name of readdirSync(directory)) {
+      if (!/^[a-f0-9]{64}\.json$/.test(name)) continue;
+      const file = join(directory, name);
+      try {
+        if (nowMs - statSync(file).mtimeMs > SNAPSHOT_TTL_MS) unlinkSync(file);
+      } catch {
+        // A concurrent consume or temp cleanup is harmless.
+      }
+    }
+  } catch {
+    // Missing temp directory or stale entries must not affect an edit.
+  }
+}
+
+export async function recordPreEditSnapshot(payload, deps = {}) {
+  const tool = payload?.tool_name || '';
+  const filePath = payload?.tool_input?.file_path;
+  if (!EDIT_TOOLS.has(tool) || typeof filePath !== 'string' || !filePath) return false;
+
+  const baseline = await capturePreEditBaseline(filePath, deps);
+  if (!baseline) return false;
+  const file = snapshotPath(payload, deps.snapshotRoot ?? SNAPSHOT_ROOT);
+  if (!file) return false;
+
+  const directory = dirname(file);
+  mkdirSync(directory, { recursive: true, mode: 0o700 });
+  pruneExpiredSnapshots(directory);
+  writeFileSync(
+    file,
+    JSON.stringify({
+      version: 1,
+      toolUseId: String(payload.tool_use_id ?? payload.tool_call_id),
+      filePath: baseline.filePath,
+      relPath: baseline.relPath,
+      findings: baseline.findings,
+      capturedAtMs: Date.now(),
+    }),
+    { encoding: 'utf8', flag: 'wx', mode: 0o600 },
+  );
+  return true;
+}
+
+export function consumePreEditSnapshot(payload, deps = {}) {
+  const file = snapshotPath(payload, deps.snapshotRoot ?? SNAPSHOT_ROOT);
+  if (!file) return null;
+  let raw;
+  try {
+    raw = readFileSync(file, 'utf8');
+  } catch {
+    return null;
+  }
+  try {
+    unlinkSync(file);
+  } catch {
+    // Cleanup failure after a successful read is non-fatal.
+  }
+
+  let record;
+  try {
+    record = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  const toolUseId = String(payload?.tool_use_id ?? payload?.tool_call_id ?? '');
+  const filePath = payload?.tool_input?.file_path;
+  if (
+    record?.version !== 1 ||
+    record.toolUseId !== toolUseId ||
+    typeof filePath !== 'string' ||
+    record.filePath !== resolve(filePath) ||
+    typeof record.relPath !== 'string' ||
+    !Array.isArray(record.findings) ||
+    !record.findings.every((finding) => typeof finding === 'string')
+  )
+    return null;
+  return record;
+}
+
+/** Compare the post-edit findings with the captured pre-edit finding set. */
+export async function nudgeFor(filePath, deps = {}) {
+  const inspected = await inspectFile(filePath, deps);
+  if (!inspected) return null;
+  const { root, relPath, lanes, detector, text: afterText, findings: after } = inspected;
   if (!after.length) return null;
 
   let before;
-  try {
-    before = new Set(scan(beforeText));
-  } catch {
-    before = new Set(); // unscannable "before" => report everything: fail loud, not silent
+  if (Array.isArray(deps.beforeFindings)) {
+    if (deps.beforeRelPath && deps.beforeRelPath !== relPath) return null;
+    before = new Set(deps.beforeFindings);
+  } else {
+    // Test-only compatibility. The installed hook never uses HEAD for attribution.
+    const showHead = deps.showHead ?? defaultShowHead;
+    const beforeText = showHead(root, relPath) ?? '';
+    if (beforeText === afterText) return null;
+    const scan = (text) =>
+      text ? detector.scanInventory([[relPath, text]], { validateRegistry: true }) : [];
+    try {
+      before = new Set(scan(beforeText));
+    } catch {
+      before = new Set(); // unscannable test baseline => report everything
+    }
   }
   const fresh = after.filter((f) => !before.has(f));
   if (!fresh.length) return null;

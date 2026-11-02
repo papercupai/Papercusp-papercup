@@ -5,7 +5,7 @@
  * written as the WRONG reading first, so a future change that reintroduces one fails
  * with the misreading named rather than with a bare assertion diff.
  */
-import { afterAll, beforeAll, describe, it, expect } from 'vitest';
+import { afterAll, beforeAll, describe, it, expect, vi } from 'vitest';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -22,6 +22,25 @@ import type { RepairSignatureEntry } from './release/frozen-candidate-repair-que
 
 const CANDIDATE = 'adbf27530285830455f8d8df32a45752cfaff332';
 const REPAIR_HEAD = 'e7bffeac00000000000000000000000000000000';
+const CANDIDATE_RUN_GROUP = 'candidate-run-current';
+const REPAIR_HEAD_RUN_GROUP = 'repair-head-run-current';
+
+const read = (opts: Parameters<typeof readGateCandidateFailures>[0]) =>
+  readGateCandidateFailures({
+    ...opts,
+    candidateRunGroupId:
+      opts.candidateRunGroupId !== undefined
+        ? opts.candidateRunGroupId
+        : opts.candidateSha && opts.repairQueueRead?.status !== 'unreadable'
+          ? CANDIDATE_RUN_GROUP
+          : null,
+    repairHeadRunGroupId:
+      opts.repairHeadRunGroupId !== undefined
+        ? opts.repairHeadRunGroupId
+        : opts.repairHeadSha && opts.repairHeadSha !== opts.candidateSha && opts.repairQueueRead?.status !== 'unreadable'
+          ? REPAIR_HEAD_RUN_GROUP
+          : null,
+  });
 
 type Row = Record<string, unknown>;
 
@@ -92,7 +111,7 @@ describe('readGateCandidateFailures', () => {
   it('reports a DIFFERENT blob at repairHead as "already fixed", not as an open failure', async () => {
     // The measured 2026-08-31 case: one failing row on the frozen candidate whose fix
     // had already landed. Reading that row as work is what cost five hours.
-    const res = await readGateCandidateFailures({
+    const res = await read({
       candidateSha: CANDIDATE,
       repairHeadSha: REPAIR_HEAD,
       root: '/repo',
@@ -116,7 +135,7 @@ describe('readGateCandidateFailures', () => {
   });
 
   it('reports an IDENTICAL blob at repairHead as still broken — the real repair queue', async () => {
-    const res = await readGateCandidateFailures({
+    const res = await read({
       candidateSha: CANDIDATE,
       repairHeadSha: REPAIR_HEAD,
       root: '/repo',
@@ -144,7 +163,7 @@ describe('readGateCandidateFailures', () => {
     });
 
     it('a PASS at repairHead is NOT still broken, even with an unchanged test blob', async () => {
-      const res = await readGateCandidateFailures({
+      const res = await read({
         candidateSha: CANDIDATE,
         repairHeadSha: REPAIR_HEAD,
         root: '/repo',
@@ -167,7 +186,7 @@ describe('readGateCandidateFailures', () => {
     });
 
     it('a FAIL at repairHead is still broken, even when the test blob changed', async () => {
-      const res = await readGateCandidateFailures({
+      const res = await read({
         candidateSha: CANDIDATE,
         repairHeadSha: REPAIR_HEAD,
         root: '/repo',
@@ -195,7 +214,7 @@ describe('readGateCandidateFailures', () => {
         if (/count\(DISTINCT file_path\)/.test(text)) return Promise.resolve([{ files_judged: 12 }]);
         return Promise.resolve([{ file_path: 'libs/a/b.test.ts', status: 'fail', attempts: 1 }]);
       }) as never;
-      const res = await readGateCandidateFailures({
+      const res = await read({
         candidateSha: CANDIDATE,
         repairHeadSha: REPAIR_HEAD,
         root: '/repo',
@@ -213,7 +232,7 @@ describe('readGateCandidateFailures', () => {
   it('a single still-broken file OUTRANKS any number of already-fixed siblings', async () => {
     // First-match ordering. Reporting `all-fixes-contained` while real work remains is
     // the reassuring-degradation failure the cell exists to end.
-    const res = await readGateCandidateFailures({
+    const res = await read({
       candidateSha: CANDIDATE,
       repairHeadSha: REPAIR_HEAD,
       root: '/repo',
@@ -263,7 +282,7 @@ describe('readGateCandidateFailures', () => {
       return null;
     };
 
-    const res = await readGateCandidateFailures({
+    const res = await read({
       candidateSha: CANDIDATE,
       repairHeadSha: REPAIR_HEAD,
       root: '/repo',
@@ -319,7 +338,7 @@ describe('readGateCandidateFailures', () => {
         })),
       ];
 
-      const res = await readGateCandidateFailures({
+      const res = await read({
         candidateSha: CANDIDATE,
         repairHeadSha: REPAIR_HEAD,
         root: '/repo',
@@ -345,7 +364,7 @@ describe('readGateCandidateFailures', () => {
       const { failing, git } = population(150, (i, ref) => (i < 100 && ref === REPAIR_HEAD ? `fixed-${i}` : `orig-${i}`));
       const atRepairHead = [140, 141, 142].map((i) => ({ file_path: failing[i].file_path, status: 'fail', id: i }));
 
-      const res = await readGateCandidateFailures({
+      const res = await read({
         candidateSha: CANDIDATE,
         repairHeadSha: REPAIR_HEAD,
         root: '/repo',
@@ -367,7 +386,7 @@ describe('readGateCandidateFailures', () => {
 
     it('an UNCUT list keeps its path order exactly', async () => {
       const { failing, git } = population(3, (i, ref) => (i === 0 && ref === REPAIR_HEAD ? 'fixed' : `orig-${i}`));
-      const res = await readGateCandidateFailures({
+      const res = await read({
         candidateSha: CANDIDATE,
         repairHeadSha: REPAIR_HEAD,
         root: '/repo',
@@ -380,7 +399,7 @@ describe('readGateCandidateFailures', () => {
 
     it('chunks the batched read, so thousands of paths never overflow the argv or the stdout buffer', async () => {
       const { git, calls } = population(900, (i, ref) => (ref === REPAIR_HEAD ? `fixed-${i}` : `orig-${i}`));
-      const res = await readGateCandidateFailures({
+      const res = await read({
         candidateSha: CANDIDATE,
         repairHeadSha: REPAIR_HEAD,
         root: '/repo',
@@ -409,7 +428,7 @@ describe('readGateCandidateFailures', () => {
         return null; // every ls-tree batch is unreadable
       };
 
-      const res = await readGateCandidateFailures({
+      const res = await read({
         candidateSha: CANDIDATE,
         repairHeadSha: REPAIR_HEAD,
         root: '/repo',
@@ -439,7 +458,7 @@ describe('readGateCandidateFailures', () => {
       [`diff --raw ${CANDIDATE} ${REPAIR_HEAD} -- libs/papercusp`]:
         ':160000 160000 1111111 2222222 M\tlibs/papercusp',
     };
-    const res = await readGateCandidateFailures({
+    const res = await read({
       candidateSha: CANDIDATE,
       repairHeadSha: REPAIR_HEAD,
       root: '/repo',
@@ -459,7 +478,7 @@ describe('readGateCandidateFailures', () => {
   });
 
   it('an unchanged gitlink is still-broken, and an unreadable one is UNKNOWN', async () => {
-    const unchanged = await readGateCandidateFailures({
+    const unchanged = await read({
       candidateSha: CANDIDATE,
       repairHeadSha: REPAIR_HEAD,
       root: '/repo',
@@ -470,7 +489,7 @@ describe('readGateCandidateFailures', () => {
     });
     expect(unchanged.distinctFailingFiles[0].fixInRepairHead).toBe(false);
 
-    const unreadable = await readGateCandidateFailures({
+    const unreadable = await read({
       candidateSha: CANDIDATE,
       repairHeadSha: REPAIR_HEAD,
       root: '/repo',
@@ -486,7 +505,7 @@ describe('readGateCandidateFailures', () => {
   });
 
   it('an unresolvable blob on EITHER side is UNKNOWN, not "fixed"', async () => {
-    const res = await readGateCandidateFailures({
+    const res = await read({
       candidateSha: CANDIDATE,
       repairHeadSha: REPAIR_HEAD,
       root: '/repo',
@@ -499,7 +518,7 @@ describe('readGateCandidateFailures', () => {
   });
 
   it('NO frozen candidate is a measured ABSENCE, never a count of zero failures', async () => {
-    const res = await readGateCandidateFailures({ candidateSha: null, repairHeadSha: null, root: '/repo' });
+    const res = await read({ candidateSha: null, repairHeadSha: null, root: '/repo' });
     expect(res.assessment).toBe('no-frozen-candidate');
     expect(res.unavailable).toMatch(/not "zero failures"/);
     // The zeroes are shape, not evidence — `unavailable` is what says so.
@@ -507,7 +526,7 @@ describe('readGateCandidateFailures', () => {
   });
 
   it('P-025: an unreadable persisted queue stays present-but-unmeasured with its raw identity', async () => {
-    const res = await readGateCandidateFailures({
+    const res = await read({
       candidateSha: null,
       repairHeadSha: null,
       root: '/repo',
@@ -531,7 +550,7 @@ describe('readGateCandidateFailures', () => {
   });
 
   it('an unreachable test_runs is UNMEASURED, and never degrades to a green-looking zero', async () => {
-    const res = await readGateCandidateFailures({
+    const res = await read({
       candidateSha: CANDIDATE,
       repairHeadSha: REPAIR_HEAD,
       root: '/repo',
@@ -544,7 +563,7 @@ describe('readGateCandidateFailures', () => {
   });
 
   it('carries the scope sentence so filesJudged is never quoted as the full suite', async () => {
-    const res = await readGateCandidateFailures({
+    const res = await read({
       candidateSha: CANDIDATE,
       repairHeadSha: REPAIR_HEAD,
       root: '/repo',
@@ -569,16 +588,109 @@ describe('readGateCandidateFailures', () => {
       return Promise.resolve(/count\(DISTINCT file_path\)/.test(strings.join(' ')) ? [{ files_judged: 1 }] : []);
     }) as never;
 
-    await readGateCandidateFailures({ candidateSha: CANDIDATE, repairHeadSha: REPAIR_HEAD, root: '/repo', sql });
+    await read({ candidateSha: CANDIDATE, repairHeadSha: REPAIR_HEAD, root: '/repo', sql });
 
     for (const q of seen) {
       expect(q).toMatch(/source\s*=/);
       expect(q).toMatch(/worktree_dirty\s*=\s*false/);
       expect(q).toMatch(/commit_sha\s*=/);
+      expect(q).toMatch(/run_group_id\s*=/);
     }
     // The failing-file query must collapse retries to the latest attempt, or a
     // retried-and-passed file reads as red forever.
     expect(seen.some((q) => /DISTINCT ON \(file_path\)/.test(q))).toBe(true);
+  });
+
+  it('fails closed when the candidate has no exact run group', async () => {
+    const sql = vi.fn() as never;
+    const res = await read({
+      candidateSha: CANDIDATE,
+      candidateRunGroupId: null,
+      repairHeadSha: REPAIR_HEAD,
+      repairHeadRunGroupId: REPAIR_HEAD_RUN_GROUP,
+      root: '/repo',
+      sql,
+    });
+
+    expect(res).toMatchObject({
+      candidateRunGroupId: null,
+      assessment: 'unmeasured',
+      unavailable: expect.stringContaining('no exact candidate run group'),
+    });
+    expect(sql).not.toHaveBeenCalled();
+  });
+
+  it('scopes same-commit candidate rows to the queue run group', async () => {
+    const seen: Array<{ text: string; values: unknown[] }> = [];
+    const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
+      const text = strings.join(' ');
+      seen.push({ text, values });
+      if (/count\(DISTINCT file_path\)/.test(text)) return Promise.resolve([{ files_judged: 2, row_count: 2 }]);
+      if (/repair_head_runs/.test(text)) return Promise.resolve([]);
+      return Promise.resolve([{ file_path: 'lib/a.test.ts', status: 'error', attempts: 1 }]);
+    }) as never;
+
+    await read({
+      candidateSha: CANDIDATE,
+      candidateRunGroupId: 'candidate-run-current',
+      repairHeadSha: REPAIR_HEAD,
+      repairHeadRunGroupId: null,
+      root: '/repo',
+      sql,
+    });
+
+    const censusQuery = seen.find((query) => /count\(DISTINCT file_path\)/.test(query.text));
+    const candidateQuery = seen.find((query) => /candidate_runs/.test(query.text));
+    for (const query of [censusQuery, candidateQuery]) {
+      expect(query?.text).toMatch(/run_group_id\s*=/);
+      expect(query?.values).toContain('candidate-run-current');
+    }
+  });
+
+  it('scopes repairHead verdicts to the exact completed run group', async () => {
+    const seen: Array<{ text: string; values: unknown[] }> = [];
+    const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
+      const text = strings.join(' ');
+      seen.push({ text, values });
+      if (/count\(DISTINCT file_path\)/.test(text)) return Promise.resolve([{ files_judged: 1 }]);
+      if (/repair_head_runs/.test(text)) return Promise.resolve([{ file_path: 'lib/a.test.ts', status: 'pass', id: 42 }]);
+      return Promise.resolve([{ file_path: 'lib/a.test.ts', status: 'fail', attempts: 1 }]);
+    }) as never;
+    const res = await read({
+      candidateSha: CANDIDATE,
+      candidateRunGroupId: 'candidate-run-current',
+      repairHeadSha: REPAIR_HEAD,
+      repairHeadRunGroupId: 'repair-head-run-current',
+      root: '/repo',
+      sql,
+      git: fakeGit({}),
+    });
+
+    const repairQuery = seen.find((query) => /repair_head_runs/.test(query.text));
+    expect(repairQuery?.text).toMatch(/run_group_id\s*=/);
+    expect(repairQuery?.values).toContain('repair-head-run-current');
+    expect(res).toMatchObject({
+      candidateRunGroupId: 'candidate-run-current',
+      repairHeadRunGroupId: 'repair-head-run-current',
+      passedAtRepairHeadCount: 1,
+    });
+  });
+
+  it('reports insufficient data while the exact repairHead verification is in flight', async () => {
+    const sql = vi.fn(async () => [{ files_judged: 1, row_count: 1 }]) as never;
+    const res = await read({
+      candidateSha: CANDIDATE,
+      candidateRunGroupId: 'candidate-run-current',
+      repairHeadSha: REPAIR_HEAD,
+      repairHeadRunGroupId: 'repair-head-previous-run',
+      repairHeadVerificationInFlight: true,
+      root: '/repo',
+      sql,
+    });
+
+    expect(res.assessment).toBe('unmeasured');
+    expect(res.unavailable).toMatch(/repairHead verification.*in flight/i);
+    expect(sql).not.toHaveBeenCalled();
   });
 
   /**
@@ -593,7 +705,7 @@ describe('readGateCandidateFailures', () => {
   const nameOnly = `diff --name-only ${CANDIDATE} ${REPAIR_HEAD}`;
 
   it('does NOT call a file "real work" when the fix could be riding a non-test file', async () => {
-    const res = await readGateCandidateFailures({
+    const res = await read({
       candidateSha: CANDIDATE,
       repairHeadSha: REPAIR_HEAD,
       root: '/repo',
@@ -626,7 +738,7 @@ describe('readGateCandidateFailures', () => {
   it('KEEPS the strong "real work" reading when nothing else moved either', async () => {
     // The hedge must not swallow the instrument: with an identical tree on both sides
     // there is nowhere for a fix to hide, so `false` is decisive and says so.
-    const res = await readGateCandidateFailures({
+    const res = await read({
       candidateSha: CANDIDATE,
       repairHeadSha: REPAIR_HEAD,
       root: '/repo',
@@ -650,7 +762,7 @@ describe('readGateCandidateFailures', () => {
     // failed, and the shared fail-soft runner collapses empty stdout to null. Deciding
     // between them from that alone would reintroduce the exact confident-wrong reading
     // this module exists to remove, so the tree ids are compared FIRST.
-    const res = await readGateCandidateFailures({
+    const res = await read({
       candidateSha: CANDIDATE,
       repairHeadSha: REPAIR_HEAD,
       root: '/repo',
@@ -671,7 +783,7 @@ describe('readGateCandidateFailures', () => {
   it('hedges when it cannot tell whether anything else moved', async () => {
     // Unknown must not degrade to the confident reading. An unreadable comparison is
     // evidence of nothing, and the row has to say so rather than pick a side.
-    const res = await readGateCandidateFailures({
+    const res = await read({
       candidateSha: CANDIDATE,
       repairHeadSha: REPAIR_HEAD,
       root: '/repo',
@@ -695,7 +807,7 @@ describe('readGateCandidateFailures', () => {
      * (papercusp / oddsmith / hello-world-3) sat in exactly this state.
      */
     const sameShaResult = () =>
-      readGateCandidateFailures({
+      read({
         candidateSha: CANDIDATE,
         repairHeadSha: CANDIDATE,
         root: '/repo',
@@ -760,7 +872,7 @@ describe('readGateCandidateFailures', () => {
 
   describe('nonTestLegs (WI-2143253)', () => {
     it('is an UNMEASURED object — never null — when the caller has no repairTickLegs measurement (C2)', async () => {
-      const res = await readGateCandidateFailures({
+      const res = await read({
         candidateSha: CANDIDATE,
         repairHeadSha: REPAIR_HEAD,
         root: '/repo',
@@ -777,7 +889,7 @@ describe('readGateCandidateFailures', () => {
     });
 
     it('names which non-test legs are failing, not just that something was measured', async () => {
-      const res = await readGateCandidateFailures({
+      const res = await read({
         candidateSha: CANDIDATE,
         repairHeadSha: REPAIR_HEAD,
         root: '/repo',
@@ -803,7 +915,7 @@ describe('readGateCandidateFailures', () => {
     });
 
     it('reports current:false and hedges the reading when the measurement predates repairHead', async () => {
-      const res = await readGateCandidateFailures({
+      const res = await read({
         candidateSha: CANDIDATE,
         repairHeadSha: REPAIR_HEAD,
         root: '/repo',
@@ -823,7 +935,7 @@ describe('readGateCandidateFailures', () => {
     });
 
     it('says all legs passed when none are failing, distinct from "nothing was measured"', async () => {
-      const res = await readGateCandidateFailures({
+      const res = await read({
         candidateSha: CANDIDATE,
         repairHeadSha: REPAIR_HEAD,
         root: '/repo',
@@ -841,7 +953,7 @@ describe('readGateCandidateFailures', () => {
     });
 
     it('survives on the unavailable path — a test_runs failure must not also lose the leg measurement', async () => {
-      const res = await readGateCandidateFailures({
+      const res = await read({
         candidateSha: CANDIDATE,
         repairHeadSha: REPAIR_HEAD,
         root: '/repo',
@@ -862,7 +974,7 @@ describe('readGateCandidateFailures', () => {
     });
 
     it('survives on the no-frozen-candidate path', async () => {
-      const res = await readGateCandidateFailures({
+      const res = await read({
         candidateSha: null,
         repairHeadSha: null,
         root: '/repo',
@@ -919,14 +1031,16 @@ describe('P-003 — the named per-leg surface that replaced postSuiteMeasured', 
     },
   ];
 
-  async function read(opts: { queueLegs?: readonly FrozenRepairLegState[] } = {}) {
+  async function read(opts: { queueLegs?: readonly FrozenRepairLegState[]; repairTickLegs?: typeof legsSnap | null } = {}) {
     return readGateCandidateFailures({
       candidateSha: CANDIDATE,
+      candidateRunGroupId: CANDIDATE_RUN_GROUP,
       repairHeadSha: REPAIR_HEAD,
+      repairHeadRunGroupId: null,
       root: '/repo',
       sql: fakeSql({ filesJudged: 223, failing: [] }),
       git: fakeGit({}),
-      repairTickLegs: legsSnap,
+      repairTickLegs: opts.repairTickLegs === undefined ? legsSnap : opts.repairTickLegs,
       ...(opts.queueLegs ? { queueLegs: opts.queueLegs } : {}),
     });
   }
@@ -937,14 +1051,15 @@ describe('P-003 — the named per-leg surface that replaced postSuiteMeasured', 
     // declared evidence paths vanished, and the verdict read `none-failing`. The lifecycle
     // is real evidence on its own (D-005 §4): list every admitted leg as not-measured, and
     // keep a failing one outstanding until something actually measures it passing.
-    const res = await readGateCandidateFailures({
+    const res = await read({
       candidateSha: CANDIDATE,
       repairHeadSha: REPAIR_HEAD,
       root: '/repo',
       sql: fakeSql({ filesJudged: 223, failing: [] }),
       git: fakeGit({}),
       queueLegs,
-      // deliberately NO repairTickLegs
+      repairTickLegs: null,
+      // deliberately no repairTickLegs snapshot
     });
     expect(res.nonTestLegsMeasured).toBe('not-recorded');
     expect(res.nonTestLegs.head).toBeNull();
@@ -969,12 +1084,13 @@ describe('P-003 — the named per-leg surface that replaced postSuiteMeasured', 
   });
 
   it('LOAD-BEARING: no leg measurement reads as NOT-RECORDED, never as "no legs failing"', async () => {
-    const res = await readGateCandidateFailures({
+    const res = await read({
       candidateSha: CANDIDATE,
       repairHeadSha: REPAIR_HEAD,
       root: '/repo',
       sql: fakeSql({ filesJudged: 223, failing: [] }),
       git: fakeGit({}),
+      repairTickLegs: null,
     });
     // The old `postSuiteMeasured: null` was indistinguishable from "measured, came back
     // empty" — and it resolved null forever, because no caller ever supplied it.
@@ -1092,7 +1208,9 @@ describe('P-007 — a red non-test leg is NEVER none-failing on any reading of t
   }) =>
     readGateCandidateFailures({
       candidateSha: CANDIDATE,
+      candidateRunGroupId: CANDIDATE_RUN_GROUP,
       repairHeadSha: REPAIR_HEAD,
+      repairHeadRunGroupId: null,
       root: '/repo',
       sql: fakeSql({ filesJudged: 223, failing: opts.failing ?? [] }),
       git: fakeGit(opts.git ?? {}),
@@ -1364,7 +1482,7 @@ describe('EI-23433375151859491 — a failing path recorded submodule-relative', 
   });
 
   it('reads the FIXED blob inside the submodule for a path the superproject cannot resolve', async () => {
-    const res = await readGateCandidateFailures({
+    const res = await read({
       candidateSha: CANDIDATE,
       repairHeadSha: REPAIR_HEAD,
       root,
@@ -1394,7 +1512,7 @@ describe('EI-23433375151859491 — a failing path recorded submodule-relative', 
   });
 
   it('reports an ambiguous path as UNMEASURABLE rather than guessing the first submodule', async () => {
-    const res = await readGateCandidateFailures({
+    const res = await read({
       candidateSha: CANDIDATE,
       repairHeadSha: REPAIR_HEAD,
       root,
@@ -1413,7 +1531,7 @@ describe('EI-23433375151859491 — a failing path recorded submodule-relative', 
   });
 
   it('keeps an unreadable pin UNKNOWN instead of collapsing it to "unchanged"', async () => {
-    const res = await readGateCandidateFailures({
+    const res = await read({
       candidateSha: CANDIDATE,
       repairHeadSha: REPAIR_HEAD,
       root,

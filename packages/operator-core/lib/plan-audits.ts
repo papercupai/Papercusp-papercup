@@ -2930,13 +2930,28 @@ async function executeCurrentActivationAudit(
                 message: `${mappings.problems.length} BAR mapping problem(s): ${mappings.problems.map((problem) => problem.detail).join('; ')}`,
               };
             }
-            barSeedPendingAmendment = {
-              rubricSlug: current.acceptance_bar_rubric_slug,
-              previousSubjectPlanRevision: Number(previous.subject_version),
-              currentSubjectPlanRevision: Number(current.version),
-              currentPlanContentHash: current.content_hash,
-              reason: 'acceptance_bar_source_changed',
-            };
+            // The source audit can predate an approved amendment's richer
+            // Intent. Restoring that exact locked canonical Intent changes the
+            // historical source fingerprint but adopts no new promise. Reuse
+            // the guarded pin synchronizer; it rejects every other meaning/map
+            // change and never revises rubric criteria or proof identities.
+            const synchronized = await synchronizeAcceptanceBarSubjectRevision(tx, {
+              workspaceId: input.workspaceId, harnessSlug: input.harnessSlug, planSlug: input.planSlug,
+              previousBody: previous.content_snapshot, nextBody: current.content,
+              previousVersion: Number(previous.subject_version), nextVersion: Number(current.version),
+              dryRun,
+            });
+            if (synchronized) {
+              preserveExistingBars = dryRun;
+            } else {
+              barSeedPendingAmendment = {
+                rubricSlug: current.acceptance_bar_rubric_slug,
+                previousSubjectPlanRevision: Number(previous.subject_version),
+                currentSubjectPlanRevision: Number(current.version),
+                currentPlanContentHash: current.content_hash,
+                reason: 'acceptance_bar_source_changed',
+              };
+            }
           } else {
             if (!rubricAlreadyPinsCurrentPlan) {
               // This reuses the Requirements/map fingerprint and canonical BAR/hash

@@ -89,6 +89,7 @@ vi.mock('../source', async (orig) => {
     getPlanRow: vi.fn(async () => ({
       planSlug: 'mock',
       status: H.state.frontmatterStatus,
+      content: `---\ntitle: Fixture\nstatus: ${H.state.frontmatterStatus ?? 'ready'}\n---\n# Fixture\n`,
       template: null,
       templateData: null,
       inputSchema: null,
@@ -96,7 +97,8 @@ vi.mock('../source', async (orig) => {
     readPlanBySlug: vi.fn(async () => ({
       parsed: { frontmatter: { status: H.state.frontmatterStatus }, items: H.state.parsedItems },
       archived: false,
-      row: { planSlug: 'mock', version: 1, opStatus: null, items: [] },
+      row: { planSlug: 'mock', version: 1, opStatus: null, items: [],
+        content: `---\ntitle: Fixture\nstatus: ${H.state.frontmatterStatus ?? 'ready'}\n---\n# Fixture\n` },
     })),
     // WI-5825: plans:start now resolves its WRITE key through the same authority
     // its READ above uses (resolvePlanScope), instead of re-deriving the tenant
@@ -143,6 +145,12 @@ vi.mock('../../../acceptance-bar-contract-snapshot', async (orig) => ({
 // its exact queue outcome. Stub it so the suite needs no work_items database —
 // and so the retired-axis block below can assert promotion STILL runs with the
 // op_status write gated off.
+// This unit suite isolates start orchestration; the real scoped proof writer is
+// exercised by start-auto-flip and plan-execution-authority integration suites.
+vi.mock('../plan-execution-authority', () => ({
+  readExecutionPlanRow: async () => ({ content: '', content_hash: 'unit-start' }),
+  recordPlanExecutionStart: async () => ({ seq: 1, contentHash: 'unit-start' }),
+}));
 vi.mock('../../../plan-workitem-promotion-run', () => ({
   promotePlanItems: vi.fn(async () => ({ promoted: 0, skipped: 0, flagOff: false })),
 }));
@@ -353,7 +361,7 @@ describe('plans:start canonical BAR subject readiness', () => {
       .mockResolvedValue(projectAcceptanceBarContractSnapshot(input));
 
     const result = await run({ slug: 'mock', consulted: true });
-    expect(result.data.results[0]).toMatchObject({
+    expect(result.data.results[0], JSON.stringify(result.data.results[0])).toMatchObject({
       ok: false,
       error: 'plan_inputs_not_ready',
       code: 'acceptance_bar_contract_not_ready',
@@ -469,7 +477,7 @@ describe('plans:start BAR contract completeness before proof (P-003)', () => {
     vi.mocked(readAcceptanceBarContractSnapshot)
       .mockResolvedValue(postEpochSnapshot({ ...completeBar(), ...patch } as AcceptanceBarTrace));
     const result = await run({ slug: 'mock', consulted: true });
-    expect(result.data.results[0]).toMatchObject({
+    expect(result.data.results[0], JSON.stringify(result.data.results[0])).toMatchObject({
       ok: false,
       error: 'plan_inputs_not_ready',
       code: 'acceptance_bar_contract_not_ready',
@@ -506,7 +514,7 @@ describe('plans:start commit-time readiness', () => {
   it('rejects a changed revision before approval and promotion', async () => {
     const writes = locked({ version: 2 });
     const result = await run({ slug: 'mock', consulted: true });
-    expect(result.data.results[0]).toMatchObject({ ok: false, error: 'plan_changed' });
+    expect(result.data.results[0], JSON.stringify(result.data.results[0])).toMatchObject({ ok: false, error: 'plan_changed' });
     expect(writes).toEqual([]);
     expect(promotePlanItemsMock).not.toHaveBeenCalled();
   });
@@ -520,7 +528,7 @@ describe('plans:start commit-time readiness', () => {
       templateData: { attempts: 'invalid' } as never,
     });
     const result = await run({ slug: 'mock', consulted: true });
-    expect(result.data.results[0]).toMatchObject({
+    expect(result.data.results[0], JSON.stringify(result.data.results[0])).toMatchObject({
       ok: false, error: 'plan_inputs_not_ready',
       readiness: { missing: ['harness'], issues: [expect.stringContaining('attempts')] },
     });
@@ -531,7 +539,7 @@ describe('plans:start commit-time readiness', () => {
   it('still approves an unchanged no-schema legacy plan', async () => {
     const writes = locked({});
     const result = await run({ slug: 'mock', consulted: true });
-    expect(result.data.results[0]).toMatchObject({ ok: true, autoApproved: true });
+    expect(result.data.results[0], JSON.stringify(result.data.results[0])).toMatchObject({ ok: true, autoApproved: true });
     expect(writes).toHaveLength(1);
     expect(writes[0]).toContain('status: ready');
     expect(promotePlanItemsMock).toHaveBeenCalledTimes(1);
@@ -545,7 +553,7 @@ describe('plans:start commit-time readiness', () => {
       };
     });
     const result = await run({ slug: 'mock', consulted: true });
-    expect(result.data.results[0]).toMatchObject({ ok: false, error: 'spec_quality_scorecard_missing' });
+    expect(result.data.results[0], JSON.stringify(result.data.results[0])).toMatchObject({ ok: false, error: 'spec_quality_scorecard_missing' });
     expect(writes).toEqual([]);
     expect(promotePlanItemsMock).not.toHaveBeenCalled();
   });
@@ -553,7 +561,7 @@ describe('plans:start commit-time readiness', () => {
   it('does not promote while the commit lock is unavailable', async () => {
     planLockMocks.withPlanLock.mockResolvedValue({ kind: 'busy', busy: [] });
     const result = await run({ slug: 'mock', consulted: true });
-    expect(result.data.results[0]).toMatchObject({ ok: false, error: 'plan_locked' });
+    expect(result.data.results[0], JSON.stringify(result.data.results[0])).toMatchObject({ ok: false, error: 'plan_locked' });
     expect(promotePlanItemsMock).not.toHaveBeenCalled();
   });
 
@@ -562,14 +570,14 @@ describe('plans:start commit-time readiness', () => {
       kind: 'applied', value: { ok: false, code: 'conversation_audit_required', message: 'audit required' },
     });
     const result = await run({ slug: 'mock', consulted: true });
-    expect(result.data.results[0]).toMatchObject({ ok: false, error: 'conversation_audit_required' });
+    expect(result.data.results[0], JSON.stringify(result.data.results[0])).toMatchObject({ ok: false, error: 'conversation_audit_required' });
     expect(promotePlanItemsMock).not.toHaveBeenCalled();
   });
 
   it('does not proceed when commit-time validation is unavailable', async () => {
     planLockMocks.withPlanLock.mockRejectedValue(new Error('lock transaction unavailable'));
     const result = await run({ slug: 'mock', consulted: true });
-    expect(result.data.results[0]).toMatchObject({ ok: false, error: 'plan_start_revalidation_unavailable' });
+    expect(result.data.results[0], JSON.stringify(result.data.results[0])).toMatchObject({ ok: false, error: 'plan_start_revalidation_unavailable' });
     expect(promotePlanItemsMock).not.toHaveBeenCalled();
   });
 });
@@ -607,7 +615,7 @@ describe('plans:start terminal guard', () => {
     const result = await run({ slug: 'invalid-dependency-plan' });
 
     expect(result.data.counts).toEqual({ ok: 0, failed: 1 });
-    expect(result.data.results[0]).toMatchObject({
+    expect(result.data.results[0], JSON.stringify(result.data.results[0])).toMatchObject({
       ok: false,
       error: 'invalid_plan_dependencies',
       dependencyDiagnostics: [
@@ -633,7 +641,7 @@ describe('plans:start terminal guard', () => {
 
     const result = await run({ slug: 'mock' });
 
-    expect(result.data.results[0]).toMatchObject({
+    expect(result.data.results[0], JSON.stringify(result.data.results[0])).toMatchObject({
       ok: false,
       error: 'conversation_audit_required',
       message: 'run plans:audit phase activation',
@@ -648,7 +656,7 @@ describe('plans:start terminal guard', () => {
     const result = await run({ slug: 'live-plan-2026-06-02', consulted: true });
 
     expect(result.data.counts).toEqual({ ok: 0, failed: 1 });
-    expect(result.data.results[0]).toMatchObject({
+    expect(result.data.results[0], JSON.stringify(result.data.results[0])).toMatchObject({
       ok: false,
       error: 'admission_refused',
       admissionReason: 'lane-unknown',
@@ -861,7 +869,8 @@ describe('plans:start — the retired op_status axis (P-047)', () => {
     const res = await run({ slug: 'live-plan-2026-06-02' });
 
     expect(res.data.results[0]).toMatchObject({
-      ok: true,
+      ok: false,
+      executionStartIssued: false,
       promotion: {
         promoted: 0,
         skipped: 3,
@@ -895,7 +904,8 @@ describe('plans:start — the retired op_status axis (P-047)', () => {
 
     const res = await run({ slug: 'live-plan-2026-06-02' });
     expect(res.data.results[0]).toMatchObject({
-      ok: true,
+      ok: false,
+      executionStartIssued: false,
       promotion: {
         promoted: 0,
         skipped: 4,
@@ -914,7 +924,8 @@ describe('plans:start — the retired op_status axis (P-047)', () => {
     const res = await run({ slug: 'live-plan-2026-06-02' });
 
     expect(res.data.results[0]).toMatchObject({
-      ok: true,
+      ok: false,
+      executionStartIssued: false,
       promotion: null,
       promotionError: 'promotion boom',
     });
@@ -1158,7 +1169,8 @@ describe('plans:start — the retired op_status axis (P-047)', () => {
     const res = await run({ slug: 'live-plan-2026-06-02' });
 
     expect(res.data.results[0]).toMatchObject({
-      ok: true,
+      ok: false,
+      executionStartIssued: false,
       promotion: { promoted: 1 },
       promotedBlockError: 'plan_locked',
     });

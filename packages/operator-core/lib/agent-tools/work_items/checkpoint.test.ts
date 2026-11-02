@@ -5551,6 +5551,35 @@ describe('work_items:checkpoint — prose path continuity lint (EI-2238651493968
     }, { allowDirectories: true });
   });
 
+  it('excludes paths preserved only from the prior checkpoint while checking current prose', async () => {
+    const priorPath = 'packages/operator-core/lib/agent-tools/fleet/respawn-member.ts';
+    const currentPath = 'packages/operator-core/lib/agent-tools/work_items/prose-path-current-missing.ts';
+    const prior = `Historical tool excerpt mentioned ${priorPath}.`;
+    const body = `The current update references ${currentPath}.`;
+    const stored = `${body}\n\n${prior}`;
+    resolveCurrentTokens.mockResolvedValue(new Map([
+      [`file:${currentPath}`, null],
+      [`file:${priorPath}`, null],
+    ]));
+    getWorkItem.mockResolvedValue({ id: 'WI-PROSE-PRESERVED-PRIOR', harness: 'papercup' });
+    setWorkItemCheckpointWithPrior.mockResolvedValue({ stored, priorLength: prior.length });
+    getWorkItemCheckpoint.mockResolvedValue(stored);
+
+    const result = await one({ id: 'WI-PROSE-PRESERVED-PRIOR', checkpoint: body, append: true });
+
+    expect(result.ok).toBe(true);
+    expect(result.prosePathLint).toMatchObject({
+      flagged: true,
+      paths: [currentPath],
+      note: expect.stringContaining('advisory only'),
+    });
+    expect(resolveCurrentTokens).toHaveBeenCalledWith(
+      [`file:${currentPath}`],
+      { workspaceId: 'default', harness: 'papercup' },
+      { allowDirectories: true },
+    );
+  });
+
   it('ignores an upstream source URL while still reporting a genuinely missing local path', async () => {
     const upstreamPath = 'src/backend/storage/aio/aio_funcs.c';
     const missingLocal = 'packages/operator-core/lib/agent-tools/work_items/url-path-regression-missing.ts';

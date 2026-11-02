@@ -101,15 +101,35 @@ afterEach(() => {
   rmSync(root, { recursive: true, force: true });
 });
 
-function makeDeps(store: ReturnType<typeof memStore>, runSuite: RunSuite = async () => true, onError?: (e: unknown) => void) {
-  return createDefaultStandingPrMergeDeps({ repoDir: deps_repo, installSlug: INSTALL, prNumber: PR_NUMBER, store, runSuite, onError });
+function makeDeps(
+  store: ReturnType<typeof memStore>,
+  runSuite: RunSuite = async () => true,
+  onError?: (e: unknown) => void,
+  admittedFixPaths?: string[],
+) {
+  return createDefaultStandingPrMergeDeps({
+    repoDir: deps_repo,
+    installSlug: INSTALL,
+    prNumber: PR_NUMBER,
+    store,
+    runSuite,
+    onError,
+    resolveAdmittedFixPaths: async ({ prHeadSha, targetTipSha }) => ({
+      ok: true,
+      paths: admittedFixPaths ?? git(deps_repo, 'diff', '--no-renames', '--name-only', `${targetTipSha}...${prHeadSha}`)
+        .split('\n').filter(Boolean),
+    }),
+  });
 }
 
 /** A PR branch off main touching its own file, published as refs/pull/7/head. */
-function makePrHead(file = 'pr.txt', content = 'pr\n'): string {
+function makePrHead(file = 'pr.txt', content = 'pr\n', additionalFiles: Record<string, string> = {}): string {
   const base = git(work, 'rev-parse', 'main');
   git(work, 'checkout', '-q', '-b', `pr-${Date.now()}-${Math.random().toString(36).slice(2)}`, base);
-  const head = commitFile(work, file, content, 'pr change');
+  let head = commitFile(work, file, content, 'pr change');
+  for (const [extraFile, extraContent] of Object.entries(additionalFiles)) {
+    head = commitFile(work, extraFile, extraContent, 'additional PR change');
+  }
   git(work, 'checkout', '-q', 'main');
   publishPrHead(head);
   return head;
@@ -246,6 +266,21 @@ describe('stepStandingPrMerge over the real deps (D-008 end to end)', () => {
   }
   const input = (head: string, promotedSha: string | null = head) => ({ pr: pr(head), policy: 'auto' as const, promotedSha, authorRevoked: false });
 
+  it('refuses a real-git PR diff path that is outside the admitted fix manifest', async () => {
+    const head = makePrHead('fix.ts', 'fix\n', { 'unrelated.ts': 'unrelated\n' });
+    let suites = 0;
+    const d = makeDeps(memStore(), async () => { suites += 1; return true; }, undefined, ['fix.ts']);
+    const before = git(bare, 'rev-parse', 'main');
+
+    const out = await stepStandingPrMerge(input(head), d);
+
+    expect(out).toMatchObject({ action: 'refused', reason: 'unattributed-delta' });
+    expect(out.action === 'refused' && out.detail).toContain('unrelated.ts');
+    expect(suites).toBe(0);
+    expect(git(bare, 'rev-parse', 'main')).toBe(before);
+    expect(await d.loadLastTest(PR_NUMBER)).toBeNull();
+  });
+
   it('never-tested -> testing -> merged; the target lands on exactly the tested sha', async () => {
     const head = makePrHead();
     const tested: string[] = [];
@@ -356,6 +391,7 @@ describe('makeLiveStandingPrMerge over real git (P-021 auto-merge policy)', () =
           const real = makeWorktreeSuiteRunner('test -f pr.txt && test -f a.txt');
           return async (a) => (tested.push(a.sha), real(a));
         },
+        buildDeps: ({ runSuite }) => makeDeps(store, runSuite),
       },
     });
     return { entry, tested, commands, suiteAsked };
@@ -529,6 +565,11 @@ describe('findUnpublishedGitlinks: submodule commits must be on their main repos
     const store = memStore();
     const d = createDefaultStandingPrMergeDeps({
       repoDir: upstreamCheckout, installSlug: INSTALL, prNumber: PR_NUMBER, store, runSuite: async () => true,
+      resolveAdmittedFixPaths: async ({ prHeadSha, targetTipSha }) => ({
+        ok: true,
+        paths: git(upstreamCheckout, 'diff', '--no-renames', '--name-only', `${targetTipSha}...${prHeadSha}`)
+          .split('\n').filter(Boolean),
+      }),
     });
 
     // A PR without gitlink changes has nothing to publish.

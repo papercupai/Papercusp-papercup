@@ -12,7 +12,11 @@ import type { PresenceTier1Joins } from '../agent-tools/coordination/presence-ti
 import type { WakeabilitySignals } from '../agent-tools/coordination/presence-wakeability';
 import type { SelfWakeSignals } from '../agent-tools/coordination/presence-selfwake';
 import type { FleetAssignmentRow } from './assignments';
-import type { FleetFoldPresence } from './fleet-roster';
+import type {
+  FleetFoldPresence,
+  FleetRosterPresenceLegTiming,
+  FleetRosterPresenceStageTiming,
+} from './fleet-roster';
 
 const {
   fetchPresenceTier1Mock,
@@ -23,6 +27,9 @@ const {
   fetchSelfWakeMock,
   findLiveHostMock,
   findLiveHostAsyncMock,
+  listPresenceMock,
+  fetchPresenceFleetMock,
+  listLiveSessionPresenceMock,
 } = vi.hoisted(() => ({
   fetchPresenceTier1Mock: vi.fn(),
   fetchWakeabilityMock: vi.fn(),
@@ -32,6 +39,9 @@ const {
   fetchSelfWakeMock: vi.fn(),
   findLiveHostMock: vi.fn(),
   findLiveHostAsyncMock: vi.fn(),
+  listPresenceMock: vi.fn(),
+  fetchPresenceFleetMock: vi.fn(),
+  listLiveSessionPresenceMock: vi.fn(),
 }));
 
 vi.mock('../agent-tools/coordination/presence-tier1', async (importOriginal) => {
@@ -57,6 +67,18 @@ vi.mock('../adv-sessions', async (importOriginal) => {
 vi.mock('../agent-tools/coordination/presence-selfwake', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../agent-tools/coordination/presence-selfwake')>();
   return { ...actual, fetchSelfWake: fetchSelfWakeMock };
+});
+vi.mock('../agent-tools/coordination/presence', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../agent-tools/coordination/presence')>();
+  return { ...actual, listPresence: listPresenceMock };
+});
+vi.mock('../agent-tools/coordination/presence-fleet', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../agent-tools/coordination/presence-fleet')>();
+  return { ...actual, fetchPresenceFleet: fetchPresenceFleetMock };
+});
+vi.mock('../sync/hyperbee/session-presence-store', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../sync/hyperbee/session-presence-store')>();
+  return { ...actual, listLiveSessionPresence: listLiveSessionPresenceMock };
 });
 vi.mock('../events/await/psu-pty-discovery', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../events/await/psu-pty-discovery')>();
@@ -93,6 +115,29 @@ function pres(ownerId: string, fleetSlug = 'p2p-parity-lanes'): FleetFoldPresenc
 
 const neverSettles = <T>(): Promise<T> => new Promise<T>(() => {});
 
+async function expectPresenceStageTimeout(
+  expectedStage: FleetRosterPresenceStageTiming['stage'],
+): Promise<void> {
+  fetchPresenceTier1Mock.mockResolvedValue(new Map<string, PresenceTier1Joins>());
+  fetchWakeabilityMock.mockResolvedValue(new Map<string, WakeabilitySignals>());
+  listFleetAssignmentsMock.mockResolvedValue([] as FleetAssignmentRow[]);
+  const stageTimings: FleetRosterPresenceStageTiming[] = [];
+  let presenceLegTiming: FleetRosterPresenceLegTiming | undefined;
+  const resultPromise = listFleetRosterDiagnosed({
+    fleetSlug: 'p2p-parity-lanes',
+    workspaceId: 'workspace-1',
+    onPresenceStageTiming: (timing) => stageTimings.push(timing),
+    onPresenceLegTiming: (timing) => { presenceLegTiming = timing; },
+  });
+  await vi.advanceTimersByTimeAsync(0);
+  expect(stageTimings.some((timing) => timing.stage === expectedStage && timing.status === 'running')).toBe(true);
+  await vi.advanceTimersByTimeAsync(FLEET_ROSTER_SUBREAD_TIMEOUT_MS);
+  const result = await resultPromise;
+  expect(result.degradedLegs).toContain('presence');
+  expect(presenceLegTiming).toMatchObject({ status: 'degraded', reason: 'timeout' });
+  expect(presenceLegTiming?.elapsedMs).toBeGreaterThanOrEqual(FLEET_ROSTER_SUBREAD_TIMEOUT_MS);
+}
+
 describe('listFleetRosterDiagnosed (WI-3818 bounded fan-out)', () => {
   beforeEach(() => {
     vi.useFakeTimers();
@@ -104,6 +149,9 @@ describe('listFleetRosterDiagnosed (WI-3818 bounded fan-out)', () => {
     fetchSelfWakeMock.mockReset();
     findLiveHostMock.mockReset();
     findLiveHostAsyncMock.mockReset().mockResolvedValue(null);
+    listPresenceMock.mockReset().mockResolvedValue([]);
+    fetchPresenceFleetMock.mockReset().mockResolvedValue(new Map());
+    listLiveSessionPresenceMock.mockReset().mockResolvedValue([]);
     // Default: the recorded leg answers promptly with "nobody recorded-live" —
     // the pre-existing tests' degradedLegs expectations stay exact.
     recordedLiveOwnerIdsMock.mockResolvedValue(new Set<string>());
@@ -131,6 +179,137 @@ describe('listFleetRosterDiagnosed (WI-3818 bounded fan-out)', () => {
     expect(result.degradedLegs).toEqual([]);
     expect(result.entries).toHaveLength(1);
     expect(result.entries[0].agentId).toBe('su-1');
+  });
+
+  it('records ordered stage timings and counts without letting observer errors affect the roster', async () => {
+    fetchPresenceTier1Mock.mockResolvedValue(new Map<string, PresenceTier1Joins>());
+    fetchWakeabilityMock.mockResolvedValue(new Map<string, WakeabilitySignals>());
+    listFleetAssignmentsMock.mockResolvedValue([] as FleetAssignmentRow[]);
+    listPresenceMock.mockResolvedValue([pres('su-1')]);
+    fetchPresenceFleetMock.mockResolvedValue(new Map([
+      ['su-1', { fleetSlug: 'p2p-parity-lanes', fleetRole: 'member' }],
+    ]));
+    listLiveSessionPresenceMock.mockResolvedValue([]);
+    const stageTimings: FleetRosterPresenceStageTiming[] = [];
+    let presenceLegTiming: FleetRosterPresenceLegTiming | undefined;
+    const resultPromise = listFleetRosterDiagnosed({
+      fleetSlug: 'p2p-parity-lanes',
+      workspaceId: 'workspace-1',
+      onPresenceStageTiming: (timing) => {
+        stageTimings.push(timing);
+        throw new Error('observer failed');
+      },
+      onPresenceLegTiming: (timing) => {
+        presenceLegTiming = timing;
+        throw new Error('observer failed');
+      },
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    const result = await resultPromise;
+
+    expect(stageTimings.map(({ stage, status }) => [stage, status])).toEqual([
+      ['coordPresence', 'running'], ['coordPresence', 'completed'],
+      ['fleetMembership', 'running'], ['fleetMembership', 'completed'],
+      ['sharedSessionPresence', 'running'], ['sharedSessionPresence', 'completed'],
+    ]);
+    expect(stageTimings.find((timing) => timing.stage === 'coordPresence' && timing.status === 'completed'))
+      .toMatchObject({ elapsedMs: expect.any(Number), resultCount: 1 });
+    expect(stageTimings.find((timing) => timing.stage === 'fleetMembership' && timing.status === 'completed'))
+      .toMatchObject({ elapsedMs: expect.any(Number), inputCount: 1, resultCount: 1 });
+    expect(stageTimings.find((timing) => timing.stage === 'sharedSessionPresence' && timing.status === 'completed'))
+      .toMatchObject({ elapsedMs: expect.any(Number), resultCount: 0 });
+    expect(presenceLegTiming).toMatchObject({ status: 'completed', elapsedMs: expect.any(Number) });
+    expect(result.degradedLegs).toEqual([]);
+    expect(result.entries).toHaveLength(1);
+  });
+
+  it('retains the best-effort federated-stage failure when local presence succeeds', async () => {
+    fetchPresenceTier1Mock.mockResolvedValue(new Map<string, PresenceTier1Joins>());
+    fetchWakeabilityMock.mockResolvedValue(new Map<string, WakeabilitySignals>());
+    listFleetAssignmentsMock.mockResolvedValue([] as FleetAssignmentRow[]);
+    listPresenceMock.mockResolvedValue([pres('su-1')]);
+    fetchPresenceFleetMock.mockResolvedValue(new Map([
+      ['su-1', { fleetSlug: 'p2p-parity-lanes', fleetRole: 'member' }],
+    ]));
+    listLiveSessionPresenceMock.mockRejectedValue(new Error('federated read failed'));
+    const stageTimings: FleetRosterPresenceStageTiming[] = [];
+    let presenceLegTiming: FleetRosterPresenceLegTiming | undefined;
+    const resultPromise = listFleetRosterDiagnosed({
+      fleetSlug: 'p2p-parity-lanes',
+      workspaceId: 'workspace-1',
+      onPresenceStageTiming: (timing) => stageTimings.push(timing),
+      onPresenceLegTiming: (timing) => { presenceLegTiming = timing; },
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    const result = await resultPromise;
+
+    expect(stageTimings.find((timing) => timing.stage === 'sharedSessionPresence' && timing.status === 'failed'))
+      .toMatchObject({ errorName: 'Error' });
+    expect(presenceLegTiming).toMatchObject({ status: 'completed' });
+    expect(result.degradedLegs).not.toContain('presence');
+    expect(result.entries).toHaveLength(1);
+  });
+
+  it('identifies which serial presence stage is still running when the aggregate leg times out', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      listPresenceMock.mockReturnValue(neverSettles());
+      await expectPresenceStageTimeout('coordPresence');
+
+      listPresenceMock.mockResolvedValue([pres('su-1')]);
+      fetchPresenceFleetMock.mockReturnValue(neverSettles());
+      await expectPresenceStageTimeout('fleetMembership');
+
+      listPresenceMock.mockResolvedValue([pres('su-1')]);
+      fetchPresenceFleetMock.mockResolvedValue(new Map([
+        ['su-1', { fleetSlug: 'p2p-parity-lanes', fleetRole: 'member' }],
+      ]));
+      listLiveSessionPresenceMock.mockReturnValue(neverSettles());
+      await expectPresenceStageTimeout('sharedSessionPresence');
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('freezes the active-stage snapshot after timeout when the underlying read settles late', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      fetchPresenceTier1Mock.mockResolvedValue(new Map<string, PresenceTier1Joins>());
+      fetchWakeabilityMock.mockResolvedValue(new Map<string, WakeabilitySignals>());
+      listFleetAssignmentsMock.mockResolvedValue([] as FleetAssignmentRow[]);
+      fetchPresenceFleetMock.mockResolvedValue(new Map([
+        ['su-1', { fleetSlug: 'p2p-parity-lanes', fleetRole: 'member' }],
+      ]));
+      listLiveSessionPresenceMock.mockResolvedValue([]);
+      let resolvePresence: ((rows: FleetFoldPresence[]) => void) | undefined;
+      listPresenceMock.mockImplementation(() => new Promise<FleetFoldPresence[]>((resolve) => {
+        resolvePresence = resolve;
+      }));
+      const stageTimings: FleetRosterPresenceStageTiming[] = [];
+      let presenceLegTiming: FleetRosterPresenceLegTiming | undefined;
+      const resultPromise = listFleetRosterDiagnosed({
+        fleetSlug: 'p2p-parity-lanes',
+        workspaceId: 'workspace-1',
+        onPresenceStageTiming: (timing) => stageTimings.push(timing),
+        onPresenceLegTiming: (timing) => { presenceLegTiming = timing; },
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(FLEET_ROSTER_SUBREAD_TIMEOUT_MS);
+      const result = await resultPromise;
+      expect(result.degradedLegs).toContain('presence');
+      expect(stageTimings).toEqual([
+        { stage: 'coordPresence', status: 'running', elapsedMs: 0 },
+      ]);
+      expect(presenceLegTiming).toMatchObject({ status: 'degraded', reason: 'timeout' });
+
+      const stageCountAtTimeout = stageTimings.length;
+      resolvePresence?.([pres('su-1')]);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(stageTimings).toHaveLength(stageCountAtTimeout);
+      expect(stageTimings).not.toContainEqual(expect.objectContaining({ status: 'completed' }));
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 
   it('uses async psu-host discovery in the request path without calling the sync lookup', async () => {

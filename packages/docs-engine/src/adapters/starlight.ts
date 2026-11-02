@@ -232,10 +232,57 @@ export function starlightContentAdapter(opts: StarlightContentAdapterOptions): S
   let cachedRevision: string | undefined;
   let cacheGeneration = 0;
   let pageBuild: Promise<Map<string, StarlightPage>> | null = null;
+  let directPageByResult = new WeakMap<DocPage, StarlightPage>();
+
+  function pageFromFile(abs: string, content: string): StarlightPage {
+    const rel = path.relative(contentRoot, abs).replace(/\\/g, '/');
+    const slug = slugFromRelPath(rel);
+    const { meta, body } = parseFrontmatter(content);
+    const slugs = slug === '' ? [] : slug.split('/');
+    const url = slug === '' ? `${baseUrl}/` : `${baseUrl}/${slug}`;
+    const title = meta.title ?? humanize(slugs[slugs.length - 1] ?? 'index');
+    const searchable = meta.searchable === 'false' ? false : undefined;
+    const okf = parseOkfFrontmatter(content);
+    return {
+      slug,
+      slugs,
+      url,
+      title,
+      ...(meta.description ? { description: meta.description } : {}),
+      ...(searchable === false ? { searchable: false as const } : {}),
+      ...(okf ? { okf } : {}),
+      toc: extractHeadings(body),
+      absolutePath: abs,
+    };
+  }
+
+  async function getPageBySlug(slug: string): Promise<StarlightPage | null> {
+    if (slug !== '' && (slug.includes('\\') || slug.split('/').some((part) => !part || part === '.' || part === '..'))) {
+      return null;
+    }
+    const stem = slug ? slug.split('/').join(path.sep) : '';
+    const relativeCandidates = slug
+      ? [`${stem}.mdx`, `${stem}.md`, path.join(stem, 'index.mdx'), path.join(stem, 'index.md')]
+      : ['index.mdx', 'index.md'];
+    for (const relative of relativeCandidates) {
+      const abs = path.resolve(contentRoot, relative);
+      const insideRoot = path.relative(contentRoot, abs);
+      if (insideRoot.startsWith('..') || path.isAbsolute(insideRoot)) continue;
+      const content = await readSafe(abs);
+      if (content === null) continue;
+      const page = pageFromFile(abs, content);
+      if (page.slug === slug) {
+        directPageByResult.set(page, page);
+        return page;
+      }
+    }
+    return null;
+  }
 
   function invalidate(): void {
     pageCache = null;
     pageBuild = null;
+    directPageByResult = new WeakMap();
     cacheGeneration += 1;
   }
 
@@ -294,32 +341,8 @@ export function starlightContentAdapter(opts: StarlightContentAdapterOptions): S
     // change which file wins a duplicate slug.
     await forEachBoundedBatch(files, readSafe, (abs, content) => {
       if (content === null) return;
-      const rel = path.relative(contentRoot, abs).replace(/\\/g, '/');
-      const slug = slugFromRelPath(rel);
-      const { meta, body } = parseFrontmatter(content);
-      const slugs = slug === '' ? [] : slug.split('/');
-      const url = slug === '' ? `${baseUrl}/` : `${baseUrl}/${slug}`;
-      const title = meta.title ?? humanize(slugs[slugs.length - 1] ?? 'index');
-      // EI-10937: `searchable: false` frontmatter keeps generated aggregator pages
-      // (the *-index title-dumps) OUT of the search corpus. Only an explicit
-      // `false` opts out — anything else (absent, `true`, junk) stays searchable.
-      const searchable = meta.searchable === 'false' ? false : undefined;
-      // OKF v0.2 (P-005). Parsed from the RAW frontmatter block rather than `meta`
-      // above, which is a flat top-level-scalar reader by construction and so cannot
-      // see `generated:` / `verified:` (nested blocks) at all. Absent → no OKF keys.
-      const okf = parseOkfFrontmatter(content);
-      const page: StarlightPage = {
-        slug,
-        slugs,
-        url,
-        title,
-        ...(meta.description ? { description: meta.description } : {}),
-        ...(searchable === false ? { searchable: false as const } : {}),
-        ...(okf ? { okf } : {}),
-        toc: extractHeadings(body),
-        absolutePath: abs,
-      };
-      cache.set(slug, page);
+      const page = pageFromFile(abs, content);
+      cache.set(page.slug, page);
     });
     const readParseMs = Math.max(0, Date.now() - readParseStartedAt);
     options?.onTiming?.({ component: 'starlight', phase: 'read-parse', state: 'completed', elapsedMs: readParseMs, count: cache.size });
@@ -342,6 +365,7 @@ export function starlightContentAdapter(opts: StarlightContentAdapterOptions): S
       const cache = await buildPages(options);
       return [...cache.values()].map(({ absolutePath: _abs, ...page }) => page);
     },
+    getPageBySlug,
     async getPage(slug: string): Promise<DocPage | null> {
       const cache = await buildPages();
       const sp = cache.get(slug);
@@ -353,9 +377,8 @@ export function starlightContentAdapter(opts: StarlightContentAdapterOptions): S
       const signal = options?.signal;
       const work = (async () => {
         throwIfAborted(signal);
-        const cache = await buildPages();
+        const sp = directPageByResult.get(page) ?? (await buildPages()).get(page.slug);
         throwIfAborted(signal);
-        const sp = cache.get(page.slug);
         if (!sp) throw new Error(`starlightContentAdapter: page ${page.slug} not found`);
         return await getCachedPageContent(sp, signal);
       })();
@@ -368,18 +391,25 @@ export function starlightContentAdapter(opts: StarlightContentAdapterOptions): S
     // file, over the size cap) is reported as "no source" so the caller refuses,
     // rather than throwing or falling back to the lossy `getContent` projection.
     async getSource(page: DocPage): Promise<string | null> {
-      const cache = await buildPages();
-      const sp = cache.get(page.slug);
+      const sp = directPageByResult.get(page) ?? (await buildPages()).get(page.slug);
       if (!sp) return null;
       return await readSafe(sp.absolutePath);
     },
     async getSectionMeta(sectionSlug: string): Promise<SectionMeta> {
-      // Try `<section>/index.mdx` frontmatter (Starlight section-intro convention).
-      const candidates = [
+      // listPages() has already read this page on docs:outline's build path. Reuse
+      // its parsed frontmatter instead of stat/read-ing every section intro again.
+      const cached = pageCache?.get(sectionSlug);
+      const indexPaths = [
         path.join(contentRoot, sectionSlug, 'index.mdx'),
         path.join(contentRoot, sectionSlug, 'index.md'),
       ];
-      for (const abs of candidates) {
+      if (cached && indexPaths.includes(cached.absolutePath)) {
+        return {
+          ...(cached.title ? { title: cached.title } : {}),
+          ...(cached.description ? { description: cached.description } : {}),
+        };
+      }
+      for (const abs of indexPaths) {
         const raw = await readSafe(abs);
         if (raw === null) continue;
         const { meta } = parseFrontmatter(raw);

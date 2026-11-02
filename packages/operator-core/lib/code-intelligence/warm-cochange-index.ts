@@ -18,10 +18,10 @@ import { execFile, fork, type ChildProcess } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { realpath } from 'node:fs/promises';
-import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
+import { papercuspPath } from '@papercusp/host-platform/home';
 import { pinModuleState } from '@papercusp/module-singleton';
 import { terminateSpawnTree } from '@papercusp/backup/hook';
 import { createTextCollector } from '../child-output';
@@ -75,7 +75,7 @@ export function defaultWarmCoChangeWorker(): string {
 
 function snapshotPathFor(root: string): string | null {
   const dir = state.options.snapshotDir === undefined
-    ? join(homedir(), '.papercusp', 'cache', 'cochange-index') : state.options.snapshotDir;
+    ? papercuspPath('cache', 'cochange-index') : state.options.snapshotDir;
   return dir === null ? null : join(dir, `${createHash('sha256').update(root).digest('hex').slice(0, 16)}.json`);
 }
 

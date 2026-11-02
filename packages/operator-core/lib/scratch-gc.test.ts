@@ -71,6 +71,7 @@ import {
   SCRATCH_RUN_DIR_MAX_AGE_MS,
   WORKSPACE_SCRATCH_MARKER,
   DEAD_WORKSPACE_QUIET_MS,
+  resolveScratchQuotaStateRoot,
   writeWithScratchQuota,
   type ScratchWriteTimings,
 } from './scratch-gc';
@@ -843,8 +844,7 @@ describe('reserveScratchSpace — no synchronous walk on the hot path (WI-100045
 
     const workspaceRoot = resolve(scratchRootForWorkspace(workspaceId));
     const statePath = join(
-      dirname(scratchRoot()),
-      'scratch-quota-state',
+      resolveScratchQuotaStateRoot(),
       createHash('sha256').update(workspaceRoot).digest('hex') + '.json',
     );
     const filePath = join(runDir, 'spill.bin');
@@ -887,6 +887,53 @@ describe('reserveScratchSpace — no synchronous walk on the hot path (WI-100045
     }
   });
 
+  it('uses the runtime filesystem for default quota state and preserves explicit roots', () => {
+    const runtimeDir = join(sandbox, 'runtime');
+    const defaultScratchRoot = join(sandbox, '.papercusp', 'scratch');
+    const explicitScratchRoot = join(sandbox, 'custom-scratch');
+
+    expect(resolveScratchQuotaStateRoot({ XDG_RUNTIME_DIR: runtimeDir }, defaultScratchRoot))
+      .toBe(join(runtimeDir, 'papercusp', 'scratch-quota-state'));
+    expect(resolveScratchQuotaStateRoot({
+      XDG_RUNTIME_DIR: runtimeDir,
+      PAPERCUSP_SCRATCH_ROOT: explicitScratchRoot,
+    }, explicitScratchRoot)).toBe(join(dirname(explicitScratchRoot), 'scratch-quota-state'));
+    expect(resolveScratchQuotaStateRoot({
+      XDG_RUNTIME_DIR: runtimeDir,
+      PAPERCUSP_FS_MUTEX_LOCK_DIR: join(sandbox, 'custom-locks'),
+    }, defaultScratchRoot)).toBe(join(dirname(defaultScratchRoot), 'scratch-quota-state'));
+  });
+
+  it('refreshes actual scratch usage before reserving when the shared quota ledger is missing', async () => {
+    const workspaceId = 'ws-quota-ledger-missing';
+    const runDir = ensureScratchRunDir({ workspaceId, toolName: 'result-door', runId: UUID(82) });
+    await refreshScratchUsage(workspaceId);
+
+    const workspaceRoot = resolve(scratchRootForWorkspace(workspaceId));
+    const statePath = join(
+      resolveScratchQuotaStateRoot(),
+      createHash('sha256').update(workspaceRoot).digest('hex') + '.json',
+    );
+    await rmAsync(statePath, { force: true });
+
+    const filePath = join(runDir, 'spill.bin');
+    const timings: ScratchWriteTimings[] = [];
+    await writeWithScratchQuota({
+      workspaceId,
+      filePath,
+      bytes: 16,
+      onTiming: (row) => timings.push(row),
+    }, async () => {
+      await writeFile(filePath, Buffer.alloc(16));
+    });
+
+    expect(readFileSync(filePath)).toHaveLength(16);
+    const state = JSON.parse(readFileSync(statePath, 'utf8')) as { bytes: number };
+    expect(state.bytes).toBe(markerBytes(workspaceId) + 16);
+    expect(state.bytes).toBe(scratchUsageBytes(workspaceId));
+    expect(timings.find((row) => !row.progress)?.refreshWaitMs).toBeGreaterThan(0);
+  });
+
   it('reconciles a torn shared quota ledger before the next reservation', async () => {
     const workspaceId = 'ws-torn-quota-ledger';
     const runDir = ensureScratchRunDir({ workspaceId, toolName: 'result-door', runId: UUID(81) });
@@ -894,8 +941,7 @@ describe('reserveScratchSpace — no synchronous walk on the hot path (WI-100045
 
     const workspaceRoot = resolve(scratchRootForWorkspace(workspaceId));
     const statePath = join(
-      dirname(scratchRoot()),
-      'scratch-quota-state',
+      resolveScratchQuotaStateRoot(),
       createHash('sha256').update(workspaceRoot).digest('hex') + '.json',
     );
     writeFileSync(statePath, '{"version":');
@@ -1448,8 +1494,7 @@ describe('cross-process scratch quota coordination', () => {
       await writeFile(seedPath, Buffer.alloc(4));
     });
     const ledgerPath = join(
-      dirname(process.env.PAPERCUSP_SCRATCH_ROOT!),
-      'scratch-quota-state',
+      resolveScratchQuotaStateRoot(),
       createHash('sha256').update(workspaceRoot).digest('hex') + '.json',
     );
     const readLedgerBytes = (): number | null => {
@@ -2283,8 +2328,7 @@ describe('deferred scratch quota recovery', () => {
     // Make the already valid cross-process ledger stale. The next reservation can safely
     // advance it; a full tree reconciliation should run after that spill settles.
     const statePath = join(
-      dirname(dirname(workspaceRoot)),
-      'scratch-quota-state',
+      resolveScratchQuotaStateRoot(),
       createHash('sha256').update(resolve(workspaceRoot)).digest('hex') + '.json',
     );
     const state = JSON.parse(readFileSync(statePath, 'utf8')) as { updatedAt: number };

@@ -199,6 +199,334 @@ export function admissionFailOpenGuaranteedSec(tickMinutes = DEFAULT_PROMOTER_TI
 }
 
 /**
+ * A scheduled backstop's nominal cadence is not evidence that it is running. The
+ * claim floor only quotes its deadline while the latest completed fail-open run
+ * is within one full admission deadline; beyond that, the caller must see an
+ * overdue or unknown backstop instead of a recycled static promise.
+ */
+export const ADMISSION_FAIL_OPEN_LIVENESS_STALE_SEC = admissionFailOpenGuaranteedSec();
+
+export type AdmissionFailOpenLiveness =
+  | {
+      status: 'healthy';
+      lastSuccessAtMs: number;
+      lastAttemptAtMs: number | null;
+      lastAttemptStatus: string | null;
+      ageMs: number;
+      thresholdMs: number;
+    }
+  | {
+      status: 'overdue';
+      reason: string;
+      lastSuccessAtMs: number | null;
+      lastAttemptAtMs: number | null;
+      lastAttemptStatus: string | null;
+      ageMs: number | null;
+      overdueBySec: number;
+      thresholdMs: number;
+    }
+  | {
+      status: 'paused';
+      reason: string | null;
+      lastSuccessAtMs: number | null;
+      lastAttemptAtMs: number | null;
+      lastAttemptStatus: string | null;
+      thresholdMs: number;
+    }
+  | {
+      status: 'inactive';
+      reason: string;
+      lastSuccessAtMs: number | null;
+      lastAttemptAtMs: number | null;
+      lastAttemptStatus: string | null;
+      thresholdMs: number;
+    }
+  | {
+      status: 'unknown';
+      reason: string;
+      lastSuccessAtMs: number | null;
+      lastAttemptAtMs: number | null;
+      lastAttemptStatus: string | null;
+      thresholdMs: number;
+    };
+
+/** Pure classifier shared by the claim-floor read and its unit tests. */
+export function classifyAdmissionFailOpenLiveness(input: {
+  routineExists: boolean;
+  active: boolean | null;
+  createdAtMs: number | null;
+  lastSuccessAtMs: number | null;
+  lastAttemptAtMs?: number | null;
+  lastAttemptStatus?: string | null;
+  pause: unknown;
+  nowMs: number;
+  staleSec?: number;
+}): AdmissionFailOpenLiveness {
+  const thresholdMs = (input.staleSec ?? ADMISSION_FAIL_OPEN_LIVENESS_STALE_SEC) * 1000;
+  const lastSuccessAtMs = Number.isFinite(input.lastSuccessAtMs) ? input.lastSuccessAtMs : null;
+  const lastAttemptAtMs = Number.isFinite(input.lastAttemptAtMs) ? input.lastAttemptAtMs ?? null : null;
+  const lastAttemptStatus = typeof input.lastAttemptStatus === 'string' ? input.lastAttemptStatus : null;
+  if (!input.routineExists) {
+    return {
+      status: 'unknown', reason: 'the fail-open routine row is missing', lastSuccessAtMs,
+      lastAttemptAtMs, lastAttemptStatus, thresholdMs,
+    };
+  }
+  const pause = readRoutinePause(input.pause);
+  if (pause.present) {
+    return { status: 'paused', reason: pause.reason, lastSuccessAtMs, lastAttemptAtMs, lastAttemptStatus, thresholdMs };
+  }
+  if (input.active !== true) {
+    return {
+      status: 'inactive', reason: 'the fail-open routine is inactive with no recorded pause',
+      lastSuccessAtMs, lastAttemptAtMs, lastAttemptStatus, thresholdMs,
+    };
+  }
+  if (lastAttemptStatus !== null && lastAttemptStatus !== 'complete') {
+    const attemptAgeMs = lastAttemptAtMs === null ? null : Math.max(0, input.nowMs - lastAttemptAtMs);
+    if (attemptAgeMs !== null && attemptAgeMs > thresholdMs) {
+      return {
+        status: 'overdue',
+        reason: `the most recent fail-open attempt is ${lastAttemptStatus} beyond the admission deadline`,
+        lastSuccessAtMs, lastAttemptAtMs, lastAttemptStatus, ageMs: attemptAgeMs,
+        overdueBySec: Math.ceil((attemptAgeMs - thresholdMs) / 1000), thresholdMs,
+      };
+    }
+    return {
+      status: 'unknown',
+      reason: `the most recent fail-open attempt is ${lastAttemptStatus}; no completed success proves a retry deadline`,
+      lastSuccessAtMs, lastAttemptAtMs, lastAttemptStatus, thresholdMs,
+    };
+  }
+
+  const watermarkMs = lastSuccessAtMs ?? input.createdAtMs;
+  if (watermarkMs == null || !Number.isFinite(watermarkMs)) {
+    return {
+      status: 'unknown', reason: 'no routine-creation or successful-run timestamp is available',
+      lastSuccessAtMs, lastAttemptAtMs, lastAttemptStatus, thresholdMs,
+    };
+  }
+  const ageMs = Math.max(0, input.nowMs - watermarkMs);
+  if (lastSuccessAtMs == null) {
+    if (ageMs > thresholdMs) {
+      return {
+        status: 'overdue',
+        reason: 'no successful fail-open run has completed since the routine was created',
+        lastSuccessAtMs, lastAttemptAtMs, lastAttemptStatus, ageMs,
+        overdueBySec: Math.ceil((ageMs - thresholdMs) / 1000),
+        thresholdMs,
+      };
+    }
+    return {
+      status: 'unknown', reason: 'no successful fail-open run has been recorded yet',
+      lastSuccessAtMs, lastAttemptAtMs, lastAttemptStatus, thresholdMs,
+    };
+  }
+  if (ageMs > thresholdMs) {
+    return {
+      status: 'overdue',
+      reason: 'the most recent successful fail-open run is older than the admission deadline',
+      lastSuccessAtMs, lastAttemptAtMs, lastAttemptStatus, ageMs,
+      overdueBySec: Math.ceil((ageMs - thresholdMs) / 1000),
+      thresholdMs,
+    };
+  }
+  return { status: 'healthy', lastSuccessAtMs, lastAttemptAtMs, lastAttemptStatus, ageMs, thresholdMs };
+}
+
+/** Read the successful-run watermark written by `runWorkItemAdmissionFailOpen`. */
+export async function readAdmissionFailOpenLiveness(
+  workspaceId: string,
+  sqlOverride?: OrgSql,
+  nowMs = Date.now(),
+): Promise<AdmissionFailOpenLiveness> {
+  const thresholdMs = ADMISSION_FAIL_OPEN_LIVENESS_STALE_SEC * 1000;
+  if (!workspaceId) {
+    return {
+      status: 'unknown', reason: 'workspace id is unavailable', lastSuccessAtMs: null,
+      lastAttemptAtMs: null, lastAttemptStatus: null, thresholdMs,
+    };
+  }
+  try {
+    const sql = sqlOverride ?? getOrgPg().sql;
+    const rows = await sql<Array<{
+      active: boolean | null;
+      created_at: Date | string | null;
+      pause: unknown;
+      last_success_at: Date | string | null;
+      last_attempt_at: Date | string | null;
+      last_attempt_status: string | null;
+    }>>`
+      SELECT r.active,
+             r.created_at,
+             r.metadata->'pause' AS pause,
+             (
+               SELECT max(ar.finished_at)
+                 FROM harness_shared.admission_runs ar
+                WHERE ar.workspace_id = ${workspaceId}
+                  AND ar.harness_slug = ${operatorHomeHarnessSlug()}
+                  AND ar.run_kind = 'promoter-tick'
+                  AND ar.detail->>'mode' = 'fail-open'
+                  AND ar.detail->>'status' = 'complete'
+             ) AS last_success_at,
+             latest.at AS last_attempt_at,
+             latest.status AS last_attempt_status
+        FROM harness_shared.routines r
+        LEFT JOIN LATERAL (
+          SELECT COALESCE(ar.finished_at, ar.started_at) AS at, ar.detail->>'status' AS status
+            FROM harness_shared.admission_runs ar
+           WHERE ar.workspace_id = ${workspaceId}
+             AND ar.harness_slug = ${operatorHomeHarnessSlug()}
+             AND ar.run_kind = 'promoter-tick'
+             AND ar.detail->>'mode' = 'fail-open'
+           ORDER BY ar.started_at DESC
+           LIMIT 1
+        ) latest ON TRUE
+       WHERE r.workspace_id = ${workspaceId}
+         AND r.install_slug = ${operatorHomeHarnessSlug()}
+         AND r.name = 'work-item-admission-fail-open'
+       LIMIT 1`;
+    const row = rows[0];
+    const toMs = (value: Date | string | null): number | null => {
+      if (value instanceof Date) return Number.isFinite(value.getTime()) ? value.getTime() : null;
+      if (typeof value !== 'string') return null;
+      const parsed = Date.parse(value);
+      return Number.isFinite(parsed) ? parsed : null;
+    };
+    return classifyAdmissionFailOpenLiveness({
+      routineExists: Boolean(row),
+      active: row?.active ?? null,
+      createdAtMs: toMs(row?.created_at ?? null),
+      lastSuccessAtMs: toMs(row?.last_success_at ?? null),
+      lastAttemptAtMs: toMs(row?.last_attempt_at ?? null),
+      lastAttemptStatus: row?.last_attempt_status ?? null,
+      pause: row?.pause,
+      nowMs,
+    });
+  } catch {
+    return {
+      status: 'unknown', reason: 'the fail-open liveness read failed', lastSuccessAtMs: null,
+      lastAttemptAtMs: null, lastAttemptStatus: null, thresholdMs,
+    };
+  }
+}
+
+export type AdmissionFailOpenRetryWindow =
+  | {
+      status: 'healthy';
+      remainingSec: number;
+      deadlineAtMs: number;
+      lastSuccessAtMs: number;
+      deadlineExpired: false;
+      deadlineOverdueBySec: 0;
+    }
+  | {
+      status: 'overdue';
+      reason: string;
+      overdueBySec: number;
+      deadlineAtMs: number | null;
+      deadlineExpired: boolean;
+      deadlineOverdueBySec: number;
+      lastSuccessAtMs: number | null;
+    }
+  | {
+      status: 'paused' | 'inactive' | 'unknown';
+      reason: string;
+      deadlineAtMs: number | null;
+      deadlineExpired: boolean;
+      deadlineOverdueBySec: number;
+      lastSuccessAtMs: number | null;
+    };
+
+/** Remaining per-item deadline, conditioned on a recent completed backstop run. */
+export function admissionFailOpenRetryWindow(
+  createdAtMs: number | null,
+  nowMs: number,
+  liveness: AdmissionFailOpenLiveness,
+): AdmissionFailOpenRetryWindow {
+  const validCreatedAt = createdAtMs != null && Number.isFinite(createdAtMs);
+  const deadlineAtMs = validCreatedAt
+    ? createdAtMs + admissionFailOpenGuaranteedSec() * 1000
+    : null;
+  const deadlineExpired = deadlineAtMs !== null && nowMs >= deadlineAtMs;
+  const deadlineOverdueBySec = deadlineExpired && deadlineAtMs !== null
+    ? Math.ceil(Math.max(0, nowMs - deadlineAtMs) / 1000)
+    : 0;
+  const lastSuccessAtMs = liveness.lastSuccessAtMs;
+  if (deadlineAtMs === null) {
+    return {
+      status: 'unknown',
+      reason: 'the work-item creation time is unavailable',
+      deadlineAtMs,
+      deadlineExpired: false,
+      deadlineOverdueBySec: 0,
+      lastSuccessAtMs,
+    };
+  }
+  if (liveness.status === 'healthy') {
+    if (deadlineExpired) {
+      return {
+        status: 'overdue',
+        reason: 'the work-item admission deadline has passed',
+        overdueBySec: deadlineOverdueBySec,
+        deadlineAtMs,
+        deadlineExpired,
+        deadlineOverdueBySec,
+        lastSuccessAtMs,
+      };
+    }
+    return {
+      status: 'healthy',
+      remainingSec: Math.max(1, Math.ceil((deadlineAtMs - nowMs) / 1000)),
+      deadlineAtMs,
+      lastSuccessAtMs: liveness.lastSuccessAtMs,
+      deadlineExpired: false,
+      deadlineOverdueBySec: 0,
+    };
+  }
+  if (liveness.status === 'overdue') {
+    return {
+      status: 'overdue',
+      reason: liveness.reason,
+      overdueBySec: Math.max(liveness.overdueBySec, deadlineOverdueBySec),
+      deadlineAtMs,
+      deadlineExpired,
+      deadlineOverdueBySec,
+      lastSuccessAtMs,
+    };
+  }
+  return {
+    status: liveness.status,
+    reason: liveness.reason ?? 'the fail-open routine is paused',
+    deadlineAtMs,
+    deadlineExpired,
+    deadlineOverdueBySec,
+    lastSuccessAtMs,
+  };
+}
+
+/** Accurate refusal text when no automatic retry deadline can be promised. */
+export function admissionPendingBackstopExplanation(window: AdmissionFailOpenRetryWindow): string | null {
+  if (window.status === 'healthy') return null;
+  const lastRun = window.lastSuccessAtMs == null
+    ? 'no successful fail-open run has been recorded'
+    : `the last successful fail-open run completed at ${new Date(window.lastSuccessAtMs).toISOString()}`;
+  const itemDeadline = window.deadlineExpired
+    ? ` This row's ${Math.round(admissionFailOpenGuaranteedSec() / 60)}-minute deadline is overdue by about ${Math.ceil(window.deadlineOverdueBySec / 60)}m.`
+    : '';
+  if (window.status === 'overdue') {
+    return `The independent fail-open admission backstop is OVERDUE: ${window.reason}; ${lastRun}. No automatic retry deadline remains.${itemDeadline}`;
+  }
+  if (window.status === 'paused') {
+    return `The fail-open admission routine is paused${window.reason ? ` (${window.reason})` : ''}; ${lastRun}. No automatic retry deadline can be promised. Do not re-arm it to unblock this claim.${itemDeadline}`;
+  }
+  if (window.status === 'inactive') {
+    return `The fail-open admission routine is inactive; ${lastRun}. No automatic retry deadline can be promised.${itemDeadline}`;
+  }
+  return `The fail-open admission backstop's last successful run could not be verified (${window.reason}); ${lastRun}. No automatic retry deadline can be promised.${itemDeadline}`;
+}
+
+/**
  * EI-22166155287498355: whether the work-item-admission-promoter's MOST RECENT
  * completed fire ended in an error (typically LLM account exhaustion) — the one
  * fact the admission-pending claim floor needs to publish an HONEST retry bound

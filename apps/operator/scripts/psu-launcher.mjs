@@ -38,6 +38,7 @@ import {
   readlinkSync,
   symlinkSync,
   copyFileSync,
+  linkSync,
   openSync,
   readSync,
   writeSync,
@@ -5386,23 +5387,47 @@ export function planValue(picked) {
  * `mcp_tools:papercusp` (unfiltered) + `mcp_tools:papercusp-su` (39, correct) both
  * present in OMP's own tool cache; confirmed server-side filtering itself works
  * correctly via a direct probe of the exact seeded URL). A co-located `.mcp.json`
- * is NEVER wanted for an SU launch regardless of its shape — park it, full stop.
+ * is NEVER wanted for an SU launch regardless of its shape. Preserve its old
+ * contents beside it, then atomically replace it with an empty server list.
+ * Claude's sandbox may bind the project path on every native Bash call; removing
+ * the file makes later calls fail before their command starts. Keep a valid path
+ * in place even when there was no prior file.
  *
- * No restore: role launchers recreate `.mcp.json` fresh on their next launch (they
- * back up any existing one first), so parking is safe. Returns the parked path, or
- * null when nothing was parked. Side-effects fs only; exported for tests.
+ * Role launchers recreate `.mcp.json` fresh on their next launch (they back up any
+ * existing one first). The empty stub remains after SU launch so sandbox bind mounts
+ * never race a missing project config. Returns the parked path, or null when there
+ * was no prior config. Side-effects fs only; exported for tests.
  */
 export function parkRoleScopedMcpJson(cwd) {
   if (!cwd) return null;
   const p = join(cwd, ".mcp.json");
-  if (!existsSync(p)) return null;
   const parked = join(cwd, ".mcp.json.su-parked");
+  const temp = join(cwd, `.mcp.json.su-stub.${process.pid}.${randomUUID()}.tmp`);
+  const emptyConfig = `${JSON.stringify({ mcpServers: {} }, null, 2)}\n`;
+  let parkedPath = null;
   try {
-    if (existsSync(parked)) rmSync(parked, { force: true }); // overwrite a stale prior park
-    renameSync(p, parked);
-    return parked;
+    writeFileSync(temp, emptyConfig, { flag: "wx" });
+    if (existsSync(p)) {
+      if (existsSync(parked)) rmSync(parked, { force: true }); // replace a stale prior park
+      copyFileSync(p, parked); // keep the active project file present while staging the stub
+      parkedPath = parked;
+      renameSync(temp, p); // atomic replacement; never expose a missing .mcp.json path
+    } else {
+      try {
+        linkSync(temp, p); // atomic create-if-absent; do not overwrite a concurrent role config
+      } catch (err) {
+        if (err?.code !== "EEXIST") throw err;
+        if (existsSync(parked)) rmSync(parked, { force: true });
+        copyFileSync(p, parked);
+        parkedPath = parked;
+        renameSync(temp, p);
+      }
+    }
+    return parkedPath;
   } catch {
     return null;
+  } finally {
+    rmSync(temp, { force: true });
   }
 }
 

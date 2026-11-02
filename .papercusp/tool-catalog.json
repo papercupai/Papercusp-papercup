@@ -940,7 +940,7 @@
           "POST"
         ]
       },
-      "description": "Report one worker-activity event (a native tool call, lifecycle transition, or todo snapshot) to the cross-CLI activity bridge sink (harness_shared.agent_activity). Called by the per-CLI hooks on every tool call; feeds the pui fleet view + curator. The display summary is derived server-side from tool_name+tool_input when not supplied. Fire-and-forget: returns { ok, id } and never blocks.",
+      "description": "Report one worker-activity event (a native tool call, lifecycle transition, or todo snapshot) to the cross-CLI activity bridge sink (harness_shared.agent_activity). Called by the per-CLI hooks on every tool call; feeds the pui fleet view + curator. The display summary is derived server-side from tool_name+tool_input when not supplied. Plain reports confirm the inserted row; calls carrying hook_bundle return its coordination delta without waiting for the telemetry insert and include persistence: 'async'.",
       "capabilities": [
         "activity:report"
       ],
@@ -3195,7 +3195,7 @@
           "POST"
         ]
       },
-      "description": "Make an outbound HTTP(S) request and return status, headers, and a bounded body. The server-resolved boundary profile validates every destination, DNS answer, and redirect; confined callers cannot target private addresses, mutate, or forward credentials. Bodies spill only within a hard streamed-download ceiling. Use expected_statuses for known non-2xx responses: the status and body remain visible, while those responses count as successful tool calls. Without it, non-2xx responses remain tool errors. For MCP streamable-HTTP POSTs, send Accept: application/json, text/event-stream; application/json alone returns 406. A local ?superuser=1 MCP endpoint also needs Authorization: Bearer <contents of $PAPERCUSP_HOME/superuser-token>, with PAPERCUSP_HOME defaulting to ~/.papercusp: without it initialize STILL SUCCEEDS, while tools/list and tools/call are refused as HTTP 200 carrying superuser_invalid_bearer in the body — so ok:true is not proof the call was accepted.",
+      "description": "Make outbound HTTP(S) requests and return status, headers, and a bounded body. The server validates each destination, DNS answer, and redirect; confined callers cannot target private addresses, mutate, or forward credentials. Bodies spill within a hard download limit. For known non-2xx responses, expected_statuses keeps status/body visible and counts the call as successful; otherwise they are tool errors. MCP streamable-HTTP POSTs need Accept: application/json, text/event-stream (application/json alone returns 406). Local ?superuser=1 MCP calls need Authorization: Bearer <contents of $PAPERCUSP_HOME/superuser-token> (default ~/.papercusp); initialize may succeed while tools/list and tools/call return HTTP 200 with superuser_invalid_bearer in the body.",
       "capabilities": [
         "capability:net"
       ],
@@ -3256,8 +3256,8 @@
         "foreign-session"
       ],
       "guidance": {
-        "when": "Fetch a URL — an API, a raw file, a docs page. When a non-2xx response is the expected result of a negative control, pass its status in expected_statuses; status/body stay visible and the tool call is not classified as a failure. For MCP streamable-HTTP POSTs, set Accept: application/json, text/event-stream (application/json alone returns 406). A credential failure on a local ?superuser=1 endpoint arrives as HTTP 200 with the refusal inside the body, so judge those by the body, never by ok/status. For rich page-to-markdown extraction prefer the fetch_plus / firecrawl plugin tools when available.",
-        "notWhen": "Reading a local file — use capability:read. Running a network CLI — use capability:bash (curl/wget).",
+        "when": "Fetch an API, raw file, or docs URL. For a negative-control non-2xx result, pass its status in expected_statuses. For rich page extraction, prefer fetch_plus or firecrawl when available.",
+        "notWhen": "Read local files with capability:read; run network CLIs with capability:bash (curl/wget).",
         "chaining": "Standalone. Large bodies spill to a log path you can capability:read."
       }
     },
@@ -31288,7 +31288,7 @@
           "POST"
         ]
       },
-      "description": "Central read-only inventory of EVERY scheduled/recurring thing in the operator host regardless of cadence: DBOS scheduled workflows (durable tier), harness_shared.routines (durable tier), live managedSetInterval timers + in-process-periodic health sweeps (ephemeral tier), and bespoke separate-process timers (external-process: the inference gateway, its watchdog, the psu-launcher — listed for visibility, live fire-state pending federation). One row shape {source,scope,tier,category,name,cadence,armed,lastFire,nextFire,lastError,groupSlug}. groupSlug (WI-5018) is populated for `routines` rows only — null elsewhere/ungrouped. Read-only.",
+      "description": "Central read-only inventory of scheduled/recurring work. Default view=schedules returns existing schedule rows and summary; view=startup adds current-user native service/login/boot observations, feature purpose/scope, separate desired versus observed state, unavailable sources and writer coverage. Unknown measurements remain null; registered does not mean running. Schedule filters apply only to view=schedules.",
       "capabilities": [
         "operator:read"
       ],
@@ -31702,7 +31702,7 @@
       "guidance": {
         "when": "Audit one existing scorecard and re-run the probes its criterion evidence names. Take issueId from scorecards:list or a grading-audit reservation.",
         "notWhen": "Use scorecards:list for history or multiple rows, rubrics:get for rubric definitions, scorecards:emit to file a scorecard.",
-        "chaining": "Spec-test-adequacy grading-integrity audit: call dev:pipeline_position { path: \"packages/operator-core/lib/agent-tools/scorecards/get.ts\", testClass: \"operator-api\" } and use its same exact serving route for both scorecards:get and plans:evaluate-spec-test-adequacy. evaluatorBuildCurrentness compares the recipe pin with the process serving scorecards:get; it cannot establish the build of a separately routed evaluator, so cross-route calls may report different currentness. To compare the scorecard as emitted, call plans:evaluate-spec-test-adequacy { harness, slug, scorecardId: issueId, criteria:[...] }; this branch loads the stored recipe and replays its exact bindings as of scorecard.createdAt. Confirm historicalAuditOnly.asOf matches the creation time. Do not compare a direct replay of rerunRecipe.args with the historical card: that is a current-state remeasurement; freshness can change after evidence changes, and other ratings can change after evidence or source files change. Use rerunRecipe.args only when measuring the present state. Oversized cards: page evidenceRead.next through the index, fetch criteria in small Promise.all groups (one criterion’s pages sequentially), and resolve papercusp.output-envelope/v1 via capability:read before reading scorecard.criteria. Concatenate complete pages as exact JSON chunks and parse only when complete. Emit the grading-integrity audit last."
+        "chaining": "For grading-integrity audits, call dev:pipeline_position for this path and use the same serving route for plans:evaluate-spec-test-adequacy. Compare an emitted card by replaying its stored recipe there; verify historicalAuditOnly.asOf matches scorecard.createdAt. Use rerunRecipe.args only for current-state measurement. Recover all evidence pages before grading; emit the audit last."
       }
     },
     {

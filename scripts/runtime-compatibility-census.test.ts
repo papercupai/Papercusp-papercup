@@ -163,6 +163,91 @@ describe('native target and caller review', () => {
 });
 
 describe('committed runtime migration inventory discovery', () => {
+  const gitFixture = (entries: Array<{ path: string; text: string; mode?: string; size?: number }>) => {
+    const root = process.cwd(), commit = 'a'.repeat(40), reads: string[] = [];
+    const rows = entries.map((entry, index) => ({ ...entry, bytes: Buffer.from(entry.text), oid: (index + 1).toString(16).repeat(40) }));
+    const runGit = (_root: string, args: string[], options?: { input: Buffer }) => {
+      if (args.includes('--show-toplevel')) return root;
+      if (args[0] === 'rev-parse') { expect(args).toContain(`${commit}^{commit}`); return commit; }
+      if (args[0] === 'ls-tree') return rows.map(row => `${row.mode ?? '100644'} blob ${row.oid} ${row.size ?? row.bytes.length}\t${row.path}\0`).join('');
+      expect(args).toEqual(['cat-file', '--batch']);
+      return Buffer.concat(options!.input.toString().trim().split('\n').map(oid => {
+        const row = rows.find(row => row.oid === oid)!; reads.push(row.path);
+        return Buffer.concat([Buffer.from(`${oid} blob ${row.bytes.length}\n`), row.bytes, Buffer.from('\n')]);
+      }));
+    };
+    return { root, commit, reads, runGit };
+  };
+
+  it('reads only explicitly selected pinned blobs while retaining opaque and missing paths', () => {
+    const fixture = gitFixture([{ path: 'skip.ts', text: 'skip();' }, { path: 'bin/launch', text: '#!/bin/sh\nexec node host.js', mode: '100755' },
+      { path: 'systemd/host.service.d/override.conf', text: '[Service]\nExecStart=node host.js' },
+      { path: 'linked.ts', text: 'target.ts', mode: '120000' }]);
+    const includePaths = ['systemd/host.service.d/override.conf', 'bin/launch', 'linked.ts', 'missing.py'];
+    const result = readCommittedSources(fixture.root, fixture.commit, { runGit: fixture.runGit, includePaths });
+    expect(fixture.reads).toEqual(['bin/launch', 'systemd/host.service.d/override.conf']);
+    expect(result.sources.map(row => row.commit)).toEqual([fixture.commit, fixture.commit]);
+    expect(result.unresolved).toEqual(expect.arrayContaining([
+      expect.objectContaining({ path: 'linked.ts', reason: 'nonregular-or-over-budget-source' }),
+      expect.objectContaining({ path: 'missing.py', revision: fixture.commit, reason: 'selected-source-unavailable' }),
+    ]));
+    expect(result.selection.paths).toEqual([...includePaths].sort());
+    expect(result.selection.populationComplete).toBe(false);
+    expect(inventorySources(result).selection).toEqual(result.selection);
+  });
+
+  it('enforces cumulative byte/file limits before blob access and retains every refused path', () => {
+    const entries = [{ path: 'a.ts', text: 'one();' }, { path: 'b.ts', text: 'longerCall();' }, { path: 'c.ts', text: '' }];
+    const bytes = gitFixture(entries);
+    const byteLimited = readCommittedSources(bytes.root, bytes.commit, { runGit: bytes.runGit, maxBytes: 6 });
+    expect(bytes.reads).toEqual(['a.ts', 'c.ts']);
+    expect(byteLimited.selection.bytesRead).toBe(6);
+    expect(byteLimited.unresolved).toContainEqual(expect.objectContaining({ path: 'b.ts', reason: 'source-reader-byte-budget' }));
+    const files = gitFixture(entries);
+    const fileLimited = readCommittedSources(files.root, files.commit, { runGit: files.runGit, maxFiles: 1 });
+    expect(files.reads).toEqual(['a.ts']);
+    expect(fileLimited.unresolved.map(row => row.path)).toEqual(['b.ts', 'c.ts']);
+    expect(fileLimited.unresolved.every(row => row.reason === 'source-reader-file-budget')).toBe(true);
+  });
+
+  it('keeps selected submodule paths bound to the parent gitlink instead of the current checkout revision', () => {
+    const root = mkdtempSync(join(tmpdir(), 'security-source-selection-'));
+    const dep = join(root, 'libs/dep'), parent = 'a'.repeat(40), pinned = 'd'.repeat(40), oid = 'b'.repeat(40), bytes = Buffer.from('run();');
+    mkdirSync(dep, { recursive: true });
+    try {
+      const calls: string[][] = [];
+      const runGit = (checkout: string, args: string[], options?: { input: Buffer }) => {
+        calls.push([checkout, ...args]);
+        if (args.includes('--show-toplevel')) return checkout;
+        if (args[0] === 'rev-parse') { expect(args).toContain(`${checkout === root ? parent : pinned}^{commit}`); return checkout === root ? parent : pinned; }
+        if (args[0] === 'ls-tree') return checkout === root ? `160000 commit ${pinned} -\tlibs/dep\0` : `100644 blob ${oid} ${bytes.length}\tchild.ts\0`;
+        expect(options?.input.toString()).toBe(`${oid}\n`);
+        return Buffer.concat([Buffer.from(`${oid} blob ${bytes.length}\n`), bytes, Buffer.from('\n')]);
+      };
+      const result = readCommittedSources(root, parent, { runGit, includePaths: ['libs/dep/child.ts'], maxBytes: bytes.length });
+      expect(result.sources[0]).toMatchObject({ path: 'libs/dep/child.ts', repository: 'libs/dep', commit: pinned, bytes });
+      expect(result.repositories).toEqual([{ path: '.', commit: parent }, { path: 'libs/dep', commit: pinned }]);
+      expect(calls.filter(args => args.includes('cat-file'))).toHaveLength(1);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it('refuses noncanonical/duplicate selections and invalid budgets before Git access', () => {
+    let calls = 0;
+    const runGit = () => { calls++; throw new Error('must not read'); };
+    for (const includePaths of [[], ['../outside.ts'], ['/absolute.ts'], ['a.ts', 'a.ts'], ['a//b.ts'], ['a\\b.ts']]) {
+      expect(() => readCommittedSources(process.cwd(), 'HEAD', { runGit, includePaths })).toThrow('unique canonical source paths');
+    }
+    for (const limits of [{ maxBytes: 0 }, { maxBytes: Infinity }, { maxFiles: -1 }, { maxFiles: 1.5 }]) {
+      expect(() => readCommittedSources(process.cwd(), 'HEAD', { runGit, ...limits })).toThrow('source budgets');
+    }
+    expect(calls).toBe(0);
+  });
+
+  it('refuses blob header sizes that disagree with the tree used for admission', () => {
+    const fixture = gitFixture([{ path: 'a.ts', text: 'moreBytes();', size: 1 }]);
+    expect(() => readCommittedSources(fixture.root, fixture.commit, { runGit: fixture.runGit, maxBytes: 1 })).toThrow('Git object stream mismatch');
+  });
+
   it('decodes exact Git blob bytes with binary input/output rather than an encoding named buffer', () => {
     const bytes = Buffer.from('export const x = "😀";'), oid = 'b'.repeat(40), root = process.cwd();
     const runGit = (_root: string, args: string[], options?: { encoding: unknown; input: Buffer }) => {
@@ -220,6 +305,12 @@ describe('committed runtime migration inventory discovery', () => {
     const input = snapshot([]); input.unresolved.push({ repository: 'missing', revision: 'old', reason: 'unavailable' });
     const first = inventorySources(input).sourceFingerprint;
     input.unresolved[0] = { repository: 'missing', revision: 'new', reason: 'unavailable' };
+    expect(inventorySources(input).sourceFingerprint).not.toBe(first);
+  });
+  it('binds requested selection and read budgets even when they produce the same file rows', () => {
+    const input = { ...snapshot([source('a.ts', 'run();')]), selection: { paths: ['a.ts'], maxBytes: 100 } };
+    const first = inventorySources(input).sourceFingerprint;
+    input.selection.maxBytes = 200;
     expect(inventorySources(input).sourceFingerprint).not.toBe(first);
   });
   it('retains multiline launch overrides and empty resets separately from inactive comments', () => {

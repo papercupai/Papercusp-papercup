@@ -71,6 +71,87 @@ function harness() {
 
 afterEach(() => resetScheduledRegistry());
 
+describe('execution eligibility', () => {
+  it('gates fireOnArm and ordinary intervals independently of shedding', async () => {
+    const h = harness();
+    let allowed = false;
+    const tick = vi.fn();
+    const canRun = vi.fn(entry => { expect(entry.category).toBe('global-sweep'); return allowed; });
+    configureScheduledRegistry({ canRun });
+    managedSetInterval('optional', 100, tick, { category: 'global-sweep', fireOnArm: true });
+    h.timeouts[0].cb();
+    expect(tick).not.toHaveBeenCalled();
+    await h.fire();
+    expect(tick).not.toHaveBeenCalled();
+    expect(getManaged('optional')).toMatchObject({ running: false, fires: 0, lastFireAt: null });
+    allowed = true;
+    h.intervals[0].cb();
+    // A synchronous permission check retains synchronous watchdog semantics.
+    expect(tick).toHaveBeenCalledOnce();
+    expect(canRun).toHaveBeenCalledTimes(3);
+  });
+
+  it('shares admission across aligned slots and retains a registered blocked timer', async () => {
+    const h = harness();
+    const tick = vi.fn();
+    configureScheduledRegistry({ canRun: () => false });
+    managedSetInterval('aligned-optional', 60 * 60_000, tick, { category: 'global-sweep', phase: 'aligned' });
+    await h.fire();
+    h.timeouts[0].cb();
+    await flush();
+    expect(tick).not.toHaveBeenCalled();
+    expect(getManaged('aligned-optional')).toMatchObject({ fires: 0 });
+  });
+
+  it('serializes asynchronous admission without reporting a permission read as running work', async () => {
+    const h = harness();
+    let decide!: (allowed: boolean) => void;
+    const canRun = vi.fn(() => new Promise<boolean>(resolve => { decide = resolve; }));
+    const tick = vi.fn();
+    configureScheduledRegistry({ canRun });
+    managedSetInterval('pending', 100, tick, { category: 'global-sweep' });
+    h.intervals[0].cb();
+    h.intervals[0].cb();
+    expect(canRun).toHaveBeenCalledOnce();
+    expect(getManaged('pending')).toMatchObject({ running: false, fires: 0, skippedWhileRunning: 0 });
+    decide(false);
+    await flush();
+    expect(tick).not.toHaveBeenCalled();
+    h.intervals[0].cb();
+    decide(true);
+    await flush();
+    expect(tick).toHaveBeenCalledOnce();
+  });
+
+  it('does not execute a stopped timer after delayed admission resolves', async () => {
+    const h = harness();
+    let decide!: (allowed: boolean) => void;
+    configureScheduledRegistry({ canRun: () => new Promise<boolean>(resolve => { decide = resolve; }) });
+    const tick = vi.fn();
+    const handle = managedSetInterval('stopped', 100, tick, { category: 'global-sweep' });
+    h.intervals[0].cb();
+    handle.stop();
+    decide(true);
+    await flush();
+    expect(tick).not.toHaveBeenCalled();
+  });
+
+  it('fails closed on a permission error and retries permission on the next interval', async () => {
+    const h = harness();
+    const tick = vi.fn();
+    const log = vi.fn();
+    configureScheduledRegistry({ canRun: () => Promise.reject(new Error('private payload')), log });
+    managedSetInterval('denied', 100, tick, { category: 'global-sweep' });
+    await h.fire();
+    expect(tick).not.toHaveBeenCalled();
+    expect(getManaged('denied')).toMatchObject({ lastError: 'Execution eligibility unavailable', fires: 0, running: false });
+    expect(log).toHaveBeenCalledWith('denied execution eligibility unavailable; tick withheld');
+    configureScheduledRegistry({ canRun: () => true });
+    await h.fire();
+    expect(tick).toHaveBeenCalledOnce();
+  });
+});
+
 describe('managed sweep starters', () => {
   it('preserves metadata and cadence, and replaces the previous named timer', async () => {
     const h = harness();

@@ -53,7 +53,7 @@ export function buildExactPlanClaimSpec(
 }
 
 type AdmissionWorkItem = Pick<WorkItem, 'id' | 'family' | 'sourcePlanItemIds' | 'payload'> &
-  Partial<Pick<WorkItem, 'assignee' | 'takenAt' | 'state'>>;
+  Partial<Pick<WorkItem, 'assignee' | 'takenAt' | 'state' | 'parent'>>;
 type RootClass = 'dependency' | 'sticky' | 'cycle' | 'dangling' | 'needs-human' | 'non-actionable-status';
 export type ExactPlanAdmissionReason =
   | 'ready'
@@ -268,7 +268,16 @@ export function evaluateExactPlanAdmission(args: {
   // only non-terminal rows are CURRENT coverage. Otherwise one dropped retry
   // beside its live successor permanently looks like duplicate actionable
   // coverage and fleet:launch-on-plan can never admit the plan again.
-  const activePromotedRows = promotedRows.filter((item) => !isSettledWorkItemState(item.state));
+  const liveRows = promotedRows.filter((item) => !isSettledWorkItemState(item.state));
+  const liveById = new Map(liveRows.map((item) => [item.id, item]));
+  // Migration 1601/D-010 preserves earlier execution records as children of
+  // the plan-line node. They are one execution tree, not competing lanes.
+  // Only collapse a child when its LIVE parent covers every one of its lines;
+  // an unfinished child of a settled/missing parent remains actionable residue.
+  const activePromotedRows = liveRows.filter((item) => {
+    const parent = item.parent ? liveById.get(item.parent) : undefined;
+    return !parent || !provenanceIds(item).every((id) => provenanceIds(parent).includes(id));
+  });
   const claimKinds = args.claimKinds?.length
     ? [...args.claimKinds]
     : deriveExactPlanClaimKinds(activePromotedRows);
@@ -643,8 +652,7 @@ export async function preflightExactPlanAdmission(args: {
   ) return structural;
   const effectiveClaimKinds = args.claimKinds?.length
     ? [...args.claimKinds]
-    : deriveExactPlanClaimKinds(args.planItemIds === undefined ? workItems : workItems.filter(row =>
-      provenanceIds(row).some(id => args.planItemIds!.includes(id))));
+    : structural.claimKinds ?? undefined;
   const built = buildExactPlanClaimSpec(args.specId, args.planSlug, effectiveClaimKinds, args.planItemIds);
   const validation = validateClaimSpec(built);
   if (!validation.ok || !validation.spec)

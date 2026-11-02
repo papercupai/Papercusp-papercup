@@ -19,9 +19,13 @@ documents:
   - "packages/operator-core/lib/agent-tools/plans/spec-evidence-store.ts"
   - "packages/operator-core/lib/agent-tools/work_items/spec-test-adequacy-gate.ts"
   - "packages/operator-core/lib/agent-tools/plans/val-retirement.test.ts"
+  - "packages/operator-core/lib/agent-tools/plans/plan-start-gate.ts"
 plans:
   - "verification-system-improvements-2026-10-10"
   - "verification-postship-followups-2026-10-11"
+promotedFrom:
+  - kind: work-item
+    ref: EI-26893282160042849
 ---
 
 A plan's **requirement contract** is the set of things it promises and how each promise is proven. This page maps every part of the system that enforces that contract, in one place: the doors that refuse, the order the layers run in, every refusal code those doors return, the tables behind them, the tools you call, and the kinds of evidence that count.
@@ -70,6 +74,7 @@ From `PlanStartRefusal` (`packages/operator-core/lib/agent-tools/plans/plan-inpu
 | `unknown_template` | The plan names a template that does not exist. |
 | `schema_conflict` | Plan inputs conflict with the template schema. |
 | `plan_inputs_not_ready` | The plan's inputs are not ready for start. |
+| `initial_change_scope_missing` | A draft or ready plan lacks the initial code-scope anchors required to start. Add `plans:edit` anchors with `action:create` for known new work or `action:investigate` when scope is uncertain. |
 
 From `DraftItemStartRefusal` (`packages/operator-core/lib/agent-tools/plans/draft-item-start-gate.ts`):
 

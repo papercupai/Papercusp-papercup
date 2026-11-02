@@ -1369,6 +1369,21 @@ async function main(): Promise<void> {
     process.stdout.write(SERVE_HELP_TEXT);
     return;
   }
+  if (argv[0] === "--install-runtime-acceptance") {
+    if (argv.length !== 3) throw new Error("usage: --install-runtime-acceptance ENVELOPE SIGNATURE");
+    const { installApplicationRuntimeAcceptance } =
+      await import("@papercusp/operator-core/lib/application-runtime-acceptance-offline");
+    process.stdout.write(JSON.stringify(await installApplicationRuntimeAcceptance(
+      argv[1]!, argv[2]!, dirname(fileURLToPath(import.meta.url)))) + "\n");
+    return;
+  }
+  if (argv[0] === "--issue-runtime-acceptance") {
+    if (argv.length !== 3) throw new Error("usage: --issue-runtime-acceptance REQUEST OUTPUT");
+    const { issueApplicationRuntimeAcceptance } =
+      await import("@papercusp/operator-core/lib/application-runtime-acceptance-issuer");
+    process.stdout.write(JSON.stringify(await issueApplicationRuntimeAcceptance(argv[1]!, argv[2]!)) + "\n");
+    return;
+  }
   // Packaged-image qualification: evaluate the same tool registry boot imports
   // before acquiring singleton locks or creating a database. Runtime-only images
   // deliberately lack cupboard assets; eager persona reads must fail this probe,
@@ -1512,13 +1527,14 @@ async function main(): Promise<void> {
   // adopt an already-running process. Non-vm-release profiles no-op here.
   await assertVmReleaseApplicationRuntime({
     env: process.env,
+    allowRuntimeHandoff: true,
     sidecarDir: dirname(fileURLToPath(import.meta.url)),
     hostname,
     port: honoPortHint,
     verifyApplicationRuntimeAcceptance: async (request) => {
-      const { readApplicationRuntimeAcceptance } =
-        await import("@papercusp/operator-core/lib/application-runtime-acceptance");
-      return readApplicationRuntimeAcceptance(request);
+      const { readInstalledApplicationRuntimeAcceptance } =
+        await import("@papercusp/operator-core/lib/application-runtime-acceptance-offline");
+      return readInstalledApplicationRuntimeAcceptance(request, dirname(fileURLToPath(import.meta.url)));
     },
   });
 

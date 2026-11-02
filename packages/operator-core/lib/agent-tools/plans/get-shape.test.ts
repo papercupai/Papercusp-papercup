@@ -438,12 +438,14 @@ describe("shapePlansGet: shipReadiness proof history is summarized, verdict kept
       expect(bar1!.falsifier_full_chars).toBe(300);
       const outSnap = sr.acceptanceBarContractSnapshot;
       expect(outSnap.proseCut).toContain("payloadTier:'full'");
+      expect(outSnap.textTruncated).toBe(true);
       const revisions = outSnap.sourceRevisions as Record<string, unknown>;
       expect(revisions.subjectPlan).toBe(7);
       expect(revisions.clauses).toEqual({ count: 40 });
       expect(revisions.scorecardIds).toEqual({ count: 2 });
       expect(revisions.workContracts).toEqual([]);
       expect(revisions.rowsCut).toContain("payloadTier:'full'");
+      expect(revisions.sourceRevisionsTruncated).toBe(true);
       expect(JSON.stringify(shaped)).not.toContain("r".repeat(200));
       // the caller's object is not mutated (one cached read serves every tier)
       expect(snap.bars[0]!.requirement).toHaveLength(1_900);
@@ -464,8 +466,9 @@ describe("shapePlansGet: shipReadiness proof history is summarized, verdict kept
 
   it("caps reason groups per bar and says how many were omitted", () => {
     const rows = Array.from({ length: 11 }, (_, i) => proofRow(i, `S-${i}`, "stale", [`reason-${i}`]));
-    const summary = summarizeProofHistory(rows) as { reasons: unknown[]; reasonsOmitted?: number };
+    const summary = summarizeProofHistory(rows) as { reasons: unknown[]; reasonsOmitted?: number; rowsTruncated?: boolean };
     expect(summary.reasons).toHaveLength(8);
     expect(summary.reasonsOmitted).toBe(3);
+    expect(summary.rowsTruncated).toBe(true);
   });
 });

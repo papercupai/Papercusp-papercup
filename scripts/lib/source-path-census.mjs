@@ -19,7 +19,26 @@ const label = node => {
 export function censusSites(path, text) {
   const ast = ts.createSourceFile(path, text, ts.ScriptTarget.Latest, true);
   if (ast.parseDiagnostics.length) throw new Error('Source parse failed: ' + path);
-  const sites = [], bindings = new Map();
+  const sites = [], bindings = new Map(), declarations = new Map(), writes = new Set();
+  const declared = name => {
+    if (!name) return;
+    if (ts.isIdentifier(name)) declarations.set(name.text, (declarations.get(name.text) ?? 0) + 1);
+    else if (ts.isObjectBindingPattern(name) || ts.isArrayBindingPattern(name)) {
+      for (const element of name.elements) if (ts.isBindingElement(element)) declared(element.name);
+    }
+  };
+  const written = target => {
+    target = unwrap(target);
+    if (ts.isIdentifier(target)) writes.add(target.text);
+    else if (ts.isArrayLiteralExpression(target)) target.elements.forEach(written);
+    else if (ts.isObjectLiteralExpression(target)) for (const property of target.properties) {
+      if (ts.isShorthandPropertyAssignment(property)) writes.add(property.name.text);
+      else if (ts.isPropertyAssignment(property)) written(property.initializer);
+      else if (ts.isSpreadAssignment(property)) written(property.expression);
+    }
+    else if (ts.isSpreadElement(target)) written(target.expression);
+    else if (ts.isBinaryExpression(target) && target.operatorToken.kind === ts.SyntaxKind.EqualsToken) written(target.left);
+  };
   const span = node => {
     const start = node.getStart(ast), end = node.end;
     const point = ast.getLineAndCharacterOfPosition(start);
@@ -37,24 +56,33 @@ export function censusSites(path, text) {
       return;
     }
     if (!ts.isObjectBindingPattern(pattern)) return;
-    const imports = [];
-    const find = node => {
-      if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword
-          && ts.isStringLiteralLike(node.arguments[0])) imports.push(node.arguments[0].text);
-      ts.forEachChild(node, find);
-    };
-    find(expression);
+    // An import somewhere inside a wrapper does not establish what the wrapper
+    // returns. Only direct literal imports can supply destructured aliases.
+    const imports = ts.isCallExpression(expression) && expression.expression.kind === ts.SyntaxKind.ImportKeyword
+      && expression.arguments[0] && ts.isStringLiteralLike(expression.arguments[0]) ? [expression.arguments[0].text] : [];
     for (const element of pattern.elements) if (ts.isIdentifier(element.name)) {
-      const entry = { imported: (element.propertyName ?? element.name).getText(), specifiers: [...new Set(imports)] };
+      const property = element.propertyName ?? element.name;
+      const entry = imports.length && !element.dotDotDotToken && !element.initializer
+        && (ts.isIdentifier(property) || ts.isStringLiteralLike(property))
+        ? { imported: property.text, specifiers: imports } : null;
       // A second lexical binding is ambiguous; never silently pick one scope.
       bindings.set(element.name.text, bindings.has(element.name.text) ? null : entry);
     }
   };
   const visit = (node, context = [], predicates = []) => {
+    if (ts.isVariableDeclaration(node) || ts.isParameter(node) || ts.isFunctionDeclaration(node)
+      || ts.isFunctionExpression(node) || ts.isClassDeclaration(node) || ts.isClassExpression(node)
+      || ts.isImportClause(node) || ts.isImportSpecifier(node) || ts.isNamespaceImport(node)
+      || ts.isImportEqualsDeclaration(node) || ts.isEnumDeclaration(node) || ts.isModuleDeclaration(node)) declared(node.name);
+    if (ts.isBinaryExpression(node) && node.operatorToken.kind >= ts.SyntaxKind.FirstAssignment
+      && node.operatorToken.kind <= ts.SyntaxKind.LastAssignment) written(node.left);
+    if ((ts.isPrefixUnaryExpression(node) || ts.isPostfixUnaryExpression(node))
+      && (node.operator === ts.SyntaxKind.PlusPlusToken || node.operator === ts.SyntaxKind.MinusMinusToken)) written(node.operand);
     if (ts.isVariableDeclaration(node)) bind(node.name, node.initializer);
     if (ts.isImportDeclaration(node) && node.importClause?.namedBindings
-        && ts.isNamedImports(node.importClause.namedBindings)) {
+        && !node.importClause.isTypeOnly && ts.isNamedImports(node.importClause.namedBindings)) {
       for (const element of node.importClause.namedBindings.elements) {
+        if (element.isTypeOnly) continue;
         const entry = { imported: (element.propertyName ?? element.name).text, specifiers: [node.moduleSpecifier.text] };
         bindings.set(element.name.text, bindings.has(element.name.text) ? null : entry);
       }
@@ -85,7 +113,11 @@ export function censusSites(path, text) {
     const base = JSON.stringify([site.kind, site.enclosingFunctions, site.predicates.map(p => [p.condition, p.side]), site.source]);
     const occurrence = (occurrences.get(base) ?? 0) + 1; occurrences.set(base, occurrence);
     site.fingerprint = hash(base + '\0' + occurrence);
-    site.binding = bindings.get(site.expression) ?? null;
+    // This collector does not resolve scopes or runtime values. Invalidate the
+    // whole name on any second declaration/write rather than guessing which
+    // binding a call reaches; every call remains in the UNKNOWN population.
+    site.binding = declarations.get(site.expression) === 1 && !writes.has(site.expression)
+      ? bindings.get(site.expression) ?? null : null;
     site.calleeCoverage = site.kind === 'call' ? 'UNKNOWN' : null;
   }
   return { path, sha256: hash(text), ast, sites, span };

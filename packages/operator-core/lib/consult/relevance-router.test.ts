@@ -217,6 +217,8 @@ describe('problem-specific expertise qualification', () => {
   it('anchors named tools independently of shared ownership decision words', () => {
     expect(expertiseSubject('stale desktop rows block computer:provision_desktop; use soleOwner?')).toBe('computer:provision_desktop');
     expect(expertiseSubject('inspect packages/core/lease.ts for stale leases')).toBe('packages/core/lease.ts');
+    expect(expertiseSubject('For the existing code-cleanup-campaigns-2026-10-26 first real campaign, is there a safe route?'))
+      .toBe('code-cleanup-campaigns-2026-10-26');
     expect(expertiseSubject('Audit acceptance-mobile-agent-sessions-2026-10-12 revision11; emit with acknowledgeExisting:true.'))
       .toBeNull();
     expect(expertiseSubject('how should ownership work?')).toBeNull();
@@ -448,6 +450,27 @@ describe('selectResponders — floor picks', () => {
 });
 
 describe('selectResponders — minimum fill (D-001 §1 / D-002)', () => {
+  it('requires supported source evidence before selecting a below-floor minimum', () => {
+    const subject = 'code-cleanup-campaigns-2026-10-26';
+    const mismatch = cand('unrelated', { subjectEvidenceCoverage: {
+      status: 'mismatch', required: [subject],
+      evidence: [{ subject, status: 'mismatch', score: 0.1 }], unresolved: [],
+    } });
+    const unmeasured = cand('unknown', { subjectEvidenceCoverage: {
+      status: 'unmeasured', required: [subject],
+      evidence: [{ subject, status: 'unmeasured', score: null }], unresolved: [],
+    } });
+    const strict = { qualified: [], allCandidates: [mismatch, unmeasured], min: 1, max: 3, requireSupportedSubjectEvidence: true };
+    expect(selectResponders(strict)).toEqual([]);
+    expect(ids(selectResponders({ ...strict, allCandidates: [mismatch], requireSupportedSubjectEvidence: false })))
+      .toEqual(['unrelated']);
+    const supported = cand('grounded', { subjectEvidenceCoverage: {
+      status: 'supported', required: [subject],
+      evidence: [{ subject, status: 'supported', score: 0.9 }], unresolved: [],
+    } });
+    expect(vias(selectResponders({ ...strict, allCandidates: [supported] }))).toEqual(['minimum']);
+  });
+
   it('fills to min from allCandidates when the floors filtered everyone, labeled via:minimum', () => {
     const all = [cand('best', { score: 0.4 }), cand('next', { score: 0.3 })];
     const s = selectResponders({ qualified: [], allCandidates: all, min: 1, max: 3 });

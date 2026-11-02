@@ -117,6 +117,15 @@ export function isLikelySaturationArtifact(row: {
 
 export type RunStatus = 'running' | 'pass' | 'fail' | 'cancelled' | 'error';
 
+export interface ProvisionalTestVerdict {
+  status: 'pass' | 'fail';
+  fileCount: number;
+  finishedAt: number;
+  passed: number;
+  failed: number;
+  skipped: number;
+}
+
 export interface RunSnapshot {
   runId: string;
   /** The task-manager row that owns this process, when enrolment was enabled. */
@@ -128,6 +137,8 @@ export interface RunSnapshot {
   requestedFiles?: string[];
   command: string[];
   status: RunStatus;
+  /** Exact requested-file reporter result observed before the linked process exits. */
+  provisionalVerdict?: ProvisionalTestVerdict;
   exitCode: number | null;
   startedAt: number;
   finishedAt: number | null;
@@ -812,9 +823,7 @@ function hasExactPassedFileCoverage(
   requestedFiles: string[] | null,
   files: DetachedRunLedgerRecovery['files'],
 ): boolean {
-  if (!requestedFiles || requestedFiles.length === 0
-    || new Set(requestedFiles).size !== requestedFiles.length
-    || files.length !== requestedFiles.length) return false;
+  if (!hasExactFileCoverage(requestedFiles, files)) return false;
   const outcomes = new Map(files.map((file) => [file.filePath, file]));
   return requestedFiles.every((filePath) => {
     const file = outcomes.get(filePath);
@@ -824,6 +833,61 @@ function hasExactPassedFileCoverage(
     return file?.status === 'pass' && details !== null && details !== undefined
       && details.passed > 0 && details.failed === 0 && !details.collectionFailed;
   });
+}
+
+function hasExactFileCoverage(
+  requestedFiles: string[] | null,
+  files: DetachedRunLedgerRecovery['files'],
+): boolean {
+  if (!requestedFiles || requestedFiles.length === 0
+    || new Set(requestedFiles).size !== requestedFiles.length
+    || files.length !== requestedFiles.length) return false;
+  const outcomes = new Map(files.map((file) => [file.filePath, file]));
+  return requestedFiles.every((filePath) => outcomes.has(filePath));
+}
+
+function provisionalVerdictFromLedger(
+  requestedFiles: string[],
+  recovery: DetachedRunLedgerRecovery,
+): ProvisionalTestVerdict | null {
+  if (recovery.status !== 'pass' && recovery.status !== 'fail') return null;
+  if (!hasExactFileCoverage(requestedFiles, recovery.files)) return null;
+  if (recovery.files.some((file) => file.executionDetails === null)) return null;
+  if (recovery.status === 'pass' && !hasExactPassedFileCoverage(requestedFiles, recovery.files)) return null;
+  if (recovery.status === 'fail' && !recovery.files.some((file) =>
+    file.status === 'fail' && (file.executionDetails!.failed > 0 || file.executionDetails!.collectionFailed))) {
+    return null;
+  }
+
+  const measured = recovery.files.map((file) => file.executionDetails!);
+  const counts = measured.reduce((sum, details) => ({
+    passed: sum.passed + details.passed,
+    failed: sum.failed + details.failed,
+    skipped: sum.skipped + details.skipped,
+  }), { passed: 0, failed: 0, skipped: 0 });
+  return {
+    status: recovery.status,
+    fileCount: recovery.fileCount,
+    finishedAt: recovery.finishedAt,
+    ...counts,
+  };
+}
+
+function withProvisionalVerdict(
+  snapshot: RunSnapshot,
+  provisionalVerdict: ProvisionalTestVerdict,
+): RunSnapshot {
+  const message = '[detached-report] Vitest reported ' + provisionalVerdict.status + ' across '
+    + provisionalVerdict.fileCount + ' requested file(s) (' + provisionalVerdict.passed + ' passed, '
+    + provisionalVerdict.failed + ' failed, ' + provisionalVerdict.skipped
+    + ' skipped); the task manager still reports the process as running, so the overall run remains nonterminal.';
+  return {
+    ...snapshot,
+    provisionalVerdict,
+    output: snapshot.output.includes(message)
+      ? snapshot.output
+      : [snapshot.output, message].filter(Boolean).join('\n'),
+  };
 }
 
 interface PersistedDetachedTaskRow {
@@ -1033,7 +1097,18 @@ async function reconcilePersistedTestRun(
     return persistReconciledSnapshot(snapshot, { ...snapshot, output, truncated }, sql);
   }
 
-  if (snapshot.status !== 'running' || !taskAllowsDetachedLedgerRecovery(task, taskLinked)) return snapshot;
+  if (snapshot.status !== 'running') return snapshot;
+  const requestedFiles = requestedFilesFromValue(task?.requested_files)
+    ?? requestedFilesFromValue(snapshot.requestedFiles);
+  if (taskLinked && task?.state === 'running' && requestedFiles) {
+    const rows = await readPersistedTestRunLedgerRows(snapshot.runId, sql);
+    if (!rows) return snapshot;
+    const recovery = deriveDetachedRunLedgerRecovery(snapshot.runId, rows);
+    if (!recovery) return snapshot;
+    const provisionalVerdict = provisionalVerdictFromLedger(requestedFiles, recovery);
+    return provisionalVerdict ? withProvisionalVerdict(snapshot, provisionalVerdict) : snapshot;
+  }
+  if (!taskAllowsDetachedLedgerRecovery(task, taskLinked)) return snapshot;
 
   const rows = await readPersistedTestRunLedgerRows(snapshot.runId, sql);
   if (!rows) return snapshot;
@@ -1100,8 +1175,9 @@ async function persistReconciledSnapshot(
 /**
  * A detached snapshot is not itself a liveness oracle: the worker that owned
  * its child may have disappeared after writing `status='running'`. The linked
- * task-manager row is the durable process-liveness authority. Once that row is
- * terminal, the process is conclusively gone (or was killed). Per-file rows are
+ * task-manager row and its exact kernel reconciliation provide liveness. A
+ * stored running row can outlive its scope before reconciliation is persisted.
+ * Once terminal, the process is conclusively gone (or was killed). Per-file rows are
  * streamed as workspaces finish, so a linked nonterminal task must not be
  * finalized from an all-pass subset.
  *
@@ -1115,6 +1191,14 @@ async function reconcilePersistedOrphan(
   sql: SqlLike,
   environment?: Readonly<Record<string, string | undefined>>,
 ): Promise<RunSnapshot> {
+  if (snapshot.status === 'running' && row.task_id && row.task_workspace_id &&
+      typeof row.task_state === 'string' && FOREGROUND_LIVE_TASK_STATES.has(row.task_state)) {
+    // Reuse the foreground oracle: only an independently confirmed released
+    // scope is terminal. A strand, partial scan or read failure stays unknown.
+    const kernel = await readForegroundKernelVerdict(row.task_id, row.task_workspace_id)
+      .catch((): ForegroundKernelVerdict => ({ status: 'unknown' }));
+    if (kernel.status === 'terminal') row = { ...row, task_state: kernel.taskState };
+  }
   const taskState = row.task_state;
   const taskDeadlineAt = epochMs(row.task_deadline_at ?? null);
   const deadlineExpired = taskDeadlineAt !== null && taskDeadlineAt <= Date.now();
@@ -2039,12 +2123,31 @@ function launchPreparedRun(prepared: PreparedRun, opts: { persistInitialSnapshot
       state.snapshot.exitCode = code;
       state.snapshot.finishedAt = Date.now();
       if (state.snapshot.status !== 'cancelled' && state.snapshot.status !== 'error') {
-        state.snapshot.status = code === 0 ? 'pass' : 'fail';
+        const output = state.snapshot.output;
+        const installLockTimeout = code === 2
+          && /TEST_FILE_INSTALL_READER_WAIT\b/m.test(output)
+          && /Timed out after \d+ms waiting for fs-mutex writer\b/i.test(output);
+        const parentSignal = /TEST_FILE_PROGRESS state=parent-(sigterm|sigint|sighup)\b/m.exec(output)?.[1];
+        const parentSignalExitCode = parentSignal === 'sigterm' ? 143
+          : parentSignal === 'sigint' ? 130
+            : parentSignal === 'sighup' ? 129 : null;
+        const routerParentTermination = parentSignalExitCode !== null && code === parentSignalExitCode;
+        if (installLockTimeout) {
+          state.snapshot.status = 'cancelled';
+          appendOutput(state, '\nTEST_RUN_NOT_MEASURED reason=install-lock-timeout executed=0\n');
+        } else if (routerParentTermination) {
+          state.snapshot.status = 'cancelled';
+        } else {
+          state.snapshot.status = code === 0 ? 'pass' : 'fail';
+        }
       }
     }
     finalizeTerminalRun();
     finishEnrolment({
-      state: state.snapshot.status === 'cancelled' ? 'killed' : 'exited',
+      state: state.snapshot.status === 'cancelled'
+        && !/TEST_RUN_NOT_MEASURED reason=install-lock-timeout executed=0/.test(state.snapshot.output)
+        ? 'killed'
+        : 'exited',
       exitCode: code,
     });
   });
@@ -2293,23 +2396,31 @@ export async function getRunAsync(
   evictOldRuns();
   const local = _runs.get(runId);
   if (local) {
+    let provisionalVerdict: ProvisionalTestVerdict | undefined;
     if (local.snapshot.status === 'running' && local.snapshot.taskId) {
       const persisted = await readPersistedRunSnapshot(
         runId, sqlOverride ?? local.snapshotSql, recoveryScope, local.childEnv,
       );
       // Preserve fresher local progress while the task is live, and never
       // overwrite a cancellation/close that completed during the durable read.
-      if (local.snapshot.status === 'running' && persisted && persisted.status !== 'running') {
-        Object.assign(local.snapshot, persisted);
-        stopProgressSnapshot(local);
+      if (local.snapshot.status === 'running' && persisted) {
+        if (persisted.status !== 'running') {
+          Object.assign(local.snapshot, persisted);
+          stopProgressSnapshot(local);
+        } else {
+          provisionalVerdict = persisted.provisionalVerdict;
+        }
       }
     }
     if (local.snapshot.finishedAt !== null && local.finalization) await local.finalization;
-    const snapshot = await withholdUnverifiedVitestPass({ ...local.snapshot }, sqlOverride);
+    let snapshot = await withholdUnverifiedVitestPass({ ...local.snapshot }, sqlOverride);
     if ((local.snapshot.status === 'pass' && snapshot.status !== 'pass')
       || (isWithheldUnverifiedVitestPass(local.snapshot)
         && (snapshot.status === 'pass' || snapshot.output !== local.snapshot.output))) {
       Object.assign(local.snapshot, snapshot);
+    }
+    if (snapshot.status === 'running' && provisionalVerdict) {
+      snapshot = withProvisionalVerdict(snapshot, provisionalVerdict);
     }
     return snapshot;
   }

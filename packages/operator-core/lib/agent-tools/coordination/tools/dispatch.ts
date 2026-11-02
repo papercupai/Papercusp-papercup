@@ -1166,14 +1166,16 @@ export default defineTool({
       const { bindAdmissionAuthority, AdmissionAuthorityRefused } = await import('../../../work-item-admission-authority');
       try {
         if (!identity.workspaceId) throw new AdmissionRecoveryRefused('recovery requires a concrete caller workspace');
+        // `self` is a dispatch selector; admission recovery requires a canonical owner ID.
+        const requestedTarget = dispatchArgs.to === 'self' ? identity.ownerId : dispatchArgs.to;
         // A canonical owner ID is already exact. requestAdmissionRecovery performs
         // fresh presence, workspace, and work-item authorization checks for it;
         // resolve only stable handles here so this path does not read the roster twice.
         const resolution = await trace.run('target_resolution', async () =>
-          CANONICAL_OWNER_ID_RE.test(dispatchArgs.to)
+          CANONICAL_OWNER_ID_RE.test(requestedTarget)
             ? null
             : resolveStableAgentTarget({
-                targetAgent: dispatchArgs.to,
+                targetAgent: requestedTarget,
                 workspaceId: identity.workspaceId!,
                 harness: dispatchArgs.harness,
               }),
@@ -1192,11 +1194,11 @@ export default defineTool({
             pickupConfirmed: false,
           }) }] };
         }
-        const targetOwnerId = resolution ? resolution.ownerId : dispatchArgs.to;
+        const targetOwnerId = resolution ? resolution.ownerId : requestedTarget;
         const result = await trace.run('admission_recovery', () => requestAdmissionRecovery({
           workspaceId: identity.workspaceId!, harnessSlug: dispatchArgs.harness!,
           workItemId: dispatchArgs.workItemIds![0]!, caller: identity.ownerId, target: targetOwnerId,
-          authority: bindAdmissionAuthority(ctx),
+          authority: bindAdmissionAuthority(ctx, dispatchArgs.harness),
           note: dispatchArgs.note, ...(dispatchArgs.body !== undefined ? { body: dispatchArgs.body } : {}),
         }));
         trace.finish('completed');

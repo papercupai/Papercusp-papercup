@@ -92,6 +92,45 @@ describe('decideMergeGate (P-024 / D-008)', () => {
     const d = decideMergeGate({ prHeadSha: PR, promotedSha: PR, targetTipSha: TIP, lastTest: test() });
     expect(d.action === 'merge' && d.advanceTargetTo).not.toBe(PR);
   });
+
+  it('refuses an otherwise mergeable PR when its diff contains a path outside admitted fixes', () => {
+    const d = decideMergeGate({
+      prHeadSha: PR,
+      promotedSha: PR,
+      targetTipSha: TIP,
+      lastTest: test(),
+      pathAttribution: {
+        ok: true,
+        prDiffPaths: ['apps/operator/lib/fix.ts', 'packages/operator-core/lib/scorecards/emit.ts'],
+        admittedFixPaths: ['apps/operator/lib/fix.ts'],
+      },
+    });
+    expect(d).toMatchObject({ action: 'refuse', reason: 'unattributed-delta' });
+    expect(d.action === 'refuse' && d.detail).toContain('packages/operator-core/lib/scorecards/emit.ts');
+  });
+
+  it('merges when every path in the PR diff is backed by an admitted fix', () => {
+    const paths = ['apps/operator/lib/a.ts', 'packages/operator-core/lib/b.ts'];
+    const d = decideMergeGate({
+      prHeadSha: PR,
+      promotedSha: PR,
+      targetTipSha: TIP,
+      lastTest: test(),
+      pathAttribution: { ok: true, prDiffPaths: paths, admittedFixPaths: paths },
+    });
+    expect(d).toMatchObject({ action: 'merge', advanceTargetTo: MERGE, expectedTargetTip: TIP });
+  });
+
+  it('fails closed when live path attribution cannot be established', () => {
+    const d = decideMergeGate({
+      prHeadSha: PR,
+      promotedSha: PR,
+      targetTipSha: TIP,
+      lastTest: test(),
+      pathAttribution: { ok: false, reason: 'settlement manifest unavailable' },
+    });
+    expect(d).toMatchObject({ action: 'refuse', reason: 'path-attribution-unverifiable' });
+  });
 });
 
 describe('confirmMergeAdvance', () => {

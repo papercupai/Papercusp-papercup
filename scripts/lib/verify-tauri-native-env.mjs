@@ -8,6 +8,7 @@ import { committedWorkRootDependencyDonor, OWNER_MARKER } from '../lint-as-commi
 import { censusSpawnArgs, interpretRestrictedHoldPreflight } from './restricted-hold-preflight.mjs';
 import { admitTaskDeadline, readTaskDeadlineEpochMs } from './task-deadline.mjs';
 import { verifierTaskBudget } from './verify-tauri-deadline.mjs';
+import { isolatedRuntimeEnv } from './isolation-child-env.mjs';
 
 // Sequential parent readiness commands (deadline, identity, types, census),
 // PostgreSQL init/start/stop/start, and portal setup precede the native rig.
@@ -179,17 +180,13 @@ export function nativeVerifierEnv(env, launch) {
       readTaskDeadlineEpochMs(env) ?? Infinity, nowMs + launch.timeoutMs,
     ));
   }
-  for (const key of ['PAPERCUSP_FORBID_REAL_PG', 'VITEST', 'VITEST_WORKER_ID', 'VITEST_POOL_ID',
-    'PAPERCUSP_RESTRICTED_HOLD_CENSUS_FILE']) {
-    delete child[key];
-  }
   // Hermetic worker setup removes the live workspace pin but retains the
   // original test-run attribution. The real native child needs that source
   // workspace for its lock census; restore it only in this copied child env.
   const workspace = [child.PAPERCUSP_WORKSPACE_ID, child.PAPERCUSP_WORKSPACE,
     child.PAPERCUSP_TEST_RUN_WORKSPACE].find(value => typeof value === 'string' && value.trim());
   if (workspace) child.PAPERCUSP_WORKSPACE_ID = workspace.trim();
-  return child;
+  return isolatedRuntimeEnv(child);
 }
 
 // Exercise the same committed-source census used by the bundle gate before

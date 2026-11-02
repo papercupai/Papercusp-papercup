@@ -516,6 +516,119 @@ export function boundInboxEntries<T extends Record<string, unknown>>(
  *  An entry whose body is not exactly the join (legacy, malformed) is returned
  *  untouched. coord:read and coord:thread still return the full sections.
  *  Pure. */
+/** Fixed allowance for identity, routing, age and truncation-pointer fields in
+ *  one bounded inbox row. The content cap is shared across its serialized
+ *  metadata as well as body/summary/sections; otherwise a page of 15 entries can
+ *  still grow without bound through provenance and structured authored fields. */
+export const INBOX_ENTRY_FIXED_OVERHEAD_CHARS = 512;
+
+const INBOX_ENTRY_DETAIL_FIELDS = [
+  "fieldProvenance",
+  "premisesClassified",
+  "premiseStamps",
+  "basedOn",
+  "sections",
+  "awaiting",
+  "staleBasis",
+  "why",
+] as const;
+
+const INBOX_ENTRY_CORE_FIELDS = new Set([
+  "msg_id", "ts", "kind", "from", "to", "expects", "summary", "body", "audience",
+  "age", "age_ms", "auto", "category", "event_key", "harness_slug", "related_msg_id",
+  "authored", "sections_text_in_body", "body_truncated", "body_full_chars",
+  "summary_truncated", "summary_full_chars", "details_truncated", "details_full_chars",
+  "details_read", "to_truncated", "to_full_count", "audience_truncated", "audience_full_count",
+]);
+
+/** Bound the whole serialized entry after the content fields have been clipped.
+ *  Large machine provenance and authored structure remain available from
+ *  coord:read; the compact `authored` marker and an explicit recovery pointer stay
+ *  on the inbox row. This is the final guard against an unbounded field bypassing
+ *  max_body_chars. */
+export function boundInboxEntrySize<T extends Record<string, unknown>>(
+  entry: T,
+  maxChars: number,
+): Record<string, unknown> {
+  if (!(maxChars > 0)) return entry;
+  const fullChars = JSON.stringify(entry).length;
+  const maxSerializedChars = maxChars + INBOX_ENTRY_FIXED_OVERHEAD_CHARS;
+  if (fullChars <= maxSerializedChars) return entry;
+
+  const out: Record<string, unknown> = {
+    ...entry,
+    details_truncated: true,
+    details_full_chars: fullChars,
+    ...(typeof entry["msg_id"] === "string"
+      ? { details_read: { tool: "coord:read", args: { msg_id: entry["msg_id"] } } }
+      : {}),
+  };
+  const overBudget = () => JSON.stringify(out).length > maxSerializedChars;
+
+  // Remove the largest structured payloads first. Their complete, authored
+  // values remain in coord:read; `authored` tells the inbox reader which classes
+  // are present without copying those values into every list row.
+  const details = INBOX_ENTRY_DETAIL_FIELDS
+    .filter((key) => out[key] !== undefined)
+    .sort((a, b) => JSON.stringify(out[b]).length - JSON.stringify(out[a]).length);
+  for (const key of details) {
+    if (!overBudget()) break;
+    delete out[key];
+  }
+
+  // Drop other optional extensions by size, preserving the message and routing
+  // fields. A future extension therefore cannot silently reopen the overflow.
+  if (overBudget()) {
+    const optional = Object.keys(out)
+      .filter((key) => !INBOX_ENTRY_CORE_FIELDS.has(key))
+      .sort((a, b) => JSON.stringify(out[b]).length - JSON.stringify(out[a]).length);
+    for (const key of optional) {
+      if (!overBudget()) break;
+      delete out[key];
+    }
+  }
+
+  // Recipient lists can be large on fleet-directed messages. Keep a small sample
+  // and the original count if it is the remaining variable-size field.
+  for (const key of ["to", "audience"] as const) {
+    const value = out[key];
+    if (!overBudget() || !Array.isArray(value) || value.length <= 4) continue;
+    out[`${key}_full_count`] = value.length;
+    out[`${key}_truncated`] = true;
+    out[key] = value.slice(0, 4);
+  }
+
+  // Preserve the actionable body first. The summary can be shortened before the
+  // body; the body clipper keeps the sender's actionable suffix and a coord:read
+  // pointer. Measure JSON serialization each pass so escaping cannot exceed cap.
+  for (const key of ["summary", "body"] as const) {
+    const value = out[key];
+    if (!overBudget() || typeof value !== "string") continue;
+    const excess = JSON.stringify(out).length - maxSerializedChars;
+    const target = Math.max(0, value.length - excess - 8);
+    if (target >= value.length) continue;
+    out[key] = key === "body"
+      ? clipBodyWithTruncationPointer(value, target, out["msg_id"])
+      : clipWithTruncationPointer(value, target, out["msg_id"]);
+    out[`${key}_truncated`] = true;
+    out[`${key}_full_chars`] = entry[`${key}_full_chars`] ?? value.length;
+  }
+
+  // A pathological row may carry an oversized recipient or unknown scalar even
+  // after all known extensions are removed. Retain the canonical identity and a
+  // bounded body, and discard optional fields until the contract is met.
+  if (overBudget()) {
+    const optional = Object.keys(out)
+      .filter((key) => !["msg_id", "ts", "kind", "from", "expects", "body", "details_truncated", "details_full_chars", "details_read", "body_truncated", "body_full_chars"].includes(key))
+      .sort((a, b) => JSON.stringify(out[b]).length - JSON.stringify(out[a]).length);
+    for (const key of optional) {
+      if (!overBudget()) break;
+      delete out[key];
+    }
+  }
+  return out;
+}
+
 export function dropSectionTextDuplicatedInBody<T extends Record<string, unknown>>(
   entries: readonly T[],
 ): Array<Record<string, unknown>> {
@@ -2227,7 +2340,7 @@ export default defineTool({
       // per-section block per row is exactly what that budget exists to prevent.
       // `coord:read <msg_id>` shows the structure in full.
       const authored = authoredFieldsMarker(entry);
-      return authored ? { ...entry, authored } : entry;
+      return boundInboxEntrySize(authored ? { ...entry, authored } : entry, effectiveCap);
     });
 
     // WI-7222: mark messages the sender has SUPERSEDED. Done last, over the bounded

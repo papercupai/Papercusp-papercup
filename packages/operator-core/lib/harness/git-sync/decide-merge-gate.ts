@@ -73,11 +73,23 @@ export interface MergeGateInput {
    * viewer), whose merge click still goes through the merge step.
    */
   submodulePins?: SubmodulePinCheck;
+  /**
+   * Path attribution for the exact PR head and target being considered. The live merge
+   * step always supplies this and refuses when it cannot be measured; it is optional only
+   * for display-only callers that do not have the admission or repository evidence.
+   */
+  pathAttribution?: MergePathAttribution;
 }
+
+export type MergePathAttribution =
+  | { ok: true; prDiffPaths: readonly string[]; admittedFixPaths: readonly string[] }
+  | { ok: false; reason: string };
 
 export type MergeGateRefusalReason =
   | 'nothing-promoted'
   | 'pr-head-not-promoted'
+  | 'path-attribution-unverifiable'
+  | 'unattributed-delta'
   | 'unpublished-gitlinks'
   | 'submodule-pins-unverifiable'
   | 'merge-result-failed';
@@ -123,6 +135,25 @@ export function decideMergeGate(input: MergeGateInput): MergeGateDecision {
       reason: 'pr-head-not-promoted',
       detail: `The pull request head (${short(prHeadSha)}) is not the commit that passed the working copy's test suite (${short(promotedSha)}). Only the tested commit can be merged.`,
     };
+  }
+
+  if (input.pathAttribution && !input.pathAttribution.ok) {
+    return {
+      action: 'refuse',
+      reason: 'path-attribution-unverifiable',
+      detail: `Could not verify that every path in this pull request belongs to an admitted fix (${input.pathAttribution.reason}).`,
+    };
+  }
+  if (input.pathAttribution?.ok) {
+    const admitted = new Set(input.pathAttribution.admittedFixPaths);
+    const unadmitted = [...new Set(input.pathAttribution.prDiffPaths.filter((path) => !admitted.has(path)))].sort();
+    if (unadmitted.length > 0) {
+      return {
+        action: 'refuse',
+        reason: 'unattributed-delta',
+        detail: `This pull request contains paths outside its admitted fixes: ${unadmitted.join(', ')}. Restore or admit those paths before merging.`,
+      };
+    }
   }
 
   const pins = input.submodulePins;

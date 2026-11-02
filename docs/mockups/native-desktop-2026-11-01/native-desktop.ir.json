@@ -1,0 +1,79 @@
+{
+  "irVersion": "0.1",
+  "surface": "native-desktop-five-surface-study",
+  "ecosystem": "native-desktop",
+  "a11y": { "landmark": "main", "headingLevel": 1 },
+  "layout": {
+    "kind": "stack",
+    "direction": "vertical",
+    "children": [
+      {
+        "kind": "header",
+        "children": [
+          { "kind": "heading", "copy": { "key": "native.title", "default": "A native home for your agents." } },
+          { "kind": "component", "ref": "platform-picker" }
+        ]
+      },
+      {
+        "kind": "tabs",
+        "interactions": ["choose-focus-workbench-or-orbit"],
+        "a11y": { "role": "tablist", "ariaLabel": { "key": "native.directions", "default": "Design direction" } },
+        "children": [
+          { "kind": "text", "copy": { "key": "native.focus", "default": "A · Focus" } },
+          { "kind": "text", "copy": { "key": "native.workbench", "default": "B · Workbench" } },
+          { "kind": "text", "copy": { "key": "native.orbit", "default": "C · Orbit" } }
+        ]
+      },
+      {
+        "kind": "tabs",
+        "interactions": ["choose-native-surface"],
+        "a11y": { "role": "tablist", "ariaLabel": { "key": "native.surfaces", "default": "Interface" } },
+        "children": [
+          { "kind": "text", "copy": { "key": "native.launcher", "default": "Quick Access" } },
+          { "kind": "text", "copy": { "key": "native.terminal", "default": "Terminal HUD" } },
+          { "kind": "text", "copy": { "key": "native.organizer", "default": "Window organizer" } },
+          { "kind": "text", "copy": { "key": "native.chat", "default": "Papercup chat" } },
+          { "kind": "text", "copy": { "key": "native.accounts", "default": "Accounts" } },
+          { "kind": "text", "copy": { "key": "native.goals", "default": "Goals and Work on everything" } }
+        ]
+      },
+      {
+        "kind": "raw",
+        "ecosystem": "native-desktop",
+        "ref": "native-desktop-artboard",
+        "spec": {
+          "why-raw": "The available registry contains React control implementations, not GNOME, AppKit, or WinUI widgets. This is a browser-rendered visual study of native desktop surfaces, preserving registered interaction grammar and existing backend semantics.",
+          "directions": ["focus-earlier-study", "workbench-resident-os-sidebars-current", "orbit-earlier-study"],
+          "selectedDirection": "workbench",
+          "lifecycle": "Resident in the signed-in desktop session from login. Each panel is summoned directly by a configurable global shortcut, with no foreground app launch and no independent Dock/taskbar/Alt-Tab entry. Escape dismisses, repeated shortcut toggles, and optional pinning retains context. Panels have no app minimize/maximize chrome. Only ordinary terminal windows retain application-window behavior. Mock shortcuts are browser-scoped simulations, not OS registration.",
+          "governingDecision": "quick-access-search-launcher-2026-10-26#D-009",
+          "surfaces": ["launcher", "terminal-hud", "window-organizer", "papercup-chat", "accounts", "goals-and-work-on-everything"],
+          "goals": "D-010: Goals and Work on everything are first-class context. Goals sidebar has a direct shortcut; search includes goals; terminal rails and chat carry selected-goal context; accounts show goal spend/cap without changing account-control scope; layouts can group by goal within each desktop. Reuse existing goal list/detail, ongoing-work-model, GoalWorkRail and WorkOnEverything controls, priority worklists, attention, outcomes and evidence. Standing-goal plan progress is not completion of the endless goal. Pause/resume/start reflect server-confirmed state and degraded-result warnings. All mock goal actions are previews and change no live goal.",
+          "remote": "Reuse psu saved profiles, connection selection, transports, and reattachment through the existing connection front controller. No new credential or remote transport store.",
+          "agentActivation": "Focus the exact existing terminal. Remote targets reuse the selected saved psu connection. No chat popup is opened by agent selection.",
+          "terminalPanels": "Orders on the left, Activity on the right, and optional Fleet peers. Compact states preserve terminal space.",
+          "layouts": "Arrange terminals and attached panels as a group; distinguish local viewer layouts from remote desktop layouts; preserve pinned windows and offer Undo.",
+          "chat": "Native presentation of existing conversation and card contracts. Simulated messages never leave the mockup.",
+          "accounts": "Preserve provider usage, session and week windows, Default fallback, Force eligible-pool restriction, and Exclude. Distinguish Auto routing from the default-account axis.",
+          "samples": "All account usage, identities, activity, and reset times are illustrative. No credentials are present."
+        },
+        "interactions": ["search", "focus-agent-preview", "open-plan-preview", "open-report-preview", "select-layout", "undo-layout-preview", "toggle-terminal-panels", "send-chat-preview", "choose-auto-or-default", "set-default-account", "force-account", "exclude-account"],
+        "children": [
+          { "kind": "component", "ref": "native-search" },
+          { "kind": "component", "ref": "focus-agent" },
+          { "kind": "component", "ref": "layout-undo" },
+          { "kind": "component", "ref": "account-popover" },
+          { "kind": "component", "ref": "native-detail-dialog" }
+        ]
+      }
+    ]
+  },
+  "components": [
+    { "id": "platform-picker", "registry": "control.select", "props": { "value": "ubuntu", "options": ["Ubuntu", "macOS", "Windows"] } },
+    { "id": "native-search", "registry": "control.text", "props": { "placeholder": "Find an agent, plan, or report…", "leading": "search" } },
+    { "id": "focus-agent", "registry": "action.primary", "props": { "label": "Focus terminal", "icon": "arrow-up-right" } },
+    { "id": "layout-undo", "registry": "action.secondary", "props": { "label": "Undo last arrangement" } },
+    { "id": "account-popover", "registry": "overlay.popover", "props": { "ariaLabel": "Accounts and session routing" } },
+    { "id": "native-detail-dialog", "registry": "overlay.modal", "props": { "ariaLabel": "Plan or report preview" } }
+  ]
+}

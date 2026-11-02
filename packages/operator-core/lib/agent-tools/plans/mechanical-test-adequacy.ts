@@ -194,7 +194,19 @@ export function evaluateMechanicalTestAdequacy(input: {
     if (bound.length === 0) {
       gaps.push(`${file}: no ledger-backed test run is bound (autobind binds its next passing run at a committed tree)`);
     } else if (!bound.some(row => isPassingLedgerRun(row))) {
-      gaps.push(`${file}: the bound run did not pass (binding ${bound.map((row) => row.id ?? '?').join(', ')})`);
+      const measuredPasses = bound.filter(({ testRunExecution: execution }) =>
+        execution?.status === 'pass' && execution.passed > 0 && execution.failed === 0 &&
+          execution.collectionFailed === false);
+      if (measuredPasses.length > 0) {
+        const counts = measuredPasses.map(row => {
+          const execution = row.testRunExecution!;
+          return `binding ${row.id ?? '?'}: passed=${execution.passed}, failed=${execution.failed}, skipped=${execution.skipped}`;
+        });
+        gaps.push(`${file}: passing execution lacks sufficient case coverage (${counts.join('; ')}); ` +
+          'declared case identities must match server-recorded passedCaseTitles');
+      } else {
+        gaps.push(`${file}: the bound run did not pass (binding ${bound.map((row) => row.id ?? '?').join(', ')})`);
+      }
     } else {
       const passing = bound.filter(row => isPassingLedgerRun(row));
       gaps.push(

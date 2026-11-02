@@ -15,6 +15,7 @@ const killHandler = vi.fn();
 const launchHandler = vi.fn();
 const getPresence = vi.fn();
 const listFleetPresence = vi.fn();
+const liveFleetMemberIds = vi.fn();
 const sendMessage = vi.fn();
 const wakeRecipients = vi.fn();
 const resolveSessionStates = vi.fn();
@@ -46,6 +47,10 @@ vi.mock('../coordination/presence', () => ({
 }));
 vi.mock('../coordination/presence-fleet', () => ({
   listFleetPresence: (...a: unknown[]) => listFleetPresence(...a),
+}));
+vi.mock('../../fleet/fleet-roster', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  liveFleetMemberIds: (...a: unknown[]) => liveFleetMemberIds(...a),
 }));
 vi.mock('../coordination/messages', () => ({
   sendMessage: (...a: unknown[]) => sendMessage(...a),
@@ -219,6 +224,7 @@ beforeEach(() => {
   sendMessage.mockResolvedValue({ msg_id: 'yield-1' });
   wakeRecipients.mockResolvedValue({ targets: [MEMBER], keys: ['wake-1'], queued: 1, woken: 1, staged: 0, stagedTargets: [], fanoutCapped: [], timedOutTargets: [] });
   resolveSessionStates.mockReset().mockResolvedValue(new Map());
+  liveFleetMemberIds.mockReset().mockResolvedValue([]);
   getFleet.mockResolvedValue({ lastLaunchTransaction: null });
   setFleetLaunchTransaction.mockResolvedValue(true);
   // WI-2141730: no colliding live host by default — the ordinary respawn path never sees this
@@ -1314,6 +1320,7 @@ describe('fleet:respawn-member (P-008)', () => {
     listFleetPresence.mockReset()
       .mockResolvedValueOnce([row(LEADER), row(MEMBER)])
       .mockResolvedValueOnce([row(LEADER), row('surviving-member')]);
+    liveFleetMemberIds.mockResolvedValueOnce(['surviving-member']);
     launchHandler.mockResolvedValue({ content: [{ type: 'text', text: 'launch failed: no capacity' }], isError: true });
     const res = await tool.handler({ member: MEMBER, model: 'sonnet:high' } as never, {} as never);
     const p = parse(res);
@@ -1337,6 +1344,7 @@ describe('fleet:respawn-member (P-008)', () => {
     listFleetPresence.mockReset()
       .mockResolvedValueOnce([row(LEADER), row(MEMBER)])
       .mockResolvedValueOnce([row(LEADER), row('surviving-member-a'), row('surviving-member-b')]);
+    liveFleetMemberIds.mockResolvedValueOnce(['surviving-member-a', 'surviving-member-b']);
     launchHandler.mockResolvedValue({ content: [{ type: 'text', text: 'launch failed: no capacity' }], isError: true });
 
     const p = parse(await tool.handler({ member: MEMBER, model: 'sonnet:high' } as never, {} as never));
@@ -1357,6 +1365,81 @@ describe('fleet:respawn-member (P-008)', () => {
     expect(p.message).toMatch(/do not relaunch/);
     expect(p.message).not.toMatch(/down one member|retry the replacement launch/);
     expect(killHandler).toHaveBeenCalledTimes(1);
+  });
+
+  it('excludes a fresh presence row for the replacement whose launch failed', async () => {
+    persistedTarget = 1;
+    let failedReplacementOwner: string | null = null;
+    listFleetPresence.mockReset()
+      .mockResolvedValueOnce([row(LEADER), row(MEMBER)])
+      .mockImplementationOnce(async () => [row(LEADER), row(failedReplacementOwner ?? 'missing-replacement')]);
+    launchHandler.mockImplementation(async (args: { __respawnOwnerId?: string }) => {
+      failedReplacementOwner = args.__respawnOwnerId ?? null;
+      return { content: [{ type: 'text', text: 'launch failed: unauthorized' }], isError: true };
+    });
+
+    const p = parse(await tool.handler({ member: MEMBER, model: 'sonnet:high' } as never, {} as never));
+
+    expect(failedReplacementOwner).toMatch(/^su-respawn-/);
+    expect(p.headcount).toMatchObject({
+      target: 1,
+      current: 0,
+      shortfall: 1,
+      underStrength: true,
+      verdict: 'under-strength',
+      memberOwnerIds: [],
+    });
+    expect(p.message).toMatch(/retry the replacement launch/);
+    expect(p.message).not.toMatch(/remains at target|do not relaunch/);
+    expect(resolveSessionStates).toHaveBeenCalledWith([], { hydratePerId: true, psuHostAuthority: true });
+  });
+
+  it('excludes a fresh presence row for the replacement whose launch failed', async () => {
+    persistedTarget = 1;
+    let failedReplacementOwner: string | null = null;
+    launchHandler.mockImplementation(async (args: { __respawnOwnerId?: string }) => {
+      failedReplacementOwner = args.__respawnOwnerId ?? null;
+      return { content: [{ type: 'text', text: 'launch failed: unauthorized' }], isError: true };
+    });
+    liveFleetMemberIds.mockImplementationOnce(async () => [failedReplacementOwner ?? 'missing-replacement']);
+
+    const p = parse(await tool.handler({ member: MEMBER, model: 'sonnet:high', verifySec: 0 } as never, {} as never));
+
+    expect(failedReplacementOwner).toMatch(/^su-respawn-/);
+    expect(liveFleetMemberIds).toHaveBeenCalledWith(SLUG, 'ws', 'launch');
+    expect(p.headcount).toMatchObject({
+      target: 1,
+      current: 0,
+      shortfall: 1,
+      underStrength: true,
+      verdict: 'under-strength',
+      memberOwnerIds: [],
+    });
+    expect(p.message).toMatch(/retry the replacement launch/);
+    expect(p.message).not.toMatch(/remains at target|do not relaunch/);
+  });
+
+  it('uses the canonical launch-member census and keeps failed reads unknown', async () => {
+    persistedTarget = 1;
+    liveFleetMemberIds.mockResolvedValueOnce(['live-survivor']);
+    launchHandler.mockResolvedValue({ content: [{ type: 'text', text: 'launch failed: no capacity' }], isError: true });
+
+    const counted = parse(await tool.handler({ member: MEMBER, model: 'sonnet:high', verifySec: 0 } as never, {} as never));
+    expect(counted.headcount).toMatchObject({ verdict: 'at-target', current: 1, memberOwnerIds: ['live-survivor'] });
+    expect(liveFleetMemberIds).toHaveBeenCalledWith(SLUG, 'ws', 'launch');
+
+    liveFleetMemberIds.mockRejectedValueOnce(new Error('liveness read failed'));
+    launchHandler.mockResolvedValue({ content: [{ type: 'text', text: 'launch failed: no capacity' }], isError: true });
+
+    const unknown = parse(await tool.handler({ member: MEMBER, model: 'sonnet:high', verifySec: 0 } as never, {} as never));
+    expect(unknown.headcount).toMatchObject({
+      target: 1,
+      current: null,
+      shortfall: null,
+      underStrength: null,
+      verdict: 'unknown',
+    });
+    expect(unknown.message).toMatch(/could not be verified/);
   });
 
   it('reuses the canonical saved profile when no boot-baked setting is passed', async () => {

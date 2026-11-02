@@ -8,6 +8,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { WithPlanLockResult } from './with-plan-lock';
+import { buildCampaignPlan } from '../../code-cleanup/campaign-plan';
+import type { TriageBatch } from '../../code-cleanup/triage';
 
 vi.mock('./_ctx-opts', () => ({ resolveCtxHarnessSlug: vi.fn(() => 'papercusp') }));
 vi.mock('../_harness-scope', async (orig) => ({
@@ -204,6 +206,34 @@ describe('plans:new parse admission (EI-22005620513894909)', () => {
     expect(out.isError).toBeUndefined();
     expect(withPlanLockM).toHaveBeenCalledTimes(1);
     expect(JSON.parse(out.content[0]!.text)).toMatchObject({ ok: true, itemsParsed: 1 });
+  });
+
+  it('accepts generated campaign content with a complete Requirements + BAR map', async () => {
+    const batch = (area: string, index: number, left: string, right: string): TriageBatch => ({
+      area, index, score: 1, redundantMass: 100,
+      families: [{
+        id: `${area}-family`, score: 1, churn: 1, redundantMass: 100, packageDistance: 0,
+        coChange: { minLinkScore: 0.5, files: 2, basis: 'file' },
+        members: [{ path: left, line: 10, symbol: 'left' }, { path: right, line: 20, symbol: 'right' }],
+      }],
+    });
+    const campaign = buildCampaignPlan({
+      slug: 'cleanup-generated-campaign',
+      batches: [batch('pkg/a', 0, 'pkg/a/left.ts', 'pkg/a/right.ts'), batch('pkg/b', 0, 'pkg/b/left.ts', 'pkg/b/right.ts')],
+    });
+
+    expect(campaign.content).toContain('## Requirements');
+    expect(campaign.content).toContain('### Bar-to-work map for this plan');
+    expect(campaign.content).toContain('| R-1 | P-001, P-002 | tree |');
+
+    const out = await call(campaign.content);
+    expect(out.isError).toBeUndefined();
+    expect(withPlanLockM).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(out.content[0]!.text)).toMatchObject({
+      ok: true,
+      itemsParsed: 2,
+      items: [{ id: 'P-001', status: 'todo' }, { id: 'P-002', status: 'todo' }],
+    });
   });
 
   it('explains that a title-bearing bar cell must use a bare R-N key', async () => {

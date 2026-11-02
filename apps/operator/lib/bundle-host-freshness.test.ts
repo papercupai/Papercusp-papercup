@@ -79,7 +79,7 @@ describe('BG original builder identity', () => {
   const boundaries = ['before-build', 'before-publication'] as const;
   let serial = 0;
 
-  async function invocationDefect(boundary: typeof boundaries[number], defect: 'builder-configuration' | 'toolchain-identity') {
+  async function invocationDefect(boundary: typeof boundaries[number], defect?: 'builder-configuration' | 'toolchain-identity') {
     const { prepared, dependencies } = await makeBgCompilerCandidate(join(repo, `bg-builder-${++serial}`));
     const invocation = { builder: join(prepared.root, 'apps/operator/bin/bundle-host.sh'),
       argv: ['--bundle', '--platform=node', '--target=node22'], node: process.execPath,
@@ -90,10 +90,12 @@ describe('BG original builder identity', () => {
     const record = prepareBgVerifierBuildRecord({ prepared, dependencies, invocation });
     const recordBytes = JSON.stringify(record);
     expect(verifyBgVerifierBuildRecord(record, invocation, boundary)).toBe(record);
-    if (defect === 'builder-configuration') invocation.argv.push('--target=node23');
-    else invocation.node = invocation.packageManager;
-    expect(() => verifyBgVerifierBuildRecord(record, invocation, boundary))
-      .toThrow('BG builder configuration or toolchain identity changed');
+    if (defect) {
+      if (defect === 'builder-configuration') invocation.argv.push('--target=node23');
+      else invocation.node = invocation.packageManager;
+      expect(() => verifyBgVerifierBuildRecord(record, invocation, boundary))
+        .toThrow('BG builder configuration or toolchain identity changed');
+    }
     expect(JSON.stringify(record)).toBe(recordBytes);
     expect(readFileSync(join(prepared.root, '.verifier-source.json'))).toEqual(originalReceipt);
   }
@@ -104,6 +106,9 @@ describe('BG original builder identity', () => {
   it(BG_R1_PARENT_SELECTORS.builder.testName, async () => {
     for (const boundary of boundaries) for (const defect of ['builder-configuration', 'toolchain-identity'] as const)
       await invocationDefect(boundary, defect);
+  });
+  it('preserves unchanged original builder inputs at both compiler boundaries', async () => {
+    for (const boundary of boundaries) await invocationDefect(boundary);
   });
 });
 

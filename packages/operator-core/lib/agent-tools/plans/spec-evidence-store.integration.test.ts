@@ -249,6 +249,9 @@ beforeAll(async () => {
       harness_slug text,
       file_path text,
       status text,
+      -- readHarnessTestRunEvidence selects duration_ms directly; a missing column
+      -- makes that fail-closed reader return null instead of the scoped receipts.
+      duration_ms integer,
       -- bind-from-test-run also reads the run's measurement lower bound.
       started_at timestamptz NOT NULL DEFAULT now(),
       finished_at timestamptz,
@@ -339,6 +342,75 @@ beforeEach(async () => {
 });
 
 describe('promotion carry-forward of current spec evidence', () => {
+  it.each([false, true])('preserves independent verification citations across a provenance-only clause revision (withdrawn=%s)', async (withdrawn) => {
+    await specs.setSpecClause(clause({ mutationRequired: false, acceptanceRef: 'D-001' }));
+    const { testRunId } = await seedExternalEvidence('test/reconnect.test.ts');
+    const runId = '20261025T000000Z-257';
+    const execution = { schemaVersion: 1, root: h.repoRoot, filePath: 'test/reconnect.test.ts',
+      runGroupId: null, workspaceId: WORKSPACE, harnessSlug: HARNESS, testNamePattern: null,
+      testLayer: 'integration', passed: 1, failed: 0, skipped: 0, collectionFailed: false,
+      mutationPhase: null, commitSha: null, worktreeDirty: true,
+      isolatedRuntimeReceipts: [{ runId, resultSha256: 'a'.repeat(64), sourceSha256: 'b'.repeat(64),
+        lifecycleSha256: 'c'.repeat(64) }] };
+    await db.sql`UPDATE harness_shared.test_runs SET execution_details = ${JSON.stringify(execution)}::text::jsonb
+      WHERE id = ${testRunId}`;
+    const currentMeasurement = { schemaVersion: 1, kind: 'repo-files', sourcePaths: ['src/reconnect.ts'],
+      runtimeUnits: [`isolated-integration:${runId}`] };
+    const source = await evidenceStore.bindSpecEvidence({
+      workItemId: 'WI-101', specId: 'SPEC-003-01', harnessSlug: HARNESS, planSlug: 'reconnect-plan',
+      actorId: 'su-original-implementer', evidenceKind: 'test', evidenceRef: 'test/reconnect.test.ts',
+      testRunId, sourceFingerprint: 'source-v1', observedAt: '2026-10-20T01:02:03.000Z',
+      details: { evidencePlane: 'live', testRun: { id: testRunId, filePath: 'test/reconnect.test.ts' },
+        currentMeasurement },
+    });
+    expect(source).toMatchObject({ status: 'created' });
+    const sourceId = (source as { id: number }).id;
+    const verified = await evidenceStore.bindSpecEvidence({
+      workItemId: 'WI-101', specId: 'SPEC-003-01', harnessSlug: HARNESS, planSlug: 'reconnect-plan',
+      actorId: 'su-original-reviewer', evidenceKind: 'independent-verification', verifiesBindingId: sourceId,
+      evidenceRef: 'test/reconnect.test.ts', sourceFingerprint: 'source-v1',
+      observedAt: '2026-10-20T01:03:04.000Z', details: { currentMeasurement },
+    });
+    expect(verified).toMatchObject({ status: 'created' });
+    if (withdrawn) {
+      expect(await evidenceStore.retractSpecEvidence({
+        harnessSlug: HARNESS, bindingId: sourceId, actorId: 'su-original-implementer',
+        reason: 'the observation was invalidated before revision carry',
+      })).toMatchObject({ status: 'retracted' });
+    }
+
+    const revised = await specs.setSpecClause(clause({
+      expectedRevision: 1, mutationRequired: false, acceptanceRef: 'D-002',
+    }));
+    const expectedCount = withdrawn ? 0 : 2;
+    expect(revised).toMatchObject({ status: 'revised', revision: 2, evidenceCarriedForward: expectedCount });
+    const copied = await db.sql<{
+      id: number; evidence_kind: string; verifies_binding_id: number | null;
+      created_by: string; observed_at: Date; test_run_id: number | null;
+    }[]>`SELECT id, evidence_kind, verifies_binding_id, created_by, observed_at, test_run_id
+          FROM harness_shared.spec_evidence_bindings WHERE spec_revision = 2 ORDER BY id`;
+    expect(copied).toHaveLength(expectedCount);
+    if (!withdrawn) {
+      const copiedTest = copied.find((row) => row.evidence_kind === 'test')!;
+      const copiedVerification = copied.find((row) => row.evidence_kind === 'independent-verification')!;
+      expect(Number(copiedVerification.verifies_binding_id)).toBe(Number(copiedTest.id));
+      expect(Number(copiedVerification.verifies_binding_id)).not.toBe(Number(sourceId));
+      expect(copiedVerification.created_by).toBe('su-original-reviewer');
+      expect(new Date(copiedVerification.observed_at).toISOString()).toBe('2026-10-20T01:03:04.000Z');
+      expect(Number(copiedTest.test_run_id)).toBe(testRunId);
+    }
+
+    const replay = await carryUnchangedBarEvidenceBindings(db.sql, {
+      workspaceId: WORKSPACE, harnessSlug: HARNESS, planSlug: 'reconnect-plan',
+      specId: 'SPEC-003-01', priorRevision: 1, nextRevision: 2,
+      nextSpecFingerprint: (revised as { contentHash: string }).contentHash,
+    });
+    expect(replay).toBe(expectedCount);
+    const [count] = await db.sql<{ count: number }[]>`
+      SELECT count(*)::int AS count FROM harness_shared.spec_evidence_bindings WHERE spec_revision = 2`;
+    expect(count.count).toBe(expectedCount);
+  });
+
   it('copies exact proof from a dropped predecessor to the canonical item and remaps its verification citation', async () => {
     const observedAt = '2026-10-20T01:02:03.000Z';
     await specs.setSpecClause(clause({ mutationRequired: false }));
@@ -2319,6 +2391,63 @@ describe('recorded retraction is the one sanctioned repair for a malformed bindi
       })
     ).map((r) => Number((r as { id: number }).id));
 
+  it('rolls back every row when a later retraction in the batch fails', async () => {
+    await specs.setSpecClause(clause());
+    const firstExternal = await seedExternalEvidence();
+    const secondExternal = await seedExternalEvidence();
+    const bind = (external: Awaited<ReturnType<typeof seedExternalEvidence>>) =>
+      evidenceStore.bindSpecEvidence({
+        harnessSlug: HARNESS,
+        planSlug: 'reconnect-plan',
+        workItemId: 'WI-101',
+        specId: 'SPEC-003-01',
+        evidenceKind: 'coverage-census' as const,
+        evidenceRef: 'surface:POST /events',
+        sourceFingerprint: 'git:abc123',
+        coverageEvidenceRef: external.coverageEvidenceRef,
+        testRunId: external.testRunId,
+        actorId: 'su-test',
+      });
+    const first = await bind(firstExternal);
+    const second = await bind(secondExternal);
+    expect(first.status).toBe('created');
+    expect(second.status).toBe('created');
+    const firstId = Number((first as { id: number }).id);
+    const secondId = Number((second as { id: number }).id);
+    expect(secondId).not.toBe(firstId);
+
+    try {
+      await h.sql.unsafe(`
+        CREATE FUNCTION harness_shared.fail_spec_evidence_retraction_batch_test()
+        RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN
+          RAISE EXCEPTION 'injected retraction failure';
+        END;
+        $$`);
+      await h.sql.unsafe(`
+        CREATE TRIGGER zzz_spec_evidence_retraction_batch_test
+        BEFORE UPDATE ON harness_shared.spec_evidence_bindings
+        FOR EACH ROW
+        WHEN (OLD.id = ${secondId} AND NEW.retracted_at IS NOT NULL)
+        EXECUTE FUNCTION harness_shared.fail_spec_evidence_retraction_batch_test()`);
+
+      await expect(evidenceStore.retractSpecEvidenceBatch({
+        harnessSlug: HARNESS,
+        actorId: RETRACTOR,
+        items: [
+          { bindingId: firstId, reason: 'withdraw first fixture row' },
+          { bindingId: secondId, reason: 'withdraw second fixture row' },
+        ],
+      })).rejects.toThrow('injected retraction failure');
+    } finally {
+      await h.sql.unsafe(`DROP TRIGGER IF EXISTS zzz_spec_evidence_retraction_batch_test
+        ON harness_shared.spec_evidence_bindings`);
+      await h.sql.unsafe(`DROP FUNCTION IF EXISTS harness_shared.fail_spec_evidence_retraction_batch_test()`);
+    }
+
+    expect((await visibleIds()).sort((a, b) => a - b)).toEqual([firstId, secondId].sort((a, b) => a - b));
+  });
+
   /**
    * THE REPAIR MUST ACTUALLY REPAIR. Retracting a malformed binding is only half of D-011's
    * sanctioned path; the other half is binding the corrected evidence afterwards. Migration
@@ -3206,13 +3335,15 @@ describe('plans:bind-spec-evidence { fromTestRun } derives the binding from a re
     workItemId = 'WI-101',
     details?: Record<string, unknown>,
     supersedeAtRevision = false,
+    sourcePaths?: string[],
   ) {
     const out = (await bindTool.handler(
       {
         harness: HARNESS,
         slug: 'reconnect-plan',
         ...(supersedeAtRevision ? { supersedeAtRevision: true } : {}),
-        binding: { workItemId, specId: 'SPEC-003-01', fromTestRun, ...(details ? { details } : {}) },
+        binding: { workItemId, specId: 'SPEC-003-01', fromTestRun, ...(details ? { details } : {}),
+          ...(sourcePaths ? { sourcePaths } : {}) },
       } as never,
       CTX,
     )) as { data: { results: Array<Record<string, unknown>>; supersession?: unknown[] } };
@@ -3630,6 +3761,9 @@ describe('plans:bind-spec-evidence { fromTestRun } derives the binding from a re
       'R-10: a probe that is not provably read-only is refused without being dispatched > reports a write-capable tool probe as could-not-run (not_read_only) and never calls the dispatcher';
     const unrelatedPassingTitle =
       'R-1 / R-25: changed and could-not-run probes get a line; matching probes print nothing > renders nothing for probes that still match their expect value';
+    const failedCaseLeafTitle =
+      'reports a write-capable tool probe as could-not-run (not_read_only) and never calls the dispatcher';
+    const additionalFailedCaseTitles = Array.from({ length: 6 }, (_, index) => `helper > measured failure ${index + 1}`);
     await setRunExecutionDetails(runId, {
         schemaVersion: 1,
         root: h.repoRoot,
@@ -3639,7 +3773,7 @@ describe('plans:bind-spec-evidence { fromTestRun } derives the binding from a re
         harnessSlug: HARNESS,
         testNamePattern: null,
         passed: 10,
-        failed: 1,
+        failed: 1 + additionalFailedCaseTitles.length,
         skipped: 0,
         collectionFailed: false,
         mutationPhase: 'mutant',
@@ -3647,7 +3781,7 @@ describe('plans:bind-spec-evidence { fromTestRun } derives the binding from a re
         worktreeDirty: false,
         testLayer: 'unit',
         runStartedAt: new Date().toISOString(),
-        failedCaseTitles: [failedCaseTitle],
+        failedCaseTitles: [failedCaseTitle, ...additionalFailedCaseTitles],
       });
 
     const accepted = await bindFromRun(runId, 'WI-101', {
@@ -3656,18 +3790,23 @@ describe('plans:bind-spec-evidence { fromTestRun } derives the binding from a re
     expect(accepted).toMatchObject({ ok: true, status: 'created' });
 
     const rejected = await bindFromRun(runId, 'WI-102', {
-      adequacy: { targeted: 'SPEC-003-01', testCases: [failedCaseTitle, unrelatedPassingTitle] },
+      adequacy: { targeted: 'SPEC-003-01', testCases: [failedCaseTitle, unrelatedPassingTitle, failedCaseLeafTitle] },
     });
     expect(rejected).toMatchObject({
       ok: false,
       error: 'test_cases_not_in_run',
       status: 'test_cases_not_in_run',
       testRunId: runId,
-      declaredCaseCount: 2,
-      failedCaseTitleCount: 1,
+      declaredCaseCount: 3,
+      failedCaseTitleCount: 1 + additionalFailedCaseTitles.length,
       source: 'mutation-failed-case-titles',
-      unmatchedTestCases: [unrelatedPassingTitle],
+      unmatchedTestCases: [unrelatedPassingTitle, failedCaseLeafTitle],
     });
+    const refusalMessage = (rejected as { message?: string }).message ?? '';
+    expect(refusalMessage).toContain(JSON.stringify(failedCaseTitle));
+    expect(refusalMessage).toContain('Near match');
+    expect(refusalMessage).toContain(JSON.stringify(failedCaseLeafTitle));
+    expect(refusalMessage).toContain('2 more omitted');
     expect(await evidenceStore.listSpecEvidence({
       harnessSlug: HARNESS,
       planSlugs: ['reconnect-plan'],
@@ -3851,9 +3990,11 @@ describe('plans:bind-spec-evidence { fromTestRun } derives the binding from a re
     await setRunExecutionDetails(mutant, execution('mutant', 1));
 
     // Bound WITHOUT causalControls: only the mutant row is adopted into the plan harness.
+    // This fixture is a plain directory, not a Git checkout. The case measures
+    // calibration attribution, so provide its canonical source at the binding seam.
     const bound = await bindFromRun(mutant, 'WI-101', {
       adequacy: { targeted: 'SPEC-003-01', testCases: [failedCase] },
-    });
+    }, false, ['src/reconnect.ts']);
     if (!bound?.ok) throw new Error(JSON.stringify(bound));
     expect(bound).toMatchObject({ ok: true, status: 'created' });
     const harnesses = await db.sql<{ id: number; harness_slug: string | null }[]>`

@@ -7,6 +7,7 @@ import {
   resolvePresenceFleet,
   type FleetMembership,
 } from './presence-fleet';
+import { mockOrgPgSql } from '../../testing/mock-org-pg';
 
 vi.mock('@papercusp/db-org', () => ({ getOrgPg: vi.fn() }));
 
@@ -68,7 +69,7 @@ describe('session-log fleet membership fallback', () => {
       }
       return [{ owner_id: 'present', fleet_slug: 'presence-fleet', fleet_role: 'leader' }];
     });
-    vi.mocked(getOrgPg).mockReturnValue({ sql } as never);
+    mockOrgPgSql(vi.mocked(getOrgPg), sql);
 
     const result = await fetchPresenceFleet(
       ['present', 'unlabelled-present', 'live', 'recorded', 'ended'],

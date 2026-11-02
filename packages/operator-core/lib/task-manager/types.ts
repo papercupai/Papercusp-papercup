@@ -244,6 +244,10 @@ export interface TaskRow extends TaskProvenance, TaskBudget, TaskMetrics {
   startedAt: string;
   endedAt?: string | null;
   lastSeenAt: string;
+  /** Latest persisted CPU sample time; independent of the liveness clock. */
+  cpuSampledAt?: string | null;
+  /** Latest persisted RSS sample time; independent of the liveness clock. */
+  rssSampledAt?: string | null;
   deadlineAt?: string | null;
 
   logPath?: string | null;

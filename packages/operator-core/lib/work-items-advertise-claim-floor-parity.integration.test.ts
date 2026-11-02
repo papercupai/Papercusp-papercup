@@ -30,6 +30,7 @@ import { HARNESS_FEATURES_CONSOLIDATED_DDL, USER_TRUST_LIST_DDL, WORK_ITEM_DEPS_
 import { ensureCoordCapabilityTables } from '@papercusp/coordination/capabilities';
 import { FLAGS } from '@papercusp/flags';
 import { setFlagOverridesForTest } from '@papercusp/flags/test';
+import { operatorHomeHarnessSlug } from './harness/operator-home-harness';
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
 vi.mock('@papercusp/db-org', async (orig) => {
@@ -47,6 +48,26 @@ const adm = await import('./work-items-admission');
 const H = 'papercup';
 const WS = 'default';
 let db: FreshPgDb;
+
+const ADMISSION_FAIL_OPEN_LIVENESS_DDL = `
+  CREATE TABLE IF NOT EXISTS harness_shared.routines (
+    id text PRIMARY KEY,
+    install_slug text NOT NULL,
+    workspace_id text NOT NULL,
+    name text NOT NULL,
+    active boolean NOT NULL DEFAULT true,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    metadata jsonb NOT NULL DEFAULT '{}'::jsonb
+  );
+  CREATE TABLE IF NOT EXISTS harness_shared.admission_runs (
+    id text PRIMARY KEY,
+    workspace_id text NOT NULL,
+    harness_slug text NOT NULL,
+    run_kind text NOT NULL,
+    started_at timestamptz NOT NULL DEFAULT now(),
+    finished_at timestamptz,
+    detail jsonb NOT NULL DEFAULT '{}'::jsonb
+  );`;
 
 async function seedIssue(
   id: string,
@@ -79,6 +100,7 @@ beforeAll(async () => {
   await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
   await db.sql.unsafe(USER_TRUST_LIST_DDL);
   await db.sql.unsafe(WORK_ITEM_DEPS_DDL).simple();
+  await db.sql.unsafe(ADMISSION_FAIL_OPEN_LIVENESS_DDL).simple();
   await ensureCoordCapabilityTables(db.sql);
 }, 180_000);
 afterAll(async () => {
@@ -307,16 +329,62 @@ describe('EI-25209690807142935 — admission-pending publishes the fail-open bou
     payload?: Record<string, unknown>;
     duplicateOf?: string;
     admission?: string;
+    createdAtMs?: number;
   }
 
   async function seedPending(id: string, opts: Omit<FailOpenCase, 'id' | 'exclusion'>) {
+    const createdAtMs = opts.createdAtMs ?? Date.now();
     await db.sql`
       INSERT INTO harness_shared.work_items
         (harness_slug, feature_id, item_kind, status, workspace_id, origin, created_ts, updated_ts,
          title, admission, duplicate_of, payload)
-      VALUES (${H}, ${id}, 'bug', 'open', ${WS}, 'local', 0, 0, ${`title ${id}`},
+      VALUES (${H}, ${id}, 'bug', 'open', ${WS}, 'local', ${createdAtMs}, ${createdAtMs}, ${`title ${id}`},
               ${opts.admission ?? 'pending'}, ${opts.duplicateOf ?? null},
               ${opts.payload ? db.sql.json(opts.payload as unknown as Parameters<typeof db.sql.json>[0]) : null})`;
+  }
+
+  async function seedFailOpenHealth(input: {
+    lastSuccessAtMs: number;
+    latestAttemptAtMs?: number;
+    latestStatus?: 'complete' | 'failed' | 'blocked';
+  }) {
+    const home = operatorHomeHarnessSlug();
+    const latestStatus = input.latestStatus ?? 'complete';
+    const latestAttemptAtMs = input.latestAttemptAtMs ?? input.lastSuccessAtMs;
+    await db.sql`
+      DELETE FROM harness_shared.routines
+       WHERE workspace_id = ${WS} AND install_slug = ${home} AND name = 'work-item-admission-fail-open'`;
+    await db.sql`
+      DELETE FROM harness_shared.admission_runs
+       WHERE workspace_id = ${WS} AND harness_slug = ${home} AND detail->>'mode' = 'fail-open'`;
+    await db.sql`
+      INSERT INTO harness_shared.routines (id, install_slug, workspace_id, name, active, created_at)
+      VALUES ('rt-fail-open-liveness', ${home}, ${WS}, 'work-item-admission-fail-open', true,
+              to_timestamp(${input.lastSuccessAtMs - 2 * 60 * 60_000} / 1000.0))`;
+    if (latestStatus === 'complete') {
+      await db.sql`
+        INSERT INTO harness_shared.admission_runs
+          (id, workspace_id, harness_slug, run_kind, started_at, finished_at, detail)
+        VALUES ('fail-open-latest', ${WS}, ${home}, 'promoter-tick',
+                to_timestamp(${latestAttemptAtMs - 1_000} / 1000.0),
+                to_timestamp(${latestAttemptAtMs} / 1000.0),
+                '{"mode":"fail-open","status":"complete"}'::jsonb)`;
+      return;
+    }
+    await db.sql`
+      INSERT INTO harness_shared.admission_runs
+        (id, workspace_id, harness_slug, run_kind, started_at, finished_at, detail)
+      VALUES ('fail-open-success', ${WS}, ${home}, 'promoter-tick',
+              to_timestamp(${input.lastSuccessAtMs - 1_000} / 1000.0),
+              to_timestamp(${input.lastSuccessAtMs} / 1000.0),
+              '{"mode":"fail-open","status":"complete"}'::jsonb)`;
+    await db.sql`
+      INSERT INTO harness_shared.admission_runs
+        (id, workspace_id, harness_slug, run_kind, started_at, finished_at, detail)
+      VALUES ('fail-open-latest', ${WS}, ${home}, 'promoter-tick',
+              to_timestamp(${latestAttemptAtMs - 1_000} / 1000.0),
+              to_timestamp(${latestAttemptAtMs} / 1000.0),
+              ${db.sql.json({ mode: 'fail-open', status: latestStatus } as unknown as Parameters<typeof db.sql.json>[0])})`;
   }
 
   const CASES: readonly FailOpenCase[] = [
@@ -367,6 +435,8 @@ describe('EI-25209690807142935 — admission-pending publishes the fail-open bou
   ];
 
   it('every case is refused by admission-pending, with a bound IFF the runner would admit it', async () => {
+    const nowMs = Date.now();
+    await seedFailOpenHealth({ lastSuccessAtMs: nowMs - 60_000 });
     for (const c of CASES) await seedPending(c.id, c);
     const ids = CASES.map((c) => c.id);
     const verdicts = await wi.explainIssueClaimFloors(H, ids);
@@ -391,6 +461,37 @@ describe('EI-25209690807142935 — admission-pending publishes the fail-open bou
     const verdictRow = verdicts.find((x) => x.id === 'WI-FO-VERDICT')!;
     expect(verdictRow.detail).toContain('(WI-FO-CLEAN)');
     expect(verdicts.find((x) => x.id === 'WI-FO-DEGRADED')!.detail).toContain('could NOT RUN');
+  });
+
+  it('uses the remaining item deadline and withdraws it when the runner watermark expires', async () => {
+    const nowMs = Date.now();
+    await seedFailOpenHealth({ lastSuccessAtMs: nowMs - 5 * 60_000 });
+    await seedPending('WI-FO-RECENT', { createdAtMs: nowMs - 10 * 60_000 });
+    await seedPending('WI-FO-OLD', {
+      createdAtMs: nowMs - adm.admissionFailOpenGuaranteedSec() * 1000 - 60_000,
+    });
+
+    const floors = await wi.explainIssueClaimFloors(H, ['WI-FO-RECENT', 'WI-FO-OLD']);
+    const recent = floors.find((row) => row.id === 'WI-FO-RECENT')!;
+    const old = floors.find((row) => row.id === 'WI-FO-OLD')!;
+    expect(recent.retry?.guaranteedWithinSec).toBeLessThan(adm.admissionFailOpenGuaranteedSec());
+    expect(recent.retry?.basis).toContain('last successful run completed at');
+    expect(old.retry).toBeUndefined();
+    expect(old.detail).toMatch(/deadline is overdue/i);
+
+    await seedFailOpenHealth({ lastSuccessAtMs: nowMs - 2 * 60 * 60_000 });
+    const stale = (await wi.explainIssueClaimFloors(H, ['WI-FO-RECENT']))[0];
+    expect(stale.retry).toBeUndefined();
+    expect(stale.detail).toMatch(/OVERDUE/);
+
+    await seedFailOpenHealth({
+      lastSuccessAtMs: nowMs - 5 * 60_000,
+      latestAttemptAtMs: nowMs - 60_000,
+      latestStatus: 'failed',
+    });
+    const failed = (await wi.explainIssueClaimFloors(H, ['WI-FO-RECENT']))[0];
+    expect(failed.retry).toBeUndefined();
+    expect(failed.detail).toContain('most recent fail-open attempt is failed');
   });
 
   it('the re-screen selector predicate is exactly "degraded and nothing stronger"', async () => {

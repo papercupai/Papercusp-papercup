@@ -145,6 +145,25 @@ describe('mechanical test adequacy', () => {
     },
   );
 
+  it('distinguishes passing filtered execution from insufficient case coverage', () => {
+    const row = proof('test');
+    row.testRunExecution!.skipped = 1;
+    row.testRunExecution!.passedCaseTitles = ['native > basic launch'];
+
+    const result = grade([row, proof('mutation')]);
+    expect(result).toMatchObject({ verdict: 'fail', passingTestBindingIds: {} });
+    expect(result.applicable && result.gaps).toEqual([
+      expect.stringContaining('passing execution lacks sufficient case coverage'),
+    ]);
+    expect(result.applicable && result.gaps[0]).toContain('passed=1, failed=0, skipped=1');
+
+    row.testRunExecution!.status = 'fail';
+    row.testRunExecution!.failed = 1;
+    expect(grade([row, proof('mutation')])).toMatchObject({
+      verdict: 'fail', gaps: [expect.stringContaining('the bound run did not pass')],
+    });
+  });
+
   it('does not let binder-written passed titles replace the ledger case list', () => {
     const row = proof('test');
     row.testRunExecution!.skipped = 1;

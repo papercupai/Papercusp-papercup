@@ -241,6 +241,60 @@ describe('scheduler:set_claim_spec appendIds', () => {
     expect(getClaimSpecRecord).not.toHaveBeenCalled();
   });
 
+  it('stores an admission-pending append as deferred and returns its unbounded fail-open warning', async () => {
+    vi.clearAllMocks();
+    getFleet.mockResolvedValueOnce({ slug: 'append-fleet' });
+    getWorkItem.mockResolvedValueOnce({ family: 'issue' });
+    const candidate: ClaimSpec = {
+      ...DEFAULT_CLAIM_SPEC,
+      specId: 'append-fleet:pending-cohort',
+      revision: 10,
+      view: { filter: { field: 'id', op: 'in', value: ['EI-pending'] } },
+    };
+    explainIssueClaimFloors.mockResolvedValueOnce([
+      {
+        id: 'EI-pending',
+        admissible: false,
+        refusedBy: 'admission-pending',
+        failedFloors: ['admission-pending'],
+        detail: 'duplicate review is pending',
+        failOpenExclusion: 'duplicate-candidates',
+      },
+    ]);
+    setClaimSpec.mockImplementationOnce(async (args) => {
+      const admission = await args.validateAppend(candidate, 'papercup');
+      expect(admission.errors).toEqual([]);
+      expect(admission.preview.deferredAdmissionIds).toEqual(['EI-pending']);
+      return { ok: true, errors: [], revision: 10, spec: candidate };
+    });
+    listFleetMembers.mockResolvedValueOnce(['su-member']);
+    wakeClaimableAwaitersForSubscribers.mockResolvedValueOnce(1);
+
+    const result = await setClaimSpecTool.handler(
+      { fleet: 'append-fleet', appendIds: ['EI-pending'], harness: 'papercup' },
+      { isSuperuser: true, uiClientId: 'su-append', workspaceId: 'ws-test' },
+    );
+
+    expect(result.data).toMatchObject({
+      ok: true,
+      revision: 10,
+      claimableAwaitersWoken: 1,
+      admissibilityPreview: {
+        cohortIds: ['EI-pending'],
+        admissibleIds: [],
+        scopeAdmissibleIds: [],
+        deferredAdmissionIds: ['EI-pending'],
+      },
+    });
+    expect(result.data.warning).toContain('No automatic retry bound is available for EI-pending');
+    expect(result.data.warning).toContain('re-screening or adjudication must clear those exclusions');
+    expect(explainIssueClaimFloors).toHaveBeenCalledWith(
+      'papercup',
+      ['EI-pending'],
+      expect.objectContaining({ assignee: 'su-append', states: ['open'], includeAllFloors: true }),
+    );
+  });
+
   it('does not wake members when the append is refused', async () => {
     vi.clearAllMocks();
     getFleet.mockResolvedValueOnce({ slug: 'append-fleet' });
@@ -499,6 +553,77 @@ describe('previewClaimSpecAdmission — WI-4429 write-time dead-cohort preventio
     expect(result.preview.floored).toHaveLength(2);
   });
 
+  it('accepts pending-only cohorts as deferred intent and distinguishes bounded from fail-open rows', async () => {
+    const bounded: ClaimFloorAttribution = {
+      id: 'EI-bounded',
+      admissible: false,
+      refusedBy: 'admission-pending',
+      failedFloors: ['admission-pending'],
+      detail: 'duplicate screening is pending',
+      retry: {
+        clearsOnItsOwn: true,
+        expectedWithinSec: 1800,
+        guaranteedWithinSec: 5400,
+        basis: 'admission promoter and fail-open backstop',
+      },
+    };
+    const failOpen: ClaimFloorAttribution = {
+      id: 'EI-fail-open',
+      admissible: false,
+      refusedBy: 'admission-pending',
+      failedFloors: ['admission-pending'],
+      detail: 'duplicate review is required',
+      failOpenExclusion: 'duplicate-candidates',
+    };
+    const explain = vi.fn(async () => [bounded, failOpen]);
+
+    const result = await previewClaimSpecAdmission({
+      spec: fixedSpec(['EI-bounded', 'EI-fail-open']),
+      harness: 'papercup',
+      assignee: 'su-leader',
+      explain,
+      resolveFamily: async () => 'issue',
+    });
+
+    expect(result.errors).toEqual([]);
+    expect(result.preview).toMatchObject({
+      checked: true,
+      admissibleIds: [],
+      scopeAdmissibleIds: [],
+      deferredAdmissionIds: ['EI-bounded', 'EI-fail-open'],
+      floored: [bounded, failOpen],
+    });
+    expect(result.warning).toContain('Retry bounds are included in admissibilityPreview.floored.');
+    expect(result.warning).toContain('No automatic retry bound is available for EI-fail-open');
+    expect(result.warning).toContain('re-screening or adjudication must clear those exclusions');
+    expect(explain).toHaveBeenCalledWith(
+      'papercup',
+      ['EI-bounded', 'EI-fail-open'],
+      expect.objectContaining({ assignee: 'su-leader', includeAllFloors: true }),
+    );
+  });
+
+  it('does not defer an admission-pending row that also has another failed floor', async () => {
+    const mixed: ClaimFloorAttribution = {
+      id: 'EI-mixed-floor',
+      admissible: false,
+      refusedBy: 'admission-pending',
+      failedFloors: ['admission-pending', 'blocked-dep'],
+      detail: 'admission and dependency floors are both active',
+    };
+    const result = await previewClaimSpecAdmission({
+      spec: fixedSpec(['EI-mixed-floor']),
+      harness: 'papercup',
+      assignee: 'su-leader',
+      explain: async () => [mixed],
+      resolveFamily: async () => 'issue',
+    });
+
+    expect(result.errors[0]).toContain('EI-mixed-floor:admission-pending');
+    expect(result.preview.deferredAdmissionIds).toBeUndefined();
+    expect(result.preview.floored).toEqual([mixed]);
+  });
+
   it('accepts a partially-admissible cohort but returns every floored id as a warning', async () => {
     const result = await previewClaimSpecAdmission({
       spec: fixedSpec(['WI-good', 'WI-held'], ['open']),
@@ -603,6 +728,7 @@ describe('fixed-cohort scope authoring — EI-25159722494650027', () => {
     expect(explain).toHaveBeenLastCalledWith('papercusp', [held.id], {
       assignee: 'su-member',
       states: ['open'],
+      includeAllFloors: true,
       scopeHeldBy: ['su-member'],
       claimantFleetSlug: 'repair-fleet',
       claimSpecReferencesFleet: false,
@@ -636,6 +762,7 @@ describe('fixed-cohort scope authoring — EI-25159722494650027', () => {
     expect(explain).toHaveBeenLastCalledWith('papercusp', [held.id], {
       assignee: 'su-self',
       states: ['open'],
+      includeAllFloors: true,
       scopeHeldBy: ['su-self'],
     });
   });
@@ -665,6 +792,7 @@ describe('fixed-cohort scope authoring — EI-25159722494650027', () => {
     expect(explain).toHaveBeenCalledWith('papercusp', [held.id], {
       assignee: 'su-member',
       states: ['open'],
+      includeAllFloors: true,
     });
   });
 
@@ -693,6 +821,7 @@ describe('fixed-cohort scope authoring — EI-25159722494650027', () => {
     expect(explain).toHaveBeenLastCalledWith('papercusp', [held.id], {
       assignee: 'su-member',
       states: ['open'],
+      includeAllFloors: true,
       scopeHeldBy: ['su-member'],
     });
   });
@@ -897,6 +1026,7 @@ describe('fixed-cohort scope authoring — EI-25159722494650027', () => {
     expect(explainIssueClaimFloors).toHaveBeenLastCalledWith('papercusp', [held.id], {
       assignee: 'su-leader',
       states: ['open'],
+      includeAllFloors: true,
       scopeHeldBy: ['su-leader'],
     });
     expect(setClaimSpec).toHaveBeenCalledWith(expect.objectContaining({ cupId: 'su-leader' }));
@@ -929,10 +1059,12 @@ describe('fixed-cohort scope authoring — EI-25159722494650027', () => {
     expect(explainIssueClaimFloors).toHaveBeenNthCalledWith(1, 'papercusp', [held.id], {
       assignee: 'su-member',
       states: ['open'],
+      includeAllFloors: true,
     });
     expect(explainIssueClaimFloors).toHaveBeenNthCalledWith(2, 'papercusp', [held.id], {
       assignee: 'su-member',
       states: ['open'],
+      includeAllFloors: true,
       scopeHeldBy: ['su-member'],
     });
     expect(setClaimSpec).toHaveBeenCalledWith(expect.objectContaining({
@@ -966,6 +1098,7 @@ describe('fixed-cohort scope authoring — EI-25159722494650027', () => {
     expect(explainIssueClaimFloors).toHaveBeenCalledWith('papercusp', [held.id], {
       assignee: 'su-member',
       states: ['open'],
+      includeAllFloors: true,
     });
     expect(setClaimSpec).not.toHaveBeenCalled();
   });

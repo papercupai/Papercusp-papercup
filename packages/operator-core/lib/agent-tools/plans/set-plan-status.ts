@@ -34,6 +34,7 @@ import {
 import { resolveAgentIdentity } from '../coordination/identity';
 import { emitDeprecateLearnings, type DeprecateLearnings } from '../../harness/improvements/deprecate-learnings';
 import { ObservationEvidenceError } from '../../harness/improvements/observation-types';
+import { reconcileStaleAcceptanceBarSubjectPin } from '../../acceptance-bar-pin-reconcile';
 import {
   evaluatePlanAcceptanceGate,
   messageWithAdditionalBlockers,
@@ -801,7 +802,7 @@ export default defineTool({
           // plan-item-types-registry-cupboard P-005 (R-14): the ship gate judges the plan
           // under the type revisions it pinned at activation and its declared plan type.
           const { withPinnedPlanTypes } = await import('../../plan-types/pins');
-          const gate = await withPinnedPlanTypes({ ...subjectScope, planSlug: slug }, () => evaluatePlanAcceptanceGate(slug, {
+          const evaluateShipGate = () => withPinnedPlanTypes({ ...subjectScope, planSlug: slug }, () => evaluatePlanAcceptanceGate(slug, {
             harnessSlug: subjectScope.harnessSlug,
             probeCitationDeployment: true,
             // P-001 (plan-verification-friction-reduction-2026-10-11): report EVERY
@@ -817,6 +818,22 @@ export default defineTool({
               return readGradingAuditDispatchSuppression(subjectScope.workspaceId, { targetOwnerId });
             },
           }));
+          let gate = await evaluateShipGate();
+          const staleSubjectPin =
+            gate.acceptanceBarLifecycle?.codes.includes('bar_snapshot_rubric_revision_mismatch') ||
+            gate.blockingPhaseLifecycle?.codes.includes('bar_snapshot_rubric_revision_mismatch');
+          // Match the start door's witness-checked repair for a stale subject revision.
+          // The reconciler owns the plan lock and refuses non-neutral changes. Re-read the
+          // gate after a successful repair so any independent ship blocker remains authoritative.
+          // Ship dry-runs stay read-only and therefore never run this repair.
+          if (!args.dryRun && !gate.satisfied && gate.code === 'acceptance_bar_contract_not_ready' && staleSubjectPin) {
+            const reconciled = await reconcileStaleAcceptanceBarSubjectPin({
+              workspaceId: subjectScope.workspaceId,
+              harnessSlug: subjectScope.harnessSlug,
+              planSlug: slug,
+            }).catch(() => null);
+            if (reconciled?.reconciled) gate = await evaluateShipGate();
+          }
           citationDeployment = gate.citationDeployment;
           if (args.pendingDeliveryBarKeys && gate.satisfied) {
             return { ok: false as const, slug, error: 'acceptance_pending_delivery',

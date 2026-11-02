@@ -160,8 +160,9 @@ const DIRECT_TEST_RUNNER_RE = new RegExp(
     String.raw`(?:vitest|jest|mocha|ava|pytest|playwright\s+test|cargo\s+test|go\s+test)(?:\s|$)`,
   'i',
 );
+const TEST_SHELL_WORD = String.raw`(?:[^\s"';&|]+|"[^"]*"|'[^']*')`;
 const PACKAGE_TEST_SCRIPT_RE = new RegExp(
-  `${TEST_SEGMENT_PREFIX}${RTK_TEST_WRAPPER_PREFIX}(?:npm|pnpm|yarn|bun)\\s+(?:run\\s+)?test(?::[A-Za-z0-9_.-]+)*(?:\\s|$)`,
+  `${TEST_SEGMENT_PREFIX}${RTK_TEST_WRAPPER_PREFIX}(?:npm\\s+(?:--prefix(?:=|\\s+)${TEST_SHELL_WORD}\\s+)?|(?:pnpm|yarn|bun)\\s+)(?:run\\s+)?test(?::[A-Za-z0-9_.-]+)*(?:\\s|$)`,
   'i',
 );
 // Maintained verification scripts are test launchers too. Confinement alone

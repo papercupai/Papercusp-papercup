@@ -86,6 +86,21 @@ export function isBuiltinReactionAction(fire: string): boolean {
   return BUILTIN_ACTIONS.has(fire);
 }
 
+/** Explicit exemptions for control-state convergence, independent of execution mode. */
+const requiredForControl: ReadonlyMap<string, string> = new Map([
+  [CACHE_BUMP_TAGS_ACTION, 'Keeps settings and pause/resume readbacks current'],
+  [PLAN_ITEM_RECONCILE_ACTION, 'Releases completed dependency blockers'],
+  [PLAN_ITEM_LANE_RESYNC_ACTION, 'Keeps work eligibility consistent with dependency changes'],
+  [PLAN_DRAIN_TRANSITION_ACTION, 'Derives lifecycle status from recorded item state'],
+  [ACCOUNT_DEFAULT_MARKER_SYNC_ACTION, 'Applies the selected credential routing policy'],
+  [GATE_REJUDGE_ADMITTED_REPAIR_ACTION, 'Recovers the registered release control lane'],
+  [WORK_ITEM_REF_BLOCKER_AUTO_CLEAR_ACTION, 'Releases blockers after dependency completion'],
+]);
+
+export function builtinReactionControlPurpose(fire: string): string | undefined {
+  return requiredForControl.get(fire);
+}
+
 /** Coerce an args value to a clean string[] of tags (drop empties / non-strings). */
 function toTags(value: unknown): string[] {
   if (!Array.isArray(value)) return [];

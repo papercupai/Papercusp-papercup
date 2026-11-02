@@ -10,9 +10,11 @@
  */
 import { registerSystemAction, type SystemActionCtx } from './system-actions';
 import { sweepSilentHalts, SILENT_HALT_MAX_PAGES_PER_SWEEP } from './silent-halt-reconcile';
+import { sweepSessionInterruptions } from './session-interruption-runtime';
 
 registerSystemAction('reconcile-silent-halts', async (ctx: SystemActionCtx) => {
   const cfg = ctx.triggerConfig ?? {};
+  const recovered = await sweepSessionInterruptions(ctx, cfg.dry_run === true);
   const result = await sweepSilentHalts({ workspaceId: ctx.workspaceId, dryRun: cfg.dry_run === true });
 
   if (result.halted.length > 0) {
@@ -57,4 +59,5 @@ registerSystemAction('reconcile-silent-halts', async (ctx: SystemActionCtx) => {
           .join(', '),
     );
   }
+  return { diagnostics: { interruptionRecovery: recovered } };
 });

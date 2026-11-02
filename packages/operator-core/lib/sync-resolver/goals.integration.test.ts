@@ -929,6 +929,71 @@ describe('goals.* resolvers against real SQL', () => {
     expect(cut.truncatedByLimit).toBe(true);
   });
 
+  it('searches goal title, body and exact identity with all literal terms', async () => {
+    const { resolveGoalsList } = await import('./goals');
+    await goal({ body: 'Publish the quarterly report' });
+    const matched = await resolveGoalsList({ workspaceId: WS, query: '  SHIP\tREPORT  ' });
+    expect(matched.goals.map(g => g.id)).toEqual([GOAL]);
+    expect(matched.totalGoals).toBe(1);
+    expect((await resolveGoalsList({ workspaceId: WS, query: GOAL })).goals.map(g => g.id)).toEqual([GOAL]);
+    const missing = await resolveGoalsList({ workspaceId: WS, query: 'ship unrelated' });
+    expect(missing.goals).toEqual([]);
+    expect(missing.totalGoals).toBe(0);
+    expect(missing.truncatedByLimit).toBe(false);
+  });
+
+  it('finds a renamed Work on everything instance through its canonical package identity', async () => {
+    const { resolveGoalsList } = await import('./goals');
+    await goal({ metadata: { goalPackageRef: 'work-on-everything' } });
+    await sql`UPDATE harness_shared.goals SET title = 'My daily priorities', standing = true
+      WHERE workspace_id = ${WS} AND id = ${GOAL}`;
+    for (const query of ['work on everything', 'work-on-everything']) {
+      const out = await resolveGoalsList({ workspaceId: WS, query });
+      expect(out.goals.map(g => g.id)).toEqual([GOAL]);
+      expect(out.goals[0]?.standing).toBe(true);
+      expect(out.goals[0]?.goalPackage?.ref).toBe('work-on-everything');
+    }
+  });
+
+  it('threads goal search through the canonical named-query boundary', async () => {
+    const { resolveNamedQueryV2 } = await import('./index');
+    await goal();
+    const found = await resolveNamedQueryV2('goals.list', { workspaceId: WS, query: 'ship' }) as
+      Array<{ goals: Array<{ id: string }>; totalGoals: number }>;
+    expect(found[0]?.goals.map(g => g.id)).toEqual([GOAL]);
+    const missing = await resolveNamedQueryV2('goals.list', { workspaceId: WS, query: 'unrelated' }) as
+      Array<{ goals: Array<{ id: string }>; totalGoals: number }>;
+    expect(missing[0]?.goals).toEqual([]);
+    expect(missing[0]?.totalGoals).toBe(0);
+  });
+
+  it('keeps SQL wildcard characters literal and counts matches before applying the limit', async () => {
+    const { resolveGoalsList } = await import('./goals');
+    await goal({ body: 'A literal %_ marker' });
+    await sql`INSERT INTO harness_shared.goals (id, workspace_id, install_slug, title, body, status)
+      VALUES ('decoy', ${WS}, 'papercusp', 'Unrelated', 'No marker', 'active')`;
+    const out = await resolveGoalsList({ workspaceId: WS, query: '%_', limit: 0 });
+    expect(out.goals).toEqual([]);
+    expect(out.totalGoals).toBe(1);
+    expect(out.truncatedByLimit).toBe(true);
+    const visible = await resolveGoalsList({ workspaceId: WS, query: '%_' });
+    expect(visible.goals.map(g => g.id)).toEqual([GOAL]);
+  });
+
+  it('applies workspace, harness and status scope to searched rows and totals', async () => {
+    const { resolveGoalsList } = await import('./goals');
+    await goal();
+    await sql`INSERT INTO harness_shared.goals (id, workspace_id, install_slug, title, status)
+      VALUES ('other-workspace', 'native-search-other-workspace', 'papercusp', 'Ship the thing', 'active'),
+             ('other-harness', ${WS}, 'another-harness', 'Ship the thing', 'active'),
+             ('paused-goal', ${WS}, 'papercusp', 'Ship the thing', 'paused')`;
+    const out = await resolveGoalsList({ workspaceId: WS, harnessSlugs: ['papercusp'],
+      status: 'active', query: 'ship' });
+    expect(out.goals.map(g => g.id)).toEqual([GOAL]);
+    expect(out.totalGoals).toBe(1);
+    expect(out.truncatedByLimit).toBe(false);
+  });
+
   it('harness-scoped listing includes an installed goal with no pot attachment', async () => {
     const { resolveGoalsList } = await import('./goals');
     await goal();

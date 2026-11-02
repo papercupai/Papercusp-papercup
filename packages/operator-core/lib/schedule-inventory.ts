@@ -16,6 +16,8 @@
  * and the /admin/schedules data path (P-003) both call collectScheduleInventory().
  */
 import { getOrgPg } from '@papercusp/db-org';
+import { createHash } from 'node:crypto';
+import { z } from 'zod';
 import { activeWorkspaceId } from './workspace-registry';
 import {
   listDbosScheduledWorkflows,
@@ -25,6 +27,7 @@ import {
 import { buildDefaultChecks, inProcessPeriodicChecksArmed } from './dbos/in-process-periodic';
 import { listManaged, type ManagedEntry, type TimerClassification } from '@papercusp/scheduled-registry';
 import { collectSiblingManagedTimers, type SiblingManagedTimers } from './schedule-federation';
+import { spendForTargetRole, spendReasonForTargetRole } from './automation/routine-classification';
 import {
   EXTERNAL_SCHEDULES,
   EXTERNAL_PROCESS_TIMERS as EXTERNAL_SCHEDULE_DESCRIPTORS,
@@ -205,6 +208,8 @@ async function resolveFlagArmed(flagKey: string): Promise<boolean | null> {
 }
 
 export interface ScheduleInventoryDeps {
+  /** Sanitized collection failures for views that must distinguish unavailable from empty. */
+  onSourceUnavailable?: (source: ScheduleSource | 'federation' | 'sync-triggered') => void;
   getDbosSchedules: () => Promise<DbosScheduledEntry[]>;
   getRoutines: () => Promise<RoutineRow[]>;
   /** LIVE managed timers from the scheduled-registry (source 'managed') — the actually-armed in-process timers with real fire times. */
@@ -250,13 +255,12 @@ export function humanInterval(intervalMs: number): string {
 async function defaultGetRoutines(
   filters: Pick<ScheduleInventoryFilters, 'name' | 'installSlug' | 'group'> = {},
 ): Promise<RoutineRow[]> {
-  try {
-    const { sql } = getOrgPg();
-    const ws = activeWorkspaceId();
-    const name = filters.name || null;
-    const installSlug = filters.installSlug || null;
-    const group = filters.group ?? null;
-    return await sql<RoutineRow[]>`
+  const { sql } = getOrgPg();
+  const ws = activeWorkspaceId();
+  const name = filters.name || null;
+  const installSlug = filters.installSlug || null;
+  const group = filters.group ?? null;
+  return await sql<RoutineRow[]>`
       SELECT install_slug, name, trigger_kind, trigger_config, target_role,
              active, next_fire_at, last_fired_at, metadata, group_slug
         FROM harness_shared.routines
@@ -265,30 +269,17 @@ async function defaultGetRoutines(
          AND (${installSlug}::text IS NULL OR position(lower(${installSlug}::text) in lower(install_slug)) > 0)
          AND (${group}::text IS NULL OR (${group}::text = '' AND group_slug IS NULL) OR group_slug = ${group})
        ORDER BY install_slug, name`;
-  } catch {
-    return [];
-  }
 }
 
 function defaultGetInProcessChecks(): InProcessChecksResult {
-  let armed = false;
-  try {
-    armed = inProcessPeriodicChecksArmed();
-  } catch {
-    /* not loaded in this process */
-  }
-  let checks: InProcessCheckLite[] = [];
-  try {
-    checks = buildDefaultChecks().map((c) => ({
-      name: c.name,
-      intervalMs: c.intervalMs,
-      shed: c.shed,
-      fireOnArm: c.fireOnArm,
-      classification: c.classification,
-    }));
-  } catch {
-    /* ignore */
-  }
+  const armed = inProcessPeriodicChecksArmed();
+  const checks = buildDefaultChecks().map((c) => ({
+    name: c.name,
+    intervalMs: c.intervalMs,
+    shed: c.shed,
+    fireOnArm: c.fireOnArm,
+    classification: c.classification,
+  }));
   return { checks, armed };
 }
 
@@ -301,6 +292,10 @@ export async function collectScheduleInventory(
   deps: Partial<ScheduleInventoryDeps> = {},
   filters: ScheduleInventoryFilters = {},
 ): Promise<ScheduleInventoryRow[]> {
+  const unavailable = (source: ScheduleSource | 'federation' | 'sync-triggered') => {
+    deps.onSourceUnavailable?.(source);
+    return [];
+  };
   const nameMatches = (name: string): boolean =>
     !filters.name || name.toLowerCase().includes(filters.name.toLowerCase());
   const shouldCollectSource = (source: ScheduleSource): boolean => {
@@ -323,15 +318,15 @@ export async function collectScheduleInventory(
       listDbosScheduledWorkflows({ getRegisteredSchedules: () => schedules, nameFilter: filters.name }));
 
   const [dbos, routines, siblings] = await Promise.all([
-    shouldCollectSource('dbos') ? getDbos().catch(() => [] as DbosScheduledEntry[]) : Promise.resolve([]),
-    shouldCollectSource('routines') ? getRoutines().catch(() => [] as RoutineRow[]) : Promise.resolve([]),
+    shouldCollectSource('dbos') ? getDbos().catch(() => unavailable('dbos')) : Promise.resolve([]),
+    shouldCollectSource('routines') ? getRoutines().catch(() => unavailable('routines')) : Promise.resolve([]),
     // Federation is a NETWORK seam, so it gets the same fail-soft treatment as the
     // DB seams — and it is additionally time-bounded inside collectSiblingManagedTimers,
     // because a wedged sibling must degrade to an UNKNOWN row, never stall the inventory.
     // It supplies federated DBOS rows too, so keep it for either DBOS or external-process
     // reads while avoiding it for unrelated source-only requests.
     shouldCollectSource('dbos') || shouldCollectSource('external-process')
-      ? getSiblingManaged().catch(() => [] as SiblingManagedTimers[])
+      ? getSiblingManaged().catch(() => unavailable('federation'))
       : Promise.resolve([]),
   ]);
   let inproc: InProcessChecksResult = { checks: [], armed: false };
@@ -339,6 +334,7 @@ export async function collectScheduleInventory(
     try {
       inproc = getChecks();
     } catch {
+      unavailable('in-process');
       inproc = { checks: [], armed: false };
     }
   }
@@ -347,6 +343,7 @@ export async function collectScheduleInventory(
     try {
       managed = getManaged();
     } catch {
+      unavailable('managed');
       managed = [];
     }
   }
@@ -355,6 +352,7 @@ export async function collectScheduleInventory(
     try {
       external = getExternal();
     } catch {
+      unavailable('external-process');
       external = [];
     }
   }
@@ -363,6 +361,7 @@ export async function collectScheduleInventory(
     try {
       syncTriggered = getSyncTriggered();
     } catch {
+      unavailable('sync-triggered');
       syncTriggered = [];
     }
   }
@@ -708,3 +707,253 @@ export function summarizeInventory(rows: ScheduleInventoryRow[]): {
   }
   return { total: rows.length, bySource, byTier };
 }
+
+/** Product projection over the existing inventory, separate from scheduler registration. */
+export interface StartupActivityPolicy {
+  automatic: boolean | null;
+  /** Explicit pause state; null deadline may mean an indefinite pause. */
+  paused?: boolean;
+  pausedUntil: string | null;
+  revision: number | null;
+}
+
+export interface StartupActivityFeature {
+  id: string;
+  name: string;
+  purpose: string;
+  trigger: string;
+  origin: ScheduleSource | 'native';
+  entrypointIds: string[];
+  scope: { kind: 'device' | 'workspace' | 'unknown'; id: string | null };
+  /** null means unmeasured; [] is reserved for an adapter that established no dependencies. */
+  dependencies: string[] | null;
+  desired: StartupActivityPolicy;
+  observed: 'running' | 'idle' | 'unknown';
+  network: 'local' | 'external' | 'unknown';
+  spend: 'llm' | 'none' | 'unknown';
+  resources: { cpuUsec: number | null; rssBytes: number | null; costCents: number | null };
+}
+
+export interface StartupActivityHistoryEntry {
+  featureId: string;
+  operation: 'start' | 'policy-change' | 'stop' | 'pause' | 'resume';
+  status: 'pending' | 'running' | 'draining' | 'completed' | 'failed';
+  at: string;
+  actor: string;
+  trigger: string;
+  source?: 'settings' | 'native' | 'routine' | 'timer' | 'event' | 'supervisor';
+  reason?: 'user-choice' | 'automatic-start' | 'clean-quit' | 'pause-expired' | 'dispatch-blocked' | 'service-recovery';
+  previous: StartupActivityPolicy | null;
+  resulting: StartupActivityPolicy | null;
+}
+
+export interface StartupActivityAdapters {
+  /** Device identity established by the local native adapter, never an arbitrary workspace selector. */
+  deviceId?: string;
+  /** Native adapter reads the current OS user's registrations, including disabled ones. */
+  native?: () => Promise<StartupActivityFeature[]>;
+  /** Policy/history adapters authorize their workspace/device scope before reading. */
+  policy?: (feature: Readonly<StartupActivityFeature>) => Promise<StartupActivityPolicy | null>;
+  history?: (featureIds: readonly string[], limit: number) => Promise<StartupActivityHistoryEntry[]>;
+  census?: (features: readonly StartupActivityFeature[]) => Promise<StartupCensusDisposition[]>;
+}
+
+const unknownPolicy = (): StartupActivityPolicy => ({ automatic: null, pausedUntil: null, revision: null });
+const unknownPurpose = 'Purpose has not been described for this feature.';
+
+/** Shared by inventory and execution admission: never derive a second policy key. */
+export function startupActivityFeatureId(
+  row: Pick<ScheduleInventoryRow, 'source' | 'installSlug' | 'name'> & { detail: { process?: unknown } },
+  context: { workspaceId?: string; deviceId?: string } = {},
+): string {
+  return `activity-${createHash('sha256').update(JSON.stringify([
+    context.workspaceId ?? null, row.source === 'routines' ? null : context.deviceId ?? null,
+    row.source, row.installSlug, row.detail.process ?? null, row.name,
+  ])).digest('hex')}`;
+}
+
+export function scheduleStartupFeature(
+  row: ScheduleInventoryRow,
+  context: { workspaceId?: string; deviceId?: string } = {},
+): StartupActivityFeature {
+  const label = row.name.replace(/([a-z])([A-Z])/g, '$1 $2').replace(/[-_:]+/g, ' ');
+  const sync = row.category === 'sync-triggered';
+  const declaredSpend = row.detail.spends;
+  const targetRole = typeof row.detail.targetRole === 'string' ? row.detail.targetRole : null;
+  const spend = sync && (declaredSpend === 'llm' || declaredSpend === 'none')
+    ? declaredSpend
+    : row.source === 'routines'
+      ? spendForTargetRole(targetRole)
+      : 'unknown';
+  // Only the live managed registry measures whether an invocation is executing.
+  // A registration, last successful fire, active flag or next-fire date is not that measurement.
+  const live = row.source === 'managed'
+    || (row.source === 'external-process' && row.detail.federated === true && row.detail.reachable === true);
+  const entrypointIds = sync
+    ? Object.entries(SYNC_TRIGGERED_SCHEDULES).filter(([, entry]) => entry.name === row.name).map(([key]) => `sync:${key}`)
+    : row.source === 'external-process' && !live
+      ? Object.entries(EXTERNAL_SCHEDULES).filter(([, entry]) => entry.name === row.name).map(([key]) => `external:${key}`)
+      : [row.source === 'dbos' ? 'dbos-registration' : row.source === 'routines' ? 'routine-dispatch' : 'managed-fire-on-arm'];
+  if (row.source === 'routines' && row.detail.triggerKind === 'event') entrypointIds.push('event-dispatch');
+  return {
+    id: startupActivityFeatureId(row, context),
+    name: label,
+    purpose: sync && typeof row.detail.note === 'string' ? row.detail.note
+      : row.source === 'routines' ? spendReasonForTargetRole(targetRole) ?? unknownPurpose : unknownPurpose,
+    trigger: typeof row.detail.trigger === 'string' ? row.detail.trigger : row.cadence,
+    origin: row.source,
+    entrypointIds,
+    scope: row.source === 'routines' ? { kind: 'workspace', id: context.workspaceId ?? null }
+      : row.source === 'dbos' ? { kind: 'unknown', id: null } : { kind: 'device', id: context.deviceId ?? null },
+    dependencies: null,
+    desired: { ...unknownPolicy(), automatic: row.source === 'routines' || sync ? row.armed : null },
+    observed: live && typeof row.detail.running === 'boolean' ? row.detail.running ? 'running' : 'idle' : 'unknown',
+    network: 'unknown',
+    spend,
+    // Neither a spend classification nor an enabled flag is a resource/cost sample.
+    resources: { cpuUsec: null, rssBytes: null, costCents: null },
+  };
+}
+
+export const startupPolicySchema = z.object({
+  automatic: z.boolean().nullable(),
+  paused: z.boolean().optional(),
+  pausedUntil: z.string().datetime({ offset: true }).nullable(),
+  revision: z.number().int().nonnegative().nullable(),
+});
+const historyCode = z.string().regex(/^[A-Za-z0-9._:-]{1,120}$/);
+export const startupHistorySchema = z.object({
+  featureId: z.string(),
+  operation: z.enum(['start', 'policy-change', 'stop', 'pause', 'resume']),
+  status: z.enum(['pending', 'running', 'draining', 'completed', 'failed']),
+  at: z.string().datetime({ offset: true }),
+  actor: historyCode,
+  trigger: historyCode,
+  source: z.enum(['settings', 'native', 'routine', 'timer', 'event', 'supervisor']).optional(),
+  reason: z.enum(['user-choice', 'automatic-start', 'clean-quit', 'pause-expired', 'dispatch-blocked', 'service-recovery']).optional(),
+  previous: startupPolicySchema.nullable(),
+  resulting: startupPolicySchema.nullable(),
+});
+
+/**
+ * Source-health is part of this view's result, rather than an apparently complete
+ * empty list. Existing schedule callers retain their fail-soft array contract.
+ * Native, policy and history observations are supplied by their scoped adapters;
+ * their absence is explicit until those lifecycle adapters are available.
+ */
+export async function collectStartupActivity(
+  deps: Partial<ScheduleInventoryDeps> = {},
+  adapters: StartupActivityAdapters = {},
+): Promise<{
+  features: StartupActivityFeature[];
+  history: StartupActivityHistoryEntry[];
+  unavailable: string[];
+  census: { version: 1; complete: boolean; problems: string[]; dispositions: StartupCensusDisposition[] };
+}> {
+  const unavailable = new Set<string>();
+  const rows = await collectScheduleInventory({ ...deps, onSourceUnavailable: (source) => {
+    unavailable.add(source);
+    deps.onSourceUnavailable?.(source);
+  } });
+  // The SDK's existing best-effort reader does not expose swallowed registry/PG
+  // failures. A successful call alone cannot prove that its empty slice is complete.
+  if (!deps.getDbosSchedules) unavailable.add('dbos-completeness');
+  if (rows.some(row => row.detail.reachable === false)) unavailable.add('federation');
+  const context = { workspaceId: activeWorkspaceId(), deviceId: adapters.deviceId };
+  const features = rows.map(row => scheduleStartupFeature(row, context));
+  if (adapters.native) {
+    try { features.push(...await adapters.native()); }
+    catch { unavailable.add('native'); }
+  } else unavailable.add('native');
+  if (adapters.policy) {
+    await Promise.all(features.map(async feature => {
+      try {
+        const policy = await adapters.policy!(feature);
+        const parsed = startupPolicySchema.safeParse(policy);
+        if (parsed.success) feature.desired = parsed.data;
+        else unavailable.add(`policy:${feature.id}`);
+      } catch { unavailable.add(`policy:${feature.id}`); }
+    }));
+  } else unavailable.add('policy');
+  let history: StartupActivityHistoryEntry[] = [];
+  if (adapters.history) {
+    try {
+      const ids = new Set(features.map(feature => feature.id));
+      const entries = await adapters.history([...ids], 100);
+      for (const entry of entries.slice(0, 100)) {
+        const parsed = startupHistorySchema.safeParse(entry);
+        if (parsed.success && ids.has(parsed.data.featureId)) history.push(parsed.data);
+        else unavailable.add('history');
+      }
+    }
+    catch { unavailable.add('history'); }
+  } else unavailable.add('history');
+  const dispositions: StartupCensusDisposition[] = STARTUP_ACTIVITY_ENTRYPOINTS
+    .filter((entry): entry is typeof entry & { notApplicableReason: string } => 'notApplicableReason' in entry)
+    .map(entry => ({ id: entry.id, kind: 'not-applicable', reason: entry.notApplicableReason }));
+  if (adapters.census) {
+    try { dispositions.push(...await adapters.census(features)); }
+    catch { unavailable.add('census'); }
+  } else unavailable.add('census');
+  const census = checkStartupActivityCensus(STARTUP_ACTIVITY_ENTRYPOINTS.map(entry => entry.id), dispositions, features);
+  return { features, history, unavailable: [...unavailable].sort(), census: { version: 1, ...census, dispositions } };
+}
+
+export type StartupCensusDisposition =
+  | { id: string; kind: 'checked'; featureIds: string[] }
+  | { id: string; kind: 'not-applicable'; reason: string }
+  | { id: string; kind: 'residue'; workItemId: string; owner: string };
+
+/** Check an independently discovered writer population; omission cannot count as coverage. */
+export function checkStartupActivityCensus(
+  population: readonly string[],
+  dispositions: readonly StartupCensusDisposition[],
+  inventory: readonly Pick<StartupActivityFeature, 'id' | 'entrypointIds'>[],
+): { complete: boolean; problems: string[] } {
+  const expected = new Set(population);
+  const features = new Map(inventory.map(feature => [feature.id, feature.entrypointIds]));
+  const seen = new Set<string>();
+  const problems: string[] = [];
+  for (const entry of dispositions) {
+    if (!expected.has(entry.id)) problems.push(`unexpected:${entry.id}`);
+    if (seen.has(entry.id)) problems.push(`duplicate:${entry.id}`);
+    seen.add(entry.id);
+    if (entry.kind === 'checked' && (!entry.featureIds.length || entry.featureIds.some(id => !features.has(id))))
+      problems.push(`unrepresented:${entry.id}`);
+    if (entry.kind === 'checked' && entry.featureIds.some(id => features.has(id) && !features.get(id)!.includes(entry.id)))
+      problems.push(`wrong-writer:${entry.id}`);
+    if (entry.kind === 'not-applicable' && !entry.reason.trim()) problems.push(`unreasoned:${entry.id}`);
+    if (entry.kind === 'residue' && (!entry.owner.trim() || !/^(WI|EI)-\d+$/.test(entry.workItemId)))
+      problems.push(`unowned:${entry.id}`);
+  }
+  for (const id of expected) if (!seen.has(id)) problems.push(`missing:${id}`);
+  return { complete: problems.length === 0, problems };
+}
+
+/** Version 1: native registration writers plus the actual dynamic dispatch/registry seams. */
+export const STARTUP_ACTIVITY_ENTRYPOINTS = [
+  { id: 'native-login', writer: 'papercusp-desktop/src-tauri/src/main.rs', witness: 'enable_login_autostart' },
+  { id: 'native-server', writer: 'papercusp-desktop/src-tauri/src/main.rs', witness: 'start_server_via_systemd_unit' },
+  { id: 'linux-user-service', writer: 'papercusp-desktop/src-tauri/systemd/papercusp-server.service', witness: 'ExecStart=' },
+  { id: 'linux-boot-opt-in', writer: 'papercusp-desktop/src-tauri/systemd/enable-boot-start.sh', witness: 'enable-linger' },
+  { id: 'linux-package-install', writer: 'papercusp-desktop/src-tauri/deb/postinstall.sh', witness: 'was-enabled' },
+  { id: 'linux-package-preinstall', writer: 'papercusp-desktop/src-tauri/deb/preinstall.sh', witness: '--user stop',
+    notApplicableReason: 'Stops the existing user service before upgrade; the postinstall writer owns any subsequent start.' },
+  { id: 'linux-package-preremove', writer: 'papercusp-desktop/src-tauri/deb/preremove.sh', witness: '--user stop',
+    notApplicableReason: 'Stops package-owned work before removal or upgrade; it registers no automatic start.' },
+  { id: 'linux-package-postremove', writer: 'papercusp-desktop/src-tauri/deb/postremove.sh', witness: '--user purge',
+    notApplicableReason: 'Reloads or purges removed service registration; it registers no automatic start.' },
+  { id: 'mac-boot-install', writer: 'papercusp-desktop/src-tauri/launchd/install-launchdaemon.sh', witness: 'launchctl' },
+  { id: 'mac-service-template', writer: 'papercusp-desktop/src-tauri/launchd/com.papercusp.server.plist.template', witness: '<key>Label</key>' },
+  { id: 'mac-current-service-template', writer: 'papercusp-desktop/src-tauri/launchd/com.papercusp.server.current.plist.template', witness: '<key>Label</key>' },
+  { id: 'routine-dispatch', writer: 'packages/operator-core/lib/dbos/routines-workflow.ts', witness: 'enqueueRoutineFire' },
+  { id: 'event-dispatch', writer: 'packages/operator-core/lib/dbos/event-reaction-workflow.ts', witness: 'eventReactionWorkflow' },
+  { id: 'dbos-registration', writer: 'packages/operator-core/lib/dbos/dbos-schedule-introspect.ts', witness: 'getRegisteredSchedules' },
+  { id: 'managed-fire-on-arm', writer: 'libs/generic/scheduled-registry/src/index.ts', witness: 'opts.fireOnArm' },
+  ...Object.entries(EXTERNAL_SCHEDULES).map(([key, entry]) => ({
+    id: `external:${key}`, writer: entry.source, witness: `EXTERNAL_SCHEDULES.${key}`,
+  })),
+  ...Object.entries(SYNC_TRIGGERED_SCHEDULES).map(([key, entry]) => ({
+    id: `sync:${key}`, writer: entry.source, witness: `SYNC_TRIGGERED_SCHEDULES.${key}`,
+  })),
+] as const;

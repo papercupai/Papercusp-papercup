@@ -95,6 +95,7 @@ import {
   normalizeLaunchMode,
   resolveLaunchMode,
 } from '../../agent-launch-core';
+import { clampCompactionLimit } from '../../agent-config-constants';
 import { declareCoupling } from '../../coord/couplings';
 import { nativeSessionHandleForAdvSession, type NativeSessionHandle } from '../../native-session-handles';
 import {
@@ -146,6 +147,9 @@ import {
  * successor's already-enrolled first-turn provenance. It is not part of the
  * public launch-agent schema or ordinary caller arguments. */
 export const INTERNAL_LOOP_FIRE_ORIGIN: unique symbol = Symbol('internal-loop-fire-origin');
+/** Background recovery preserves identity and may reopen a waiting host without a turn.
+ * Symbol-keyed so a public JSON caller cannot grant itself this disposition. */
+export const INTERNAL_INTERRUPTION_RECOVERY: unique symbol = Symbol('internal-interruption-recovery');
 
 /** The ledger orders by started_at DESC. Read TWO unqualified candidates so a
  * tie or a newer running/later-incarnation row cannot disappear behind a filter.
@@ -900,6 +904,10 @@ export default defineTool({
       });
   })(),
   async handler(args, ctx) {
+    const interruptionRecovery = (args as typeof args & {
+      [INTERNAL_INTERRUPTION_RECOVERY]?: { ownerId: string; nativeSessionId: string; wait: boolean;
+        beforeNativeCreate?: () => Promise<void> };
+    })[INTERNAL_INTERRUPTION_RECOVERY];
     let modelResolution: ReturnType<typeof resolveLaunchModelAlias> | null = null;
     const memberAliasResolutions: Array<ReturnType<typeof resolveLaunchModelAlias> | undefined> = [];
     const requestedDefaultEffort = args.effort;
@@ -908,6 +916,8 @@ export default defineTool({
     // public schema so ordinary resumes continue using the fleet recipe.
     const leaderRecoveryOwnerId = (args as typeof args & { __leaderRecoveryOwnerId?: string })
       .__leaderRecoveryOwnerId?.trim() || null;
+    const originalRecoveryOwnerId = leaderRecoveryOwnerId ?? interruptionRecovery?.ownerId;
+    let recoveredFleetRole: 'leader' | 'member' | undefined = leaderRecoveryOwnerId ? 'leader' : undefined;
     try {
       if (args.model) {
         modelResolution = resolveLaunchModelAlias(args.model, { effort: args.effort, agent: args.agent });
@@ -1134,7 +1144,7 @@ export default defineTool({
         'A session cannot be resumed more than once (a second CLI on one transcript collides). Use `fork: true` with `count` to branch N agents off it, or launch fresh agents with a `brief`.',
       );
     }
-    if (isResume && !args.brief?.trim() && !neutralLineageRequested) {
+    if (isResume && !args.brief?.trim() && !neutralLineageRequested && !interruptionRecovery?.wait) {
       return err(
         '`resume`/`fork` requires a non-empty `brief` — it is the resumed session\'s actionable next turn. A no-brief resume would open an idle CLI and report an ambiguous launch; use a fresh `plan` launch if no next-turn direction is available.',
       );
@@ -1319,12 +1329,17 @@ export default defineTool({
           return err('Cannot start successor: the resolved source no longer matches the expected workspace, harness, and incarnation binding. No process was opened.');
         }
       }
-      resumeSessionId = target.sessionId;
+      resumeSessionId = target.sessionId ?? (interruptionRecovery ? target.ompThreadId : null);
       // Native UUID verification remains nullable for tracked Codex rows that
       // resume by their adv_sessions row id through psu's isolated CODEX_HOME.
       resumeId = target.resumeId ?? target.sessionId;
       resumeOwnerId = target.ownerId;
-      if (neutralLineageRequested && resumeOwnerId) {
+      if (interruptionRecovery && (target.live || args.fork !== false ||
+          target.ownerId !== interruptionRecovery.ownerId ||
+          (target.sessionId ?? target.ompThreadId) !== interruptionRecovery.nativeSessionId)) {
+        return err('Interruption recovery refused: source must remain dead, non-retired and exactly identity-bound.');
+      }
+      if ((neutralLineageRequested || interruptionRecovery) && resumeOwnerId) {
         // A neutral successor inherits the predecessor's registered mode, not
         // the recovering caller's owner-directed launch mode.
         launchMode = await readCallerLaunchMode(workspaceId, resumeOwnerId);
@@ -1982,6 +1997,8 @@ export default defineTool({
           const membership = await latestFleetMembership(workspaceId, resumeOwnerId);
           if (membership?.fleetSlug) {
             fleetSlug = membership.fleetSlug;
+            if (interruptionRecovery && (membership.fleetRole === 'leader' || membership.fleetRole === 'member'))
+              recoveredFleetRole = membership.fleetRole;
             scheme = await getFleetScheme(workspaceId, membership.fleetSlug);
           }
         } catch (e) {
@@ -2069,8 +2086,8 @@ export default defineTool({
             headless: args.headless,
             extraArgs: requestedProfileExtraArgs,
           },
-          ...(leaderRecoveryOwnerId ? {
-            memberOwnerId: leaderRecoveryOwnerId,
+          ...(originalRecoveryOwnerId ? {
+            memberOwnerId: originalRecoveryOwnerId,
             preferMemberRecord: true,
           } : {}),
           reusePath: leaderRecoveryOwnerId
@@ -2320,6 +2337,11 @@ export default defineTool({
       launchContext: neutralLineageRequested ? undefined : persistedHeadcountProfile?.config.launchContext,
       extraArgs: neutralLineageRequested ? undefined : args.extraArgs ?? undefined,
     };
+    const compactionLimitWarnings: Array<{
+      memberIndex: number;
+      requested: number;
+      effective: number;
+    }> = [];
     const foldedConfigs: FleetMemberDefaults[] = Array.from({ length: count }, (_v, i) => {
       // A successor is a fresh process even though it has a source identity.
       // Apply the same Codex model policy as an ordinary fresh launch; otherwise
@@ -2340,14 +2362,28 @@ export default defineTool({
       // pinning here, add an explicit `goalRole` to MemberSpec — do NOT reinstate
       // the `--role` lookup.
       const folded = foldMemberSpec(flatBase, memberSpecs[i]);
-      if (folded.agent !== 'codex') return folded;
-      // One policy owns both the omitted-model default and the Spark deny. Do
-      // this before any terminal/PTY is opened so a bad member cannot partially
-      // launch a batch and leave an untracked process behind.
-      const selection = resolveCodexModelSelection(folded.model, {
-        source: folded.modelSource ?? (folded.model ? 'explicit' : 'configured-default'),
-      });
-      return { ...folded, model: selection.model, modelSource: selection.source };
+      let effective = folded;
+      if (folded.agent === 'codex') {
+        // One policy owns both the omitted-model default and the Spark deny. Do
+        // this before any terminal/PTY is opened so a bad member cannot partially
+        // launch a batch and leave an untracked process behind.
+        const selection = resolveCodexModelSelection(folded.model, {
+          source: folded.modelSource ?? (folded.model ? 'explicit' : 'configured-default'),
+        });
+        effective = { ...folded, model: selection.model, modelSource: selection.source };
+      }
+      if (fleetSlug && effective.compactionLimit != null) {
+        const requested = effective.compactionLimit;
+        const limit = clampCompactionLimit(requested, effective.model, { fleetMember: true });
+        if (limit < requested) {
+          compactionLimitWarnings.push({ memberIndex: i, requested, effective: limit });
+          notes.push(
+            `⚠ Member ${i + 1} requested compaction limit ${requested} tokens, above the fleet-member ceiling; the effective limit is ${limit} tokens. For an unfleeted agent that needs a higher limit, pass independent: true and omit fleet.`,
+          );
+          effective = { ...effective, compactionLimit: limit };
+        }
+      }
+      return effective;
     });
     if (gradingAuditTaskDetail !== undefined) {
       if (!isGradingAuditTaskDetail(gradingAuditTaskDetail)) {
@@ -2558,7 +2594,7 @@ export default defineTool({
               // unless the caller deliberately requests another one. Without
               // this, `--account=auto` sessions silently restart on `default`.
               account: args.account ?? resumeAccount,
-              fleetRole: leaderRecoveryOwnerId ? 'leader' : undefined,
+              fleetRole: recoveredFleetRole === 'leader' ? 'leader' : undefined,
               // Resume/fork does not pass --agent, but the command builder
               // still needs the recorded backend to apply Codex's model
               // policy. A Codex source may have changed model OR reasoning
@@ -2774,11 +2810,14 @@ export default defineTool({
           intendedParallelPlanFleets: goalLaunch.settings?.intendedParallelPlanFleets ?? null,
         })
       : null;
+    const liveForkSafetyBrief = fork && sourceStillLive
+      ? 'LIVE SOURCE SAFETY: the source identity is still active. This fork has a fresh identity and inherits no work-item claims. Before continuing any task described in the source transcript, read its current work item and confirm this fork holds the claim; otherwise take distinct work through scheduler:get_next.'
+      : null;
     const memberBriefs = memberCommands.map((_, i) => {
       const custom = isSuccessor
         ? successorBrief
         : (memberSpecs[i]?.brief?.trim() || args.brief);
-      return [custom, goalAllocationBrief].filter(Boolean).join('\n\n') || undefined;
+      return [liveForkSafetyBrief, custom, goalAllocationBrief].filter(Boolean).join('\n\n') || undefined;
     });
     const kickoffProofRequired = memberBriefs.map((brief) => Boolean(brief || args.plan));
     const results = await Promise.all(
@@ -2787,7 +2826,7 @@ export default defineTool({
         const env = {
           ...base.env,
           // Only explicit exact resume authorizes retirement clearing.
-          ...(!fork && isResume ? { PSU_ALLOW_RETIRED_RESUME: '1' } : {}),
+          ...(!fork && isResume && !interruptionRecovery ? { PSU_ALLOW_RETIRED_RESUME: '1' } : {}),
           ...(scopedGateway ? { [SCOPED_INFERENCE_GATEWAY_ENV]: JSON.stringify(scopedGateway) } : {}),
           ...(memberBrief ? { PAPERCUSP_KICKOFF_PROMPT: memberBrief } : {}),
           ...(internalKickoffOrigin
@@ -2817,6 +2856,7 @@ export default defineTool({
           }
         };
         try {
+          await interruptionRecovery?.beforeNativeCreate?.();
           if (recheckInPlaceResume) await recheckInPlaceResume();
           if (recheckOriginalMember) await recheckOriginalMember();
           if (reconcileOriginalRouting) await reconcileOriginalRouting();
@@ -2854,8 +2894,20 @@ export default defineTool({
             if (recheckOriginalMember) await recheckOriginalMember();
             if (reconcileOriginalRouting) await reconcileOriginalRouting();
             await successorPreparation.beforeSpawn?.();
+            await interruptionRecovery?.beforeNativeCreate?.();
             if (startupReservation && startupReservation.expiresAtMs <= Date.now())
               throw new Error('Ended-source resume startup reservation expired before process start.');
+            // In-place resumes skip bootstrap. Only an explicit admitted launch
+            // by a different known actor reparents inherited work context here.
+            // Internal recovery retains its original mission and identity.
+            if (isResume && !fork && !interruptionRecovery && !neutralLineageRequested &&
+                !blindReviewResumeAuthorized && callerOwnerId && targetOwnerId &&
+                callerOwnerId !== targetOwnerId) {
+              const { resolveGoalContext, setInheritedGoalContext } = await import('../../modes/goal-context');
+              const inheritedGoal = await resolveGoalContext(workspaceId, callerOwnerId, undefined, { requireRead: true });
+              if (!(await setInheritedGoalContext(workspaceId, targetOwnerId, inheritedGoal)))
+                throw new Error('Resume goal context could not be reconciled before process start.');
+            }
             const governedEnv = {
               ...env,
               PAPERCUSP_ADMISSION_CONTEXT: JSON.stringify(admissionContext),
@@ -3377,6 +3429,7 @@ export default defineTool({
       failed: failed.length,
       failures,
       partial: partialLaunch,
+      compactionLimitWarnings,
       command,
       fleet: fleetSlug,
       independent: args.independent === true,

@@ -32,6 +32,7 @@ import {
   replacePreparedSelectionAfterRepairHeadAdvance,
   supersedePreparedSelectionBeforeStart,
   preparedSelectionNamesAttemptCandidate,
+  preparedSelectionQueueRepairHeadOnlyAdvanced,
   type PreparedCheckpointSelectionRecord,
 } from './checkpoint-qualification-transaction';
 import { GREEN_CHECKPOINT_RESULT_MARKER } from './checkpoint-log-tags';
@@ -1316,6 +1317,10 @@ describe('a stored settlement that moves the attempt candidate voids the old pre
     generation: { candidate, identity: 'generation-1', token: 'v3:token',
       inputFingerprint: '1'.repeat(64), reused: true, root: '/generations' },
   });
+  const persistedSelectionFor = (candidate: string) => {
+    const { queue: _queue, ...selection } = selectionFor(candidate);
+    return { ...selection, queueAuthority: null };
+  };
   // The measured papercusp state before the 23:25Z crash: a physical run committed the repair
   // head's selection, then ended pre-suite with the queue's frozen candidate as its result.
   const running = () => ({
@@ -1349,7 +1354,7 @@ describe('a stored settlement that moves the attempt candidate voids the old pre
     expect(await waitStoredQualification(target, { attemptId: 'attempt-1', reason: 'repair-in-progress',
       candidate: 'repair-head-1', repairHead: 'repair-head-1', runId: 'run-1', nowMs: 300 }))
       .toMatchObject({ status: 'updated' });
-    expect(writtenTransaction(statements).preparedSelection).toEqual(selectionFor('repair-head-1'));
+    expect(writtenTransaction(statements).preparedSelection).toEqual(persistedSelectionFor('repair-head-1'));
   });
 });
 
@@ -1361,12 +1366,29 @@ describe('committing a prepared selection honours the attempt candidate (WI-6554
     generation: { candidate, identity: 'generation-1', token: 'v3:token',
       inputFingerprint: '1'.repeat(64), reused: true, root: '/generations' },
   });
+  const persistedSelectionFor = (candidate: string) => {
+    const { queue: _queue, ...selection } = selectionFor(candidate);
+    return { ...selection, queueAuthority: null };
+  };
   // The CLI attaches its runner on the attempt's candidate before the preflight selects.
   const attachedOn = (candidate: string) => reserveQualificationRunner(beginQualificationTransaction(null, {
     attemptId: 'attempt-1', candidate, nowMs: 100,
   }).transaction, { attemptId: 'attempt-1', candidate, runnerId: 'runner-1', runId: 'run-1', pid: 42,
     pidIdentity: 'boot:42', leaseDurationMs: 1000, started: true, nowMs: 200 }).transaction;
   const expected = { queue: null, pendingCarry: null };
+  const largeReadyToVerifyQueue = () => {
+    const red = markFrozenCandidateVerificationRed(createFrozenCandidateQueue({
+      candidate: 'candidate-1', qualificationAttemptId: 'attempt-1', base: null, nowMs: 110,
+    }), {
+      failingTests: Array.from({ length: 400 }, (_, index) =>
+        `packages/operator-core/lib/release/generated-${index}.test.ts`),
+      nowMs: 120,
+    });
+    const dispatched = markFrozenRepairFixerDispatched(red, { spawnId: 'fixer-1', nowMs: 130 });
+    return markFrozenRepairFixerFinished(dispatched, {
+      spawnId: 'fixer-1', repairHead: 'repair-head-1', nowMs: 140,
+    });
+  };
   const updates = <T extends { text: string }>(statements: T[]) =>
     statements.filter(value => value.text.includes('UPDATE harness_shared.routines'));
   const written = (statements: Array<{ text: string; values: unknown[] }>) => {
@@ -1386,7 +1408,7 @@ describe('committing a prepared selection honours the attempt candidate (WI-6554
   it('publishes a selection that names the attempt candidate', async () => {
     const { statements } = transactionHarness({ qualificationTransaction: attachedOn('frozen-candidate-1') });
     expect(await commitPreparedCheckpointSelection(target, selectionFor('frozen-candidate-1'), expected)).toBe(true);
-    expect(written(statements).preparedSelection).toEqual(selectionFor('frozen-candidate-1'));
+    expect(written(statements).preparedSelection).toEqual(persistedSelectionFor('frozen-candidate-1'));
   });
 
   it('replaces a stored selection for another candidate instead of refusing every later commit', async () => {
@@ -1395,7 +1417,7 @@ describe('committing a prepared selection honours the attempt candidate (WI-6554
     } });
     expect(await commitPreparedCheckpointSelection(target, selectionFor('frozen-candidate-1'), expected)).toBe(true);
     const transaction = written(statements);
-    expect(transaction.preparedSelection).toEqual(selectionFor('frozen-candidate-1'));
+    expect(transaction.preparedSelection).toEqual(persistedSelectionFor('frozen-candidate-1'));
     expect(transaction.evidenceRefs).toContain('prepared-selection-voided:repair-head-1');
   });
 
@@ -1413,7 +1435,67 @@ describe('committing a prepared selection honours the attempt candidate (WI-6554
       attemptId: 'attempt-1', candidate: 'frozen-candidate-1', nowMs: 100,
     }).transaction });
     expect(await commitPreparedCheckpointSelection(target, selectionFor('repair-head-1'), expected)).toBe(true);
-    expect(written(statements).preparedSelection).toEqual(selectionFor('repair-head-1'));
+    expect(written(statements).preparedSelection).toEqual(persistedSelectionFor('repair-head-1'));
+  });
+
+  it('stores a compact queue authority and phase instead of duplicating the full queue', async () => {
+    const queue = largeReadyToVerifyQueue();
+    const record = { ...selectionFor('repair-head-1'), queue };
+    const { statements } = transactionHarness({
+      qualificationTransaction: attachedOn('repair-head-1'),
+      repair_queue: queue,
+    });
+
+    expect(await commitPreparedCheckpointSelection(target, record, { queue, pendingCarry: null })).toBe(true);
+    const stored = written(statements).preparedSelection as Record<string, unknown>;
+    expect(JSON.stringify(queue).length).toBeGreaterThan(10_000);
+    expect(stored).not.toHaveProperty('queue');
+    expect(stored.queueAuthority).toEqual({
+      candidate: queue.candidate,
+      openedAtMs: queue.openedAtMs,
+      qualificationAttemptId: 'attempt-1',
+      base: queue.base,
+      repairHead: queue.repairHead,
+      judgesCandidate: false,
+      phase: 'ready-to-verify',
+    });
+    expect(JSON.stringify(stored).length).toBeLessThan(1_000);
+
+    const admittedPath = queue.failingTests[0]!;
+    const advanced = markFrozenRepairAdmitted(queue, {
+      atMs: 150, actor: 'su-test', source: { ref: 'head-2', sha: 'repair-head-2' },
+      fromRepairHead: queue.repairHead, toRepairHead: 'repair-head-2',
+      paths: [admittedPath], unchanged: [], blobs: { [admittedPath]: 'blob-2' },
+    });
+    expect(preparedSelectionQueueRepairHeadOnlyAdvanced(
+      stored as unknown as PreparedCheckpointSelectionRecord, advanced,
+    )).toBe(true);
+  });
+
+  it('reads legacy full queue selections and compacts them on the next transaction write', async () => {
+    const queue = largeReadyToVerifyQueue();
+    const legacySelection = { ...selectionFor('repair-head-1'), queue };
+    const current = { ...attachedOn('repair-head-1'), preparedSelection: legacySelection };
+    const { statements } = transactionHarness({ qualificationTransaction: current, repair_queue: queue });
+
+    const result = await waitStoredQualification(target, {
+      attemptId: 'attempt-1', reason: 'repair-in-progress', candidate: 'repair-head-1',
+      repairHead: 'repair-head-1', runId: 'run-1', nowMs: 300,
+    });
+
+    expect(result.status).toBe('updated');
+    const update = statements.find(statement => statement.text.includes('UPDATE harness_shared.routines'))!;
+    const serialized = update.values.find((value): value is string =>
+      typeof value === 'string' && value.includes('"preparedSelection"'))!;
+    const payload = JSON.parse(serialized) as Record<string, unknown>;
+    const transaction = (payload.qualificationTransaction ?? payload) as Record<string, unknown>;
+    const stored = transaction.preparedSelection as Record<string, unknown>;
+    expect(stored).not.toHaveProperty('queue');
+    expect(stored.queueAuthority).toMatchObject({
+      candidate: queue.candidate, openedAtMs: queue.openedAtMs, repairHead: queue.repairHead,
+      judgesCandidate: false, phase: 'ready-to-verify',
+    });
+    expect(JSON.stringify(stored).length).toBeLessThan(1_000);
   });
 
   it('atomically replans a committed selection when only the ready repairHead advanced before the suite', async () => {
@@ -1439,8 +1521,13 @@ describe('committing a prepared selection honours the attempt candidate (WI-6554
       target, previous, replacement, newQueue, 'run-1',
     )).toBe(true);
     const writtenTransaction = written(statements);
+    const { queue: _queue, ...replacementWithoutQueue } = replacement;
     expect(writtenTransaction).toMatchObject({ candidate: 'repair-head-2', repairHead: 'repair-head-2',
-      preparedSelection: replacement,
+      preparedSelection: { ...replacementWithoutQueue, queueAuthority: {
+        candidate: newQueue.candidate, openedAtMs: newQueue.openedAtMs,
+        qualificationAttemptId: newQueue.qualificationAttemptId ?? null, base: newQueue.base,
+        repairHead: newQueue.repairHead, judgesCandidate: newQueue.phase === 'ready-to-test', phase: newQueue.phase,
+      } },
       currentPhysicalRunner: { candidate: 'repair-head-2', phase: 'materializing' } });
     expect(writtenTransaction.evidenceRefs).toContain('prepared-selection-replanned:repair-head-1:repair-head-2');
   });

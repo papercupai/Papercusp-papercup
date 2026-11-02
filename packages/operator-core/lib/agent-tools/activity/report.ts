@@ -25,7 +25,7 @@
 
 import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
-import { recordActivity, type TodoItem, type ToolInput } from '@papercusp/activity-bridge';
+import { normalizeReport, type ActivityKind, type TodoItem, type ToolInput } from '@papercusp/activity-bridge';
 import { createPgTelemetryStore } from '../../activity-pg-store';
 import {
   armInboxWake,
@@ -110,12 +110,21 @@ const todoSchema = z
   })
   .passthrough();
 
+const SLOW_ACTIVITY_REPORT_TRACE_THRESHOLD_MS = 10_000;
+type ActivityReportPhaseStatus = 'running' | 'fulfilled' | 'soft-dropped' | 'rejected';
+
 /**
  * WI-41305: lifecycle-report needs the SAME terminal-vs-continuation verdict
  * this handler already computes for lease safety. Carry it on the ordinary
  * activity result so the hook never grows a second, drifting classifier.
  */
-type ActivityReportResult = Awaited<ReturnType<typeof recordActivity>> & {
+type ActivityReportResult = {
+  id: string | null;
+  owner: string;
+  kind: ActivityKind;
+  summary: string;
+  persistence?: 'async';
+  dropped?: 'contention';
   /** `foreign` (WI-10003957): the ending native session is not the owner's bound
    *  incarnation — a nested CLI that inherited PAPERCUSP_SID. Never reaped. */
   session_end_disposition?: 'terminal' | 'continuation' | 'foreign';
@@ -127,7 +136,7 @@ type ActivityReportResult = Awaited<ReturnType<typeof recordActivity>> & {
 export default defineTool({
   name: 'activity:report',
   description:
-    "Report one worker-activity event (a native tool call, lifecycle transition, or todo snapshot) to the cross-CLI activity bridge sink (harness_shared.agent_activity). Called by the per-CLI hooks on every tool call; feeds the pui fleet view + curator. The display summary is derived server-side from tool_name+tool_input when not supplied. Fire-and-forget: returns { ok, id } and never blocks.",
+    "Report one worker-activity event (a native tool call, lifecycle transition, or todo snapshot) to the cross-CLI activity bridge sink (harness_shared.agent_activity). Called by the per-CLI hooks on every tool call; feeds the pui fleet view + curator. The display summary is derived server-side from tool_name+tool_input when not supplied. Plain reports confirm the inserted row; calls carrying hook_bundle return its coordination delta without waiting for the telemetry insert and include persistence: 'async'.",
   capability: 'activity:report',
   guidance: {
     when: 'Almost never call this by hand — the per-CLI hooks (posttooluse-activity-report.sh / the OMP coord-hook port) call it automatically to mirror each worker\'s native tool stream into the fleet view. Call directly only to inject a synthetic activity marker (e.g. a custom lifecycle note).',
@@ -273,62 +282,110 @@ export default defineTool({
     const workspaceId = resolveConcreteWorkspaceId(ctx.workspaceId, ctx.principal?.workspaceId);
     const hookFallbacksAccepted = recordHookFallbacks(args.hook_fallbacks, owner, args.agent, ctx, workspaceId);
 
-    // Normalize the raw cross-CLI report + append it through the PG-backed
-    // TelemetryStore seam (@papercusp/activity-bridge). The host-domain `scope`
-    // maps to the harness the worker is in; everything else is the worker's
-    // coordination identity. The migration-143 NOTIFY trigger does the fleet-view push.
+    // Normalize the raw cross-CLI report. The host-domain `scope` maps to the
+    // harness the worker is in; everything else is the worker's coordination
+    // identity. The migration-143 NOTIFY trigger does the fleet-view push.
     //
-    // FIRE-AND-FORGET (the tool's documented contract: "never blocks"): a TRANSIENT
-    // PG contention on this telemetry INSERT — a `lock_timeout` (55P03) or
-    // `statement_timeout` (57014), which the harness_admin org pool caps at 15s — must
-    // NOT surface as a hard tool error. The per-CLI hooks call this detached on EVERY
-    // native tool call (~45k/day); a single dropped fleet-view row self-heals on the
-    // worker's next report, so a rare contention dip is a benign no-op, never a fleet-
-    // wide "tool activity:report is failing" watchdog signal (EI-7439). This mirrors the
-    // best-effort/swallowed treatment of every other write in this handler (the inbox-wake
-    // arm + watermark below). Non-contention errors (a genuine bug / DB-down) still surface.
-    let result: ActivityReportResult;
-    try {
-      result = await recordActivity(createPgTelemetryStore(), {
-        owner,
-        agent: args.agent ?? null,
-        sessionId: args.session_id ?? null,
-        scope: harnessSlug,
-        kind: args.kind,
-        toolName: args.tool_name ?? null,
-        phase: args.phase,
-        toolUseId: args.tool_use_id ?? null,
-        toolInput: args.tool_input as ToolInput,
-        todos: args.todos as TodoItem[] | undefined,
-        summary: args.summary ?? null,
-        status: args.status ?? null,
-        cwd: args.cwd ?? null,
-        // `ctx.principal.workspaceId` is '*' for an unscoped superuser request.
-        // Never persist that sentinel: concrete workspace reads (including
-        // activity:recent) cannot see it. Prefer the request context and fall
-        // back to the active workspace through the shared resolver.
-        workspaceId,
+    // This is best-effort telemetry dispatched on EVERY native tool call (~45k/day).
+    // When the caller needs a coordination hook_bundle, keep the PostgreSQL append
+    // off that critical path: a slow store must not delay inbox/glance delivery or
+    // lifecycle cleanup. Plain reports keep their insert receipt contract because
+    // failure-recording hooks use it to distinguish a persisted row from a local
+    // recovery record.
+    const activityReportInput = {
+      owner,
+      agent: args.agent ?? null,
+      sessionId: args.session_id ?? null,
+      scope: harnessSlug,
+      kind: args.kind,
+      toolName: args.tool_name ?? null,
+      phase: args.phase,
+      toolUseId: args.tool_use_id ?? null,
+      toolInput: args.tool_input as ToolInput,
+      todos: args.todos as TodoItem[] | undefined,
+      summary: args.summary ?? null,
+      status: args.status ?? null,
+      cwd: args.cwd ?? null,
+      // `ctx.principal.workspaceId` is '*' for an unscoped superuser request.
+      // Never persist that sentinel: concrete workspace reads cannot see it.
+      workspaceId,
+    };
+    const activityRecord = normalizeReport(activityReportInput);
+    let result: ActivityReportResult = {
+      id: null,
+      owner: activityRecord.owner,
+      kind: activityRecord.kind,
+      summary: activityRecord.summary,
+    };
+    const activityReportMetadata = (ctx as {
+      metadata?: (value: Record<string, unknown>) => void;
+    } | undefined)?.metadata;
+    const activityReportStartedAt = performance.now();
+    let activityReportPhaseStatus: ActivityReportPhaseStatus = 'running';
+    let activityReportSlowTraceTriggered = false;
+    const publishActivityReportPhase = (): void => {
+      if (!activityReportMetadata) return;
+      try {
+        activityReportMetadata({
+          activityReportPhase: {
+            schemaVersion: 'activity-report-phase-v1',
+            unit: 'ms',
+            timing: 'awaited-helper-wall-time',
+            phase: 'record-activity',
+            status: activityReportPhaseStatus,
+            elapsedMs: Math.max(0, Math.round(performance.now() - activityReportStartedAt)),
+          },
+        });
+      } catch {
+        // Diagnostic metadata must never replace the telemetry result or error.
+      }
+    };
+    const activityReportTraceTimer = setTimeout(() => {
+      activityReportSlowTraceTriggered = true;
+      publishActivityReportPhase();
+      console.warn(
+        `[activity:report] telemetry append still running for ${owner}` +
+          `${args.tool_use_id ? ` (tool_use_id ${args.tool_use_id})` : ''} after ${SLOW_ACTIVITY_REPORT_TRACE_THRESHOLD_MS}ms`,
+      );
+    }, SLOW_ACTIVITY_REPORT_TRACE_THRESHOLD_MS);
+
+    const persistActivityReportWithPhaseTrace = async (): Promise<{ id: string | null }> => {
+      try {
+        const receipt = await createPgTelemetryStore().append(activityRecord);
+        activityReportPhaseStatus = 'fulfilled';
+        return receipt;
+      } catch (error) {
+        activityReportPhaseStatus = isWorkspaceContended(error) ? 'soft-dropped' : 'rejected';
+        throw error;
+      } finally {
+        clearTimeout(activityReportTraceTimer);
+        const elapsedMs = performance.now() - activityReportStartedAt;
+        if (activityReportSlowTraceTriggered || elapsedMs >= SLOW_ACTIVITY_REPORT_TRACE_THRESHOLD_MS) {
+          publishActivityReportPhase();
+          console.warn(
+            `[activity:report] telemetry append settled for ${owner} after ${Math.round(elapsedMs)}ms (${activityReportPhaseStatus})`,
+          );
+        }
+      }
+    };
+    if (args.hook_bundle) {
+      result.persistence = 'async';
+      // Attach the rejection handler immediately so an async best-effort write can
+      // never become an unhandled rejection or mask coordination/lifecycle work.
+      void persistActivityReportWithPhaseTrace().catch((error) => {
+        if (!isWorkspaceContended(error)) {
+          console.error(
+            `[activity:report] telemetry append failed for ${owner}: ${error instanceof Error ? error.message : error}`,
+          );
+        }
       });
-    } catch (e) {
-      if (!isWorkspaceContended(e)) throw e; // a real fault must still surface
-      // Dropped-under-contention: report a soft, honest result (id null + dropped
-      // marker) rather than a handler error. The side-effect arms below are throttled
-      // + best-effort and will re-run on the next report, so skipping them here is safe.
-      const hookBundle = args.hook_bundle
-        ? await buildActivityHookBundle(owner, args.hook_bundle, ctx).catch(() => null)
-        : undefined;
-      return {
-        content: [{
-          type: 'text',
-          text: JSON.stringify({
-            ok: true,
-            id: null,
-            dropped: 'contention',
-            ...(args.hook_fallbacks ? { hook_fallbacks_accepted: hookFallbacksAccepted } : {}),
-            ...(hookBundle ? { hook_bundle: hookBundle } : {}),
-          }),
-        }],
-      };
+    } else {
+      try {
+        result.id = (await persistActivityReportWithPhaseTrace()).id;
+      } catch (error) {
+        if (!isWorkspaceContended(error)) throw error;
+        result.dropped = 'contention';
+      }
     }
 
     // turn-lifecycle-control P-003/P-004: a session's lifecycle transition is the

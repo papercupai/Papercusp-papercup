@@ -743,6 +743,8 @@ export interface CompletionBriefDeps {
   reuse?: TaskBriefDeps['reuse'];
   engineering?: TaskBriefDeps['engineering'];
   toolset?: TaskBriefDeps['toolset'];
+  /** Override the capture budget in tests; production keeps the six-second default. */
+  budgetMs?: number;
 }
 
 /** Added lines from a complete native diff only. Context/deletions and truncated
@@ -812,7 +814,8 @@ export async function getCompletionTimeBrief(ref: { workspaceId: string; harness
   deadlineMs?: number },
   deps: Partial<CompletionBriefDeps> = {}) {
   const rootResolver = deps.root ?? defaults.root;
-  const deadline = Math.min(ref.deadlineMs ?? Number.POSITIVE_INFINITY, Date.now() + TASK_BRIEF_BUDGET_MS);
+  const budgetMs = Number.isFinite(deps.budgetMs) ? Math.max(1, deps.budgetMs!) : TASK_BRIEF_BUDGET_MS;
+  const deadline = Math.min(ref.deadlineMs ?? Number.POSITIVE_INFINITY, Date.now() + budgetMs);
   const toolset = readBriefToolset(deps.toolset, ref.workspaceId, ref.reuse?.owner ?? ref.owner);
   // WI-6554700010042518: on the operator-home harness a cold per-symbol worker measured past
   // the completion deadline, so callers come from the maintained push snapshot. Other

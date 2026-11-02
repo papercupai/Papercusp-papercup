@@ -73,7 +73,7 @@ export interface BenchEgressConfig {
   sidecarImage?: string;
   /** Parent of the per-run work dir (relay sockets + nginx.conf). Default `os.tmpdir()`. */
   workRoot?: string;
-  /** How long to wait for the sidecar to listen on every endpoint port. Default 15s. */
+  /** Total startup budget, including Docker commands and port readiness. Default 15s. */
   readyTimeoutMs?: number;
   /** Poll interval for that wait. Default 200ms. */
   readyPollMs?: number;
@@ -301,7 +301,7 @@ async function closeRelay(r: Relay): Promise<void> {
 
 async function docker(exec: ProcExec, args: string[]): Promise<{ ok: boolean; out: string; err: string }> {
   try {
-    const r = await exec('docker', args);
+    const r = await exec('docker', args, { timeoutMs: 15_000 });
     return { ok: r.code === 0, out: r.stdout, err: `exit ${r.code}: ${r.stderr.trim().slice(0, 300)}` };
   } catch (e) {
     return { ok: false, out: '', err: (e as Error).message };
@@ -419,6 +419,19 @@ export async function startBenchEgress(cfg: BenchEgressConfig): Promise<BenchEgr
   if (!image || /\s/.test(image)) throw new Error(`bench-egress: bad sidecar image ${JSON.stringify(image)}`);
   const readyTimeoutMs = cfg.readyTimeoutMs ?? 15_000;
   const readyPollMs = cfg.readyPollMs ?? 200;
+  if (!Number.isSafeInteger(readyTimeoutMs) || readyTimeoutMs <= 0 ||
+      !Number.isSafeInteger(readyPollMs) || readyPollMs <= 0) {
+    throw new Error('bench-egress: readiness timeout and poll interval must be positive safe integers');
+  }
+  const deadline = Date.now() + readyTimeoutMs;
+  // Bound the command itself, not just the next iteration of the readiness loop.
+  // Cleanup uses the original port so an expired startup budget cannot prevent it.
+  const setupExec: ProcExec = (cmd, args, opts) => {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) return Promise.resolve({ stdout: '', code: 124,
+      stderr: `startup deadline exhausted before ${args.slice(0, 2).join(' ')}` });
+    return exec(cmd, args, { ...opts, timeoutMs: Math.min(opts?.timeoutMs ?? readyTimeoutMs, remaining) });
+  };
 
   // A random suffix keeps two runs with the same runId from colliding on docker names.
   const prefix = `pc-egress-${dockerSafe(cfg.runId, 24)}-${randomBytes(3).toString('hex')}`;
@@ -438,7 +451,7 @@ export async function startBenchEgress(cfg: BenchEgressConfig): Promise<BenchEgr
   let networksInUse = 0;
   let sidecarId = '';
   let sidecarAttempted = false;
-  let baseCreated = false;
+  let baseAttempted = false;
   let stopped = false;
   let seq = 0;
 
@@ -454,9 +467,9 @@ export async function startBenchEgress(cfg: BenchEgressConfig): Promise<BenchEgr
       const neverCreated = !sidecarId && /no such container/i.test(r.err);
       if (!r.ok && !neverCreated) errors.push(`rm sidecar ${sidecarName}: ${r.err}`);
     }
-    if (baseCreated) {
+    if (baseAttempted) {
       const r = await docker(exec, ['network', 'rm', baseNetwork]);
-      if (!r.ok) errors.push(`rm network ${baseNetwork}: ${r.err}`);
+      if (!r.ok && !isMissingDockerNetwork(r.err)) errors.push(`rm network ${baseNetwork}: ${r.err}`);
     }
     for (const relay of relays) {
       try {
@@ -487,21 +500,21 @@ export async function startBenchEgress(cfg: BenchEgressConfig): Promise<BenchEgr
     const confPath = join(workDir, 'nginx.conf');
     writeFileSync(confPath, renderEgressNginxConf(endpoints), { mode: 0o644 });
 
-    let net = await docker(exec, ['network', 'create', '--internal', '--label', label, baseNetwork]);
+    baseAttempted = true;
+    let net = await docker(setupExec, ['network', 'create', '--internal', '--label', label, baseNetwork]);
     if (!net.ok && /all predefined address pools have been fully subnetted/i.test(net.err)) {
       const initialError = net.err;
-      const sweep = await sweepStaleBenchEgressNetworks(exec, Date.now());
+      const sweep = await sweepStaleBenchEgressNetworks(setupExec, Date.now());
       if (sweep.errors.length) {
         throw new Error(`bench-egress: address pools exhausted (${initialError}); stale egress cleanup failed — ${sweep.errors.join('; ')}`);
       }
-      net = await docker(exec, ['network', 'create', '--internal', '--label', label, baseNetwork]);
+      net = await docker(setupExec, ['network', 'create', '--internal', '--label', label, baseNetwork]);
       if (!net.ok) net.err = `${net.err}; retry after stale egress cleanup (initial failure: ${initialError})`;
     }
     if (!net.ok) throw new Error(`bench-egress: network create ${baseNetwork} failed — ${net.err}`);
-    baseCreated = true;
 
     sidecarAttempted = true;
-    const run = await docker(exec, [
+    const run = await docker(setupExec, [
       'run', '-d', '--name', sidecarName, '--label', label,
       '--network', baseNetwork, '--network-alias', BENCH_EGRESS_ALIAS,
       '-v', `${relayDir}:${SIDECAR_RELAY_DIR}`,
@@ -515,10 +528,9 @@ export async function startBenchEgress(cfg: BenchEgressConfig): Promise<BenchEgr
     // Ready = every endpoint port in LISTEN inside the sidecar. Read from /proc, so readiness sends no request
     // through to the gateway or MCP.
     const want = endpoints.map((e) => e.listenPort);
-    const deadline = Date.now() + readyTimeoutMs;
     let seen = new Set<number>();
     for (;;) {
-      const r = await docker(exec, ['exec', sidecarId, 'cat', '/proc/net/tcp', '/proc/net/tcp6']);
+      const r = await docker(setupExec, ['exec', sidecarId, 'cat', '/proc/net/tcp', '/proc/net/tcp6']);
       if (r.ok) seen = listeningPortsFromProcNet(r.out);
       if (want.every((p) => seen.has(p))) break;
       if (Date.now() >= deadline) {
@@ -528,7 +540,7 @@ export async function startBenchEgress(cfg: BenchEgressConfig): Promise<BenchEgr
             ` — logs: ${(logs.out + logs.err).trim().slice(0, 500)}`,
         );
       }
-      await sleep(readyPollMs);
+      await sleep(Math.min(readyPollMs, Math.max(0, deadline - Date.now())));
     }
   } catch (e) {
     const report = await stop();
@@ -559,11 +571,15 @@ export async function startBenchEgress(cfg: BenchEgressConfig): Promise<BenchEgr
       const network = `${prefix}-t${++seq}-${dockerSafe(tag, 20)}`;
       const created = await docker(exec, ['network', 'create', '--internal', '--label', label, network]);
       if (!created.ok) {
+        const cleanup = await docker(exec, ['network', 'rm', network]);
         networksInUse--;
-        throw new Error(`bench-egress: network create ${network} failed — ${created.err}`);
+        throw new Error(`bench-egress: network create ${network} failed — ${created.err}` +
+          (!cleanup.ok && !isMissingDockerNetwork(cleanup.err) ? ` (cleanup: ${cleanup.err})` : ''));
       }
       const joined = await docker(exec, ['network', 'connect', '--alias', BENCH_EGRESS_ALIAS, network, sidecarId]);
       if (!joined.ok) {
+        // The daemon may have connected it even if the command receipt was lost.
+        await docker(exec, ['network', 'disconnect', '-f', network, sidecarId]);
         await docker(exec, ['network', 'rm', network]);
         networksInUse--;
         throw new Error(`bench-egress: sidecar could not join ${network} — ${joined.err}`);

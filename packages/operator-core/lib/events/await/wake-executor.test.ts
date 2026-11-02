@@ -2404,6 +2404,53 @@ describe('executeWake — queued loop-fire lifecycle gate (EI-21157954408185498)
     }
   });
 
+  it.each([
+    ['cancelled-before-write', { kind: 'drop' }],
+    ['cancel-requested', { kind: 'park', hostCommitPending: true }],
+    ['delivery-already-committed', { kind: 'delivered', channel: 'psu-socket-inject' }],
+  ] as const)(
+    'respects the host write boundary when an ended loop delivery was previously accepted (%s)',
+    async (reason, expected) => {
+      const injectPsuHostWithConfirmation = vi.fn(async (
+        _sock: unknown,
+        _request: Record<string, unknown>,
+      ) => ({
+        ok: reason === 'cancelled-before-write',
+        confirmation: 'acked' as const,
+        reason,
+      }));
+      const d = deps({
+        findPsuHost: vi.fn(() => ({
+          id: 'pty-loop',
+          ownerId: 'su-abc',
+          sock: 'host-sock',
+          caps: ['delivery-cancel'],
+        })) as never,
+        injectPsuHostWithConfirmation: injectPsuHostWithConfirmation as never,
+        getLoopStatusFn: vi.fn(async () => null) as never,
+      });
+      const delivery = work({
+        id: 782699,
+        payload: loopPayload,
+        attempts: 2,
+        lastError: 'psu-host accepted: delivery accepted before turn-start proof; retry remains durable',
+      });
+
+      const out = await executeWake(delivery, d);
+
+      expect(out).toMatchObject(expected);
+      expect(injectPsuHostWithConfirmation).toHaveBeenCalledTimes(1);
+      expect(injectPsuHostWithConfirmation.mock.calls[0]?.[1]).toMatchObject({
+        mode: 'delivery-cancel',
+        ownerId: 'su-abc',
+        deliveryId: '782699',
+      });
+      expect(d.findPsuHost).toHaveBeenCalledWith('su-abc');
+      expect(d.injectPsuHost).not.toHaveBeenCalled();
+      expect(d.write).not.toHaveBeenCalled();
+    },
+  );
+
   // EI-21393930883750326: the drop verdict is composition-aware. An ended loop
   // fire folded beside a NON-loop sibling (the await → loop:end parking
   // incident: await 93491's work-item:claimable fire rode in delivery #166616
@@ -6475,7 +6522,7 @@ describe('executeWake — turn-provenance tagging (turn-provenance-owner-vs-agen
     await executeWake(
       work({ wakeHandle: advHandle(), payload: { carry: 'cold', wakeCount: 1, harness: 'papercusp' } }),
       deps({
-        findPsuHost: vi.fn(() => ({ sock: '/tmp/psu-pty/x.sock' })) as never,
+        findPsuHost: vi.fn(() => ({ sock: '/tmp/psu-pty/x.sock', caps: ['reset-reanchor-v1'] })) as never,
         injectPsuHost: injectPsuHost as never,
         coldAutoEnabled: vi.fn(async () => true),
         getLoopCarryNoteFn: vi.fn(async () => '## Next action\nresume'),
@@ -6509,7 +6556,7 @@ describe('executeWake — turn-provenance tagging (turn-provenance-owner-vs-agen
     await executeWake(
       work({ wakeHandle: advHandle(), payload: { carry: 'cold', wakeCount: 1, harness: 'papercusp' } }),
       deps({
-        findPsuHost: vi.fn(() => ({ sock: '/tmp/psu-pty/x.sock' })) as never,
+        findPsuHost: vi.fn(() => ({ sock: '/tmp/psu-pty/x.sock', caps: ['reset-reanchor-v1'] })) as never,
         injectPsuHost: vi.fn(async () => true) as never,
         coldAutoEnabled: vi.fn(async () => true),
         getLoopCarryNoteFn: vi.fn(async () => '## Next action\nresume'),
@@ -6541,7 +6588,7 @@ describe('executeWake — turn-provenance tagging (turn-provenance-owner-vs-agen
     const out = await executeWake(
       work({ wakeHandle: advHandle(), payload: { carry: 'cold', wakeCount: 1, harness: 'papercusp' } }),
       deps({
-        findPsuHost: vi.fn(() => ({ sock: '/tmp/psu-pty/x.sock' })) as never,
+        findPsuHost: vi.fn(() => ({ sock: '/tmp/psu-pty/x.sock', caps: ['reset-reanchor-v1'] })) as never,
         injectPsuHost: injectPsuHost as never,
         coldAutoEnabled: vi.fn(async () => true),
         getLoopCarryNoteFn: vi.fn(async () => '## Next action\nresume'),
@@ -6602,7 +6649,7 @@ describe('executeWake — turn-provenance tagging (turn-provenance-owner-vs-agen
         payload: { carry: 'cold', wakeCount: 1, harness: 'papercusp', routineId: 'routine-cold-2' },
       }),
       deps({
-        findPsuHost: vi.fn(() => ({ sock: '/tmp/psu-pty/x.sock' })) as never,
+        findPsuHost: vi.fn(() => ({ sock: '/tmp/psu-pty/x.sock', caps: ['reset-reanchor-v1'] })) as never,
         injectPsuHost: vi.fn(async () => true) as never,
         coldAutoEnabled: vi.fn(async () => true),
         getLoopCarryNoteFn: vi.fn(async () => '## Next action\nresume'),
@@ -6637,7 +6684,7 @@ describe('executeWake — turn-provenance tagging (turn-provenance-owner-vs-agen
         payload: { carry: 'cold', wakeCount: 1, harness: 'papercusp', routineId: 'routine-cold-3' },
       }),
       deps({
-        findPsuHost: vi.fn(() => ({ sock: '/tmp/psu-pty/x.sock' })) as never,
+        findPsuHost: vi.fn(() => ({ sock: '/tmp/psu-pty/x.sock', caps: ['reset-reanchor-v1'] })) as never,
         injectPsuHost: injectPsuHost as never,
         coldAutoEnabled: vi.fn(async () => true),
         getLoopCarryNoteFn: vi.fn(async () => '## Next action\nresume'),
@@ -6750,7 +6797,7 @@ describe('executeWake — psu-host cold-auto fork (su-cold-auto-mode-2026-07-03 
   // a carry-note present). Individual cases override to exercise each gate.
   const coldDeps = (over: Partial<ExecuteWakeDeps> = {}): ExecuteWakeDeps =>
     deps({
-      findPsuHost: vi.fn(() => ({ sock: '/tmp/psu-pty/cold.sock' })) as never,
+      findPsuHost: vi.fn(() => ({ sock: '/tmp/psu-pty/cold.sock', caps: ['reset-reanchor-v1'] })) as never,
       injectPsuHost: vi.fn(async () => true) as never,
       coldAutoEnabled: vi.fn(async () => true),
       getLoopCarryNoteFn: vi.fn(async () => '## Next action\nresume the wiring'),
@@ -7572,6 +7619,21 @@ describe('executeWake — psu-host cold-auto fork (su-cold-auto-mode-2026-07-03 
     expect((injectPsuHost.mock.calls[0] as unknown as [string, { mode: string }])[1].mode).toBe('recycle');
   });
 
+  it('uses full recycle for a cold wake when the host lacks reset-reanchor-v1', async () => {
+    const injectPsuHost = vi.fn(async () => true);
+    const out = await executeWake(
+      work({ wakeHandle: advHandle(), payload: coldPayload({ wakeCount: 1 }) }),
+      coldDeps({
+        findPsuHost: vi.fn(() => ({ sock: '/tmp/psu-pty/legacy.sock', caps: [] })) as never,
+        injectPsuHost: injectPsuHost as never,
+      }),
+    );
+    expect(out).toEqual({ kind: 'delivered', channel: 'psu-socket-recycle' });
+    const [, msg] = injectPsuHost.mock.calls[0] as unknown as [string, { mode: string; data: string }];
+    expect(msg.mode).toBe('recycle');
+    expect(msg.data).toContain('## Next action\nresume the wiring');
+  });
+
   it('the handle-less always-armed branch forks cold too (both inject sites wired, not just the main one)', async () => {
     const out = await executeWake(work({ wakeHandle: null, payload: coldPayload() }), coldDeps());
     expect(out).toEqual({ kind: 'delivered', channel: 'psu-socket-reset' });
@@ -7657,7 +7719,7 @@ describe('executeWake — P-021 verdict-gated cold-by-default (deterministic-con
     harness: 'papercusp',
     ...over,
   });
-  const hostView = { sock: '/tmp/psu-pty/p021.sock', bridgeTty: false, lastInputAt: null };
+  const hostView = { sock: '/tmp/psu-pty/p021.sock', bridgeTty: false, lastInputAt: null, caps: ['reset-reanchor-v1'] };
   const p021Deps = (over: Partial<ExecuteWakeDeps> = {}): ExecuteWakeDeps =>
     deps({
       findPsuHost: vi.fn(() => ({ ...hostView })) as never,

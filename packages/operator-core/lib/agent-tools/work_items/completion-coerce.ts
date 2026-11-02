@@ -35,6 +35,29 @@
 
 /** CompletionRecord prose fields that are arrays of strings (a lone scalar → `[scalar]`). */
 const ARRAY_FIELDS = ['whatLanded', 'migrations', 'deferred'] as const;
+
+const NO_DEFERRED_WORK_SENTINELS = new Set([
+  'none',
+  'n/a',
+  'na',
+  '-',
+  'nothing',
+  'nothing deferred',
+]);
+
+export function normalizeDeferred(value: string | string[] | undefined): string[] | undefined;
+export function normalizeDeferred(value: unknown): unknown;
+export function normalizeDeferred(value: unknown): unknown {
+  const entries =
+    typeof value === 'string' ? [value] : Array.isArray(value) ? value : undefined;
+  if (!entries) return value;
+  return entries.filter((entry) => {
+    if (typeof entry !== 'string') return true;
+    const normalized = entry.trim().toLowerCase();
+    return normalized.length > 0 && !NO_DEFERRED_WORK_SENTINELS.has(normalized);
+  });
+}
+
 /** CompletionRecord fields that are plain strings (an array → joined). */
 const STRING_FIELDS = [
   'summary',
@@ -523,6 +546,7 @@ export function coerceCompletionShape(raw: unknown): unknown {
       out[f] = [val];
     }
   }
+  out.deferred = normalizeDeferred(out.deferred);
 
   // `filesChanged` is path-only, so it has a stricter scalar rescue than the
   // prose arrays above: common list delimiters become distinct paths. This also

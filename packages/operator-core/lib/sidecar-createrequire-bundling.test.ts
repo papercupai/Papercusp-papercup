@@ -197,6 +197,19 @@ describe.skipIf(!existsSync(BUILD_SCRIPT))('desktop sidecar createRequire bundli
     expect([...found.keys()].sort()).toEqual(expect.arrayContaining(['luxon', 'rrule']));
   });
 
+  it('keeps the boot authority parser in the production install closure', () => {
+    // Copying the parser into a packaged sidecar does not protect an unbundled
+    // host installed with --omit=dev. Its import runs before the host can boot.
+    const guard = readFileSync(join(LIB_DIR, 'agent-tools/plans/plan-execution-guard.ts'), 'utf8');
+    expect(createRequireSpecifiers(guard)).toContain('shell-quote');
+    const manifest = JSON.parse(readFileSync(join(LIB_DIR, '../package.json'), 'utf8'));
+    const lock = JSON.parse(readFileSync(join(REPO_ROOT, 'package-lock.json'), 'utf8'));
+    const version = manifest.dependencies['shell-quote'];
+    expect(version).toBeTruthy();
+    expect(lock.packages['packages/operator-core'].dependencies['shell-quote']).toBe(version);
+    expect(lock.packages['node_modules/shell-quote'].dev).not.toBe(true);
+  });
+
   // POSITIVE CONTROL: live loaders in both forms are extracted — without it the
   // blindness control below passes vacuously on a dead extractor.
   it('extracts inline and aliased createRequire loaders written as live code', () => {

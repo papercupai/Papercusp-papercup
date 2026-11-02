@@ -136,6 +136,10 @@ export interface GateCandidateFailingFile {
 export interface GateCandidateFailures {
   candidateSha: string | null;
   repairHeadSha: string | null;
+  /** Exact clean CI run group that supplied the frozen-candidate population. */
+  candidateRunGroupId: string | null;
+  /** Exact completed run group selected for repairHead, or null when none matches that SHA. */
+  repairHeadRunGroupId: string | null;
   /**
    * DISTINCT test files the gate judged on this candidate — the AFFECTED RADIUS,
    * not the full suite. Read `scope` before quoting this anywhere.
@@ -406,6 +410,12 @@ function spawnBudgetSpent(path: string): Pick<
 export interface ReadGateCandidateFailuresOpts {
   candidateSha: string | null;
   repairHeadSha: string | null;
+  /** Exact clean CI group that produced the frozen-candidate test population. */
+  candidateRunGroupId?: string | null;
+  /** Exact completed clean CI group selected for this repairHead SHA. */
+  repairHeadRunGroupId?: string | null;
+  /** True only when the live checkpoint run authoritatively names this exact repairHead. */
+  repairHeadVerificationInFlight?: boolean;
   /** Repo root the blob comparisons resolve against. */
   root: string;
   /** Submodule prefixes (from `submodulePaths()`), so a gitlink move is not misread. */
@@ -459,10 +469,14 @@ function unavailable(
   // a null subtree is what made the cell's declared evidence paths vanish (C2).
   nonTestLegs: GateCandidateFailures['nonTestLegs'],
   nonTestLegsMeasured: GateCandidateFailures['nonTestLegsMeasured'],
+  candidateRunGroupId: string | null = null,
+  repairHeadRunGroupId: string | null = null,
 ): GateCandidateFailures {
   return {
     candidateSha,
     repairHeadSha,
+    candidateRunGroupId,
+    repairHeadRunGroupId,
     // ZEROES THAT ARE NOT MEASUREMENTS. They exist so the shape is stable for a reader
     // that destructures blindly; `assessment` and `unavailable` are what say they mean
     // nothing. This is the one place this module could manufacture a reassuring number,
@@ -1020,10 +1034,11 @@ async function compareOne(
 async function runsAtRepairHead(
   sql: ReturnType<typeof getOrgPg>['sql'],
   repairHeadSha: string,
+  repairHeadRunGroupId: string | null,
   paths: readonly string[],
 ): Promise<Map<string, { status: string; runId: number }>> {
   const out = new Map<string, { status: string; runId: number }>();
-  if (paths.length === 0) return out;
+  if (!repairHeadRunGroupId || paths.length === 0) return out;
   const rows = await sql<Array<{ file_path: string; status: string; id: string | number }>>`
     WITH repair_head_runs AS (
       SELECT file_path, status, finished_at, id
@@ -1031,6 +1046,7 @@ async function runsAtRepairHead(
        WHERE source = 'ci'
          AND worktree_dirty = false
          AND commit_sha = ${repairHeadSha}
+         AND run_group_id = ${repairHeadRunGroupId}
          AND file_path = ANY(${paths as string[]}::text[])
          AND status IN ('pass', 'fail', 'error')
     )
@@ -1085,6 +1101,8 @@ export async function readGateCandidateFailures(
 ): Promise<GateCandidateFailures> {
   const candidateSha = opts.candidateSha?.trim() || null;
   const repairHeadSha = opts.repairHeadSha?.trim() || null;
+  const candidateRunGroupId = opts.candidateRunGroupId?.trim() || null;
+  const repairHeadRunGroupId = opts.repairHeadRunGroupId?.trim() || null;
   // WI-2143253: pure and cheap — compute once, thread through every return path
   // (including the unavailable ones below) rather than only the success path.
   // P-012 / C2: measured-ness is derived from whether a SNAPSHOT exists, never from the
@@ -1103,6 +1121,8 @@ export async function readGateCandidateFailures(
       'unmeasured',
       nonTestLegs,
       nonTestLegsMeasured,
+      candidateRunGroupId,
+      repairHeadRunGroupId,
     );
   }
   if (!candidateSha) {
@@ -1113,6 +1133,32 @@ export async function readGateCandidateFailures(
       'no-frozen-candidate',
       nonTestLegs,
       nonTestLegsMeasured,
+      candidateRunGroupId,
+      repairHeadRunGroupId,
+    );
+  }
+  if (!candidateRunGroupId) {
+    return unavailable(
+      'no exact candidate run group — same-commit rows cannot be separated from stale runs, so candidate failures are UNMEASURED.',
+      candidateSha,
+      repairHeadSha,
+      'unmeasured',
+      nonTestLegs,
+      nonTestLegsMeasured,
+      candidateRunGroupId,
+      repairHeadRunGroupId,
+    );
+  }
+  if (opts.repairHeadVerificationInFlight) {
+    return unavailable(
+      'an exact repairHead verification is in flight; prior test_runs rows are not a current verdict.',
+      candidateSha,
+      repairHeadSha,
+      'unmeasured',
+      nonTestLegs,
+      nonTestLegsMeasured,
+      candidateRunGroupId,
+      repairHeadRunGroupId,
     );
   }
 
@@ -1132,7 +1178,8 @@ export async function readGateCandidateFailures(
           FROM harness_shared.test_runs
          WHERE source = 'ci'
            AND worktree_dirty = false
-           AND commit_sha = ${candidateSha}`,
+           AND commit_sha = ${candidateSha}
+           AND run_group_id = ${candidateRunGroupId}`,
       // DISTINCT ON keeps only each file's LATEST attempt: a gate retry writes a second
       // row, and counting the superseded attempt forever is how a fixed file keeps
       // reading as red.
@@ -1143,6 +1190,7 @@ export async function readGateCandidateFailures(
            WHERE source = 'ci'
              AND worktree_dirty = false
              AND commit_sha = ${candidateSha}
+             AND run_group_id = ${candidateRunGroupId}
         ), latest AS (
           SELECT DISTINCT ON (file_path) file_path, status
             FROM candidate_runs
@@ -1163,6 +1211,8 @@ export async function readGateCandidateFailures(
       'unmeasured',
       nonTestLegs,
       nonTestLegsMeasured,
+      candidateRunGroupId,
+      repairHeadRunGroupId,
     );
   }
 
@@ -1184,6 +1234,7 @@ export async function readGateCandidateFailures(
       atHead = await runsAtRepairHead(
         opts.sql ?? getOrgPg().sql,
         repairHeadSha,
+        repairHeadRunGroupId,
         rows.map((r) => r.file_path),
       );
     } catch {
@@ -1268,6 +1319,8 @@ export async function readGateCandidateFailures(
   return {
     candidateSha,
     repairHeadSha,
+    candidateRunGroupId,
+    repairHeadRunGroupId,
     filesJudged,
     distinctFailingFiles: rendered,
     failingFileCount: failing.length,

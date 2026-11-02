@@ -1,4 +1,4 @@
-import { papercuspPath } from '@papercusp/host-platform/home';
+import { papercuspHome, papercuspPath } from '@papercusp/host-platform/home';
 /**
  * Cut one workspace-host release as a MANAGED operation: build, sign, evidence and publish on ONE
  * release task, journaled stage by stage (D-394, WI-10002539).
@@ -1062,7 +1062,7 @@ export async function reclaimWorkspaceHostCutIntermediatesWithProtection(
   const notExamined: string[] = [];
   if (!Number.isFinite(input.notAfterMs) || !Number.isFinite(nowMs)) throw new Error('workspace-host retention needs a finite deadline and snapshot time');
   let root: string;
-  try { root = realpathSync(join(input.home ?? homedir(), '.papercusp')); }
+  try { root = realpathSync(input.home === undefined ? papercuspHome() : papercuspHome({}, input.home)); }
   catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { ok: true, cuts }; throw error; }
   const remaining = () => {
     const ms = input.notAfterMs - Date.now();
@@ -1104,6 +1104,8 @@ export async function reclaimWorkspaceHostCutIntermediatesWithProtection(
         // Effects use the writer's uid, so census must retain foreign ownership
         // boundaries under that same authority before any marker is removed.
         includeRecent: true, retainAfterMs: -Infinity, timeoutMs: remaining(), requirePrivilege: false, sudo: null,
+        // This cutter removes atomic top-level groups; treat nested symlinks as group boundaries.
+        retainSymlinkDescendants: true,
         coversPinnedPath: isPinned.coversPath,
       });
       receipt.capsMeasurement = 'unavailable';

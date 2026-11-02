@@ -3,7 +3,7 @@
  * call; the relay half is REAL: unix sockets in a temp dir piping to a real loopback TCP server. The real-docker
  * path (sidecar, internal networks, isolation) is bench-egress.integration.test.ts.
  */
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { createServer, connect, type Server } from 'node:net';
 import { createServer as createHttpServer, request as httpRequest } from 'node:http';
 import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
@@ -371,7 +371,9 @@ describe('startBenchEgress', () => {
     const { egress, calls } = await start({ fail: ['network connect'] });
     calls.length = 0;
     await expect(egress.openTaskNetwork('t')).rejects.toThrow(/sidecar could not join/);
-    expect(calls.map((c) => c.args.slice(0, 2).join(' '))).toEqual(['network create', 'network connect', 'network rm']);
+    expect(calls.map((c) => c.args.slice(0, 2).join(' '))).toEqual([
+      'network create', 'network connect', 'network disconnect', 'network rm',
+    ]);
   });
 
   it('stop releases open task networks, then the sidecar, then the base network, then the relay; idempotent', async () => {
@@ -416,6 +418,39 @@ describe('startBenchEgress', () => {
     const tail = fake.calls.map((c) => c.args.slice(0, 2).join(' ')).slice(-3);
     expect(tail).toEqual(['logs --tail', 'rm -f', 'network rm']);
     expect((await import('node:fs')).readdirSync(workRoot).filter((n) => !before.has(n))).toEqual([]);
+  });
+
+  it('shares one startup deadline across Docker stages and gives cleanup a fresh command budget', async () => {
+    const fake = fakeDocker({ listen: [8788] });
+    const now = Date.now();
+    let elapsed = 0;
+    const budgets: { args: string[]; timeout: number | undefined }[] = [];
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() => now + elapsed);
+    const exec: ProcExec = async (cmd, args, opts) => {
+      budgets.push({ args, timeout: opts?.timeoutMs });
+      if (args[0] === 'network' && args[1] === 'create') elapsed += 60;
+      if (args[0] === 'run') elapsed += 40;
+      return fake.exec(cmd, args, opts);
+    };
+    try {
+      await expect(startBenchEgress({ runId: 'deadline', workRoot, exec, readyTimeoutMs: 100,
+        endpoints: [{ name: 'gw', listenPort: 8788, targetPort: upstreamPort }] }))
+        .rejects.toThrow(/not listening/);
+    } finally { clock.mockRestore(); }
+    expect(budgets.find(row => row.args[0] === 'run')?.timeout).toBe(40);
+    expect(budgets.filter(row => row.args[0] === 'exec')).toHaveLength(0);
+    expect(budgets.filter(row => row.args[0] === 'rm' || row.args[1] === 'rm')
+      .map(row => row.timeout)).toEqual([15_000, 15_000]);
+    expect((await import('node:fs')).readdirSync(workRoot)).toEqual([]);
+  });
+
+  it('removes an attempted base network when its creation receipt is lost', async () => {
+    const fake = fakeDocker({ fail: ['network create'] });
+    await expect(startBenchEgress({ runId: 'lost-base-receipt', workRoot, exec: fake.exec,
+      endpoints: [{ name: 'gw', listenPort: 8788, targetPort: upstreamPort }] }))
+      .rejects.toThrow(/network create/);
+    expect(fake.calls.at(-1)?.args.slice(0, 2)).toEqual(['network', 'rm']);
+    expect((await import('node:fs')).readdirSync(workRoot)).toEqual([]);
   });
 
   it('reclaims only old unattached labelled networks after IPAM exhaustion, then retries creation', async () => {

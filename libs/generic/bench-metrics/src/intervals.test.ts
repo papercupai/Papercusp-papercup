@@ -1,5 +1,201 @@
 import { describe, it, expect } from 'vitest';
-import { wilsonInterval, bootstrapMeanCI, meanStderr, pairedBootstrapCI, pairedRepositoryPowerPlan, mcnemarExact } from './intervals';
+import { wilsonInterval, bootstrapMeanCI, meanStderr, pairedBootstrapCI, pairedRepositoryPowerPlan, mcnemarExact, empiricalQuantile, baselineAutocorrelationBlocks, pairedBlockBootstrapCI, pairedRatioStatistic, prospectivePairedBlockPower, type PairedPowerComparison, type PairedTimeSeries } from './intervals';
+
+describe('exact ratio block acceleration', () => {
+  // The callback wrapper deliberately bypasses the optimized function identity.
+  // It independently materializes/sorts the SAME RNG's pairs in the old path.
+  const compare = (repeats: PairedTimeSeries[], metric: 'mean' | number, seed: number) => {
+    const fast = pairedRatioStatistic(metric);
+    const before = JSON.stringify(repeats);
+    const options = { familySize: 9, iterations: 10_000, seed };
+    const reference = pairedBlockBootstrapCI(repeats, (a, b) => fast(a, b), options);
+    expect(pairedBlockBootstrapCI(repeats, fast, options)).toEqual(reference);
+    expect(JSON.stringify(repeats)).toBe(before);
+  };
+
+  it.each(['mean', 0, 0.95, 0.99, 1] as const)('matches the materialized %s ratio on unequal repeats, ties and truncated circular blocks', metric => {
+    const repeats = [17, 23, 31].map((n, r) => ({ repeatId: `r${r}`, blockLength: [3, 8, 11][r],
+      a: Array.from({ length: n }, (_, i) => 0.3 + (i * 17 + r) % 19 / 7),
+      b: Array.from({ length: n }, (_, i) => 0.1 + (i * 11 + r) % 13 / 3) }));
+    for (const seed of [0, 871]) compare(repeats, metric, seed);
+  });
+
+  it('keeps unrepresentable statistics and sparse zero-denominator draws unknown', () => {
+    for (const metric of ['mean', 0.95] as const) for (const values of [[0, 0, 1], [1e308, 1e308], [-1e308, 1e308]]) {
+      compare([0, 1, 2].map(i => ({ repeatId: `r${i}`, a: values, b: values.map(x => x / 2), blockLength: 1 })), metric, 7);
+    }
+  });
+
+  it('preserves signed-zero semantics and rejects invalid estimands', () => {
+    for (const q of [0, 0.95, 1]) compare([0, 1, 2].map(i => ({ repeatId: `r${i}`, a: [1, 2], b: [-0, 0], blockLength: 1 })), q, 7);
+    expect(() => pairedRatioStatistic(NaN)).toThrow(RangeError);
+    expect(() => pairedRatioStatistic(1.01)).toThrow(RangeError);
+  });
+
+  it('preserves the complete prospective joint-power result under the accelerated production decision', () => {
+    const repeats = [0, 1, 2].map(i => ({ repeatId: `r${i}`, a: [10, 20], b: [10, 21], blockLength: 1 }));
+    const statistic = pairedRatioStatistic(0.95);
+    const base = { id: 'tail', repeats, direction: 'upper' as const, limit: 1.05 };
+    const scenarios = [{ id: 'unchanged', candidateScales: { tail: 1 } }];
+    const options = { simulations: 200, iterations: 10_000, seed: 87, maximumSampledPairs: 100_000_000 };
+    expect(prospectivePairedBlockPower([{ ...base, statistic }], scenarios, options))
+      .toEqual(prospectivePairedBlockPower([{ ...base, statistic: (a, b) => statistic(a, b) }], scenarios, options));
+  }, 30_000);
+});
+
+describe('prospectivePairedBlockPower', () => {
+  // Synthetic tiny fixtures exercise the engine, never the runtime sample floor.
+  const repeats = [0, 1, 2].map(i => ({ repeatId: `r${i}`, a: [10], b: [10], blockLength: 1 }));
+  const ratio = (a: readonly number[], b: readonly number[]) => empiricalQuantile(b, 0.95)! / empiricalQuantile(a, 0.95)!;
+  const family = (): PairedPowerComparison[] => [{ id: 'p95', repeats, statistic: ratio, direction: 'upper', limit: 1.05 }];
+  const options = { simulations: 200, iterations: 10_000, seed: 123, maximumSampledPairs: 100_000_000 };
+
+  it('powers the production CI jointly under explicit alternatives, retaining worst-scenario power', () => {
+    const result = prospectivePairedBlockPower(family(), [
+      { id: 'unchanged', candidateScales: { p95: 1 } }, { id: 'regressed', candidateScales: { p95: 1.2 } },
+    ], options);
+    expect(result).toMatchObject({ status: 'estimated', scenarios: [
+      { id: 'unchanged', jointPasses: 200 }, { id: 'regressed', jointPasses: 0 },
+    ], lowerPowerBound: 0 });
+    if (result.status === 'estimated') expect(result.scenarios[0].lowerPowerBound).toBeGreaterThan(0.8);
+  }, 30_000);
+
+  it('does not turn high marginal power into a joint family pass', () => {
+    const all = [...family(), { id: 'rate', repeats, statistic: ratio, direction: 'lower' as const, limit: 0.95 }];
+    const result = prospectivePairedBlockPower(all, [{ id: 'one-bad-member', candidateScales: { p95: 1, rate: 0.8 } }], options);
+    expect(result).toMatchObject({ status: 'estimated', scenarios: [{ jointPasses: 0 }], lowerPowerBound: 0 });
+  }, 30_000);
+
+  it('replays exactly and preserves baseline inputs', () => {
+    const before = JSON.stringify(repeats);
+    const scenarios = [{ id: 'unchanged', candidateScales: { p95: 1 } }];
+    expect(prospectivePairedBlockPower(family(), scenarios, options)).toEqual(prospectivePairedBlockPower(family(), scenarios, options));
+    expect(JSON.stringify(repeats)).toBe(before);
+  }, 30_000);
+
+  it('refuses incomplete, unaligned or unaffordable designs before running', () => {
+    const scenarios = [{ id: 'unchanged', candidateScales: { p95: 1 } }];
+    expect(prospectivePairedBlockPower(family(), scenarios, { ...options, maximumSampledPairs: 1 })).toEqual({ status: 'unknown', reason: 'prospective-computation-budget' });
+    const changed = [...family(), { ...family()[0], id: 'other', repeats: repeats.map(r => ({ ...r, repeatId: `${r.repeatId}-different` })) }];
+    expect(prospectivePairedBlockPower(changed, [{ id: 'x', candidateScales: { p95: 1, other: 1 } }], options)).toMatchObject({ status: 'unknown', reason: 'unaligned-comparison-manifest' });
+    const aligned = [1, 2].map(blockLength => ({ ...family()[0], id: `m${blockLength}`,
+      repeats: repeats.map(r => ({ ...r, a: [10, 20], b: [10, 20], blockLength })) }));
+    expect(prospectivePairedBlockPower(aligned, [{ id: 'x', candidateScales: { m1: 1, m2: 1 } }], { ...options, maximumSampledPairs: 1 }))
+      .toMatchObject({ status: 'unknown', reason: 'prospective-computation-budget' });
+    expect(prospectivePairedBlockPower(family(), [{ id: 'x', candidateScales: {} }], options)).toMatchObject({ status: 'unknown', reason: 'invalid-prospective-alternative' });
+    expect(() => prospectivePairedBlockPower(family(), scenarios, { ...options, simulations: 199 })).toThrow(RangeError);
+    expect(() => prospectivePairedBlockPower(family(), scenarios, { ...options, iterations: 9999 })).toThrow(RangeError);
+  });
+});
+
+describe('baselineAutocorrelationBlocks', () => {
+  it('treats a constant baseline as a measured diagnostic, never an independence/power claim', () => {
+    expect(baselineAutocorrelationBlocks(Array(100).fill(4))).toMatchObject({ status: 'measured', blockLength: 1, lastDetectedLag: 0, maximumLag: 25 });
+  });
+  it('requires more baseline data when time dependence remains unresolved', () => {
+    const trend = Array.from({ length: 1000 }, (_, i) => i);
+    expect(baselineAutocorrelationBlocks(trend)).toEqual({ status: 'unknown', reason: 'unresolved-baseline-autocorrelation' });
+    expect(baselineAutocorrelationBlocks(trend, 0.95).status).toBe('unknown');
+    expect(baselineAutocorrelationBlocks([]).status).toBe('unknown');
+    expect(baselineAutocorrelationBlocks(Array(100).fill(NaN)).status).toBe('unknown');
+  });
+});
+
+describe('empiricalQuantile', () => {
+  it('uses type-7 interpolation rather than nearest rank, preserving the input', () => {
+    const values = [40, 10, 30, 20];
+    expect(empiricalQuantile(values, 0.95)).toBeCloseTo(38.5);
+    expect(empiricalQuantile(values, 0)).toBe(10);
+    expect(empiricalQuantile(values, 1)).toBe(40);
+    expect(values).toEqual([40, 10, 30, 20]);
+  });
+
+  it('keeps missing/nonfinite data unknown instead of deleting it or returning zero', () => {
+    for (const values of [[], [1, NaN], [Infinity], Array(2), [-1e308, 1e308]]) expect(empiricalQuantile(values, 0.99)).toBeNull();
+    expect(empiricalQuantile([0], 0.99)).toBe(0);
+    expect(() => empiricalQuantile([1], NaN)).toThrow(RangeError);
+    expect(() => empiricalQuantile([1], 1.1)).toThrow(RangeError);
+  });
+});
+
+describe('pairedBlockBootstrapCI', () => {
+  const repeats: PairedTimeSeries[] = [0, 1, 2].map(k => ({
+    repeatId: `repeat-${k}`, a: [1, 2, 3, 4].map(x => x + 10 * k),
+    b: [1, 2, 3, 4].map(x => 2 * (x + 10 * k)), blockLength: 2,
+  }));
+  const ratio = (a: readonly number[], b: readonly number[]) => empiricalQuantile(b, 0.95)! / empiricalQuantile(a, 0.95)!;
+
+  it('retains pairing even with heterogeneous independent repeats and is reproducible', () => {
+    const first = pairedBlockBootstrapCI(repeats, ratio, { familySize: 9, seed: 8 });
+    expect(first).toEqual(pairedBlockBootstrapCI(repeats, ratio, { familySize: 9, seed: 8 }));
+    expect(first).toMatchObject({ status: 'measured', pairs: 12, independentRepeats: 3, iterations: 10_000,
+      interval: { point: 2, lower: 2, upper: 2 }, familyConfidence: 0.95 });
+  });
+
+  it('draws complete paired time blocks within repeats and resamples whole repeat identities', () => {
+    let calls = 0;
+    const selected = new Set<number>();
+    const result = pairedBlockBootstrapCI(repeats, (a, b) => {
+      calls++;
+      if (calls > 1) {
+        let identityPattern = 0;
+        for (let offset = 0; offset < a.length; offset += 4) {
+          const group = Math.floor((a[offset] - 1) / 10);
+          identityPattern = identityPattern * 3 + group;
+          for (let j = 0; j < 4; j++) expect(Math.floor((a[offset + j] - 1) / 10)).toBe(group);
+          for (const j of [0, 2]) expect((a[offset + j + 1] - 1) % 10).toBe(((a[offset + j] - 1) % 10 + 1) % 4);
+        }
+        selected.add(identityPattern);
+      }
+      for (let i = 0; i < a.length; i++) expect(b[i]).toBe(2 * a[i]);
+      return ratio(a, b);
+    }, { familySize: 1 });
+    expect(result.status).toBe('measured');
+    expect(calls).toBe(10_001);
+    expect(selected.size).toBe(27);
+  });
+
+  it('widens intervals for the complete comparison family instead of pointwise confidence', () => {
+    const noisy = repeats.map(r => ({ ...r, b: r.b.map((x, i) => x + i * 3) }));
+    const pointwise = pairedBlockBootstrapCI(noisy, ratio, { familySize: 1 });
+    const family = pairedBlockBootstrapCI(noisy, ratio, { familySize: 10 });
+    if (pointwise.status !== 'measured' || family.status !== 'measured') throw new Error('expected measured interval');
+    expect(family.comparisonAlpha).toBeCloseTo(0.005);
+    expect(family.interval.lower).toBeLessThanOrEqual(pointwise.interval.lower);
+    expect(family.interval.upper).toBeGreaterThanOrEqual(pointwise.interval.upper);
+    expect(pairedBlockBootstrapCI(noisy, ratio, { familySize: 1000 })).toEqual({ status: 'unknown', reason: 'insufficient-bootstrap-tail-resolution' });
+  });
+
+  it('never discards an undefined bootstrap outcome', () => {
+    let calls = 0;
+    expect(pairedBlockBootstrapCI(repeats, () => ++calls === 4 ? null : 1, { familySize: 1 }))
+      .toEqual({ status: 'unknown', reason: 'undefined-bootstrap-statistic' });
+    expect(pairedBlockBootstrapCI(repeats, () => NaN, { familySize: 1 })).toEqual({ status: 'unknown', reason: 'undefined-observed-statistic' });
+  });
+
+  it('reports unmeasured, unpaired and unidentifiable repeats explicitly', () => {
+    const unknown: PairedTimeSeries[][] = [[], repeats.slice(0, 1),
+      [{ ...repeats[0], a: [] }, repeats[1]], [{ ...repeats[0], b: [1] }, repeats[1]],
+      [{ ...repeats[0], a: [NaN, 2, 3, 4] }, repeats[1]],
+      [{ ...repeats[0], a: Array(4) }, repeats[1]],
+      [repeats[0], repeats[0]], [{ ...repeats[0], repeatId: '' }, repeats[1]],
+      [{ ...repeats[0], blockLength: 0 }, repeats[1]], [{ ...repeats[0], blockLength: 5 }, repeats[1]],
+    ];
+    for (const series of unknown) expect(pairedBlockBootstrapCI(series, ratio, { familySize: 1 }).status).toBe('unknown');
+  });
+
+  it('supports unequal repeats and partial final blocks without changing source observations', () => {
+    const unequal = [repeats[0], { ...repeats[1], a: [10, 11, 12], b: [20, 22, 24] }];
+    const before = structuredClone(unequal);
+    expect(pairedBlockBootstrapCI(unequal, ratio, { familySize: 1 })).toMatchObject({ status: 'measured', pairs: 7, interval: { lower: 2, upper: 2 } });
+    expect(unequal).toEqual(before);
+  });
+
+  it.each([{ familySize: 0 }, { familySize: 1, iterations: 9999 }, { familySize: 1, seed: 0.5 }, { familySize: 1, familyConfidence: 1 }])
+    ('refuses malformed or underresolved controls %j', options => {
+      expect(() => pairedBlockBootstrapCI(repeats, ratio, options)).toThrow(RangeError);
+    });
+});
 
 describe('pairedRepositoryPowerPlan', () => {
   const controls = { minimumEffect: 0.2, alpha: 0.05, power: 0.8 };

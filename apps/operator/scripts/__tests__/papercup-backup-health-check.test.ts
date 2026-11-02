@@ -147,7 +147,10 @@ describe('papercup-backup-health-check.sh', () => {
       const nodeShim = join(bin, 'node');
       writeFileSync(nodeShim, [
         '#!/usr/bin/env sh',
-        'if [ "$2" = "coord:send" ]; then',
+        'if [ "$1" = "-e" ]; then',
+        '  exec "$REAL_NODE" "$@"',
+        'fi',
+        'if [ "$1" = "scripts/mcp-call.mjs" ] && [ "$2" = "coord:send" ]; then',
         '  printf "%s" "$3" > "$CAPTURE_PAYLOAD"',
         'fi',
         'exit 0',
@@ -164,6 +167,7 @@ describe('papercup-backup-health-check.sh', () => {
         env: {
           ...process.env,
           PATH: `${bin}:${process.env.PATH ?? ''}`,
+          REAL_NODE: process.execPath,
           CAPTURE_PAYLOAD: capture,
           PAPERCUSP_HOST_PG_DUMP_DIR: dump,
         },

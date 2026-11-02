@@ -39,6 +39,13 @@ function runAssertion(assertionSource: string, useBashC = false, command?: strin
   // their real behavior is covered by their own canonical suites/native rig.
   mkdirSync(join(dir, 'scripts/lib'), { recursive: true });
   mkdirSync(join(dir, 'papercusp-desktop/bin/lib'), { recursive: true });
+  const tauri = join(dir, 'papercusp-desktop/node_modules/.bin/tauri');
+  mkdirSync(join(dir, 'papercusp-desktop/node_modules/.bin'), { recursive: true });
+  // Satisfy the executable-install preflight without borrowing the real CLI.
+  // Any accidental native launch still fails the existing invocation assertions.
+  writeFileSync(tauri,
+    '#!/usr/bin/env bash\nprintf "tauri invoked\\n" >> "$VERIFY_TEST_INVOCATIONS"\nexit 0\n');
+  chmodSync(tauri, 0o755);
   writeFileSync(join(dir, 'scripts/lib/committed-source-loader.mjs'), '');
   writeFileSync(join(dir, 'scripts/restricted-hold-tree-gate.mjs'), 'process.exit(0);\n');
   writeFileSync(join(dir, 'scripts/lib/spa-require-built.sh'), '');

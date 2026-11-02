@@ -228,6 +228,7 @@ export function ReportsLibrary() {
   const kind = kinds.find(k => k === state.kind);
   const vis = visibility.find(v => v === state.vis);
   const subject = subjects.find(s => s === subjectKind);
+  const libraryRequestClass = state.sel ? 'background-sync' : 'foreground-read';
   const since = state.since && !Number.isNaN(Date.parse(state.since)) ? new Date(state.since).toISOString() : undefined;
   const library = useSyncQuery<Summary>({ queryName: 'reports.list', args: {
     ...(kind ? { kind } : {}), ...(vis ? { visibility: vis } : {}),
@@ -235,12 +236,13 @@ export function ReportsLibrary() {
     ...(state.pot ? { originHarnessSlug: state.pot } : {}), ...(state.q ? { query: state.q } : {}),
     ...(state.tag ? { tags: state.tag.split(',').map(t => t.trim()).filter(Boolean) } : {}),
     ...(since ? { since } : {}), limit: 200,
-  } });
+  }, requestClass: libraryRequestClass });
   // One bounded catalog supplies real subjects and counts, independent of the
   // current filters. At the query ceiling these are explicitly lower bounds.
-  const catalog = useSyncQuery<Summary>({ queryName: 'reports.list', args: { limit: 200 } });
-  const preferences = useSyncQuery<{ payload: Record<string, unknown> }>({ queryName: 'userPreferences.current' });
-  const detail = useSyncQuery<Full>({ queryName: 'reports.get', args: { reportId: state.sel || '__none__' }, enabled: !!state.sel });
+  const catalog = useSyncQuery<Summary>({ queryName: 'reports.list', args: { limit: 200 }, requestClass: libraryRequestClass });
+  const preferences = useSyncQuery<{ payload: Record<string, unknown> }>({ queryName: 'userPreferences.current', requestClass: libraryRequestClass });
+  const detail = useSyncQuery<Full>({ queryName: 'reports.get', args: { reportId: state.sel || '__none__' },
+    enabled: !!state.sel, requestClass: 'interactive-control' });
   // A disabled or changing subscription may still hold its previous snapshot.
   const report = state.sel ? detail.data.find(row => row.report_id === state.sel) : undefined;
   const marked = useRef(new Set<string>());

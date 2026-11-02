@@ -14,7 +14,7 @@ import {
   executeDurableReaction as genericExecuteDurableReaction,
   type DurableReactionPayload as GenericDurableReactionPayload,
 } from '@papercusp/event-reaction';
-import { fireReactionInProcess } from './dispatch-reaction';
+import { fireReactionInProcess, reactionBackgroundActivityAllowed } from './dispatch-reaction';
 import { claimReaction, releaseReaction, markReactionFailed, reactionOutcome, completeReaction, markReactionUncertain } from './reaction-dedup';
 import type { SerializableReactionParent } from './reaction-id';
 
@@ -22,6 +22,10 @@ import type { SerializableReactionParent } from './reaction-id';
 export type DurableReactionPayload = GenericDurableReactionPayload<SerializableReactionParent>;
 
 export async function executeDurableReaction(payload: DurableReactionPayload): Promise<void> {
+  // Read at actual execution, not enqueue time. A queued or recovered reaction
+  // withheld by policy must not consume a claim or pretend an effect completed.
+  if (payload.parent.workspaceId
+    && !await reactionBackgroundActivityAllowed(payload.parent.workspaceId, payload.fire)) return;
   await genericExecuteDurableReaction(payload, {
     // The PG idempotency ledger (migration 153) — `harness_shared.event_reactions`.
     store: { claim: claimReaction, release: releaseReaction, markFailed: markReactionFailed,

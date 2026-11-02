@@ -136,17 +136,19 @@ export async function getInheritedGoalContext(
  * — the alternative (populate-once-then-keep, as the other lanes use) would pin
  * a recycled owner id to a goal that no longer owns it.
  *
- * Fail-soft: a launch must never fail because provenance could not be recorded.
- * Returns whether the write landed, so a caller can log the miss instead of
- * assuming success.
+ * Explicit null clears inherited context without changing the agent's own
+ * GOAL authority. An absent or blank id is not an explicit clearing request.
+ * Returns whether the narrow write landed; a caller that requires reconciliation
+ * must refuse process start on false rather than assume success.
  */
 export async function setInheritedGoalContext(
   workspaceId: string,
   ownerId: string,
-  goalId: string,
+  goalId: string | null,
   sql?: Sql,
 ): Promise<boolean> {
-  if (!workspaceId || workspaceId === '*' || !ownerId || !goalId) return false;
+  if (!workspaceId || workspaceId === '*' || !ownerId ||
+      (goalId !== null && (typeof goalId !== 'string' || !goalId.trim()))) return false;
   try {
     await pg(sql)`
       INSERT INTO harness_shared.session_briefs

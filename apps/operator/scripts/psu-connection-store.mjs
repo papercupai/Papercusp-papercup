@@ -18,9 +18,9 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
+import { papercuspHome } from "@papercusp/host-platform/home";
 import {
   AWS_CLI_PROFILE_PATTERN,
   AWS_EC2_INSTANCE_ID_PATTERN,
@@ -334,9 +334,7 @@ function validateStoredProfile(value) {
 export function defaultPsuConnectionStorePath(home) {
   // A private runtime home must also isolate saved machine credentials. An
   // explicit home remains the caller's override (tests and profile migration).
-  const root = home === undefined
-    ? process.env.PAPERCUSP_HOME?.trim() || join(homedir(), ".papercusp")
-    : join(home, ".papercusp");
+  const root = home === undefined ? papercuspHome() : papercuspHome({}, home);
   return join(root, "psu-connections.json");
 }
 

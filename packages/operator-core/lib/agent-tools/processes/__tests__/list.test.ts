@@ -137,6 +137,13 @@ describe('processes:list structured output', () => {
     expect(projected.agentRoles).toContain('mug');
   });
 
+  it('documents PID counts and PID arrays as distinct return fields', () => {
+    const returns = projected.guidance?.returns ?? '';
+    expect(returns).toContain('pids: number|null (PID count)');
+    expect(returns).toContain('livePids: number[]|null (PID array');
+    expect(returns).toContain('unaccountedGroups?: Array<{ pids: number[] (PID array) }>');
+  });
+
   it('accepts the singular state filter used by sibling task surfaces', async () => {
     const { listTasks } = await import('../../../task-manager/store');
     vi.mocked(listTasks).mockClear();
@@ -612,7 +619,12 @@ describe('processes:list structured output', () => {
 
   it('uses persisted sample timestamps and ignores repeated reads of the same CPU sample', async () => {
     const { listTasks } = await import('../../../task-manager/store');
-    const row = (cpuUsec: number, lastSeenAt: string): TaskRow => ({
+    const row = (
+      cpuUsec: number,
+      lastSeenAt: string,
+      cpuSampledAt = lastSeenAt,
+      rssSampledAt = lastSeenAt,
+    ): TaskRow => ({
       taskId: 'cpu-rate-task',
       workspaceId: 'default',
       rootTaskId: 'cpu-rate-task',
@@ -627,6 +639,8 @@ describe('processes:list structured output', () => {
       state: 'running',
       startedAt: '2026-08-24T09:00:00.000Z',
       lastSeenAt,
+      cpuSampledAt,
+      rssSampledAt,
       lastMemoryBytes: 1024,
       peakMemoryBytes: 2048,
       cpuUsec,
@@ -665,19 +679,25 @@ describe('processes:list structured output', () => {
         );
 
       vi.setSystemTime(sampleTime);
-      vi.mocked(listTasks).mockResolvedValueOnce([row(0, new Date(sampleTime).toISOString())]);
+      vi.mocked(listTasks).mockResolvedValueOnce([
+        row(0, new Date(sampleTime).toISOString(), new Date(sampleTime).toISOString()),
+      ]);
       const first = await read('processes-list-cpu-first');
 
       // The ledger still has the same metric sample ten seconds later. Request time
       // must not turn that cached counter into an apparently measured zero.
       vi.setSystemTime(sampleTime + 10_000);
-      vi.mocked(listTasks).mockResolvedValueOnce([row(0, new Date(sampleTime).toISOString())]);
+      vi.mocked(listTasks).mockResolvedValueOnce([
+        row(0, new Date(sampleTime + 10_000).toISOString(), new Date(sampleTime).toISOString()),
+      ]);
       const repeated = await read('processes-list-cpu-repeated');
 
       // A later persisted sample does provide a valid interval. Its sample timestamps,
       // rather than the much later request time, set the rate denominator.
       vi.setSystemTime(sampleTime + 20_000);
-      vi.mocked(listTasks).mockResolvedValueOnce([row(1_000_000, new Date(sampleTime + 1000).toISOString())]);
+      vi.mocked(listTasks).mockResolvedValueOnce([
+        row(1_000_000, new Date(sampleTime + 1000).toISOString(), new Date(sampleTime + 1000).toISOString()),
+      ]);
       const second = await read('processes-list-cpu-second');
 
       expect(first.ok, JSON.stringify(first)).toBe(true);
@@ -686,14 +706,22 @@ describe('processes:list structured output', () => {
       expect((first.result?.structuredContent as { tasks: Array<Record<string, unknown>> }).tasks[0]).toMatchObject({
         cpuSec: 0,
         cpuBusyPercent: null,
+        cpuSampleAgeSec: 0,
+        cpuSampleFreshness: 'current',
       });
       expect((repeated.result?.structuredContent as { tasks: Array<Record<string, unknown>> }).tasks[0]).toMatchObject({
         cpuSec: 0,
         cpuBusyPercent: null,
+        cpuSampleAgeSec: 10,
+        cpuSampleFreshness: 'stale',
+        rssSampleAgeSec: 0,
+        rssSampleFreshness: 'current',
       });
       expect((second.result?.structuredContent as { tasks: Array<Record<string, unknown>> }).tasks[0]).toMatchObject({
         cpuSec: 1,
         cpuBusyPercent: 100,
+        cpuSampleAgeSec: 19,
+        cpuSampleFreshness: 'current',
       });
     } finally {
       vi.useRealTimers();

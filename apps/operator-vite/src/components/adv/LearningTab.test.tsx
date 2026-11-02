@@ -2099,6 +2099,18 @@ describe("LearningTab — unified Signals views", () => {
     expect(screen.getByTestId("rubrics-panel")).toBeTruthy();
   });
 
+  it("opens an unscored rubric from its Learning URL selection without a list click", () => {
+    nuqsState.lview = "rubrics";
+    nuqsState.rrubric = "native-unknown-breakdown";
+    render(<LearningTab />);
+    expect(screen.getByTestId("rubrics-panel")).toBeTruthy();
+    expect(screen.getByLabelText("Rubric evidence")).toBeTruthy();
+    expect(screen.getByTestId("rubric-detail").textContent).toContain(
+      "native-unknown-breakdown",
+    );
+    expect(nuqsSetters.rrubric).not.toHaveBeenCalled();
+  });
+
   it("keeps a visited sync pane mounted when navigating to another stage", () => {
     nuqsState.lview = "pipeline";
     const { rerender } = render(<LearningTab />);

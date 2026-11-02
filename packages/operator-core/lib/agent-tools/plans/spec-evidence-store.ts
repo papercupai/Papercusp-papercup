@@ -177,6 +177,25 @@ function ambiguousCaseTitlesMessage(
     `Bind the full title or a suffix unique in the recorded source.`;
 }
 
+const MAX_CASE_TITLES_IN_ERROR_MESSAGE = 5;
+const MAX_CASE_TITLE_CHARS_IN_ERROR_MESSAGE = 512;
+
+function quoteBoundedCaseTitle(title: string): string {
+  const characters = Array.from(title);
+  return JSON.stringify(
+    characters.length > MAX_CASE_TITLE_CHARS_IN_ERROR_MESSAGE
+      ? `${characters.slice(0, MAX_CASE_TITLE_CHARS_IN_ERROR_MESSAGE - 1).join('')}…`
+      : title,
+  );
+}
+
+function formatBoundedCaseTitleList(titles: readonly string[]): string {
+  const rendered = titles.slice(0, MAX_CASE_TITLES_IN_ERROR_MESSAGE).map(quoteBoundedCaseTitle);
+  const omitted = titles.length - rendered.length;
+  const omittedSuffix = omitted > 0 ? `${rendered.length > 0 ? ', ' : ''}${omitted} more omitted` : '';
+  return `[${rendered.join(', ')}${omittedSuffix}]`;
+}
+
 async function hasLedgerProvenPassingSelection(
   row: EvidenceRow,
   execution: NonNullable<ReturnType<typeof parseTestRunExecutionDetails>>,
@@ -1950,6 +1969,24 @@ export async function bindSpecEvidence(input: BindSpecEvidenceInput): Promise<Bi
           (testName) => !mutationCases.some((measuredTitle) => hasSameCaseTitleIdentity(testName, measuredTitle)),
         );
         if (unmatched.length > 0) {
+          const nearMatches = unmatched.flatMap((declaredTitle) =>
+            mutationCases.flatMap((measuredTitle) => {
+              const separator = measuredTitle.lastIndexOf(' > ');
+              return separator >= 0 && measuredTitle.slice(separator + 3) === declaredTitle
+                ? [{ declaredTitle, measuredTitle }]
+                : [];
+            }),
+          );
+          const nearMatchHint = nearMatches.length > 0
+            ? `Near match: ${nearMatches
+                .slice(0, MAX_CASE_TITLES_IN_ERROR_MESSAGE)
+                .map(({ declaredTitle, measuredTitle }) =>
+                  `${quoteBoundedCaseTitle(declaredTitle)} is the final " > " segment of measured title ${quoteBoundedCaseTitle(measuredTitle)}`,
+                )
+                .join('; ')}${nearMatches.length > MAX_CASE_TITLES_IN_ERROR_MESSAGE
+                ? `; ${nearMatches.length - MAX_CASE_TITLES_IN_ERROR_MESSAGE} more near matches omitted`
+                : ''}. Use the full measured title.`
+            : '';
           return {
             status: 'test_cases_not_in_run',
             testRunId: input.testRunId,
@@ -1959,10 +1996,11 @@ export async function bindSpecEvidence(input: BindSpecEvidenceInput): Promise<Bi
             unmatchedTestCases: unmatched,
             message:
               unmatched.length + ' of ' + declaredTestCases.length +
-              ' declared details.adequacy.testCases entries matched no exact measured failed case among the ' +
-              mutationCases.length + ' failedCaseTitles in mutation test-run ' + input.testRunId + ' (' +
-              unmatched.map((title) => JSON.stringify(title)).join(', ') +
-              '). A mutation binding must name a measured failing case; correct the title or bind a run that failed it.',
+              ' declared details.adequacy.testCases entries matched no exact measured failed case. Mutation test-run ' +
+              input.testRunId + ' measured failedCaseTitles: ' + formatBoundedCaseTitleList(mutationCases) +
+              '. Unmatched declared titles: ' + formatBoundedCaseTitleList(unmatched) + '. ' +
+              (nearMatchHint ? nearMatchHint + ' ' : '') +
+              'A mutation binding must name a measured failing case; correct the title or bind a run that failed it.',
           };
         }
       }
@@ -3603,77 +3641,113 @@ async function notifyCancelledAuditorsAfterCommit(
   }
 }
 
+export type RetractSpecEvidenceResult =
+  | { status: 'not_found'; bindingId: number; binding: null }
+  | { status: 'already_retracted'; bindingId: number; binding: RetractedBindingRow }
+  | {
+      status: 'retracted';
+      bindingId: number;
+      binding: RetractedBindingRow;
+      cancelledAuditIssueIds: string[];
+    };
+
+export interface RetractSpecEvidenceBatchOptions {
+  harnessSlug?: string;
+  /** Internal callers already holding a scoped target must retain its workspace. */
+  workspaceId?: string;
+  actorId: string;
+  items: ReadonlyArray<Pick<RetractSpecEvidenceOptions, 'bindingId' | 'reason'>>;
+}
+
 /**
- * Record a one-way, attributable withdrawal of a single evidence binding (D-011).
+ * Record attributable withdrawals of evidence bindings (D-011) in one workspace
+ * transaction. A database failure rolls the full request back; expected per-row
+ * outcomes such as not_found and already_retracted remain in the returned results.
  *
- * The row is never deleted and never edited — it acquires a stamp, and default reads
+ * Each row is never deleted and never edited — it acquires a stamp, and default reads
  * stop counting it while an `includeRetracted` audit read still returns it in full.
- * This is the ONLY sanctioned repair for a malformed binding: because the adequacy
+ * This is the ONLY sanctioned repair for malformed bindings: because the adequacy
  * evaluator fails a clause if ANY bound row is uncollected/unexecuted or stale, and
  * spec_revision is its only partitioning dimension, the alternative was bumping a
  * clause revision purely to shed failing evidence — which D-011 forbids as gate
  * evasion, since a bar whose hash moved has genuinely different meaning.
  */
-export async function retractSpecEvidence(
-  options: RetractSpecEvidenceOptions,
+export async function retractSpecEvidenceBatch(
+  options: RetractSpecEvidenceBatchOptions,
   deps: SpecEvidenceGradingAuditNotificationDeps = {},
-) {
+): Promise<RetractSpecEvidenceResult[]> {
+  if (options.items.length === 0) return [];
   const scope = await resolvePlanScope({ harnessSlug: options.harnessSlug, workspaceId: options.workspaceId });
-  const reason = options.reason.trim();
   const actorId = options.actorId.trim();
-  const result = await withWorkspace(scope.workspaceId, async (tx) => {
-    const [existing] = await tx<RetractedBindingRow[]>`
-      SELECT id, work_item_id, plan_slug, spec_id, spec_revision,
-             evidence_kind, evidence_ref, retracted_at, retracted_by, retraction_reason
-        FROM harness_shared.spec_evidence_bindings
-       WHERE workspace_id = ${scope.workspaceId}
-         AND harness_slug = ${scope.harnessSlug}
-         AND id = ${options.bindingId}`;
-    // Not-found and already-retracted are reported as statuses rather than thrown: a
-    // retraction is idempotent from the caller's side, and the trigger's own
-    // re-retraction error would otherwise surface as an opaque 55000 for the benign
-    // case of replaying the same repair.
-    if (!existing) return { status: 'not_found' as const, bindingId: options.bindingId, binding: null };
-    if (existing.retracted_at != null) return { status: 'already_retracted' as const, bindingId: existing.id, binding: existing };
-    const [updated] = await tx<RetractedBindingRow[]>`
-      UPDATE harness_shared.spec_evidence_bindings
-         SET retracted_at = now(), retracted_by = ${actorId}, retraction_reason = ${reason}
-       WHERE workspace_id = ${scope.workspaceId}
-         AND harness_slug = ${scope.harnessSlug}
-         AND id = ${options.bindingId}
-         AND retracted_at IS NULL
-      RETURNING id, work_item_id, plan_slug, spec_id, spec_revision,
-                evidence_kind, evidence_ref, retracted_at, retracted_by, retraction_reason`;
-    if (!updated) return { status: 'already_retracted' as const, bindingId: existing.id, binding: existing };
-    // The binding row is withdrawn before the audit row is fenced, but both writes
-    // share this transaction. A dispatcher cannot win a reservation in the gap
-    // between the evidence update and cancellation (EI-26089859582727160).
-    // Keep this import lazy: scorecards' evaluator path consumes this store's
-    // schemas, so a static edge would make the schema undefined during module
-    // initialization (the cancellation runs only after the store is ready).
-    const { cancelPendingGradingAuditsForBindingInTransaction } = await import('../../scorecards');
-    const cancelledAuditIssueIds = await cancelPendingGradingAuditsForBindingInTransaction(
-      tx,
-      scope.workspaceId,
-      updated.id,
-    );
-    return {
-      status: 'retracted' as const,
-      bindingId: updated.id,
-      binding: updated,
-      cancelledAuditIssueIds,
-    };
+  const results = await withWorkspace(scope.workspaceId, async (tx) => {
+    const batchResults: RetractSpecEvidenceResult[] = [];
+    for (const item of options.items) {
+      const reason = item.reason.trim();
+      const [existing] = await tx<RetractedBindingRow[]>`
+        SELECT id, work_item_id, plan_slug, spec_id, spec_revision,
+               evidence_kind, evidence_ref, retracted_at, retracted_by, retraction_reason
+          FROM harness_shared.spec_evidence_bindings
+         WHERE workspace_id = ${scope.workspaceId}
+           AND harness_slug = ${scope.harnessSlug}
+           AND id = ${item.bindingId}`;
+      // Not-found and already-retracted are reported as statuses rather than thrown: a
+      // retraction is idempotent from the caller's side, and the trigger's own
+      // re-retraction error would otherwise surface as an opaque 55000 for a benign replay.
+      if (!existing) {
+        batchResults.push({ status: 'not_found', bindingId: item.bindingId, binding: null });
+        continue;
+      }
+      if (existing.retracted_at != null) {
+        batchResults.push({ status: 'already_retracted', bindingId: existing.id, binding: existing });
+        continue;
+      }
+      const [updated] = await tx<RetractedBindingRow[]>`
+        UPDATE harness_shared.spec_evidence_bindings
+           SET retracted_at = now(), retracted_by = ${actorId}, retraction_reason = ${reason}
+         WHERE workspace_id = ${scope.workspaceId}
+           AND harness_slug = ${scope.harnessSlug}
+           AND id = ${item.bindingId}
+           AND retracted_at IS NULL
+        RETURNING id, work_item_id, plan_slug, spec_id, spec_revision,
+                  evidence_kind, evidence_ref, retracted_at, retracted_by, retraction_reason`;
+      if (!updated) {
+        batchResults.push({ status: 'already_retracted', bindingId: existing.id, binding: existing });
+        continue;
+      }
+      // The binding row is withdrawn before the audit row is fenced, but both writes
+      // share this transaction. A dispatcher cannot win a reservation in the gap
+      // between the evidence update and cancellation (EI-26089859582727160).
+      // Keep this import lazy: scorecards' evaluator path consumes this store's
+      // schemas, so a static edge would make the schema undefined during module
+      // initialization (the cancellation runs only after the store is ready).
+      const { cancelPendingGradingAuditsForBindingInTransaction } = await import('../../scorecards');
+      const cancelledAuditIssueIds = await cancelPendingGradingAuditsForBindingInTransaction(
+        tx,
+        scope.workspaceId,
+        updated.id,
+      );
+      batchResults.push({
+        status: 'retracted',
+        bindingId: updated.id,
+        binding: updated,
+        cancelledAuditIssueIds,
+      });
+    }
+    return batchResults;
   });
-  // Notify readers only after the transaction has committed. The cancellation is
-  // part of the same transaction as the binding retraction, so a pushed read can
-  // never observe the binding withdrawn while its audit lease remains pending.
-  if (result.status === 'retracted') {
+  // Notify only after the shared transaction commits. The audit cancellation for each row
+  // is inside that same transaction, so a pushed read cannot see a withdrawn binding whose
+  // audit lease is still pending.
+  for (const [index, result] of results.entries()) {
+    if (result.status !== 'retracted') continue;
     await notifyCancelledAuditorsAfterCommit({
       workspaceId: scope.workspaceId,
       harnessSlug: scope.harnessSlug,
-      issueIds: result.cancelledAuditIssueIds ?? [],
-      reason: `binding ${result.bindingId} was retracted: ${reason}`,
+      issueIds: result.cancelledAuditIssueIds,
+      reason: `binding ${result.bindingId} was retracted: ${options.items[index]!.reason.trim()}`,
     }, deps);
+  }
+  if (results.some((result) => result.status === 'retracted')) {
     void trackDetached(import('../../sync-sse'))
       .then((m) => {
         m.notifySyncInvalidate('scorecards.list');
@@ -3682,7 +3756,21 @@ export async function retractSpecEvidence(
       })
       .catch(() => {});
   }
-  return result;
+  return results;
+}
+
+/** Record one attributable withdrawal through the same transactional batch path. */
+export async function retractSpecEvidence(
+  options: RetractSpecEvidenceOptions,
+  deps: SpecEvidenceGradingAuditNotificationDeps = {},
+): Promise<RetractSpecEvidenceResult> {
+  const [result] = await retractSpecEvidenceBatch({
+    harnessSlug: options.harnessSlug,
+    workspaceId: options.workspaceId,
+    actorId: options.actorId,
+    items: [{ bindingId: options.bindingId, reason: options.reason }],
+  }, deps);
+  return result!;
 }
 
 export interface SupersedeSpecEvidenceOptions {

@@ -104,6 +104,7 @@ export const OPERATIONAL_DOOR_CODES: Readonly<Record<string, string>> = {
   plan_changed: 'optimistic-concurrency: the plan moved during start',
   plan_revision_unavailable: 'storage read failure, retryable',
   plan_start_revalidation_unavailable: 'storage read failure, retryable',
+  plan_start_authority_unavailable: 'operational failure to issue start authority; this is not a contract verdict and earlier side effects may have committed',
   plan_admission_unavailable: 'promotion preflight could not read admission state; operational read failure, retryable',
   plan_source_unavailable: 'promotion preflight could not read plan frontmatter; operational read failure, retryable',
   invalid_consult_id: 'input validation on the critique consult id',

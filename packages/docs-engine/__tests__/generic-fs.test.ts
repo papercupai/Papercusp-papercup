@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { promises as fs } from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
-import { genericFsAdapter } from '../src/adapters/generic-fs';
+import { extractHeadings, genericFsAdapter } from '../src/adapters/generic-fs';
 import { searchDocs } from '../src/search';
 
 let tmpDir: string;
@@ -34,6 +34,30 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await fs.rm(tmpDir, { recursive: true, force: true });
+});
+
+describe('extractHeadings', () => {
+  it('ignores ATX-looking lines inside backtick and tilde fences', () => {
+    const content = [
+      '# Page',
+      '## Introduction',
+      '~~~bash',
+      '## Fake tilde heading',
+      '```',
+      '# Still inside the tilde fence',
+      '~~~~',
+      '```js',
+      '## Fake backtick heading',
+      '```',
+      '## Actual next section',
+    ].join('\n');
+
+    expect(extractHeadings(content)).toEqual([
+      { id: 'Page', text: 'Page', depth: 1 },
+      { id: 'Introduction', text: 'Introduction', depth: 2 },
+      { id: 'Actual-next-section', text: 'Actual next section', depth: 2 },
+    ]);
+  });
 });
 
 describe('genericFsAdapter', () => {

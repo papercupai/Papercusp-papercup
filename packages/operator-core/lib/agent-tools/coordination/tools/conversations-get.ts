@@ -21,7 +21,27 @@ import { mergeIds, runBulk, bulkContent } from '../../_bulk';
 type ParsedRef = { kind: 'conversation' } | { kind: 'invalid-post' } | { kind: 'post'; postId: number };
 
 function currentConsultResult(consult: ConsultLifecycleState): Record<string, unknown> | null {
-  if (consult.closed_at == null) return consult.request_result ?? null;
+  if (consult.closed_at == null) {
+    const initial = consult.request_result;
+    const wake = initial?.wake;
+    if (!initial || !wake || typeof wake !== 'object' || Array.isArray(wake)) return initial ?? null;
+
+    const wakeRecord = wake as Record<string, unknown>;
+    const currentDispatch = consult.dispatch?.recent
+      .filter((walk) => walk.source_owner_id === consult.responder_id)
+      .at(-1);
+    if (
+      wakeRecord.attempted !== true ||
+      typeof wakeRecord.queued !== 'number' ||
+      wakeRecord.queued > 0 ||
+      !currentDispatch?.dispatched ||
+      !currentDispatch.answering_owner_id
+    ) return initial;
+
+    // Keep the original request result as an audit receipt. The open consult's
+    // current result reflects the durable launch for its current responder.
+    return { ...initial, wake: { ...wakeRecord, queued: 1 } };
+  }
 
   const outcome = consult.outcome;
   if (!outcome) return null;
