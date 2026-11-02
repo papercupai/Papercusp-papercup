@@ -316,6 +316,7 @@ export function captureIsolatedWorker(child: ChildProcess, evidenceDir: string, 
     let lastProgressAt = -Infinity;
     let completedCases = 0;
     const caseProgress = new Set<string>();
+    const nestedProgress = new Set<string>();
     const provenanceSteps = new Set<string>();
     let provenanceFiles = 0;
     let provenanceTotal: number | undefined;
@@ -368,6 +369,27 @@ export function captureIsolatedWorker(child: ChildProcess, evidenceDir: string, 
         catch { return; }
       }
       if (typeof line !== 'string') return;
+      const nestedProgressPrefix = 'ISOLATED_WORKER_PROGRESS ';
+      if (options.testFileExecutionFromStdout && deadlines && !timedOut && line.startsWith(nestedProgressPrefix)) {
+        try {
+          const value = JSON.parse(line.slice(nestedProgressPrefix.length));
+          if (!Number.isSafeInteger(value.pid) || value.pid <= 0 ||
+              !['bootstrap', 'execute', 'finalize', 'teardown'].includes(value.phase) ||
+              typeof value.stage !== 'string' || value.stage.length === 0 || value.stage.length > 200) return;
+          const key = JSON.stringify([value.pid, value.phase, value.stage]);
+          if (!nestedProgress.has(key) && nestedProgress.size < 4096) {
+            nestedProgress.add(key);
+            // A nested capture owns the inner TEST_FILE_PROGRESS stream. Its
+            // phase transition is the only reliable start signal visible to
+            // this outer worker; without it, the outer bootstrap clock can
+            // reap a test that has already entered execution.
+            if (phase === 'bootstrap' && value.phase !== 'bootstrap') armPhase('execute');
+            else progressWatchdog?.noteProgress();
+            relayProgress('nested-worker-' + value.phase);
+          }
+        } catch { /* malformed nested progress cannot alter a phase deadline */ }
+        return;
+      }
       const heartbeat = /^TEST_FILE_HEARTBEAT completedCases=(\d+)$/.exec(line);
       if (heartbeat) {
         const count = Number(heartbeat[1]);

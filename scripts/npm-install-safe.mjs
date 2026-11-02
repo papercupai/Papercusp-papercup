@@ -1758,6 +1758,19 @@ export function applyResolvedManifestFiles({
   return { applied: true };
 }
 
+// Call under an install reader so the admission decision observes one graph.
+async function installedGraphNeedsRepair({ repoRoot, npmArgs }) {
+  const { workspaceDirs } = verificationScopeForNpmArgs({ repoRoot, npmArgs });
+  const ranges = await findUnsatisfiedDeclaredDepRangesWithRetry({ repoRoot, workspaceDirs });
+  const declared = await findUnextractedDepsWithRetry({ repoRoot, workspaceDirs });
+  const lockPath = join(repoRoot, existsSync(join(repoRoot, "npm-shrinkwrap.json"))
+    ? "npm-shrinkwrap.json" : "package-lock.json");
+  const lockTreeDefects = existsSync(lockPath) ? auditLockfile({
+    lock: JSON.parse(readFileSync(lockPath, "utf8")), lockDir: "", treeRoot: repoRoot,
+  }).defects : [];
+  return ranges.invalid.length > 0 || declared.missing.length > 0 || lockTreeDefects.length > 0;
+}
+
 async function runManifestOnlyInstall({
   repoRoot,
   lockName,
@@ -1781,22 +1794,14 @@ async function runManifestOnlyInstall({
         }
         const value = manifestOnlyResolutionLayout(repoRoot);
         if (!value.supported) return value;
-        const { workspaceDirs } = verificationScopeForNpmArgs({ repoRoot, npmArgs });
-        const ranges = await findUnsatisfiedDeclaredDepRangesWithRetry({ repoRoot, workspaceDirs });
-        const declared = await findUnextractedDepsWithRetry({ repoRoot, workspaceDirs });
         // A transitive security override can leave every direct range satisfied
         // while the installed runtime differs from the selected lock. Reuse the
         // publisher's exact-path audit, as post-reify verification already does;
         // that graph needs repair admission rather than an unbounded pre-drain.
-        const lockPath = join(repoRoot, existsSync(join(repoRoot, "npm-shrinkwrap.json"))
-          ? "npm-shrinkwrap.json" : "package-lock.json");
-        const lockTreeDefects = existsSync(lockPath) ? auditLockfile({
-          lock: JSON.parse(readFileSync(lockPath, "utf8")), lockDir: "", treeRoot: repoRoot,
-        }).defects : [];
         // A broken installed graph needs a writer reservation so sustained new
         // readers cannot starve its repair. Existing readers still drain under
         // the exclusive mutex; healthy installs retain the D-009 pre-drain.
-        value.repairInstalledGraph = ranges.invalid.length > 0 || declared.missing.length > 0 || lockTreeDefects.length > 0;
+        value.repairInstalledGraph = await installedGraphNeedsRepair({ repoRoot, npmArgs });
         input = createManifestOnlyTree(repoRoot, value.inputPaths);
         return value;
       });
@@ -2426,6 +2431,12 @@ export async function main(argv = process.argv.slice(2)) {
     );
   }
 
+  // Fallback commands need the same repair admission as manifest installs.
+  // prune explicitly repairs extraneous packages, which declared/locked-path
+  // probes cannot detect. Reserve first, then drain every existing reader.
+  const repairInstalledGraph = !packageLockOnly && (npmArgs[0] === "prune" ||
+    await withFsMutexRead(lockName, () => installedGraphNeedsRepair({ repoRoot, npmArgs })));
+
   // Lock order: repo writer → EXCLUSIVE cache (verify only, released) → shared cache
   // READ lease (reify). Verify must never overlap another checkout's reify — see
   // verifyNpmCacheExclusive (WI-10004430).
@@ -2503,7 +2514,7 @@ export async function main(argv = process.argv.slice(2)) {
     {
       // A queued install must not reserve every test/tool reader while a
       // protected generation snapshot is still being published (D-009).
-      waitForReadersBeforeReserve: true,
+      waitForReadersBeforeReserve: !repairInstalledGraph,
       // WI-10006385: re-announce every 30 s (was once) and close with the real wait.
       ...installLockWaitReporter({
         lock: "writer",

@@ -2417,6 +2417,20 @@ describe('work_items:complete (keyed-array)', () => {
       expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
     });
 
+    it('rejects recordOnly:true combined with an explicit or inherited state before lifecycle writes', () => {
+      const completion = { summary: 'progress', rootCauseVerification: ROOT_CAUSE_VERIFICATION_FIXTURE };
+      const conflictingCalls = [
+        { id: 'WI-1', state: 'done', recordOnly: true, assumptions: 'none', completion },
+        { state: 'done', recordOnly: true, assumptions: 'none', items: [{ id: 'WI-1', completion }] },
+        { state: 'done', assumptions: 'none', items: [{ id: 'WI-1', recordOnly: true, completion }] },
+      ];
+
+      for (const input of conflictingCalls) {
+        expect(() => parseRaw(input)).toThrow(/recordOnly:true` cannot be combined with `state/);
+      }
+      expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+    });
+
     it('a successful terminal close is ok:true with no error', async () => {
       getWorkItem.mockResolvedValue(issue);
       setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...issue, state: 'resolved' }));

@@ -15,7 +15,7 @@ import { activeWorkspaceId } from '../workspace-registry';
 import { claimImmutableTextArtifact, loadImmutableTextArtifact, loadImmutableTextArtifactClaim,
   saveImmutableTextArtifact } from '../text-artifacts';
 import { loadSecurityManifest, loadSecurityTupleLedger, saveSecurityManifest, saveSecurityTupleLedger } from './security-manifest-store';
-import { createSecurityManifest, createSecurityTupleLedger, type SecurityManifest,
+import { createSecurityManifest, createSecurityTupleLedger, reconcileSecurityTupleLedger, type SecurityManifest,
   type SecurityTuple, type SecurityTupleDisposition } from './security-manifest';
 
 const hash = z.string().regex(/^[a-f0-9]{64}$/);
@@ -31,6 +31,7 @@ const eventSchema = z.object({
   executor: text.nullable(), reviewRef: text.nullable(),
   result: z.enum(['passed', 'failed']).nullable(),
   executionEvidenceSha256: hash.optional(),
+  applicabilityEvidenceSha256: hash.optional(),
 }).strict();
 type Event = z.infer<typeof eventSchema>;
 const signedSchema = z.object({ event: eventSchema, signature: hash }).strict();
@@ -170,7 +171,15 @@ export interface SecurityReviewRequest {
   reviewRef: string;
 }
 const reviewRequestSchema = z.object({ manifestSha256: hash, ledgerSha256: hash,
-  manifestProducerRef: hash, ledgerProducerRef: hash, executor: text, reviewRef: text }).strict();
+  manifestProducerRef: hash, ledgerProducerRef: hash, executor: text, reviewRef: text,
+  expectedTuples: z.array(z.custom<SecurityTuple>()).min(1),
+  expectedDispositions: z.array(z.custom<SecurityTupleDisposition>()).min(1),
+}).strict();
+export interface SecurityApplicabilityReviewRequest extends SecurityReviewRequest {
+  /** Independently derived from the pinned population/applicability sources. */
+  expectedTuples: readonly SecurityTuple[];
+  expectedDispositions: readonly SecurityTupleDisposition[];
+}
 async function subject(harness: string, request: SecurityReviewRequest) {
   const manifest = await loadSecurityManifest(harness, request.manifestSha256);
   const ledger = await loadSecurityTupleLedger(harness, request.ledgerSha256);
@@ -193,18 +202,32 @@ async function independent(reviewer: string, producers: readonly string[], execu
 }
 
 /** Only the independently authenticated reviewer can commit. No time/identity overrides. */
-export async function commitSecurityApplicability(ctx: UnifiedToolContext, harness: string, request: SecurityReviewRequest) {
-  request = reviewRequestSchema.parse(request);
+export async function commitSecurityApplicability(ctx: UnifiedToolContext, harness: string, input: SecurityApplicabilityReviewRequest) {
+  const { expectedTuples, expectedDispositions, ...request } = reviewRequestSchema.parse(input);
   const reviewer = actor(ctx, harness), current = await subject(harness, request);
   text.parse(request.reviewRef);
   await independent(reviewer, current.producers, request.executor);
-  const approval = event(harness, reviewer, 'approval', { ...request, ordinal: 1 });
+  const expected = { manifest: current.manifest, tuples: expectedTuples, dispositions: expectedDispositions };
+  if (!reconcileSecurityTupleLedger(current.ledger, expected).matches) refuse('applicability_reconciliation_mismatch');
+  const evidence = createSecurityTupleLedger({ ...expected, producer: reviewer });
+  await saveSecurityTupleLedger(harness, evidence);
+  const approval = event(harness, reviewer, 'approval', { ...request, ordinal: 1,
+    applicabilityEvidenceSha256: evidence.sha256 });
   if (approval.at < current.producedAt) refuse('scope_or_order_mismatch');
   // Changing applicability after a probe/result is never a fresh review of the
   // old population. A genuine source/runtime/population change needs a NEW
   // manifest and ledger, a fresh review, then new qualification evidence.
   await claimImmutableTextArtifact(harness, `security-qualification:ledger:${request.manifestSha256}`, request.ledgerSha256);
   return { approvalRef: await persist(approval), manifestSha256: request.manifestSha256, ledgerSha256: request.ledgerSha256 };
+}
+
+async function verifyApplicability(harness: string, approval: Event, current: Awaited<ReturnType<typeof subject>>) {
+  if (!approval.applicabilityEvidenceSha256) refuse('applicability_reconciliation_missing');
+  const evidence = await loadSecurityTupleLedger(harness, approval.applicabilityEvidenceSha256);
+  if (!evidence || evidence.body.producer !== approval.actor || !reconcileSecurityTupleLedger(current.ledger, {
+    manifest: current.manifest, tuples: evidence.body.rows.map(row => row.tuple),
+    dispositions: evidence.body.rows.map(row => row.disposition),
+  }).matches || evidence.body.manifestSha256 !== current.manifest.sha256) refuse('applicability_reconciliation_mismatch');
 }
 
 /** The only qualification runner entry. Receipt persistence and permanent claim
@@ -226,6 +249,7 @@ captureResult?: (value: T) => unknown) {
   const current = await subject(harness, { ...input, manifestProducerRef: approval.manifestProducerRef,
     ledgerProducerRef: approval.ledgerProducerRef, executor, reviewRef: approval.reviewRef });
   await independent(approval.actor, current.producers, executor);
+  await verifyApplicability(harness, approval, current);
   if (await loadImmutableTextArtifactClaim(harness, `security-qualification:ledger:${input.manifestSha256}`) !== input.ledgerSha256) {
     refuse('frozen_disposition_mismatch');
   }
@@ -289,6 +313,7 @@ export async function verifySecurityQualificationResult(harness: string, input: 
     executor: approval.executor, reviewRef: approval.reviewRef });
   if (approval.at < current.producedAt) refuse('scope_or_order_mismatch');
   await independent(approval.actor, current.producers, approval.executor);
+  await verifyApplicability(harness, approval, current);
   let executionEvidence: unknown;
   if (result.executionEvidenceSha256) {
     const bytes = await loadImmutableTextArtifact(harness, result.executionEvidenceSha256);

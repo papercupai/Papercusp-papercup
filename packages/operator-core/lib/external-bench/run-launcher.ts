@@ -64,6 +64,7 @@ import { createCurrentSuBenchHarness, currentBenchAssignmentId, currentBenchGate
   currentBenchProviderAuthenticator, currentBenchObservationReader, recoverCurrentBenchRun,
   currentBenchWorkloadProviderInputCapture, currentBenchWorkloadProviderInputReader, currentBenchWorkloadLockStateReader,
   currentBenchCodexRoute, requireCurrentBenchHostBinding, requireCurrentBenchNativeRunCost,
+  currentBenchSoloCapabilityControl,
   currentBenchWorkloadToolResultReader, currentBenchWorkloadLockGrantReader,
   type CurrentBenchLockStateAllocation, type CurrentBenchNativeRunCost,
   type CurrentSuBenchOptions, type CurrentBenchObservationReaderOptions, type CurrentBenchTaskRequestCensus } from './current-su';
@@ -79,6 +80,7 @@ import { resolveSpawnHostOperatorBaseUrl } from '../mcp-base-url';
 import { resolveCoordinationSpec } from './coordination-topology';
 import { emitRollout } from './reproducibility/emit';
 import type { runFrontierSweCurrentArm } from './frontier-swe-arm';
+import type { MinecraftTaskLaunch, runMinecraftProvisionedTrial } from './minecraft-launch-adapter';
 
 export { currentBenchSessionRequestDelta, currentBenchSessionUsageDelta,
   type CurrentBenchTaskRequestCensus } from './current-su';
@@ -168,6 +170,8 @@ export interface LaunchDeps {
   currentNative?: { start?: typeof startFrontierSweCurrentAssignment; resolveClaudeBinary?: typeof resolveContainerClaudeBinary };
   /** Trusted host seams; launch JSON cannot select an interpreter or assignment factory. */
   currentProximus?: { prepare?: typeof prepareProximusRuntime; start?: typeof startFrontierSweProximusAssignment };
+  /** Host-issued opaque world/manifest/pair handles; never accepted from launch JSON. */
+  currentMinecraft?: { tasks: readonly MinecraftTaskLaunch[]; execute?: typeof runMinecraftProvisionedTrial };
 }
 
 export interface CurrentTaskInput {
@@ -654,7 +658,12 @@ export function currentBenchLaunchSelection(input: LaunchBenchRunInput, config: 
     (!arm.control || arm.control.topology === 'stock-native-reference') &&
     arm.account === arm.account.trim() && !['auto', 'default'].includes(arm.account) &&
     /^claude\/\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?$/.test(arm.runtime.clientVersion);
-  if (!['papercusp', 'baseline'].includes(arm.id) || arm.agent !== 'codex' && !hostReference && !claudeReference)
+  const minecraftReference = input.suite === 'minecraft' && protocol.grader.family === 'minecraft' &&
+    protocol.aggregateBudgetUsd <= 20 && arm.agent === 'codex' &&
+    ['stock-native-reference', 'repeated-session', 'solo'].includes(arm.control?.topology ?? '');
+  if (minecraftReference && arm.control?.topology === 'solo') currentBenchSoloCapabilityControl(arm);
+  if (input.suite === 'minecraft' && !minecraftReference ||
+      !minecraftReference && (!['papercusp', 'baseline'].includes(arm.id) || arm.agent !== 'codex' && !hostReference && !claudeReference))
     throw new Error('Unsupported current benchmark execution arm/client.');
   if (input.taskSetId !== 'custom' || input.taskIds && canonicalJson(input.taskIds) !== canonicalJson(protocol.taskIds) ||
       input.model !== undefined && input.model !== arm.model || input.cap !== undefined && input.cap !== 1 ||
@@ -1029,7 +1038,13 @@ async function launchCurrentBenchRun(input: LaunchBenchRunInput, deps: LaunchDep
   if (!['low', 'medium', 'high', 'xhigh', 'max', 'ultra'].includes(arm.effort)) throw new Error('Unsupported frozen native effort.');
   const registration = { preregHash: prereg.preregHash, config: protocol, repoRoot: deps.currentRepoRoot };
   await requireCommittedPreregistration(protocol.runId, registration, { ...scope, repoRoot: deps.currentRepoRoot });
-  const loaded = await (deps.loadBacklog ?? loadBenchTaskSet)(frontier ? 'frontier-swe-v2-custom' : 'custom', protocol.taskIds);
+  const minecraft = input.suite === 'minecraft' ? await import('./minecraft-launch-adapter') : undefined;
+  const minecraftTasks = minecraft && deps.currentMinecraft?.tasks.map(source => minecraft.prepareMinecraftTaskLaunch(protocol, arm.id, source));
+  if (minecraft && (!minecraftTasks || minecraftTasks.length !== protocol.taskIds.length ||
+      new Set(minecraftTasks.map(value => value.task.instanceId)).size !== minecraftTasks.length))
+    throw Error('Minecraft host launch requires the complete distinct frozen task roster');
+  const loaded = minecraftTasks ? minecraftTasks.map(value => value.task)
+    : await (deps.loadBacklog ?? loadBenchTaskSet)(frontier ? 'frontier-swe-v2-custom' : 'custom', protocol.taskIds);
   if (canonicalJson(loaded.map(task => task.instanceId).sort()) !== canonicalJson([...protocol.taskIds].sort()) ||
       loaded.some(task => task.benchmark !== (input.suite ?? 'swe-bench-pro'))) throw new Error('Current benchmark task loader differs from the frozen roster/suite.');
   const backlog = protocol.taskIds.map(id => loaded.find(task => task.instanceId === id)!);
@@ -1077,6 +1092,45 @@ async function launchCurrentBenchRun(input: LaunchBenchRunInput, deps: LaunchDep
   activeRuns.set(runId, active);
   const run = async (req: HiveBacklogRunRequest): Promise<HiveBacklogResult> => {
     const taskResults: FleetTaskResult[] = [];
+    if (minecraft && minecraftTasks) {
+      for (const task of backlog) {
+        if (abort.signal.aborted) break;
+        await upsertBenchRunTask(runId, { instanceId: task.instanceId, taskStatus: 'in_progress' }, scope);
+        const execute = deps.currentMinecraft?.execute ?? minecraft.runMinecraftProvisionedTrial;
+        const execution = execute({ protocol, context, scope, resources, loopId, hostRunId: runId,
+          observation: current.observation, options: { workspaceId: ws, runId: protocol.runId, armId: arm.id,
+            seed: current.seed, agent: 'codex', model: arm.model, effort: arm.effort as CurrentSuBenchOptions['effort'],
+            account: arm.account, preregistration: registration, signal: abort.signal,
+            driveTimeoutMs: arm.generationBudget.maxWallClockMs } },
+        minecraftTasks.find(value => value.task.instanceId === task.instanceId)!.launch);
+        active.stopCurrent = async () => { await execution.catch(() => {}); };
+        try {
+          const result = await execution;
+          for (const row of result.rows) {
+            const stopReason = row.generationStatus === 'error' ? 'error' : row.generationStatus === 'timeout' ? 'timeout'
+              : row.capped ? 'budget-exhausted' : 'done';
+            const stored: FleetTaskResult = { attempt: { arm: arm.id,
+              blueprintId: CURRENT_STOCK_CODEX_BLUEPRINT, instanceId: row.taskId, seed: String(current.seed), diff: '',
+              tokensIn: row.tokensIn, tokensOut: row.tokensOut, tokensCacheRead: row.tokensCacheRead ?? undefined,
+              tokensCacheWrite: row.tokensCacheWrite ?? undefined, costUsd: row.costUsd, turns: row.turns,
+              wallClockMs: row.wallClockMs, trajectoryRef: row.traceRefs?.[0] ?? '', stopReason,
+              generationError: row.generationError ?? undefined,
+              armMeta: { ...row.armMeta, score: row.score, graderStatus: row.graderStatus, graderDetail: row.graderDetail } },
+              cupId: currentBenchAssignmentId(protocol.runId, arm.id, row.taskId, current.seed),
+              placedAtMs: result.startedAtMs, startedAtMs: result.startedAtMs, finishedAtMs: result.finishedAtMs, disposition: 'spawn' };
+            taskResults.push(stored);
+            await upsertBenchRunTask(runId, { ...taskRowFromFleetResult(stored), taskStatus: 'graded', resolved: row.resolved }, scope);
+          }
+          if (result.accountingUnknown) throw Error('Minecraft native usage accounting is unknown; further dispatch refused');
+        } catch (error) {
+          await upsertBenchRunTask(runId, { instanceId: task.instanceId, taskStatus: 'error',
+            generationError: error instanceof Error ? error.message : String(error) }, scope);
+          throw error;
+        } finally { active.stopCurrent = undefined; }
+      }
+      return { arm: req.arm, suite: req.suite, runId, seed: current.seed, startedAtMs: active.startedAtMs,
+        finishedAtMs: Date.now(), taskResults, coordEvents: [], peakConcurrentBees: taskResults.length ? 1 : 0, runError: null };
+    }
     if (frontier) {
       const execute = deps.currentFrontierArm ?? (await import('./frontier-swe-arm')).runFrontierSweCurrentArm;
       const options = { workspaceId: ws, runId: protocol.runId, armId: arm.id, seed: current.seed,
@@ -1205,7 +1259,8 @@ export async function launchBenchRun(
   // A public objective roster grants no gameplay runtime or inference authority.
   // Minecraft must enter through its frozen runtime/assignment admission rather
   // than becoming a SWE/diff task with the generic launcher's default grader.
-  if (input.suite === 'minecraft' || isMinecraftTaskSet(input.taskSetId) || input.taskSetId.startsWith('minecraft-'))
+  if ((input.suite === 'minecraft' || isMinecraftTaskSet(input.taskSetId) || input.taskSetId.startsWith('minecraft-')) &&
+      !(input.suite === 'minecraft' && input.taskSetId === 'custom' && input.current && deps.currentMinecraft))
     throw new Error('Minecraft execution requires its frozen gameplay runtime and assignment launcher.');
   const assertEnabled = deps.assertEnabled ?? (() => assertExternalBenchEnabled('system'));
   await assertEnabled();

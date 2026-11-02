@@ -181,6 +181,12 @@ export const SCRATCH_PLAN_TOOLS: readonly string[] = Object.freeze([
   'plan-types:list', 'plan-types:get', 'cupboard:search',
 ]);
 
+/** Benchmark planning uses the same private plan boundary, with draft authoring
+ * only. Auditing, activation and shipment can recruit inference outside its meter. */
+export const BENCHMARK_SCRATCH_PLAN_TOOLS: readonly string[] = Object.freeze([
+  'plans:new', 'plans:add-item', 'plans:get',
+]);
+
 // Exact top-level keys per verb. Left out on purpose: multi-plan selectors (slugs),
 // session reads (sourceRanges, mappings), work-item references (findings, evidence,
 // verification, priorAttemptRefs, operationalBrief), rubric classes (classRef), and
@@ -211,7 +217,7 @@ export function validScratchPlanBoundary(value: unknown): value is ScratchPlanBo
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   const row = value as Record<string, unknown>;
   return Object.keys(row).every(key => ['scratchPrefix', 'reviewedSlug', 'harness'].includes(key)) &&
-    typeof row.scratchPrefix === 'string' && /^blind-review-scratch-[a-z0-9]{6,32}-$/.test(row.scratchPrefix) &&
+    typeof row.scratchPrefix === 'string' && /^(?:blind-review|benchmark)-scratch-[a-z0-9]{6,32}-$/.test(row.scratchPrefix) &&
     typeof row.reviewedSlug === 'string' && /^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/.test(row.reviewedSlug) &&
     typeof row.harness === 'string' && /^[A-Za-z0-9][A-Za-z0-9_-]{0,119}$/.test(row.harness) && row.harness !== 'all';
 }
@@ -223,6 +229,9 @@ function withinScratchPlanBoundary(tool: string, args: unknown, boundary: Scratc
   // the reviewed plan out of reach however its slug is spelled into a field.
   if (JSON.stringify(args).includes(boundary.reviewedSlug)) return false;
   const row = args as Record<string, unknown>;
+  if (boundary.scratchPrefix.startsWith('benchmark-scratch-') &&
+      (!BENCHMARK_SCRATCH_PLAN_TOOLS.includes(tool) || row.harness !== boundary.harness ||
+       tool === 'plans:new' && (row.status !== 'draft' || row.force !== true))) return false;
   const keys = SCRATCH_PLAN_KEYS[tool];
   if (!keys || Object.keys(row).some(key => !keys.includes(key) && key !== 'projection' && key !== 'payloadTier')) return false;
   // Registry definitions and public pack listings are product surfaces, not plan

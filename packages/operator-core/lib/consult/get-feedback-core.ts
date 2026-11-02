@@ -352,6 +352,8 @@ interface AcceptedRequest {
   leaseUntil?: string | null;
   attempts?: number;
   result?: GetFeedbackResult | GetFeedbackError;
+  /** Prior instrument failures retained when the requester retries this identity. */
+  recoveryHistory?: Array<{ at: string; result: GetFeedbackResult }>;
   lastError?: string;
 }
 
@@ -371,7 +373,7 @@ function requestFingerprint(req: GetFeedbackRequest): string {
  * consult PK both converge on the same requester/workspace/key identity. */
 export async function acceptFeedbackRequestCore(
   req: GetFeedbackRequest,
-  deps: Pick<GetFeedbackDeps, 'getSql' | 'open'>,
+  deps: Pick<GetFeedbackDeps, 'getSql' | 'open' | 'now'>,
 ): Promise<AcceptedFeedbackResult | { error: 'request_key_conflict'; conversation_id: string; hint: string }> {
   methodReviewTarget(req);
   const sql = deps.getSql();
@@ -394,11 +396,56 @@ export async function acceptFeedbackRequestCore(
     SELECT state, routing FROM harness_shared.consult_state
     WHERE workspace_id = ${req.workspaceId} AND conversation_id = ${opened.conversation_id}
       AND requester_id = ${req.requesterId}`;
-  const row = rows[0];
+  let row = rows[0];
   if (!row || row.routing.request?.fingerprint !== fingerprint) return {
     error: 'request_key_conflict', conversation_id: opened.conversation_id,
     hint: 'This request_key already names a different question or options. Reuse its original payload for recovery, or use a new key for a fresh consult.',
   };
+  const previous = row.routing.request.result;
+  if (previous && 'verdict' in previous && previous.verdict === 'relevance_unmeasured' &&
+      requestFingerprint(row.routing.request.payload) === fingerprint) {
+    const now = (deps.now?.() ?? new Date()).toISOString();
+    // An explicit same-payload retry can recover an instrument outage. This is
+    // preparation only: the existing continuation must acquire its CAS lease
+    // and rerun the governed router before it can select or dispatch anyone.
+    // Fence every trace of selection/delivery, including ambiguous launch work.
+    // Comparing the whole request also prevents concurrent retries from erasing
+    // a newer outcome or appending the same history entry twice.
+    await sql`
+      UPDATE harness_shared.consult_state cs
+         SET state = 'routing', updated_at = ${now}::timestamptz,
+             routing = jsonb_set(routing, '{request}',
+               ((routing->'request') - 'result') || jsonb_build_object(
+                 'recoveryHistory', COALESCE(routing #> '{request,recoveryHistory}', '[]'::jsonb) ||
+                   jsonb_build_array(jsonb_build_object('at', ${now}::text,
+                     'result', routing #> '{request,result}'))))
+       WHERE workspace_id = ${req.workspaceId} AND conversation_id = ${opened.conversation_id}
+         AND requester_id = ${req.requesterId}
+         AND routing->'request' = ${sql.json(row.routing.request as never)}
+         AND routing #>> '{request,version}' = '1'
+         AND routing #>> '{request,result,reason}' IN ('embed_unavailable', 'evidence_unavailable')
+         AND routing #>> '{request,result,state}' = 'no_qualified_responder'
+         AND routing #> '{request,result,responder}' = 'null'::jsonb
+         AND routing #> '{request,result,wake}' @> '{"attempted":false,"queued":0,"woke":0}'::jsonb
+         AND COALESCE(routing #> '{request,result,dispatch}', 'null'::jsonb) = 'null'::jsonb
+         AND COALESCE(routing #> '{request,result,archive}', 'null'::jsonb) = 'null'::jsonb
+         AND routing->>'deliveryIntent' = 'dispatch'
+         AND routing #> '{selection,selected}' = '[]'::jsonb
+         AND COALESCE(routing->'cascadeDispatch', 'null'::jsonb) = 'null'::jsonb
+         AND state = 'no_qualified_responder' AND closed_at IS NULL AND responder_id IS NULL
+         AND wakes_used = 0 AND exchanges_used = 0 AND outcome IS NULL AND expires_at IS NULL
+         AND cascade_cursor = 0 AND cascade_digest = '[]'::jsonb AND dispatch_attempts = '[]'::jsonb
+         AND COALESCE((routing #>> '{request,leaseUntil}')::timestamptz, '-infinity'::timestamptz) <= ${now}::timestamptz
+         AND NOT EXISTS (SELECT 1 FROM harness_shared.consult_post_meta pm
+           WHERE pm.workspace_id = cs.workspace_id AND pm.conversation_id = cs.conversation_id)
+         AND NOT EXISTS (SELECT 1 FROM harness_shared.coord_conversations c
+           WHERE c.workspace_id = cs.workspace_id AND c.id = cs.conversation_id AND c.state <> 'open')`;
+    const current = await sql<typeof rows>`
+      SELECT state, routing FROM harness_shared.consult_state
+      WHERE workspace_id = ${req.workspaceId} AND conversation_id = ${opened.conversation_id}
+        AND requester_id = ${req.requesterId}`;
+    row = current[0] ?? row;
+  }
   const latency = req.latencyContract ?? 'proceed';
   const result = row.routing.request.result;
   const outcomeHint = result?.hint ?? (row.state === 'routing' ? ''

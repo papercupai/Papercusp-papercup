@@ -12,6 +12,7 @@ import {
   parseProcDirectoryFd,
   parseCpuPressureSomeAvg60,
   classifyThreadCpu,
+  sampleProcThreadState,
   isConfirmedHostIoWait,
   isLikelySyncSubprocessBlock,
   isConfirmedCpuStarvation,
@@ -262,6 +263,48 @@ describe('classifyThreadCpu', () => {
   it('does not flag wrong-subject for a legitimately saturated single thread', () => {
     const v = classifyThreadCpu({ ...base, baselineTicks: 0, currentTicks: 100 });
     expect(v.suspectWrongSubject).toBe(false);
+  });
+});
+
+describe('sampleProcThreadState', () => {
+  it('retries the recorded runnable/storage-wait mismatch and preserves its fresh transition', () => {
+    const stats = ['R', 'D', 'R', 'R'].map(state => ({ state, ticks: 700 }));
+    const waits = ['rq_qos_wait', null];
+    const sample = sampleProcThreadState(() => stats.shift()!, () => waits.shift()!);
+    expect(sample).toEqual({ stat: { state: 'R', ticks: 700 }, wchan: null, hostIoTransition: true });
+    expect(isConfirmedHostIoWait({ cpuKind: 'parked', state: sample.stat!.state,
+      cpuMs: 0, cores: 0, wchan: sample.wchan, hostIoTransition: sample.hostIoTransition })).toBe(true);
+    // The old single stat/wchan pair misses the same I/O transition.
+    expect(isConfirmedHostIoWait({ cpuKind: 'parked', state: 'R',
+      cpuMs: 0, cores: 0, wchan: 'rq_qos_wait' })).toBe(false);
+  });
+
+  it('does not carry an earlier I/O transition into a later real wedge', () => {
+    const stats = ['D', 'R', 'R', 'R'].map(state => ({ state, ticks: 700 }));
+    const waits = ['jbd2_log_wait_commit', null];
+    expect(sampleProcThreadState(() => stats.shift()!, () => waits.shift()!).hostIoTransition).toBe(true);
+    for (const [state, wchan, cpuKind] of [
+      ['R', null, 'spinning'], ['S', 'ep_poll', 'parked'],
+    ] as const) {
+      const sample = sampleProcThreadState(() => ({ state, ticks: 900 }), () => wchan);
+      expect(sample.hostIoTransition).toBe(false);
+      expect(isConfirmedHostIoWait({ state, wchan, cpuKind, cpuMs: 200, cores: 1,
+        hostIoTransition: sample.hostIoTransition })).toBe(false);
+    }
+  });
+
+  it('requires parked CPU evidence even when a fresh I/O transition was observed', () => {
+    expect(isConfirmedHostIoWait({ state: 'R', wchan: null, cpuKind: 'spinning',
+      cpuMs: 1000, cores: 1, hostIoTransition: true })).toBe(false);
+    expect(isConfirmedHostIoWait({ state: 'R', wchan: null, cpuKind: 'unknown',
+      cpuMs: null, cores: null, hostIoTransition: true })).toBe(false);
+  });
+
+  it('keeps unreadable samples unknown and unrelated runnable states killable', () => {
+    expect(sampleProcThreadState(() => null, () => null))
+      .toEqual({ stat: null, wchan: null, hostIoTransition: false });
+    expect(sampleProcThreadState(() => ({ state: 'R', ticks: 700 }), () => 'futex_do_wait')
+      .hostIoTransition).toBe(false);
   });
 });
 

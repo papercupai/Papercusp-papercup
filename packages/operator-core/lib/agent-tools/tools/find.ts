@@ -1062,7 +1062,7 @@ export function compactSchemaForResult(
       [...directObject.required].every((field) => {
         const child = directObject.properties[field] as JsonSchemaNode | undefined;
         const type = child ? schemaType(child) : '';
-        return type.length > 0 && type !== 'object' && !type.startsWith('array');
+        return type.length > 0 && !type.split('|').some((branch) => branch === 'object' || branch.startsWith('array'));
       });
     return {
       index,

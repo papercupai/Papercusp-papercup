@@ -4,18 +4,23 @@
  * This adapter supplies only the enrolled player's bounded gameplay client.
  */
 import { createHash } from 'node:crypto';
-import { mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { join, relative, resolve } from 'node:path';
 import { canonicalJson } from './reproducibility/canonical-json';
 import { currentBenchmarkProtocolSchema } from './reproducibility/schema';
 import { emitRollout, rolloutIdFor } from './reproducibility/emit';
-import { withMinecraftAssignment, type FrozenMinecraftManifest, type FrozenMinecraftPair,
+import { assignMinecraftTask, inspectMinecraftPairAssignment, withMinecraftAssignment,
+  type FrozenMinecraftManifest, type FrozenMinecraftPair, type FrozenMinecraftTrial,
   type FrozenMinecraftSelection } from './minecraft-protocol';
-import { readMinecraftInitialWorld, startMinecraftParticipantBridge, type MinecraftRuntime } from './minecraft-runtime';
+import { readMinecraftInitialWorld, startMinecraftParticipantBridge, startMinecraftRuntime,
+  type MinecraftRuntime, type MinecraftRuntimeConfig, type MinecraftWorldBaseline } from './minecraft-runtime';
+import { loadMinecraftTaskSet } from './task-sets';
 import { collectMinecraftEvidence, exportMinecraftEvidence, gradeMinecraftEvidence } from './minecraft-evidence';
 import { readCurrentBenchRepeatedSessionControl, startCurrentBenchTaskAssignment, type CurrentTaskInput } from './run-launcher';
 import { createCurrentSuBenchHarness, CURRENT_STOCK_CLAUDE_BLUEPRINT, CURRENT_STOCK_CODEX_BLUEPRINT,
   currentBenchAssignmentId, currentBenchSessionUsageDelta, requireCurrentBenchNativeRunCost,
+  currentBenchSoloCapabilityControl,
   type CurrentBenchNativeRunCost, type CurrentBenchSessionBudget,
   type CurrentSuBenchObservations, type CurrentSuBenchOptions } from './current-su';
 import { createCurrentStockBenchHarness } from './native-harness-runner';
@@ -60,6 +65,7 @@ export async function startMinecraftNativeAssignment(input: MinecraftNativeAssig
   const trial = runtime.trial, game = trial.protocol;
   const topology = arm?.control?.topology;
   const stock = topology === 'stock-native-reference' || topology === 'repeated-session';
+  if (topology === 'solo') currentBenchSoloCapabilityControl(arm!);
   if (!arm || !['stock-native-reference', 'solo', 'coordinated', 'repeated-session'].includes(topology ?? '') ||
       arm.agent === 'proximus' || options.agent !== arm.agent || options.model !== arm.model ||
       options.account !== arm.account || options.effort !== arm.effort || protocol.grader.family !== 'minecraft' ||
@@ -300,14 +306,15 @@ export type MinecraftNativeTrialControl = {
 /** Consume one prepared single-player runtime. The shared driver owns rows and
  * denominators; the host-owned evidence reader owns shutdown and grading. A
  * replay must be retained before, or atomically with, the scored row.
- * Coordinated and product-capability arms need their own verified delivery and
- * participant accounting; this entry point cannot declare those on their behalf.
+ * Solo uses the maintained host's verified capability controls. Coordinated
+ * arms still require shared participant accounting before admission.
  */
 export async function runMinecraftNativeTrial(input: MinecraftNativeAssignmentInput, control: MinecraftNativeTrialControl,
   ports: MinecraftNativeTrialPorts = liveTrialPorts) {
   const protocol = currentBenchmarkProtocolSchema.parse(input.current.protocol);
   const arm = protocol.arms.find(value => value.id === input.current.options.armId);
-  if (!arm || !['stock-native-reference', 'repeated-session'].includes(arm.control?.topology ?? '') ||
+  if (arm?.control?.topology === 'solo') currentBenchSoloCapabilityControl(arm);
+  if (!arm || !['stock-native-reference', 'repeated-session', 'solo'].includes(arm.control?.topology ?? '') ||
       input.runtime.trial.protocol.participants.length !== 1 || !control.rolloutId.trim() ||
       !(typeof control.persistResult === 'function'
         ? control.retainEvidence === undefined && control.onResult === undefined
@@ -387,6 +394,117 @@ export interface MinecraftStoredTrialPorts extends MinecraftNativeTrialPorts {
   emitRollout: typeof emitRollout;
 }
 const liveStoredTrialPorts: MinecraftStoredTrialPorts = { ...liveTrialPorts, emitRollout };
+
+/** Host-only launch data. Opaque manifest, selection, pair and baseline handles
+ * cannot be reconstructed from the public launch JSON. The caller owns the
+ * reusable baseline; each execution owns its fresh runtime and workspace. */
+export interface MinecraftTaskLaunch {
+  trial: FrozenMinecraftTrial;
+  manifest: FrozenMinecraftManifest;
+  selection: FrozenMinecraftSelection;
+  participantId: string;
+  pairing: MinecraftNativeAssignmentInput['pairing'];
+  runtime: Omit<MinecraftRuntimeConfig, 'trial' | 'signal' | 'exec' | 'worldBaseline'> & {
+    worldBaseline: MinecraftWorldBaseline;
+  };
+}
+
+/** Validate the complete roster before registering a run or allocating Docker. */
+export function prepareMinecraftTaskLaunch(protocol: ReturnType<typeof currentBenchmarkProtocolSchema.parse>,
+  armId: string, source: MinecraftTaskLaunch) {
+  const launch = { ...source, runtime: { ...source.runtime },
+    pairing: { pair: source.pairing.pair, initialState: structuredClone(source.pairing.initialState) } };
+  const { trial, selection, participantId } = launch, game = trial.protocol;
+  const arm = protocol.arms.find(value => value.id === armId);
+  if (arm?.control?.topology === 'solo') currentBenchSoloCapabilityControl(arm);
+  if (!arm || arm.agent !== 'codex' || !['stock-native-reference', 'repeated-session', 'solo'].includes(arm.control?.topology ?? '') ||
+      protocol.grader.family !== 'minecraft' || protocol.aggregateBudgetUsd > 20 ||
+      protocol.runId !== game.runId || armId !== game.armId || !protocol.taskIds.includes(game.taskId) ||
+      game.participants.length !== 1 || game.participants[0] !== participantId ||
+      selection.modelId !== arm.model || selection.promptSha256 !== arm.runtime.promptHash ||
+      selection.configurationSha256 !== createHash('sha256').update(canonicalJson(protocol)).digest('hex') ||
+      arm.generationBudget.maxUsd !== game.limits.maxUsd || arm.generationBudget.maxWallClockMs !== game.limits.maxWallClockMs ||
+      !launch.runtime.acceptEula || !launch.runtime.worldBaseline) {
+    throw Error('Minecraft launch requires exact frozen native reference, runtime and total budget');
+  }
+  assignMinecraftTask(launch.manifest, trial, participantId, selection);
+  const paired = inspectMinecraftPairAssignment(launch.pairing.pair, armId, { trialId: trial.trialId,
+    protocol: game, initialState: { worldSha256: launch.runtime.worldBaseline.worldSha256,
+      memorySha256: protocol.context.memoryHash } });
+  if (!paired.paired || canonicalJson(launch.pairing.initialState) !== canonicalJson({
+    worldSha256: launch.runtime.worldBaseline.worldSha256, memorySha256: protocol.context.memoryHash }))
+    throw Error('Minecraft launch differs from its frozen world/memory pair');
+  const taskSet = game.objective === 'ender-dragon' ? 'minecraft-ender-dragon' : 'minecraft-pilot';
+  const task = { ...loadMinecraftTaskSet(taskSet, [game.objective])[0]!, instanceId: game.taskId };
+  return { launch, task };
+}
+
+export interface MinecraftProvisionedTrialPorts extends MinecraftStoredTrialPorts {
+  startRuntime: typeof startMinecraftRuntime;
+}
+const liveProvisionedTrialPorts: MinecraftProvisionedTrialPorts = { ...liveStoredTrialPorts, startRuntime: startMinecraftRuntime };
+
+/** Provision through the maintained reset/runtime, then enter the canonical
+ * stored-trial path. Cancellation drains late startup and cleanup before the
+ * caller may retire the operational assignment. */
+export async function runMinecraftProvisionedTrial(host: Omit<CurrentTaskInput, 'checkout' | 'task'>,
+  source: MinecraftTaskLaunch, ports: MinecraftProvisionedTrialPorts = liveProvisionedTrialPorts) {
+  const protocol = currentBenchmarkProtocolSchema.parse(host.protocol);
+  const { launch, task } = prepareMinecraftTaskLaunch(protocol, host.options.armId, source);
+  const options = { ...host.options, preregistration: { ...host.options.preregistration,
+    config: structuredClone(host.options.preregistration.config) } };
+  const scope = { ...host.scope, workspaceId: options.workspaceId };
+  if (host.context.workspaceId !== options.workspaceId || host.scope.workspaceId !== undefined &&
+      host.scope.workspaceId !== options.workspaceId || options.runId !== protocol.runId ||
+      canonicalJson(options.preregistration.config) !== canonicalJson(protocol))
+    throw Error('Minecraft provisioning differs from its frozen protocol/workspace');
+  const signal = AbortSignal.any([options.signal, host.context.signal].filter((value): value is AbortSignal => !!value));
+  let runtime: MinecraftRuntime | undefined, root: string | undefined;
+  let transferred = false, failure: unknown;
+  try {
+    signal.throwIfAborted();
+    runtime = await ports.startRuntime({ ...launch.runtime, trial: launch.trial, signal });
+    signal.throwIfAborted();
+    root = await mkdtemp(join(tmpdir(), 'papercusp-minecraft-agent-'));
+    const checkout = { dir: root, repo: `minecraft:${task.instanceId}`, baseCommit: launch.trial.trialId,
+      cleanup: async () => { await rm(root!, { recursive: true, force: true }); } };
+    const current = { ...host, options: { ...options, signal }, protocol, scope, task, checkout };
+    transferred = true;
+    return await runMinecraftStoredTrial({ ...launch, current, runtime }, ports);
+  } catch (error) {
+    failure = error;
+    if (!transferred) {
+      // No native assignment has been opened. Retain an explicit infrastructure
+      // disposition with known zero inference; there is no server replay yet.
+      const arm = protocol.arms.find(value => value.id === options.armId)!;
+      try {
+        const receipt = await ports.emitRollout({ runId: protocol.runId, preregHash: options.preregistration.preregHash,
+          suite: 'minecraft', taskId: task.instanceId, arm: arm.id, seed: options.seed, modality: 'in-container',
+          generation: { status: 'error', error: error instanceof Error ? error.message : String(error),
+            tokensIn: 0, tokensOut: 0, tokensTotal: 0, tokensCacheRead: 0, tokensCacheWrite: 0,
+            wallClockMs: 0, turns: 0, budgetTokens: arm.generationBudget.maxTokens ?? null, capped: false,
+            modelId: arm.model, harnessVersion: arm.runtime.sourceRevision,
+            armMeta: { minecraftProvisioning: 'failed-before-native-assignment', trialId: launch.trial.trialId } },
+          grading: { resolved: null, status: 'error', score: null, family: protocol.grader.family, version: protocol.grader.version },
+          provenance: { configSnapshot: { protocol, minecraft: { trial: launch.trial, pair: launch.pairing.pair,
+            initialState: launch.pairing.initialState } }, harnessGitSha: arm.runtime.sourceRevision } }, scope);
+        if (receipt.runId !== protocol.runId || receipt.rolloutId !== rolloutIdFor(protocol.runId,
+          'minecraft', task.instanceId, arm.id, options.seed)) throw Error('Minecraft provisioning returned a foreign persistence receipt');
+      } catch (persistence) { failure = new AggregateError([error, persistence], 'Minecraft provisioning and persistence failed'); }
+    }
+    throw failure;
+  } finally {
+    const errors: unknown[] = [];
+    try {
+      if (runtime) {
+        const report = await runtime.dispose();
+        if (!report.removed || report.errors.length) throw Error(`Minecraft provisioning cleanup incomplete: ${report.errors.join('; ')}`);
+      }
+    } catch (error) { errors.push(error); }
+    try { if (root) await rm(root, { recursive: true, force: true }); } catch (error) { errors.push(error); }
+    if (errors.length) throw new AggregateError([...(failure ? [failure] : []), ...errors], 'Minecraft provisioned trial cleanup failed');
+  }
+}
 
 /** Production persistence over the same preregistration firewall, transaction,
  * price normalization and evaluation report invalidation used by other suites.

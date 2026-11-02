@@ -48,6 +48,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { describe, expect, it, vi } from 'vitest';
 import { computeWorkspaceRootFrom } from '@papercusp/test-config/admin-test-runs-reporter';
+import { createRetentionPin, removeRetentionPin } from './storage/retention-pins';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const scriptPath = resolve(here, '../../../scripts/lint-as-committed.mjs');
@@ -1546,6 +1547,8 @@ const { execFileSync } = require('node:child_process');
       const childEnv: NodeJS.ProcessEnv = {
         ...process.env,
         PATH: `${fakeBin}${process.platform === 'win32' ? ';' : ':'}${process.env.PATH}`,
+        PAPERCUSP_FS_MUTEX_LOCK_DIR: join(root, 'mutex'),
+        PAPERCUSP_RELEASE_RETENTION_ROOT: join(root, 'leases'),
       };
       const committedLoader = `--import=${resolve(repoRoot, 'scripts/lib/committed-source-loader.mjs')}`;
       childEnv.NODE_OPTIONS = (childEnv.NODE_OPTIONS ?? '')
@@ -1763,7 +1766,7 @@ console.log('PINNED_ASSETS_OK');
 describe('extracted-tree lifecycle (WI-10005705)', () => {
   type Verdict = { remove: boolean; reason: string };
   type Marker = { pid?: number; keep?: boolean; createdAtMs?: number } | null;
-  const { classifyWorkRoot, sweepStaleWorkRoots, WORK_ROOT_PREFIX, OWNER_MARKER, KEEP_TTL_MS, MAX_AGE_MS } = mod as {
+  const { classifyWorkRoot, sweepStaleWorkRoots, sweepStaleWorkRootsWithRetentionPins, WORK_ROOT_PREFIX, OWNER_MARKER, KEEP_TTL_MS, MAX_AGE_MS } = mod as {
     classifyWorkRoot: (a: { inUse: boolean; marker: Marker; ownerAlive: boolean; ageMs: number }) => Verdict;
     sweepStaleWorkRoots: (o: {
       root: string;
@@ -1771,12 +1774,54 @@ describe('extracted-tree lifecycle (WI-10005705)', () => {
       cwds: string[] | null;
       isAlive: (pid: number) => boolean;
     }) => Promise<{ removed: { name: string; reason: string }[]; kept: { name: string; reason: string }[] }>;
+    sweepStaleWorkRootsWithRetentionPins: (
+      o: { root: string; nowMs: number; cwds: string[]; isAlive: (pid: number) => boolean },
+      pins: { dir: string; nowMs: number },
+    ) => Promise<{ removed: { name: string; reason: string }[]; kept: { name: string; reason: string }[] }>;
     WORK_ROOT_PREFIX: string;
     OWNER_MARKER: string;
     KEEP_TTL_MS: number;
     MAX_AGE_MS: number;
   };
   const H = 3600_000;
+
+  it('keeps an active acceptance pin through self-sweep and exit cleanup until explicit release', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'lac-active-retention-pin-'));
+    try {
+      const source = join(root, `${WORK_ROOT_PREFIX}acceptance`);
+      const leases = join(root, 'leases');
+      vi.stubEnv('PAPERCUSP_FS_MUTEX_LOCK_DIR', join(root, 'locks'));
+      vi.stubEnv('PAPERCUSP_RELEASE_RETENTION_ROOT', leases);
+      const nowMs = Date.now();
+      mkdirSync(join(source, '.git'), { recursive: true });
+      writeFileSync(join(source, OWNER_MARKER), JSON.stringify({
+        pid: 101, keep: true, sha: 'a'.repeat(40), createdAtMs: nowMs - MAX_AGE_MS - H,
+      }));
+      const pin = createRetentionPin({
+        path: source,
+        owner: 'test-owner',
+        reason: 'acceptance snapshot is still referenced',
+        expiresAt: new Date(nowMs + H).toISOString(),
+      }, { dir: leases, nowMs });
+
+      const swept = await sweepStaleWorkRootsWithRetentionPins(
+        { root, nowMs, cwds: [], isAlive: () => false },
+        { dir: leases, nowMs },
+      );
+      expect(swept.removed).toEqual([]);
+      expect(swept.kept).toContainEqual({ name: `${WORK_ROOT_PREFIX}acceptance`, reason: 'pinned' });
+      expect(existsSync(source)).toBe(true);
+      expect(await mod.cleanupCommittedWorkRoot(source)).toBe(false);
+      expect(existsSync(source)).toBe(true);
+
+      expect(removeRetentionPin(pin.id, 'test-owner', { dir: leases })).toBe(true);
+      expect(await mod.cleanupCommittedWorkRoot(source)).toBe(true);
+      expect(existsSync(source)).toBe(false);
+    } finally {
+      vi.unstubAllEnvs();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 
   it('retains dependent source past the age and idle cap, then releases it when the artifact disappears', async () => {
     const root = mkdtempSync(join(tmpdir(), 'lac-dependent-'));
@@ -1841,6 +1886,8 @@ describe('extracted-tree lifecycle (WI-10005705)', () => {
   it('exit cleanup waits for a competing retention writer before deciding to delete', async () => {
     const { withFsMutex } = await import('../../../scripts/lib/fs-mutex.mjs');
     const root = mkdtempSync(join(tmpdir(), 'lac-exit-retention-'));
+    vi.stubEnv('PAPERCUSP_FS_MUTEX_LOCK_DIR', join(root, 'locks'));
+    vi.stubEnv('PAPERCUSP_RELEASE_RETENTION_ROOT', join(root, 'leases'));
     const source = join(root, 'source');
     const artifact = join(root, 'artifact');
     mkdirSync(join(source, '.git'), { recursive: true });
@@ -1875,6 +1922,7 @@ describe('extracted-tree lifecycle (WI-10005705)', () => {
     } finally {
       releaseWriter();
       await Promise.allSettled([writer, ...(cleanup ? [cleanup] : [])]);
+      vi.unstubAllEnvs();
       rmSync(root, { recursive: true, force: true });
     }
   }, 20_000);

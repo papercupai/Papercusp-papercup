@@ -60,6 +60,20 @@ describe('FSWE-P011-ONETOGGLE: one registered ablation per capability shipped si
     expect(() => requireRunnableAblation(protocol, 'coordinated-no-locks')).toThrow(/not runnable/);
     expect(() => launchAblation(protocol)).toThrow(/not runnable/);
   });
+  it('binds ledger ablation only to the implemented solo topology', () => {
+    const protocol = ablationOf('work-item-ledger');
+    expect(() => launchAblation(protocol)).toThrow(/not runnable.*only solo/);
+    const coordinated = protocol.arms.find(arm => arm.id === 'coordinated')!;
+    coordinated.control!.topology = 'solo';
+    coordinated.control!.capabilities = { ...allCapabilities('off'), 'work-item-ledger': 'on' };
+    const ablated = protocol.arms.find(arm => arm.id === 'coordinated-no-locks')!;
+    ablated.control!.topology = 'solo'; ablated.control!.capabilities = allCapabilities('off');
+    expect(currentBenchmarkProtocolSchema.safeParse(protocol).success).toBe(true);
+    expect(requireRunnableAblation(protocol, ablated.id)).toBe(CAPABILITY_ABLATIONS['work-item-ledger']);
+    expect(() => requireCurrentBenchmarkAssignment(protocol, { runId: 'run-1', armId: ablated.id,
+      taskId: 't1', seed: 1, agent: 'codex', model: 'configured-alias', effort: 'high', account: 'auto',
+      budget: { maxUsd: 3, maxWallClockMs: 100 }, topology: 'solo' })).not.toThrow();
+  });
 
   it.each(D018_CAPABILITIES.filter(capability => CAPABILITY_ABLATIONS[capability as AblatedCapability].nativeControl.status === 'unavailable'))
     ('refuses to launch %s-off while its native control is unavailable', capability => {

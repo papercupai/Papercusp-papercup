@@ -90,6 +90,8 @@ export interface AcceptanceBarLifecycleOptions {
    * the resolver and the gate. The resolved snapshot remains immutable for every phase.
    */
   snapshot?: AcceptanceBarContractSnapshot | Promise<AcceptanceBarContractSnapshot>;
+  /** Internal early contract gate; never valid for grading, shipping or operational proof. */
+  proofMode?: 'metadata';
 }
 
 const DELIVERY_PROOF_CODES = new Set<AcceptanceBarSnapshotCode>([
@@ -450,6 +452,8 @@ export function evaluateAcceptanceBarLifecycle(
 
   const codes: AcceptanceBarSnapshotCode[] = [];
   const requested = phase === 'pre-grading' ? new Set(options.pendingDeliveryBarKeys ?? []) : new Set<string>();
+  if (snapshot.proofMeasured === false && (phase === 'pre-grading' || phase === 'ship'))
+    addCode(codes, 'bar_snapshot_proof_uncertain');
   const pending = new Set(snapshot.bars.filter((bar) => requested.has(bar.barKey)
     && (bar.evidencePlane === 'deployed' || bar.evidencePlane === 'live')
     && bar.check?.kind === 'instrument' && bar.check.instrumentKey === 'none').map((bar) => bar.barKey));
@@ -607,6 +611,7 @@ export async function readAndEvaluateAcceptanceBarLifecycle(
     : await readAcceptanceBarContractSnapshot(planSlug, {}, {
         current: options.current,
         ...(options.harnessSlug ? { harnessSlug: options.harnessSlug } : {}),
+        ...(options.proofMode === 'metadata' ? { proofMode: 'metadata' as const } : {}),
       });
   // Only a positively identified legacy plan may bypass the contract. A missing,
   // unavailable, ambiguous, or truncated subject read cannot establish legacy
@@ -639,6 +644,6 @@ export async function readAndEvaluateAcceptanceBarLifecycle(
       { requireCompleteContractBeforeProof: options.requireCompleteContractBeforeProof,
         pendingDeliveryBarKeys: options.pendingDeliveryBarKeys },
     ),
-    nonCodeItemProofs: deriveNonCodeItemProofs(snapshot),
+    nonCodeItemProofs: snapshot.proofMeasured === false ? [] : deriveNonCodeItemProofs(snapshot),
   };
 }

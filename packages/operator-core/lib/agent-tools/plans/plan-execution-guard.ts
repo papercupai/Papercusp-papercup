@@ -6,13 +6,25 @@ import { ANY_FAMILY_TERMINAL_STATES } from '../../work-item-dispatch-states';
 import { parsePlan } from './parser';
 import { getPlanRow } from './source';
 import { planExecutionMeaning } from './plan-execution-meaning';
+import type { ResolvedGoal } from '../../agent-goal-ref';
 export { planExecutionMeaning } from './plan-execution-meaning';
 
 // The installed parser has no bundled declarations. Treat its tokens as unknown
 // and validate the small token vocabulary this read-only boundary accepts.
 const parseShell: (command: string) => unknown[] = createRequire(import.meta.url)('shell-quote').parse;
 
-export interface ExecutionPlanBinding { planSlug: string; harnessSlug: string | null }
+export type ExecutionPlanBindingSource =
+  | 'session-brief'
+  | 'control-state'
+  | 'active-session'
+  | 'plan-item-claim'
+  | 'work-item';
+export interface ExecutionPlanBinding {
+  planSlug: string;
+  harnessSlug: string | null;
+  source?: ExecutionPlanBindingSource;
+  sourceRef?: string | null;
+}
 export interface PlanExecutionRefusal {
   code: 'plan_execution_not_ready';
   reason: string;
@@ -22,8 +34,13 @@ export interface PlanExecutionRefusal {
 export interface PlanExecutionGuardInput {
   ownerId: string; workspaceId: string; toolName: string; args: unknown;
 }
+export interface ExecutionPlanGoalResolution {
+  goal: ResolvedGoal | null;
+  diagnostics: readonly unknown[];
+}
 export interface PlanExecutionGuardDeps {
   readBindings: (ownerId: string, workspaceId: string) => Promise<ExecutionPlanBinding[]>;
+  resolveGoal?: (ownerId: string, workspaceId: string) => Promise<ExecutionPlanGoalResolution>;
   checkPlan: (binding: ExecutionPlanBinding, workspaceId: string) => Promise<string[]>;
 }
 
@@ -120,25 +137,96 @@ export function isPlanImplementationCall(toolName: string, args: unknown): boole
 /** Read durable authority, never coord_presence or caller-supplied plan/force/purpose. */
 export async function readExecutionPlanBindings(ownerId: string, workspaceId: string): Promise<ExecutionPlanBinding[]> {
   const { sql } = getOrgPg();
-  const rows = await sql<Array<{ plan_slug: string; harness_slug: string | null }>>`
-    SELECT current_plan_slug AS plan_slug, harness_slug
-      FROM harness_shared.session_briefs WHERE owner_id=${ownerId} AND workspace_id=${workspaceId}
-    UNION
-    SELECT control_state #>> '{scope,plan}', control_state #>> '{scope,harness}'
-      FROM harness_shared.session_briefs WHERE owner_id=${ownerId} AND workspace_id=${workspaceId}
-    UNION
-    SELECT plan_slug, NULL::text FROM harness_shared.adv_sessions
-      WHERE coord_owner_id=${ownerId} AND workspace_id=${workspaceId} AND plan_slug IS NOT NULL
-        AND ended_at IS NULL
-    UNION
-    SELECT plan_slug, harness_slug FROM harness_shared.plan_item_claims
-      WHERE owner=${ownerId} AND workspace_id=${workspaceId}
-    UNION
-    SELECT source_plan_slug, harness_slug FROM harness_shared.work_items
-      WHERE taken_by=${ownerId} AND workspace_id=${workspaceId} AND source_plan_slug IS NOT NULL
-        AND NOT (status = ANY(${[...ANY_FAMILY_TERMINAL_STATES]}::text[]))`;
+  const rows = await sql<Array<{
+    plan_slug: string | null;
+    harness_slug: string | null;
+    source: ExecutionPlanBindingSource;
+    source_ref: string | null;
+  }>>`
+    SELECT current_plan_slug AS plan_slug, harness_slug, 'session-brief'::text AS source,
+           current_plan_slug AS source_ref
+      FROM harness_shared.session_briefs
+     WHERE owner_id=${ownerId} AND workspace_id=${workspaceId} AND current_plan_slug IS NOT NULL
+    UNION ALL
+    SELECT control_state #>> '{scope,plan}', control_state #>> '{scope,harness}',
+           'control-state'::text, control_state #>> '{scope,plan}'
+      FROM harness_shared.session_briefs
+     WHERE owner_id=${ownerId} AND workspace_id=${workspaceId}
+       AND control_state #>> '{scope,plan}' IS NOT NULL
+    UNION ALL
+    SELECT plan_slug, NULL::text, 'active-session'::text, plan_slug
+      FROM harness_shared.adv_sessions
+     WHERE coord_owner_id=${ownerId} AND workspace_id=${workspaceId} AND plan_slug IS NOT NULL
+       AND ended_at IS NULL
+    UNION ALL
+    SELECT plan_slug, harness_slug, 'plan-item-claim'::text, plan_slug || '#' || item_id
+      FROM harness_shared.plan_item_claims
+     WHERE owner=${ownerId} AND workspace_id=${workspaceId}
+    UNION ALL
+    SELECT source_plan_slug, harness_slug, 'work-item'::text, feature_id
+      FROM harness_shared.work_items
+     WHERE taken_by=${ownerId} AND workspace_id=${workspaceId}
+       AND source_plan_slug IS NOT NULL
+       AND NOT (status = ANY(${[...ANY_FAMILY_TERMINAL_STATES]}::text[]))`;
   return rows.filter(row => typeof row.plan_slug === 'string' && row.plan_slug.trim())
-    .map(row => ({ planSlug: row.plan_slug, harnessSlug: row.harness_slug }));
+    .map(row => ({
+      planSlug: row.plan_slug!,
+      harnessSlug: row.harness_slug,
+      source: row.source,
+      sourceRef: row.source_ref,
+    }));
+}
+
+function uniquePlanBindings(bindings: readonly ExecutionPlanBinding[]): ExecutionPlanBinding[] {
+  const unique = new Map<string, ExecutionPlanBinding>();
+  for (const binding of bindings) {
+    const key = JSON.stringify([binding.planSlug, binding.harnessSlug]);
+    unique.set(key, { planSlug: binding.planSlug, harnessSlug: binding.harnessSlug });
+  }
+  return [...unique.values()];
+}
+
+/** Narrow enforcement by source identity only when the resolver and binding census agree. */
+export function selectExecutionPlanBindings(
+  bindings: readonly ExecutionPlanBinding[],
+  goal: ResolvedGoal | null,
+): ExecutionPlanBinding[] {
+  if (!goal || goal.source === 'fleet-mission' ||
+      bindings.some(binding => !binding.source || !binding.sourceRef)) {
+    return uniquePlanBindings(bindings);
+  }
+
+  const selectedRefs = new Set([goal.ref, goal.corroboratedBy].filter((ref): ref is string => Boolean(ref)));
+  const selectedPlanSlugs = new Set<string>();
+  for (const binding of bindings) {
+    if (binding.sourceRef && selectedRefs.has(binding.sourceRef)) selectedPlanSlugs.add(binding.planSlug);
+  }
+  // A declared plan-slug override is itself a resolvable pointer. Work-item
+  // overrides match their sourceRef above, while plan-item overrides match their
+  // exact ref and contribute the plan slug from that binding.
+  if (goal.source === 'author-override') {
+    for (const binding of bindings) {
+      if (binding.planSlug === goal.ref) selectedPlanSlugs.add(binding.planSlug);
+    }
+  }
+
+  const selected = bindings.filter(binding =>
+    Boolean(binding.sourceRef && selectedRefs.has(binding.sourceRef)) ||
+    selectedPlanSlugs.has(binding.planSlug));
+  // A plan-item or authored override without matching durable binding evidence is
+  // ambiguous. Keep the full census so the guard cannot turn a stale/missing
+  // selected binding into permission.
+  if (selected.length === 0 && (goal.source === 'plan-item' || goal.source === 'author-override')) {
+    return uniquePlanBindings(bindings);
+  }
+  return uniquePlanBindings(selected);
+}
+
+async function readExecutionPlanGoal(ownerId: string, workspaceId: string): Promise<ExecutionPlanGoalResolution> {
+  return runWithWorkspace(workspaceId, async () => {
+    const { resolveOwnerGoalWithAssessment } = await import('../coordination/agent-goal-sources');
+    return resolveOwnerGoalWithAssessment(ownerId, 'self');
+  });
 }
 
 export async function checkExecutionPlan(binding: ExecutionPlanBinding, workspaceId: string): Promise<string[]> {
@@ -193,7 +281,10 @@ export async function checkPlanExecutionReadiness(binding: ExecutionPlanBinding,
     ]);
     const dependencies = validatePlanCandidateDependencies(parsed, 'started');
     if (dependencies.state === 'rejected' || dependencies.state === 'invalid-draft') return ['plan_dependencies_invalid'];
-    const gate = await checkPlanStartable(binding.planSlug, opts, null, 'start');
+    // This door enforces the current contract, not proof completion. Measuring
+    // every bound artifact here repeats ship-only work on each native tool call.
+    // Metadata still reads the live bounded sources; grading/ship reject reuse.
+    const gate = await checkPlanStartable(binding.planSlug, opts, null, 'start', { proofMode: 'metadata' });
     if (!gate.ok) return [gate.refusal.code];
     const items = plan.items.length ? plan.items : parsed.items;
     const quality = await evaluatePlanSpecQualityGate({ harnessSlug: row.harness_slug,
@@ -217,11 +308,27 @@ export async function checkPlanExecutionReadiness(binding: ExecutionPlanBinding,
 }
 
 export async function checkPlanExecutionGuard(input: PlanExecutionGuardInput,
-  deps: PlanExecutionGuardDeps = { readBindings: readExecutionPlanBindings, checkPlan: checkExecutionPlan },
+  deps: PlanExecutionGuardDeps = {
+    readBindings: readExecutionPlanBindings,
+    resolveGoal: readExecutionPlanGoal,
+    checkPlan: checkExecutionPlan,
+  },
 ): Promise<PlanExecutionRefusal | null> {
   if (!isPlanImplementationCall(input.toolName, input.args)) return null;
   try {
-    const bindings = await deps.readBindings(input.ownerId, input.workspaceId);
+    const allBindings = await deps.readBindings(input.ownerId, input.workspaceId);
+    let resolution: ExecutionPlanGoalResolution | null = null;
+    if (deps.resolveGoal) {
+      try {
+        resolution = await deps.resolveGoal(input.ownerId, input.workspaceId);
+      } catch {
+        // An unreadable selector cannot narrow authority. Check the entire durable
+        // census instead, preserving the existing fail-closed behavior.
+      }
+    }
+    const bindings = resolution && resolution.diagnostics.length === 0
+      ? selectExecutionPlanBindings(allBindings, resolution.goal)
+      : uniquePlanBindings(allBindings);
     for (const binding of bindings) {
       const blockers = await deps.checkPlan(binding, input.workspaceId);
       if (blockers.length) return { code: 'plan_execution_not_ready', planSlug: binding.planSlug, blockers,

@@ -41,6 +41,13 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { wsLocalKey } from '@papercusp/operator-core/lib/browser-workspace';
 import { nuqsParsers } from '@papercusp/test-config/nuqs-mock';
+import { PERF_INTERACTIONS } from '@/app/_components/perf/perf-marks';
+
+const { beginTiming } = vi.hoisted(() => ({ beginTiming: vi.fn() }));
+vi.mock('@/app/_components/perf/perf-marks', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/app/_components/perf/perf-marks')>()),
+  beginInteraction: beginTiming,
+}));
 
 // nuqs: stable [value, setter] per key. State is plain module data the tests
 // seed before render; setters are spies that DON'T write back (assert-only).
@@ -876,6 +883,17 @@ describe('AdvShell — tab fullscreen', () => {
     // bare fireEvent.click never reaches onValueChange.
     fireEvent.mouseDown(screen.getByRole('tab', { name: 'learning' }));
     await waitFor(() => expect(nuqsSetters.tab).toHaveBeenCalledWith('learning'));
+  });
+
+  it('starts work-list timing in the Work-tab gesture before navigation', async () => {
+    nuqsState.slug = 'pot-a';
+    nuqsState.scope = 'self';
+    beginTiming.mockClear();
+    await renderShell();
+    fireEvent.mouseDown(screen.getByRole('tab', { name: 'work' }));
+    expect(beginTiming).toHaveBeenCalledWith(PERF_INTERACTIONS.workListOpen, 'pot-a');
+    expect(nuqsSetters.tab).toHaveBeenCalledWith('harnesses');
+    expect(beginTiming.mock.invocationCallOrder.at(-1)).toBeLessThan(nuqsSetters.tab.mock.invocationCallOrder.at(-1)!);
   });
 });
 

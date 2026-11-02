@@ -241,6 +241,7 @@ const h = vi.hoisted(() => {
     },
     /** WI-10007010: isolate the accepted-operation tools/list candidate path. */
     identityListingTest: false,
+    identitySurfacePhases: null as { intervals: () => Array<{ phase: string }> } | null,
     identityListingUnresolved: false,
     identityOperationRecord: null as unknown,
     identityAdmittedToolNames: new Set<string>(),
@@ -398,7 +399,8 @@ vi.mock('../../capability-envelope/identity-tool-surface', async (importOriginal
     ...actual,
     resolveIdentityToolSurface: async (...args: Parameters<typeof actual.resolveIdentityToolSurface>) => {
       if (!h.identityListingTest) return actual.resolveIdentityToolSurface(...args);
-      const [ctx, candidates, , expandCandidates] = args;
+      const [ctx, candidates, , expandCandidates, phases] = args;
+      h.identitySurfacePhases = phases ?? null;
       const receiptCandidates = expandCandidates?.(h.identityOperationRecord) ?? [];
       h.identityObservedRoleCaps = [...(ctx.principal?.capabilities ?? [])];
       if (h.identityListingUnresolved) return { kind: 'unresolved', key: 'gating-matrix-operation' };
@@ -5016,6 +5018,8 @@ describe('tools/list — strict-mode listing matrix', () => {
     });
     const names = res.tools.map((tool) => tool.name);
 
+    expect(h.identitySurfacePhases?.intervals().map(({ phase }) => phase))
+      .toContain('identitySurface.context');
     expect(h.identityListedCandidateNames).toContain('work_items:claim');
     expect(h.identityListedCandidateNames).toContain('work_items:checkpoint');
     expect(h.identityListedCandidateNames).toContain('plans:set-status');

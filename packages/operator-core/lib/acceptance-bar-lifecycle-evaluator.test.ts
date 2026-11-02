@@ -281,6 +281,18 @@ describe('readAndEvaluateAcceptanceBarLifecycle — authoritative applicability'
       .toMatchObject({ applicable: true, satisfied: true, codes: [] });
   });
 
+  it('cannot reuse a contract-only snapshot for grading, shipping or operational realization', async () => {
+    const supplied = snapshot({ proofMeasured: false });
+    expect(evaluateAcceptanceBarLifecycle(supplied, 'pre-start').satisfied).toBe(true);
+    for (const phase of ['pre-grading', 'ship'] as const) {
+      expect(evaluateAcceptanceBarLifecycle(supplied, phase)).toMatchObject({ satisfied: false,
+        codes: expect.arrayContaining(['bar_snapshot_proof_uncertain']) });
+    }
+    const read = await readAndEvaluateAcceptanceBarLifecycle('plan-a', 'pre-start', { snapshot: supplied });
+    expect(read.nonCodeItemProofs).toEqual([]);
+    expect(readAcceptanceBarContractSnapshot).not.toHaveBeenCalled();
+  });
+
   it('evaluates a supplied snapshot without starting another BAR read', async () => {
     const supplied = snapshot();
 

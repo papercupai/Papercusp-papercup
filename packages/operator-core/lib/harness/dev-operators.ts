@@ -29,7 +29,7 @@
 
 import {
   defaultDetectSourceArchivePending,
-  defaultDetectSourceRoot,
+  defaultDetectSourceRootAsync,
   type SkipReason,
 } from './env-operator-launcher';
 import { isVmReleaseDistribution } from '../vm-release-runtime-policy';
@@ -382,7 +382,7 @@ export async function resolveDevOperators(
   // (PAPERCUSP_DEV_SOURCE_ROOT, WI-3308) counts — a raw detectPapercupRoot()
   // here omitted dev/local from the list while local was literally running
   // (WI-3307 mac verify, 2026-07-07).
-  const hasSourceTree = deps.hasSourceTree ?? defaultDetectSourceRoot() != null;
+  const hasSourceTree = deps.hasSourceTree ?? (await defaultDetectSourceRootAsync()) != null;
   const allCandidates = deps.candidates ?? DEV_OPERATORS;
   const candidates = allCandidates.filter((d) => hasSourceTree || !d.requiresSourceTree);
   // The omission above is deliberate and stays; what was missing is the READBACK for it

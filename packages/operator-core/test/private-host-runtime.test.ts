@@ -17,7 +17,7 @@ const dirs: string[] = [];
 const common = resolve(import.meta.dirname, '../../../apps/operator/bin/bundle-host-common.sh');
 function cleanupPrivateHostTestDirectories(directories: string[], failed: boolean) {
   if (failed) {
-    console.error(`[private-host-runtime] retained failure evidence: ${JSON.stringify(directories)}`);
+    process.stderr.write(`[private-host-runtime] retained failure evidence: ${JSON.stringify(directories)}\n`);
     return;
   }
   for (const dir of directories) rmSync(dir, { recursive: true, force: true });
@@ -34,7 +34,7 @@ it.each([false, true])('preserves private-host failure evidence and cleans succe
   const journal = join(root, 'hono-host.mjs.build-steps.jsonl');
   const original = '{"step":"compile","event":"start"}\n';
   writeFileSync(journal, original);
-  const report = vi.spyOn(console, 'error').mockImplementation(() => {});
+  const report = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
   try {
     cleanupPrivateHostTestDirectories([root], failed);
     if (failed) {
@@ -1101,10 +1101,20 @@ it('stops the entire async builder group when no completed progress exists', asy
 
 it('enforces the absolute build ceiling despite distinct successful step progress', async () => {
   const evidenceDir = mkdtempSync(join(tmpdir(), 'private-builder-')); dirs.push(evidenceDir);
-  await expect(buildPrivateOperatorApiBundle(evidenceDir, evidenceDir, { command: 'bash',
-    args: ['-c', 'source "$1"; BUNDLE_HOST_STEP_LOG="$2"; i=0; while true; do i=$((i+1)); bundle_host_run_step "step-$i" sleep .08; done',
-      '_', common, join(evidenceDir, 'hono-host.mjs.build-steps.jsonl')],
-    timeoutMs: 600, maxMs: 1200, pollMs: 20 })).rejects.toThrow(/ETIMEDOUT.*absolute-ceiling/);
+  // Exercise the builder's journal sampler and real child teardown while
+  // controlling time and progress independently of OS sleep scheduling.
+  vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] });
+  const build = buildPrivateOperatorApiBundle(evidenceDir, evidenceDir, { command: 'bash',
+    args: ['-c', 'sleep 60'], timeoutMs: 600, maxMs: 1200, pollMs: 20 });
+  const rejected = expect(build).rejects.toThrow(/ETIMEDOUT.*absolute-ceiling/);
+  const journal = join(evidenceDir, 'hono-host.mjs.build-steps.jsonl');
+  for (let step = 1; step <= 6; step++) {
+    for (const event of ['start', 'end']) appendFileSync(journal, JSON.stringify({
+      at: Date.now() / 1000, pid: process.pid, step: `step-${step}`, event, status: 0,
+    }) + '\n');
+    await vi.advanceTimersByTimeAsync(200);
+  }
+  await rejected;
   const receipt = JSON.parse(readFileSync(join(evidenceDir, 'operator-api-build-result.json'), 'utf8'));
   expect(receipt.watchdog).toMatchObject({ reason: 'absolute-ceiling' });
   // Timers may fire just before their requested deadline and schedule one

@@ -373,6 +373,12 @@ export interface ContinuationGateInputs {
    *  It can wake on resolution but has no timeout, so it is an intentional wait
    *  signal, not a guaranteed re-wake. */
   activeQuestionResolutionAwait?: boolean | null;
+  /** True only for an inactive loop row carrying a persisted explicit loop:end. */
+  explicitLoopEnded?: boolean | null;
+  /** Whether this owner has any live work-item claim; null means the read was unavailable. */
+  activeClaimPresent?: boolean | null;
+  /** Count of active non-inbox awaits; null means the await read was unavailable. */
+  activeNonInboxAwaitCount?: number | null;
   /** Whether a standing, unbounded wake:true subscription is active. It may
    *  re-invoke the session when its event fires, but it cannot guarantee a
    *  wake when no matching event arrives. Keep this separate from the guarantee. */
@@ -436,6 +442,8 @@ export interface ContinuationVerdict {
   activeInboxWakeAwait: boolean | null;
   /** Whether an open requester question has its exact resolution await active. */
   activeQuestionResolutionAwait: boolean | null;
+  /** True only for an explicit loop end with no held claim or directed work remaining. */
+  explicitLoopEndNoActiveWork: boolean;
   /** Whether an unbounded standing wake:true watch was active (null ⇒ unknown). */
   activeUnboundedWakeWatch: boolean | null;
   /** Whether the next wake sheds the current transcript (null ⇒ unknown). */
@@ -487,6 +495,15 @@ export function evaluateContinuationGate(inputs: ContinuationGateInputs): Contin
   const rewakeGuaranteed = inputs.rewakeGuaranteed ?? null;
   const activeInboxWakeAwait = inputs.activeInboxWakeAwait ?? null;
   const activeQuestionResolutionAwait = inputs.activeQuestionResolutionAwait ?? null;
+  const explicitLoopEnded = inputs.explicitLoopEnded ?? null;
+  const activeClaimPresent = inputs.activeClaimPresent ?? null;
+  const activeNonInboxAwaitCount = inputs.activeNonInboxAwaitCount ?? null;
+  const explicitLoopEndNoActiveWork =
+    explicitLoopEnded === true &&
+    activeClaimPresent === false &&
+    unreadInbox === 0 &&
+    activeQuestionResolutionAwait === false &&
+    activeNonInboxAwaitCount === 0;
   const activeUnboundedWakeWatch = inputs.activeUnboundedWakeWatch ?? null;
   const nextWakeFresh = inputs.nextWakeFresh ?? null;
   const activeLoopRewakeBlockedReason = inputs.activeLoopRewakeBlockedReason ?? null;
@@ -498,13 +515,21 @@ export function evaluateContinuationGate(inputs: ContinuationGateInputs): Contin
     ? `continuation gate OPEN (${contextPct}% context, no unread inbox): you MAY run the next unit in this turn IF it is already scoped — but FIRST flush (every held work-item claim checkpointed, P-002). Re-evaluate this gate at the next unit boundary.`
     : `continuation gate CLOSED — settle this turn: ${reasons.join('; ')}. Checkpoint what you hold and end the turn; the next wake re-opens the gate.`;
 
-  // A fleet wind-down is the one deliberate exception to the no-PTY rule. At
+  // An explicit loop:end is a deliberate stop, not a mandate to create another
+  // wake. Only trust it when the live claim, inbox, open question and active
+  // non-inbox awaits were all checked and found clear.
+  if (!shouldContinue && explicitLoopEndNoActiveWork) {
+    guidance =
+      `continuation gate CLOSED — settle this turn: ${reasons.join('; ')}. ` +
+      `The loop was explicitly ended and no held claim, unread directed message, open question, or non-inbox await remains. ` +
+      `Preserve the explicit stop: do not arm a wake; wait for an explicit re-arm or new directed assignment.`;
+  } else if (
+    // A fleet wind-down is the one deliberate exception to the no-PTY rule. At
   // critical context, the member has already flushed/released its claim and the
   // fleet's durable control + typed cue authorize stopping the engine loop. It
   // must be checked before the ordinary re-wake/cold-carry remedies, because
   // neither a warm nor a missing wake should resurrect a fleet that is standing
   // down. This branch never authorizes session:end or process respawn.
-  if (
     !shouldContinue &&
     selfCompactionAvailable === false &&
     contextPct != null &&
@@ -693,6 +718,7 @@ export function evaluateContinuationGate(inputs: ContinuationGateInputs): Contin
     rewakeGuaranteed,
     activeInboxWakeAwait,
     activeQuestionResolutionAwait,
+    explicitLoopEndNoActiveWork,
     activeUnboundedWakeWatch,
     nextWakeFresh,
     activeLoopRewakeBlockedReason,
@@ -714,6 +740,9 @@ export function continuationGateFromReads(args: {
   rewakeGuaranteed?: boolean | null;
   activeInboxWakeAwait?: boolean | null;
   activeQuestionResolutionAwait?: boolean | null;
+  explicitLoopEnded?: boolean | null;
+  activeClaimPresent?: boolean | null;
+  activeNonInboxAwaitCount?: number | null;
   activeUnboundedWakeWatch?: boolean | null;
   nextWakeFresh?: boolean | null;
   selfCompactionAvailable?: boolean | null;
@@ -729,6 +758,9 @@ export function continuationGateFromReads(args: {
     rewakeGuaranteed: args.rewakeGuaranteed,
     activeInboxWakeAwait: args.activeInboxWakeAwait,
     activeQuestionResolutionAwait: args.activeQuestionResolutionAwait,
+    explicitLoopEnded: args.explicitLoopEnded,
+    activeClaimPresent: args.activeClaimPresent,
+    activeNonInboxAwaitCount: args.activeNonInboxAwaitCount,
     activeUnboundedWakeWatch: args.activeUnboundedWakeWatch,
     nextWakeFresh: args.nextWakeFresh,
     selfCompactionAvailable: args.selfCompactionAvailable,

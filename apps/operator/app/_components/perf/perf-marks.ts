@@ -60,6 +60,12 @@
 /** The curated set of named interactions we budget + measure. Keep this small
  *  and intentional — one entry per user-perceived interaction worth a budget. */
 export const PERF_INTERACTIONS = {
+  /** Work-tab gesture → the selected harness's rows and summary have rendered. */
+  workListOpen: "work-list-open",
+  /** Work grid selection → the matching detail has committed usable content. */
+  workItemOpen: "work-item-open",
+  /** Human-work claim click → the authoritative claimed state has rendered. */
+  workItemClaim: "work-item-claim",
   /** Plans dashboard: "Open full plan" click → plan body rendered in Vditor.
    *  The "several seconds to load a plan" path (WI-5547); the measure spans
    *  click → the first Vditor.preview parse of the popup's plan body. */
@@ -136,7 +142,7 @@ function latestMeasureDuration(p: Performance, name: string): number | null {
  * Begin timing a named interaction. Records a `<name>:start` mark, replacing
  * any prior (unconsumed) start for the same name. Never throws.
  */
-export function beginInteraction(name: PerfInteractionName | string): void {
+export function beginInteraction(name: PerfInteractionName | string, subject?: string): void {
   const p = perf();
   if (!p) return;
   try {
@@ -144,7 +150,8 @@ export function beginInteraction(name: PerfInteractionName | string): void {
     for (const entry of p.getEntriesByType('measure')) {
       if (entry.name.startsWith(`${name}:phase:`)) p.clearMeasures?.(entry.name);
     }
-    p.mark(name + START_SUFFIX);
+    if (subject === undefined) p.mark(name + START_SUFFIX);
+    else p.mark(name + START_SUFFIX, { detail: { subject } });
   } catch {
     /* never break the interaction we are trying to measure */
   }
@@ -184,6 +191,7 @@ export function markInteractionPhase(name: string, phase: string): number | null
  */
 export function endInteraction(
   name: PerfInteractionName | string,
+  subject?: string,
 ): number | null {
   const p = perf();
   if (!p) return null;
@@ -192,6 +200,8 @@ export function endInteraction(
     const starts = p.getEntriesByName(startName, "mark");
     const start = starts[starts.length - 1];
     if (!start) return null;
+    // A late response for another selection must not consume the current click.
+    if (subject !== undefined && (start as PerformanceMark).detail?.subject !== subject) return null;
     // Discard a stale start (a begin whose timely end never came).
     if (p.now() - start.startTime > STALE_START_MS) {
       p.clearMarks?.(startName);
@@ -226,10 +236,14 @@ export function getLatestMeasure(
 }
 
 /** Drop any pending start mark for a name (the interaction was aborted). */
-export function clearInteraction(name: PerfInteractionName | string): void {
+export function clearInteraction(name: PerfInteractionName | string, subject?: string): void {
   const p = perf();
   if (!p) return;
   try {
+    if (subject !== undefined) {
+      const starts = p.getEntriesByName(name + START_SUFFIX, "mark");
+      if ((starts[starts.length - 1] as PerformanceMark | undefined)?.detail?.subject !== subject) return;
+    }
     p.clearMarks?.(name + START_SUFFIX);
   } catch {
     /* noop */

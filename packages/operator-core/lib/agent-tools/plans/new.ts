@@ -33,6 +33,8 @@ import { emitPlanAuthored } from '../../harness/usage-emitters';
 import { resolveGoalContext, stampPlanGoalProvenance } from '../../modes/goal-context';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { authoringReuse } from '../../code-intelligence/reuse-authoring';
+import { suggestResearchAnchors } from '../../code-intelligence/research-trail';
+import { sessionAllowsAmbientContext } from '../../capability-envelope/session-confinement-port';
 import { productShapingScaffold, productShapingWriteAdvisory, PRODUCT_SHAPING_GUIDANCE } from './product-shaping';
 import { planDeclarationsScaffold, planDeclarationsWriteAdvisory } from './plan-declarations';
 import {
@@ -414,7 +416,7 @@ export function findSimilarPlans(
 export default defineTool({
   name: 'plans:new',
   description:
-    'Create a plan in the plan store; never write a plan file. Optional content; lock-enforced unique slug. Format: /internal/docs/spec/plan-format.',
+    "Create a plan with a unique slug. suggestedAnchors come from this caller's trail; pass chosen links to plans:add-item anchors to store them.",
   guidance: {
     when: 'Starting a plan: plans:new { slug, title, content }. ' + PRODUCT_SHAPING_GUIDANCE + ' Requirements need R-N records with executable requirement JSON (METHOD, check, requiredTestLayers) and Design "### Bar-to-work map for this plan". Fill "## Existing infrastructure reused" and "## Third-party libraries" (scaffolded; or notApplicable).',
     notWhen:
@@ -813,8 +815,12 @@ export default defineTool({
 
     const shapingAdvisory = body != null && body.trim().length > 0 ? productShapingWriteAdvisory(body) : null;
     const declarationsAdvisory = body != null && body.trim().length > 0 ? planDeclarationsWriteAdvisory(body) : null;
-    const reuseAdvice = await authoringReuse(ctx, { workspaceId: result.scope.workspaceId,
-      harness: result.scope.harnessSlug, plan: value.slug, text: body ?? args.title });
+    const adviceOwner = resolveAgentIdentity(ctx).ownerId;
+    const allowAdvice = await sessionAllowsAmbientContext({ ownerId: adviceOwner, workspaceId: result.scope.workspaceId });
+    const reuseAdvice = allowAdvice ? await authoringReuse(ctx, { workspaceId: result.scope.workspaceId,
+      harness: result.scope.harnessSlug, plan: value.slug, text: body ?? args.title }) : undefined;
+    const suggestedAnchors = allowAdvice ? await suggestResearchAnchors(result.scope.workspaceId,
+      adviceOwner, harnessSlug ?? result.scope.harnessSlug) : undefined;
     return {
       content: [
         {
@@ -825,6 +831,7 @@ export default defineTool({
             filePath: result.filePath,
             revision: rev.recorded.current ? { seq: rev.recorded.current.seq } : null,
             verificationProfile: verificationStamp,
+            suggestedAnchors,
             ...(semanticallyCleared.length > 0 ? { semanticallyCleared } : {}),
             ...parseSummary,
             // R-9: a supplied body without product shaping still lands; the

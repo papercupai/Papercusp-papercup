@@ -87,6 +87,20 @@ describe("PERF_INTERACTIONS registry", () => {
 });
 
 describe('interaction phases', () => {
+  it('does not let a late item response end or clear a different selection', () => {
+    beginInteraction(PERF_INTERACTIONS.workItemOpen, 'alpha:WI-2');
+    expect(endInteraction(PERF_INTERACTIONS.workItemOpen, 'alpha:WI-1')).toBeNull();
+    clearInteraction(PERF_INTERACTIONS.workItemOpen, 'alpha:WI-1');
+    expect(endInteraction(PERF_INTERACTIONS.workItemOpen, 'alpha:WI-2')).not.toBeNull();
+    expect(endInteraction(PERF_INTERACTIONS.workItemOpen, 'alpha:WI-2')).toBeNull();
+  });
+
+  it('clears an aborted scoped journey without recording a success', () => {
+    beginInteraction(PERF_INTERACTIONS.workItemClaim, 'alpha:WI-1:claim');
+    clearInteraction(PERF_INTERACTIONS.workItemClaim, 'alpha:WI-1:claim');
+    expect(endInteraction(PERF_INTERACTIONS.workItemClaim, 'alpha:WI-1:claim')).toBeNull();
+    expect(getLatestMeasure(PERF_INTERACTIONS.workItemClaim)).toBeNull();
+  });
   it('retains the original total start and records each phase only once', () => {
     beginInteraction(NAME);
     const start = performance.getEntriesByName(START)[0]!.startTime;

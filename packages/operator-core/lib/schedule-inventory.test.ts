@@ -254,6 +254,38 @@ describe('startup activity disclosure', () => {
 });
 
 describe('startup entrypoint census', () => {
+  describe.each(['local', 'federated'] as const)('%s managed execution-policy coverage', placement => {
+    it.each([
+      { name: 'unbound legacy timer', activity: undefined, classified: false },
+      { name: 'empty control reason', activity: { kind: 'required-control', reason: ' ' }, classified: false },
+      { name: 'unknown workspace', activity: { kind: 'workspace', workspaceId: '*', featureId: `activity-${'a'.repeat(64)}` }, classified: false },
+      { name: 'invalid feature identity', activity: { kind: 'workspace', workspaceId: 'workspace-a', featureId: 'unknown' }, classified: false },
+      { name: 'required recovery', activity: { kind: 'required-control', reason: 'Restores the settings control channel.' }, classified: true },
+      { name: 'scoped optional work', activity: { kind: 'workspace', workspaceId: 'workspace-a', featureId: `activity-${'a'.repeat(64)}` }, classified: true },
+    ] as const)('keeps $name distinct from checked writer coverage', async ({ activity, classified }) => {
+      const timer = { name: 'legacy-policy-probe', category: 'global-sweep' as const, intervalMs: 1000,
+        ...(activity === undefined ? {} : { activity }),
+        armedAt: 0, lastFireAt: null, lastError: null, running: false, runningSince: null,
+        skippedWhileRunning: 0, fires: 0, shed: false, instanced: false, instances: 1, classification: null };
+      const native = STARTUP_ACTIVITY_ENTRYPOINTS.filter(entry => !('notApplicableReason' in entry))
+        .map(entry => ({ ...scheduleStartupFeature(startupRow()), id: entry.id, origin: 'native', entrypointIds: [entry.id] }));
+      const snapshot = await runWithWorkspace('workspace-a', () => collectStartupActivity({ ...emptyInventory,
+        getManaged: () => placement === 'local' ? [timer] : [],
+        getSiblingManaged: async () => placement === 'federated'
+          ? [{ port: 3271, pid: 12345, label: 'bg-host:3271', process: 'bg-host', ok: true,
+            timers: [timer], dbosSchedules: [], stallWaker: null, elapsedMs: 0 }] : [],
+      }, { native: async () => native,
+        census: async features => STARTUP_ACTIVITY_ENTRYPOINTS.filter(entry => !('notApplicableReason' in entry))
+          .map(entry => ({ id: entry.id, kind: 'checked', featureIds: features.filter(feature => feature.entrypointIds.includes(entry.id)).map(feature => feature.id) })),
+      }));
+      const feature = snapshot.features.find(entry => entry.origin === (placement === 'local' ? 'managed' : 'external-process'))!;
+      expect(feature).toBeDefined();
+      expect(snapshot.census.complete).toBe(classified);
+      expect(snapshot.census.problems).toEqual(classified ? [] : [`unclassified-managed:${feature.id}`]);
+      expect(feature.desired.automatic).toBeNull();
+    });
+  });
+
   it('returns the versioned census with the actual snapshot and fails an omitted installed entry', async () => {
     const native: StartupActivityFeature[] = STARTUP_ACTIVITY_ENTRYPOINTS.filter(entry => !('notApplicableReason' in entry))
       .map(entry => ({ ...scheduleStartupFeature(startupRow()), id: entry.id, origin: 'native', entrypointIds: [entry.id] }));
@@ -276,6 +308,10 @@ describe('startup entrypoint census', () => {
       for (const file of readdirSync(resolve(REPO_ROOT, base)).filter(file => /(?:\.service|\.sh|\.plist\.template)$/.test(file)))
         expect(writers.has(`${base}/${file}`), `unregistered native startup writer ${file}`).toBe(true);
     }
+    const windows = 'papercusp-desktop/src-tauri/windows';
+    for (const file of readdirSync(resolve(REPO_ROOT, windows), { recursive: true, encoding: 'utf8' })
+      .filter(file => file.endsWith('.iss')))
+      expect(writers.has(`${windows}/${file.replaceAll('\\', '/')}`), `unregistered Windows installer ${file}`).toBe(true);
     const population = STARTUP_ACTIVITY_ENTRYPOINTS.map(entry => entry.id);
     const dispositions = STARTUP_ACTIVITY_ENTRYPOINTS.map(entry => 'notApplicableReason' in entry
       ? { id: entry.id, kind: 'not-applicable' as const, reason: entry.notApplicableReason }
@@ -283,6 +319,18 @@ describe('startup entrypoint census', () => {
     const features = population.map(id => ({ id, entrypointIds: [id] }));
     expect(checkStartupActivityCensus(population, dispositions, features).complete).toBe(true);
     expect(checkStartupActivityCensus(population, dispositions.slice(1), features).complete).toBe(false);
+  });
+  it('marks the actual Windows update relaunch as an upgrade while retaining its commit guard', () => {
+    const installer = sourceText('papercusp-desktop/src-tauri/windows/inno/papercusp.iss');
+    const runSection = installer.split(/^\[Run\]\r?$/m)[1]?.split(/^\[/m)[0] ?? '';
+    const launches = runSection.split(/\r?\n/).filter(line => line.startsWith('Filename:'));
+    expect(launches).toHaveLength(1);
+    // The release GUI treats an unmarked relaunch as manual and clears clean-stop.
+    // These are the installer arguments delivered to the native launch gate.
+    expect(launches[0]).toContain('Filename: "{app}\\papercusp-desktop.exe"');
+    expect(launches[0]).toMatch(/Parameters:\s*"--upgrade";/);
+    expect(launches[0]).toMatch(/Check:\s*IsUpdaterLaunch\s*$/);
+    expect(installer).toMatch(/Result := PayloadUpgradeCommitted and \(Pos\('\/UPDATE', UpperCase\(GetCmdTail\(\)\)\) > 0\);/);
   });
   it('discovers native Rust registration adapters independently of the census', () => {
     const base = 'papercusp-desktop/src-tauri/src';

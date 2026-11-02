@@ -267,6 +267,31 @@ afterEach(() => {
 });
 
 describe('test-files router', () => {
+  it('routes startup-only through the bounded owned child without listing or reporting passing tests', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'router-startup-only-'));
+    mkdirSync(join(root, 'src'));
+    writeFileSync(join(root, 'package.json'), JSON.stringify({ name: 'startup-only-fixture' }));
+    writeFileSync(join(root, 'vitest.config.ts'), 'export default {}');
+    writeFileSync(join(root, 'src/selected.test.ts'), 'throw new Error("must not collect")');
+    const runCapturedTestProcessImpl = vi.fn(async () => ({ status: 2, stdout: '', stderr: '', signal: null }));
+    const runVitestListImpl = vi.fn(() => { throw new Error('list must not run'); });
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const status = await main(['--startup-only', 'src/selected.test.ts'], { repoRoot: root,
+        restrictedHoldPreflightImpl: () => ({ verdict: 'skipped', reason: 'fixture' }),
+        runCapturedTestProcessImpl, runVitestListImpl });
+      expect(status).toBe(2);
+      expect(runVitestListImpl).not.toHaveBeenCalled();
+      expect(runCapturedTestProcessImpl).toHaveBeenCalledOnce();
+      expect(runCapturedTestProcessImpl).toHaveBeenCalledWith(process.execPath,
+        expect.arrayContaining(['--startup-only-child', '--config', 'vitest.config.ts', 'src/selected.test.ts']),
+        expect.objectContaining({ cwd: root, files: ['src/selected.test.ts'],
+          timeoutMs: expect.any(Number), watchdogMaxMs: expect.any(Number) }));
+      expect(log.mock.calls.flat().join('\n')).toContain('"testVerdict":"not-measured"');
+      expect(log.mock.calls.flat().join('\n')).not.toContain('status=passed');
+    } finally { log.mockRestore(); rmSync(root, { recursive: true, force: true }); }
+  });
+
   it('routes the DB-free PTY process fixture through its maintained integration config', () => {
     expect(discoverVitestRoute('apps/operator/lib/psu-pty-host-assume-fence.integration.test.ts'))
       .toMatchObject({
@@ -340,6 +365,7 @@ describe('test-files router', () => {
         loadVitestReceiptReporterImpl: async () => ({
           shouldRecordTestRunPath: () => true,
           missingTestRunReceiptPaths: () => [],
+          reconcileTimedOutTestRunReceipts: async () => [],
         }),
         testConfigExportPreflightImpl: check,
         runVitestListImpl: list,
@@ -3225,7 +3251,7 @@ describe('executed proof output custody (EI-26908539061140583)', () => {
 describe('main() — evidence runs require inserted Vitest ledger receipts', () => {
   const file = 'packages/operator-core/lib/__tests__/test-file-router.test.ts';
 
-  it.each(['shouldRecordTestRunPath', 'missingTestRunReceiptPaths'])(
+  it.each(['shouldRecordTestRunPath', 'missingTestRunReceiptPaths', 'reconcileTimedOutTestRunReceipts'])(
     'refuses a pinned reporter missing %s before collection or execution', async missingExport => {
       const priorReceiptFile = process.env.PAPERCUSP_TEST_RUN_RECEIPT_FILE;
       process.env.PAPERCUSP_TEST_RUN_RECEIPT_FILE = join(tmpdir(), 'unused-router-preflight-receipt.jsonl');
@@ -3233,7 +3259,9 @@ describe('main() — evidence runs require inserted Vitest ledger receipts', () 
       const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
       const list = vi.fn(), run = vi.fn();
       const reporter: Record<string, unknown> = {
-        shouldRecordTestRunPath: () => true, missingTestRunReceiptPaths: () => [],
+        shouldRecordTestRunPath: () => true,
+        missingTestRunReceiptPaths: () => [],
+        reconcileTimedOutTestRunReceipts: async () => [],
       };
       // An export with the right name and wrong type is just as incompatible
       // as an absent export; check callable shape, not key presence.
@@ -3367,6 +3395,99 @@ describe('main() — evidence runs require inserted Vitest ledger receipts', () 
     expect(result.errors).toContain('CONNECT_TIMEOUT');
     expect(result.errors).not.toContain('startedAt');
     expect(result.output).not.toContain('TEST_FILE_RESULT');
+  });
+
+  it('reads back a timed-out row only after the bounded receipt-file wait and keeps its run group', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'test-file-receipt-readback-'));
+    const receiptFile = join(dir, 'receipts.jsonl');
+    const priorReceiptFile = process.env.PAPERCUSP_TEST_RUN_RECEIPT_FILE;
+    const priorRunGroup = process.env.PAPERCUSP_TEST_RUN_GROUP;
+    const priorWorkItem = process.env.PAPERCUSP_TEST_RUN_WORK_ITEM;
+    process.env.PAPERCUSP_TEST_RUN_RECEIPT_FILE = receiptFile;
+    delete process.env.PAPERCUSP_TEST_RUN_GROUP;
+    delete process.env.PAPERCUSP_TEST_RUN_WORK_ITEM;
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    let childRunGroup: string | undefined;
+    let runFinishedAt = 0;
+    let readbackElapsedMs = 0;
+    let readbackOptions: any = null;
+    const reporter = {
+      shouldRecordTestRunPath: () => true,
+      reporterWriteBudget: () => ({ flushBudgetMs: 50 }),
+      missingTestRunReceiptPaths: (receiptLog: string, expectedPaths: string[]) => {
+        const inserted = receiptLog.split(/\r?\n/).some(line => {
+          try { return JSON.parse(line).outcome === 'inserted'; } catch { return false; }
+        });
+        return inserted ? [] : expectedPaths;
+      },
+      reconcileTimedOutTestRunReceipts: async (receiptLog: string, options: any) => {
+        readbackElapsedMs = Date.now() - runFinishedAt;
+        readbackOptions = options;
+        const timeoutReceipt = JSON.parse(receiptLog.trim().split(/\r?\n/).at(-1)!);
+        expect(timeoutReceipt.outcome).toBe('timeout');
+        const { outcome: _outcome, reason: _reason, replayable: _replayable, ...base } = timeoutReceipt;
+        const inserted = { ...base, outcome: 'inserted', id: 'canonical-902' };
+        writeFileSync(receiptFile, `${JSON.stringify(inserted)}\n`, { flag: 'a' });
+        return [inserted];
+      },
+    };
+    const runCapturedTestProcessImpl = vi.fn(async (_command: string, _args: string[], options: any) => {
+      childRunGroup = options.env.PAPERCUSP_TEST_RUN_GROUP;
+      const filePath = file;
+      const timeoutReceipt = {
+        receiptId: 'same-run-timeout',
+        attempt: 0,
+        filePath,
+        status: 'pass',
+        row: {
+          filePath,
+          startedAt: '2026-10-14T17:00:00.000Z',
+          finishedAt: '2026-10-14T17:00:01.000Z',
+          executionDetails: { root: REPO_ROOT, runGroupId: childRunGroup },
+        },
+        outcome: 'timeout',
+        reason: 'pg_insert_timeout_15000ms',
+        replayable: false,
+      };
+      writeFileSync(options.env.PAPERCUSP_TEST_RUN_RECEIPT_FILE, `${JSON.stringify(timeoutReceipt)}\n`);
+      runFinishedAt = Date.now();
+      return { status: 0, signal: null, stdout: 'Test Files 1 passed (1)\nTests 1 passed (1)\n',
+        stderr: '', timedOut: false, error: null };
+    });
+
+    try {
+      const code = await main([file], {
+        createRouterProofCustodyImpl: () => null,
+        restrictedHoldPreflightImpl: () => ({ verdict: 'skip' }),
+        loadVitestReceiptReporterImpl: async () => reporter,
+        testConfigExportPreflightImpl: () => {},
+        runVitestListImpl: async () => ({ status: 0, signal: null,
+          stdout: 'lib/__tests__/test-file-router.test.ts\n', stderr: '', timedOut: false, error: null }),
+        runCapturedTestProcessImpl,
+      });
+      const output = logSpy.mock.calls.map(([line]) => String(line)).join('\n');
+      const errors = errorSpy.mock.calls.map(([line]) => String(line)).join('\n');
+      expect(code).toBe(0);
+      expect(childRunGroup).toEqual(expect.any(String));
+      expect(childRunGroup).not.toBe('');
+      expect(readbackElapsedMs).toBeGreaterThanOrEqual(40);
+      expect(readbackOptions).toMatchObject({
+        expectedPaths: [file], expectedRoot: REPO_ROOT, runGroupId: childRunGroup,
+      });
+      expect(output).toContain('TEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed');
+      expect(errors).not.toContain('TEST_FILE_LEDGER_RECEIPT_MISSING');
+    } finally {
+      logSpy.mockRestore();
+      errorSpy.mockRestore();
+      if (priorReceiptFile === undefined) delete process.env.PAPERCUSP_TEST_RUN_RECEIPT_FILE;
+      else process.env.PAPERCUSP_TEST_RUN_RECEIPT_FILE = priorReceiptFile;
+      if (priorRunGroup === undefined) delete process.env.PAPERCUSP_TEST_RUN_GROUP;
+      else process.env.PAPERCUSP_TEST_RUN_GROUP = priorRunGroup;
+      if (priorWorkItem === undefined) delete process.env.PAPERCUSP_TEST_RUN_WORK_ITEM;
+      else process.env.PAPERCUSP_TEST_RUN_WORK_ITEM = priorWorkItem;
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('does not create or require a receipt sink for ordinary focused runs', async () => {
@@ -4302,6 +4423,47 @@ describe('warnIfInstallInFlight (EI-19304880034803985 — the HANG-path hint)', 
 });
 
 describe('direct test-files CLI install reader lease (EI-24946572521324679)', () => {
+  it.each([false, true])('dispatches startup-only inside the shared reader boundary, inherited=%s', async inherited => {
+    const lockName = repoLockName();
+    const previous = inherited ? lockName : 'npm-install-aaaaaaaaaaaa';
+    const env = { PAPERCUSP_INSTALL_MUTEX_HELD: previous };
+    const args = ['--startup-only-child', '--config', 'vitest.config.ts', 'selected.test.ts'];
+    const run = vi.fn(() => { throw new Error('ordinary/list/collection path must not run'); });
+    const acquireReadLease = vi.fn(async (_name, withLease) => withLease());
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const diagnoseStartupImpl = vi.fn(async (nativeArgs, emit) => {
+      expect(env.PAPERCUSP_INSTALL_MUTEX_HELD.split(',')).toContain(lockName);
+      expect(nativeArgs).toEqual(args.slice(1));
+      emit({ event: 'startup-only-outcome', status: 'startup-observed', testVerdict: 'not-measured' });
+      return { status: 'startup-observed' };
+    });
+    try {
+      await expect(runTestFilesCli(args, { env, lockName, acquireReadLease, run, diagnoseStartupImpl })).resolves.toBe(2);
+      expect(run).not.toHaveBeenCalled();
+      expect(diagnoseStartupImpl).toHaveBeenCalledOnce();
+      expect(acquireReadLease).toHaveBeenCalledTimes(inherited ? 0 : 1);
+      expect(env.PAPERCUSP_INSTALL_MUTEX_HELD).toBe(previous);
+      expect(errorSpy.mock.calls.flat().join('\n')).toContain('"testVerdict":"not-measured"');
+      expect(errorSpy.mock.calls.flat().join('\n')).not.toContain('status=passed');
+    } finally { errorSpy.mockRestore(); }
+  });
+
+  it('restores the install marker and preserves a diagnostic rejection for common CLI error handling', async () => {
+    const lockName = repoLockName();
+    const env = { PAPERCUSP_INSTALL_MUTEX_HELD: 'npm-install-aaaaaaaaaaaa' };
+    const expected = new Error('native diagnostic failure');
+    const acquireReadLease = vi.fn(async (_name, withLease) => withLease());
+    const run = vi.fn();
+    const diagnoseStartupImpl = vi.fn(async () => {
+      expect(env.PAPERCUSP_INSTALL_MUTEX_HELD.split(',')).toContain(lockName);
+      throw expected;
+    });
+    await expect(runTestFilesCli(['--startup-only-child', 'selected.test.ts'],
+      { env, lockName, acquireReadLease, run, diagnoseStartupImpl })).rejects.toBe(expected);
+    expect(env.PAPERCUSP_INSTALL_MUTEX_HELD).toBe('npm-install-aaaaaaaaaaaa');
+    expect(run).not.toHaveBeenCalled();
+  });
+
   it('reports reader-admission waits and propagates the marker for an unmarked CLI run', async () => {
     const lockName = repoLockName();
     const otherLockName = 'npm-install-aaaaaaaaaaaa';

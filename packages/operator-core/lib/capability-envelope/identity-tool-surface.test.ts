@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { compileAgentSpecification, type ResolvedCapabilityProviderInput } from '@papercusp/orchestrator/blueprint';
 import type { UnifiedToolContext } from '@papercusp/agent-mcp';
+import { createPhaseTracker } from '@papercusp/tooldef';
 import { checkIdentityGrantKernel, type IdentityGrantPolicy } from './identity-grants-port';
 import {
   __resetListedIdentitySurfaces,
@@ -89,6 +90,24 @@ describe('P-012 / D-040(b): a governed wearer sees what the kernel admits', () =
         stateFor({ requires: [CLASS] }), stateFor({ requires: [CLASS] }).identityLaunchRecord, async () => policy);
       expect(verdict?.decision === 'allow').toBe(surface.kind === 'governed' && surface.admitted.has(candidate.name));
     }
+  });
+
+  it('separates the one-time authority and policy reads from candidate evaluation timings', async () => {
+    const phases = createPhaseTracker();
+    const readPolicy = vi.fn(async () => policy);
+
+    const surface = await resolveIdentityToolSurface(
+      ctx, candidates, deps(stateFor({ requires: [CLASS] }), readPolicy), undefined, phases,
+    );
+
+    expect(surface.kind).toBe('governed');
+    expect(readPolicy).toHaveBeenCalledTimes(1);
+    expect(phases.intervals().map((phase) => phase.phase)).toEqual([
+      'identitySurface.controlState',
+      'identitySurface.grantPolicy',
+      'identitySurface.firstCandidate',
+      'identitySurface.remainingCandidates',
+    ]);
   });
 
   it('expands an accepted operation receipt before the same identity-kernel listing gate', async () => {

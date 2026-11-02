@@ -511,6 +511,8 @@ export interface AcceptanceBarContractSnapshot {
   contentHash: string;
   planSlug: string;
   applicable: boolean;
+  /** False for contract-only reads; these snapshots cannot certify execution proof. */
+  proofMeasured?: false;
   plan: AcceptanceBarSubjectPlanSource | null;
   rubric: {
     rubricId: string;
@@ -589,6 +591,7 @@ export interface AcceptanceBarSnapshotDeps {
   readEvidence: (
     plan: AcceptanceBarSubjectPlanSource,
     current?: EvidenceCurrentInput[],
+    proofMode?: 'metadata',
   ) => Promise<BoundedAcceptanceBarRows<AcceptanceBarEvidenceSource>>;
   readLineage: (plan: AcceptanceBarSubjectPlanSource) => Promise<AcceptanceBarLineageSource>;
   readScorecards: (rubric: Rubric) => Promise<BoundedAcceptanceBarRows<ScorecardRow>>;
@@ -1999,12 +2002,14 @@ async function defaultReadWorkContracts(
 async function defaultReadEvidence(
   plan: AcceptanceBarSubjectPlanSource,
   current?: EvidenceCurrentInput[],
+  proofMode?: 'metadata',
 ): Promise<BoundedAcceptanceBarRows<AcceptanceBarEvidenceSource>> {
   const rows = await listSpecEvidence({
     harnessSlug: plan.harnessSlug,
     planSlugs: [plan.planSlug],
     current,
     limit: ACCEPTANCE_BAR_SNAPSHOT_EVIDENCE_LIMIT + 1,
+    ...(proofMode ? { measurementMode: proofMode } : {}),
   });
   return bounded(rows, ACCEPTANCE_BAR_SNAPSHOT_EVIDENCE_LIMIT);
 }
@@ -2111,7 +2116,7 @@ const DEFAULT_DEPS: AcceptanceBarSnapshotDeps = {
 export async function readAcceptanceBarContractSnapshot(
   planSlug: string,
   deps: Partial<AcceptanceBarSnapshotDeps> = {},
-  options: { current?: EvidenceCurrentInput[]; harnessSlug?: string;
+  options: { current?: EvidenceCurrentInput[]; harnessSlug?: string; proofMode?: 'metadata';
     /** Synchronous diagnostic only; observer failures cannot change the snapshot. */
     onRead?: (source: AcceptanceBarSnapshotSource, elapsedMs: number) => void;
   } = {},
@@ -2165,7 +2170,9 @@ export async function readAcceptanceBarContractSnapshot(
       () => (plan ? d.readWorkContracts(plan) : Promise.resolve(emptyContracts)),
       emptyContracts,
     ),
-    capture('evidence', () => (plan ? d.readEvidence(plan, options.current) : Promise.resolve(emptyEvidence)), emptyEvidence),
+    capture('evidence', () => (plan ? options.proofMode === 'metadata'
+      ? d.readEvidence(plan, undefined, 'metadata') : d.readEvidence(plan, options.current)
+      : Promise.resolve(emptyEvidence)), emptyEvidence),
     capture('lineage', () => (plan ? d.readLineage(plan) : Promise.resolve(emptyLineage)), emptyLineage),
     capture('grading', () => (rubric ? d.readScorecards(rubric) : Promise.resolve(emptyScorecards)), emptyScorecards),
     capture(
@@ -2213,7 +2220,8 @@ export async function readAcceptanceBarContractSnapshot(
     graderSelectionVia: selectionVia.value,
     readFailures: failures,
   });
-  return snapshot.planSlug ? snapshot : { ...snapshot, planSlug };
+  return { ...snapshot, ...(snapshot.planSlug ? {} : { planSlug }),
+    ...(options.proofMode === 'metadata' ? { proofMeasured: false as const } : {}) };
 }
 
 export type AcceptanceBarDiffKind =

@@ -4607,6 +4607,9 @@ describe('idempotency (P-014: a replay must not open a second set of windows)', 
         startedAt: 1_760_000_000_000,
         expectedCount: 1,
         ownerIds: ['su-original'],
+        targetMembers: [{ ownerId: 'su-original', label: 'do it', headless: true }],
+        spawnAttempted: true,
+        nativeSpawnAttempted: [0],
         processHandles: { '0': { ownerId: 'su-original', pid: 4242, terminalPid: 4343 } },
         memberResults: { '0': { status: 'starting', outcome: 'unknown' } },
       },
@@ -4626,10 +4629,41 @@ describe('idempotency (P-014: a replay must not open a second set of windows)', 
         status: 'reconciliation-required',
         opened: null,
         failed: null,
+        spawnAttempted: true,
+        nativeSpawnAttempted: [0],
+        targetMembers: [{ ownerId: 'su-original', label: 'do it', headless: true }],
         processHandles: { '0': { ownerId: 'su-original', pid: 4242, terminalPid: 4343 } },
       },
     });
     expect(dataOf(res)?.completionReceipt).toBeUndefined();
+  });
+
+  it('keeps absent spawn-attempt evidence unknown in a legacy incomplete claim', async () => {
+    claimAgentLaunchMock.mockResolvedValue({
+      won: false,
+      priorSummary: {
+        requestKind: 'capability:launch-agent',
+        launchState: 'spawning',
+        ownerIds: ['su-legacy'],
+      },
+      priorLaunchedAt: 1_760_000_000_000,
+      priorLaunchedBy: 'su-original-launcher',
+    });
+
+    const res = await launchAgent.handler({ brief: 'do it', idempotencyKey: 'retry-legacy-unknown' }, ctx);
+
+    expect(spawnConsoleMock).not.toHaveBeenCalled();
+    expect(dataOf(res)).toMatchObject({
+      deduped: true,
+      launch: {
+        status: 'reconciliation-required',
+        spawnAttempted: null,
+        nativeSpawnAttempted: null,
+        processHandles: null,
+        memberResults: null,
+        ownerIds: ['su-legacy'],
+      },
+    });
   });
 
   it('records claim phase and exact targets before opening a process', async () => {

@@ -33,7 +33,7 @@ import type { UnifiedToolContext } from '@papercusp/agent-mcp';
 import { realpath } from 'node:fs/promises';
 import { dirname, isAbsolute, relative, resolve } from 'node:path';
 
-import { evaluateSessionConfinement, validWorkItemBoundary, type SessionToolConfinement } from './session-confinement';
+import { evaluateSessionConfinement, validWorkItemBoundary, validScratchPlanBoundary, type SessionToolConfinement } from './session-confinement';
 import { isHookReleasedOperationContinuationCall } from '../released-operation-continuation-door';
 
 /**
@@ -103,8 +103,12 @@ export async function sessionPromptPolicy(input: {
   if (!confinement) return ordinary;
   if (confinement.denyWorkItemsOutside !== undefined && !validWorkItemBoundary(confinement.denyWorkItemsOutside))
     throw new Error('Session prompt workflow assignment boundary is invalid.');
+  if (confinement.denyPlansOutside !== undefined && !validScratchPlanBoundary(confinement.denyPlansOutside))
+    throw new Error('Session prompt workflow scratch plan boundary is invalid.');
+  const draftPlanningOnly = confinement.denyPlansOutside?.scratchPrefix.startsWith('benchmark-scratch-') === true;
   const hostManaged = confinement.denyAmbientContext === true && confinement.denyWorkItemsOutside !== undefined &&
-    confinement.denyOutside !== undefined && !confinement.denyOutside.some(name => /^(?:work_items|plans):/.test(name));
+    confinement.denyOutside !== undefined && !confinement.denyOutside.some(name =>
+      name.startsWith('work_items:') || !draftPlanningOnly && name.startsWith('plans:'));
   return { ambientContextAllowed: confinement.denyAmbientContext === undefined,
     workItemWorkflow: hostManaged ? 'host-managed' : 'agent-managed' };
 }

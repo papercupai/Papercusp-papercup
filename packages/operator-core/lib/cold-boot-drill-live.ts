@@ -142,6 +142,8 @@ export interface ColdBootDrillHostEvent {
   mode?: string;
   launchContextPath?: string | null;
   reason?: string;
+  /** The host may retry this respawn attempt; a later lifecycle row settles it. */
+  retryable?: boolean;
   /** Wait budget the host stamped on a busy-gate / re-arm row, ms. Read by
    *  carry-respawn-outcome to decide when a `pending` attempt is past the window
    *  in which it could still fire (see isOrphanedPendingRespawn). */

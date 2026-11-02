@@ -552,6 +552,72 @@ test(`${installed} installed dependencies reserve the writer while existing read
 });
 }
 
+for (const [command, version, reserve] of [
+  ["prune", "1.2.3", true],
+  ["install", "1.2.2", true],
+  ["install", "1.2.3", false],
+]) {
+test(`fallback ${command} with installed ${version} ${reserve ? "reserves repair admission" : "keeps healthy reader admission open"}`, {
+  timeout: 25_000, skip: process.platform === "win32",
+}, async () => {
+  const fixture = createManifestResolutionFixture({ flagOnlyDuringResolve: true });
+  const packageDir = join(fixture.repoRoot, "node_modules", "fixture-pkg");
+  mkdirSync(packageDir, { recursive: true });
+  writeFileSync(join(packageDir, "package.json"), JSON.stringify({ name: "fixture-pkg", version }));
+  const lockRootDir = fixture.env.PAPERCUSP_FS_MUTEX_LOCK_DIR;
+  const name = repoLockName(fixture.repoRoot);
+  let releaseReader;
+  let readyReader;
+  const ready = new Promise(resolve => { readyReader = resolve; });
+  const held = new Promise(resolve => { releaseReader = resolve; });
+  const reader = withFsMutexRead(name, async () => { readyReader(); await held; }, { lockRootDir });
+  let child;
+  let ended;
+  let output = "";
+  try {
+    await ready;
+    const args = command === "prune"
+      ? ["prune", "--legacy-peer-deps", "--package-lock=false"]
+      : ["install", "fixture-pkg@file:../fixture-pkg"];
+    child = spawn(process.execPath, [fixture.cli, "--repo-root", fixture.repoRoot, ...args], {
+      env: { ...fixture.env, NPM_INSTALL_SAFE_TEST_FOREIGN_FALLBACK: "1", PAPERCUSP_SKIP_DEP_VERIFY: "1" },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    child.stdout.on("data", data => { output += data; });
+    child.stderr.on("data", data => { output += data; });
+    ended = new Promise(resolve => child.once("close", resolve));
+    const deadline = Date.now() + 10_000;
+    while (!output.includes("writer waiting for dependency readers")) {
+      assert.equal(child.exitCode, null, output);
+      assert.ok(Date.now() < deadline, output);
+      await new Promise(resolve => setTimeout(resolve, 5));
+    }
+    // Neither policy may mutate the protected tree before its reader finishes.
+    assert.equal(existsSync(fixture.tracePath), false, output);
+    assert.equal(existsSync(join(lockRootDir, name + ".lock")), reserve, output);
+    if (reserve) {
+      await assert.rejects(withFsMutexRead(name, async () => {
+        assert.fail("new reader overtook dependency repair");
+      }, { lockRootDir, timeoutMs: 50, retryMs: 5 }), /Timed out/);
+    } else {
+      assert.equal(await withFsMutexRead(name, async () => "entered", {
+        lockRootDir, timeoutMs: 500, retryMs: 5,
+      }), "entered");
+    }
+    releaseReader();
+    await reader;
+    assert.equal(await ended, 0, output);
+    assert.deepEqual(readFileSync(fixture.tracePath, "utf8").trim().split("\n"), ["cache-verify", "fallback"]);
+  } finally {
+    releaseReader();
+    await reader;
+    if (child && child.exitCode === null) child.kill("SIGTERM");
+    if (ended) await ended;
+    rmSync(fixture.tempRoot, { recursive: true, force: true });
+  }
+});
+}
+
 test("test:affected preflight refuses stale workspace lock metadata before launching tests", async () => {
   const fixture = createManifestResolutionFixture();
   const manifestPath = join(fixture.repoRoot, "packages", "operator-core", "package.json");

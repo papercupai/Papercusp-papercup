@@ -1757,6 +1757,26 @@ describe('AcceptanceBarContractSnapshot — fixed-call loader', () => {
     expect(observed.completeness.complete).toBe(!sourceFails);
   });
 
+  it('marks metadata snapshots and keeps source failures and bounded binding rows visible', async () => {
+    const source = fixture(1);
+    const readEvidence = vi.fn(async () => source.evidence);
+    const observed = await readAcceptanceBarContractSnapshot('plan-a', {
+      readPlans: async () => source.planRows, readRubrics: async () => source.rubrics,
+      readPlanItems: async () => source.planItems, readClauses: async () => { throw Error('clause read down'); },
+      readWorkContracts: async () => source.workContracts, readEvidence,
+      readLineage: async () => source.lineage, readScorecards: async () => source.scorecards,
+      readVettingScorecards: async () => source.vettingScorecards, readCurrentCritique: async () => null,
+      readParties: async () => new Map(source.partyByIdentity),
+      readGraderSelectionVia: async () => new Map(source.graderSelectionVia),
+    }, { proofMode: 'metadata' });
+    expect(readEvidence).toHaveBeenCalledWith(source.planRows.rows[0], undefined, 'metadata');
+    expect(observed.proofMeasured).toBe(false);
+    expect(observed.bounded.evidence.rowsRead).toBe(source.evidence.rows.length);
+    expect(observed.completeness.problems).toContainEqual(expect.objectContaining({
+      code: 'bar_snapshot_source_unavailable', source: 'clauses',
+    }));
+  });
+
   it('turns a reader failure into an explicit unavailable source and blocked repair', async () => {
     const source = fixture(1);
     const snapshot = await readAcceptanceBarContractSnapshot('plan-a', {

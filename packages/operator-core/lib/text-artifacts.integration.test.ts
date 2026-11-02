@@ -149,7 +149,8 @@ describe('text-artifacts (drizzle, PG)', () => {
     const input = await q.commitSecurityApplicability(context('reviewer'), 'web', {
       manifestSha256: produced.manifest.sha256, ledgerSha256: planned.ledger.sha256,
       manifestProducerRef: produced.producerRef, ledgerProducerRef: planned.producerRef,
-      executor: 'su-executor', reviewRef: 'fixture:independent-storage-check' });
+      executor: 'su-executor', reviewRef: 'fixture:independent-storage-check',
+      expectedTuples: tuples, expectedDispositions: planned.ledger.body.rows.map(row => row.disposition) });
     const execute = vi.fn(async (pins: { startRef: string }) => {
       expect(await loadImmutableTextArtifactClaim('web', `security-qualification:start:${input.approvalRef}`)).toBe(pins.startRef);
       return 'storage-control';
@@ -181,17 +182,30 @@ describe('text-artifacts (drizzle, PG)', () => {
     if (!('manifestSha256' in produced) || !('producerRef' in produced)) throw Error('no manifest');
     const tuples = SECURITY_POPULATIONS.map(population => ({ population, kind: population, surfaceId: population,
       distribution: 'fixture', platform: 'linux', runtime: 'node', enforcementMode: 'strict', effect: 'fs', channel: 'mcp' }));
+    const dispositions = tuples.map(tuple => ({ rowId: securityTupleId(tuple), applicability: 'notApplicable' as const,
+      reason: 'Storage fixture, no security acceptance', sourceRefs: ['fixture:adapter-storage'] }));
     const planned = await a.securityQualificationMetadata(context('producer'), 'web', { phase: 'ledger',
-      manifestSha256: produced.manifestSha256, tuples, dispositions: tuples.map(tuple => ({
-        rowId: securityTupleId(tuple), applicability: 'notApplicable', reason: 'Storage fixture, no security acceptance',
-        sourceRefs: ['fixture:adapter-storage'] })) });
+      manifestSha256: produced.manifestSha256, tuples, dispositions });
     if (!('ledgerSha256' in planned) || !('producerRef' in planned)) throw Error('no ledger');
     const review = { phase: 'review' as const, manifestSha256: produced.manifestSha256,
       ledgerSha256: planned.ledgerSha256, manifestProducerRef: produced.producerRef,
-      ledgerProducerRef: planned.producerRef, executor: 'su-executor', reviewRef: 'fixture:review' };
+      ledgerProducerRef: planned.producerRef, executor: 'su-executor', reviewRef: 'fixture:review',
+      expectedTuples: tuples, expectedDispositions: dispositions };
     await expect(a.securityQualificationMetadata(context('producer'), 'web', review)).rejects.toThrow('reviewer_not_independent');
+    const extra = { ...tuples[0], platform: 'darwin-arm64' };
+    await expect(a.securityQualificationMetadata(context('reviewer'), 'web', { ...review,
+      expectedTuples: [...tuples, extra], expectedDispositions: [...dispositions, {
+        rowId: securityTupleId(extra), applicability: 'notApplicable', reason: 'Independent additional platform',
+        sourceRefs: ['fixture:additional-platform'],
+      }] })).rejects.toThrow('applicability_reconciliation_mismatch');
     const approved = await a.securityQualificationMetadata(context('reviewer'), 'web', review);
     if (!('approvalRef' in approved)) throw Error('no approval');
+    const approvalBytes = await loadImmutableTextArtifact('web', approved.approvalRef);
+    if (!approvalBytes) throw Error('missing approval');
+    const approval = JSON.parse(approvalBytes).event;
+    const comparisonBytes = await loadImmutableTextArtifact('web', approval.applicabilityEvidenceSha256);
+    if (!comparisonBytes) throw Error('missing comparison');
+    expect(JSON.parse(comparisonBytes)).toMatchObject({ producer: 'su-reviewer', manifestSha256: produced.manifestSha256 });
     const input = { phase: 'execute' as const, manifestSha256: review.manifestSha256,
       ledgerSha256: review.ledgerSha256, approvalRef: approved.approvalRef };
     // The callback is a storage fixture: this tests real signing/SQL/adapter

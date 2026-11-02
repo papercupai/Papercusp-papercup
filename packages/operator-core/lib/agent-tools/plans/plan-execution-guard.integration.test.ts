@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createFreshPgDb, type FreshPgDb } from '../../../test/_pg-helpers';
 import { dispatchProjectedTool, type ProjectedTool } from '@papercusp/agent-mcp';
+import { resolveAgentGoal } from '../../agent-goal-ref';
 
 const connection = vi.hoisted(() => ({ sql: null as unknown }));
 vi.mock('@papercusp/db-org', async original => ({
@@ -51,7 +52,7 @@ beforeAll(async () => {
     CREATE TABLE harness_shared.adv_sessions (id bigint, coord_owner_id text, workspace_id text,
       plan_slug text, launch_spec jsonb, started_at timestamptz, ended_at timestamptz, ended_by text);
     CREATE TABLE harness_shared.plan_item_claims (owner text, workspace_id text, harness_slug text,
-      plan_slug text, expires_ts timestamptz);
+      plan_slug text, item_id text, expires_ts timestamptz);
     CREATE TABLE harness_shared.work_items (taken_by text, workspace_id text, harness_slug text,
       source_plan_slug text, status text);
     CREATE TABLE harness_shared.harness_plans (workspace_id text, harness_slug text, plan_slug text,
@@ -133,12 +134,72 @@ describe('real write-boundary bypass regression', () => {
   });
   it('retains launch and expired-but-held plan claims, scoped to the owner and workspace', async () => {
     await db.sql`INSERT INTO harness_shared.adv_sessions VALUES (1,${OWNER},${WS},'draft-feature',NULL,now(),NULL,NULL)`;
-    await db.sql`INSERT INTO harness_shared.plan_item_claims VALUES (${OWNER},${WS},'project','claim-plan',now()-interval '1 day')`;
-    await db.sql`INSERT INTO harness_shared.plan_item_claims VALUES (${OWNER},'other-workspace','project','foreign-plan',now())`;
+    await db.sql`INSERT INTO harness_shared.plan_item_claims
+      (owner,workspace_id,harness_slug,plan_slug,item_id,expires_ts)
+      VALUES (${OWNER},${WS},'project','claim-plan','P-001',now()-interval '1 day')`;
+    await db.sql`INSERT INTO harness_shared.plan_item_claims
+      (owner,workspace_id,harness_slug,plan_slug,item_id,expires_ts)
+      VALUES (${OWNER},'other-workspace','project','foreign-plan','P-002',now())`;
     expect(await readExecutionPlanBindings(OWNER, WS)).toEqual(expect.arrayContaining([
-      { planSlug: 'draft-feature', harnessSlug: null }, { planSlug: 'claim-plan', harnessSlug: 'project' },
+      expect.objectContaining({ planSlug: 'draft-feature', harnessSlug: null, source: 'active-session' }),
+      expect.objectContaining({ planSlug: 'claim-plan', harnessSlug: 'project',
+        source: 'plan-item-claim', sourceRef: 'claim-plan#P-001' }),
     ]));
     expect((await readExecutionPlanBindings(OWNER, WS)).some(row => row.planSlug === 'foreign-plan')).toBe(false);
+  });
+  it('uses the selected work-item when an unrelated plan-item claim is also held', async () => {
+    await db.sql`INSERT INTO harness_shared.work_items
+      (taken_by,workspace_id,harness_slug,source_plan_slug,status,feature_id)
+      VALUES (${OWNER},${WS},'project','security-plan','wip','EI-security')`;
+    await db.sql`INSERT INTO harness_shared.plan_item_claims
+      (owner,workspace_id,harness_slug,plan_slug,item_id,expires_ts)
+      VALUES (${OWNER},${WS},'project','unrelated-plan','P-008',now()-interval '1 day')`;
+    const goal = resolveAgentGoal({
+      workItems: [{ id: 'EI-security' }],
+      planItems: [{ planSlug: 'unrelated-plan', itemId: 'P-008' }],
+    })!;
+    const checked: string[] = [];
+    const refusal = await checkPlanExecutionGuard({
+      ownerId: OWNER, workspaceId: WS, toolName: 'apply_patch', args: {},
+    }, {
+      readBindings: readExecutionPlanBindings,
+      resolveGoal: async () => ({ goal, diagnostics: [] }),
+      checkPlan: async binding => {
+        checked.push(binding.planSlug);
+        return binding.planSlug === 'unrelated-plan' ? ['plan_status:draft'] : [];
+      },
+    });
+
+    expect(refusal).toBeNull();
+    expect(checked).toEqual(['security-plan']);
+  });
+  it('still blocks when the selected work-item points to a plan that has not started', async () => {
+    await db.sql`INSERT INTO harness_shared.work_items
+      (taken_by,workspace_id,harness_slug,source_plan_slug,status,feature_id)
+      VALUES (${OWNER},${WS},'project','draft-feature','wip','EI-security')`;
+    await db.sql`INSERT INTO harness_shared.plan_item_claims
+      (owner,workspace_id,harness_slug,plan_slug,item_id,expires_ts)
+      VALUES (${OWNER},${WS},'project','unrelated-plan','P-008',now())`;
+    const readyPlan = '---\ntitle: Draft\nstatus: ready\n---\n# Draft\n';
+    await db.sql`UPDATE harness_shared.harness_plans
+      SET content=${readyPlan},content_hash='ready-hash',status='ready'`;
+    const goal = resolveAgentGoal({
+      workItems: [{ id: 'EI-security' }],
+      planItems: [{ planSlug: 'unrelated-plan', itemId: 'P-008' }],
+    })!;
+    const refusal = await checkPlanExecutionGuard({
+      ownerId: OWNER, workspaceId: WS, toolName: 'apply_patch', args: {},
+    }, {
+      readBindings: readExecutionPlanBindings,
+      resolveGoal: async () => ({ goal, diagnostics: [] }),
+      checkPlan: checkExecutionPlan,
+    });
+
+    expect(refusal).toMatchObject({
+      code: 'plan_execution_not_ready',
+      planSlug: 'draft-feature',
+      blockers: ['plan_not_started'],
+    });
   });
   it('allows genuinely unbound work, but never interprets an unreadable binding store as unbound', async () => {
     const input = { ownerId: OWNER, workspaceId: WS, toolName: 'apply_patch', args: {} };
@@ -180,7 +241,7 @@ describe('real write-boundary bypass regression', () => {
       expect(await checkPlanExecutionReadiness(binding, WS)).toEqual([]);
       expect(policy.readLifecycle).toHaveBeenCalledTimes(1);
       expect(policy.readLifecycle).toHaveBeenLastCalledWith('draft-feature', 'pre-start', {
-        harnessSlug: 'project', requireCompleteContractBeforeProof: true,
+        harnessSlug: 'project', requireCompleteContractBeforeProof: true, proofMode: 'metadata',
       });
       expect(await checkPlanExecutionReadiness(binding, WS)).toEqual(['acceptance_bar_contract_not_ready']);
       expect(policy.readLifecycle).toHaveBeenCalledTimes(2);

@@ -8,12 +8,15 @@ import { StallWaker, type StallEvent, type StallWakerDeps, type StallWakerOption
 function harness(opts: StallWakerOptions = {}) {
   // lastAct defaults to 60s BEFORE t0: the owner is idle (past idleSilenceMs) and its activity
   // PRE-dates any stall pushed at t0 — the "plausibly wedged" baseline.
-  const state = { t: 1_000_000, lastAct: 940_000, capBack: true, woken: 1, unwedgeOk: true, unwedgeExpected: false };
+  const state = { t: 1_000_000, lastAct: 940_000, capBack: true, woken: 1, wakeTimedOut: false, unwedgeOk: true, unwedgeExpected: false };
   const queue: StallEvent[] = [];
   const logs: Array<{ level: 'info' | 'warn'; msg: string }> = [];
-  const calls = { wake: [] as string[], cap: 0, unwedge: [] as string[] };
+  const calls = { fetch: 0, wake: [] as string[], cap: 0, unwedge: [] as string[] };
   const deps: StallWakerDeps = {
-    fetchStalls: async (since) => ({ now: state.t, stalls: queue.filter((s) => s.at > since) }),
+    fetchStalls: async (since) => {
+      calls.fetch++;
+      return { now: state.t, stalls: queue.filter((s) => s.at > since) };
+    },
     ownerLastActivityAt: async () => state.lastAct,
     capacityBack: async () => {
       calls.cap++;
@@ -21,7 +24,7 @@ function harness(opts: StallWakerOptions = {}) {
     },
     wake: async (ownerId) => {
       calls.wake.push(ownerId);
-      return { woken: state.woken };
+      return { woken: state.woken, timedOut: state.wakeTimedOut };
     },
     unwedge: async (ownerId) => {
       calls.unwedge.push(ownerId);
@@ -56,6 +59,18 @@ test('happy path — confirmed-idle bee, after reset + capacity back → woken o
   assert.deepEqual(r.woken, ['bee-1'], 'woken once capacity is back');
   assert.equal(h.w.pendingCount, 0, 'cleared after a successful wake');
   assert.equal(h.calls.wake.length, 1);
+});
+
+test('23 concurrent poll ticks share one pass and cannot duplicate the same wake', async () => {
+  const h = harness({ wakeCooldownMs: 0 });
+  h.pushStall({ soonestResetAt: h.state.t - 1 });
+
+  const results = await Promise.all(Array.from({ length: 23 }, () => h.w.tick()));
+
+  assert.equal(h.calls.fetch, 1, 'overlapping poll callbacks share one fetch and pending-state pass');
+  assert.deepEqual(h.calls.wake, ['bee-1'], 'one pending stall produces one wake attempt');
+  assert.deepEqual(results[0].woken, ['bee-1']);
+  assert.ok(results.every((result) => result === results[0]), 'all coalesced callers observe the same pass');
 });
 
 test('FALSE-POSITIVE guard — an owner that keeps acting after its stall (recovered) is dropped, never woken or ESC\'d', async () => {
@@ -130,6 +145,20 @@ test('bee gone — wake fires but nobody is watching (woken:0) → dropped, not 
   assert.deepEqual(r.woken, [], 'woken:0 is not a successful wake');
   assert.deepEqual(h.calls.wake, ['bee-1'], 'it DID attempt the wake');
   assert.equal(h.w.pendingCount, 0, 'dropped — a gone bee is not retried');
+});
+
+test('wake timeout is unknown delivery, not a confirmed no-listener miss', async () => {
+  const h = harness();
+  h.state.woken = 0;
+  h.state.wakeTimedOut = true;
+  h.pushStall({ soonestResetAt: h.state.t + 1000 });
+  h.advance(2000);
+
+  await h.w.tick();
+
+  assert.equal(h.w.pendingCount, 0, 'unknown delivery is not retried');
+  assert.ok(h.logs.some((entry) => /wake timed out — delivery unknown/.test(entry.msg)));
+  assert.ok(!h.logs.some((entry) => /nobody home/.test(entry.msg)), 'a timeout is not evidence that the listener is absent');
 });
 
 test('de-dup — many stalls for one bee → a single pending + a single wake (latest reset wins)', async () => {

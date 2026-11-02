@@ -8,7 +8,7 @@ import type { DispatchProjectedDeps, PolicyDecisionPoint, AuthDecision, AuthzQue
 import { createInvocationCapabilityContext, runWithInvocationCapabilities } from '@papercusp/plugin-loader';
 import type { Capability } from '@papercusp/plugin-sdk';
 import { canonicalJson } from './authority/authority-rpc-envelope';
-import { getGrantsForPluginInHarness } from './plugin-grants';
+import type { getGrantsForPluginInHarness } from './plugin-grants';
 
 type Request = Parameters<NonNullable<DispatchProjectedDeps['aroundInvoke']>>[0];
 type Installation = NonNullable<Request['tool']['pluginInstallation']>;
@@ -55,7 +55,7 @@ export function createPluginInvocationChokepoint(deps: {
     if (!principal || !['trusted', 'verified'].includes(principal.trust ?? '')
       || !principal.kind || !principal.authMethod || !principal.slug || !principal.workspaceId || principal.workspaceId === '*'
       || request.ctx.workspaceId !== principal.workspaceId || !harnessSlug || !request.callId
-      || !principal.allowedTools?.has(request.toolName)) {
+      || request.ctx.signal.aborted || !principal.allowedTools?.has(request.toolName)) {
       return refuse('An authenticated workspace, harness and exact tool allowlist are required');
     }
 
@@ -79,7 +79,8 @@ export function createPluginInvocationChokepoint(deps: {
           roles: request.ctx.principal.roles && [...request.ctx.principal.roles].sort() } });
       const originalIdentity = dispatchIdentity();
       const manifest = [...await (deps.readManifest ?? loadedManifest)(pluginName, installation)];
-      const granted = await (deps.readGrants ?? getGrantsForPluginInHarness)(pluginName,
+      const readGrants = deps.readGrants ?? (await import('./plugin-grants')).getGrantsForPluginInHarness;
+      const granted = await readGrants(pluginName,
         installation.version, harnessSlug, { requireAuthoritative: true });
       const binding = createHash('sha256').update(canonicalJson({ callId: request.callId,
         toolName: request.toolName, pluginName, installation, harnessSlug, input,
@@ -104,7 +105,7 @@ export function createPluginInvocationChokepoint(deps: {
         || approval.expiresAt <= Date.now()) {
         return refuse('A current host approval bound to this exact invocation is required');
       }
-      const isActive = () => resolvePolicy() === policy && dispatchIdentity() === originalIdentity
+      const isActive = () => !request.ctx.signal.aborted && resolvePolicy() === policy && dispatchIdentity() === originalIdentity
         && policy.isCurrent(structuredClone(query), structuredClone(decision)) === true;
       context = createInvocationCapabilityContext({ pluginName, capabilities: manifest,
         granted: granted as Capability[], principal: boundPrincipal, invocationId: request.callId,
@@ -120,4 +121,16 @@ export function createPluginInvocationChokepoint(deps: {
   };
 }
 
-export const pluginInvocationChokepoint = createPluginInvocationChokepoint();
+/** Production binding uses the existing owner-signed policy and grant rows.
+ * Test/custom hosts may still explicitly install their own trusted PDP. */
+export const pluginInvocationChokepoint: NonNullable<DispatchProjectedDeps['aroundInvoke']> = async request => {
+  if (!request.tool.pluginInstallation) return request.invoke();
+  if (hostPolicy) return createPluginInvocationChokepoint()(request);
+  try {
+    const { withPinnedPluginInvocationPolicy } = await import('./plugin-invocation-policy-store');
+    return await withPinnedPluginInvocationPolicy(request, (policy, grants) =>
+      createPluginInvocationChokepoint({ resolvePolicy: () => policy, readGrants: async () => grants })(request));
+  } catch {
+    return refuse('The current signed host policy and installation grant revision could not be pinned');
+  }
+};

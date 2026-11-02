@@ -28,7 +28,7 @@ import '../agent-tools/tools/invoke';
 import { __markSessionConfinementsPrimedForTest, __setSessionConfinementCacheForTest,
   declareSessionConfinement, readSessionConfinement, refreshSessionConfinements,
   releaseSessionConfinement } from './session-confinement-store';
-import type { SessionToolConfinement } from './session-confinement';
+import { BENCHMARK_SCRATCH_PLAN_TOOLS, type SessionToolConfinement } from './session-confinement';
 import { BLIND_REVIEW_TOOL } from '../blind-review-gate';
 import { blindReviewerConfinement } from '../blind-reviewer-mint';
 import { runManagedPreCompact } from '../../../../apps/operator/scripts/hooks/cc/precompact-managed-carry.mjs';
@@ -274,6 +274,33 @@ describe('durable launch confinement at the dispatch boundary', () => {
     }
     expect(await dispatch('plans:items', { slug: `${prefix}probe` })).toMatchObject({ ok: false, error: { code: 'capability_denied' } });
     expect(target).toHaveBeenCalledTimes(2);
+  });
+
+  it('persists benchmark draft planning and enforces its namespace direct and nested at the real seat', async () => {
+    const boundary = { scratchPrefix: 'benchmark-scratch-abc123def456-', reviewedSlug: 'benchmark-observer-private', harness: 'bench-private' };
+    await declare(OWNER, { ...ceiling([...BENCHMARK_SCRATCH_PLAN_TOOLS, 'tools:invoke']),
+      denyAmbientContext: true,
+      denyWorkItemsOutside: { id: 'WI-own', harness: boundary.harness, checkout: '/private/assignment' },
+      denyPlansOutside: boundary });
+    expect((await readSessionConfinement(OWNER, WORKSPACE))?.denyPlansOutside).toEqual(boundary);
+    const own = { slug: `${boundary.scratchPrefix}solution`, harness: boundary.harness };
+    const create = { ...own, title: 'Solve assignment', status: 'draft', force: true };
+    expect(await dispatch('plans:new', create)).toMatchObject({ ok: true });
+    expect(await dispatch('tools:invoke', { name: 'plans:new', args: create })).toMatchObject({ ok: true });
+    expect(await dispatch('plans:add-item', { ...own, text: 'Verify the fix' })).toMatchObject({ ok: true });
+    expect(await dispatch('plans:get', own)).toMatchObject({ ok: true });
+    const executed = target.mock.calls.length;
+    for (const args of [{ ...create, slug: 'shared-plan' }, { ...create, harness: 'neighbor' },
+      { ...create, slug: 'benchmark-scratch-foreign123456-solution' }, { ...create, status: 'active' },
+      { ...create, force: false }, { ...create, sourceRanges: [{ session: 'self' }] }]) {
+      expect(await dispatch('plans:new', args)).toMatchObject({ ok: false, error: { code: 'capability_denied' } });
+      const nested = await dispatch('tools:invoke', { name: 'plans:new', args });
+      expect(nested.ok).toBe(false);
+      expect(JSON.stringify(nested)).toContain('scratch plans');
+    }
+    for (const name of ['plans:audit', 'plans:start', 'work_items:get', 'consult:get_feedback'])
+      expect(await dispatch(name, own)).toMatchObject({ ok: false, error: { code: 'capability_denied' } });
+    expect(target).toHaveBeenCalledTimes(executed);
   });
 
   it('reads another process connection immediately and ignores a stale or empty local cache', async () => {

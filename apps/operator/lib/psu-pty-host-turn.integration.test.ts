@@ -365,7 +365,8 @@ it.each([503, 403])('preserves the classified Codex home failure and retries onl
       !(existsSync(log) && readFileSync(log, 'utf8').includes('codex-route-unavailable')))) await sleep(15);
     const events = readFileSync(log, 'utf8').split('\n').filter(Boolean).map(line => JSON.parse(line));
     expect(events).toContainEqual(expect.objectContaining({ kind: 'respawn-failed', mode: 'carry-respawn',
-      reason: 'codex-route-unavailable', homeEnsureFailure: failure }));
+      reason: 'codex-route-unavailable', homeEnsureFailure: failure,
+      retryable: status === 503, capMs: 1000 }));
     expect(mints).toBe(0);
     expect(events.some(event => event.kind === 'respawn-predecessor-stop-started')).toBe(false);
     expect(diagnostic.mock.calls.some(([value]) => String(value).includes(

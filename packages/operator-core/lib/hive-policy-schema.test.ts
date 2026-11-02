@@ -19,6 +19,22 @@ import {
 } from './hive-policy-schema';
 import { generateEd25519KeypairDer, signWithPrivateKeyDer, verifyEd25519 } from './identity/ed25519';
 
+describe('owner-signed plugin invocation approvals', () => {
+  const approval = { pluginName: 'fixture', pluginVersion: '1.0.0', installationPath: '/installed/fixture',
+    installationSource: 'global', principalSlug: 'caller', principalKind: 'system', authMethod: 'bearer-token',
+    toolName: 'fixture:write', inputSha256: 'a'.repeat(64), capabilities: ['tasks:write'], expiresAt: 2_000_000_000_000 };
+  it('preserves exact approvals in the signed policy and rejects broad or incomplete authoring', () => {
+    const policy = { pluginInvocations: { approvals: [approval] }, future: { retained: true } };
+    expect(coerceHivePolicyInput(policy)).toEqual({ ok: true, policy });
+    expect(parseHivePolicyJson(canonicalizeHivePolicy(policy))).toEqual(policy);
+    for (const change of [{ toolName: '*' }, { capabilities: ['tasks:*'] }, { principalSlug: '' },
+      { inputSha256: 'bad' }, { expiresAt: Infinity }, { installationPath: '' }, { capabilities: [] }]) {
+      expect(coerceHivePolicyInput({ pluginInvocations: { approvals: [{ ...approval, ...change }] } }).ok).toBe(false);
+    }
+    expect(coerceHivePolicyInput({ pluginInvocations: { approvals: 'anything' } }).ok).toBe(false);
+  });
+});
+
 describe('owner-signed finance references', () => {
   it('rejects unsafe chains and zero addresses, preserving unknown owner policy fields', () => {
     const address = '0x' + '1'.repeat(40);

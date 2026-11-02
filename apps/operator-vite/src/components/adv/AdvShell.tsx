@@ -1,5 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ComponentType, type CSSProperties } from 'react';
 import { useSyncQuery } from '@papercusp/sync';
+import { beginInteraction, PERF_INTERACTIONS } from '@/app/_components/perf/perf-marks';
 import { wsLocalKey } from '@papercusp/operator-core/lib/browser-workspace';
 import {
   HARNESS_SCOPE_MODES,
@@ -866,6 +867,12 @@ export default function AdvShell({ children }: { children: React.ReactNode }) {
     advScope,
   } = useAdvScopeModel();
   // ── Tab fullscreen: off → window (maximize) → screen (OS fullscreen) ──────
+  const openTab = useCallback((tab: AdvTabId) => {
+    if (tab === 'harnesses' && tab !== renderedActiveTab && activeSlug && !allMode) {
+      beginInteraction(PERF_INTERACTIONS.workListOpen, activeSlug);
+    }
+    return setActiveTab(tab);
+  }, [activeSlug, allMode, renderedActiveTab, setActiveTab]);
   // See the ADV_MAX_LEVELS doc comment for the shape. URL-backed so it survives
   // a refresh and is agent-drivable; 'off' is the default so nuqs clears ?max=.
   const [maxLevel, setMaxLevel] = useQueryState(
@@ -1059,7 +1066,7 @@ export default function AdvShell({ children }: { children: React.ReactNode }) {
   const cycleTab = (dir: 1 | -1) => {
     const idx = embedVisibleTabs.findIndex((tab) => tab.id === renderedActiveTab);
     const next = embedVisibleTabs[(idx + dir + embedVisibleTabs.length) % embedVisibleTabs.length];
-    if (next && next.id !== renderedActiveTab) void setActiveTab(next.id);
+    if (next && next.id !== renderedActiveTab) void openTab(next.id);
   };
   useShortcutAction('goto.prevTab', () => cycleTab(-1), navKeyOpts);
   useShortcutAction('goto.nextTab', () => cycleTab(1), navKeyOpts);
@@ -1108,7 +1115,7 @@ export default function AdvShell({ children }: { children: React.ReactNode }) {
             is actually the scope you are looking at. */}
         <Tabs.Root
           value={renderedActiveTab}
-          onValueChange={(value) => void setActiveTab(value as AdvTabId)}
+          onValueChange={(value) => void openTab(value as AdvTabId)}
           className="pc-advshell__tabs"
           data-of-left={tabOverflow.left ? '' : undefined}
           data-of-right={tabOverflow.right ? '' : undefined}
@@ -1174,7 +1181,7 @@ export default function AdvShell({ children }: { children: React.ReactNode }) {
                   router.push('/reports');
                 } : undefined}
                 onSelect={(id) => {
-                  void setActiveTab(id);
+                  void openTab(id);
                   setMoreOpen(false);
                 }}
               />

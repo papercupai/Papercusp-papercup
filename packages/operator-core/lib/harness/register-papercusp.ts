@@ -22,6 +22,7 @@
  */
 
 import { existsSync } from 'node:fs';
+import { access } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { loadHarnessRegistry, saveHarnessRegistry } from '../harness-registry';
 import {
@@ -48,6 +49,21 @@ export function hasPapercupMarkers(dir: string): boolean {
     existsSync(join(dir, 'apps', 'operator', 'package.json')) &&
     existsSync(join(dir, 'libs', 'papercusp', 'package.json'))
   );
+}
+
+/** Runtime counterpart: slow network/WSL metadata must not block the operator's
+ * main thread. Check on every call so extraction, removal and root changes remain
+ * visible; a cached success would accept a stale or half-replaced source tree. */
+export async function hasPapercupMarkersAsync(dir: string): Promise<boolean> {
+  try {
+    await Promise.all([
+      access(join(dir, 'apps', 'operator', 'package.json')),
+      access(join(dir, 'libs', 'papercusp', 'package.json')),
+    ]);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -84,6 +100,27 @@ export function detectPapercupRoot(start?: string): string | null {
     }
     const parent = dirname(dir);
     if (parent === dir) return null; // hit filesystem root
+    dir = parent;
+  }
+  return null;
+}
+
+/** Same root precedence and walk bound as detectPapercupRoot, for async runtime
+ * callers. In particular, an explicit start never adopts the ambient root. */
+export async function detectPapercupRootAsync(start?: string): Promise<string | null> {
+  if (start === undefined) {
+    const envRoot = process.env.PAPERCUSP_INTEGRATION_ROOT;
+    if (envRoot) {
+      const resolved = resolve(envRoot);
+      if (await hasPapercupMarkersAsync(resolved)) return resolved;
+    }
+    start = process.cwd();
+  }
+  let dir = resolve(start);
+  for (let i = 0; i < 8; i++) {
+    if (await hasPapercupMarkersAsync(dir)) return dir;
+    const parent = dirname(dir);
+    if (parent === dir) return null;
     dir = parent;
   }
   return null;

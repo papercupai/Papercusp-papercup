@@ -1305,6 +1305,129 @@ describe('checkpoint qualification lifecycle (real row lock and JSONB)', () => {
     if (afterLateWrite.status === 'present') expect(JSON.stringify(afterLateWrite.transaction)).toBe(beforeLateWrite);
   });
 
+  it('preserves a mixed durable failure frontier through runner death, replay and full composition', async () => {
+    const { CHECKPOINT_QUALIFICATION_METADATA_KEY } = await import('./checkpoint-qualification-transaction');
+    const root = mkdtempSync(join(tmpdir(), 'qualification-mixed-frontier-'));
+    const git = (...args: string[]) => execFileSync('git', ['-C', root, ...args],
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+    const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
+    const closed = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve, reject) => {
+      child.once('error', reject);
+      child.once('close', (code, signal) => resolve({ code, signal }));
+    });
+    let fixture: Awaited<ReturnType<typeof nativeRecoveryFixture>> | undefined;
+    try {
+      git('init', '--quiet');
+      for (const file of ['native.test.ts', 'input.json']) writeFileSync(join(root, file), '{}\n');
+      git('add', '.');
+      git('-c', 'user.name=Qualification fixture', '-c', 'user.email=fixture@example.invalid',
+        'commit', '--quiet', '-m', 'mixed frontier fixture');
+      const candidate = git('rev-parse', 'HEAD');
+      const pidIdentity = checkpointPidIdentity(child.pid!)!;
+      expect(pidIdentity).toBeTruthy();
+      fixture = await nativeRecoveryFixture({ root, candidate, runner: { pid: child.pid!, pidIdentity } });
+      const input = fixture.input;
+      input.retryStates = ['fail', 'infra'];
+      // Freeze the full population independently of receipts and evaluator output.
+      const selected = ['native', 'guard-failed', 'post-infra', 'guard-pending', 'post-pending'];
+      input.manifest.units.push(
+        { id: 'guard-failed', kind: 'guard', path: 'input.json' },
+        { id: 'post-infra', kind: 'post-suite', path: 'input.json' },
+        { id: 'guard-pending', kind: 'guard', path: 'input.json' },
+        { id: 'post-pending', kind: 'post-suite', path: 'input.json' },
+      );
+      Object.assign(fixture.snapshot.nativeRun, { finishedAtMs: 290, terminalHook: 'onTestRunEnd',
+        reason: 'passed', unhandledErrorCount: 0, modulePopulationMatched: true });
+      fixture.save();
+      const observation = fixture.enroll();
+      const options = { classifyReadPaths: observation.classifyReadPaths };
+      expect((await recordStoredQualificationNativeProducer(target, input, observation)).status).toBe('updated');
+      expect((await recoverStoredQualificationNativeCompletions(target, input, options.classifyReadPaths)).status).toBe('updated');
+      const receipt = (unitId: string, state: 'pass' | 'fail' | 'infra', completionId: string, observedAtMs = 280) => ({
+        unitId, state, completionId, observedAtMs, observedCount: 1, worktreeDirty: false,
+        proof: { recordedSha: candidate, runContext: input.runContext, runnerIdentity: input.runnerIdentity,
+          executedModules: ['input.json'], readPaths: [], inputsCaptured: true, opaqueReasons: [] },
+      });
+      expect((await recordStoredQualificationWorkProgress(target, { ...input, updates: [
+        { receipt: receipt('guard-failed', 'fail', 'failed-before-crash') },
+        { receipt: receipt('post-infra', 'infra', 'infra-before-crash') },
+      ] })).status).toBe('updated');
+      const beforeCrash = await readStoredQualification(target);
+      if (beforeCrash.status !== 'present') throw new Error('mixed frontier missing before crash');
+      const banked = structuredClone(beforeCrash.transaction.continuation!.receipts);
+      const evaluate = (transaction: typeof beforeCrash.transaction, progress = input) =>
+        evaluatePartialTaskContinuation({ root, taskKey: input.taskKey, continuation: transaction.continuation },
+          { ...progress, sourceCommit: candidate });
+      expect(evaluate(beforeCrash.transaction)).toMatchObject({ verdict: 'red', reused: ['native'],
+        retainedFailures: ['guard-failed'], infrastructure: ['post-infra'], run: ['guard-failed', 'guard-pending', 'post-infra', 'post-pending'],
+        counts: { selected: 5, passed: 1, failed: 1, infrastructure: 1, pending: 2 } });
+      expect(child.kill('SIGKILL')).toBe(true);
+      expect(await closed).toEqual({ code: null, signal: 'SIGKILL' });
+      expect(await probeRunnerLiveness(beforeCrash.transaction.currentPhysicalRunner)).toBe('dead');
+      const replacement = { ...fixture.owner, runnerId: 'runner-two', runId: 'run-two',
+        pid: process.pid, pidIdentity: checkpointPidIdentity(process.pid)!, nowMs: 500 };
+      expect((await reserveStoredQualificationRunner(target, replacement)).status).toBe('updated');
+      const resumed = { ...input, ...replacement, nowMs: 900 };
+      const recovered = await readStoredQualification(target);
+      if (recovered.status !== 'present') throw new Error('mixed frontier missing after crash');
+      expect(recovered.transaction.candidate).toBe(candidate);
+      expect(recovered.transaction.continuation!.manifest.units.map(unit => unit.id)).toEqual(selected);
+      expect(recovered.transaction.continuation!.receipts).toEqual(banked);
+      expect(evaluate(recovered.transaction, resumed)).toEqual(evaluate(beforeCrash.transaction));
+      // Replay of a passing receipt must not eclipse either unresolved result.
+      expect((await recoverStoredQualificationNativeCompletions(target, resumed, options.classifyReadPaths)).status).toBe('idempotent');
+      const executed: string[] = [];
+      const continued = await continueStoredQualificationWork(target, resumed, async unit => {
+        executed.push(unit.id);
+        return receipt(unit.id, 'pass', 'finished:' + unit.id, 700);
+      }, { ...options, unitIds: ['guard-pending', 'post-pending'] });
+      expect(executed).toEqual(['guard-pending', 'post-pending']);
+      expect(continued).toMatchObject({ status: 'settled', evaluation: { verdict: 'red',
+        reused: ['guard-pending', 'native', 'post-pending'], retainedFailures: ['guard-failed'],
+        infrastructure: ['post-infra'], counts: { selected: 5, passed: 3, failed: 1, infrastructure: 1, pending: 0 } } });
+      const full = await readStoredQualification(target);
+      if (full.status !== 'present') throw new Error('continued mixed frontier missing');
+      expect(await composeStoredQualificationWork(target, resumed, options)).toMatchObject({
+        status: 'conflict', refusalReason: 'continuation-verdict-not-green' });
+      expect(await readStoredQualification(target)).toEqual(full);
+      const metadataBeforeDeletion = await metadata();
+      for (const missing of ['guard-failed', 'post-infra']) {
+        const corrupted = structuredClone(metadataBeforeDeletion);
+        const transaction = structuredClone(full.transaction);
+        transaction.continuation!.receipts = transaction.continuation!.receipts.filter(row => row.unitId !== missing);
+        corrupted[CHECKPOINT_QUALIFICATION_METADATA_KEY] = transaction;
+        await sql`UPDATE harness_shared.routines SET metadata = ${JSON.stringify(corrupted)}::text::jsonb
+          WHERE workspace_id = ${target.workspaceId}`;
+        const missingOutcome = await readStoredQualification(target);
+        if (missingOutcome.status !== 'present') throw new Error('deletion counterexample unreadable');
+        expect(evaluate(missingOutcome.transaction, resumed)).toMatchObject({ run: ['guard-failed', 'post-infra'],
+          counts: { selected: 5, passed: 3, pending: 1 } });
+        expect(await composeStoredQualificationWork(target, resumed, options)).toMatchObject({
+          status: 'conflict', refusalReason: 'continuation-verdict-not-green' });
+      }
+      await sql`UPDATE harness_shared.routines SET metadata = ${JSON.stringify(metadataBeforeDeletion)}::text::jsonb
+        WHERE workspace_id = ${target.workspaceId}`;
+      expect(await recordStoredQualificationWorkProgress(target, { ...resumed, retryStates: [] })).toMatchObject({
+        status: 'conflict', refusalReason: 'continuation-policy-mismatch' });
+      const repaired = await continueStoredQualificationWork(target, resumed, async unit => {
+        executed.push(unit.id);
+        return receipt(unit.id, 'pass', 'repaired:' + unit.id, 800);
+      }, options);
+      expect(executed).toEqual(['guard-pending', 'post-pending', 'guard-failed', 'post-infra']);
+      expect(repaired).toMatchObject({ status: 'settled', evaluation: { verdict: 'green',
+        counts: { selected: 5, passed: 5, failed: 0, infrastructure: 0, pending: 0 } } });
+      expect(await recordStoredQualificationComposedVerdict(target, resumed, { candidate, runId: resumed.runId,
+        reason: 'advanced', green: true, nowMs: 1000,
+        terminalEvent: { status: 'mixed-frontier-composition-fixture', detail: { selected } } }, options))
+        .toMatchObject({ status: 'updated', transaction: { outcome: { kind: 'green' }, currentPhysicalRunner: null } });
+    } finally {
+      child.kill('SIGKILL');
+      await closed;
+      fixture?.cleanup();
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 30_000);
+
   it('serializes competing continuation custody requests and refuses the losing writer', async () => {
     await seed();
     await beginStoredQualification(target, { attemptId: 'attempt-race', candidate: 'candidate-race', nowMs: 100 });
@@ -1736,11 +1859,13 @@ describe('checkpoint qualification lifecycle (real row lock and JSONB)', () => {
 });
 
 /** Native artifact contract fixture; actual Vitest crash proof remains in the recorder suite. */
-async function nativeRecoveryFixture(options: { root?: string; candidate?: string } = {}) {
+async function nativeRecoveryFixture(options: { root?: string; candidate?: string;
+  runner?: { pid: number; pidIdentity: string } } = {}) {
   await seed();
   await beginStoredQualification(target, { attemptId: 'attempt-native', candidate: options.candidate ?? 'candidate-native', nowMs: 100 });
   const owner = { attemptId: 'attempt-native', candidate: options.candidate ?? 'candidate-native', runnerId: 'runner-one', runId: 'run-one',
-    evidenceRefs: ['checkpoint-run:run-one'], pid: 42, pidIdentity: 'boot:42', leaseDurationMs: 1000, started: true, nowMs: 200 };
+    evidenceRefs: ['checkpoint-run:run-one'], pid: options.runner?.pid ?? 42,
+    pidIdentity: options.runner?.pidIdentity ?? 'boot:42', leaseDurationMs: 1000, started: true, nowMs: 200 };
   expect((await reserveStoredQualificationRunner(target, owner)).status).toBe('updated');
   const input: QualificationWorkProgressInput = { ...owner, repairHead: null, root: options.root ?? '/repo', taskKey: 'qualification',
     runContext: 'ci', runnerIdentity: 'proof-v3 node', retryStates: [], updates: [], nowMs: 300,

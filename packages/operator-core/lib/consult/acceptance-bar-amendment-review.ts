@@ -410,6 +410,8 @@ export type FreshAmendmentReviewerResult =
  * walk the same dead tasks and launch at most one new reviewer per call.
  */
 export const MAX_DEAD_REVIEWER_CHAIN = 4;
+/** Bound automatic account-wall failover to the first few workspace-allowed ranks. */
+export const MAX_FRESH_REVIEWER_MODEL_ATTEMPTS = 4;
 
 async function readLedgerTaskState(taskId: string): Promise<TaskState | null> {
   const { getTask } = await import('../task-manager/store');
@@ -438,21 +440,29 @@ async function readReviewerLiveness(
   }
 }
 
+type ReviewerTurnFailure = { reason: 'account-walled' | 'provider-error'; evidence: string };
+
 /**
- * WI-6554700010018125: true only when the reviewer's own native transcript is
- * readable and its turns since the latest submitted prompt end on a synthetic
- * transient provider failure (5xx, "Server error mid-response"). A missing or
+ * Read the exact retained reviewer's latest submitted turn. A missing or
  * unreadable transcript stays unknown and never authorizes a replacement.
  */
-function reviewerEndedOnProviderError(
+function reviewerEndedOnFailure(
   nativeRef: unknown,
   analyze: typeof analyzeClaudeResumeTranscriptFile | undefined,
-): boolean {
-  if (typeof nativeRef !== 'string' || !nativeRef.endsWith('.jsonl')) return false;
+): ReviewerTurnFailure | null {
+  if (typeof nativeRef !== 'string' || !nativeRef.endsWith('.jsonl')) return null;
   try {
-    return ((analyze ?? analyzeClaudeResumeTranscriptFile)(nativeRef)?.trailingProviderErrorTurns ?? 0) > 0;
+    const analysis = (analyze ?? analyzeClaudeResumeTranscriptFile)(nativeRef);
+    if (!analysis) return null;
+    if ((analysis.trailingAccountWallTurns ?? 0) > 0) {
+      return { reason: 'account-walled', evidence: analysis.lastAccountWallEvidence ?? 'provider account rejection' };
+    }
+    if ((analysis.trailingProviderErrorTurns ?? 0) > 0) {
+      return { reason: 'provider-error', evidence: analysis.lastProviderErrorEvidence ?? 'provider error' };
+    }
+    return null;
   } catch {
-    return false;
+    return null;
   }
 }
 
@@ -530,6 +540,16 @@ export function selectFreshReviewerModelForAccountSteer(args: {
   accounts: readonly { id: string; provider?: string; available: boolean }[];
   ranks: readonly AllowedExpertModel[];
 }): ConsultReviewerModel {
+  return selectFreshReviewerModelsForAccountSteer(args)[0]!;
+}
+
+/** Ordered failover candidates from the same allowed ranks and account steer. */
+export function selectFreshReviewerModelsForAccountSteer(args: {
+  forcedAccounts: readonly string[];
+  excludeAccounts: readonly string[];
+  accounts: readonly { id: string; provider?: string; available: boolean }[];
+  ranks: readonly AllowedExpertModel[];
+}): ConsultReviewerModel[] {
   const forced = new Set(args.forcedAccounts);
   const excluded = new Set(args.excludeAccounts);
   const providers = new Set(args.accounts
@@ -537,14 +557,23 @@ export function selectFreshReviewerModelForAccountSteer(args: {
       && (forced.size === 0 || forced.has(account.id))
       && !excluded.has(account.id))
     .map((account) => account.provider ?? 'claude'));
-  const rank = args.ranks.find((candidate) => providers.has(candidate.agent));
-  if (!rank) {
+  const selected: ConsultReviewerModel[] = [];
+  const seen = new Set<string>();
+  for (const rank of args.ranks) {
+    if (!providers.has(rank.agent)) continue;
+    const key = JSON.stringify([rank.agent, rank.model]);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    selected.push({ agent: rank.agent, model: rank.model });
+    if (selected.length >= MAX_FRESH_REVIEWER_MODEL_ATTEMPTS) break;
+  }
+  if (selected.length === 0) {
     throw new Error('no expert model has an available account permitted by the workspace account steer');
   }
-  return { agent: rank.agent, model: rank.model };
+  return selected;
 }
 
-async function resolveFreshReviewerModelForAccountSteer(workspaceId: string): Promise<ConsultReviewerModel> {
+async function resolveFreshReviewerModelsForAccountSteer(workspaceId: string): Promise<ConsultReviewerModel[]> {
   const [{ getAccountOverride }, { loadAccountPool }, { accountProvider, isAvailable },
     { readConsultExpertRoutingSettings, bindConsultExpertRoutingSettings }] = await Promise.all([
     import('../deployment/account-session-override'),
@@ -558,7 +587,7 @@ async function resolveFreshReviewerModelForAccountSteer(workspaceId: string): Pr
     readConsultExpertRoutingSettings(workspaceId),
   ]);
   const ranks = await resolveExpertModelAllowlist(workspaceId, bindConsultExpertRoutingSettings(settings));
-  return selectFreshReviewerModelForAccountSteer({
+  return selectFreshReviewerModelsForAccountSteer({
     ...override,
     accounts: pool.accounts.map((account) => ({
       id: account.id,
@@ -567,6 +596,10 @@ async function resolveFreshReviewerModelForAccountSteer(workspaceId: string): Pr
     })),
     ranks,
   });
+}
+
+async function resolveFreshReviewerModelForAccountSteer(workspaceId: string): Promise<ConsultReviewerModel> {
+  return (await resolveFreshReviewerModelsForAccountSteer(workspaceId))[0]!;
 }
 
 /** The work-item whose thread carries the preview post, with its harness. */
@@ -629,6 +662,7 @@ export async function launchFreshAmendmentReviewer(
     launch?: LaunchHandler;
     assertAllowed?: typeof assertReviewerModelAllowed;
     resolveSteeredModel?: typeof resolveFreshReviewerModelForAccountSteer;
+    resolveSteeredModels?: (workspaceId: string) => Promise<ConsultReviewerModel[]>;
     analyzeTranscript?: typeof analyzeClaudeResumeTranscriptFile;
     nowMs?: () => number;
     sleepMs?: (ms: number) => Promise<void>;
@@ -653,7 +687,16 @@ export async function launchFreshAmendmentReviewer(
   const target: FreshReviewerAnswerTarget = answerOn;
   const rubricId = input.rubricRef.trim().replace(/^plan:/i, '').trim();
   if (input.reviewerModel) await (deps.assertAllowed ?? assertReviewerModelAllowed)(input.workspaceId, input.reviewerModel);
-  const reviewerModel = input.reviewerModel ?? await (deps.resolveSteeredModel ?? resolveFreshReviewerModelForAccountSteer)(input.workspaceId);
+  let reviewerModels: Array<ConsultReviewerModel | undefined>;
+  if (input.reviewerModel) reviewerModels = [input.reviewerModel];
+  else if (deps.resolveSteeredModels) reviewerModels = await deps.resolveSteeredModels(input.workspaceId);
+  else if (deps.resolveSteeredModel) reviewerModels = [await deps.resolveSteeredModel(input.workspaceId)];
+  else reviewerModels = await resolveFreshReviewerModelsForAccountSteer(input.workspaceId);
+  reviewerModels = reviewerModels.slice(0, MAX_FRESH_REVIEWER_MODEL_ATTEMPTS);
+  if (reviewerModels.length === 0) {
+    throw new Error('no expert model has an available account permitted by the workspace account steer');
+  }
+  const reviewerModel = reviewerModels[0];
   const resolveScreen =
     deps.resolveScreen ?? (async (args) => (await import('../rubrics')).resolveAcceptanceBarApproverScreen(args));
   const screen = await resolveScreen({ rubricId, applierId: input.applierId });
@@ -678,45 +721,93 @@ export async function launchFreshAmendmentReviewer(
   let attemptKey = idempotencyKey;
   let attemptLabel = label;
   let result: LaunchResult;
+  let reviewerModelIndex = 0;
   for (;;) {
-    result = await launchOnce(attemptKey, attemptLabel);
-    if (result?.isError || result?.data?.deduped !== true) break;
+    result = await launchOnce(attemptKey, attemptLabel, reviewerModels[reviewerModelIndex]);
+    if (result?.isError || result?.data?.deduped !== true) {
+      const finished = await finishFreshReviewerLaunch(result, attemptKey, attemptLabel);
+      const canFailOver = !input.reviewerModel && reviewerModelIndex + 1 < reviewerModels.length
+        && relaunchedAfter.length + 1 < MAX_DEAD_REVIEWER_CHAIN;
+      if (finished.state === 'blocked' && finished.reason === 'account-walled'
+        && finished.recovery?.state === 'stopped' && typeof finished.taskId === 'string' && canFailOver) {
+        relaunchedAfter.push(finished.taskId);
+        reviewerModelIndex++;
+        attemptKey = input.reviewEvidence
+          ? `${idempotencyKey}:evidence:${input.reviewEvidence.postRef}:after:${finished.taskId}`
+          : `${idempotencyKey}:after:${finished.taskId}`;
+        attemptLabel = `${label}.r${relaunchedAfter.length}`;
+        continue;
+      }
+      return finished;
+    }
     const deadTask = result.data?.launch?.tasks?.[0];
     const deadTaskId = typeof deadTask?.taskId === 'string' ? deadTask.taskId : null;
-    if (!deadTaskId) break;
+    if (!deadTaskId) return finishFreshReviewerLaunch(result, attemptKey, attemptLabel);
     const authorId = typeof deadTask?.ownerId === 'string' ? deadTask.ownerId : undefined;
     const state = await readTaskState(deadTaskId);
     const liveness = state && !isTerminalState(state) && authorId
       ? await readReviewerLiveness(authorId, deps.resolveSessionStates)
       : null;
     const stranded = liveness?.sessionState === 'parked' && liveness.selfWake === 'none';
+    const failure = state
+      ? reviewerEndedOnFailure(deadTask?.kickoffProof?.nativeRef, deps.analyzeTranscript)
+      : null;
+    const accountWalled = failure?.reason === 'account-walled';
     // WI-6554700010018125: a reviewer whose latest turn ended on a transient
     // provider failure has parked waiting for input. A wake source alone does
     // not make it answer, so replace it exactly like a stranded one.
     const providerErrored = state !== null && !isTerminalState(state) && !stranded
-      && reviewerEndedOnProviderError(deadTask?.kickoffProof?.nativeRef, deps.analyzeTranscript);
-    if (!state || (!isTerminalState(state) && !stranded && !providerErrored)) break;
+      && failure?.reason === 'provider-error';
+    if (!state || (!isTerminalState(state) && !stranded && !providerErrored && !accountWalled)) {
+      return finishFreshReviewerLaunch(result, attemptKey, attemptLabel);
+    }
     // A missing reviewer identity cannot establish custody of a re-review verdict.
-    if (input.reviewEvidence && !authorId) break;
+    if (input.reviewEvidence && !authorId) return finishFreshReviewerLaunch(result, attemptKey, attemptLabel);
     if (await hasReviewerAnswer({ workspaceId: input.workspaceId, previewPostRef,
       ...(authorId ? { authorId } : {}),
       ...(input.reviewEvidence ? { afterPostRef: input.reviewEvidence.postRef } : {}),
-    })) break;
-    if (stranded || providerErrored) {
-      let stopped: string;
-      try {
-        stopped = await (deps.stopFailedLaunch ?? defaultStopFailedLaunch)(deadTaskId,
-          authorId ? { answeringOwnerId: authorId } : undefined);
-      } catch (error) {
-        stopped = `stop threw: ${error instanceof Error ? error.message : String(error)}`;
+    })) return finishFreshReviewerLaunch(result, attemptKey, attemptLabel);
+    let containmentEvidence = isTerminalState(state) ? `Task ${deadTaskId} was already terminal (${state}).` : null;
+    if (stranded || providerErrored || accountWalled) {
+      if (!isTerminalState(state)) {
+        let stopped: string;
+        try {
+          stopped = await (deps.stopFailedLaunch ?? defaultStopFailedLaunch)(deadTaskId,
+            authorId ? { answeringOwnerId: authorId } : undefined);
+        } catch (error) {
+          stopped = `stop threw: ${error instanceof Error ? error.message : String(error)}`;
+        }
+        const stoppedState = await readTaskState(deadTaskId);
+        if (!stoppedState || !isTerminalState(stoppedState)) {
+          if (accountWalled) {
+            return {
+              state: 'blocked',
+              launcherId: ACCEPTANCE_BAR_AMENDMENT_REVIEW_ACTOR,
+              taskId: deadTaskId,
+              label: attemptLabel,
+              idempotencyKey: attemptKey,
+              deduped: true,
+              answerOn,
+              ...(authorId ? { ownerId: authorId } : {}),
+              nativeRef: typeof deadTask?.kickoffProof?.nativeRef === 'string' ? deadTask.kickoffProof.nativeRef : 'unknown',
+              reason: 'account-walled',
+              evidence: failure?.evidence ?? 'provider account rejection',
+              recovery: { state: 'unverified', evidence: `${stopped}; task state after containment is ${stoppedState ?? 'unknown'}` },
+              ...(relaunchedAfter.length > 0 ? { relaunchedAfter: [...relaunchedAfter] } : {}),
+            };
+          }
+          return {
+            state: 'not-launched',
+            reason: `deduped reviewer task ${deadTaskId} is ${providerErrored ? 'parked after a provider error' : 'parked without a self-wake source'} and could not be safely replaced: ${stopped}`,
+          };
+        }
+        containmentEvidence = `${stopped}; terminal state confirmed as ${stoppedState}.`;
       }
-      const stoppedState = await readTaskState(deadTaskId);
-      if (!stoppedState || !isTerminalState(stoppedState)) {
-        return {
-          state: 'not-launched',
-          reason: `deduped reviewer task ${deadTaskId} is ${providerErrored ? 'parked after a provider error' : 'parked without a self-wake source'} and could not be safely replaced: ${stopped}`,
-        };
-      }
+    }
+    if (accountWalled) {
+      const canFailOver = !input.reviewerModel && reviewerModelIndex + 1 < reviewerModels.length
+        && relaunchedAfter.length + 1 < MAX_DEAD_REVIEWER_CHAIN;
+      if (canFailOver) reviewerModelIndex++;
     }
     relaunchedAfter.push(deadTaskId);
     if (relaunchedAfter.length >= MAX_DEAD_REVIEWER_CHAIN) {
@@ -730,9 +821,15 @@ export async function launchFreshAmendmentReviewer(
         answerOn,
         ...(authorId ? { ownerId: authorId } : {}),
         nativeRef: typeof deadTask?.kickoffProof?.nativeRef === 'string' ? deadTask.kickoffProof.nativeRef : 'unknown',
-        reason: 'reviewer-ended',
-        evidence: `${relaunchedAfter.length} reviewer(s) for this preview ended without answering (${relaunchedAfter.join(', ')}); ` +
-          'reviewer launches are failing, so read their task logs (processes:list { taskId }) before re-running',
+        reason: accountWalled ? 'account-walled' : 'reviewer-ended',
+        evidence: accountWalled
+          ? `${relaunchedAfter.length} account-walled reviewer(s) for this preview were confirmed terminal (${relaunchedAfter.join(', ')}); ` +
+            (failure?.evidence ?? 'provider account rejection')
+          : `${relaunchedAfter.length} reviewer(s) for this preview ended without answering (${relaunchedAfter.join(', ')}); ` +
+            'reviewer launches are failing, so read their task logs (processes:list { taskId }) before re-running',
+        ...(accountWalled ? {
+          recovery: { state: 'stopped' as const, evidence: containmentEvidence ?? `Task ${deadTaskId} is confirmed terminal.` },
+        } : {}),
         relaunchedAfter,
       };
     }
@@ -741,9 +838,7 @@ export async function launchFreshAmendmentReviewer(
       : `${idempotencyKey}:after:${deadTaskId}`;
     attemptLabel = `${label}.r${relaunchedAfter.length}`;
   }
-  return finishFreshReviewerLaunch(result, attemptKey, attemptLabel);
-
-  async function launchOnce(key: string, attemptLabelArg: string): Promise<LaunchResult> {
+  async function launchOnce(key: string, attemptLabelArg: string, modelChoice?: ConsultReviewerModel): Promise<LaunchResult> {
     return (await launch(
     {
       brief: buildAmendmentReviewBrief({ ...input, previewPostRef }, target),
@@ -761,9 +856,9 @@ export async function launchFreshAmendmentReviewer(
       count: 1,
       // role:'judge' is harness-scoped; launch-agent refuses it without one
       // (EI-23414612968722239), so it rides only with a resolved harness.
-      ...(target.harness || reviewerModel ? { members: [{
+      ...(target.harness || modelChoice ? { members: [{
         ...(target.harness ? { role: 'judge' } : {}),
-        ...(reviewerModel ?? {}),
+        ...(modelChoice ?? {}),
       }] } : {}),
       label: attemptLabelArg,
       idempotencyKey: key,

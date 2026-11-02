@@ -143,6 +143,41 @@ describe('re-wake guarantee escalation (kills the "the next wake re-opens the ga
     expect(v.guidance).not.toMatch(/the next wake re-opens the gate/);
   });
 
+  it('allows parking after an explicit loop end when no held or directed work remains', () => {
+    const v = evaluateContinuationGate({
+      contextPct: 75,
+      unreadInbox: 0,
+      rewakeGuaranteed: false,
+      explicitLoopEnded: true,
+      activeClaimPresent: false,
+      activeQuestionResolutionAwait: false,
+      activeNonInboxAwaitCount: 0,
+    });
+
+    expect(v.shouldContinue).toBe(false);
+    expect(v.rewakeGuaranteed).toBe(false);
+    expect(v.explicitLoopEndNoActiveWork).toBe(true);
+    expect(v.guidance).toMatch(/explicit loop end/i);
+    expect(v.guidance).toMatch(/do not arm a wake/i);
+    expect(v.guidance).not.toMatch(/SILENTLY HALT|ARM A WAKE|the next wake re-opens the gate/i);
+  });
+
+  it('keeps the no-rewake warning when an explicitly ended loop still has a held claim', () => {
+    const v = evaluateContinuationGate({
+      contextPct: 75,
+      unreadInbox: 0,
+      rewakeGuaranteed: false,
+      explicitLoopEnded: true,
+      activeClaimPresent: true,
+      activeQuestionResolutionAwait: false,
+      activeNonInboxAwaitCount: 0,
+    });
+
+    expect(v.explicitLoopEndNoActiveWork).toBe(false);
+    expect(v.guidance).toMatch(/SILENTLY HALT/);
+    expect(v.guidance).toMatch(/loop:arm|events:await/);
+  });
+
   it('allows an intentional wait on an unresolved requester question without calling it guaranteed', () => {
     const v = evaluateContinuationGate({
       contextPct: 80,

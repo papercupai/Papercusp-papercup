@@ -7,6 +7,7 @@ import { claudeAttemptHeaders, makeBearerCredentialResolver } from '../inference
 import {
   currentBenchLaunchRequest, currentBenchRunLabel, currentBenchAttemptLabel, currentSuBenchHarnessDriver, currentStockBenchHarnessDriver,
   liveCurrentSuBenchPorts, recoverCurrentBenchRun, beginCurrentBenchNativeSession, currentBenchNativeFailure,
+  currentBenchSoloCapabilityControl,
   currentBenchIdentityFromObservation, type CurrentBenchIdentityObservation,
   currentBenchObservationReader, liveCurrentBenchObservationReaderPorts, type CurrentBenchObservationReaderPorts,
   currentBenchAssignmentId, currentBenchGatewayController, currentBenchProviderAuthenticator,
@@ -1414,7 +1415,8 @@ describe('D-023 Codex subscription payer', () => {
   });
 });
 
-const native = vi.hoisted(() => ({ launch: vi.fn(), kill: vi.fn() }));
+const native = vi.hoisted(() => ({ launch: vi.fn(), kill: vi.fn(), archivePlans: vi.fn(async () => 0) }));
+vi.mock('../blind-review-scratch-plans', () => ({ archiveScratchPlansByPrefix: native.archivePlans }));
 vi.mock('../agent-tools/capability/launch-agent', () => ({ default: { handler: native.launch },
   INTERNAL_SCOPED_INFERENCE_GATEWAY: Symbol.for('benchmark-test-private-route'),
   INTERNAL_SCOPED_SESSION_CONFINEMENT: Symbol.for('benchmark-test-server-ceiling'),
@@ -2369,13 +2371,15 @@ describe('current benchmark restart and live binding', () => {
     await expect(recoverCurrentBenchRun(f.ports, options)).rejects.toThrow(/census exceeded/);
     expect(f.ports.killTask).not.toHaveBeenCalled();
   });
-  it.each([undefined, 'on', 'off'] as const)('binds native ledger exposure %s while retaining authenticated observer ownership', async ledger => {
+  it.each([[undefined, 'off'], ['on', 'off'], ['off', 'off'], ['on', 'on'], ['off', 'on']] as const)
+    ('binds native ledger exposure %s and planning %s while retaining authenticated observer ownership', async (ledger, planning) => {
     const f = fixture();
+    const archivedBefore = native.archivePlans.mock.calls.length;
     const ctx = { workspaceId: 'bench-private', authenticatedPrincipal: { retained: true } } as unknown as PapercuspUnifiedToolContext;
     const protocol = currentProtocolFixture(), preregHash = 'a'.repeat(64);
     if (ledger) {
       protocol.arms[0].control = { topology: 'solo', solverGroup: 'ledger-control',
-        solverToolsHash: 'f'.repeat(64), capabilities: { ...allCapabilities('off'), 'work-item-ledger': ledger } };
+        solverToolsHash: 'f'.repeat(64), capabilities: { ...allCapabilities('off'), 'work-item-ledger': ledger, planning } };
       protocol.arms[1].control = { topology: 'stock-native-reference', solverGroup: 'stock-control',
         solverToolsHash: 'f'.repeat(64), capabilities: allCapabilities('off') };
     }
@@ -2396,6 +2400,13 @@ describe('current benchmark restart and live binding', () => {
     const hosted = await controller.startNativeGateway(() => {}, async () => ({ port: 32101, stop } as never));
     const opts = { ...options, preregistration: { preregHash, config: protocol, repoRoot: snapshotRoot } };
     const ports = liveCurrentSuBenchPorts(ctx, { admit: f.ports.admit, observeIdentity: async () => null, ...hosted }, opts);
+    if (ledger) {
+      expect(ports.verifyGenerationBudget!(protocol.arms[0].generationBudget, 't1'))
+        .toEqual({ frozenBudget: protocol.arms[0].generationBudget, topology: 'solo',
+          capabilityControl: currentBenchSoloCapabilityControl(protocol.arms[0]) });
+      expect(() => ports.verifyGenerationBudget!({ ...protocol.arms[0].generationBudget, maxUsd: 99 }, 't1')).toThrow(/budget/);
+      expect(() => ports.verifyGenerationBudget!(protocol.arms[0].generationBudget, 'foreign')).toThrow(/assignment/);
+    }
     const context = await ports.restoreContext(restoredHandle, 't1');
     const args = currentBenchLaunchRequest(opts, restoredHandle, 'issue', context);
     try { await ports.launch(args);
@@ -2405,7 +2416,7 @@ describe('current benchmark restart and live binding', () => {
     expect(forwarded[Symbol.for('benchmark-test-private-route')]).toEqual(hosted.nativeGateway);
     expect(forwarded[Symbol.for('benchmark-test-server-ceiling')]).toMatchObject({
       denyTools: [], denyAmbientContext: true,
-      denyOutside: ledger === 'off' ? ['coord:whoami', 'session:request-compaction']
+      denyOutside: ledger ? currentBenchSoloCapabilityControl(protocol.arms[0]).toolNames
         : ['coord:whoami', 'session:request-compaction', 'work_items:get', 'work_items:checkpoint', 'work_items:complete'],
       denyWorkItemsOutside: { id: restoredHandle.featureId, harness: restoredHandle.slug, checkout },
       imposedBy: expect.stringContaining('benchmark-host') });
@@ -2430,9 +2441,36 @@ describe('current benchmark restart and live binding', () => {
     }
     expect(evaluateSessionConfinement({ toolName: 'work_items:list', args: {}, confinement }).allowed).toBe(false);
     expect(evaluateSessionConfinement({ toolName: 'coord:inbox', args: {}, confinement }).allowed).toBe(false);
-    // The actual launch ceiling admits the installed hook's empty self request
-    // in both ledger arms. This measures dispatch admission only; the local
-    // response does not prove a host respawn or model request.
+    expect(launched.brief.includes('For structured planning')).toBe(planning === 'on');
+    if (planning === 'on') {
+      const boundary = confinement.denyPlansOutside!;
+      expect(boundary).toMatchObject({ scratchPrefix: expect.stringMatching(/^benchmark-scratch-[a-f0-9]{24}-$/),
+        harness: restoredHandle.slug });
+      expect(launched.brief).toContain(boundary.scratchPrefix);
+      const ownPlan = { harness: restoredHandle.slug, slug: `${boundary.scratchPrefix}solution` };
+      expect(evaluateSessionConfinement({ toolName: 'plans:new', args: { ...ownPlan,
+        status: 'draft', force: true, title: 'Solve task' }, confinement }).allowed).toBe(true);
+      expect(evaluateSessionConfinement({ toolName: 'plans:add-item', args: { ...ownPlan,
+        text: 'Investigate and verify the fix' }, confinement }).allowed).toBe(true);
+      expect(evaluateSessionConfinement({ toolName: 'plans:get', args: ownPlan, confinement }).allowed).toBe(true);
+      for (const toolName of ['plans:start', 'plans:audit', 'plans:set-plan-status', 'plans:set-status', 'consult:get_feedback'])
+        expect(evaluateSessionConfinement({ toolName, args: ownPlan, confinement }).allowed).toBe(false);
+      for (const args of [{ ...ownPlan, slug: 'shared-plan' }, { ...ownPlan, harness: 'neighbor' },
+        { ...ownPlan, slug: 'benchmark-scratch-foreign123456-solution' }])
+        expect(evaluateSessionConfinement({ toolName: 'plans:get', args, confinement }).allowed).toBe(false);
+      const foreign = currentBenchLaunchRequest({ ...opts, seed: 2 }, restoredHandle, 'issue', context);
+      expect(foreign.brief).not.toContain(boundary.scratchPrefix);
+      const changedItem = currentBenchLaunchRequest(opts, { ...restoredHandle, featureId: 'WI-neighbor' }, 'issue', context);
+      expect(changedItem.brief).not.toContain(boundary.scratchPrefix);
+    } else {
+      expect(confinement.denyPlansOutside).toBeUndefined();
+      expect(evaluateSessionConfinement({ toolName: 'plans:new', args: {}, confinement }).allowed).toBe(false);
+      expect(evaluateSessionConfinement({ toolName: 'plans:get', args: {}, confinement }).allowed).toBe(false);
+    }
+    // Controlled carry-off arms deny managed carry; legacy assignments retain
+    // their existing hook path. Neither is a measurement of a real respawn.
+    expect(evaluateSessionConfinement({ toolName: 'session:request-compaction', args: {}, confinement }).allowed).toBe(!ledger);
+    if (!ledger) {
     const nativeSessionId = randomUUID();
     const dispatch = vi.fn<typeof globalThis.fetch>(async (url, init) => {
       expect(url).toBe('http://benchmark.invalid/mcp');
@@ -2465,6 +2503,7 @@ describe('current benchmark restart and live binding', () => {
     expect(evaluateSessionConfinement({ toolName: 'session:request-compaction', args: {},
       confinement: { ...confinement, denyOutside: confinement.denyOutside!.filter(name => name !== 'session:request-compaction') } }))
       .toMatchObject({ allowed: false, matchedGlob: 'outside-exact-ceiling' });
+    }
     const calls = native.launch.mock.calls.length;
     // A caller cannot reintroduce an agent-facing instruction prefix outside
     // the frozen host arm, even if the frozen context suffix is unchanged.
@@ -2475,6 +2514,15 @@ describe('current benchmark restart and live binding', () => {
     await ports.killTask('task-own');
     expect(native.kill).toHaveBeenCalledWith('task-own', { includeSubtree: true, reapTerminalResidue: true, escalateAfterMs: 5000 });
     expect(ctx.workspaceId).toBe('bench-private');
+    if (planning === 'on' && ledger === 'off') {
+      native.archivePlans.mockRejectedValueOnce(new Error('private plan cleanup unavailable'));
+      await expect(ports.releaseGateway!()).rejects.toThrow(/private plan cleanup unavailable/);
+    } else await ports.releaseGateway!();
+    expect(native.archivePlans.mock.calls.length - archivedBefore).toBe(planning === 'on' ? 1 : 0);
+    if (planning === 'on') expect(native.archivePlans).toHaveBeenLastCalledWith(ctx.workspaceId,
+      confinement.denyPlansOutside!.scratchPrefix);
+    // An archival error cannot leave the private inference route live.
+    expect(stop).toHaveBeenCalledOnce();
     } finally { await hosted.stop(); rmSync(snapshotRoot, { recursive: true, force: true }); }
     expect(stop).toHaveBeenCalledOnce();
     await expect(ports.launch(args)).rejects.toThrow(/host-owned gateway/);
@@ -2536,6 +2584,40 @@ describe('current benchmark restart and live binding', () => {
       const again = native.launch.mock.calls.at(-1)![1][Symbol.for('benchmark-test-backend-bin')] as typeof override;
       expect(readFileSync(again.codex.command, 'utf8')).toContain('fswe-task-1');
     } finally { await hosted.stop(); rmSync(snapshotRoot, { recursive: true, force: true }); }
+  });
+  it.each(['memory-recall', 'carry-respawn', 'fleet-leader', 'locks', 'consult-router', 'review'] as const)
+    ('refuses unsupported native %s delivery before admission', async capability => {
+      const protocol = currentProtocolFixture();
+      protocol.arms[0].control = { topology: 'solo', solverGroup: 'solver', solverToolsHash: 'f'.repeat(64),
+        capabilities: { ...allCapabilities('off'), [capability]: 'on' } };
+      protocol.arms[1].control = { topology: 'stock-native-reference', solverGroup: 'stock', solverToolsHash: 'f'.repeat(64),
+        capabilities: allCapabilities('off') };
+      const opts = { ...options, preregistration: { ...options.preregistration, config: protocol } };
+      const f = fixture(opts);
+      f.ports.verifyGenerationBudget = () => ({ frozenBudget: protocol.arms[0].generationBudget,
+        topology: 'solo', capabilityControl: currentBenchSoloCapabilityControl(protocol.arms[0]) });
+      const result = await f.run();
+      expect(result.telemetry.generationError).toContain(`unavailable for: ${capability}`);
+      expect(f.ports.admit).not.toHaveBeenCalled(); expect(f.ports.launch).not.toHaveBeenCalled();
+    });
+  it.each(['on', 'off'] as const)('executes the verified solo ledger-%s control and retains its control snapshot', async ledger => {
+    const protocol = currentProtocolFixture();
+    protocol.arms[0].control = { topology: 'solo', solverGroup: 'solver', solverToolsHash: 'f'.repeat(64),
+      capabilities: { ...allCapabilities('off'), 'work-item-ledger': ledger } };
+    protocol.arms[1].control = { topology: 'stock-native-reference', solverGroup: 'stock', solverToolsHash: 'f'.repeat(64),
+      capabilities: allCapabilities('off') };
+    const opts = { ...options, preregistration: { ...options.preregistration, config: protocol } };
+    const f = fixture(opts), control = currentBenchSoloCapabilityControl(protocol.arms[0]);
+    f.ports.verifyGenerationBudget = () => ({ frozenBudget: protocol.arms[0].generationBudget,
+      topology: 'solo', capabilityControl: control });
+    const result = await f.run();
+    expect(result.telemetry.stopReason).toBe('done'); expect(f.ports.launch).toHaveBeenCalledOnce();
+    expect(result.telemetry.armMeta).toMatchObject({ currentExecution: { nativeCapabilityControl: control } });
+    // A topology-only receipt cannot claim that the control was applied.
+    const forged = fixture(opts);
+    forged.ports.verifyGenerationBudget = () => ({ frozenBudget: protocol.arms[0].generationBudget, topology: 'solo' });
+    expect((await forged.run()).telemetry.generationError).toMatch(/exact frozen capability control/);
+    expect(forged.ports.admit).not.toHaveBeenCalled(); expect(forged.ports.launch).not.toHaveBeenCalled();
   });
   it('issues and revokes the frozen Claude baseline route through the existing host controller', async () => {
     const f = budgetFixture(); f.input.protocol.arms[1].agent = 'claude';

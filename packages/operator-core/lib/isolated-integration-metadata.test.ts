@@ -1111,6 +1111,29 @@ it('extends progressing bootstrap stages and refuses renewal by noise or repeate
   } finally { stdout.destroy(); vi.useRealTimers(); rmSync(dir, { recursive: true, force: true }); }
 });
 
+it('adopts a nested worker execution transition instead of expiring the outer bootstrap clock', async () => {
+  vi.useFakeTimers();
+  const dir = mkdtempSync(join(tmpdir(), 'isolated-nested-worker-progress-'));
+  const child = new ChildProcess();
+  const stdout = new PassThrough(); Object.assign(child, { stdout });
+  const kill = vi.spyOn(child, 'kill').mockReturnValue(true);
+  try {
+    const captured = captureIsolatedWorker(child, dir, { testFileExecutionFromStdout: true,
+      phaseTimeouts: { bootstrapMs: 100, bootstrapMaxMs: 300, executeMs: 500, executeMaxMs: 700,
+        executeStallWindowMs: 400, teardownMs: 100 }, killGraceMs: 50 });
+    await vi.advanceTimersByTimeAsync(90);
+    stdout.write('ISOLATED_WORKER_PROGRESS ' + JSON.stringify({ pid: 123, phase: 'bootstrap', stage: 'phase-bootstrap' }) + '\n');
+    await vi.advanceTimersByTimeAsync(90);
+    stdout.write('ISOLATED_WORKER_PROGRESS ' + JSON.stringify({ pid: 123, phase: 'execute', stage: 'test-started' }) + '\n');
+    await vi.advanceTimersByTimeAsync(30);
+    expect(kill).not.toHaveBeenCalled();
+    Object.assign(child, { exitCode: 0 });
+    child.emit('exit', 0, null); stdout.end(); child.emit('close', 0, null);
+    expect(await captured).toMatchObject({ code: 0, signal: null, timedOut: false,
+      exitWaitTimedOut: false, stdioDrainTimedOut: false });
+  } finally { stdout.destroy(); vi.useRealTimers(); rmSync(dir, { recursive: true, force: true }); }
+});
+
 it('enforces the absolute bootstrap ceiling despite distinct continuing stages', async () => {
   vi.useFakeTimers();
   const dir = mkdtempSync(join(tmpdir(), 'isolated-boot-ceiling-'));

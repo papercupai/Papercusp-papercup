@@ -1,10 +1,11 @@
 /** Passive, bounded diagnostics for Vitest's real forks lifecycle protocol. */
 import childProcess from 'node:child_process';
 import { registerHooks, syncBuiltinESMExports } from 'node:module';
+import { createRequire } from 'node:module';
 import { createHash, randomUUID } from 'node:crypto';
 import { closeSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, unlinkSync, writeFileSync, writeSync } from 'node:fs';
-import { isAbsolute, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { dirname, isAbsolute, join, resolve } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { threadId } from 'node:worker_threads';
 
 export const nativeSourceRetentionLimits = Object.freeze({ sourceBytes: 16 * 1024 ** 2,
@@ -474,6 +475,132 @@ export function observeForkStartup(child, emit, now = () => performance.now()) {
   child.once('disconnect', onDisconnect);
   child.once('close', onClose);
   return cleanup;
+}
+
+/** An active control, deliberately separate from the passive observer above.
+ * Only attach to an identified Vitest forks transport. Start/stop retain their
+ * exact native arguments, receiver, return value and errors. Execution refusal
+ * uses the native pool's error path, never a fabricated test completion.
+ * @param {any} child
+ * @param {(row: Record<string, any>) => void} emit
+ */
+export function controlForkStartupOnly(child, emit) {
+  const originalSend = child.send;
+  const record = row => { try { emit(row); } catch { /* Diagnostics cannot disable the fence. */ } };
+  const send = function(message, ...args) {
+    if (message?.__vitest_worker_request__ === true && ['start', 'stop'].includes(message.type)) {
+      let inputSha256 = null;
+      try { inputSha256 = createHash('sha256').update(JSON.stringify(message)).digest('hex'); }
+      catch { /* Native advanced serialization, not JSON, owns the actual payload. */ }
+      record({ event: 'lifecycle-request', childPid: child.pid, type: message.type,
+        inputSha256 });
+      return originalSend.call(this, message, ...args);
+    }
+    record({ event: 'execution-request-refused', childPid: child.pid,
+      request: ['run', 'collect'].includes(message?.type) ? message.type : 'unknown' });
+    const error = Object.assign(new Error('Vitest startup-only diagnostic refused execution'),
+      { code: 'VITEST_STARTUP_ONLY_EXECUTION_REFUSED' });
+    // PoolRunner subscribes before sending start/run. An error rejects its real
+    // resolver and lets its native stop/signal/500ms-kill cleanup run normally.
+    if (!child.listenerCount('error')) throw error;
+    child.emit('error', error);
+    return false;
+  };
+  child.send = send;
+  const detach = () => {
+    if (child.send === send) child.send = originalSend;
+    child.removeListener('close', detach);
+  };
+  child.once('close', detach);
+  return detach;
+}
+
+/** Run the installed Vitest pipeline with its resolved options, fencing only
+ * its identified forks transport. The router owns the external timeout/scope.
+ * No list/collect, copied worker options, pool override, or general Worker hook.
+ * @param {string[]} argv Native Vitest run arguments (including selected files).
+ * @param {(row: Record<string, any>) => void} emit
+ * @param {{ control?: typeof controlForkStartupOnly }} [options] Narrow negative-control seam; the CLI always uses the fence.
+ */
+export async function diagnoseVitestStartup(argv, emit, { control = controlForkStartupOnly } = {}) {
+  const record = row => { try { emit(row); } catch { /* Fail closed independently of the sink. */ } };
+  const sha = bytes => createHash('sha256').update(bytes).digest('hex');
+  const require = createRequire(join(process.cwd(), 'package.json'));
+  const nodeEntry = require.resolve('vitest/node');
+  const workerEntry = realpathSync(join(dirname(nodeEntry), 'workers/forks.js'));
+  const packagePath = require.resolve('vitest/package.json');
+  const installed = JSON.parse(readFileSync(packagePath, 'utf8'));
+  if (!installed.version.startsWith('4.')) throw new Error('Unsupported Vitest startup protocol');
+  const { createVitest, parseCLI } = await import(pathToFileURL(nodeEntry).href);
+  const parsed = parseCLI(['vitest', 'run', ...argv]);
+  if (!parsed.filter.length || parsed.options.watch || parsed.options.browser?.enabled || parsed.options.poolRunner)
+    throw new Error('Unsupported startup-only command');
+  const originalFork = childProcess.fork;
+  const workers = [];
+  const closedWorkers = [];
+  let context;
+  let forkControl;
+  try {
+    context = await createVitest('test', parsed.options);
+    const specifications = await context.globTestSpecifications(parsed.filter);
+    const requested = new Set(parsed.filter.map(file => resolve(file)));
+    if (!specifications.length || specifications.some(spec => spec.pool !== 'forks' ||
+        spec.project.config.poolRunner || !requested.has(resolve(spec.moduleId))) ||
+        [...requested].some(file => !specifications.some(spec => resolve(spec.moduleId) === file)))
+      throw new Error('Unsupported or ambiguous startup-only specification; verified forks required');
+    record({ event: 'startup-only-contract', mode: 'native-vitest-forks-execution-fence',
+      vitestVersion: installed.version, nodeVersion: process.version,
+      runtime: [packagePath, nodeEntry, workerEntry].map(path => ({ path, sha256: sha(readFileSync(path)) })),
+      config: context.vite.config.configFile ? { path: context.vite.config.configFile,
+        sha256: sha(readFileSync(context.vite.config.configFile)) } : null,
+      argvSha256: sha(JSON.stringify(argv)), specifications: specifications.map(spec => ({
+        file: spec.moduleId, pool: spec.pool, project: spec.project.name ?? null,
+        sha256: sha(readFileSync(spec.moduleId)), configSha256: sha(JSON.stringify(spec.project.serializedConfig)),
+      })) });
+    forkControl = function(modulePath, ...args) {
+      // Match the actual installed entrypoint, not a filename substring. Native
+      // utility workers and every unrelated child retain their normal behavior.
+      let selected = false;
+      try { selected = realpathSync(modulePath instanceof URL ? fileURLToPath(modulePath) : modulePath) === workerEntry; }
+      catch { /* The original fork owns validation and errors. */ }
+      const child = originalFork.call(this, modulePath, ...args);
+      if (!selected) return child;
+      const options = (Array.isArray(args[0]) ? args[1] : args[0]) ?? {};
+      const state = { childPid: child.pid, started: false, closed: false, refused: 0 };
+      workers.push(state);
+      closedWorkers.push(new Promise(resolve => child.once('close', resolve)));
+      record({ event: 'controlled-worker-forked', childPid: child.pid, entrypoint: workerEntry,
+        execArgv: loaderIdentity((options.execArgv ?? process.execArgv).join(' ')),
+        envSha256: sha(JSON.stringify(options.env ?? process.env)),
+        optionsSha256: sha(JSON.stringify(options)) });
+      const detachObservation = observeForkStartup(child, row => {
+        if (row.event === 'started-received' && !row.error) state.started = true;
+        if (row.event === 'worker-close') state.closed = true;
+        record(row);
+      });
+      const detachControl = control(child, row => {
+        if (row.event === 'execution-request-refused') state.refused++;
+        record(row);
+      });
+      child.once('close', () => { detachControl(); detachObservation(); });
+      return child;
+    };
+    childProcess.fork = forkControl;
+    syncBuiltinESMExports();
+    await context.start(parsed.filter);
+  } finally {
+    // Leave observation/fencing installed through native stop and owned cleanup.
+    try { await context?.close(); await Promise.all(closedWorkers); }
+    finally {
+      if (childProcess.fork === forkControl) childProcess.fork = originalFork;
+      syncBuiltinESMExports();
+    }
+  }
+  const outcome = { event: 'startup-only-outcome', testVerdict: 'not-measured', workers,
+    status: workers.length > 0 && workers.every(row => row.started && row.closed && row.refused > 0)
+      ? 'startup-observed' : 'startup-incomplete' };
+  record(outcome);
+  return outcome;
 }
 
 // No clients, intervals, or extra processes: existing runner shutdown owns the

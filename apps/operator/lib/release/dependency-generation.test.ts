@@ -604,6 +604,22 @@ describe('dependency source checkout boundaries', () => {
     expect(result.stdout).toBe('');
   });
 
+  it.each(['audit', 'serial', 'parallel', 'fingerprint'])('fails closed on a partial installed-tree census (%s)', operation => {
+    const integration = makeIntegration();
+    const result = spawnSync('bash', ['-c', [
+      'source "$SCRIPT"',
+      'dependency_generation_enumerate_node_modules() { printf "%s\\n" "$INTEGRATION/node_modules"; return 17; }',
+      ...(operation === 'audit' ? ['dependency_generation_audit_lock_tree "$INTEGRATION" "$INTEGRATION"']
+        : operation === 'serial' ? ['dependency_generation_set_manifest_serial "$INTEGRATION"']
+          : operation === 'parallel' ? ['DEPENDENCY_GENERATION_WALK_JOBS=2', 'dependency_generation_set_manifest "$INTEGRATION"']
+            : ['dependency_generation_set_fingerprint "$INTEGRATION"']),
+    ].join('\n')], { encoding: 'utf8', env: { ...process.env, SCRIPT, INTEGRATION: integration } });
+    expect(result.status, result.stdout + result.stderr).not.toBe(0);
+    expect(result.status).not.toBeNull();
+    expect(result.stderr).not.toContain('LOCK_TREE_AUDIT');
+    if (operation === 'audit') expect(result.stderr).toContain('installed-tree enumeration failed');
+  });
+
   it('WI-6554700010018380: an ignored install-generated lockfile is not a live input, so the live key still matches the exact ref', () => {
     const integration = makeIntegration();
     commitFixture(integration, 'seed source repository');
@@ -2055,6 +2071,48 @@ describe('immutable dependency generation', () => {
     const leaseRoot = join(generationRoot, '.leases');
     expect(existsSync(leaseRoot) ? readdirSync(leaseRoot) : []).toEqual([]);
     expect(predictionOf(predictRef(integration, candidate).stdout).verdict).toBe('prewarmed');
+  }, NATIVE_SHELL_TIMEOUT_MS);
+
+  it('rejects an incomplete legacy ancestor even when its publication token is valid', () => {
+    const integration = makeIntegration();
+    for (const rel of ['node_modules', 'packages/a/node_modules', 'packages/b/node_modules']) {
+      rmSync(join(integration, rel), { recursive: true });
+    }
+    writeFileSync(join(integration, 'package-lock.json'), JSON.stringify({
+      name: 'fixture', lockfileVersion: 3, packages: {},
+    }));
+    const empty = publish(integration);
+    expect(empty.status, empty.stderr).toBe(0);
+
+    writeFileSync(join(integration, 'package-lock.json'), lockWith(PKG));
+    const baseline = commitFixture(integration, 'legacy ancestor input');
+    const generationRoot = join(integration, '.papercusp/dependency-generations');
+    const baselineInput = publishedInputFingerprint(fingerprintRef(integration, baseline).stdout);
+    const selector = join(generationRoot, '.inputs', baselineInput);
+    const legacySelector = `schema=1\ninput=${baselineInput}\nidentity=${publishedIdentity(empty.stdout)}\ntoken=${publishedToken(empty.stdout)}\n`;
+    writeFileSync(selector, legacySelector);
+
+    const candidateLock = JSON.parse(lockWith(PKG));
+    candidateLock.packages[''].dependencies = { pkg: '1.0.0' };
+    writeFileSync(join(integration, 'package-lock.json'), `${JSON.stringify(candidateLock)}\n`);
+    const candidate = commitFixture(integration, 'equivalent candidate input');
+    const candidateInput = publishedInputFingerprint(fingerprintRef(integration, candidate).stdout);
+    writeFileSync(join(integration, 'package-lock.json'), lockWith({
+      'node_modules/pkg': { ...PKG['node_modules/pkg'], version: '2.0.0' },
+    }));
+    mkdirSync(join(integration, 'node_modules/pkg'), { recursive: true });
+    writeFileSync(join(integration, 'node_modules/pkg/package.json'), '{"name":"pkg","version":"2.0.0"}\n');
+
+    const prediction = predictRef(integration, candidate);
+    expect(prediction.status, prediction.stderr).toBe(0);
+    expect(predictionOf(prediction.stdout).verdict).toBe('refused');
+    expect(prediction.stderr).toContain('skipping incomplete prewarmed ancestor');
+    const result = ensureRef(integration, candidate);
+    expect(result.status, result.stdout + result.stderr).toBe(74);
+    expect(result.stdout).not.toContain('DEPENDENCY_GENERATION_RESULT');
+    expect(existsSync(join(generationRoot, '.inputs', candidateInput))).toBe(false);
+    expect(readFileSync(selector, 'utf8')).toBe(legacySelector);
+    expect(readdirSync(exactScratch(integration))).toEqual([]);
   }, NATIVE_SHELL_TIMEOUT_MS);
 
   it('EI-26287122280182495: materializes only indexed historical inputs when no donor is equivalent', () => {

@@ -279,7 +279,8 @@ export async function readNativeStartupActivity(options: {
     network: 'local', spend: 'none', resources: { cpuUsec: null, rssBytes: null, costCents: null },
   });
   const server = base('server', 'Papercusp server', 'Runs local Papercusp services and makes background features available.',
-    'OS user service start', ['native-server', ...(platform === 'linux' ? linuxEntrypoints : [])]);
+    'OS user service start', ['native-server', ...(platform === 'linux' ? linuxEntrypoints : []),
+      ...(platform === 'win32' ? ['windows-package-update'] : [])]);
   const login = base('login', 'Start at sign-in', 'Starts Papercusp for this OS user when they sign in.',
     'OS user sign-in', ['native-login']);
   const boot = base('boot', 'Start before sign-in', 'Makes the installed Papercusp service available before sign-in.',
@@ -350,8 +351,11 @@ export async function readNativeStartupActivity(options: {
 export function startupActivityCensus(features: readonly StartupActivityFeature[], platform = process.platform): StartupCensusDisposition[] {
   return STARTUP_ACTIVITY_ENTRYPOINTS.flatMap((entry): StartupCensusDisposition[] => {
     if ('notApplicableReason' in entry) return []; // The central collector already owns these dispositions.
-    if ((entry.id.startsWith('linux-') && platform !== 'linux') || (entry.id.startsWith('mac-') && platform !== 'darwin'))
-      return [{ id: entry.id, kind: 'not-applicable', reason: `This registration writer targets ${entry.id.startsWith('linux-') ? 'Linux' : 'macOS'}; this device runs ${platform === 'linux' ? 'Linux' : platform}.` }];
+    const target = entry.id.startsWith('linux-') ? { platform: 'linux', name: 'Linux' }
+      : entry.id.startsWith('mac-') ? { platform: 'darwin', name: 'macOS' }
+        : entry.id.startsWith('windows-') ? { platform: 'win32', name: 'Windows' } : null;
+    if (target && platform !== target.platform)
+      return [{ id: entry.id, kind: 'not-applicable', reason: `This registration writer targets ${target.name}; this device runs ${platform === 'linux' ? 'Linux' : platform === 'darwin' ? 'macOS' : platform === 'win32' ? 'Windows' : platform}.` }];
     const featureIds = features.filter(feature => feature.entrypointIds.includes(entry.id)).map(feature => feature.id);
     return featureIds.length ? [{ id: entry.id, kind: 'checked', featureIds }] : [];
   });

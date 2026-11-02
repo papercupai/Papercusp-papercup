@@ -27,6 +27,22 @@ const rubricsMocks = vi.hoisted(() => ({
 
 const reviewMocks = vi.hoisted(() => ({ openAcceptanceBarAmendmentReview: vi.fn() }));
 const planMocks = vi.hoisted(() => ({ getPlanRow: vi.fn() }));
+const runtimeMocks = vi.hoisted(() => ({
+  hostIdentity: vi.fn(() => 'pid-test'),
+  guardResource: vi.fn(),
+  heartbeat: vi.fn(),
+  held: new Set<string>(),
+  terminalWrite: undefined as (() => Promise<void>) | undefined,
+}));
+vi.mock('../../serving-host-identity', () => ({ hostIdentity: runtimeMocks.hostIdentity }));
+vi.mock('../locks/identity', () => ({
+  readIdentity: () => ({ ownerId: 'amend-test', ownerLabel: 'amend test' }),
+}));
+vi.mock('../locks/coordination-domain', () => ({
+  resourceLockDomain: (resource: string) => `host-global:${resource}`,
+}));
+vi.mock('../locks/resource-lock-guard', () => ({ guardResource: runtimeMocks.guardResource }));
+vi.mock('../locks/su-lock-store', () => ({ heartbeatSharedResourceAtomic: runtimeMocks.heartbeat }));
 vi.mock('../plans/source', () => ({ getPlanRow: planMocks.getPlanRow }));
 const workItemMocks = vi.hoisted(() => ({ commentWorkItem: vi.fn(), getWorkItemsByIds: vi.fn() }));
 const receiptDb = vi.hoisted(() => {
@@ -72,6 +88,7 @@ const receiptDb = vi.hoisted(() => {
         return [];
       }
       const failed = query.includes("SET state = 'failed'");
+      if (query.includes('SET state =')) await runtimeMocks.terminalWrite?.();
       const [workspace, rubric, key] = values.slice(failed ? 2 : 3) as string[];
       const row = rows.get(`${workspace}:${rubric}:${key}`);
       if (row) {
@@ -143,6 +160,18 @@ const body = async (args: unknown) => {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  runtimeMocks.hostIdentity.mockReturnValue('pid-test');
+  runtimeMocks.held.clear();
+  runtimeMocks.terminalWrite = undefined;
+  runtimeMocks.heartbeat.mockReset().mockResolvedValue({ extended: true, expires_ts: new Date() });
+  runtimeMocks.guardResource.mockReset().mockImplementation(async (spec, run) => {
+    runtimeMocks.held.add(spec.ownerId);
+    try {
+      return { acquired: true, result: await run({ lockId: spec.ownerId }), lock_id: spec.ownerId };
+    } finally {
+      runtimeMocks.held.delete(spec.ownerId);
+    }
+  });
   rubricsMocks.applyRubricAmendment.mockReset();
   receiptDb.rows.clear();
   receiptDb.progressControl.beforeWrite = undefined;
@@ -1286,6 +1315,105 @@ describe('rubrics:amend receipts (RSR-P-008-C)', () => {
     // The minted key is what the amendment commits under, so its Decision can be found by it.
     expect(rubricsMocks.amendRubric).toHaveBeenCalledWith(expect.objectContaining({ idempotencyKey: 'amend-minted-key' }));
     expect(rubricsMocks.mintAmendmentIdempotencyKey).toHaveBeenCalledWith(expect.anything(), 3);
+  });
+
+  it.each(['apply', 'preview'] as const)('holds the runtime lease after a pending %s response through terminal receipt persistence', async (kind) => {
+    runtimeMocks.hostIdentity.mockReturnValue('port-3170');
+    const slow = deferred<any>();
+    const terminalWrite = deferred<void>();
+    const writing = deferred<void>();
+    runtimeMocks.terminalWrite = () => { writing.resolve(); return terminalWrite.promise; };
+    if (kind === 'apply') rubricsMocks.amendRubric.mockReturnValue(slow.promise);
+    else rubricsMocks.previewAcceptanceBarAmendment.mockReturnValue(slow.promise);
+    const answered = await body({ ...amendArgs, ...(kind === 'preview' ? { dryRun: true } : {}) });
+    expect(answered).toMatchObject({ pending: true, receipt: { registered: true } });
+    expect(runtimeMocks.held.size).toBe(1);
+    slow.resolve(kind === 'apply'
+      ? { rubricId: 'acceptance-example', kind: 'standard', criteria: [] }
+      : { approvalRequired: false });
+    await writing.promise;
+    expect(runtimeMocks.held.size).toBe(1);
+    expect([...receiptDb.rows.values()][0]!.state).toBe('running');
+    terminalWrite.resolve();
+    await vi.waitFor(() => expect(runtimeMocks.held.size).toBe(0));
+    expect([...receiptDb.rows.values()][0]!.state).toBe(kind === 'apply' ? 'committed' : 'previewed');
+  });
+
+  it('releases the runtime lease after an execution failure has persisted its failed receipt', async () => {
+    runtimeMocks.hostIdentity.mockReturnValue('port-3170');
+    rubricsMocks.amendRubric.mockRejectedValue(new Error('amend failed'));
+    runtimeMocks.terminalWrite = async () => { expect(runtimeMocks.held.size).toBe(1); };
+    await expect(body(amendArgs)).rejects.toThrow('amend failed');
+    expect([...receiptDb.rows.values()][0]!.state).toBe('failed');
+    expect(runtimeMocks.held.size).toBe(0);
+  });
+
+  it.each([false, true])('does not register or execute an amendment when the runtime is draining (preview=%s)', async (dryRun) => {
+    runtimeMocks.hostIdentity.mockReturnValue('port-3170');
+    runtimeMocks.guardResource.mockResolvedValue({ acquired: false, reason: 'draining', holders: [] });
+    expect(await body({ ...amendArgs, dryRun })).toMatchObject({
+      ok: false, code: 'amendment_runtime_unavailable', reason: 'resource_draining', resource: 'staging-server',
+    });
+    expect(receiptDb.rows.size).toBe(0);
+    expect(rubricsMocks.amendRubric).not.toHaveBeenCalled();
+    expect(rubricsMocks.previewAcceptanceBarAmendment).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['port-3170', 'staging-server'], ['port-3070', 'dev-server'],
+    ['port-3270', null], ['pid-test', null],
+  ] as const)('protects only the actual serving operator runtime (%s)', async (host, resource) => {
+    runtimeMocks.hostIdentity.mockReturnValue(host);
+    rubricsMocks.amendRubric.mockResolvedValue({ rubricId: 'acceptance-example', kind: 'standard', criteria: [] });
+    expect(await body(amendArgs)).toMatchObject({ ok: true });
+    if (resource === null) expect(runtimeMocks.guardResource).not.toHaveBeenCalled();
+    else expect(runtimeMocks.guardResource).toHaveBeenCalledWith(expect.objectContaining({
+      coordinationDomain: `host-global:${resource}`, resource, mode: 'shared',
+      ownerId: expect.stringMatching(/^amend-test:rubrics-amend:/),
+    }), expect.any(Function));
+  });
+
+  it('keeps concurrent amendments independently protected when the first finishes', async () => {
+    runtimeMocks.hostIdentity.mockReturnValue('port-3170');
+    const first = deferred<unknown>();
+    const second = deferred<unknown>();
+    rubricsMocks.amendRubric.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
+    await body({ ...amendArgs, idempotencyKey: 'runtime-first' });
+    await body({ ...amendArgs, idempotencyKey: 'runtime-second' });
+    expect(runtimeMocks.held.size).toBe(2);
+    first.resolve({ rubricId: 'acceptance-example', kind: 'standard', criteria: [] });
+    await vi.waitFor(() => expect(runtimeMocks.held.size).toBe(1));
+    expect(receiptDb.rows.get('ws-amend-test:acceptance-example:runtime-second')!.state).toBe('running');
+    second.resolve({ rubricId: 'acceptance-example', kind: 'standard', criteria: [] });
+    await vi.waitFor(() => expect(runtimeMocks.held.size).toBe(0));
+  });
+
+  it('renews a detached amendment lease beyond its initial TTL and stops renewing after settlement', async () => {
+    vi.useFakeTimers();
+    const slow = deferred<unknown>();
+    const rubric = { rubricId: 'acceptance-example', kind: 'standard', criteria: [] };
+    try {
+      runtimeMocks.hostIdentity.mockReturnValue('port-3170');
+      rubricsMocks.amendRubric.mockReturnValue(slow.promise);
+      const answer = body(amendArgs);
+      await vi.advanceTimersByTimeAsync(25);
+      expect(await answer).toMatchObject({ pending: true });
+      await vi.advanceTimersByTimeAsync(1_200_005);
+      expect(runtimeMocks.heartbeat).toHaveBeenCalledTimes(2);
+      expect(runtimeMocks.heartbeat).toHaveBeenCalledWith(expect.objectContaining({
+        coordinationDomain: 'host-global:staging-server', resource: 'staging-server',
+        owner: [...runtimeMocks.held][0], lockId: [...runtimeMocks.held][0], ttlSec: 1200,
+      }));
+      expect(runtimeMocks.held.size).toBe(1);
+      slow.resolve(rubric);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(runtimeMocks.held.size).toBe(0);
+      await vi.advanceTimersByTimeAsync(1_200_005);
+      expect(runtimeMocks.heartbeat).toHaveBeenCalledTimes(2);
+    } finally {
+      slow.resolve(rubric);
+      vi.useRealTimers();
+    }
   });
 
   it('keeps a caller-supplied key instead of minting one', async () => {

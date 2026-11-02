@@ -14,6 +14,7 @@ import {
   FileText,
 } from 'lucide-react';
 import { useSyncQuery } from '@papercusp/sync';
+import { beginInteraction, PERF_INTERACTIONS } from '@/app/_components/perf/perf-marks';
 import { operatorUi } from '@papercusp/operator-ui/seam';
 import FleetRateControl from './FleetRateControl';
 import { isRunningAgent, type RosterAgent } from './AgentsRunningPill';
@@ -893,7 +894,10 @@ export default function AdvOverviewTab() {
           error={statsQ.error ? String((statsQ.error as Error).message ?? statsQ.error) : null}
           empty={workItemStats.total === 0}
           emptyLabel="No work items"
-          onOpen={() => void setActiveTab(OVERVIEW_TILE_TARGETS.workItems)}
+          onOpen={() => {
+            if (potScope.slug) beginInteraction(PERF_INTERACTIONS.workListOpen, potScope.slug);
+            void setActiveTab(OVERVIEW_TILE_TARGETS.workItems);
+          }}
         >
           {/* P-002: the 24h burn-down headline — one row, only when it moved. */}
           {(workItemStats.opened24h > 0 || workItemStats.closed24h > 0) && (

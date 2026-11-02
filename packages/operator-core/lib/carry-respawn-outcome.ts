@@ -40,10 +40,9 @@ import { readOwnerHostEvents, type ColdBootDrillHostEvent } from './cold-boot-dr
  *  successful respawn emits them. Anything else in the log (wake deferrals,
  *  stale-fire drops, shutdown rows) is NOT a verdict about a respawn. */
 const RESPAWN_TERMINAL_OK = new Set(['respawn-carry-delivered']);
-// `respawn-failed` is emitted when the host cannot build/spawn the successor
-// (for example a missing per-session Codex AGENTS.md). It is terminal for this
-// carry attempt just like `respawn-carry-dropped`; omitting it makes the reader
-// report an already-failed request as `pending` forever.
+// `respawn-failed` without retryable is terminal. A retryable failure is one
+// attempt in the host's re-arm window, so the carry remains pending until a
+// later lifecycle row settles it.
 const RESPAWN_TERMINAL_FAIL = new Set(['respawn-carry-dropped', 'respawn-failed']);
 /** Non-terminal: the host accepted a carry or is still re-polling for an idle window. */
 const RESPAWN_IN_FLIGHT = new Set([
@@ -149,8 +148,9 @@ export function deriveLastRespawnOutcome(
       retiringInFlight = true;
       continue;
     }
+    const retryableFailure = kind === 'respawn-failed' && row.retryable === true;
     let outcome: PriorRespawnOutcome | null = null;
-    if (RESPAWN_TERMINAL_FAIL.has(kind)) outcome = 'dropped';
+    if (RESPAWN_TERMINAL_FAIL.has(kind)) outcome = retryableFailure ? 'pending' : 'dropped';
     else if (RESPAWN_TERMINAL_OK.has(kind)) outcome = 'delivered';
     // A spawned process is not a delivered continuation. WI-10001066 opened a
     // fresh Codex child but dropped its first prompt minutes later. Keep that
@@ -160,7 +160,7 @@ export function deriveLastRespawnOutcome(
     else if (RESPAWN_IN_FLIGHT.has(kind)) outcome = 'pending';
     if (!outcome) continue;
     if (retiringInFlight) {
-      if (RESPAWN_IN_FLIGHT.has(kind)) continue;
+      if (RESPAWN_IN_FLIGHT.has(kind) || retryableFailure) continue;
       retiringInFlight = false;
     }
     const ts = typeof row.ts === 'string' ? row.ts : undefined;

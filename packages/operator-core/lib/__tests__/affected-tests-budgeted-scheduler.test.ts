@@ -376,6 +376,7 @@ describe('private native proof custody (P002)', () => {
       'import { verifyNativeProofPacket } from ' + JSON.stringify(resolve(REPO_ROOT, 'scripts/lib/budgeted-task-scheduler.mjs')) + ';' +
       'console.log(verifyNativeProofPacket(...JSON.parse(process.argv[1])).status)',
       JSON.stringify([f.directory, saved.locator, f.contract])], { encoding: 'utf8', timeout: 30_000 });
+    assertNativeFixtureCompleted(child, join(f.root, 'consumer.json'), 'oversized-out-consumer');
     expect({ status: child.status, stderr: child.stderr }).toEqual({ status: 0, stderr: '' });
     expect(child.stdout.trim()).toBe('complete');
     expect(saved.manifest.verdicts).toMatchObject({ nativeProof: 'unqualified', acceptance: 'unmeasured' });
@@ -639,7 +640,7 @@ describe('private native proof custody (P002)', () => {
   });
 });
 
-// Read failure evidence before the fixture's finally block removes its trace.
+// Retain failure evidence before the fixture's finally block removes its trace.
 // An absent entry is unknown startup progress, not proof the child never ran.
 function assertNativeFixtureCompleted(child: ReturnType<typeof spawnSync>, out: string, phase: string) {
   if (!child.error) return;
@@ -678,6 +679,9 @@ function assertNativeFixtureCompleted(child: ReturnType<typeof spawnSync>, out: 
   const diagnostic = {
     phase, pid: child.pid, code: (child.error as NodeJS.ErrnoException).code ?? null,
     status: child.status, signal: child.signal,
+    // An exit event records synchronous listener completion. It does not prove
+    // OS process termination, closed inherited pipes, or parent collection.
+    terminationObserved: false,
     traceStatus: events.length ? 'observed' : 'unknown', traceFiles, traceReadError,
     traceTruncated: traceFiles > 2048, eventCount: events.length,
     rootProcess: {
@@ -693,7 +697,14 @@ function assertNativeFixtureCompleted(child: ReturnType<typeof spawnSync>, out: 
       .slice(-8).map(({ pid, loadId, url }) => ({ pid, loadId, url: url?.slice(-512) })),
     stdout: tail(child.stdout), stderr: tail(child.stderr),
   };
-  child.error.message += `\nNATIVE_FIXTURE_FAILURE ${JSON.stringify(diagnostic)}`;
+  let retainedRoot: string | null = null;
+  let retentionError: string | null = null;
+  try {
+    retainedRoot = mkdtempSync(join(tmpdir(), 'native-fixture-failure-'));
+    cpSync(dirname(out), join(retainedRoot, 'fixture'), { recursive: true, dereference: false });
+    writeFileSync(join(retainedRoot, 'failure.json'), JSON.stringify(diagnostic), { mode: 0o600 });
+  } catch (error) { retentionError = error instanceof Error ? error.message : String(error); }
+  child.error.message += `\nNATIVE_FIXTURE_FAILURE ${JSON.stringify({ ...diagnostic, retainedRoot, retentionError })}`;
   throw child.error;
 }
 
@@ -853,6 +864,19 @@ describe('native affected-task parent receipt transport', () => {
     expect(diagnostic.pendingLoads.length).toBeLessThanOrEqual(8);
     expect(diagnostic.traceStatus).toBe(diagnostic.eventCount ? 'observed' : 'unknown');
     expect(readdirSync(dirname(root))).not.toContain(root.split('/').at(-1));
+    // The original finally cleanup must leave an independently readable packet.
+    try {
+      expect(diagnostic.retentionError).toBeNull();
+      const retained = JSON.parse(readFileSync(join(diagnostic.retainedRoot, 'failure.json'), 'utf8'));
+      expect(retained).toMatchObject({ phase: 'forced-timeout', code: 'ETIMEDOUT',
+        pid: observed!.pid, terminationObserved: false });
+      expect(retained.stdout).toEqual(diagnostic.stdout);
+      expect(retained.stderr).toEqual(diagnostic.stderr);
+      if (diagnostic.traceStatus === 'observed') {
+        const names = readdirSync(join(diagnostic.retainedRoot, 'fixture', 'source-map.json.native-processes'));
+        expect(names.filter(name => name.endsWith('.json'))).toHaveLength(diagnostic.traceFiles);
+      }
+    } finally { if (diagnostic.retainedRoot) rmSync(diagnostic.retainedRoot, { recursive: true, force: true }); }
   }, 15_000);
 
   it.each([16384, 16385, 55278])('retains bounded authenticated observations from %i artifacts including streams', count => {

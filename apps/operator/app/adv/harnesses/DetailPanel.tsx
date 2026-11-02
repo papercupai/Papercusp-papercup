@@ -7,6 +7,7 @@ import { redactSensitiveText } from '@papercusp/operator-core/lib/sensitive-text
 import { ArrowUpRight, MessageCircle } from 'lucide-react';
 import { useSyncQuery } from '@papercusp/sync';
 import { useLexicon } from '@/lib/useLexicon';
+import { clearInteraction, endInteraction, PERF_INTERACTIONS } from '../../_components/perf/perf-marks';
 import { openFeatureChat } from '@papercusp/papercusp-shared';
 import type { Issue, IssueNote } from '@papercusp/operator-core/lib/harness/issue-types';
 import type { PanelComponentProps } from '../../harness/dock/panel-registry';
@@ -245,6 +246,20 @@ export default function DetailPanel({ params, api }: PanelComponentProps) {
       : null,
     [kind, workItemDetailRow, selectedId],
   );
+  useEffect(() => {
+    if (!slug || kind !== 'workItem' || !selectedId) return;
+    const subject = `${slug}:${selectedId}`;
+    if (workItemDetailQuery.error || workItemDetailQuery.failureCount > 0 ||
+        (!workItemDetailQuery.loading && !workItem)) {
+      clearInteraction(PERF_INTERACTIONS.workItemOpen, subject);
+    } else if (workItem) {
+      endInteraction(PERF_INTERACTIONS.workItemOpen, subject);
+    }
+  }, [slug, kind, selectedId, workItem, workItemDetailQuery.loading,
+    workItemDetailQuery.error, workItemDetailQuery.failureCount]);
+  useEffect(() => () => {
+    clearInteraction(PERF_INTERACTIONS.workItemOpen, `${slug}:${selectedId}`);
+  }, [slug, selectedId]);
   // agent:* resolves against the same `fleetAssignments.byHarness` sync query
   // the Agents panel's Working view reads (one projection, identical rows).
   // Only subscribed while an agent is actually selected.

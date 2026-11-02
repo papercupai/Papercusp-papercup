@@ -196,6 +196,17 @@ async function verifyRequest(sql: Sql, scope: AdmissionRecoveryScope, request: A
   }
 }
 
+/** Signed prior placement is evidence for review, never admission or execution. */
+export async function readVerifiedAdmissionRecoveryTarget(
+  scope: AdmissionRecoveryScope,
+  sql: Sql = getOrgPg().sql,
+): Promise<string | null> {
+  const request = savedRequest(await readItem(sql, scope));
+  if (!request || request.version !== 3 || request.state !== 'held' || request.stage !== 'screen') return null;
+  await verifyRequest(sql, scope, request);
+  return request.target;
+}
+
 async function readItem(sql: Sql, scope: AdmissionRecoveryScope): Promise<RecoveryItem> {
   const [item] = await sql<RecoveryItem[]>`
     SELECT feature_id, status, origin, taken_by, admission, payload, last_progress_at

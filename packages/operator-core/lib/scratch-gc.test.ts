@@ -896,11 +896,10 @@ describe('reserveScratchSpace — no synchronous walk on the hot path (WI-100045
         String(from).startsWith(statePath + '.') || String(to) === statePath,
       );
 
-      // One locked read for reservation plus one for settlement. Reservation publication
-      // reuses its current-state read instead of repeating it; neither publication needs a
-      // temp-file rename because all authoritative ledger access is mutex-protected.
-      expect(reads).toHaveLength(2);
-      expect(writes).toHaveLength(2);
+      // Successful payload bytes were already charged by the persisted reservation. Only that
+      // admission reads and publishes shared state; success settlement is process-local.
+      expect(reads).toHaveLength(1);
+      expect(writes).toHaveLength(1);
       expect(writes.every(([path]) => String(path) === statePath)).toBe(true);
       expect(renames).toHaveLength(0);
 
@@ -1537,6 +1536,75 @@ describe('cross-process scratch quota coordination', () => {
     expect(outcomes.find((outcome) => !outcome.ok)).toMatchObject({ code: 'SCRATCH_QUOTA_EXCEEDED' });
     expect([existsSync(firstPath), existsSync(secondPath)].filter(Boolean)).toHaveLength(1);
   }, 15_000);
+
+  it('does not overwrite a newer process reservation when an earlier write settles', async () => {
+    const workspaceId = 'ws-SETTLEMENT-REMOTE-RESERVATION';
+    const firstRunDir = ensureScratchRunDir({ workspaceId, toolName: 'quota', runId: UUID(8851) });
+    const secondRunDir = ensureScratchRunDir({ workspaceId, toolName: 'quota', runId: UUID(8852) });
+    await refreshScratchUsage(workspaceId);
+
+    const workspaceRoot = resolve(scratchRootForWorkspace(workspaceId));
+    const ledgerPath = join(
+      resolveScratchQuotaStateRoot(),
+      createHash('sha256').update(workspaceRoot).digest('hex') + '.json',
+    );
+    const readLedgerBytes = (): number => Number(JSON.parse(readFileSync(ledgerPath, 'utf8')).bytes);
+    const baselineBytes = readLedgerBytes();
+    const script = [
+      'const { writeWithScratchQuota } = await import(process.env.PC_SCRATCH_GC_MODULE);',
+      "const { writeFile } = await import('node:fs/promises');",
+      'const workspaceId = process.env.PC_WORKSPACE_ID;',
+      'const filePath = process.env.PC_FILE_PATH;',
+      'const writer = process.env.PC_WRITER;',
+      'await writeWithScratchQuota({ workspaceId, filePath, bytes: 80 }, async () => {',
+      '  await new Promise((resolve) => {',
+      "    process.once('message', (message) => { if (message && message.type === 'release') resolve(); });",
+      "    process.send({ type: 'payload-started-' + writer });",
+      '  });',
+      '  await writeFile(filePath, Buffer.alloc(80));',
+      '});',
+      'process.stdout.write(JSON.stringify({ ok: true }));',
+    ].join('\n');
+    const baseEnv = {
+      PC_SCRATCH_GC_MODULE: new URL('./scratch-gc.ts', import.meta.url).href,
+      PC_WORKSPACE_ID: workspaceId,
+    };
+    const first = startScratchChild(script, {
+      ...baseEnv,
+      PC_FILE_PATH: join(firstRunDir, 'first.spill'),
+      PC_WRITER: 'first',
+    });
+    let second: ReturnType<typeof startScratchChild> | undefined;
+    try {
+      await first.waitForMessage('payload-started-first');
+      second = startScratchChild(script, {
+        ...baseEnv,
+        PC_FILE_PATH: join(secondRunDir, 'second.spill'),
+        PC_WRITER: 'second',
+      });
+      await second.waitForMessage('payload-started-second');
+      expect(readLedgerBytes()).toBe(baselineBytes + 160);
+
+      first.child.send({ type: 'release' });
+      const firstResult = await first.finished;
+      expect(firstResult.code, firstResult.stderr || firstResult.spawnError || undefined).toBe(0);
+      expect(readLedgerBytes(), 'first settlement dropped the second writer reservation')
+        .toBe(baselineBytes + 160);
+
+      second.child.send({ type: 'release' });
+      const secondResult = await second.finished;
+      expect(secondResult.code, secondResult.stderr || secondResult.spawnError || undefined).toBe(0);
+      await refreshScratchUsage(workspaceId);
+      expect(scratchUsageBytes(workspaceId)).toBe(baselineBytes + 160);
+      expect(readLedgerBytes()).toBe(baselineBytes + 160);
+    } finally {
+      if (first.child.connected) first.child.send({ type: 'release' });
+      if (second?.child.connected) second.child.send({ type: 'release' });
+      if (first.child.exitCode === null) first.child.kill('SIGTERM');
+      if (second?.child.exitCode === null) second.child.kill('SIGTERM');
+      await Promise.allSettled([first.finished, ...(second ? [second.finished] : [])]);
+    }
+  }, 20_000);
 
   it('publishes no quota reservation while another process holds the exclusive data lease', async () => {
     // WI-6554700010018533: quota recovery and GC measure the tree under the exclusive data lease

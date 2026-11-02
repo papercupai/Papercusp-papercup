@@ -22825,7 +22825,7 @@
         "foreign-session"
       ],
       "guidance": {
-        "when": "New work surfaces — a chunk to do, a verification step, a follow-up. Pick the right phase (or name a new one). Add several at once via items:[…] (the new ids come back per result).",
+        "when": "Append new work to a phase; batch with items. suggestedAnchors are caller-session suggestions; only explicit anchors are stored. Manual anchors remain available.",
         "notWhen": "Updating an existing item — that's a direct edit, not an assisted write (the format is stable). Or status flip — plans:set-status.",
         "chaining": "Before writing a code item, run graph:query impact and graph:query op similar on the symbols it changes; pass symbols or paths as anchors (code links). Name/import similarity is not ownership. Use graph:query { op:\"evidence\", plan, item } to inspect exact linked specs and proof; missing declarations need explicit anchors/specs. plans:add-item → plans:set-specs → plans:set-status when work starts."
       }
@@ -24471,7 +24471,7 @@
           "POST"
         ]
       },
-      "description": "Create a plan in the plan store; never write a plan file. Optional content; lock-enforced unique slug. Format: /internal/docs/spec/plan-format.",
+      "description": "Create a plan with a unique slug. suggestedAnchors come from this caller's trail; pass chosen links to plans:add-item anchors to store them.",
       "capabilities": [
         "plans:write"
       ],

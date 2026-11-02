@@ -8,7 +8,10 @@ import { join } from 'node:path';
 import type { PapercuspUnifiedToolContext } from '../agent-tools/_tool-context';
 import type { BenchHarnessDriver } from './run-loop';
 import type { BenchTask } from './types';
-import { currentProtocolFixture, allCapabilities } from './reproducibility/_protocol-test-fixture';
+import { currentProtocolFixture, controlledProtocolFixture, allCapabilities } from './reproducibility/_protocol-test-fixture';
+import { freezeMinecraftManifest, freezeMinecraftPair, freezeMinecraftSelection, freezeMinecraftTrial } from './minecraft-protocol';
+import type { MinecraftTaskLaunch, runMinecraftProvisionedTrial } from './minecraft-launch-adapter';
+import { canonicalJson } from './reproducibility/canonical-json';
 import { PROXIMUS_CLIENT_VERSION, PROXIMUS_SOURCE_REVISION } from './reproducibility/schema';
 
 const io = vi.hoisted(() => ({ prereg: vi.fn(), committed: vi.fn(), register: vi.fn(),
@@ -105,6 +108,119 @@ describe('current host selection', () => {
   it('refuses unregistered seeds and selects the frozen stock arm independently', () => {
     expect(() => currentBenchLaunchSelection({ ...input, current: { ...input.current!, seed: 4 } }, config)).toThrow(/frozen protocol/);
     expect(currentBenchLaunchSelection({ ...input, arm: 'baseline' }, config).arm.id).toBe('baseline');
+  });
+});
+
+function minecraftLaunchFixture(ledger?: 'on' | 'off') {
+  config = controlledProtocolFixture();
+  config.taskIds = ['t1']; config.seeds = [1]; config.aggregateBudgetUsd = 15;
+  config.grader.family = 'minecraft'; config.grader.version = 'minecraft@1.20.4/server-advancements-v1';
+  if (ledger) config.arms.find(arm => arm.id === 'solo')!.control!.capabilities = {
+    ...allCapabilities('off'), 'work-item-ledger': ledger };
+  for (const rate of config.priceSchedule.rates) {
+    rate.inputTokenCeiling = 1000; rate.inputTokenCeilingSourceSha256 = 'e'.repeat(64);
+  }
+  const hash = (n: number) => n.toString(16).padStart(64, '0');
+  const material = (taskId: string, n: number) => ({ taskId, worldSeed: String(n), objective: 'iron-tools',
+    referenceSha256: hash(n * 10), scoringFixtureSha256: hash(n * 10 + 1), exampleSha256: [] });
+  const manifest = freezeMinecraftManifest({ schemaVersion: 1, revision: 1,
+    train: [material('train', 1)], dev: [material('dev', 2)], heldOut: [material('t1', 3)] });
+  const initialState = { worldSha256: hash(90), memorySha256: config.context.memoryHash };
+  const selectedArm = ledger ? 'solo' : 'stock';
+  const arms = config.arms.filter(arm => [selectedArm, 'repeated-session'].includes(arm.id)).map(arm => {
+    const selection = freezeMinecraftSelection(manifest, { runId: config.runId, armId: arm.id, modelId: arm.model,
+      promptSha256: arm.runtime.promptHash, configurationSha256: createHash('sha256').update(canonicalJson(config)).digest('hex'), sources: [] });
+    const trial = freezeMinecraftTrial({ schemaVersion: 1, runId: config.runId, armId: arm.id, taskId: 't1',
+      manifestHash: manifest.manifestHash, selectionHash: selection.selectionHash, worldSeed: '3', objective: 'iron-tools',
+      rules: { version: '1.20.4', difficulty: 'easy', gameMode: 'survival', cheats: false },
+      pins: { serverImage: `minecraft/server@sha256:${hash(70)}`, serverJarSha256: hash(71), mineflayerVersion: '4.32.0', pathfinderVersion: '2.4.5' },
+      participants: ['alice'], observations: ['position'], actions: ['move'],
+      limits: { maxWallClockMs: 100, maxProgramMs: 50, maxUsd: 3 } });
+    return { trial, selection, initialState };
+  });
+  const pair = freezeMinecraftPair(manifest, { arms, orderSeed: hash(100) });
+  const selected = arms.find(value => value.trial.protocol.armId === selectedArm)!;
+  const launch: MinecraftTaskLaunch = { ...selected, manifest, participantId: 'alice', pairing: { pair, initialState },
+    runtime: { serverJar: '/host/pinned-server.jar', botImage: `sha256:${hash(72)}`, acceptEula: true,
+      worldBaseline: { worldSha256: initialState.worldSha256, dispose: vi.fn(async () => {}) } } };
+  const preregHash = hash(50);
+  io.prereg.mockResolvedValue({ preregHash, config });
+  const request = { ...input, arm: selectedArm, suite: 'minecraft', current: { ...input.current!, protocolRunId: config.runId,
+    preregHash, seed: 1 } };
+  const execute = vi.fn<typeof runMinecraftProvisionedTrial>(async (host): Promise<Awaited<ReturnType<typeof runMinecraftProvisionedTrial>>> => ({ arm: selectedArm, runId: config.runId,
+    startedAtMs: 0, finishedAtMs: 1, modelCallsSpent: 0, tokensSpent: 0, costUsdSpent: 0,
+    accountingUnknown: false, budgetExhausted: false, attemptedTaskIds: ['t1'], skippedTaskIds: [], rows: [{
+      runId: config.runId, suite: 'minecraft', modality: 'in-container', taskId: 't1', arm: selectedArm, seed: 1,
+      resolved: false, score: 0, graderStatus: 'failed', graderFamily: 'minecraft', graderVersion: config.grader.version,
+      tokensIn: 0, tokensOut: 0, tokensTotal: 0, costUsd: 0, priceTableVersion: config.priceSchedule.version,
+      wallClockMs: 1, turns: 0, budgetTokens: null, capped: false, generationStatus: 'completed', generationError: null,
+      modelId: host.options.model, harnessVersion: config.arms[0].runtime.sourceRevision,
+      preregHash, rolloutId: 'stored-minecraft-replay', createdAt: new Date(0).toISOString() }] }));
+  const deps = { scope: scope(), currentContext: context, assertEnabled: async () => {},
+    currentMinecraft: { tasks: [launch], execute } };
+  return { request, deps, execute, launch };
+}
+describe('Minecraft current operational lifecycle', () => {
+  it.each(['on', 'off'] as const)('routes verified solo ledger-%s through the maintained Minecraft lifecycle', async ledger => {
+    const f = minecraftLaunchFixture(ledger);
+    expect(currentBenchLaunchSelection(f.request, config).arm.id).toBe('solo');
+    await (await launchBenchRun(f.request, f.deps)).done;
+    expect(f.execute).toHaveBeenCalledOnce();
+    expect(f.execute.mock.calls[0]![0].options.armId).toBe('solo');
+    expect(io.upsert.mock.calls[0][0]).toMatchObject({ suite: 'minecraft', arm: 'solo' });
+    expect(io.legacyRun).not.toHaveBeenCalled();
+  });
+  it('refuses unsupported solo capabilities before registration', async () => {
+    const f = minecraftLaunchFixture('on');
+    config.arms.find(arm => arm.id === 'solo')!.control!.capabilities['consult-router'] = 'on';
+    await expect(launchBenchRun(f.request, f.deps)).rejects.toThrow(/unavailable for: consult-router/);
+    expect(io.register).not.toHaveBeenCalled(); expect(f.execute).not.toHaveBeenCalled();
+  });
+  it('registers the existing governor and run roster, then projects the stored result into live status', async () => {
+    const f = minecraftLaunchFixture();
+    await (await launchBenchRun(f.request, f.deps)).done;
+    expect(io.register).toHaveBeenCalledOnce(); expect(io.committed).toHaveBeenCalledOnce();
+    expect(io.upsert.mock.calls[0][0]).toMatchObject({ suite: 'minecraft', taskCount: 1, arm: 'stock' });
+    expect(io.task.mock.calls.map(call => call[1].taskStatus)).toEqual(['todo', 'in_progress', 'graded']);
+    expect(f.execute).toHaveBeenCalledWith(expect.objectContaining({ loopId: expect.stringContaining('benchmark:'),
+      options: expect.objectContaining({ armId: 'stock', seed: 1 }) }), expect.objectContaining({ trial: f.launch.trial }));
+    expect(io.completion).toHaveBeenCalledOnce();
+    expect(io.legacyBind).not.toHaveBeenCalled(); expect(io.legacyRun).not.toHaveBeenCalled();
+  });
+  it.each(['missing', 'duplicate', 'foreign-pair'])('refuses %s frozen host data before governor/run allocation', async drift => {
+    const f = minecraftLaunchFixture();
+    if (drift === 'missing') f.deps.currentMinecraft.tasks = [];
+    if (drift === 'duplicate') f.deps.currentMinecraft.tasks.push(f.launch);
+    if (drift === 'foreign-pair') f.launch.pairing.pair = { ...f.launch.pairing.pair };
+    await expect(launchBenchRun(f.request, f.deps)).rejects.toThrow(/Minecraft/);
+    expect(io.register).not.toHaveBeenCalled(); expect(io.upsert).not.toHaveBeenCalled();
+    expect(f.execute).not.toHaveBeenCalled();
+  });
+  it('keeps provisioning failure on the assigned task and fails the operational run', async () => {
+    const f = minecraftLaunchFixture(); f.execute.mockRejectedValue(Error('server unavailable'));
+    io.status.mockResolvedValue(undefined);
+    await (await launchBenchRun(f.request, f.deps)).done;
+    expect(io.task.mock.calls.at(-1)![1]).toMatchObject({ instanceId: 't1', taskStatus: 'error', generationError: 'server unavailable' });
+    expect(io.status).toHaveBeenCalledWith(expect.any(String), 'error', { runError: 'server unavailable' }, expect.anything());
+    expect(io.completion).not.toHaveBeenCalled();
+  });
+  it('aborts and drains the active runtime before cancellation returns', async () => {
+    const f = minecraftLaunchFixture();
+    let entered!: () => void, drained = false;
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    f.execute.mockImplementationOnce(async host => {
+      entered(); await new Promise<void>(resolve => host.options.signal!.addEventListener('abort', () => resolve(), { once: true }));
+      drained = true; throw Error('cancelled runtime');
+    });
+    const launched = await launchBenchRun(f.request, f.deps); await started;
+    sql.mockResolvedValueOnce([{ status: 'running', pot_slug: null, config: { current: { protocolRunId: config.runId } } }]);
+    expect(await cancelBenchRun(launched.runId, { scope: scope() })).toEqual({ cancelled: true });
+    expect(drained).toBe(true); await launched.done;
+    expect(io.completion).not.toHaveBeenCalled();
+  });
+  it('does not enable undeployed solo/coordinated capabilities through a host data object', () => {
+    const f = minecraftLaunchFixture();
+    expect(() => currentBenchLaunchSelection({ ...f.request, arm: 'coordinated' }, config)).toThrow(/execution/);
   });
 });
 

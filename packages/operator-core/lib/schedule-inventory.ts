@@ -818,6 +818,10 @@ const managedWorkspaceActivitySchema = z.object({
   workspaceId: z.string().trim().min(1).refine(value => value !== '*'),
   featureId: z.string().regex(/^activity-[a-f0-9]{64}$/),
 });
+const managedControlActivitySchema = z.object({
+  kind: z.literal('required-control'),
+  reason: z.string().trim().min(1),
+});
 
 function managedWorkspaceBinding(row: { source: string; detail: { activity?: unknown } }) {
   if (row.source !== 'managed' && row.source !== 'external-process') return null;
@@ -1007,6 +1011,17 @@ export async function collectStartupActivity(
     catch { unavailable.add('census'); }
   } else unavailable.add('census');
   const census = checkStartupActivityCensus(STARTUP_ACTIVITY_ENTRYPOINTS.map(entry => entry.id), dispositions, features);
+  // A represented timer proves that its writer was observed, not that execution
+  // controls cover it. Legacy timers remain allowed by the host adapter until
+  // classified; keep that gap visible even when every writer has a disposition.
+  for (const row of rows) {
+    const liveManaged = row.source === 'managed' || (row.source === 'external-process'
+      && row.detail.federated === true && row.detail.reachable === true);
+    if (liveManaged && !managedWorkspaceBinding(row)
+      && !managedControlActivitySchema.safeParse(row.detail.activity).success)
+      census.problems.push(`unclassified-managed:${startupActivityFeatureId(row, context)}`);
+  }
+  census.complete = census.problems.length === 0;
   return { features, history, unavailable: [...unavailable].sort(), census: { version: 1, ...census, dispositions } };
 }
 
@@ -1057,6 +1072,7 @@ export const STARTUP_ACTIVITY_ENTRYPOINTS = [
   { id: 'mac-boot-install', writer: 'papercusp-desktop/src-tauri/launchd/install-launchdaemon.sh', witness: 'launchctl' },
   { id: 'mac-service-template', writer: 'papercusp-desktop/src-tauri/launchd/com.papercusp.server.plist.template', witness: '<key>Label</key>' },
   { id: 'mac-current-service-template', writer: 'papercusp-desktop/src-tauri/launchd/com.papercusp.server.current.plist.template', witness: '<key>Label</key>' },
+  { id: 'windows-package-update', writer: 'papercusp-desktop/src-tauri/windows/inno/papercusp.iss', witness: 'Check: IsUpdaterLaunch' },
   { id: 'routine-dispatch', writer: 'packages/operator-core/lib/dbos/routines-workflow.ts', witness: 'enqueueRoutineFire' },
   { id: 'event-dispatch', writer: 'packages/operator-core/lib/dbos/event-reaction-workflow.ts', witness: 'eventReactionWorkflow' },
   { id: 'dbos-registration', writer: 'packages/operator-core/lib/dbos/dbos-schedule-introspect.ts', witness: 'getRegisteredSchedules' },

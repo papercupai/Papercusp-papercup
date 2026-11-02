@@ -2816,6 +2816,51 @@ export function prepareSuLaunchEnvironment(envelopeEnv, inheritedEnv = process.e
  * never a broken launch). No-sid launches (interactive, untracked) stay untagged.
  * @param {{ routineId: string, wakeCount: number } | null} [loopFire]
  */
+const LOOP_FIRE_PROVENANCE_TTL_MS = 65 * 60 * 1000;
+const DEFAULT_PROVENANCE_TTL_MS = 10 * 60 * 1000;
+
+function normalizeLoopFireIdentity(value) {
+  if (!value || typeof value !== "object") return null;
+  return typeof value.routineId === "string" && value.routineId.trim().length > 0 &&
+    Number.isInteger(value.wakeCount) && value.wakeCount > 0
+    ? { routineId: value.routineId, wakeCount: value.wakeCount }
+    : null;
+}
+
+/** Recover loop identity from an already-enrolled prompt when the private
+ * successor hint carries only the legacy origin string. The row must match the
+ * exact nonce, SID, origin, payload hash, and live TTL; prompt prose alone never
+ * supplies fire identity. */
+function readVerifiedLoopFireIdentity(text, sid, dir, nowMs) {
+  if (typeof sid !== "string" || !sid) return null;
+  const normalized = String(text).replace(/\r\n?/g, "\n");
+  const [firstLine = "", ...bodyLines] = normalized.split("\n");
+  const match = /^⟦turn-origin:loop-fire nonce:([0-9a-f]{16})⟧$/.exec(firstLine.trim());
+  if (!match) return null;
+  const bodyHash = createHash("sha256")
+    .update(bodyLines.join("\n").replace(/\r\n?/g, "\n").trim(), "utf8")
+    .digest("hex");
+  const safe = String(sid).replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 200);
+  let lines;
+  try {
+    lines = readFileSync(join(dir, `${safe}.jsonl`), "utf8").split(/\r?\n/);
+  } catch {
+    return null;
+  }
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (!lines[i]?.trim()) continue;
+    let row;
+    try { row = JSON.parse(lines[i]); } catch { continue; }
+    if (row.sid !== sid || row.nonce !== match[1] || row.origin !== "loop-fire" || row.sha256 !== bodyHash ||
+        !Number.isFinite(row.ts) || row.ts > nowMs) continue;
+    const ttlMs = Number.isFinite(row.ttlMs) && row.ttlMs > 0 ? row.ttlMs : DEFAULT_PROVENANCE_TTL_MS;
+    if (nowMs - row.ts > ttlMs) continue;
+    const identity = normalizeLoopFireIdentity(row.loopFire);
+    if (identity) return identity;
+  }
+  return null;
+}
+
 export function tagKickoffProvenance(
   text,
   sid,
@@ -2827,13 +2872,6 @@ export function tagKickoffProvenance(
   try {
     if (!text || !sid) return text;
     const kickoffOrigin = origin === "loop-fire" ? "loop-fire" : "fleet-kickoff";
-    // Only the private loop-successor path supplies this identity. Legacy or
-    // malformed hints retain their origin but cannot qualify a loop fire.
-    const identity = kickoffOrigin === "loop-fire" &&
-      typeof loopFire?.routineId === "string" && loopFire.routineId.trim() &&
-      Number.isInteger(loopFire.wakeCount) && loopFire.wakeCount > 0
-      ? { routineId: loopFire.routineId, wakeCount: loopFire.wakeCount }
-      : null;
     const nonce = randomBytes(8).toString("hex");
     const sha256 = createHash("sha256")
       .update(String(text).replace(/\r\n?/g, "\n").trim(), "utf8")
@@ -2845,6 +2883,12 @@ export function tagKickoffProvenance(
     const dir =
       env.PAPERCUSP_TURN_PROVENANCE_DIR ||
       (scopedHome ? join(scopedHome, "turn-provenance") : papercuspPath("turn-provenance"));
+    // Only a typed private hint or a live, hash-matched prior enrollment can
+    // qualify the successor. A bare "loop-fire" hint must not discard the
+    // identity already attached to its incoming wake prompt.
+    const identity = kickoffOrigin === "loop-fire"
+      ? normalizeLoopFireIdentity(loopFire) ?? readVerifiedLoopFireIdentity(text, sid, dir, nowMs)
+      : null;
     mkdirSync(dir, { recursive: true });
     const safe = String(sid)
       .replace(/[^a-zA-Z0-9._-]/g, "_")
@@ -2858,6 +2902,7 @@ export function tagKickoffProvenance(
         origin: kickoffOrigin,
         sha256,
         ts: nowMs,
+        ...(kickoffOrigin === "loop-fire" ? { ttlMs: LOOP_FIRE_PROVENANCE_TTL_MS } : {}),
         ...(identity ? { loopFire: identity } : {}),
       }) + "\n",
       { flag: "a" },

@@ -44,6 +44,10 @@ export const DESKTOP_PERF_BUDGETS: DesktopPerfBudgets = {
   chaosMaxFrameDrops: 8,
   maxProcessRssKb: 3584 * 1024,
   interactions: {
+    // Approved application-performance rubric journey limits (provisional).
+    'work-list-open': 1500,
+    'work-item-open': 1500,
+    'work-item-claim': 1500,
     // Sidebar Plans face: row click → plan body rendered in Vditor (WI-5547).
     // Matches PERF_INTERACTIONS.planPopupOpen in
     // apps/operator/app/_components/perf/perf-marks.ts.

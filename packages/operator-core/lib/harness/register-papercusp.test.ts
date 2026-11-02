@@ -1,9 +1,78 @@
 import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
 import { existsSync } from 'node:fs';
-import { mkdtemp, rm, mkdir, writeFile } from 'node:fs/promises';
+import { access, mkdtemp, rm, mkdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { detectPapercupRoot } from './register-papercusp';
+import { detectPapercupRoot, detectPapercupRootAsync, hasPapercupMarkersAsync } from './register-papercusp';
+
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>();
+  return { ...actual, access: vi.fn(actual.access) };
+});
+
+describe('async runtime source-root detection', () => {
+  let work: string;
+  beforeEach(async () => {
+    work = await mkdtemp(join(tmpdir(), 'detect-papercup-async-'));
+  });
+  afterEach(async () => {
+    vi.unstubAllEnvs();
+    if (work) await rm(work, { recursive: true, force: true });
+  });
+
+  async function mark(root: string): Promise<void> {
+    await mkdir(join(root, 'apps', 'operator'), { recursive: true });
+    await mkdir(join(root, 'libs', 'papercusp'), { recursive: true });
+    await writeFile(join(root, 'apps', 'operator', 'package.json'), '{}');
+    await writeFile(join(root, 'libs', 'papercusp', 'package.json'), '{}');
+  }
+
+  it('keeps the event loop responsive while source metadata is pending', async () => {
+    const actual = await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises');
+    let release!: () => void;
+    const pending = new Promise<void>((resolve) => { release = resolve; });
+    vi.mocked(access).mockImplementation(() => pending);
+    try {
+      let finished = false;
+      const probe = hasPapercupMarkersAsync(work).then((result) => {
+        finished = true;
+        return result;
+      });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(finished).toBe(false);
+      release();
+      expect(await probe).toBe(true);
+    } finally {
+      release();
+      vi.mocked(access).mockImplementation(actual.access);
+    }
+  });
+
+  it('observes marker creation and removal without caching stale results', async () => {
+    expect(await hasPapercupMarkersAsync(work)).toBe(false);
+    await mark(work);
+    expect(await hasPapercupMarkersAsync(work)).toBe(true);
+    await rm(join(work, 'libs', 'papercusp', 'package.json'));
+    expect(await hasPapercupMarkersAsync(work)).toBe(false);
+  });
+
+  it('preserves ambient precedence, explicit starts and the eight-directory bound', async () => {
+    const integration = join(work, 'integration');
+    const other = join(work, 'other');
+    await mark(integration);
+    await mark(other);
+    vi.stubEnv('PAPERCUSP_INTEGRATION_ROOT', integration);
+    expect(await detectPapercupRootAsync()).toBe(integration);
+    expect(await detectPapercupRootAsync(other)).toBe(other);
+    const within = join(other, 'a', 'b', 'c', 'd', 'e', 'f', 'g');
+    const beyond = join(within, 'h');
+    await mkdir(beyond, { recursive: true });
+    expect(await detectPapercupRootAsync(within)).toBe(other);
+    expect(await detectPapercupRootAsync(beyond)).toBe(null);
+    vi.stubEnv('PAPERCUSP_INTEGRATION_ROOT', join(work, 'missing'));
+    expect(await detectPapercupRootAsync()).toBe(detectPapercupRoot());
+  });
+});
 
 describe('detectPapercupRoot', () => {
   let work: string;

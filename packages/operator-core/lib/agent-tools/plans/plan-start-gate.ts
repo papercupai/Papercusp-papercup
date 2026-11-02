@@ -121,6 +121,7 @@ export async function checkPlanStartable(
   opts: PlanSourceOpts = {},
   overrides?: Record<string, unknown> | null,
   door: PlanAdmissionDoor = 'start',
+  evaluationOptions: { proofMode?: 'metadata' } = {},
 ): Promise<PlanStartGateResult> {
   const row = await getPlanRow(slug, opts);
   // Absent plan: not this gate's error to report (see the module header).
@@ -159,6 +160,7 @@ export async function checkPlanStartable(
       () => readAndEvaluateAcceptanceBarLifecycle(slug, 'pre-start', {
         harnessSlug: row.harnessSlug,
         requireCompleteContractBeforeProof: door === 'start',
+        ...evaluationOptions,
       }),
     );
   };

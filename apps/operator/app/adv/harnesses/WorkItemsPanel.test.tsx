@@ -14,6 +14,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { NuqsTestingAdapter } from 'nuqs/adapters/testing';
 import type { ReactNode } from 'react';
+import { beginInteraction, endInteraction, getLatestMeasure, PERF_INTERACTIONS } from '../../_components/perf/perf-marks';
 
 interface SyncState { loading?: boolean; fetching?: boolean; data?: unknown; error?: { message: string } | null }
 let wiState: SyncState;
@@ -105,6 +106,8 @@ function renderPanel(slug = 'alpha', searchParams = '', onUrlUpdate?: (e: unknow
 }
 
 beforeEach(() => {
+  performance.clearMarks?.();
+  performance.clearMeasures?.();
   wiState = { loading: false, fetching: false, data: ROWS, error: null };
   summaryState = {
     loading: false,
@@ -120,6 +123,45 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe('WorkItemsPanel', () => {
+  it('ends work-list timing only after the matching page and summary have committed', () => {
+    beginInteraction(PERF_INTERACTIONS.workListOpen, 'alpha');
+    renderPanel();
+    expect(screen.getByTestId('row-WI-1')).toBeTruthy();
+    expect(getLatestMeasure(PERF_INTERACTIONS.workListOpen)).not.toBeNull();
+    expect(performance.getEntriesByName('work-list-open', 'measure')).toHaveLength(1);
+  });
+
+  it('keeps timing pending while the matching summary is loading', () => {
+    summaryState.loading = true;
+    beginInteraction(PERF_INTERACTIONS.workListOpen, 'alpha');
+    renderPanel();
+    expect(getLatestMeasure(PERF_INTERACTIONS.workListOpen)).toBeNull();
+    expect(performance.getEntriesByName('work-list-open:start', 'mark')).toHaveLength(1);
+  });
+
+  it('does not consume another harness start when this list commits', () => {
+    beginInteraction(PERF_INTERACTIONS.workListOpen, 'beta');
+    renderPanel();
+    expect(getLatestMeasure(PERF_INTERACTIONS.workListOpen)).toBeNull();
+    expect(endInteraction(PERF_INTERACTIONS.workListOpen, 'beta')).not.toBeNull();
+  });
+
+  it('clears a failed list attempt without recording a success', () => {
+    wiState.error = { message: 'resolver failed' };
+    beginInteraction(PERF_INTERACTIONS.workListOpen, 'alpha');
+    renderPanel();
+    expect(getLatestMeasure(PERF_INTERACTIONS.workListOpen)).toBeNull();
+    expect(endInteraction(PERF_INTERACTIONS.workListOpen, 'alpha')).toBeNull();
+  });
+
+  it('clears an abandoned pending list without recording a success', () => {
+    wiState.loading = true;
+    beginInteraction(PERF_INTERACTIONS.workListOpen, 'alpha');
+    const pane = renderPanel();
+    pane.unmount();
+    expect(getLatestMeasure(PERF_INTERACTIONS.workListOpen)).toBeNull();
+    expect(endInteraction(PERF_INTERACTIONS.workListOpen, 'alpha')).toBeNull();
+  });
   it('shows the pick-a-harness empty state when no slug is set', () => {
     renderPanel('');
     expect(screen.getByText(/Pick a harness to view its deliverables/i)).toBeTruthy();
@@ -207,9 +249,18 @@ describe('WorkItemsPanel', () => {
     const onUrlUpdate = vi.fn();
     renderPanel('alpha', '', onUrlUpdate);
     fireEvent.click(screen.getByTestId('row-WI-1'));
+    const start = performance.getEntriesByName('work-item-open:start', 'mark')[0] as PerformanceMark;
+    expect(start.detail.subject).toBe('alpha:WI-1');
+    expect(getLatestMeasure(PERF_INTERACTIONS.workItemOpen)).toBeNull();
     await waitFor(() => expect(onUrlUpdate).toHaveBeenCalled());
     const ev = onUrlUpdate.mock.calls.at(-1)![0] as { searchParams: URLSearchParams };
     expect(ev.searchParams.get('sel')).toBe('WI-1');
+  });
+
+  it('does not leave a new timing start when clicking the already-selected row', () => {
+    renderPanel('alpha', '?sel=WI-1');
+    fireEvent.click(screen.getByTestId('row-WI-1'));
+    expect(performance.getEntriesByName('work-item-open:start', 'mark')).toHaveLength(0);
   });
 });
 

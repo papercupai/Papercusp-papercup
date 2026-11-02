@@ -70,7 +70,12 @@ import { basename, delimiter, dirname, join, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, openSync, readFileSync, writeSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { detectPapercupRoot, hasPapercupMarkers } from './register-papercusp';
+import {
+  detectPapercupRoot,
+  detectPapercupRootAsync,
+  hasPapercupMarkers,
+  hasPapercupMarkersAsync,
+} from './register-papercusp';
 import { readEnvSwitcherPrefs } from './env-switcher-prefs';
 
 /** One provisionable env operator: which fixed local port it serves and which git
@@ -449,7 +454,7 @@ export interface LaunchEnvOperatorsDeps {
   probe?: (origin: string) => Promise<boolean>;
   /** Resolve the runnable source root (default defaultDetectSourceRoot:
    *  PAPERCUSP_DEV_SOURCE_ROOT exact-checked, else detectPapercupRoot). null ⇒ absent. */
-  detectSourceRoot?: () => string | null;
+  detectSourceRoot?: () => string | null | Promise<string | null>;
   /** Whether a source archive shipped with this build but is not yet extracted (default
    *  defaultDetectSourceArchivePending: PAPERCUSP_SOURCE_ARCHIVE points at a real file).
    *  Only consulted when detectSourceRoot() found no tree. */
@@ -564,6 +569,17 @@ export function defaultDetectSourceRoot(): string | null {
     if (hasPapercupMarkers(root)) return root;
   }
   return detectPapercupRoot();
+}
+
+/** Runtime requests and boot provisioning must yield during WSL/network metadata
+ * probes. Keep the synchronous resolver for synchronous tooling consumers. */
+export async function defaultDetectSourceRootAsync(): Promise<string | null> {
+  const extracted = process.env.PAPERCUSP_DEV_SOURCE_ROOT;
+  if (extracted && extracted.trim() !== '') {
+    const root = resolve(extracted);
+    if (await hasPapercupMarkersAsync(root)) return root;
+  }
+  return detectPapercupRootAsync();
 }
 
 /**
@@ -991,14 +1007,14 @@ export async function launchEnvOperators(
   const host = deps.host ?? '127.0.0.1';
   const readPrefs = deps.readPrefs ?? (() => readEnvSwitcherPrefs());
   const probe = deps.probe ?? ((origin: string) => defaultProbe(origin));
-  const detectSourceRoot = deps.detectSourceRoot ?? defaultDetectSourceRoot;
+  const detectSourceRoot = deps.detectSourceRoot ?? defaultDetectSourceRootAsync;
   const selfPort = deps.selfPort !== undefined ? deps.selfPort : defaultSelfPort();
   const spawnOperator = deps.spawnOperator ?? defaultSpawnOperator;
   const staggerMs = deps.staggerMs ?? 4000;
   const sleep = deps.sleep ?? sleepReal;
   const log = deps.log ?? ((m: string) => console.log(m));
 
-  const sourceRoot = detectSourceRoot();
+  const sourceRoot = await detectSourceRoot();
   const hasSourceTree = !!sourceRoot;
   // Only meaningful when there is no tree: is one still being unpacked? Splits the
   // transient first-boot skip from the terminal one (EI-19442842364710969).

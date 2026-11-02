@@ -9,6 +9,9 @@ import {
   evaluateSessionConfinement,
   toDenyMatchKey,
   validProductReadBoundary,
+  validScratchPlanBoundary,
+  SCRATCH_PLAN_TOOLS,
+  BENCHMARK_SCRATCH_PLAN_TOOLS,
   type SessionToolConfinement,
 } from './session-confinement';
 
@@ -19,6 +22,36 @@ const CONFINEMENT: SessionToolConfinement = directedImplementerConfinement({
 
 const evaluate = (toolName: string) =>
   evaluateSessionConfinement({ toolName, confinement: CONFINEMENT });
+
+describe('benchmark planning reuses private scratch plans', () => {
+  const boundary = { scratchPrefix: 'benchmark-scratch-abcdef123456-', reviewedSlug: 'observer-private', harness: 'bench-private' };
+  const confinement: SessionToolConfinement = { denyTools: [], denyOutside: SCRATCH_PLAN_TOOLS,
+    denyPlansOutside: boundary, reason: 'frozen assignment', imposedBy: 'benchmark-host' };
+  const check = (toolName: string, args: unknown) => evaluateSessionConfinement({ toolName, args, confinement });
+  const own = { slug: `${boundary.scratchPrefix}solution`, harness: boundary.harness };
+
+  it('admits exact private draft authoring and refuses activation even under a broader ceiling', () => {
+    expect(validScratchPlanBoundary(boundary)).toBe(true);
+    expect(check('plans:new', { ...own, title: 'Solve task', status: 'draft', force: true }).allowed).toBe(true);
+    expect(check('plans:add-item', { ...own, text: 'Inspect the failing case' }).allowed).toBe(true);
+    expect(check('plans:get', own).allowed).toBe(true);
+    for (const tool of SCRATCH_PLAN_TOOLS.filter(name => !BENCHMARK_SCRATCH_PLAN_TOOLS.includes(name)))
+      expect(check(tool, { ...own, dryRun: true }).allowed).toBe(false);
+    for (const status of [undefined, 'ready', 'active', 'shipped'])
+      expect(check('plans:new', { ...own, title: 'Bad activation', status, force: true }).allowed).toBe(false);
+    expect(check('plans:new', { ...own, title: 'Dedup inference', status: 'draft' }).allowed).toBe(false);
+  });
+  it('rejects foreign namespaces, harness aliases, multi-plan selectors and nested cross-plan writes', () => {
+    for (const args of [{ ...own, slug: 'shared-plan' }, { ...own, slug: 'benchmark-scratch-other123456-solution' },
+      { ...own, harness: 'neighbor' }, { slug: own.slug }, { ...own, slugs: [own.slug, 'neighbor'] },
+      { ...own, sourceRanges: [{ session: 'self' }] }])
+      expect(check('plans:get', args)).toMatchObject({ allowed: false, matchedGlob: 'outside-exact-scratch-plan' });
+    expect(check('plans:add-item', { ...own, items: [{ slug: 'shared-plan', text: 'Foreign' }] }).allowed).toBe(false);
+    expect(check('plans:new', { ...own, status: 'draft', force: true, content: boundary.reviewedSlug }).allowed).toBe(false);
+    expect(evaluateSessionConfinement({ toolName: 'plans:get', args: own,
+      confinement: { ...confinement, denyOutside: ['coord:whoami'] } }).allowed).toBe(false);
+  });
+});
 
 describe('session confinement — exact product test path families', () => {
   const base = {

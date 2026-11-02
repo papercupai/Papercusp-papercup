@@ -178,3 +178,13 @@ equality (not cosine ≈ 1): `POST /embed {model, kind, texts:[t]}` vs
 `build<Model>Embedder({kind})(t)`. The P-005 and P-014 live verifications did
 exactly this — 10/10 bit-identical (gemma), exact-equal both kinds (harrier,
 dims 1024).
+
+## Saturated does not prove successful inference progress
+
+A live embed worker and a saturated queue can coexist with stalled model calls. The old watchdog deferred every failed functional probe in that state, so its consecutive-failure recovery never ran (EI-27693441554592976). Queue depth, cache misses and started work cannot establish completion.
+
+The existing `/healthz` response exposes `inferenceProgress` by `model:kind`. Each record contains `completed` and `lastCompletedAtMs`, updated only after the awaited model embed succeeds. Cache hits, coalesced consumers and failed inference do not increment it. The watchdog reads `gemma:query`, the same model and kind as its cache-bypassing functional probe.
+
+A failed probe may defer recovery only when the worker is alive, its queue is saturated with waiting work, the process PID matches the prior snapshot, uptime has not reset, and the successful query-completion count increases. Advancing completion resets the failure streak. Missing or malformed progress, a restarted process, a decreased count or an unchanged count cannot defer: these use the existing consecutive-failure threshold. Startup grace, inactive-unit handling and nonblocking restart remain in place. The progress snapshot is stored beside the existing runtime failure-state file.
+
+The maintained HTTP suite `packages/operator-core/lib/memory/embed-sidecar-server.test.ts` checks actual successful inference separately from cache hits, failures and document work. `apps/operator/scripts/__tests__/embed-sidecar-pressure-watchdog.test.ts` checks advancing and stalled saturated queues, missing or invalid progress, process/uptime changes, and failure-streak reset. Local verification: test\_runs 23015786 (72 HTTP tests) and 23015827 (22 watchdog tests), both pass with dirty working-tree provenance. This detector proof does not establish the original latency cause or a serving-runtime rollout; those need their own evidence.

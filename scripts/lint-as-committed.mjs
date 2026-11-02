@@ -115,6 +115,7 @@ import { fileURLToPath } from 'node:url';
 import { ensurePapercuspTmpdir, tmpdirHasCriticalHeadroom } from '@papercusp/test-config/tmpdir-guard';
 import { applyEnvLocal, parseEnvFile, PG_URL_ENV_VARS } from './lib/pg-url.mjs';
 import { withFsMutex } from './lib/fs-mutex.mjs';
+import { withRetentionPinProtection } from './lib/retention-pins.mjs';
 import { installLockNameForRoot, installMutexIsHeld } from './lib/install-lock-name.mjs';
 
 export function requireDurableTestRunSink(environment = process.env) {
@@ -378,21 +379,25 @@ function hasDependentArtifact(workRoot, marker) {
 /** Dispose a command's own extracted tree unless a consumer retained it. */
 export async function cleanupCommittedWorkRoot(workRoot, keep = false) {
   if (keep) return false;
-  let root;
-  try { root = realpathSync(workRoot); }
-  catch (error) {
-    if (error?.code === 'ENOENT') return false;
-    throw error;
-  }
-  return withFsMutex(committedSourceRetentionMutexName(root), async () => {
-    // A consumer can register a hold while this command is finishing. Share
-    // its lock through the last marker read and unlink, just like the sweeper.
-    let marker = null;
-    try { marker = JSON.parse(readFileSync(join(root, OWNER_MARKER), 'utf8')); }
-    catch { /* Missing or invalid metadata establishes no dependent artifact. */ }
-    if (hasDependentArtifact(root, marker)) return false;
-    rmSync(root, { recursive: true, force: true });
-    return true;
+  return withRetentionPinProtection(async (isPinned) => {
+    let root;
+    try { root = realpathSync(workRoot); }
+    catch (error) {
+      if (error?.code === 'ENOENT') return false;
+      throw error;
+    }
+    if (isPinned(root)) return false;
+    return withFsMutex(committedSourceRetentionMutexName(root), async () => {
+      // A consumer can register a marker hold while this command is finishing.
+      // Share its per-root lock through the final marker read and unlink; the
+      // outer retention lock protects central lease pins across the same window.
+      let marker = null;
+      try { marker = JSON.parse(readFileSync(join(root, OWNER_MARKER), 'utf8')); }
+      catch { /* Missing or invalid metadata establishes no dependent artifact. */ }
+      if (hasDependentArtifact(root, marker)) return false;
+      rmSync(root, { recursive: true, force: true });
+      return true;
+    });
   });
 }
 
@@ -555,6 +560,21 @@ export async function sweepStaleWorkRoots({ root = tmpdir(), nowMs = Date.now(),
     else await tryRemove(name, path, 'keep-over-cap');
   }
   return { removed, kept };
+}
+
+/**
+ * Run the lint runner's self-sweep under the existing central retention-pin guard.
+ * @param {Parameters<typeof sweepStaleWorkRoots>[0]} [options]
+ * @param {{dir?: string, nowMs?: number}} [pinOptions]
+ */
+export async function sweepStaleWorkRootsWithRetentionPins(options = {}, pinOptions = {}) {
+  return withRetentionPinProtection((isPinned) => sweepStaleWorkRoots({
+    ...options,
+    beforeRemove: (path) => {
+      const refusal = options.beforeRemove?.(path);
+      return refusal || (isPinned(path) ? 'pinned' : null);
+    },
+  }), pinOptions);
 }
 
 /* ─────────────────────────── pure helpers (unit-tested) ─────────────────────────── */
@@ -1324,7 +1344,7 @@ async function main() {
     console.error(`lint-as-committed: no temporary directory has critical disk headroom (${tmpdir()}); refusing to materialise the committed tree.`);
     process.exit(2);
   }
-  const swept = await sweepStaleWorkRoots();
+  const swept = await sweepStaleWorkRootsWithRetentionPins();
   if (swept.removed.length > 0) {
     console.log(`  swept ${swept.removed.length} stale extracted tree(s): ${swept.removed.map((r) => `${r.name} (${r.reason})`).join(', ')}`);
   }

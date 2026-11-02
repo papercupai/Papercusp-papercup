@@ -40,6 +40,69 @@ import { lintAcceptanceMethods } from '../../rubrics-method-lint';
 import { runtimeVettingFindings } from '../../acceptance-runtime-citation';
 import { openAcceptanceBarAmendmentReview } from '../../consult/acceptance-bar-amendment-review';
 import { acceptanceBarMappingDeltaEntrySchema } from '../../acceptance-bar-amendment';
+import { hostIdentity } from '../../serving-host-identity';
+import { readIdentity, type IdentityCtx } from '../locks/identity';
+import { resourceLockDomain } from '../locks/coordination-domain';
+import { guardResource } from '../locks/resource-lock-guard';
+import { DEFAULT_LOCK_TTL_SEC } from '../locks/lock-config';
+import { heartbeatSharedResourceAtomic } from '../locks/su-lock-store';
+
+/** Keep the executor alive until the tracked run has settled its durable receipt.
+ * The foreground deadline only detaches the caller; it must not release this lease.
+ */
+async function guardAmendRun(
+  ctx: IdentityCtx,
+  run: () => Promise<Record<string, unknown>>,
+): Promise<Record<string, unknown>> {
+  const host = hostIdentity();
+  const resource = host === 'port-3170' ? 'staging-server'
+    : host === 'port-3070' ? 'dev-server' : null;
+  if (resource === null) return run();
+  const { ownerId, ownerLabel } = readIdentity(ctx);
+  const leaseOwner = `${ownerId}:rubrics-amend:${randomUUID()}`;
+  const coordinationDomain = resourceLockDomain(resource);
+  const outcome = await guardResource({
+    coordinationDomain,
+    // Concurrent runs need independent leases: reusing the caller's lease lets
+    // the first completed run release protection while another is still active.
+    ownerId: leaseOwner,
+    ownerLabel,
+    coordIdentity: resolveAgentIdentity(ctx),
+    resource,
+    mode: 'shared',
+    ttlSec: DEFAULT_LOCK_TTL_SEC,
+    reason: 'rubrics:amend keeps its serving runtime alive through terminal receipt settlement',
+  }, async (fence) => {
+    let renewal: Promise<void> | undefined;
+    const timer = setInterval(() => {
+      if (renewal) return;
+      renewal = heartbeatSharedResourceAtomic({
+        coordinationDomain, resource, owner: leaseOwner, lockId: fence.lockId,
+        ttlSec: DEFAULT_LOCK_TTL_SEC,
+      }).then((result) => {
+        if (!result.extended) console.warn('rubrics:amend runtime lease lost', { resource, lockId: fence.lockId });
+      }).catch((error: unknown) => {
+        console.warn('rubrics:amend runtime lease renewal failed', { resource, lockId: fence.lockId, error });
+      }).finally(() => { renewal = undefined; });
+    }, DEFAULT_LOCK_TTL_SEC * 500);
+    timer.unref();
+    try {
+      return await run();
+    } finally {
+      clearInterval(timer);
+      // Finish any in-flight renewal before guardResource releases the lease.
+      await renewal;
+    }
+  });
+  if (outcome.acquired) return outcome.result;
+  return {
+    ok: false,
+    code: 'amendment_runtime_unavailable',
+    reason: `resource_${outcome.reason}`,
+    resource,
+    holders: outcome.holders,
+  };
+}
 
 /** P-006: the requirement this dry run still owes when nobody has opened its review. */
 const REVIEW_NOT_REQUESTED_NEXT =
@@ -673,7 +736,7 @@ export default defineTool({
         ...(includeProgress && progress ? { progress: { ...progress, observedAt: Date.now() } } : {}),
       });
       // notify-classification: {"classification":"durable","reason":"Tracked amendment preview can request an independent review; preserve that terminal handoff obligation through this wrapper.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
-      const run = trackAmendRun(receiptKey, args.rubricRef, async (onPhase): Promise<Record<string, unknown>> => {
+      const run = guardAmendRun(ctx, () => trackAmendRun(receiptKey, args.rubricRef, async (onPhase): Promise<Record<string, unknown>> => {
         const reportPhase = (phase: string) => {
           onPhase(phase);
           progress = { phase, phaseStartedAt: Date.now() };
@@ -750,7 +813,7 @@ export default defineTool({
         onRegistered: () => { registered = true; },
         persistPhaseProgress: true,
         omittedReviewRecovery: { ownerId: identity.ownerId, retryArgs: { ...args } },
-      });
+      }));
       const settled = await settleWithin(run, remainingBudget(), ctx.signal);
       if (settled.kind === 'rejected') {
         const refusal = proposeRubricInvalidArgsRefusal(settled.error) ?? acceptanceBarContractRefusal(settled.error);
@@ -782,7 +845,7 @@ export default defineTool({
       idempotencyKey, rubricRef: args.rubricRef, registered,
       poll: { tool: 'rubrics:amend-status', args: { rubricRef: args.rubricRef, idempotencyKey } },
     });
-    const run = trackAmendRun(
+    const run = guardAmendRun(ctx, () => trackAmendRun(
       idempotencyKey,
       args.rubricRef,
       (onPhase) => executeAmend({ ...input, idempotencyKey, onPhase }, args.rubricRef),
@@ -791,7 +854,7 @@ export default defineTool({
         persistPhaseProgress: true,
         persistProgressForPhase: (phase) => APPLY_RECEIPT_PROGRESS_PHASES.has(phase),
       },
-    );
+    ));
     const settled = await settleWithin(run, remainingBudget(), ctx.signal);
     if (settled.kind === 'rejected') throw settled.error;
     const payload =

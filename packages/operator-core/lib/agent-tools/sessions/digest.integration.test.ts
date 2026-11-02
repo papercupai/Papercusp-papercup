@@ -511,6 +511,15 @@ describe.skipIf(!selectedRecovery)('sessions:digest selected-operator acceptance
       return Math.ceil(ms);
     };
     const measuredCalls: Array<{ tool: string; args: unknown; elapsedMs: number }> = [];
+    const setupTimings: Array<{ phase: string; elapsedMs: number }> = [];
+    const measureSetup = async <T>(phase: string, run: () => Promise<T>): Promise<T> => {
+      const before = performance.now();
+      try {
+        return await run();
+      } finally {
+        setupTimings.push({ phase, elapsedMs: performance.now() - before });
+      }
+    };
     const health = async () => {
       const response = await fetch(new URL('/api/health', selected.url), { signal: AbortSignal.timeout(remaining()) });
       expect(response.ok).toBe(true);
@@ -519,21 +528,22 @@ describe.skipIf(!selectedRecovery)('sessions:digest selected-operator acceptance
       expect(body.sha).toMatch(/^[a-f0-9]{7,64}$/);
       return body.sha!;
     };
-    const buildSha = await health();
-    const { client } = await connectAgentMcp({
+    const buildSha = await measureSetup('health-before', health);
+    const { client } = await measureSetup('mcp-connect', () => connectAgentMcp({
       url: buildMcpUrl(selected.url, { workspace: process.env.PAPERCUSP_TEST_RUN_WORKSPACE,
         harness: 'papercusp', client: process.env.PAPERCUSP_SID, contextTier: 'full' }).href,
       headers: { Authorization: `Bearer ${bearer}` }, timeoutMs: remaining(),
       name: 'session-recovery-acceptance',
-    }).catch(error => {
+    })).catch(error => {
       process.stdout.write('SESSION_RECOVERY_CONNECTION_FAILURE ' + JSON.stringify({
         url: selected.url, buildSha, diagnostic: error.diagnostic ?? { category: 'unknown' },
-        elapsedMs: performance.now() - started,
+        setupTimings, elapsedMs: performance.now() - started,
       }) + '\n');
       throw error;
     });
     try {
-      const catalog = await listAllTools(client, { timeoutMs: remaining(), totalTimeoutMs: remaining() });
+      const catalog = await measureSetup('tools-list', () =>
+        listAllTools(client, { timeoutMs: remaining(), totalTimeoutMs: remaining() }));
       const call = async (tool: string, args: Record<string, unknown>): Promise<any> => {
         const entry = catalog.find((row: { name: string }) => row.name === tool);
         expect(entry, `${tool} unavailable in selected runtime`).toBeTruthy();
@@ -617,17 +627,17 @@ describe.skipIf(!selectedRecovery)('sessions:digest selected-operator acceptance
           expect(new Date(source.ts!).getTime()).toBeLessThanOrEqual(new Date(stop.ts!).getTime());
         }
       }
-      expect(await health()).toBe(buildSha);
+      expect(await measureSetup('health-after', health)).toBe(buildSha);
       const elapsedMs = performance.now() - started;
       expect(elapsedMs).toBeLessThan(120_000);
       process.stdout.write('SESSION_RECOVERY_JOURNEY ' + JSON.stringify({
         url: selected.url, buildSha, runtime: selected.runtime, inputs,
         discovery: { query, hits: discovery.hits.map((hit: any) => hit.tool), servingGeneration: discovery.servingGeneration },
-        pages, resolvedReferences: refs, measuredCalls, elapsedMs,
+        pages, resolvedReferences: refs, setupTimings, measuredCalls, elapsedMs,
       }) + '\n');
     } finally {
       process.stdout.write('SESSION_RECOVERY_CALL_TIMINGS ' + JSON.stringify({
-        url: selected.url, elapsedMs: performance.now() - started, measuredCalls,
+        url: selected.url, elapsedMs: performance.now() - started, setupTimings, measuredCalls,
       }) + '\n');
       await client.close();
     }

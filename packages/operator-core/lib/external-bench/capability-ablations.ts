@@ -17,13 +17,13 @@
  *
  * Definitions only: registering one authorizes no runs (D-001 governs spend).
  */
-import type { BenchmarkCapability, CurrentBenchmarkProtocol } from './reproducibility/schema';
+import type { ArmTopology, BenchmarkCapability, CurrentBenchmarkProtocol } from './reproducibility/schema';
 
 /** The six capabilities D-018 defines; planning and review have no registered ablation yet. */
 export type AblatedCapability = Exclude<BenchmarkCapability, 'planning' | 'review'>;
 
 export type NativeAblationControl =
-  | { status: 'bound'; ref: string }
+  | { status: 'bound'; ref: string; topologies?: readonly ArmTopology[] }
   | { status: 'unavailable'; reason: string };
 
 export interface CapabilityAblationDefinition {
@@ -135,7 +135,8 @@ export const CAPABILITY_ABLATIONS: Readonly<Record<AblatedCapability, Capability
       use: 'agent-originated claim/checkpoint/state operations (observer bookkeeping excluded)',
     },
     inadmissibleWhen: ['agent use and observer bookkeeping cannot be separated'],
-    nativeControl: { status: 'unavailable', reason: NO_SCOPED_CONTROL },
+    nativeControl: { status: 'bound', topologies: ['solo'],
+      ref: 'current-su.ts:currentBenchSoloCapabilityControl + liveCurrentSuBenchPorts exact-item launch confinement; solo ledger only' },
   },
 };
 
@@ -157,6 +158,8 @@ export function requireRunnableAblation(protocol: CurrentBenchmarkProtocol, armI
   if (definition.nativeControl.status !== 'bound') {
     throw new Error(`Arm ${armId} (${definition.variant}) is not runnable: ${definition.nativeControl.reason}`);
   }
+  if (definition.nativeControl.topologies && !definition.nativeControl.topologies.includes(arm.control!.topology))
+    throw new Error(`Arm ${armId} (${definition.variant}) is not runnable: native control supports only ${definition.nativeControl.topologies.join(', ')}.`);
   return definition;
 }
 

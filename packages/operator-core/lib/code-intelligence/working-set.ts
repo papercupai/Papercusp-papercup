@@ -164,7 +164,14 @@ export function rankCodeWorkingSet(signals: WorkingSetSignals, opts: { root?: st
   };
 }
 
-type SqlLike = { begin<T>(fn: (tx: any) => Promise<T>): Promise<T> };
+type ReservedSqlLike = {
+  begin<T>(fn: (tx: any) => Promise<T>): Promise<T>;
+  release(): void;
+};
+type SqlLike = {
+  begin<T>(fn: (tx: any) => Promise<T>): Promise<T>;
+  reserve?(): Promise<ReservedSqlLike>;
+};
 
 /** `tool_invocations.harness_slug` values that attribute a call to NO harness: a
  * harness-less su records `''`, operator-level calls record `'*'`. Those calls stay
@@ -316,11 +323,15 @@ export interface ForeignWorkingSet { itemId: string; stamp: StampedCodeWorkingSe
  * IN THIS HARNESS — a stamp on an item of another harness names paths of another
  * checkout, so it is never inherited (blind review 35 G-3). */
 export async function readForeignWorkingSets(owner: string, workspace: string, harness: string,
-  sql: SqlLike = getOrgPg().sql as unknown as SqlLike, statementTimeoutMs = 75): Promise<ForeignWorkingSet[]> {
+  sql: SqlLike = getOrgPg().sql as unknown as SqlLike, statementTimeoutMs = 75,
+  onTiming?: (phase: string, elapsedMs: number) => void): Promise<ForeignWorkingSet[]> {
   if (!owner || !workspace || !harness) return [];
   const { ANY_FAMILY_TERMINAL_STATES } = await import('../work-item-dispatch-states');
-  return sql.begin(async (tx: any) => {
+  const read = async (tx: any): Promise<ForeignWorkingSet[]> => {
+    const timeoutStarted = Date.now();
     await tx`SELECT set_config('statement_timeout', ${`${Math.max(10, Math.floor(statementTimeoutMs))}ms`}, true)`;
+    onTiming?.('setTimeout', Date.now() - timeoutStarted);
+    const queryStarted = Date.now();
     const rows: { feature_id: string; stamp: unknown }[] = await tx`
       SELECT feature_id, payload -> 'codeWorkingSet' AS stamp FROM harness_shared.work_items
        WHERE workspace_id = ${workspace} AND harness_slug = ${harness} AND taken_by = ${owner}
@@ -328,11 +339,37 @@ export async function readForeignWorkingSets(owner: string, workspace: string, h
          AND jsonb_typeof(payload -> 'codeWorkingSet') = 'object'
          AND payload -> 'codeWorkingSet' ->> 'owner' IS DISTINCT FROM ${owner}
        ORDER BY feature_id DESC LIMIT 4`;
-    return rows.flatMap(row => {
+    onTiming?.('select', Date.now() - queryStarted);
+    const parseStarted = Date.now();
+    const result = rows.flatMap(row => {
       const stamp = parseStampedWorkingSet(row.stamp);
       return stamp && stamp.owner !== owner ? [{ itemId: row.feature_id, stamp }] : [];
     });
+    onTiming?.('parse', Date.now() - parseStarted);
+    return result;
+  };
+  if (sql.reserve) {
+    const acquireStarted = Date.now();
+    const conn = await sql.reserve().finally(() => onTiming?.('poolAcquire', Date.now() - acquireStarted));
+    const transactionStarted = Date.now();
+    try {
+      const result = await conn.begin(async tx => {
+        onTiming?.('beginCallbackEntry', Date.now() - transactionStarted);
+        return read(tx);
+      });
+      onTiming?.('transactionTotal', Date.now() - transactionStarted);
+      return result;
+    } finally {
+      conn.release();
+    }
+  }
+  const transactionStarted = Date.now();
+  const result = await sql.begin(async tx => {
+    onTiming?.('beginCallbackEntry', Date.now() - transactionStarted);
+    return read(tx);
   });
+  onTiming?.('transactionTotal', Date.now() - transactionStarted);
+  return result;
 }
 
 /** Validate a stamp read back from a work-item payload. */

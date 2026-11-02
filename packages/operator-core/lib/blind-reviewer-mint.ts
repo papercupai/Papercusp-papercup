@@ -18,6 +18,7 @@
  * `cat` of a plan file). The ceiling closes the MCP half only.
  */
 import { createHash } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 import {
   SCRATCH_PLAN_TOOLS,
   validProductReadBoundary,
@@ -291,6 +292,10 @@ export interface MintBlindGapReviewerDeps {
   releaseSessionResume?: typeof releaseBlindReviewSessionResume;
   /** Registered tool names for the howToRun ceiling check; injected in tests. */
   knownTools?: () => Promise<ReadonlySet<string>>;
+  /** Re-read the original launch cohort when its verifier returned no identity receipt. */
+  probeLaunchSessions?: typeof import('./agent-launch-core').probeFreshLaunchSessions;
+  /** Authoritative ceiling for the exact reconciled native reviewer, never a caller override. */
+  readConfinement?: (ownerId: string, workspaceId: string) => Promise<SessionToolConfinement | null>;
 }
 
 export type MintBlindGapReviewerResult =
@@ -340,15 +345,15 @@ export async function mintBlindGapReviewer(
   // the boundary cannot represent leaves the plan verbs refused, as before D-050.
   const scratchCandidate: ScratchPlanBoundary = { scratchPrefix: blindReviewScratchPrefix(),
     reviewedSlug: input.slug, harness: input.harness };
-  const scratchPlans = validScratchPlanBoundary(scratchCandidate) ? scratchCandidate : undefined;
-  const confinement = blindReviewerConfinement(input.slug, productReads, scratchPlans);
+  let scratchPlans = validScratchPlanBoundary(scratchCandidate) ? scratchCandidate : undefined;
+  let confinement = blindReviewerConfinement(input.slug, productReads, scratchPlans);
   const refusedTools = howToRunToolsOutsideCeiling(input.howToRun, confinement,
     await (deps.knownTools ?? defaultKnownToolNames)());
   if (refusedTools.length > 0) {
     return { ok: false, code: 'how_to_run_outside_ceiling', refusedTools,
       message: howToRunOutsideCeilingMessage(refusedTools, confinement) };
   }
-  const kickoff = buildBlindReviewerKickoff(brief, input.howToRun, productReads, scratchPlans);
+  let kickoff = buildBlindReviewerKickoff(brief, input.howToRun, productReads, scratchPlans);
   let existingBinding: BlindReviewSessionBinding | null;
   try {
     existingBinding = await (deps.findSessionBinding ?? findBlindReviewSessionBinding)({
@@ -360,14 +365,15 @@ export async function mintBlindGapReviewer(
         (error instanceof Error ? error.message : String(error)) };
   }
   if (existingBinding && (existingBinding.status === 'ready' || existingBinding.status === 'resuming')) {
+    const boundScratch = existingBinding.confinementSnapshot.denyPlansOutside;
     return {
       ok: true,
       launch: { data: { deduped: true, launch: {
         deduped: true, opened: 0, failed: 0, mode: 'deduped', ownerIds: [existingBinding.reviewerOwnerId], tasks: [],
       } } },
-      kickoff,
+      kickoff: buildBlindReviewerKickoff(brief, input.howToRun, productReads, boundScratch),
       activationAuditSeq: brief.activationAuditSeq,
-      scratchPrefix: scratchPlans?.scratchPrefix ?? null,
+      scratchPrefix: boundScratch?.scratchPrefix ?? null,
       binding: existingBinding,
       launchStatus: 'bound',
     };
@@ -420,7 +426,59 @@ export async function mintBlindGapReviewer(
     }
     if (!launchProvablyNotStarted(launch)) break;
   }
-  const receipt = blindReviewLaunchReceipt(launch);
+  let receipt = blindReviewLaunchReceipt(launch);
+  if (receipt.kind === 'uncertain') {
+    const env = receiptRecord(launch);
+    const data = receiptRecord(env?.data) ?? receiptRecord(env?.structuredContent);
+    const opened = receiptRecord(data?.launch) ?? receiptRecord(env?.launch) ?? env;
+    const owners = opened?.ownerIds;
+    const tasks = opened?.tasks;
+    // A completed one-process receipt can lack freshVerdict when verification
+    // times out. Reuse the same authoritative cohort probe, including its
+    // workspace, system-parent and launch-time fences. Never infer identity
+    // from a process handle, log path, or an incomplete spawning reservation.
+    if (opened?.requestKind === 'capability:launch-agent' && opened.launchState === 'completed'
+        && opened.opened === 1 && opened.failed === 0 && opened.partial === false
+        && opened.expectedCount === 1 && opened.spawnAttempted === true
+        && Number.isSafeInteger(opened.startedAt) && Number(opened.startedAt) > 0
+        && !opened.freshVerdict && Array.isArray(owners) && owners.length === 1
+        && typeof owners[0] === 'string' && owners[0].trim()
+        && Array.isArray(tasks) && tasks.length === 1
+        && receiptRecord(tasks[0])?.ownerId === owners[0]) {
+      try {
+        const probe = deps.probeLaunchSessions ?? (await import('./agent-launch-core')).probeFreshLaunchSessions;
+        const sessions = await probe({ workspaceId, launcherOwnerId: BLIND_GAP_REVIEW_ACTOR,
+          since: Number(opened.startedAt), expectedOwnerIds: [owners[0]] });
+        const session = sessions.length === 1 ? sessions[0] : null;
+        if (session?.ownerId === owners[0] && Number.isSafeInteger(session.advSessionId)
+            && session.advSessionId > 0 && typeof session.sessionId === 'string' && session.sessionId.trim()) {
+          // Replay creates a new candidate prefix, but the original process retains its
+          // immutable launch ceiling. Recover only that prefix from the exact owner's
+          // authoritative ceiling; any other scope, tool, product or attribution change
+          // still fails closed, and binding independently rechecks the effective ceiling.
+          const read = deps.readConfinement ?? (async (ownerId: string, scope: string) =>
+            (await import('./capability-envelope/session-confinement-store')).readSessionConfinement(ownerId, scope));
+          const actual = await read(owners[0], workspaceId);
+          const originalScratch = actual?.denyPlansOutside;
+          const recoveredScratch = scratchPlans && originalScratch && validScratchPlanBoundary(originalScratch)
+            ? { ...scratchPlans, scratchPrefix: originalScratch.scratchPrefix } : scratchPlans;
+          if (!actual || !isDeepStrictEqual(actual, blindReviewerConfinement(input.slug, productReads, recoveredScratch))) {
+            return { ok: false, code: 'session_binding_failed',
+              message: 'The original reviewer confinement does not match this request; no ceiling was changed or second reviewer launched.' };
+          }
+          scratchPlans = recoveredScratch;
+          confinement = actual;
+          kickoff = buildBlindReviewerKickoff(brief, input.howToRun, productReads, scratchPlans);
+          receipt = { kind: 'native', ownerId: owners[0], advSessionId: session.advSessionId,
+            sessionId: session.sessionId };
+        }
+      } catch (error) {
+        return { ok: false, code: 'session_binding_failed',
+          message: 'Could not reconcile the original reviewer launch identity; no second reviewer was launched. '
+            + (error instanceof Error ? error.message : String(error)) };
+      }
+    }
+  }
   if (receipt.kind === 'not-started' || receipt.kind === 'uncertain') {
     return { ok: true, launch, kickoff, activationAuditSeq: brief.activationAuditSeq,
       scratchPrefix: scratchPlans?.scratchPrefix ?? null, binding: null, launchStatus: receipt.kind };

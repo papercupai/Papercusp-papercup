@@ -49,7 +49,7 @@ describe('deriveLastRespawnOutcome', () => {
     expect(out.ageMs).toBe(NOW - Date.parse('2026-08-04T00:38:29.702Z'));
   });
 
-  it('treats respawn-failed as terminal instead of leaving the carry pending', () => {
+  it('treats a non-retryable respawn-failed row as terminal', () => {
     const out = deriveLastRespawnOutcome(
       [
         {
@@ -63,6 +63,7 @@ describe('deriveLastRespawnOutcome', () => {
           kind: 'respawn-failed',
           reason: 'argv-build-failed',
           mode: 'carry-respawn',
+          retryable: false,
         },
       ],
       { now: Date.parse('2026-09-20T00:10:00.000Z') },
@@ -72,6 +73,54 @@ describe('deriveLastRespawnOutcome', () => {
       reason: 'argv-build-failed',
       ts: '2026-09-20T00:05:00.000Z',
     });
+  });
+
+  it('keeps a retryable respawn-failed attempt pending through its cap and reports later delivery', () => {
+    const failedAt = '2026-09-20T00:05:00.000Z';
+    const failed = {
+      ts: failedAt,
+      kind: 'respawn-failed',
+      reason: 'codex-route-unavailable',
+      mode: 'carry-respawn',
+      retryable: true,
+      capMs: 600_000,
+    };
+    const pending = deriveLastRespawnOutcome([failed], {
+      now: Date.parse(failedAt) + 500_000,
+    });
+    expect(pending).toMatchObject({
+      outcome: 'pending',
+      reason: 'codex-route-unavailable',
+      ts: failedAt,
+      capMs: 600_000,
+    });
+    // 500s exceeds the legacy 360s fallback plus grace, but not this event's 600s cap.
+    expect(isOrphanedPendingRespawn(pending)).toBe(false);
+
+    const deliveredAt = '2026-09-20T00:15:00.001Z';
+    expect(deriveLastRespawnOutcome([
+      failed,
+      { ts: deliveredAt, kind: 'respawn-carry-delivered', mode: 'carry-respawn' },
+    ], { now: Date.parse(deliveredAt) + 1_000 })).toMatchObject({
+      outcome: 'delivered',
+      ts: deliveredAt,
+    });
+  });
+
+  it('lets a superseded retirement suppress an earlier retryable failure', () => {
+    const deliveredAt = '2026-10-03T00:33:31.325Z';
+    const out = deriveLastRespawnOutcome(
+      [
+        { ts: '2026-10-03T00:33:25.211Z', kind: 'respawned', mode: 'carry-respawn' },
+        { ts: deliveredAt, kind: 'respawn-carry-delivered', mode: 'carry-respawn' },
+        { ts: '2026-10-03T00:36:30.000Z', kind: 'respawn-failed', mode: 'carry-respawn',
+          reason: 'codex-route-unavailable', retryable: true, capMs: 600_000 },
+        { ts: '2026-10-03T00:36:31.326Z', kind: 'respawn-carry-dropped', mode: 'carry-respawn',
+          reason: 'superseded', capMs: 360_000, rearmed: true },
+      ],
+      { now: Date.parse('2026-10-03T00:36:51.000Z') },
+    );
+    expect(out).toMatchObject({ outcome: 'delivered', ts: deliveredAt });
   });
 
   it('ignores non-lifecycle rows entirely — a wake deferral is not a verdict about a respawn', () => {

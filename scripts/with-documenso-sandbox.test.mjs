@@ -288,6 +288,8 @@ test('pinned source receipt preparation precedes providers and is required by th
   assert.match(wrapper, /env: \{ \.\.\.sourcePreparation\.env,/);
   assert.match(daoBootstrap, /expect\(Boolean\(receiptPath\)/,
     'the native bootstrap must fail closed instead of freezing after providers have started');
+  assert.match(daoBootstrap, /env\.VERIFY_TAURI_SOURCE_INPUTS\s*=\s*NATIVE_SOURCE_INPUTS\.join\(','\)/,
+    'native verifier inputs must use the comma delimiter accepted by verifier-inputs-check');
 });
 
 test('pinned verifier preparation seeds the gitignored Porcupine model through the committed source helper', () => {

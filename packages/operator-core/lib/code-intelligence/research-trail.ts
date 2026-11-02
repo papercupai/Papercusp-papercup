@@ -5,6 +5,8 @@ import { operatorHomeHarnessSlug } from '../harness/operator-home-harness';
 import { activeWorkspaceId } from '../workspace-registry';
 import { firstTouchPaths, grepLookupSubject, normalizePushCall, type PushInput } from './push-channel';
 import { corroboratePushSources, peekPushSnapshot, type PushSnapshot } from './push-snapshot';
+import { anchorInputSchema, type AnchorInput } from '../plan-items/anchors';
+import { withBoundedTimeout } from '../bounded-timeout';
 
 export const RESEARCH_TRAIL_LIMIT = 200;
 export const RESEARCH_TRAIL_RETENTION_MS = 7 * 86_400_000;
@@ -18,6 +20,38 @@ export interface ResearchSubject {
 export interface ResearchTrail {
   subjects: ResearchSubject[];
   reason?: 'trail not captured for this client' | 'nothing recorded';
+}
+
+export interface AnchorSuggestions {
+  anchors: AnchorInput[];
+  reason?: ResearchTrail['reason'] | 'research trail unavailable';
+  manualEntry: true;
+}
+
+/** Most recent research first; ties prefer the more precise symbol link. */
+export function rankResearchAnchors(subjects: ResearchSubject[]): AnchorInput[] {
+  const ranked = mergeResearchSubjects(subjects, []).sort((a, b) => b.seenAt - a.seenAt
+    || Number(b.kind === 'symbol') - Number(a.kind === 'symbol') || a.requested.localeCompare(b.requested));
+  const unique = new Map<string, AnchorInput>();
+  for (const subject of ranked) {
+    const candidate = anchorInputSchema.safeParse(subject.kind === 'symbol'
+      ? { symbol: subject.requested, path: subject.path } : { path: subject.path });
+    if (!candidate.success) continue;
+    const key = JSON.stringify(candidate.data);
+    if (!unique.has(key)) unique.set(key, candidate.data);
+    if (unique.size === 32) break;
+  }
+  return [...unique.values()];
+}
+
+/** An advisory read only: storage still requires the caller's explicit anchors argument. */
+export async function suggestResearchAnchors(workspace: string, owner: string, harness: string): Promise<AnchorSuggestions> {
+  const result = await withBoundedTimeout(() => readResearchTrail(workspace, owner, harness), {
+    fallback: null, timeoutMs: 500, label: 'plan-anchor-suggestions', warn: true,
+  });
+  if (!result.value) return { anchors: [], reason: 'research trail unavailable', manualEntry: true };
+  const anchors = rankResearchAnchors(result.value.subjects);
+  return { anchors, ...(!anchors.length ? { reason: result.value.reason ?? 'nothing recorded' as const } : {}), manualEntry: true };
 }
 
 /** Use the push channel's literal path and identifier parsers, excluding edits. */

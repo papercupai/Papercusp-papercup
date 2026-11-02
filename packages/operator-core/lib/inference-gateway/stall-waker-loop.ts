@@ -257,7 +257,7 @@ export function createStallWakerDeps(workspaceId: string): StallWakerDeps {
         /* no live turn to end (already idle) → just wake */
       }
       const r = await wakeRecipients([ownerId], { summary, source: 'stall-waker', workspaceId });
-      return { woken: r.woken };
+      return { woken: r.woken, timedOut: r.timedOutTargets.includes(ownerId) };
     },
     now: () => Date.now(),
     log: (level, msg) => (level === 'warn' ? console.warn : console.log)(`[stall-waker] ${msg}`),
@@ -320,7 +320,7 @@ export function ensureStallWakerLoop(workspaceId: string): void {
     'stall-waker-loop',
     POLL_MS,
     () =>
-      void waker!
+      waker!
         .tick()
         .then((r) => {
           tickCount++;

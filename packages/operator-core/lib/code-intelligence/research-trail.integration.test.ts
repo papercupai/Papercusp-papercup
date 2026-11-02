@@ -2,7 +2,8 @@ import { createHash } from 'node:crypto';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { pgResultDiagnosticSnapshot } from '@papercusp/db-org';
 import { harnessRoot } from '@papercusp/harness/paths';
 import { setupPlanPgFixture, type PlanPgFixture } from '../agent-tools/plans/__tests__/_pg-tool-fixture';
 import { codeIntelPushText, CODE_INTEL_PUSH_TURN_CHARS, type PushChannelDeps, type PushInput } from './push-channel';
@@ -38,6 +39,13 @@ beforeAll(async () => {
       path: 'code.ts', line: 1, column: 17, sha256: hash, signature: 'researched()', aliases: [], callers: [] }]]]) };
 }, 180_000);
 afterAll(async () => { await fx?.dispose(); if (root) await rm(root, { recursive: true, force: true }); });
+afterEach(({ task }) => {
+  if (task.result?.state !== 'fail') return;
+  // Preserve the existing bounded, value-free query recorder in the test artifact.
+  // A client stack alone cannot distinguish an INSERT from transaction setup,
+  // acquisition or protocol delay; do not turn a timeout into a guessed cause.
+  console.error('RESEARCH_TRAIL_QUERY_DIAGNOSTICS', JSON.stringify(pgResultDiagnosticSnapshot('org-app', 8)));
+});
 
 describe('caller-session research replay through the push boundary', () => {
   it('captures Read and resolved Grep subjects even when no push fits, with stable owner isolation', async () => {
@@ -107,6 +115,34 @@ describe('caller-session research replay through the push boundary', () => {
       [{ kind: 'path', requested: path, path, seenAt: Date.now() }])));
     expect((await readResearchTrail(fx.workspaceId, batch.owner, harness)).subjects.map(s => s.path).sort())
       .toEqual(['a.ts', 'b.ts']);
+  });
+  it('keeps the statement deadline and records an attributable INSERT failure', async () => {
+    // This trigger exists only in this suite's private database and affects one
+    // fixture owner. It supplies a known server-side delay as a diagnostic control.
+    await fx.admin.unsafe(`CREATE FUNCTION harness_shared.research_trail_deadline_fixture()
+      RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN PERFORM pg_sleep(1); RETURN NEW; END $$;
+      CREATE TRIGGER research_trail_deadline_fixture BEFORE INSERT
+      ON harness_shared.code_intel_research_trails FOR EACH ROW
+      WHEN (NEW.owner_id = 'zzz-deadline-owner')
+      EXECUTE FUNCTION harness_shared.research_trail_deadline_fixture()`);
+    const before = pgResultDiagnosticSnapshot('org-app').totalFailures;
+    try {
+      await expect(persistResearchBatch(input({ owner: 'zzz-deadline-owner' }), []))
+        .rejects.toMatchObject({ code: '57014' });
+      const diagnostics = pgResultDiagnosticSnapshot('org-app');
+      expect(diagnostics.totalFailures).toBeGreaterThan(before);
+      expect(diagnostics.failures).toContainEqual(expect.objectContaining({
+        queryFamily: 'insert:harness_shared.code_intel_research_trails',
+        errorCode: '57014', failurePhase: 'statement', backendPid: expect.any(Number),
+        elapsedMs: expect.any(Number), preBuildMs: expect.any(Number),
+      }));
+      expect((await readResearchTrail(fx.workspaceId, 'zzz-deadline-owner', harness)).subjects).toEqual([]);
+    } finally {
+      await fx.admin.unsafe(`DROP TRIGGER research_trail_deadline_fixture
+        ON harness_shared.code_intel_research_trails;
+        DROP FUNCTION harness_shared.research_trail_deadline_fixture()`);
+    }
   });
   it('retains a newer batch committed while an earlier capture waits for its transaction lock', async () => {
     const batch = input({ owner: 'zzz-queued-owner' });

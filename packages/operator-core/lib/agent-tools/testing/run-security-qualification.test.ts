@@ -13,7 +13,11 @@ const digest = (c: string) => c.repeat(64);
 const pins = { manifestSha256: digest('a'), ledgerSha256: digest('b') };
 const execute = { phase: 'execute' as const, ...pins, approvalRef: digest('c') };
 const review = { phase: 'review' as const, ...pins, manifestProducerRef: digest('d'),
-  ledgerProducerRef: digest('e'), executor: 'authenticated-executor', reviewRef: 'thread-post:review' };
+  ledgerProducerRef: digest('e'), executor: 'authenticated-executor', reviewRef: 'thread-post:review',
+  expectedTuples: [{ population: 'handler' as const, kind: 'handler', surfaceId: 'fixture', distribution: 'fixture',
+    platform: 'linux', runtime: 'node', enforcementMode: 'strict', effect: 'fs', channel: 'mcp' }],
+  expectedDispositions: [{ rowId: digest('f'), applicability: 'notApplicable' as const,
+    reason: 'adapter fixture', sourceRefs: ['fixture:adapter'] }] };
 beforeEach(() => vi.resetAllMocks());
 
 describe('testing:run security custody adapter', () => {
@@ -35,6 +39,9 @@ describe('testing:run security custody adapter', () => {
       expect(securityQualificationSchema.safeParse({ ...review, [field]: 'forged' }).success).toBe(false);
     }
     expect(securityQualificationSchema.safeParse({ ...execute, approvalRef: 'missing' }).success).toBe(false);
+    const { expectedTuples: _tuples, expectedDispositions: _dispositions, ...unreconciled } = review;
+    expect(securityQualificationSchema.safeParse(unreconciled).success).toBe(false);
+    expect(securityQualificationSchema.safeParse({ ...review, expectedTuples: [] }).success).toBe(false);
   });
   it('rejects file execution or recovery mixed into a metadata commitment', () => {
     for (const field of ['files', 'changedPaths', 'recoverEvidence', 'remeasureEvidence', 'nativeConsult',

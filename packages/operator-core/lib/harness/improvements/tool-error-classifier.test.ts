@@ -746,6 +746,12 @@ describe('classifyToolError — real-corpus regression (P-011)', () => {
     }).class).toBe('transient');
   });
 
+  it('classifies an MCP pre-dispatch deadline expiry as transient, not a structural tool error', () => {
+    const message = 'MCP dispatch deadline expired before tool "activity:report" started';
+    expect(classifyToolError(null, 'error', message)).toBe('transient');
+    expect(classifyToolError('handler_error', 'error', 'activity:report handler failed to persist its row')).toBe('structural');
+  });
+
   it('classifies a parent-signal abort as caller control flow, not a structural tool defect', () => {
     const message = 'tool "coord:declare-intent" was aborted by its parent signal after the handler returned';
     expect(classifyToolError('aborted', 'error', message)).toBe('caller');
@@ -1146,6 +1152,7 @@ describe('classifyToolError — real-corpus regression (P-011)', () => {
     const approvalErrors = [
       'acceptance_bar_approval_invalid_receipt',
       'acceptance_bar_approval_stale_or_mismatched: R-10 hash mismatch',
+      'acceptance_bar_approval_patch_mismatched: applied acceptance amendment differs from the complete proposed criteria shown to the outside-lineage reviewer',
       'acceptance_bar_approval_unparseable: the approval post must contain JSON',
       'acceptance_bar_approval_incomplete: the applied amendment changes R-10',
       'acceptance_bar_approval_ambiguous_preview_pointer',

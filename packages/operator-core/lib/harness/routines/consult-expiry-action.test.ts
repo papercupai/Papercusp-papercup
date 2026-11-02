@@ -12,6 +12,9 @@ const seams = vi.hoisted(() => ({
   sweepParks: vi.fn(async (_args: unknown) => undefined),
   pollParks: vi.fn(async (_args: unknown) => undefined),
   makeSeams: vi.fn(() => ({})),
+  makeConsultReachDispatcher: vi.fn(() => ({})),
+  rejudgeFirstTurn: vi.fn(),
+  upsertConditionWorkItem: vi.fn(),
   sweepDeliveries: vi.fn(async (_args: unknown) => ({ checked: [], failures: [], saturated: false })),
   listTasks: vi.fn(async (_filter: unknown) => [] as unknown[]),
   listLiveTasks: vi.fn(async (_workspaceId: string) => [] as unknown[]),
@@ -36,11 +39,16 @@ vi.mock('./system-actions', () => ({
   SYSTEM_TARGET_PREFIX: 'system:',
   registerSystemAction: seams.register,
 }));
-vi.mock('@papercusp/db-org', async (original) => ({
-  ...await original<typeof import('@papercusp/db-org')>(),
+vi.mock('@papercusp/db-org', () => ({
+  DEFAULT_TX_ACQUIRE_DEADLINE_MS: 45_000,
   getOrgPg: () => ({ sql: {} }),
 }));
 vi.mock('../../consult/consult-expiry-core', () => ({ sweepExpiredConsults: seams.sweep }));
+vi.mock('../../consult/consult-dispatch', () => ({
+  makeConsultReachDispatcher: seams.makeConsultReachDispatcher,
+  rejudgeFirstTurn: seams.rejudgeFirstTurn,
+}));
+vi.mock('../../coord/condition-upsert', () => ({ upsertConditionWorkItem: seams.upsertConditionWorkItem }));
 vi.mock('../../events/await/engine', () => ({ emitAwaitedEvent: vi.fn() }));
 vi.mock('../../agent-tools/coordination/messages', () => ({ sendMessage: seams.send }));
 vi.mock('../../task-manager/store', () => ({ listLiveTasks: seams.listLiveTasks, listTasks: seams.listTasks }));

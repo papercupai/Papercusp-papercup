@@ -373,8 +373,8 @@ describe('startEventLoopSentinel', () => {
   }, 60_000);
 
   /** Run the real sentinel against a child main thread, retaining its fd-2 evidence. */
-  function runParkedDiagnosticTrial(kind: 'idle' | 'blocked' | 'recovered', mode = 'observe') {
-    const built = buildWorkerMjs();
+  function runParkedDiagnosticTrial(kind: 'idle' | 'blocked' | 'recovered', mode = 'observe', footer?: string) {
+    const built = buildWorkerMjs(footer);
     if (!built) throw new Error('esbuild unavailable');
     const dir = mkdtempSync(join(tmpdir(), 'sentinel-parked-'));
     const script = `
@@ -406,6 +406,7 @@ describe('startEventLoopSentinel', () => {
       const heartbeat = setInterval(() => Atomics.add(view, 0, 1), 100);
       await new Promise(r => setTimeout(r, 600));
       clearInterval(heartbeat);
+      console.error('sentinel-alive:' + (worker.threadId !== -1));
       await worker.terminate();
     `;
     const result = spawnSync(process.execPath, ['--input-type=module', '-e', script], {
@@ -459,6 +460,39 @@ describe('startEventLoopSentinel', () => {
     expect(result.stderr).toContain('mainThreadInspectorResponse: responsive');
     expect(result.stderr).toContain('mainThreadEventLoopResponse: responsive');
     expect(result.stderr).toContain('WEDGED — SIGKILLing the host');
+  }, 30_000);
+
+  it.skipIf(process.platform !== 'linux')('does not kill when the heartbeat advances during the proc diagnostic', () => {
+    const result = runParkedDiagnosticTrial('idle', 'kill', `
+      const originalWchan = readMainThreadWchan;
+      let recoveryInjected = false;
+      readMainThreadWchan = () => {
+        if (!recoveryInjected && state.consecutiveStale >= thresholds.observationsToAct) {
+          recoveryInjected = true;
+          Atomics.add(view, 0, 1);
+          writeSync(2, 'recovery injected during proc diagnostic\\n');
+        }
+        return originalWchan();
+      };
+    `);
+    expect(result.stderr).toContain('recovery injected during proc diagnostic');
+    expect(result.stderr).toContain('sentinel-alive:true');
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.signal).toBeNull();
+  }, 30_000);
+
+  it.skipIf(process.platform !== 'linux')('rechecks recovery after writing the fatal diagnostic and leaves the worker armed', () => {
+    const result = runParkedDiagnosticTrial('idle', 'kill', `
+      const originalEmit = emit;
+      emit = (message, fields) => {
+        originalEmit(message, fields);
+        if (message.includes('SIGKILLing the host')) Atomics.add(view, 0, 1);
+      };
+    `);
+    expect(result.stderr).toContain('SIGKILL cancelled — heartbeat recovered during diagnostics');
+    expect(result.stderr).toContain('sentinel-alive:true');
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.signal).toBeNull();
   }, 30_000);
 
   it('CONTROL: re-introducing the unref bug DOES trip the regression test above', async () => {

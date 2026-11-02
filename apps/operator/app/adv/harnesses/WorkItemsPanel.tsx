@@ -8,6 +8,7 @@ import { VirtualGrid, usePersistedColumnWidths } from '@papercusp/grid-core';
 import { readListMeta } from '@papercusp/operator-core/lib/sync-resolver/list-meta';
 import type { CompanionListSummary } from '@papercusp/facets';
 import { useLexicon } from '@/lib/useLexicon';
+import { beginInteraction, clearInteraction, endInteraction, PERF_INTERACTIONS } from '../../_components/perf/perf-marks';
 import {
   useColumnFilterState,
   useColumnFiltersFromState,
@@ -163,11 +164,13 @@ export default function WorkItemsPanel({ params, api }: PanelComponentProps) {
   // LIMIT over this mutable newest-first corpus.
   const [cursor, setCursor] = useState<string | null>(null);
   const [rows, setRows] = useState<WorkItemRow[]>([]);
+  const [appliedPage, setAppliedPage] = useState<WorkItemRow[] | null>(null);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   useEffect(() => {
     setCursor(null);
     setNextCursor(null);
     setRows([]);
+    setAppliedPage(null);
   }, [slug, search, filterFingerprint]);
 
   const sharedArgs = useMemo(
@@ -191,6 +194,7 @@ export default function WorkItemsPanel({ params, api }: PanelComponentProps) {
   useEffect(() => {
     if (query.loading || !query.data) return;
     setRows((previous) => mergeWorkItemPage(previous, query.data, cursor));
+    setAppliedPage(query.data);
     setNextCursor(
       typeof readListMeta(query.data)?.nextCursor === 'string'
         ? readListMeta(query.data)!.nextCursor as string
@@ -202,6 +206,17 @@ export default function WorkItemsPanel({ params, api }: PanelComponentProps) {
   const pairedFetching = Boolean(query.fetching || summaryQuery.fetching);
   const loading = pairedFetching;
   const error = query.error?.message ?? summaryQuery.error?.message ?? null;
+  useEffect(() => {
+    if (!slug) return;
+    if (error) clearInteraction(PERF_INTERACTIONS.workListOpen, slug);
+    else if (!query.loading && !summaryQuery.loading && query.data && summaryQuery.data &&
+        appliedPage === query.data) {
+      endInteraction(PERF_INTERACTIONS.workListOpen, slug);
+    }
+  }, [slug, error, query.loading, summaryQuery.loading, query.data, summaryQuery.data, appliedPage]);
+  useEffect(() => () => {
+    clearInteraction(PERF_INTERACTIONS.workListOpen, slug);
+  }, [slug]);
   const hasMore = nextCursor !== null;
   const loadMore = useCallback(() => {
     if (nextCursor) setCursor(nextCursor);
@@ -331,7 +346,11 @@ export default function WorkItemsPanel({ params, api }: PanelComponentProps) {
           columnWidths={colWidths}
           onColumnWidthsChange={setColWidths}
           getRowId={(r) => r.id}
-          onRowClick={(r) => void setSelectedId(r.id)}
+          onRowClick={(r) => {
+            if (r.id === selectedId) return;
+            beginInteraction(PERF_INTERACTIONS.workItemOpen, `${slug}:${r.id}`);
+            void setSelectedId(r.id);
+          }}
           getRowBg={(r) =>
             r.id === selectedId ? 'color-mix(in oklab, var(--accent), transparent 80%)' : undefined
           }

@@ -5,6 +5,7 @@
  * (start → incremental read → completion / kill).
  */
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, existsSync, statSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -67,9 +68,15 @@ import {
   composeStreamingRedactors,
   createStreamingPatternRedactor,
   decodeRedactions,
+  SYSTEMD_RUNNER_BASH_JOB_ID_ENV,
+  SYSTEMD_RUNNER_JOB_END_PREFIX,
+  SYSTEMD_RUNNER_MARKER_SECRET_ENV,
   SYSTEMD_RUNNER_OUTPUT_PATH_ENV,
   SYSTEMD_RUNNER_REDACTIONS_ENV,
+  SYSTEMD_RUNNER_SCOPE_UNIT_ENV,
+  SYSTEMD_RUNNER_TASK_ID_ENV,
 } from '../../systemd-scope-env-runner.mjs';
+import { readJobLogTerminal } from '../../task-manager/job-log-terminal';
 import { SELF_IDENTIFYING_SECRET_PATTERN } from '../../sensitive-text';
 import {
   PIDS_PER_CONCURRENT_TASK,
@@ -731,6 +738,19 @@ describe('background jobs', () => {
       (binary: string, argv: string[], env?: Readonly<Record<string, string | undefined>>, cwd?: string) => {
         wrappedEnv = env;
         wrappedCwd = cwd;
+        const outputPath = env?.[SYSTEMD_RUNNER_OUTPUT_PATH_ENV];
+        const taskId = env?.[SYSTEMD_RUNNER_TASK_ID_ENV];
+        const bashJobId = env?.[SYSTEMD_RUNNER_BASH_JOB_ID_ENV];
+        const scopeUnit = env?.[SYSTEMD_RUNNER_SCOPE_UNIT_ENV];
+        const secret = env?.[SYSTEMD_RUNNER_MARKER_SECRET_ENV];
+        if (outputPath && taskId && bashJobId && scopeUnit && secret) {
+          const nonce = createHash('sha256').update(secret).digest('hex');
+          writeFileSync(
+            outputPath,
+            `\n${SYSTEMD_RUNNER_JOB_END_PREFIX}: status=completed exit=0 at 2026-11-02T19:00:00.000Z ` +
+              `task=${taskId} bash=${bashJobId} scope=${scopeUnit} invocation=test-invocation nonce=${nonce}\n`,
+          );
+        }
         return { binary, argv };
       },
     );
@@ -778,6 +798,22 @@ describe('background jobs', () => {
       expect(wrappedEnv).not.toHaveProperty('DATABASE_URL');
       expect(job.runnerOwnsLog).toBe(true);
       expect(wrappedEnv?.[SYSTEMD_RUNNER_OUTPUT_PATH_ENV]).toBe(job.logPath);
+      expect(wrappedEnv?.[SYSTEMD_RUNNER_TASK_ID_ENV]).toBe('service-payload-task');
+      expect(wrappedEnv?.[SYSTEMD_RUNNER_BASH_JOB_ID_ENV]).toBe(job.id);
+      expect(wrappedEnv?.[SYSTEMD_RUNNER_SCOPE_UNIT_ENV]).toBe('service-payload-task.service');
+      const runnerSecret = wrappedEnv?.[SYSTEMD_RUNNER_MARKER_SECRET_ENV] ?? '';
+      expect(runnerSecret).toMatch(/^[a-f0-9]{64}$/);
+      const nonceHash = createHash('sha256').update(runnerSecret).digest('hex');
+      const taskDetail = complete.mock.calls[0]![1].detail;
+      expect(taskDetail).toMatchObject({ bashJobId: job.id, runnerMarkerNonceHash: nonceHash });
+      expect(JSON.stringify(taskDetail)).not.toContain(runnerSecret);
+      expect(readJobLogTerminal(job.logPath)).toMatchObject({
+        taskId: 'service-payload-task',
+        bashJobId: job.id,
+        scopeUnit: 'service-payload-task.service',
+        invocationId: 'test-invocation',
+        nonce: nonceHash,
+      });
       // WI-10003538: the runner receives the exact values AND the same shape
       // patterns the live stream applies, so its durable log cannot diverge.
       expect(
@@ -839,6 +875,10 @@ describe('background jobs', () => {
           env: {
             [SYSTEMD_RUNNER_OUTPUT_PATH_ENV]: '/tmp/caller-forged-runner-output',
             [SYSTEMD_RUNNER_REDACTIONS_ENV]: 'caller-forged-redactions',
+            [SYSTEMD_RUNNER_TASK_ID_ENV]: 'caller-forged-task',
+            [SYSTEMD_RUNNER_BASH_JOB_ID_ENV]: 'caller-forged-job',
+            [SYSTEMD_RUNNER_SCOPE_UNIT_ENV]: 'caller-forged.service',
+            [SYSTEMD_RUNNER_MARKER_SECRET_ENV]: 'caller-forged-secret',
           },
         },
         10_000,
@@ -859,6 +899,10 @@ describe('background jobs', () => {
       expect(job.runnerOwnsLog).toBe(false);
       expect(wrappedEnv).not.toHaveProperty(SYSTEMD_RUNNER_OUTPUT_PATH_ENV);
       expect(wrappedEnv).not.toHaveProperty(SYSTEMD_RUNNER_REDACTIONS_ENV);
+      expect(wrappedEnv).not.toHaveProperty(SYSTEMD_RUNNER_TASK_ID_ENV);
+      expect(wrappedEnv).not.toHaveProperty(SYSTEMD_RUNNER_BASH_JOB_ID_ENV);
+      expect(wrappedEnv).not.toHaveProperty(SYSTEMD_RUNNER_SCOPE_UNIT_ENV);
+      expect(wrappedEnv).not.toHaveProperty(SYSTEMD_RUNNER_MARKER_SECRET_ENV);
       expect(readJobOutput(job), `status=${job.status} exit=${job.exitCode}`).toContain(
         'payload-controls=absent/absent',
       );

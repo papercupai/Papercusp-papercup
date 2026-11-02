@@ -72,6 +72,7 @@ import { STALL_PROFILE_DEFAULTS, hotStackFields, shouldCaptureStallProfile, summ
 // @ts-ignore — the plain-node Worker requires an explicit .ts specifier; apps/operator does not enable allowImportingTsExtensions.
 import {
   classifyThreadCpu,
+  sampleProcThreadState,
   isConfirmedCpuStarvation,
   isConfirmedHostIoWait,
   isLikelySyncSubprocessBlock,
@@ -353,13 +354,14 @@ interface MainThreadActivitySnapshot extends MainThreadActivity {
 }
 
 function mainThreadActivity(): MainThreadActivitySnapshot {
-  const now = readMainThreadStat();
+  const sample = sampleProcThreadState(readMainThreadStat, readMainThreadWchan);
+  const now = sample.stat;
   const verdict = classifyThreadCpu({
     baselineTicks: healthyCpu?.ticks ?? null,
     currentTicks: now?.ticks ?? null,
     elapsedMs: healthyCpu ? Date.now() - healthyCpu.atMs : 0,
   });
-  const wchan = readMainThreadWchan();
+  const wchan = sample.wchan;
   const cpuPsiSome60 = readCpuPressureSomeAvg60();
   const out: Record<string, string | number | boolean> = {
     mainThreadActivity: verdict.kind,
@@ -369,6 +371,7 @@ function mainThreadActivity(): MainThreadActivitySnapshot {
   if (verdict.cores != null) out.mainThreadCores = Number(verdict.cores.toFixed(2));
   if (verdict.suspectWrongSubject) out.suspectWrongSubject = true;
   if (wchan) out.mainThreadWchan = wchan;
+  if (sample.hostIoTransition) out.mainThreadHostIoTransition = true;
   if (cpuPsiSome60 != null) out.mainThreadCpuPsiSome60 = cpuPsiSome60;
   Object.assign(out, readMainThreadDirectoryWait(wchan));
   if (now?.state === 'D') Object.assign(out, readMainThreadSyscallWait());
@@ -379,6 +382,7 @@ function mainThreadActivity(): MainThreadActivitySnapshot {
     cores: verdict.cores,
     wchan,
     cpuPsiSome60,
+    hostIoTransition: sample.hostIoTransition,
   };
   // Every caller has already established a stale heartbeat. Capture children
   // even when the CPU sample is partial or wchan changes between observations:
@@ -760,9 +764,13 @@ const timer = setInterval(() => {
 
     case 'kill': {
       const activity = mainThreadActivity();
+      // Diagnostic /proc reads can themselves wait while the main loop
+      // recovers. The decision predates those reads; never act on that stale
+      // heartbeat. The next tick records recovery through the normal reducer.
+      if (Atomics.load(view, 0) !== state.lastCounter) return;
 
-      // A stale heartbeat plus a main thread in D-state, with zero CPU and a
-      // recognized storage wait channel, means the host is blocked behind I/O.
+      // Parked CPU plus a coherent D-state storage wait, or fresh bracketed
+      // evidence of its R/D transition, means the host is blocked behind I/O.
       // SIGKILL cannot free the block and a restart adds more I/O pressure, so
       // keep watching instead. If the thread later becomes a CPU-consuming
       // wedge, a subsequent observation still reaches the normal kill path.
@@ -775,7 +783,7 @@ const timer = setInterval(() => {
           wedgeAfterMs: thresholds.wedgeAfterMs,
           mode,
           pid,
-          reason: 'main thread is in confirmed uninterruptible storage wait; continue watching without restarting the host',
+          reason: 'main thread is parked in a measured storage wait or its sampling transition; continue watching without restarting the host',
           hostIoWait: true,
           ...activity.fields,
           ...lastKnownLag(),
@@ -811,10 +819,7 @@ const timer = setInterval(() => {
       // for "does this recur, and how often". Guard the flood instead: report
       // once per contiguous stall, and re-arm only after the loop RECOVERS
       // (the 'ok'/'grace' branches clear `reportedThisStall`).
-      if (mode === 'kill') {
-        acted = true;
-        clearInterval(timer);
-      } else {
+      if (mode !== 'kill') {
         if (reportedThisStall) return;
         reportedThisStall = true;
       }
@@ -835,6 +840,14 @@ const timer = setInterval(() => {
         },
       );
       if (mode === 'kill') {
+        // Even the fd-2 diagnostic write can block. Recheck after it and keep
+        // the timer armed if the heartbeat advanced before the actual signal.
+        if (Atomics.load(view, 0) !== state.lastCounter) {
+          emit('SIGKILL cancelled — heartbeat recovered during diagnostics', { pid });
+          return;
+        }
+        acted = true;
+        clearInterval(timer);
         try {
           process.kill(pid, 'SIGKILL');
         } catch (err) {

@@ -342,6 +342,7 @@ describe('deliberate loop-end is a headcount repair admission fence', () => {
 
   it('disarms without a pull or replacement when complete evidence shows the leader was reaped', async () => {
     const transaction = setup(true);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     mocks.readFleetRoster.mockResolvedValue({
       entries: [],
       degradedLegs: [],
@@ -372,10 +373,13 @@ describe('deliberate loop-end is a headcount repair admission fence', () => {
       outcome: 'unverified',
       reason: expect.stringContaining('leader is not positively live'),
     });
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('leader is not positively live'));
+    warn.mockRestore();
   });
 
   it('rechecks leader liveness after preflight and refuses a replacement if the leader was reaped', async () => {
     setup(false);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     mocks.orgSql.mockResolvedValue([{ status: 'active', archived: false }]);
     mocks.readFleetRoster
       .mockResolvedValueOnce({
@@ -413,6 +417,8 @@ describe('deliberate loop-end is a headcount repair admission fence', () => {
     expect(mocks.setHeadcountTarget).toHaveBeenCalledWith(
       expect.objectContaining({ workspaceId: 'ws', fleetSlug: 'fleet-a', target: null }),
     );
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('leader is not positively live'));
+    warn.mockRestore();
   });
 
   it('does not prune or respawn into an exactly measured empty fleet lane', async () => {
@@ -631,6 +637,7 @@ describe('headcount governor disarms a fleet whose plan is finished (WI-1457060)
   });
 
   it('disarms an archived plan even when its stored status still reads active', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     mocks.listTargets.mockResolvedValue(targetWithPlan);
     mocks.orgSql.mockResolvedValue([{ status: 'active', archived: true }]);
 
@@ -646,6 +653,8 @@ describe('headcount governor disarms a fleet whose plan is finished (WI-1457060)
       succeeded: false,
       error: expect.stringContaining('plan plan-a is archived'),
     }));
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('plan plan-a is archived'));
+    warn.mockRestore();
   });
 
   // CALIBRATION. Without this, every assertion above would also pass if the guard simply
@@ -680,6 +689,18 @@ describe('headcount governor disarms a fleet whose plan is finished (WI-1457060)
     // status-checked. (Before R5 this fixture was a config-less row; a config-less
     // row can no longer be granted at all — see the R5 describe below.)
     const { plan: _plan, ...planless } = baseConfig;
+    // The claimed attempt is the config the governor actually executes. Keep it
+    // consistent with the granted target instead of inheriting the default plan-a.
+    mocks.claimAttempt.mockResolvedValue({
+      workspaceId: 'ws',
+      fleetSlug: 'fleet-a',
+      target: 1,
+      config: planless,
+      nextAttemptAt: null,
+      backoffMs: 0,
+      lastError: null,
+      claimedAt: 1,
+    });
     mocks.listTargets.mockResolvedValue([grantedTarget(planless)]);
     mocks.orgSql.mockResolvedValue([{ status: 'shipped' }]);
 

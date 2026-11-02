@@ -68,6 +68,19 @@ describe('native startup activity observations', () => {
     expect(checkStartupActivityCensus(STARTUP_ACTIVITY_ENTRYPOINTS.map(e => e.id), counterexample, features).problems).toContain('wrong-writer:linux-user-service');
   });
 
+  it('links the Windows update writer only on Windows without asserting a running service', async () => {
+    const windows = await readNativeStartupActivity({ platform: 'win32', deviceId: 'windows-device' });
+    const server = windows.features[0]!;
+    expect(server.entrypointIds).toContain('windows-package-update');
+    expect(server.observed).toBe('unknown');
+    expect(server.desired.automatic).toBeNull();
+    expect(startupActivityCensus(windows.features, 'win32').find(entry => entry.id === 'windows-package-update'))
+      .toEqual({ id: 'windows-package-update', kind: 'checked', featureIds: [server.id] });
+    const local = await linux(state('enabled', 'active'));
+    expect(startupActivityCensus(local.features, 'linux').find(entry => entry.id === 'windows-package-update'))
+      .toMatchObject({ kind: 'not-applicable', reason: expect.stringContaining('Windows') });
+  });
+
   it('reads persistent workspace policy without rewriting native preferences or inferring a stopped invocation', async () => {
     const { features } = await linux(state('enabled', 'active'));
     const device = features[0]!;

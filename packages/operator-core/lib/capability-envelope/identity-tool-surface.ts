@@ -15,6 +15,7 @@
  */
 import type { KernelEnforcementRequest, KernelEnforcementResult, UnifiedToolContext } from '@papercusp/agent-mcp';
 import { pinModuleState } from '@papercusp/module-singleton';
+import type { PhaseTracker } from '@papercusp/tooldef';
 import { readControlAnchorKernelState } from '../projected-tool-deps';
 import {
   checkIdentityGrantKernel,
@@ -88,13 +89,15 @@ function unresolvedVerdict(verdict: KernelEnforcementResult): boolean {
 }
 
 /** One policy read per surface: the policy does not vary by listed tool. */
-function memoizedPolicyReader(read: PolicyReader): PolicyReader {
+function memoizedPolicyReader(read: PolicyReader, phases?: PhaseTracker): PolicyReader {
   const reads = new Map<string, Promise<IdentityGrantPolicy>>();
   return (input) => {
     const key = JSON.stringify([input.workspaceId, input.harnessSlug, input.role ?? null, input.classRefs]);
     let pending = reads.get(key);
     if (!pending) {
-      pending = read(input);
+      pending = phases
+        ? phases.track('identitySurface.grantPolicy', () => read(input))
+        : read(input);
       reads.set(key, pending);
     }
     return pending;
@@ -113,14 +116,17 @@ export async function resolveIdentityToolSurface(
   candidates: readonly IdentitySurfaceCandidate[],
   deps: IdentitySurfaceDeps = DEFAULT_DEPS,
   expandCandidates?: IdentitySurfaceCandidateExpander,
+  phases?: PhaseTracker,
 ): Promise<IdentityToolSurface> {
+  const track = <T>(phase: string, work: () => T | Promise<T>): Promise<T> =>
+    phases ? phases.track(`identitySurface.${phase}`, work) : Promise.resolve(work());
   const request = (candidate: IdentitySurfaceCandidate): KernelEnforcementRequest => ({
     phase: 'preflight', boundary: 'dispatch', toolName: candidate.name,
     capabilities: candidate.capabilities, args: {}, ctx,
   });
   let state: KernelState | null;
   try {
-    state = await deps.readState(request(candidates[0] ?? { name: '', capabilities: [] }));
+    state = await track('controlState', () => deps.readState(request(candidates[0] ?? { name: '', capabilities: [] })));
   } catch {
     return { kind: 'unresolved', key: null };
   }
@@ -138,18 +144,50 @@ export async function resolveIdentityToolSurface(
   }
   const surfaceCandidates = [...byName.values()];
   if (surfaceCandidates.length === 0) return { kind: 'ungoverned', key };
-  const readPolicy = memoizedPolicyReader(deps.readPolicy);
+  const readPolicy = memoizedPolicyReader(deps.readPolicy, phases);
   const admitted = new Set<string>();
-  for (const candidate of surfaceCandidates) {
-    let verdict: KernelEnforcementResult | null;
+  const evaluate = async (candidate: IdentitySurfaceCandidate): Promise<KernelEnforcementResult | null | { kind: 'error' }> => {
     try {
-      verdict = await deps.check(request(candidate), state, state.identityLaunchRecord, readPolicy, async () => true);
+      return await deps.check(request(candidate), state, state.identityLaunchRecord, readPolicy, async () => true);
     } catch {
-      return { kind: 'unresolved', key };
+      return { kind: 'error' };
     }
+  };
+  const applyVerdict = (
+    candidate: IdentitySurfaceCandidate,
+    verdict: KernelEnforcementResult | null | { kind: 'error' },
+  ): IdentityToolSurface | null => {
+    if (verdict && 'kind' in verdict && verdict.kind === 'error') return { kind: 'unresolved', key };
     if (verdict === null) return { kind: 'ungoverned', key };
     if (unresolvedVerdict(verdict)) return { kind: 'unresolved', key };
     if (verdict.decision === 'allow') admitted.add(candidate.name);
+    return null;
+  };
+  const firstCandidate = surfaceCandidates[0];
+  let firstVerdict: KernelEnforcementResult | null | { kind: 'error' };
+  try {
+    firstVerdict = await track('firstCandidate', () => evaluate(firstCandidate));
+  } catch {
+    return { kind: 'unresolved', key };
+  }
+  const firstDisposition = applyVerdict(firstCandidate, firstVerdict);
+  if (firstDisposition) return firstDisposition;
+
+  if (surfaceCandidates.length > 1) {
+    let remainingDisposition: IdentityToolSurface | null;
+    try {
+      remainingDisposition = await track('remainingCandidates', async () => {
+        for (const candidate of surfaceCandidates.slice(1)) {
+          const verdict = await evaluate(candidate);
+          const disposition = applyVerdict(candidate, verdict);
+          if (disposition) return disposition;
+        }
+        return null;
+      });
+    } catch {
+      return { kind: 'unresolved', key };
+    }
+    if (remainingDisposition) return remainingDisposition;
   }
   return { kind: 'governed', key, admitted };
 }

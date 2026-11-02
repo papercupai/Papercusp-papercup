@@ -433,6 +433,34 @@ describe('lintCarrySurfaceProvenance', () => {
       ).toEqual({ flagged: false, matches: [] });
     });
 
+    it('EI-27706343693041409: accepts the recovery checkpoint identity/control evidence', () => {
+      const line =
+        '[turn:self] SAME identity verified via coord:whoami; control hashbdefcb44.../AUTO/original fleet leadership and WARM route retained. One orient recovered deliberately omitted obligations, no new owner directive applies.';
+      expect(lintCarrySurfaceProvenance(line)).toEqual({ flagged: false, matches: [] });
+      expect(lintCarrySurfaceProvenance('No new owner directive applies.')).toEqual({
+        flagged: false,
+        matches: [],
+      });
+    });
+
+    it('EI-27706343693041409: keeps new directives and mixed authority claims loud', () => {
+      expect(lintCarrySurfaceProvenance('New owner directive #9: hold the deploy.').matches[0]?.kind).toBe(
+        'manual-owner-tag',
+      );
+      expect(
+        lintCarrySurfaceProvenance('No new owner directive applies; do NOT deploy until reviewed.')
+          .matches[0]?.kind,
+      ).toBe('bare-gate-imperative');
+      expect(
+        lintCarrySurfaceProvenance('No new owner directive applies; the owner said to hold the deploy.')
+          .matches[0]?.kind,
+      ).toBe('owner-attribution');
+      expect(
+        lintCarrySurfaceProvenance('No new owner directive applies; [owner:Jane] hold the deploy.')
+          .matches[0]?.kind,
+      ).toBe('manual-owner-tag');
+    });
+
     it('EI-25438670819476017: keeps an imperative loud beside a negative-existence disclaimer', () => {
       expect(
         lintCarrySurfaceProvenance('No applicable owner directive was found; do NOT deploy until reviewed.')

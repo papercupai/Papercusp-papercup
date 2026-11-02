@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  createSecurityManifest, createSecurityTupleLedger, reconcileSecurityManifest,
+  createSecurityManifest, createSecurityTupleLedger, reconcileSecurityManifest, reconcileSecurityTupleLedger,
   SECURITY_POPULATIONS, securityTupleId,
   type SecurityManifest, type SecurityProbeIdentity, type SecurityTuple, type SecurityTupleDisposition,
 } from './security-manifest';
@@ -93,6 +93,49 @@ describe('immutable security census manifests', () => {
 });
 
 describe('pre-execution security tuple partitions', () => {
+  it('reconciles independent tuple sets irrespective of input order', () => {
+    const input = ledgerInput(), ledger = createSecurityTupleLedger(input);
+    expect(reconcileSecurityTupleLedger(ledger, { ...input, tuples: [...input.tuples].reverse(),
+      dispositions: [...input.dispositions].reverse() })).toEqual({ missing: [], unexpected: [], changed: [], matches: true });
+  });
+
+  it('detects an omitted channel even when every surface is still represented', () => {
+    const input = ledgerInput();
+    const ledger = createSecurityTupleLedger({ ...input, tuples: input.tuples.slice(1), dispositions: input.dispositions.slice(1) });
+    expect(reconcileSecurityTupleLedger(ledger, input)).toEqual({
+      missing: [securityTupleId(input.tuples[0])], unexpected: [], changed: [], matches: false,
+    });
+    expect(reconcileSecurityTupleLedger(createSecurityTupleLedger(input), {
+      ...input, tuples: input.tuples.slice(1), dispositions: input.dispositions.slice(1),
+    }).unexpected).toEqual([securityTupleId(input.tuples[0])]);
+  });
+
+  it('detects equal-count substitution and changed applicability or probe pins', () => {
+    const input = ledgerInput(), ledger = createSecurityTupleLedger(input);
+    const substituted = tuple({ platform: 'darwin-arm64' });
+    expect(reconcileSecurityTupleLedger(ledger, { ...input, tuples: [substituted, ...input.tuples.slice(1)],
+      dispositions: [disposition(substituted), ...input.dispositions.slice(1)] })).toMatchObject({
+      missing: [securityTupleId(substituted)], unexpected: [securityTupleId(input.tuples[0])], matches: false,
+    });
+    input.dispositions[0] = { rowId: securityTupleId(input.tuples[0]), applicability: 'notApplicable',
+      reason: 'independent source excludes route', sourceRefs: ['source:distribution'] };
+    expect(reconcileSecurityTupleLedger(ledger, input).changed).toEqual([securityTupleId(input.tuples[0])]);
+    input.dispositions[0] = disposition(input.tuples[0]);
+    if (input.dispositions[0].applicability !== 'applicable') throw Error('fixture');
+    input.dispositions[0].negativeCanary.runtimeSha256 = hash('e');
+    expect(reconcileSecurityTupleLedger(ledger, input).changed).toEqual([securityTupleId(input.tuples[0])]);
+  });
+
+  it('detects manifest drift and refuses corrupt or duplicate comparison inputs', () => {
+    const input = ledgerInput(), ledger = createSecurityTupleLedger(input), changed = population();
+    changed.runtime.sha256 = hash('e');
+    expect(reconcileSecurityTupleLedger(ledger, { ...input, manifest: createSecurityManifest(changed) }).changed)
+      .toEqual(['manifestSha256']);
+    expect(() => reconcileSecurityTupleLedger({ ...ledger, sha256: hash('e') }, input)).toThrow('snapshot_drift');
+    expect(() => reconcileSecurityTupleLedger(ledger, { ...input, tuples: [...input.tuples, input.tuples[0]] }))
+      .toThrow('tuple_duplicate');
+  });
+
   it('freezes a complete, distinct row-bound control/canary partition without granting approval', () => {
     const input = ledgerInput(), ledger = createSecurityTupleLedger(input);
     expect(ledger.body.manifestSha256).toBe(input.manifest.sha256);

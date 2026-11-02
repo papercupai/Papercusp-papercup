@@ -3522,6 +3522,7 @@ async function resolveVisibleToolListings(extra: unknown, phases: PhaseTracker =
     ? await phases.track('identitySurface', () => identityAdmittedListings(spawnRes.ctx, result, extra, {
       requiredToolListing,
       requiredToolAllowed: requiredToolPrincipalAndAppFilter,
+      phases,
     }))
     : null;
   if (identityListings) result = identityListings;
@@ -3652,6 +3653,7 @@ async function identityAdmittedListings(
   operationOptions?: {
     requiredToolListing: (name: string) => ReturnType<typeof listMcpProjections>[number] | undefined;
     requiredToolAllowed: (name: string) => boolean;
+    phases?: PhaseTracker;
   },
 ): Promise<ReturnType<typeof listMcpProjections> | null> {
   const nameOf = (listing: unknown) => (listing as { name?: unknown }).name;
@@ -3663,7 +3665,10 @@ async function identityAdmittedListings(
   const acceptedOperationListings = new Map<string, ReturnType<typeof listMcpProjections>[number]>();
   try {
     const surfaceModule = await import('../../../capability-envelope/identity-tool-surface');
-    const ctx = await identitySurfaceContext(spawn);
+    const timings = operationOptions?.phases;
+    const ctx = timings
+      ? await timings.track('identitySurface.context', () => identitySurfaceContext(spawn))
+      : await identitySurfaceContext(spawn);
     const surface = await surfaceModule.resolveIdentityToolSurface(ctx, candidates, undefined, (record) => {
       if (!operationOptions || !record || typeof record !== 'object' || Array.isArray(record)) return [];
       const acceptedOperation = (record as Record<string, unknown>).acceptedOperation;
@@ -3691,7 +3696,7 @@ async function identityAdmittedListings(
         }
       }
       return additional;
-    });
+    }, timings);
     const sessionKey = mcpSessionKey(extra);
     if (sessionKey) surfaceModule.rememberListedIdentitySurface(sessionKey, { ctx, candidates: surfaceCandidates, surface });
     if (surface.kind === 'unresolved' && acceptedOperationListings.size > 0) {

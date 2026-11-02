@@ -250,6 +250,45 @@ describe('R-6: a new holder receives fresh facts for the previous holder\'s file
     expect(read).toContain("payload -> 'codeWorkingSet' ->> 'owner' IS DISTINCT FROM ?");
   });
 
+  it('separates reserved-pool acquisition, transaction startup, and SQL timings', async () => {
+    const timings: Array<[string, number]> = [];
+    const delay = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
+    const transaction = async (strings: TemplateStringsArray) => {
+      const query = strings.join('');
+      if (query.includes('codeWorkingSet')) {
+        await delay(8);
+        return [{ feature_id: 'WI-2', stamp: { owner: 'su-other', paths: ['lib/target.ts'], symbols: ['targetFn'] } }];
+      }
+      return [];
+    };
+    const connection: any = Object.assign(transaction, {
+      begin: async (fn: (tx: unknown) => unknown) => {
+        await delay(6);
+        return fn(transaction);
+      },
+      release: vi.fn(),
+    });
+    const reserve = vi.fn(async () => {
+      await delay(10);
+      return connection;
+    });
+    const sql = { reserve, begin: vi.fn() };
+    const sets = await readForeignWorkingSets(OWNER, 'ws-A', 'papercusp', sql as never, 75,
+      (phase, elapsedMs) => timings.push([phase, elapsedMs]));
+
+    expect(sets.map(set => set.itemId)).toEqual(['WI-2']);
+    expect(reserve).toHaveBeenCalledOnce();
+    expect(sql.begin).not.toHaveBeenCalled();
+    expect(connection.release).toHaveBeenCalledOnce();
+    const measured = Object.fromEntries(timings);
+    expect(Object.keys(measured)).toEqual([
+      'poolAcquire', 'beginCallbackEntry', 'setTimeout', 'select', 'parse', 'transactionTotal',
+    ]);
+    expect(measured.poolAcquire).toBeGreaterThanOrEqual(5);
+    expect(measured.beginCallbackEntry).toBeGreaterThanOrEqual(3);
+    expect(measured.select).toBeGreaterThanOrEqual(4);
+  });
+
   it('G-3 (blind review 35): inherits only stamps on items of THIS harness, and the resume read passes its harness', async () => {
     const calls: Array<{ text: string; values: unknown[] }> = [];
     const tx = (strings: TemplateStringsArray, ...values: unknown[]) => {

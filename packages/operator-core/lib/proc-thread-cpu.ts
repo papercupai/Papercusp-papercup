@@ -253,18 +253,47 @@ export interface MainThreadActivity {
   wchan: string | null;
   /** Host CPU PSI `some avg60`, or null when the pressure read was unknown. */
   cpuPsiSome60?: number | null;
+  /** A fresh bracketed /proc sample observed storage wait during a state transition. */
+  hostIoTransition?: boolean;
 }
 
 /**
  * Linux wait-channel names that identify a thread parked behind block I/O.
  *
- * The parked CPU classification and D-state checks are load-bearing: a name
- * alone is not enough to establish that the main thread is the parked subject
- * rather than a stale or misread `/proc` sample. Requiring exactly zero CPU
- * rejects measured low-CPU storage waits that the classifier already marks
- * parked.
+ * Parked CPU plus D-state, or a fresh bracketed I/O transition, is required:
+ * a wait-channel name paired with an independently read R-state is not a
+ * coherent snapshot. Requiring exactly zero CPU would also reject measured
+ * low-CPU storage waits that the classifier already marks parked.
  */
 const HOST_IO_WAIT_WCHAN_RE = /^(?:iterate_dir|lookup_slow|rq_qos_wait|io_schedule(?:_timeout)?|blk_mq_[a-z0-9_]+|wait_on_(?:buffer|page(?:_bit)?|page_writeback)|folio_wait_[a-z0-9_]+|(?:__)?jbd2_[a-z0-9_]+|do_get_write_access|wait_transaction_locked)$/i;
+
+/**
+ * /proc state and wchan are separate reads. Bracket the wait-channel read with
+ * stat reads and retry a transition once, instead of pairing a runnable state
+ * with a later storage wait and treating that impossible snapshot as a wedge.
+ * Keep fresh I/O transition evidence for this observation only: the next call
+ * starts clean, so a subsequent CPU spin or sync subprocess remains killable.
+ */
+export function sampleProcThreadState(
+  readStat: () => ProcStatSample | null,
+  readWchan: () => string | null,
+): { stat: ProcStatSample | null; wchan: string | null; hostIoTransition: boolean } {
+  let stat: ProcStatSample | null = null;
+  let wchan: string | null = null;
+  let hostIoTransition = false;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const before = readStat();
+    wchan = readWchan();
+    stat = readStat();
+    const storageWait = Boolean(wchan && HOST_IO_WAIT_WCHAN_RE.test(wchan.trim()));
+    if (storageWait && (before?.state === 'R' || stat?.state === 'R')) {
+      hostIoTransition = true;
+    }
+    if (before && stat && before.state === stat.state &&
+        !(stat.state === 'R' && wchan)) break;
+  }
+  return { stat, wchan, hostIoTransition };
+}
 
 /**
  * Decide whether a sentinel kill should be suppressed because the main thread
@@ -280,9 +309,9 @@ const HOST_IO_WAIT_WCHAN_RE = /^(?:iterate_dir|lookup_slow|rq_qos_wait|io_schedu
 export function isConfirmedHostIoWait(activity: MainThreadActivity): boolean {
   const wchan = activity.wchan?.trim();
   return (
-    activity.state === 'D' &&
     activity.cpuKind === 'parked' &&
-    Boolean(wchan && HOST_IO_WAIT_WCHAN_RE.test(wchan))
+    ((activity.state === 'D' && Boolean(wchan && HOST_IO_WAIT_WCHAN_RE.test(wchan))) ||
+      activity.hostIoTransition === true)
   );
 }
 

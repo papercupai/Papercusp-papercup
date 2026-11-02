@@ -6887,6 +6887,23 @@ const workItemsCompleteTool = defineTool({
       reportRootCauseVerificationInputShape(raw, (issue) => preflight.push(issue));
       const hoisted = hoistMisplacedCompletionFields(raw);
       const gathered = gatherFlatCompletion(hoisted);
+      if (gathered && typeof gathered === 'object' && !Array.isArray(gathered)) {
+        const envelope = gathered as Record<string, unknown>;
+        const bulkItems = Array.isArray(envelope.items);
+        const entries = bulkItems ? envelope.items as unknown[] : [envelope];
+        entries.forEach((rawItem, index) => {
+          if (!rawItem || typeof rawItem !== 'object' || Array.isArray(rawItem)) return;
+          const item = rawItem as Record<string, unknown>;
+          const state = item.state ?? envelope.state;
+          const recordOnly = item.recordOnly ?? envelope.recordOnly;
+          if (recordOnly !== true || state === undefined) return;
+          preflight.push({
+            code: 'custom',
+            message: 'REJECTED — `recordOnly:true` cannot be combined with `state`. Omit `state` to record evidence without changing lifecycle state, or set `recordOnly:false` to request a lifecycle transition.',
+            path: bulkItems ? ['items', index, 'recordOnly'] : ['recordOnly'],
+          });
+        });
+      }
       reportMalformedCompletionCoverage(gathered, (issue) => preflight.push(issue));
       for (const issue of preflight) ctx.addIssue(issue);
       if (preflight.length > 0) {

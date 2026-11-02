@@ -30,7 +30,8 @@ export const securityQualificationSchema = z.discriminatedUnion('phase', [
   z.object({ phase: z.literal('ledger'), manifestSha256: hash,
     tuples: z.array(tuple).min(1), dispositions: z.array(disposition).min(1) }).strict(),
   z.object({ phase: z.literal('review'), ...pins, manifestProducerRef: hash,
-    ledgerProducerRef: hash, executor: text, reviewRef: text }).strict(),
+    ledgerProducerRef: hash, executor: text, reviewRef: text,
+    expectedTuples: z.array(tuple).min(1), expectedDispositions: z.array(disposition).min(1) }).strict(),
   z.object({ phase: z.literal('execute'), ...pins, approvalRef: hash }).strict(),
   z.object({ phase: z.literal('verify'), ...pins, resultRef: hash }).strict(),
 ]);

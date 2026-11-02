@@ -3175,6 +3175,30 @@ describe('listSpecEvidence timestamp normalization', () => {
       );
     });
 
+    it('keeps contract metadata unmeasured even with a claimed server replay, then freshly detects moved source', async () => {
+      const measured = await measureRepoFilesEvidenceAtRoot(measurementRoot, recipe);
+      h.rows = [boundRow(recipe, { source: 'sha256:source-at-binding-time', test: measured.testFingerprint })];
+      const bound = h.rows[0]!;
+      const diagnostics: ListSpecEvidenceDiagnostics = { phaseMs: {}, bindings: {
+        selectedRows: 0, rowsWithRecipe: 0, measured: 0, unavailable: 0, skipped: 0,
+        totalMeasurementMs: 0, maxMeasurementMs: 0,
+      } };
+      const [metadata] = await listSpecEvidence({ harnessSlug: 'papercusp', planSlugs: ['plan-one'],
+        measurementMode: 'metadata', replaySnapshot: true, currentProvenance: 'server-measured', diagnostics,
+        current: [{ planSlug: bound.plan_slug, specId: bound.spec_id, specRevision: bound.spec_revision,
+          specFingerprint: bound.spec_fingerprint, evidenceKind: bound.evidence_kind, evidenceRef: bound.evidence_ref,
+          sourceFingerprint: bound.source_fingerprint, testFingerprint: bound.test_fingerprint }],
+      });
+      expect(metadata?.currentness.overall).toBe('unknown');
+      expect(metadata?.currentness.unknownReasons).toContain('evidence-metadata-only');
+      expect(metadata).not.toHaveProperty('serverMeasurement');
+      expect(diagnostics.bindings).toMatchObject({ rowsWithRecipe: 0, measured: 0, unavailable: 0, skipped: 1 });
+      const fresh = await readWithoutCallerCurrent();
+      expect(fresh?.serverMeasurement?.status).toBe('measured');
+      expect(fresh?.currentness.overall).toBe('stale');
+      expect(fresh?.currentness.staleReasons).toContain('source-stale');
+    });
+
     it('records separate registry, filesystem, and commit maxima for root-resolution outliers', async () => {
       const measured = await measureRepoFilesEvidenceAtRoot(measurementRoot, recipe);
       h.rows = [boundRow(recipe, { source: measured.sourceFingerprint, test: measured.testFingerprint })];

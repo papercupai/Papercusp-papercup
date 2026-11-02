@@ -22,6 +22,7 @@ import {
   type EnvOperatorSpec,
   type LaunchEnvOperatorsDeps,
   defaultDetectSourceRoot,
+  defaultDetectSourceRootAsync,
   sourceChildEnv,
   openEnvOperatorLog,
   viteChildArgv,
@@ -404,6 +405,19 @@ function fakeLaunchDeps(over: Partial<LaunchEnvOperatorsDeps> = {}): {
 }
 
 describe('launchEnvOperators (effectful, fully faked)', () => {
+  it('waits for async source detection before passing the root to child preparation', async () => {
+    let release!: (root: string | null) => void;
+    const pending = new Promise<string | null>((resolve) => { release = resolve; });
+    const { deps, spawnedCalls } = fakeLaunchDeps({ detectSourceRoot: () => pending });
+    const result = launchEnvOperators(deps);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(spawnedCalls).toHaveLength(0);
+    release('/src/ready');
+    await result;
+    expect(spawnedCalls).toHaveLength(3);
+    expect(spawnedCalls.every((call) => call.treePath === '/src/ready')).toBe(true);
+  });
+
   it('spawns every enabled env when none are up and a toolchain + tree exist', async () => {
     const { deps, spawnedCalls } = fakeLaunchDeps();
     const res = await launchEnvOperators(deps);
@@ -638,6 +652,22 @@ describe('defaultDetectSourceRoot (WI-3306/WI-3308 extraction contract)', () => 
     expect(defaultDetectSourceRoot()).not.toBe(resolve(root));
     rmSync(root, { recursive: true, force: true });
   });
+
+  it('async runtime detection rechecks extracted markers after replacement', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'pc-devsrc-async-'));
+    try {
+      mkdirSync(join(root, 'apps', 'operator'), { recursive: true });
+      mkdirSync(join(root, 'libs', 'papercusp'), { recursive: true });
+      writeFileSync(join(root, 'apps', 'operator', 'package.json'), '{}');
+      writeFileSync(join(root, 'libs', 'papercusp', 'package.json'), '{}');
+      process.env.PAPERCUSP_DEV_SOURCE_ROOT = root;
+      expect(await defaultDetectSourceRootAsync()).toBe(resolve(root));
+      rmSync(join(root, 'libs', 'papercusp', 'package.json'));
+      expect(await defaultDetectSourceRootAsync()).not.toBe(resolve(root));
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('sourceChildEnv (WI-3306 source-child contract)', () => {
@@ -670,15 +700,15 @@ describe('sourceChildEnv (WI-3306 source-child contract)', () => {
 });
 
 describe('openEnvOperatorLog (EI-19423766332560955)', () => {
-  const priorHome = process.env.HOME;
+  const priorHome = process.env.PAPERCUSP_HOME;
   afterEach(() => {
-    if (priorHome === undefined) delete process.env.HOME;
-    else process.env.HOME = priorHome;
+    if (priorHome === undefined) delete process.env.PAPERCUSP_HOME;
+    else process.env.PAPERCUSP_HOME = priorHome;
   });
 
   it('routes stdout+stderr to a per-env log instead of discarding them', () => {
     const home = mkdtempSync(join(tmpdir(), 'pc-envlog-'));
-    process.env.HOME = home;
+    process.env.PAPERCUSP_HOME = join(home, '.papercusp');
 
     const log = openEnvOperatorLog('dev');
 
@@ -698,7 +728,7 @@ describe('openEnvOperatorLog (EI-19423766332560955)', () => {
 
   it('opens APPEND-mode so a restart never truncates the previous boot', () => {
     const home = mkdtempSync(join(tmpdir(), 'pc-envlog-'));
-    process.env.HOME = home;
+    process.env.PAPERCUSP_HOME = join(home, '.papercusp');
 
     const first = openEnvOperatorLog('local');
     writeSync(first.fd as number, 'FIRST BOOT\n');
@@ -720,7 +750,7 @@ describe('openEnvOperatorLog (EI-19423766332560955)', () => {
     const dir = mkdtempSync(join(tmpdir(), 'pc-envlog-'));
     const notADir = join(dir, 'i-am-a-file');
     writeFileSync(notADir, 'x');
-    process.env.HOME = notADir;
+    process.env.PAPERCUSP_HOME = join(notADir, '.papercusp');
 
     const log = openEnvOperatorLog('dev');
 

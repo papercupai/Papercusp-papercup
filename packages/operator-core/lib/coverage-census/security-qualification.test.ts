@@ -69,7 +69,9 @@ async function prepare() {
   h.now = 2000;
   return { manifestSha256: produced.manifest.sha256, ledgerSha256: planned.ledger.sha256,
     manifestProducerRef: produced.producerRef, ledgerProducerRef: planned.producerRef,
-    executor: ids.executor, reviewRef: 'fixture:independent-review-of-exact-population' };
+    executor: ids.executor, reviewRef: 'fixture:independent-review-of-exact-population',
+    expectedTuples: structuredClone(planned.ledger.body.rows.map(row => row.tuple)),
+    expectedDispositions: structuredClone(planned.ledger.body.rows.map(row => row.disposition)) };
 }
 async function approved() {
   const request = await prepare();
@@ -144,6 +146,61 @@ describe('authenticated host discovery custody', () => {
 });
 
 describe('host-authenticated pre-execution applicability commitment', () => {
+  it('pins the independently authenticated reviewer comparison in immutable approval evidence', async () => {
+    const { input, request } = await approved();
+    const approval = load(input.approvalRef).event;
+    const evidence = load(approval.applicabilityEvidenceSha256);
+    expect(evidence.producer).toBe(ids.reviewer);
+    expect(evidence.manifestSha256).toBe(request.manifestSha256);
+    expect(evidence.rows.map((row: { rowId: string }) => row.rowId)).toEqual(request.expectedTuples.map(securityTupleId));
+    expect(approval).not.toHaveProperty('expectedTuples');
+  });
+
+  it.each(['missing-platform', 'equal-count-substitution', 'changed-na', 'changed-probe'])(
+    'refuses independently discovered %s before claiming or writing approval', async fault => {
+      const request = await prepare(), before = h.artifacts.size;
+      const original = request.expectedTuples[0];
+      const extra = { ...original, platform: 'darwin-arm64' };
+      const disposition = { rowId: securityTupleId(extra), applicability: 'notApplicable' as const,
+        reason: 'independent distribution source', sourceRefs: ['source:distribution'] };
+      if (fault === 'missing-platform') {
+        request.expectedTuples.push(extra); request.expectedDispositions.push(disposition);
+      } else if (fault === 'equal-count-substitution') {
+        request.expectedTuples[0] = extra; request.expectedDispositions[0] = disposition;
+      } else if (fault === 'changed-na') {
+        request.expectedDispositions[0] = { ...disposition, rowId: securityTupleId(original) };
+      } else {
+        const row = request.expectedDispositions[0];
+        if (row.applicability !== 'applicable') throw Error('fixture');
+        row.negativeCanary.fixtureSha256 = digest('e');
+      }
+      await expect(commitSecurityApplicability(ctx(ids.reviewer), 'test', request))
+        .rejects.toThrow('applicability_reconciliation_mismatch');
+      expect(h.artifacts.size).toBe(before);
+      expect(h.claims.size).toBe(0);
+    });
+
+  it.each(['missing', 'producer-substitution', 'missing-pin'])('rejects %s reconciliation evidence before effects', async fault => {
+    const { input, request } = await approved(), execute = vi.fn();
+    let approvalRef = input.approvalRef;
+    if (fault === 'missing') h.artifacts.delete(`test:${load(approvalRef).event.applicabilityEvidenceSha256}`);
+    else approvalRef = mutation(approvalRef, event => {
+      if (fault === 'missing-pin') delete event.applicabilityEvidenceSha256;
+      else event.applicabilityEvidenceSha256 = request.ledgerSha256;
+    }, true);
+    await expect(runSecurityQualification(ctx(ids.executor), 'test', { ...input, approvalRef }, execute))
+      .rejects.toThrow('applicability_reconciliation');
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it('rechecks the same comparison evidence during final result verification', async () => {
+    const { input } = await approved();
+    const result = await runSecurityQualification(ctx(ids.executor), 'test', input, async () => 'fixture');
+    const ref = load(input.approvalRef).event.applicabilityEvidenceSha256;
+    h.artifacts.delete(`test:${ref}`);
+    await expect(verifySecurityQualificationResult('test', result)).rejects.toThrow('applicability_reconciliation_mismatch');
+  });
+
   it('signs the exact immutable runner result and rejects corrupted result evidence', async () => {
     const { input } = await approved(); h.now = 3000;
     const measured = { runId: 'actual-router-group', ok: true, files: 1, passed: 2, failed: 0 };
@@ -268,7 +325,9 @@ describe('host-authenticated pre-execution applicability commitment', () => {
         applicability: 'notApplicable' as const, reason: 'reclassify after observation', sourceRefs: ['fixture:changed'] })),
     });
     await expect(commitSecurityApplicability(ctx(ids.reviewer), 'test', { ...request,
-      ledgerSha256: modified.ledger.sha256, ledgerProducerRef: modified.producerRef })).rejects.toThrow('claim_conflict');
+      ledgerSha256: modified.ledger.sha256, ledgerProducerRef: modified.producerRef,
+      expectedTuples: modified.ledger.body.rows.map(row => row.tuple),
+      expectedDispositions: modified.ledger.body.rows.map(row => row.disposition) })).rejects.toThrow('claim_conflict');
     await expect(verifySecurityQualificationResult('test', { ...result, ledgerSha256: modified.ledger.sha256 }))
       .rejects.toThrow('result_pin_substitution');
   });

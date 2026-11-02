@@ -91,11 +91,24 @@ vi.mock('@papercusp/db-org', async (orig) => ({
   getOrgPg: () => ({ sql: sqlMock }),
 }));
 
-vi.mock('../../issues-engineer', () => ({
-  issuesScopeWorkspace: () => 'test-workspace',
-  issuesOutLinksMany: async () => new Map(),
-  issuesSupersededByRevision: async () => new Set<string>(),
-}));
+vi.mock('../../issues-engineer', () => {
+  // The rubric read seam initializes these defaults at import time. Keep the
+  // fixture isolated from the issue store's import graph, and fail if a test
+  // unexpectedly uses one instead of the scorecard rows supplied above.
+  const unexpectedRead = (name: string) => () => {
+    throw new Error(`Unexpected issue-store read in scorecard fixture: ${name}`);
+  };
+  return {
+    listIssues: unexpectedRead('listIssues'),
+    listIssueScopes: unexpectedRead('listIssueScopes'),
+    projectAllIssuesForBoundedRead: unexpectedRead('projectAllIssuesForBoundedRead'),
+    countIssues: unexpectedRead('countIssues'),
+    countIssuesBySourceRole: unexpectedRead('countIssuesBySourceRole'),
+    issuesScopeWorkspace: () => 'test-workspace',
+    issuesOutLinksMany: async () => new Map(),
+    issuesSupersededByRevision: async () => new Set<string>(),
+  };
+});
 
 vi.mock('../../rubrics', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../rubrics')>()),

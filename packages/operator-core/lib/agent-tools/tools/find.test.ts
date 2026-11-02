@@ -2103,6 +2103,24 @@ describe('bounded discovery projection (EI-20235784774977954)', () => {
     expect(compact?.length ?? 0).toBeLessThanOrEqual(2_200);
   });
 
+  it('keeps required nested primitive keys when the aggregate schema reaches its ceiling', () => {
+    const compact = compactSchemaForResult({
+      type: 'object',
+      properties: {
+        prefix: { type: 'string', pattern: 'x'.repeat(180) },
+        recovery: {
+          type: 'object',
+          properties: Object.fromEntries(['workItemId', 'originRunId', 'runId'].map((name) =>
+            [name, { type: 'string', pattern: 'a'.repeat(100) }])),
+          required: ['workItemId', 'originRunId', 'runId'],
+        },
+      },
+    }, { maxChars: 400 });
+
+    expect(compact).toContain('recovery?:object{workItemId:string,originRunId:string,runId:string}');
+    expect(compact!.length).toBeLessThanOrEqual(400);
+  });
+
   it('preserves every required testing:run recovery key in compact discovery', async () => {
     const { corpus, schemaByTool } = buildCorpus();
     const schema = schemaByTool.get('testing:run') as

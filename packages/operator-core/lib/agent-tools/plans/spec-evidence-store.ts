@@ -3205,6 +3205,8 @@ export interface ListSpecEvidenceOptions {
   limit?: number;
   /** Optional internal timing sink for the plans:get-spec-evidence slow-read diagnosis. */
   diagnostics?: ListSpecEvidenceDiagnostics;
+  /** Internal contract inspection only. Rows remain unmeasured and cannot prove freshness. */
+  measurementMode?: 'metadata';
 }
 
 export interface WorkItemSpecRevisionEdge {
@@ -4762,6 +4764,7 @@ async function measureCompletedIntegrationRuntime(row: EvidenceRow, recipe: Repo
 
 export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
   const diagnostics = options.diagnostics;
+  const metadataOnly = options.measurementMode === 'metadata';
   const committedTree = diagnostics
     ? (diagnostics.committedTree ??= createCommittedTreeDiagnostics())
     : undefined;
@@ -5022,11 +5025,11 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
   );
   recordPhase('workspaceRead', workspaceReadStartedAt);
 
-  const currentByKey = new Map(replayCurrent.map((c) => [evidenceCurrentInputKey(c), c]));
+  const currentByKey = new Map((metadataOnly ? [] : replayCurrent).map((c) => [evidenceCurrentInputKey(c), c]));
   // The server-measured replay opt-out is explained at its use in the loop below.
   const recipeBuildStartedAt = diagnostics ? Date.now() : 0;
   const recipes = rows.map((row) =>
-    options.auditAsOf || (options.replaySnapshot && options.currentProvenance === 'server-measured')
+    metadataOnly || options.auditAsOf || (options.replaySnapshot && options.currentProvenance === 'server-measured')
       ? null
       : measurementFromDetails(row.details),
   );
@@ -5438,7 +5441,7 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
         ? { ...callerCurrent, ...measured.current }
         : callerCurrent;
     const replayProvenance =
-      options.replaySnapshot && options.currentProvenance
+      !metadataOnly && options.replaySnapshot && options.currentProvenance
         ? { provenance: options.currentProvenance }
         : {};
     const declaredConfiguration = declaredConfigurations.get(declaredConfigurationPinKey(row) ?? '');
@@ -5452,6 +5455,10 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
         ...(declaredConfiguration ? { declaredConfiguration } : {}),
       },
     );
+    if (metadataOnly) {
+      currentness.overall = 'unknown';
+      currentness.unknownReasons = [...currentness.unknownReasons, 'evidence-metadata-only'];
+    }
     if (measured?.status === 'unavailable' && currentness.overall === 'unknown') {
       currentness.unknownReasons = [...currentness.unknownReasons, `server-measurement-unavailable:${measured.reason}`];
     }

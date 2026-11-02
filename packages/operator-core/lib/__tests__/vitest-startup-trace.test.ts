@@ -8,12 +8,155 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createTextCollector } from '../child-output';
-import { loaderIdentity, nativeProcessTraceEnv, observeForkStartup, startupTraceEnv } from '../../../../scripts/lib/vitest-startup-trace.mjs';
+import { controlForkStartupOnly, loaderIdentity, nativeProcessTraceEnv, observeForkStartup, startupTraceEnv } from '../../../../scripts/lib/vitest-startup-trace.mjs';
 import { readPartialNativeChannelCustody, readPartialNativeCompletion,
   registerPartialNativeProducerChannels } from '../../../../scripts/lib/partial-task-resume.mjs';
 import { writeRelatedFilterList } from '../../../../scripts/lib/related-tests.mjs';
 
+function retainNativeStartupFailure(dir: string, error: unknown) {
+  // Preserve the actual execFile result as well as the source/trace fixture.
+  // A timeout's killed flag alone does not establish closed descendant pipes.
+  const failure = error as Error & { code?: string | number; signal?: string;
+    killed?: boolean; stdout?: string | Buffer; stderr?: string | Buffer };
+  let retentionError: string | null = null;
+  try {
+    writeFileSync(join(dir, 'failure.stdout'), failure.stdout ?? '', { mode: 0o600 });
+    writeFileSync(join(dir, 'failure.stderr'), failure.stderr ?? '', { mode: 0o600 });
+    writeFileSync(join(dir, 'failure.json'), JSON.stringify({ code: failure.code ?? null,
+      signal: failure.signal ?? null, killed: failure.killed ?? null,
+      terminationObserved: false }), { mode: 0o600 });
+  } catch (cause) { retentionError = String(cause); }
+  failure.message += `\nNATIVE_STARTUP_FAILURE ${JSON.stringify({ retainedRoot: dir, retentionError })}`;
+}
+
 describe('focused runner startup tracing', () => {
+  it('startup-only preserves native lifecycle send inputs, returns and errors even with a throwing sink', () => {
+    const child = new EventEmitter() as any;
+    const expected = new Error('native-send-error');
+    const calls: unknown[] = [];
+    const original = child.send = function(...args: unknown[]) {
+      calls.push([this, ...args]);
+      if ((args[0] as any).type === 'stop') throw expected;
+      return false;
+    };
+    const detach = controlForkStartupOnly(child, () => { throw new Error('sink unavailable'); });
+    const start = { type: 'start', __vitest_worker_request__: true, context: { secret: 'private' } };
+    const callback = () => {};
+    expect(child.send(start, callback)).toBe(false);
+    expect(calls).toEqual([[child, start, callback]]);
+    const cyclic = { ...start, context: {} as any };
+    cyclic.context.self = cyclic;
+    expect(child.send(cyclic, callback)).toBe(false);
+    expect(() => child.send({ type: 'stop', __vitest_worker_request__: true })).toThrow(expected);
+    for (const type of ['run', 'collect', 'unknown']) {
+      expect(() => child.send({ type, __vitest_worker_request__: true })).toThrow('refused execution');
+    }
+    expect(calls).toHaveLength(3);
+    detach(); detach();
+    expect(child.send).toBe(original);
+    expect(child.listenerCount('close')).toBe(0);
+  });
+
+  it('startup-only rejects the real pool resolver through an error, without forging test results', () => {
+    const child = new EventEmitter() as any;
+    child.pid = 42;
+    const forwarded: unknown[] = [], errors: any[] = [], rows: any[] = [];
+    child.send = (message: unknown) => { forwarded.push(message); return true; };
+    child.on('error', (error: unknown) => errors.push(error));
+    const detach = controlForkStartupOnly(child, row => rows.push(row));
+    for (const type of ['run', 'collect', 'other']) expect(child.send({ type })).toBe(false);
+    expect(forwarded).toEqual([]);
+    expect(errors.map(error => error.code)).toEqual(Array(3).fill('VITEST_STARTUP_ONLY_EXECUTION_REFUSED'));
+    expect(rows.map(row => row.request)).toEqual(['run', 'collect', 'unknown']);
+    detach();
+  });
+
+  it.each(['enabled', 'disabled-fence', 'unsupported-pool', 'custom-pool', 'ambiguous'] as const)(
+    'startup-only real installed Vitest independent execution oracle: %s', async mode => {
+      const root = fileURLToPath(new URL('../../../../', import.meta.url));
+      const dir = mkdtempSync(join(tmpdir(), 'vitest-startup-only-'));
+      const top = join(dir, 'selected-top-level'), body = join(dir, 'selected-test-body');
+      const utility = join(dir, 'native-utility'), unrelated = join(dir, 'unrelated-fork');
+      const test = join(dir, 'selected.test.mjs'), config = join(dir, 'vitest.config.mjs');
+      symlinkSync(join(root, 'node_modules'), join(dir, 'node_modules'), 'dir');
+      writeFileSync(test, `import { writeFileSync } from 'node:fs'; import { test } from 'vitest';
+        writeFileSync(${JSON.stringify(top)}, 'selected-module-entered');
+        test('independent body sentinel', () => writeFileSync(${JSON.stringify(body)}, JSON.stringify({
+          value: process.env.STARTUP_FIXTURE_VALUE, execArgv: process.execArgv })));
+      `);
+      writeFileSync(join(dir, 'unrelated.cjs'), `require('node:fs').writeFileSync(${JSON.stringify(unrelated)}, 'native-fork');`);
+      writeFileSync(join(dir, 'setup.mjs'), `import { Worker } from 'node:worker_threads';
+        import nativeThreads from 'node:worker_threads'; import { fork } from 'node:child_process';
+        import { writeFileSync } from 'node:fs';
+        export default async function() {
+          if (Worker !== nativeThreads.Worker) throw new Error('Worker identity changed');
+          const worker = new Worker('require("node:worker_threads").parentPort.postMessage(73)', { eval: true });
+          await new Promise((resolve, reject) => { worker.once('error', reject);
+            worker.once('message', value => { writeFileSync(${JSON.stringify(utility)}, String(value)); });
+            worker.once('exit', code => code === 0 ? resolve() : reject(new Error('utility failed'))); });
+          const child = fork(${JSON.stringify(join(dir, 'unrelated.cjs'))}, [], { execArgv: [], stdio: 'ignore' });
+          await new Promise((resolve, reject) => { child.once('error', reject);
+            child.once('close', code => code === 0 ? resolve() : reject(new Error('fork failed'))); });
+        }`);
+      writeFileSync(config, `export default { test: { pool: '${mode === 'unsupported-pool' ? 'threads' : 'forks'}',
+        ${mode === 'custom-pool' ? "poolRunner: { name: 'custom', createPoolWorker() { throw new Error('CUSTOM_PAYLOAD_RAN'); } }," : ''}
+        include: ['selected.test.mjs'], maxWorkers: 1, globalSetup: ['./setup.mjs'],
+        execArgv: ['--conditions=d042-fixture-input'], env: { STARTUP_FIXTURE_VALUE: 'resolved-from-config' } } };`);
+      const module = new URL('../../../../scripts/lib/vitest-startup-trace.mjs', import.meta.url).href;
+      const rows: any[] = [];
+      let complete = false;
+      try {
+        const source = `import { diagnoseVitestStartup } from ${JSON.stringify(module)};
+          try { await diagnoseVitestStartup(${JSON.stringify(['--config', config, mode === 'ambiguous' ? dir : test])},
+            row => console.log('DIAGNOSTIC=' + JSON.stringify(row)),
+            ${mode === 'disabled-fence' ? '{ control: () => () => {} }' : '{}'}); }
+          catch (error) { console.log('REFUSED=' + error.message); }
+          process.exitCode = 2;`;
+        const driver = join(dir, 'driver.mjs');
+        writeFileSync(driver, source);
+        const result = await new Promise<{ stdout: string; stderr: string; code: number | string | null }>(resolve => {
+          execFile(process.execPath, [driver], {
+            cwd: dir, env: { ...process.env, NODE_OPTIONS: '', PC_EXECUTED_SOURCE_MAP_OUT: '',
+              PAPERCUSP_TEST_STARTUP_TRACE: '0' }, timeout: 90_000, maxBuffer: 4 * 1024 * 1024,
+          }, (error, stdout, stderr) => resolve({ stdout, stderr, code: error?.code ?? 0 }));
+        });
+        expect(result.code, result.stdout + result.stderr).toBe(2);
+        rows.push(...result.stdout.split('\n').filter(line => line.startsWith('DIAGNOSTIC='))
+          .map(line => JSON.parse(line.slice('DIAGNOSTIC='.length))));
+        // This filesystem oracle is independent of controller counters and of
+        // Vitest's synthetic/test-result protocol. A collection leak trips top.
+        const oracle = () => ({ moduleEntered: existsSync(top), testBodyEntered: existsSync(body) });
+        if (mode === 'disabled-fence') {
+          expect(oracle()).toEqual({ moduleEntered: true, testBodyEntered: true });
+          expect(JSON.parse(readFileSync(body, 'utf8'))).toMatchObject({ value: 'resolved-from-config',
+            execArgv: expect.arrayContaining(['--conditions=d042-fixture-input']) });
+        } else {
+          expect(oracle()).toEqual({ moduleEntered: false, testBodyEntered: false });
+        }
+        if (['unsupported-pool', 'custom-pool', 'ambiguous'].includes(mode)) {
+          expect(result.stdout).toContain('verified forks required');
+          expect(result.stdout + result.stderr).not.toContain('CUSTOM_PAYLOAD_RAN');
+          expect(rows.some(row => row.event === 'controlled-worker-forked')).toBe(false);
+          expect(existsSync(utility)).toBe(false);
+        } else {
+          expect(readFileSync(utility, 'utf8')).toBe('73');
+          expect(readFileSync(unrelated, 'utf8')).toBe('native-fork');
+          expect(rows.find(row => row.event === 'startup-only-contract')).toMatchObject({
+            mode: 'native-vitest-forks-execution-fence',
+            specifications: [expect.objectContaining({ pool: 'forks' })] });
+          expect(rows.some(row => row.event === 'started-received' && !row.error)).toBe(true);
+          expect(rows.find(row => row.event === 'startup-only-outcome')).toMatchObject({
+            status: mode === 'enabled' ? 'startup-observed' : 'startup-incomplete', testVerdict: 'not-measured',
+            workers: [expect.objectContaining({ started: true, closed: true })] });
+        }
+        complete = true;
+      } catch (error) {
+        retainNativeStartupFailure(dir, error);
+        writeFileSync(join(dir, 'diagnostic-rows.json'), JSON.stringify(rows, null, 2));
+        throw error;
+      } finally { if (complete) rmSync(dir, { recursive: true, force: true }); }
+    }, 120_000);
+
   it('predicts the exact native preload environment before OUT allocation without fabricating a channel', () => {
     const plain = { NODE_OPTIONS: '--stack-trace-limit=30' };
     const predicted = nativeProcessTraceEnv(plain, { enabled: true });
@@ -197,6 +340,7 @@ describe('focused runner startup tracing', () => {
         selectedSpecifications: [{ testFile: `file-${step}.test.ts`, pool: 'forks', projectName: null,
           testNamePattern: null, testIds: null, testTagsFilter: null, testLines: null }],
       }));
+      let completed = false;
       try {
         const enrolled = registerPartialNativeProducerChannels(out, { status: 'ready', channels }, {
           attemptId: 'attempt', runGroupId: 'group', root: dir, workspaceName: 'ws',
@@ -281,7 +425,11 @@ describe('focused runner startup tracing', () => {
             command: { ...producer.command, argv: ['run', 'foreign'] } }, native).status).toBe('refused');
           expect(read().status).toBe('bound');
         }
-      } finally { rmSync(dir, { recursive: true, force: true }); }
+        completed = true;
+      } catch (error) {
+        retainNativeStartupFailure(dir, error);
+        throw error;
+      } finally { if (completed) rmSync(dir, { recursive: true, force: true }); }
     }, 30_000);
 
   it.each(['event', 'stream'])('never publishes partial %s artifacts when killed after opening the output', async kind => {
@@ -760,6 +908,7 @@ describe('focused runner startup tracing', () => {
         if (message.type === 'started') child.send({ type: 'stop' });
       });
       child.send({ type: 'start', config: { secret: 'never-log' } });`);
+    let completed = false;
     try {
       const env = startupTraceEnv({ ...process.env, PAPERCUSP_TEST_STARTUP_TRACE: undefined });
       const { stderr } = await promisify(execFile)(process.execPath, [parent], { env, timeout: 10_000 });
@@ -774,8 +923,12 @@ describe('focused runner startup tracing', () => {
       expect(rows.some(row => row.event === 'node-loaded' && row.pid === workerPid)).toBe(true);
       expect(rows.find(row => row.event === 'started-received')).toMatchObject({ error: false });
       expect(stderr).not.toContain('never-log');
+      completed = true;
+    } catch (error) {
+      retainNativeStartupFailure(dir, error);
+      throw error;
     } finally {
-      rmSync(dir, { recursive: true, force: true });
+      if (completed) rmSync(dir, { recursive: true, force: true });
     }
   });
 

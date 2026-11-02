@@ -25,7 +25,7 @@ import { createRequire } from 'node:module';
 import { PRIVATE_TEST_PG_RELEASE_TOKEN_ENV } from './lib/with-test-pg-cleanup.mjs';
 import { isVitestAssertionFailure } from '@papercusp/test-config/vitest-failure-classification';
 import { applyWorkerCapEnv } from './lib/worker-cap.mjs';
-import { startupTraceEnv } from './lib/vitest-startup-trace.mjs';
+import { diagnoseVitestStartup, startupTraceEnv } from './lib/vitest-startup-trace.mjs';
 import { expandWorkspaces } from './assert-workspace-links.mjs';
 import {
   parseSummaryFailedCounts,
@@ -2406,7 +2406,7 @@ export function parseCli(argv) {
   // them (including the file list) would be forwarded to vitest as argv. `--require-ran` takes the
   // `=` form only, deliberately: a space-separated value would be indistinguishable from a test
   // path in exactly this scan.
-  const isOwnOption = (arg) => arg === '--dry' || arg.startsWith('--require-ran=');
+  const isOwnOption = (arg) => arg === '--dry' || arg === '--startup-only' || arg.startsWith('--require-ran=');
   const firstVitestArg = separator < 0
     ? argv.findIndex((arg) => !isOwnOption(arg) && arg.startsWith('-'))
     : -1;
@@ -2426,7 +2426,8 @@ export function parseCli(argv) {
   // WI-39830: normalize the name filter to the joined form ONCE, here, so every downstream
   // consumer of `vitestArgs` gets it — the main `vitest run` spawn, the per-file fallback
   // re-run, and `nameFilterFrom` (which already accepts both forms) alike.
-  return { dry, requireRan, files, vitestArgs: joinNameFilterArgs(vitestArgs) };
+  return { dry, requireRan, files, vitestArgs: joinNameFilterArgs(vitestArgs),
+    ...(own.includes('--startup-only') ? { startupOnly: true } : {}) };
 }
 
 /**
@@ -3733,7 +3734,8 @@ export async function main(
   const preemptMarkerPaths = consumePreemptMarkerEnv(process.env);
   // One native command retains one identity across all workspace groups.
   // Preserve a caller/CI-owned group, including across nested router calls.
-  if (process.env.PAPERCUSP_TEST_RUN_WORK_ITEM?.trim()
+  if ((process.env.PAPERCUSP_TEST_RUN_WORK_ITEM?.trim()
+      || process.env.PAPERCUSP_TEST_RUN_RECEIPT_FILE?.trim())
     && !process.env.PAPERCUSP_TEST_RUN_GROUP?.trim())
     process.env.PAPERCUSP_TEST_RUN_GROUP = randomUUID();
   // An explicit receipt sink marks a proof-consuming run. Snapshot its current
@@ -3817,7 +3819,7 @@ export async function main(
     },
   });
   try {
-  const { dry, requireRan, files, vitestArgs: requestedVitestArgs } = parseCli(argv);
+  const { dry, requireRan, files, startupOnly, vitestArgs: requestedVitestArgs } = parseCli(argv);
   let loaderPolicy;
   try { loaderPolicy = vitestConfigLoaderPolicy(requestedVitestArgs); }
   catch (error) { console.error(formatRouteError(error.message)); return 2; }
@@ -3923,6 +3925,29 @@ export async function main(
     }
   }
   const nameFilter = nameFilterFrom(vitestArgs);
+  if (startupOnly) {
+    // A diagnostic never enters list/collection or the assertion receipt path.
+    // Reuse this router's exact route/config, admission, process scope, bounded
+    // FD sampling, hard ceiling, and owned termination rather than another runner.
+    if (dry || requireRan || groups.length !== 1 || groups[0].runner === 'node') {
+      console.error(formatRouteError('startup-only requires one Vitest route and no dry/require-ran verdict'));
+      return TEST_FILE_EXIT_NOT_MEASURED;
+    }
+    const group = groups[0];
+    const exact = group.routes.map(route => relative(group.cwd, route.absolute));
+    const configArgs = [...(group.config ? ['--config', group.config] : []), ...configLoaderArgs];
+    const timeoutMs = testFileListTimeoutMs(process.env);
+    if (!ensurePreemptReady()) return TEST_FILE_EXIT_TEMPFAIL;
+    const result = await runCapturedTestProcessImpl(process.execPath,
+      [fileURLToPath(import.meta.url), '--startup-only-child', ...configArgs, ...exact, ...vitestArgs],
+      { cwd: group.cwd, env: process.env, files: exact, timeoutMs, watchdogMaxMs: timeoutMs });
+    if (result.stdout) process.stdout.write(result.stdout);
+    if (result.stderr) process.stderr.write(result.stderr);
+    console.error(`TEST_FILE_STARTUP_ONLY ${JSON.stringify({ testVerdict: 'not-measured',
+      status: result.status, signal: result.signal, timedOut: Boolean(result.timedOut),
+      processDiagnostic: result.processDiagnostic ?? null })}`);
+    return TEST_FILE_EXIT_NOT_MEASURED;
+  }
   let listTimeoutMs;
   try {
     listTimeoutMs = testFileListTimeoutMs(process.env);
@@ -3948,7 +3973,7 @@ export async function main(
   if (!dry && receiptFile && groups.some(group => group.runner !== 'node')) {
     try {
       receiptReporter = await loadVitestReceiptReporterImpl();
-      const missing = ['shouldRecordTestRunPath', 'missingTestRunReceiptPaths']
+      const missing = ['shouldRecordTestRunPath', 'missingTestRunReceiptPaths', 'reconcileTimedOutTestRunReceipts']
         .filter(name => typeof receiptReporter?.[name] !== 'function');
       if (missing.length > 0) throw new Error(`reporter lacks required function exports: ${missing.join(', ')}`);
       testConfigExportPreflightImpl(repoRoot);
@@ -4765,6 +4790,7 @@ export async function main(
     let expectedPaths = [...expectedVitestReceiptPaths];
     let missingPaths = [];
     let receiptDiagnostics = [];
+    let receiptLog = '';
     let receiptWaitEligible = false;
     let receiptIssue = receiptStartError
       ? `could not inspect receipt file before run: ${receiptStartError instanceof Error ? receiptStartError.message : String(receiptStartError)}`
@@ -4788,7 +4814,7 @@ export async function main(
               receiptWaitEligible = false;
               return { complete: false, retryable: false };
             }
-            const receiptLog = contents.subarray(receiptStartOffset).toString('utf8');
+            receiptLog = contents.subarray(receiptStartOffset).toString('utf8');
             missingPaths = reporter.missingTestRunReceiptPaths(receiptLog, expectedPaths, repoRoot);
           // Preserve the reporter's failure evidence before a mutation probe
           // removes its receipt sink. Never echo serialized test rows or config.
@@ -4835,6 +4861,25 @@ export async function main(
             receiptIssue = `could not observe late test-run receipt updates: ${receiptState.watchError instanceof Error ? receiptState.watchError.message : String(receiptState.watchError)}`;
           } else if (receiptState.retryable) {
             receiptIssue = `one or more recordable Vitest files still lack an inserted ledger receipt after the bounded ${receiptWaitMs}ms reconciliation window`;
+            // The original INSERT may have committed after its receipt waiter expired. Give its
+            // canonical same-run row one bounded readback only after the receipt-file grace period.
+            if (receiptLog && missingPaths.length > 0) {
+              const recovered = await reporter.reconcileTimedOutTestRunReceipts(receiptLog, {
+                expectedPaths: missingPaths,
+                expectedRoot: repoRoot,
+                runGroupId: process.env.PAPERCUSP_TEST_RUN_GROUP,
+                env: process.env,
+              });
+              if (recovered.length > 0) {
+                receiptState = inspectReceiptFile();
+                if (receiptState.complete) receiptIssue = null;
+                else if (receiptState.watchError) {
+                  receiptIssue = `could not observe recovered test-run receipts: ${receiptState.watchError instanceof Error ? receiptState.watchError.message : String(receiptState.watchError)}`;
+                } else if (receiptState.retryable) {
+                  receiptIssue = `one or more recordable Vitest files still lack an inserted ledger receipt after exact same-run readback`;
+                }
+              }
+            }
           }
         }
       }
@@ -4913,9 +4958,16 @@ export async function runTestFilesCli(
     acquireReadLease = withFsMutexRead,
     lockName = repoLockName(REPO_ROOT),
     run = main,
+    diagnoseStartupImpl = diagnoseVitestStartup,
   } = {},
 ) {
-  if (installMutexIsHeld(lockName, env)) return run(args);
+  const runUnderLease = async () => {
+    if (args[0] !== '--startup-only-child') return run(args);
+    await diagnoseStartupImpl(args.slice(1),
+      row => console.error(`TEST_FILE_STARTUP_ONLY_EVENT ${JSON.stringify(row)}`));
+    return TEST_FILE_EXIT_NOT_MEASURED;
+  };
+  if (installMutexIsHeld(lockName, env)) return runUnderLease();
 
   const previousMarker = env.PAPERCUSP_INSTALL_MUTEX_HELD;
   const inheritedMarker = envWithInstallMutex(lockName, env).PAPERCUSP_INSTALL_MUTEX_HELD;
@@ -4924,7 +4976,7 @@ export async function runTestFilesCli(
     async () => {
       env.PAPERCUSP_INSTALL_MUTEX_HELD = inheritedMarker;
       try {
-        return await run(args);
+        return await runUnderLease();
       } finally {
         if (previousMarker === undefined) delete env.PAPERCUSP_INSTALL_MUTEX_HELD;
         else env.PAPERCUSP_INSTALL_MUTEX_HELD = previousMarker;

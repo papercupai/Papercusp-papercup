@@ -544,7 +544,8 @@ for (const tree of readFileSync(3, 'utf8').split('\n').filter(Boolean))
 JS
 }
 
-dependency_generation_enumerate_node_modules() {
+dependency_generation_enumerate_node_modules() (
+  set -o pipefail
   local root="$1" dir
   # WI-10006855: emitted desktop payloads copy dependencies from source trees;
   # those copies have no committed lock at the emitted path. Source generations
@@ -577,7 +578,7 @@ dependency_generation_enumerate_node_modules() {
         dependency_generation_is_foreign_checkout "$root" "$dir" && continue
         printf '%s\n' "$dir"
       done | dependency_generation_filter_install_trees "$root"
-}
+)
 
 # Metadata identity deliberately avoids reading ~13 GiB of file contents. The
 # aggregate is sampled before and after publication, so a concurrent install or
@@ -667,12 +668,15 @@ dependency_generation_walk_supports_parallel() {
 }
 
 dependency_generation_set_manifest_serial() {
-  local root="$1" nm
+  local root="$1" nm trees
+  trees="$(dependency_generation_enumerate_node_modules "$root")" || return $?
   (
+    set -o pipefail
     while IFS= read -r nm; do
+      [ -n "$nm" ] || continue
       dependency_generation_emit_tree_record "$root" "$nm" || exit 1
-    done < <(dependency_generation_enumerate_node_modules "$root")
-  ) | LC_ALL=C sort
+    done <<< "$trees" | LC_ALL=C sort
+  )
 }
 
 # Each tree's fingerprint is computed independently and the manifest is globally
@@ -701,6 +705,7 @@ dependency_generation_set_manifest() {
   # letting a truncated manifest reach the caller as a valid identity. The
   # manifest is one short line per node_modules tree, so this stays small.
   records="$(
+    set -o pipefail
     dependency_generation_enumerate_node_modules "$root" \
       | tr '\n' '\0' \
       | DEPENDENCY_GENERATION_WALK_ROOT="$root" xargs -0 -r -P "$jobs" -I '{}' \
@@ -725,10 +730,11 @@ dependency_generation_source_fingerprint() {
   } | dependency_generation_sha256
 }
 
-dependency_generation_set_fingerprint() {
+dependency_generation_set_fingerprint() (
+  set -o pipefail
   local root="$1"
   dependency_generation_set_manifest "$root" | dependency_generation_sha256
-}
+)
 
 dependency_generation_log_manifest_delta() {
   local before="$1" after="$2"
@@ -3281,17 +3287,23 @@ dependency_generation_snapshot_lockfiles() {
 # whose inputs key the generation. Logs the helper's summary + defect lines; returns 0
 # complete, non-zero otherwise.
 dependency_generation_audit_lock_tree() {
-  local tree="$1" lock_root="$2" manifest_file rc=0 output line nm
+  local tree="$1" lock_root="$2" manifest_file rc=0 output line nm trees
   local helper="${DEPENDENCY_GENERATION_LOCK_TREE_AUDIT:-$(dirname "${BASH_SOURCE[0]}")/dependency-lock-tree-audit.mjs}"
   manifest_file="$(mktemp)" || return 1
   dependency_generation_input_manifest "$lock_root" > "$manifest_file" || {
     rm -f -- "$manifest_file"
     return 1
   }
+  trees="$(dependency_generation_enumerate_node_modules "$tree")" || {
+    rm -f -- "$manifest_file"
+    dependency_generation_log 'FATAL: installed-tree enumeration failed; completeness is unmeasured'
+    return 1
+  }
   : > "$manifest_file.trees"
   while IFS= read -r nm; do
+    [ -n "$nm" ] || continue
     printf '%s\n' "${nm#"$tree"/}" >> "$manifest_file.trees"
-  done < <(dependency_generation_enumerate_node_modules "$tree")
+  done <<< "$trees"
   output="$("${DEPENDENCY_GENERATION_NODE:-node}" "$helper" \
     --tree-root "$tree" --lock-root "$lock_root" --manifest "$manifest_file" --installed-trees "$manifest_file.trees")" || rc=$?
   rm -f -- "$manifest_file" "$manifest_file.trees"
@@ -3555,8 +3567,9 @@ dependency_generation_ensure_once() {
     done < "$DEPENDENCY_GENERATION_PREDECESSOR_MANIFEST"
     dependency_generation_release_selector_lease
   else
-    while IFS= read -r nm; do
-      rel="${nm#"$integration_root"/}"
+    while IFS=$'\t' read -r rel record_fingerprint extra; do
+      [ -n "$rel" ] || continue
+      nm="$integration_root/$rel"
       dependency_generation_log "copying dependency tree: $rel"
       copy_rc=0
       dependency_generation_copy_changed_tree "$nm" "$tree/$rel" "$build" "$rel" || copy_rc=$?
@@ -3570,7 +3583,7 @@ dependency_generation_ensure_once() {
       dependency_generation_record_tree_bytes "$build" "$rel"
       tree_copied=$((tree_copied + 1))
       dependency_generation_log "copied dependency tree: $rel"
-    done < <(dependency_generation_enumerate_node_modules "$integration_root")
+    done < "$before_manifest"
   fi
   dependency_generation_emit_phase tree-copy "$phase_started_ms" ok \
     "trees_reused=$tree_reused trees_copied=$tree_copied trees_removed=$tree_removed predecessor=$predecessor_identity"
@@ -3866,11 +3879,25 @@ dependency_generation_find_equivalent_prewarm() {
     verdict="$("${DEPENDENCY_GENERATION_NODE:-node}" "$helper" \
       --ref-root "$scratch" --ref-manifest "$scratch/.ref-inputs" \
       --live-root "$basis" --live-manifest "$scratch/.basis-inputs")" || rc=$?
-    rm -rf -- "$basis"
     rm -f -- "$scratch/.basis-inputs"
-    [ "$rc" -eq 3 ] && continue
-    [ "$rc" -eq 0 ] || return 1
+    if [ "$rc" -ne 0 ]; then
+      rm -rf -- "$basis"
+      [ "$rc" -eq 3 ] && continue
+      return 1
+    fi
     dependency_generation_select_input_fingerprint "$source_input" "$generation_root" || return $?
+    # A publication token proves immutable bytes, not that a legacy selector
+    # bound those bytes to a complete install. Audit the donor's own locks
+    # before either the no-copy selector shortcut or the hardlink builder.
+    rc=0
+    dependency_generation_audit_lock_tree "$DEPENDENCY_GENERATION_TREE" "$basis" || rc=$?
+    if [ "$rc" -ne 0 ]; then
+      rm -rf -- "$basis"
+      [ "$rc" -eq 3 ] || return "$rc"
+      dependency_generation_log "skipping incomplete prewarmed ancestor $source_ref ($DEPENDENCY_GENERATION_ID)"
+      continue
+    fi
+    rm -rf -- "$basis"
     DEPENDENCY_GENERATION_EXACT_SOURCE_ROOT="$DEPENDENCY_GENERATION_TREE"
     DEPENDENCY_GENERATION_EXACT_SOURCE_INPUT="$source_input"
     DEPENDENCY_GENERATION_EQUIVALENCE_VERDICT="$verdict"
@@ -3950,7 +3977,7 @@ dependency_generation_stage_exact_ref_inputs() {
 dependency_generation_prepare_exact_ref_root() {
   local integration_root="$1" ref="$2" exact_input="$3"
   local generation_root="${4:-$(dependency_generation_resolve_root "$integration_root")}"
-  local scratch verdict rc line drop trees=0
+  local scratch verdict rc line drop tree_paths trees=0
   rc=0
   dependency_generation_stage_exact_ref_inputs \
     "$integration_root" "$ref" "$exact_input" "$generation_root" || rc=$?
@@ -3982,6 +4009,10 @@ dependency_generation_prepare_exact_ref_root() {
   fi
 
   # 4. Hardlink the installed trees (metadata only; ensure copies from here).
+  tree_paths="$(dependency_generation_enumerate_node_modules "$DEPENDENCY_GENERATION_EXACT_SOURCE_ROOT")" || {
+    dependency_generation_release_selector_lease
+    return 1
+  }
   while IFS= read -r line; do
     [ -n "$line" ] || continue
     drop="${line#"$DEPENDENCY_GENERATION_EXACT_SOURCE_ROOT"/}"
@@ -3995,7 +4026,7 @@ dependency_generation_prepare_exact_ref_root() {
       return 1
     }
     trees=$((trees + 1))
-  done < <(dependency_generation_enumerate_node_modules "$DEPENDENCY_GENERATION_EXACT_SOURCE_ROOT")
+  done <<< "$tree_paths"
   dependency_generation_release_selector_lease
 
   # 5. Drop the live-only workspace links the ref's lock does not have.

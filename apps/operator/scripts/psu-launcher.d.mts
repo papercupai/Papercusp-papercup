@@ -582,34 +582,7 @@ export function prepareSuLaunch(boot: any, { model, resumeSession, nativeSession
 export function prepareSuLaunchEnvironment(envelopeEnv: NodeJS.ProcessEnv, inheritedEnv?: NodeJS.ProcessEnv): {
     [x: string]: string | undefined;
 };
-/**
- * improve-fleet-launch-autokickoff (EI-5503): the TRAILING POSITIONAL kickoff arg(s)
- * to append to the backend CLI argv — the first user turn that makes a SCRIPTED plan
- * launch (a fleet/automation member) start working the plan immediately instead of
- * orienting once and parking idle. All three backends have a native first-turn
- * seam, but fresh OMP UI sessions need the managed-pty barrier because asynchronous
- * MCP discovery can still be assembling their prompt when OMP submits argv.
- *
- * Empty (today's behavior) unless ALL hold: the server supplied `res.kickoffPrompt`
- * (a plan is bound) · this is a `--no-picker` launch (`args.picker === false`) so an
- * interactive human picker launch still opens at an empty prompt · `--no-kickoff` was
- * not passed (`args.kickoff !== false`). Pure — exported for tests.
- */
-/**
- * turn-provenance P-002 (turn-provenance-owner-vs-agent-2026-07-11): envelope +
- * ledger-tag a SCRIPTED kickoff first turn so the session's UserPromptSubmit
- * hook classifies it as verified agent-origin (`fleet-kickoff`), never owner
- * input. MIRROR of packages/operator-core/lib/turn-provenance/turn-provenance.ts
- * (the launcher is plain node and cannot import the TS module) — keep the
- * envelope format + JSONL row shape in lockstep. Fail-soft: any error returns
- * the untagged text (the turn then classifies owner/unverified — visible, and
- * never a broken launch). No-sid launches (interactive, untracked) stay untagged.
- * @param {{ routineId: string, wakeCount: number } | null} [loopFire]
- */
-export function tagKickoffProvenance(text: any, sid: any, env?: NodeJS.ProcessEnv, nowMs?: number, origin?: string, loopFire?: {
-    routineId: string;
-    wakeCount: number;
-} | null): any;
+export function tagKickoffProvenance(text: any, sid: any, env?: NodeJS.ProcessEnv, nowMs?: number, origin?: string, loopFire?: null): any;
 export function kickoffPositionalArgs(res: any, args: any): any[];
 /**
  * The free-form first-turn text for a launch, with the SPAWN-SAFE env fallback:

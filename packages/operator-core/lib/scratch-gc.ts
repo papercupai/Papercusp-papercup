@@ -2749,56 +2749,38 @@ export async function writeWithScratchQuota(
       break;
     }
 
-    // Settle the reservation only after payload I/O has released the shared data lease. This is
-    // short metadata work under the quota mutex and advances the ledger revision so a concurrent
-    // refresh cannot publish a pre-settlement snapshot over the writer's result.
-    try {
-      await withScratchWorkspaceMutex(opts.workspaceId, 'write-settlement', async () => {
-        if (!pending.reserved) return;
-        if (succeeded) {
-          if (reservation!.markerBytes > 0 && !markerPresentAfterWrite) {
-            entry.bytes = Math.max(0, entry.bytes - reservation!.markerBytes);
-            pending.bytes -= reservation!.markerBytes;
-          }
-          pending.reserved = false;
+    if (succeeded && pending.reserved) {
+      // The persisted reservation already charges the exact payload bytes. On success those
+      // reserved bytes become the durable file, so publishing the same process-local total again
+      // is redundant and can overwrite a newer reservation made by another process. Keep every
+      // admission on the existing cross-process FIFO mutex; settle only this process's metadata.
+      pending.reserved = false;
+      entry.writeGeneration += 1;
+      if (reservation!.sharedStateStale || (reservation!.markerBytes > 0 && !markerPresentAfterWrite)) {
+        // The shared state may be stale, or may conservatively still count a marker that failed
+        // to appear. Re-measure after local writers drain instead of publishing a local snapshot.
+        invalidateRunSizeIndex(entry);
+        entry.refreshDeferred = true;
+      } else {
+        entry.refreshDeferred = false;
+      }
+    } else if (pending.reserved) {
+      try {
+        await withScratchWorkspaceMutex(opts.workspaceId, 'write-settlement', async () => {
+          if (!pending.reserved) return;
           entry.writeGeneration += 1;
-          try {
-            await writeSharedScratchQuotaState(
-              opts.workspaceId,
-              entry.bytes,
-              entry.measuredAt || reservation!.sharedMeasuredAt,
-              observeAwait,
-            );
-          } catch {
-            // The payload is already durable. Invalidate the local/shared cache so the next
-            // reservation performs a complete reconciliation instead of trusting stale bytes.
-            invalidateLocalScratchUsage(opts.workspaceId);
+          entry.bytes = Math.max(0, entry.bytes - pending.bytes);
+          pending.reserved = false;
+          adjustCachedRunBytes(entry, opts.workspaceId, opts.filePath, -opts.bytes);
+          if (reservedStatePersisted) {
+            // A failed write may have left a partial file. Remove the ledger so the next writer
+            // measures the actual tree before making a quota decision.
+            await removeSharedScratchQuotaState(opts.workspaceId).catch(() => {});
           }
-          // A fresh shared ledger now includes this settled payload and every reservation that
-          // preceded it. The existing per-run index already tracks the reservation delta; retain
-          // it when the ledger was fresh. The stale-ledger case still needs an async reconciliation
-          // to account for changes made by another process before this reservation.
-          if (reservation!.sharedStateStale) {
-            invalidateRunSizeIndex(entry);
-            entry.refreshDeferred = true;
-          } else {
-            entry.refreshDeferred = false;
-          }
-          return;
-        }
-
-        entry.writeGeneration += 1;
-        entry.bytes = Math.max(0, entry.bytes - pending.bytes);
-        pending.reserved = false;
-        adjustCachedRunBytes(entry, opts.workspaceId, opts.filePath, -opts.bytes);
-        if (reservedStatePersisted) {
-          // A failed write may have left a partial file. Remove the ledger so the next writer
-          // measures the actual tree before making a quota decision.
-          await removeSharedScratchQuotaState(opts.workspaceId).catch(() => {});
-        }
-      }, onMutexWaiting, recordMutexWait, opts.requestTraceId, opts.mutexTimeoutMs, recordMutexWait);
-    } catch (error) {
-      writeFailure ??= error;
+        }, onMutexWaiting, recordMutexWait, opts.requestTraceId, opts.mutexTimeoutMs, recordMutexWait);
+      } catch (error) {
+        writeFailure ??= error;
+      }
     }
     if (writeFailure) throw writeFailure;
   } finally {

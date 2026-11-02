@@ -27,6 +27,29 @@ export function startupTraceEnv(env?: NodeJS.ProcessEnv): NodeJS.ProcessEnv;
  * @returns {() => void} stops observing.
  */
 export function observeForkStartup(child: any, emit: (row: Record<string, unknown>) => void, now?: () => number): () => void;
+/** An active control, deliberately separate from the passive observer above.
+ * Only attach to an identified Vitest forks transport. Start/stop retain their
+ * exact native arguments, receiver, return value and errors. Execution refusal
+ * uses the native pool's error path, never a fabricated test completion.
+ * @param {any} child
+ * @param {(row: Record<string, any>) => void} emit
+ */
+export function controlForkStartupOnly(child: any, emit: (row: Record<string, any>) => void): () => void;
+/** Run the installed Vitest pipeline with its resolved options, fencing only
+ * its identified forks transport. The router owns the external timeout/scope.
+ * No list/collect, copied worker options, pool override, or general Worker hook.
+ * @param {string[]} argv Native Vitest run arguments (including selected files).
+ * @param {(row: Record<string, any>) => void} emit
+ * @param {{ control?: typeof controlForkStartupOnly }} [options] Narrow negative-control seam; the CLI always uses the fence.
+ */
+export function diagnoseVitestStartup(argv: string[], emit: (row: Record<string, any>) => void, { control }?: {
+    control?: typeof controlForkStartupOnly;
+}): Promise<{
+    event: string;
+    testVerdict: string;
+    workers: any[];
+    status: string;
+}>;
 export const nativeSourceRetentionLimits: Readonly<{
     sourceBytes: number;
     processBytes: number;

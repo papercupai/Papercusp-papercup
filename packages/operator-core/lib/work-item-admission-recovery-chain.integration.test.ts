@@ -763,6 +763,58 @@ async function parkForReview(id: string) {
 }
 
 describe('authenticated admission-only review composition (EI-270226)', () => {
+  async function unassignedRecoveryReview() {
+    const original = await create('Unassigned original screening recovery');
+    const recovery = await request(original.id);
+    await placeReview(original.id);
+    await db.sql`DELETE FROM harness_shared.fleet_assignment WHERE work_item_id = ${original.id}`;
+    await db.sql`UPDATE harness_shared.work_items SET taken_by = NULL, status = 'open',
+      payload = jsonb_set(payload, '{_admissionRecovery}', ${db.sql.typed(JSON.stringify({
+        ...recovery.request, state: 'held', stage: 'screen', reason: 'agent-review pending',
+      }), 25)}::jsonb) WHERE feature_id = ${original.id}`;
+    return original;
+  }
+
+  it('reviews signed same-fleet recovery placement without assigning or changing the original recovery', async () => {
+    const original = await unassignedRecoveryReview();
+    const before = await row(original.id);
+    const queued = await review(original.id, reviewLeader);
+    expect(await tick()).toMatchObject({ promoted: 1, merged: 0 });
+    const after = await row(original.id);
+    expect(after).toMatchObject({ taken_by: null, status: 'open', admission: 'admitted',
+      payload: { _admissionReviewReceipt: { requestId: queued.requestId, pickupConfirmed: false } } });
+    expect(after.payload._admissionRecovery).toEqual(before.payload._admissionRecovery);
+    expect(h.claim).not.toHaveBeenCalled();
+    expect(h.wake).not.toHaveBeenCalled();
+  });
+
+  it.each(['tampered', 'foreign-fleet', 'ambiguous', 'live-custodian'] as const)(
+    'does not use signed recovery placement to override %s review custody', async kind => {
+      const original = await unassignedRecoveryReview();
+      if (kind === 'tampered') {
+        await db.sql`UPDATE harness_shared.work_items SET payload = jsonb_set(payload,
+          '{_admissionRecovery,target}', '"foreign-target"') WHERE feature_id = ${original.id}`;
+      } else if (kind === 'foreign-fleet') {
+        await appendFleetMembershipEvent({ workspaceId: scope.workspaceId, ownerId: reviewerOwnerId,
+          fleetSlug: 'other-fleet', fleetRole: 'member' }, db.sql);
+      } else if (kind === 'ambiguous') {
+        await placeReview(original.id);
+        await db.sql`INSERT INTO harness_shared.fleet_assignment
+          (workspace_id,harness_slug,work_item_id,fleet_slug,agent_id,claim_active)
+          VALUES ('default','papercusp',${original.id},'review-fleet','other-custodian',true)`;
+      } else {
+        await db.sql`UPDATE harness_shared.work_items SET taken_by = 'other-custodian'
+          WHERE feature_id = ${original.id}`;
+      }
+      const before = await row(original.id);
+      await expect(review(original.id, reviewLeader)).rejects.toThrow();
+      expect(await row(original.id)).toEqual(before);
+      expect(h.model).not.toHaveBeenCalled();
+      expect(h.claim).not.toHaveBeenCalled();
+      expect(h.wake).not.toHaveBeenCalled();
+    },
+  );
+
   it('reviews another executor custody with canonical fleet authority without claiming or waking', async () => {
     const original = await create('Held original review');
     await claimOriginal(original.id);

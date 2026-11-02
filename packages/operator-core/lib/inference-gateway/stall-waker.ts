@@ -35,9 +35,9 @@ export interface StallWakerDeps {
   /** Has the account's budget actually returned (its pause expired + the gateway can serve again)? Guards
    *  against waking a bee straight back into a still-throttled pool. */
   capacityBack: (accountId: string, soonestResetAt: number) => Promise<boolean>;
-  /** Fire the targeted coord wake. Returns `woken` (>0 = a watching bee was re-invoked; 0 = nobody home —
-   *  the bee process is gone, not a resumable session). Honors the hive pause/manual gate internally. */
-  wake: (ownerId: string, summary: string) => Promise<{ woken: number }>;
+  /** Fire the targeted coord wake. `woken:0` is a completed no-listener miss; `timedOut:true` means
+   *  delivery is unknown because the bounded wake leg expired. Honors the hive pause/manual gate. */
+  wake: (ownerId: string, summary: string) => Promise<{ woken: number; timedOut: boolean }>;
   /** FAST un-wedge (owner-requested 2026-06-23): ESC the owner's dead turn NOW (no wake), decoupled from the
    *  capacity gate. A turn that DIED on a gateway error is WEDGED — its CLI can't receive ANY message (not even
    *  a wake) until the dead turn is ESC'd. This re-arms it immediately so it's reachable again, WITHOUT shoving
@@ -109,6 +109,13 @@ interface Pending {
   unwedged: boolean;
 }
 
+interface StallWakerTickResult {
+  pulled: number;
+  woken: string[];
+  dropped: string[];
+  unwedged: string[];
+}
+
 const DEFAULTS: Required<StallWakerOptions> = {
   confirmWindowMs: 2 * 60_000,
   wakeCooldownMs: 60_000,
@@ -129,6 +136,7 @@ export class StallWaker {
   private readonly lastUnwedgeAt = new Map<string, number>();
   private readonly wakeCount = new Map<string, number>();
   private readonly opt: Required<StallWakerOptions>;
+  private activeTick: Promise<StallWakerTickResult> | null = null;
 
   constructor(private readonly deps: StallWakerDeps, opts: StallWakerOptions = {}) {
     this.opt = { ...DEFAULTS, ...opts };
@@ -146,9 +154,21 @@ export class StallWaker {
     return new Set<string>([...this.lastWokeAt.keys(), ...this.lastUnwedgeAt.keys(), ...this.wakeCount.keys()]).size;
   }
 
-  /** One pass: pull new stalls, then re-evaluate every pending bee. Never throws (each step is guarded);
-   *  returns what it pulled + which bees it woke this tick. */
-  async tick(): Promise<{ pulled: number; woken: string[]; dropped: string[]; unwedged: string[] }> {
+  /** One pass: pull new stalls, then re-evaluate every pending bee. Concurrent pollers share the
+   *  in-flight pass so they cannot each act on the same pending stall before its first result lands. */
+  tick(): Promise<StallWakerTickResult> {
+    if (this.activeTick) return this.activeTick;
+    const active = this.tickOnce();
+    this.activeTick = active;
+    void active.then(
+      () => { if (this.activeTick === active) this.activeTick = null; },
+      () => { if (this.activeTick === active) this.activeTick = null; },
+    );
+    return active;
+  }
+
+  /** Never throws (each step is guarded); returns what it pulled + which bees it woke this pass. */
+  private async tickOnce(): Promise<StallWakerTickResult> {
     const woken: string[] = [];
     const dropped: string[] = [];
     const unwedged: string[] = [];
@@ -297,7 +317,13 @@ export class StallWaker {
         const r = await this.deps.wake(ownerId, `capacity recovered on ${info.accountId} — resume your turn`);
         this.lastWokeAt.set(ownerId, now);
         this.wakeCount.set(ownerId, (this.wakeCount.get(ownerId) ?? 0) + 1);
-        if (r.woken > 0) {
+        if (r.timedOut) {
+          // The bounded wake leg may complete late. Do not retry an unknown delivery, and do not
+          // misreport it as a confirmed no-listener miss.
+          this.pending.delete(ownerId);
+          dropped.push(ownerId);
+          this.deps.log('warn', `stall-waker: ${ownerId} wake timed out — delivery unknown; dropped without retry`);
+        } else if (r.woken > 0) {
           woken.push(ownerId);
           this.pending.delete(ownerId);
           this.deps.log('info', `stall-waker: woke ${ownerId} (capacity back on ${info.accountId})`);

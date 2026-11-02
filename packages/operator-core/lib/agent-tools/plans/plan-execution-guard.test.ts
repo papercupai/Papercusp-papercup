@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { checkPlanExecutionGuard, isPlanImplementationCall, isPlanResearchCommand, planExecutionMeaning } from './plan-execution-guard';
+import { resolveAgentGoal } from '../../agent-goal-ref';
 
 const call = (toolName = 'apply_patch', args: unknown = { patch: 'implementation' }) =>
   ({ ownerId: 'su-builder', workspaceId: 'ws', toolName, args });
@@ -30,6 +31,66 @@ describe('implementation authority before direct writes (EI-27540173897381380)',
       { readBindings: async () => { throw Error('unavailable'); }, checkPlan: async () => [] },
       { readBindings: async () => [binding], checkPlan: async () => { throw Error('unavailable'); } },
     ]) expect(await checkPlanExecutionGuard(call(), deps)).toMatchObject({ blockers: ['plan_authority_unavailable'] });
+  });
+  it('checks the canonical selected work-item plan without inheriting an unrelated held plan', async () => {
+    const selected = {
+      planSlug: 'security-plan', harnessSlug: 'project', source: 'work-item' as const, sourceRef: 'EI-security',
+    };
+    const unrelated = {
+      planSlug: 'unrelated-plan', harnessSlug: 'project',
+      source: 'plan-item-claim' as const, sourceRef: 'unrelated-plan#P-008',
+    };
+    const goal = resolveAgentGoal({
+      workItems: [{ id: 'EI-security' }],
+      planItems: [{ planSlug: 'unrelated-plan', itemId: 'P-008' }],
+    })!;
+    expect(goal).toMatchObject({ ref: 'EI-security', source: 'work-item', competing: ['unrelated-plan#P-008'] });
+
+    const checkPlan = vi.fn(async (binding: { planSlug: string }) =>
+      binding.planSlug === 'unrelated-plan' ? ['plan_status:draft'] : []);
+    const result = await checkPlanExecutionGuard(call(), {
+      readBindings: async () => [selected, unrelated],
+      resolveGoal: async () => ({ goal, diagnostics: [] }),
+      checkPlan,
+    });
+
+    expect(result).toBeNull();
+    expect(checkPlan.mock.calls.map(([binding]) => binding.planSlug)).toEqual(['security-plan']);
+  });
+  it('still refuses an unstarted plan attached to the selected work-item', async () => {
+    const goal = resolveAgentGoal({
+      workItems: [{ id: 'EI-security' }],
+      planItems: [{ planSlug: 'unrelated-plan', itemId: 'P-008' }],
+    })!;
+    const result = await checkPlanExecutionGuard(call(), {
+      readBindings: async () => [
+        { planSlug: 'security-plan', harnessSlug: 'project', source: 'work-item', sourceRef: 'EI-security' },
+        { planSlug: 'unrelated-plan', harnessSlug: 'project', source: 'plan-item-claim', sourceRef: 'unrelated-plan#P-008' },
+      ],
+      resolveGoal: async () => ({ goal, diagnostics: [] }),
+      checkPlan: async binding => binding.planSlug === 'security-plan' ? ['plan_not_started'] : ['plan_status:draft'],
+    });
+
+    expect(result).toMatchObject({
+      code: 'plan_execution_not_ready',
+      planSlug: 'security-plan',
+      blockers: ['plan_not_started'],
+    });
+  });
+  it('keeps the full binding census when current goal resolution is incomplete', async () => {
+    const checkPlan = vi.fn(async (binding: { planSlug: string }) =>
+      binding.planSlug === 'unrelated-plan' ? ['plan_status:draft'] : []);
+    const result = await checkPlanExecutionGuard(call(), {
+      readBindings: async () => [
+        { planSlug: 'security-plan', harnessSlug: 'project', source: 'work-item', sourceRef: 'EI-security' },
+        { planSlug: 'unrelated-plan', harnessSlug: 'project', source: 'plan-item-claim', sourceRef: 'unrelated-plan#P-008' },
+      ],
+      resolveGoal: async () => ({ goal: null, diagnostics: [{ leg: 'work-items' }] }),
+      checkPlan,
+    });
+
+    expect(result).toMatchObject({ planSlug: 'unrelated-plan', blockers: ['plan_status:draft'] });
+    expect(checkPlan).toHaveBeenCalledTimes(2);
   });
   it.each(['Read', 'Grep', 'Glob', 'plans:edit', 'plans:audit', 'plans:start', 'reports:publish', 'work_items:checkpoint'])('keeps %s available without reading blocked plan authority', async toolName => {
     const readBindings = vi.fn();

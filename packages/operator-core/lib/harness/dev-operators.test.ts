@@ -7,7 +7,12 @@ import {
 } from './dev-operators';
 // Imported from the LAUNCHER on purpose: the readback's whole claim is that the two
 // surfaces share one vocabulary, so the test branches with the launcher's own predicate.
-import { isTransientSkip } from './env-operator-launcher';
+import { defaultDetectSourceRootAsync, isTransientSkip } from './env-operator-launcher';
+
+vi.mock('./env-operator-launcher', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./env-operator-launcher')>();
+  return { ...actual, defaultDetectSourceRootAsync: vi.fn(actual.defaultDetectSourceRootAsync) };
+});
 
 function versionResponse(sha: string): Response {
   return new Response(JSON.stringify({ sidecarSha: sha }), {
@@ -17,6 +22,23 @@ function versionResponse(sha: string): Response {
 }
 
 describe('resolveDevOperators', () => {
+  it('yields during source discovery and does not treat its pending promise as a source tree', async () => {
+    let release!: (root: string | null) => void;
+    const pending = new Promise<string | null>((resolve) => { release = resolve; });
+    vi.mocked(defaultDetectSourceRootAsync).mockReturnValueOnce(pending);
+    let finished = false;
+    const result = resolveDevOperators({
+      fetch: vi.fn(async () => versionResponse('aaaaaaaa')) as unknown as typeof fetch,
+      selfPort: null,
+      sourceArchivePending: false,
+    }).then((value) => { finished = true; return value; });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(finished).toBe(false);
+    release(null);
+    const resolved = await result;
+    expect(resolved.operators.some((op) => op.id === 'dev' || op.id === 'local')).toBe(false);
+  });
+
   it('returns only the single immutable operator for vm-release', async () => {
     const fetchMock = vi.fn();
     const { operators, selfPort } = await resolveDevOperators({

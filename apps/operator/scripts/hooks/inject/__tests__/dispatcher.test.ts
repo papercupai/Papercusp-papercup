@@ -24,7 +24,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
 const execFileAsync = promisify(execFile);
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -33,6 +33,29 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 // mutated COPY of index.mjs — e.g. with the outer fail-silent catch removed —
 // without ever mutating the tracked file (EI-19989482108652654).
 const CLI = process.env.PROBE_SCRIPT || path.join(HERE, '..', 'index.mjs');
+let cliFixtureRoot: string;
+let copiedCli: string;
+
+function copyDispatcher(destination: string) {
+  for (const rel of ['', 'adapters']) {
+    const src = path.join(HERE, '..', rel);
+    const dest = path.join(destination, rel);
+    mkdirSync(dest, { recursive: true });
+    for (const name of readdirSync(src)) {
+      if (name.endsWith('.mjs')) copyFileSync(path.join(src, name), path.join(dest, name));
+    }
+  }
+}
+
+beforeAll(() => {
+  // Keep the child loader enabled while executing the exact bytes under test.
+  // Repository children otherwise substitute HEAD for dirty hook modules.
+  cliFixtureRoot = mkdtempSync(path.join(tmpdir(), 'inject-cli-source-'));
+  copyDispatcher(cliFixtureRoot);
+  copiedCli = path.join(cliFixtureRoot, 'index.mjs');
+  copyFileSync(CLI, copiedCli); // preserve the mutation-probe entry override
+});
+afterAll(() => rmSync(cliFixtureRoot, { recursive: true, force: true }));
 
 const claude = await import(path.join(HERE, '..', 'adapters', 'claude.mjs'));
 const codex = await import(path.join(HERE, '..', 'adapters', 'codex.mjs'));
@@ -42,13 +65,14 @@ const ports = await import(path.join(HERE, '..', 'ports.mjs'));
  * A fake operator. Records what it received; answers with injectable text.
  * `opts` is read per request, so a test may mutate it between turns.
  */
-function fakeOperator(opts: { text?: string | null; delayMs?: number; deliveryToken?: string } = {}) {
+function fakeOperator(opts: { text?: string | null; delayMs?: number; deliveryToken?: string; onRequest?: () => void } = {}) {
   const received: Array<{ url: string; body: Record<string, unknown> }> = [];
   const server: Server = createServer((req, res) => {
     let raw = '';
     req.on('data', (c) => (raw += c));
     req.on('end', () => {
       received.push({ url: req.url ?? '', body: JSON.parse(raw || '{}') });
+      opts.onRequest?.();
       const send = () => {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(
@@ -80,7 +104,7 @@ async function runCli(
   args: string[],
   stdin: string,
   env: Record<string, string> = {},
-  cli = CLI,
+  cli = copiedCli,
 ): Promise<{ code: number; stdout: string; stderr: string }> {
   return await new Promise((resolve) => {
     const child = execFile(
@@ -115,14 +139,7 @@ describe('standalone installed dispatcher', () => {
     running = op;
     try {
       // Match installInjectionHooksUnlocked: only sibling/adapters .mjs files ship.
-      for (const rel of ['', 'adapters']) {
-        const src = path.join(HERE, '..', rel);
-        const dest = path.join(installed, rel);
-        mkdirSync(dest, { recursive: true });
-        for (const name of readdirSync(src)) {
-          if (name.endsWith('.mjs')) copyFileSync(path.join(src, name), path.join(dest, name));
-        }
-      }
+      copyDispatcher(installed);
       const result = await runCli(
         ['--client=claude', '--event=UserPromptSubmit'],
         JSON.stringify({ prompt: 'standalone installation' }),
@@ -130,11 +147,28 @@ describe('standalone installed dispatcher', () => {
         path.join(installed, 'index.mjs'),
       );
       expect(result.code).toBe(0);
-      expect(result.stderr).toBe('');
+      // An inherited source loader may report its own preload substitutions on
+      // stderr; the hook contract is exit 0 plus the expected stdout payload.
       expect(result.stdout).toContain('STANDALONE-INJECTED');
       expect(op.received).toHaveLength(1);
     } finally {
       rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('executes the copied current guard for local anchor repair and denies remote destinations', async () => {
+    const payload = { slug: 'optional-evaluations', itemId: 'P-002', anchors: [{
+      path: 'source.ts', change: { action: 'investigate', summary: 'Inspect source', reason: 'Evaluation only' },
+    }] };
+    for (const [url, denied] of [['http://127.0.0.1:3170', false], ['http://example.com:3170', true]] as const) {
+      const cmd = [`ptool plans:edit --json - --url=${url} <<'JSON'`, JSON.stringify(payload), 'JSON'].join('\n');
+      const result = await runCli(['--client=codex', '--event=PreToolUse'],
+        JSON.stringify({ tool_name: 'exec_command', tool_input: { cmd } }), {
+          PAPERCUSP_SID: 'sid-copied-guard', PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:9', PAPERCUSP_MCP_PROXY_PORT: '9',
+        });
+      expect(result.code).toBe(0);
+      if (denied) expect(JSON.parse(result.stdout).hookSpecificOutput.permissionDecision).toBe('deny');
+      else expect(result.stdout).toBe('');
     }
   });
 });
@@ -411,6 +445,45 @@ describe('identity hook ports through the real CLI (P-011)', () => {
     }
   });
 
+  it('pre-tool: unavailable authority permits typed anchor repair on local staging but refuses arbitrary destinations and shell execution', async () => {
+    const { runInjection } = await import('../core.mjs');
+    const fetchImpl = (async () => { throw Error('authority unavailable'); }) as typeof fetch;
+    const payload = { slug: 'optional-evaluations', itemId: 'P-002', anchors: [{
+      path: 'packages/operator-core/lib/harness/docs/native-architecture.ts',
+      change: { action: 'investigate', summary: 'Evaluate current source citations', reason: 'Evaluation only' },
+    }] };
+    const command = (flags: string, body: unknown = payload) =>
+      [`ptool plans:edit ${flags} <<'JSON'`, JSON.stringify(body), 'JSON'].join('\n');
+    const safe = [
+      command('--url http://127.0.0.1:3170 --json -'),
+      command('--json - --url=http://localhost:3170/ --harness=papercusp'),
+      command('--json - --url "http://[::1]:3170" --workspace=papercusp-workspace'),
+    ];
+    const unsafe = [
+      ...['http://example.com:3170', 'http://127.0.0.1:39047', 'http://127.0.0.1:3170.evil',
+        'http://user@127.0.0.1:3170', 'http://127.0.0.1:3170/path',
+        'http://127.0.0.1:3170?next=elsewhere', 'http://127.0.0.1:3170#fragment']
+        .map(url => command(`--json - --url=${url}`)),
+      command('--json - --url=http://127.0.0.1:3170 --url=http://localhost:3170'),
+      command('--json - --url=http://127.0.0.1:3170; touch source.ts'),
+      command('--json - --url=http://127.0.0.1:3170 --extra=write'),
+      command('--json - --url=http://127.0.0.1:3170', { ...payload, old_string: 'old', new_string: 'new' }),
+    ];
+    for (const [adapter, nativeEvent] of [[claude, 'PreToolUse'], [codex, 'pre-tool-use']] as const) {
+      for (const cmd of safe) expect(await runInjection({ adapter, nativeEvent,
+        event: { tool_name: 'exec_command', tool_input: { cmd } },
+        env: { PAPERCUSP_SID: 'sid-anchor-repair' }, fetchImpl }), cmd).toBeNull();
+      for (const cmd of unsafe) {
+        const result = await runInjection({ adapter, nativeEvent,
+          event: { tool_name: 'exec_command', tool_input: { cmd } },
+          env: { PAPERCUSP_SID: 'sid-anchor-repair' }, fetchImpl });
+        expect(JSON.parse(result!).hookSpecificOutput, cmd).toMatchObject({
+          permissionDecision: 'deny', permissionDecisionReason: expect.stringContaining('no server verdict was received'),
+        });
+      }
+    }
+  });
+
   it('pre-tool: unavailable authority permits only bounded reviewer read/control calls, including one invoke wrapper', async () => {
     const { runInjection } = await import('../core.mjs');
     const ptool = (name: string, args: unknown) =>
@@ -455,8 +528,20 @@ describe('identity hook ports through the real CLI (P-011)', () => {
       "rg -n -F 'plan_execution_not_ready' apps/operator/scripts/hooks/inject",
       "sed -n '1,20p' apps/operator/scripts/hooks/inject/core.mjs",
     ].join('\n');
+    const reportedReadOnlyReads = [
+      "sed -n '2670,2825p' packages/operator-core/lib/agent-tools/capability/launch-agent.ts",
+      "sed -n '2855,2960p' packages/operator-core/lib/agent-tools/capability/launch-agent.ts",
+      "rg -n 'reconcilePendingGradingAudits|dispatch.*Audit|launchSummary|dispatchReservation|launch-agent' packages/operator-core/lib/grading-audit-routing.ts packages/operator-core/lib/scorecards.ts",
+    ].join('\n');
+    // The reported fourth line is a read-only pipeline, but pipelines stay
+    // fail-closed when the authority lookup is unavailable.
+    const reportedReadOnlyPipeline = [
+      reportedReadOnlyReads,
+      "rg --files packages/operator-core/lib | rg '(agent-launch|launch-ledger|spawn-attempt)'",
+    ].join('\n');
     const readOnlyCommands = [
       readOnlyInspection,
+      reportedReadOnlyReads,
       "rg -n -C 2 'plan_execution_not_ready|isSafeWithoutExecutionAuthority' apps/operator/scripts/hooks/inject/core.mjs",
       [
         "ptool tools:find --json - <<'JSON'",
@@ -490,6 +575,15 @@ describe('identity hook ports through the real CLI (P-011)', () => {
           await vi.advanceTimersByTimeAsync(ports.PORTS['pre-tool'].timeoutMs);
           expect(await read).toBeNull();
         }
+
+        const pipeline = runInjection({ adapter, nativeEvent,
+          event: { tool_name: 'exec_command', tool_input: { cmd: reportedReadOnlyPipeline } },
+          env: { PAPERCUSP_SID: 'sid-guard' }, fetchImpl: stalledFetch });
+        await vi.advanceTimersByTimeAsync(ports.PORTS['pre-tool'].timeoutMs);
+        expect(JSON.parse((await pipeline)!).hookSpecificOutput).toMatchObject({
+          permissionDecision: 'deny',
+          permissionDecisionReason: expect.stringContaining('plan_execution_not_ready'),
+        });
 
         const write = runInjection({ adapter, nativeEvent,
           event: { tool_name: 'exec_command', tool_input: { cmd: 'touch source.ts' } },
@@ -741,10 +835,10 @@ describe('fail-silent: EXIT 0 AND EMPTY STDOUT (D-001 invariant 1)', () => {
   it('operator SLOWER than the port wall -> exit 0, no output', async () => {
     // mid-turn's wall is 1.5s; answer at 4s. The turn must proceed un-augmented
     // rather than wait — a slow operator costs the turn nothing.
-    const op = fakeOperator({ delayMs: 4_000 });
+    let receivedAt: number | undefined;
+    const op = fakeOperator({ delayMs: 4_000, onRequest: () => { receivedAt = performance.now(); } });
     const base = await op.start();
     running = op;
-    const started = Date.now();
     const res = await runCli(
       ['--client=claude', '--event=PostToolBatch'],
       JSON.stringify({ tool_calls: [{ tool_name: 'B', tool_input: 'x', tool_response: 'y' }] }),
@@ -752,9 +846,10 @@ describe('fail-silent: EXIT 0 AND EMPTY STDOUT (D-001 invariant 1)', () => {
     );
     expect(res.code).toBe(0);
     expect(res.stdout).toBe('');
-    // Bounded well under the 4s answer: proves the wall fired rather than the
-    // request simply having failed for some other reason.
-    expect(Date.now() - started).toBeLessThan(3_500);
+    // Measure the request wall, excluding process/loader startup. Requiring a
+    // received request also rules out passing because the child never called.
+    expect(receivedAt).toBeTypeOf('number');
+    expect(performance.now() - receivedAt!).toBeLessThan(3_500);
   }, 20_000);
 
   it('empty/whitespace injection text -> nothing emitted', async () => {

@@ -27,7 +27,8 @@ vi.mock('../../harness/improvements/report-attachments', () => ({
 }));
 const getWorkItemDetail = vi.fn();
 const getWorkItemThreadWindow = vi.fn();
-vi.mock('../../work-items', () => ({
+vi.mock('../../work-items', async (original) => ({
+  ...(await original<typeof import('../../work-items')>()),
   getWorkItem: (...a: unknown[]) => getWorkItem(...a),
   getWorkItemDetail: (...a: unknown[]) => getWorkItemDetail(...a),
   getWorkItemThreadWindow: (...a: unknown[]) => getWorkItemThreadWindow(...a),

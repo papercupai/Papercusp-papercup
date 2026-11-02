@@ -47,6 +47,8 @@ import { resolvePlanScope } from './source';
 import { effectivePlanProfile } from '../../plan-verification-escape';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { authoringReuse } from '../../code-intelligence/reuse-authoring';
+import { suggestResearchAnchors } from '../../code-intelligence/research-trail';
+import { sessionAllowsAmbientContext } from '../../capability-envelope/session-confinement-port';
 import { notifySyncInvalidate } from '../../sync-sse';
 
 /**
@@ -544,11 +546,16 @@ async function addItemOne(it: NewItem, ctx: UnifiedToolContext): Promise<BulkIte
   // notify-classification: {"id":"packages/operator-core/lib/agent-tools/plans/add-item.ts#<module>/addItemOne:ec3df5e4bd6815dbed9b:2","classification":"durable","reason":"Scope resolution can reach notification paths through detached callers; no safe-to-lose proof is recorded.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
   const adviceScope = scope ?? await resolvePlanScope({ harnessSlug,
     workspaceId: (sctx as { workspaceId?: string }).workspaceId });
-  const reuseAdvice = await authoringReuse(ctx, { workspaceId: adviceScope.workspaceId,
+  const adviceOwner = resolveAgentIdentity(ctx).ownerId;
+  const allowAdvice = await sessionAllowsAmbientContext({ ownerId: adviceOwner, workspaceId: adviceScope.workspaceId });
+  const reuseAdvice = allowAdvice ? await authoringReuse(ctx, { workspaceId: adviceScope.workspaceId,
     harness: adviceScope.harnessSlug, plan: it.slug, item: result.value.itemId, text: it.text,
-    paths: anchors?.flatMap(anchor => anchor.path ? [anchor.path] : []) });
+    paths: anchors?.flatMap(anchor => anchor.path ? [anchor.path] : []) }) : undefined;
+  const suggestedAnchors = allowAdvice ? await suggestResearchAnchors(adviceScope.workspaceId,
+    adviceOwner, harnessSlug ?? adviceScope.harnessSlug) : undefined;
   return {
     ...result.value,
+    suggestedAnchors,
     ...(anchors !== undefined ? { anchors } : {}),
     ...(reuseAdvice ? { reuseAdvice } : {}),
     ...(warnNoLinks ? { warnings: ['This code plan item has no code links; add symbols or paths as anchors.'] } : {}),
@@ -567,7 +574,7 @@ export default defineTool({
   description:
     "Append one OR many new items to a phase. Allocates the next P-NNN id inside a lock. Creates the phase section if it doesn't exist. Auto-bumps frontmatter updated:. Single: { slug, phase, text, importance }. Many to one phase: { slug, phase, importance, items:[{ text, blockedBy? }] }. Heterogeneous: items:[{ slug, phase, text, importance }]. Returns { ok, results:[{ ok, slug, itemId, createdPhase | error }], counts } — each result embeds the NEW itemId; correlate by { slug, itemId }, not position; one failure never fails the rest.",
   guidance: {
-    when: 'New work surfaces — a chunk to do, a verification step, a follow-up. Pick the right phase (or name a new one). Add several at once via items:[…] (the new ids come back per result).',
+    when: 'Append new work to a phase; batch with items. suggestedAnchors are caller-session suggestions; only explicit anchors are stored. Manual anchors remain available.',
     notWhen:
       "Updating an existing item — that's a direct edit, not an assisted write (the format is stable). Or status flip — plans:set-status.",
     chaining:

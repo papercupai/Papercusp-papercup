@@ -24,8 +24,10 @@ import { emitFleetRun, fleetRunIdFor, listFleetRuns, getCoordTrace } from './fle
 import { exportRunBundle } from './export';
 import type { EmitRolloutInput } from './schema';
 import type { ArmAttempt, BenchTask, GradeResult } from '../types';
-import { currentProtocolFixture } from './_protocol-test-fixture';
-import { freezeMinecraftTrial } from '../minecraft-protocol';
+import { currentProtocolFixture, controlledProtocolFixture } from './_protocol-test-fixture';
+import { freezeMinecraftManifest, freezeMinecraftPair, freezeMinecraftSelection, freezeMinecraftTrial } from '../minecraft-protocol';
+import { runMinecraftProvisionedTrial, type MinecraftProvisionedTrialPorts, type MinecraftTaskLaunch } from '../minecraft-launch-adapter';
+import type { CurrentTaskInput } from '../run-launcher';
 import { gradeMinecraftEvidence, readMinecraftEvidenceExport } from '../minecraft-evidence';
 import { minecraftOfflinePlayerUuid } from '../minecraft-runtime';
 import { canonicalJson } from './canonical-json';
@@ -50,6 +52,7 @@ const MIGRATIONS = [
   '291-benchmark-reproducibility.sql',
   '292-benchmark-hive-layer.sql',
   '302-bench-run-score.sql',
+  '1615-benchmark-frozen-arm-identities.sql',
 ];
 const WS = 'bench-repro-test-ws';
 const RUN = 'run-pilot-1';
@@ -225,6 +228,29 @@ describe('current frozen rollout emission', () => {
     return { protocol, attempt };
   }
 
+  it.each(['stock', 'solo', 'coordinated', 'repeated-session', 'custom-preregistered-arm'])(
+    'retains frozen named arm %s after the arm migration without changing its identity', async armId => {
+      const protocol = currentProtocolFixture(`named-arm-${armId}`);
+      protocol.arms[0].id = armId;
+      const { preregHash } = await preregister({ runId: protocol.runId, config: protocol,
+        suites: ['swe-bench-pro'], sql, workspaceId: WS, repoRoot });
+      const base = input({ preregHash });
+      const attempt: EmitRolloutInput = { ...base, runId: protocol.runId, taskId: 't1', seed: 1, arm: armId,
+        generation: { ...base.generation, modelId: protocol.arms[0].model },
+        grading: { ...base.grading, ...protocol.grader } };
+      const receipt = await emitRollout(attempt, { sql, workspaceId: WS });
+      // Reapply over actual saved data: the extension must be idempotent.
+      await sql.unsafe(migrationSql('1615-benchmark-frozen-arm-identities.sql'));
+      const [row] = await listRunResults({ runId: protocol.runId, sql, workspaceId: WS });
+      expect(row.arm).toBe(armId);
+      expect((await getRollout(receipt.rolloutId, { sql, workspaceId: WS }))!.arm).toBe(armId);
+      await expect(emitRollout({ ...attempt, arm: 'not-frozen' }, { sql, workspaceId: WS }))
+        .rejects.toThrow('identity differs from the frozen current protocol');
+      await expect(sql`UPDATE harness_shared.benchmark_run_result SET arm = '  '
+        WHERE rollout_id = ${receipt.rolloutId}`).rejects.toThrow('benchmark_run_result_arm_check');
+      expect((await listRunResults({ runId: protocol.runId, sql, workspaceId: WS }))[0].arm).toBe(armId);
+    });
+
   it.each(['configured-alias', 'claude-opus-4-8[1m]'])('persists frozen prices and agrees with regenerated report for %s', async model => {
     const { protocol, attempt } = await frozenInput(model === 'configured-alias' ? 'alias' : 'known', model);
     await emitRollout(attempt, { sql, workspaceId: WS });
@@ -280,6 +306,71 @@ describe('current frozen rollout emission', () => {
     expect(report.suite).toBe('minecraft');
     expect(report.arms.find(arm => arm.arm === attempt.arm)?.cost.costUsd).toBeCloseTo(row.costUsd);
     expect(await getRollout(receipt.rolloutId, { sql, workspaceId: 'foreign-minecraft-workspace' })).toBeNull();
+  });
+
+  it('retains Minecraft provisioning failure in the real rollout store and report without a native call', async () => {
+    const protocol = controlledProtocolFixture();
+    protocol.runId = 'minecraft-provisioning-pg'; protocol.aggregateBudgetUsd = 15;
+    protocol.grader = { ...protocol.grader, family: 'minecraft', version: 'minecraft@1.20.4/server-advancements-v1' };
+    const sha = (n: number) => n.toString(16).padStart(64, '0');
+    const material = (taskId: string, n: number) => ({ taskId, worldSeed: String(n), objective: 'iron-tools',
+      referenceSha256: sha(n * 10), scoringFixtureSha256: sha(n * 10 + 1), exampleSha256: [] });
+    const manifest = freezeMinecraftManifest({ schemaVersion: 1, revision: 1,
+      train: [material('train', 1)], dev: [material('dev', 2)], heldOut: [material('t1', 3)] });
+    const initialState = { worldSha256: sha(90), memorySha256: protocol.context.memoryHash };
+    const arms = protocol.arms.filter(arm => ['stock', 'repeated-session'].includes(arm.id)).map(arm => {
+      const selection = freezeMinecraftSelection(manifest, { runId: protocol.runId, armId: arm.id, modelId: arm.model,
+        promptSha256: arm.runtime.promptHash, configurationSha256: createHash('sha256').update(canonicalJson(protocol)).digest('hex'), sources: [] });
+      const trial = freezeMinecraftTrial({ schemaVersion: 1, runId: protocol.runId, armId: arm.id, taskId: 't1',
+        manifestHash: manifest.manifestHash, selectionHash: selection.selectionHash, worldSeed: '3', objective: 'iron-tools',
+        rules: { version: '1.20.4', difficulty: 'easy', gameMode: 'survival', cheats: false },
+        pins: { serverImage: `minecraft/server@sha256:${sha(70)}`, serverJarSha256: sha(71), mineflayerVersion: '4.32.0', pathfinderVersion: '2.4.5' },
+        participants: ['alice'], observations: ['position'], actions: ['move'],
+        limits: { maxWallClockMs: 100, maxProgramMs: 50, maxUsd: 3 } });
+      return { trial, selection, initialState };
+    });
+    const pair = freezeMinecraftPair(manifest, { arms, orderSeed: sha(100) });
+    const selected = arms.find(value => value.trial.protocol.armId === 'stock')!;
+    const launch: MinecraftTaskLaunch = { ...selected, manifest, participantId: 'alice', pairing: { pair, initialState },
+      runtime: { serverJar: '/host/unavailable-server.jar', botImage: `sha256:${sha(72)}`, acceptEula: true,
+        worldBaseline: { worldSha256: initialState.worldSha256, dispose: async () => {} } } };
+    const { preregHash } = await preregister({ runId: protocol.runId, config: protocol,
+      suites: ['minecraft'], sql, workspaceId: WS, repoRoot });
+    const arm = protocol.arms.find(value => value.id === 'stock')!;
+    const host: Omit<CurrentTaskInput, 'checkout' | 'task'> = {
+      protocol, options: { workspaceId: WS, runId: protocol.runId, armId: arm.id, seed: 1,
+        agent: 'codex', model: arm.model, effort: 'high', account: arm.account,
+        preregistration: { preregHash, config: protocol } },
+      context: { workspaceId: WS, log: () => {}, signal: new AbortController().signal, progress: () => {}, emit: () => {} },
+      scope: { sql, workspaceId: WS }, resources: { inputTokens: 0, outputTokens: 0, requestsPerArm: 0, armIds: [] }, loopId: 'fixture', hostRunId: 'fixture',
+      observation: { runtimeWorkspaceId: WS, workerUnit: 'fixture-worker', gatewayUnit: 'fixture-gateway' },
+    };
+    const startRuntime = vi.fn<MinecraftProvisionedTrialPorts['startRuntime']>(async () => { throw Error('fixture startup unavailable'); });
+    const forbidden = vi.fn(() => { throw Error('Native allocation before provisioning'); });
+    const ports: MinecraftProvisionedTrialPorts = { startRuntime, emitRollout,
+      startAssignment: forbidden, startBridge: forbidden, readInitialWorld: forbidden,
+      createDriver: forbidden, readRepeatedSession: forbidden, collectEvidence: forbidden };
+    // The only substituted boundary is runtime startup; persistence/report SQL is real.
+    await expect(runMinecraftProvisionedTrial(host, launch, ports)
+      .catch(error => {
+        if (error instanceof AggregateError) throw new Error(error.errors.map(String).join('; '), { cause: error });
+        throw error;
+      }))
+      .rejects.toThrow(/^fixture startup unavailable$/);
+    expect(forbidden).not.toHaveBeenCalled();
+    const rows = await listRunResults({ runId: protocol.runId, sql, workspaceId: WS });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ taskId: 't1', arm: 'stock', resolved: null, generationStatus: 'error',
+      graderStatus: 'error', tokensTotal: 0, costUsd: 0,
+      armMeta: { minecraftProvisioning: 'failed-before-native-assignment', trialId: selected.trial.trialId } });
+    const rolloutId = rolloutIdFor(protocol.runId, 'minecraft', 't1', 'stock', 1);
+    const rollout = await getRollout(rolloutId, { sql, workspaceId: WS });
+    expect(rollout!.submission).toBeNull();
+    expect(rollout!.configSnapshot).toMatchObject({ minecraft: { trial: selected.trial, pair } });
+    const [report] = await getRunReports(protocol.runId, { sql, workspaceId: WS });
+    expect(report.suite).toBe('minecraft');
+    expect(report.arms.find(value => value.arm === 'stock')!.cost.costUsd).toBe(0);
+    expect(await getRollout(rolloutId, { sql, workspaceId: 'foreign-provisioning-workspace' })).toBeNull();
   });
 
   it('refuses a caller override that differs from frozen prices without writing either row', async () => {

@@ -636,7 +636,8 @@ registerCodeIntelPushLeg('resume', snapshotResumeLeg);
 export interface ReadResumeContextDeps {
   epoch(owner: string): Promise<EpochRow>;
   signals(query: WorkingSetQuery): Promise<WorkingSetSignals>;
-  foreign(owner: string, workspace: string, harness: string): Promise<ForeignWorkingSet[]>;
+  foreign(owner: string, workspace: string, harness: string,
+    onTiming?: (phase: string, elapsedMs: number) => void): Promise<ForeignWorkingSet[]>;
   /** Subjects already pushed to this owner in its CURRENT epoch on the first-touch / resume legs. */
   pushed(input: PushInput, epoch: number): Promise<string[]>;
 }
@@ -654,7 +655,7 @@ async function readPushedResumeSubjects(input: PushInput, epoch: number, sql = g
 const resumeDefaults: ReadResumeContextDeps = {
   epoch: owner => readSessionEpoch(owner),
   signals: query => readWorkingSetSignals(query, undefined, 75),
-  foreign: (owner, workspace, harness) => readForeignWorkingSets(owner, workspace, harness),
+  foreign: (owner, workspace, harness, onTiming) => readForeignWorkingSets(owner, workspace, harness, undefined, 75, onTiming),
   pushed: (input, epoch) => readPushedResumeSubjects(input, epoch),
 };
 
@@ -665,12 +666,17 @@ export async function readPushResumeContext(input: PushInput, deps: ReadResumeCo
   const harness = input.harness;
   if (!input.owner || !input.workspace || !harness) return { entries: [] };
   const epoch = await timeResumeReadPhase(diagnostics, 'epoch', () => deps.epoch(input.owner));
+  const foreignTiming = diagnostics
+    ? (phase: string, elapsedMs: number) => { diagnostics.phaseMs['foreignWorkingSets.' + phase] = elapsedMs; }
+    : undefined;
   const [previous, foreign, pushed] = await Promise.all([
     timeResumeReadPhase(diagnostics, 'previousWorkingSet', () => deriveCodeWorkingSet(
       { workspace: input.workspace, harness, owner: input.owner, which: 'previous', root: input.root },
       { epoch: async () => epoch, signals: query => deps.signals(query) },
     )).catch(() => null),
-    timeResumeReadPhase(diagnostics, 'foreignWorkingSets', () => deps.foreign(input.owner, input.workspace, harness))
+    timeResumeReadPhase(diagnostics, 'foreignWorkingSets', () => foreignTiming
+      ? deps.foreign(input.owner, input.workspace, harness, foreignTiming)
+      : deps.foreign(input.owner, input.workspace, harness))
       .catch(() => [] as ForeignWorkingSet[]),
     timeResumeReadPhase(diagnostics, 'pushedSubjects', () => deps.pushed(input, epoch.epoch)).catch(() => [] as string[]),
   ]);

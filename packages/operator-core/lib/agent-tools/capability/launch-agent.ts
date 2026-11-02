@@ -2747,11 +2747,18 @@ export default defineTool({
           requestKind: prior?.requestKind ?? 'capability:launch-agent',
           launchState: priorState,
           startedAt: prior?.startedAt ?? claim.priorLaunchedAt ?? null,
-          expectedCount: prior?.expectedCount ?? count,
-          ownerIds: prior?.ownerIds ?? prior?.targetOwnerIds ?? [],
-          fleet: prior?.fleet ?? fleetSlug,
-          processHandles: prior?.processHandles ?? {},
-          memberResults: prior?.memberResults ?? {},
+          expectedCount: prior?.expectedCount ?? priorLaunch?.expectedCount ?? null,
+          ownerIds: prior?.ownerIds ?? prior?.targetOwnerIds ?? priorLaunch?.ownerIds ?? priorLaunch?.targetOwnerIds ?? null,
+          targetMembers: prior?.targetMembers ?? priorLaunch?.targetMembers ?? null,
+          fleet: prior?.fleet ?? priorLaunch?.fleet ?? null,
+          mode: prior?.mode ?? priorLaunch?.mode ?? null,
+          // These fields distinguish an exact pre-spawn claim from a process
+          // attempt whose PID/task receipt was lost. Missing legacy evidence
+          // stays unknown; empty defaults would falsely authorize a retry.
+          spawnAttempted: prior?.spawnAttempted ?? priorLaunch?.spawnAttempted ?? null,
+          nativeSpawnAttempted: prior?.nativeSpawnAttempted ?? priorLaunch?.nativeSpawnAttempted ?? null,
+          processHandles: prior?.processHandles ?? priorLaunch?.processHandles ?? null,
+          memberResults: prior?.memberResults ?? priorLaunch?.memberResults ?? null,
         };
         return {
           content: [

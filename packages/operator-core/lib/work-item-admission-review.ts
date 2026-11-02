@@ -10,7 +10,9 @@ import {
   admissionAuthoritySchema, authorizeAdmissionReviewReplay, AdmissionAuthorityRefused,
   type AdmissionRecoveryAuthority,
 } from './work-item-admission-authority';
-import type { AdmissionRecoveryScope } from './work-item-admission-recovery';
+import {
+  AdmissionRecoveryRefused, readVerifiedAdmissionRecoveryTarget, type AdmissionRecoveryScope,
+} from './work-item-admission-recovery';
 import {
   readAdmissionMergeSnapshots, runWorkItemAdmissionPromoter, admissionReviewSubjectEligible,
   WORK_ITEM_ADMISSION_PROMOTER, type AdmissionMergeGuardRefusal, type PromoterLlmCall, type PromoterRunResult,
@@ -63,10 +65,21 @@ async function authorize(sql: Sql, scope: AdmissionRecoveryScope, request: Revie
        WHERE workspace_id = ${scope.workspaceId} AND harness_slug = ${scope.harnessSlug}
          AND work_item_id = ${scope.workItemId} AND fleet_slug = ${membership.fleetSlug}
          AND agent_id IS NOT NULL`;
-    if (rows.length !== 1) throw new AdmissionAuthorityRefused('exact same-fleet placement unknown or ambiguous');
-    const target = await latestFleetMembership(scope.workspaceId, rows[0]!.agent_id, sql);
+    let placedTarget = rows.length === 1 ? rows[0]!.agent_id : null;
+    // An unassigned screening reservation retains signed placement for review
+    // only. It cannot override a custodian or ambiguous current placement.
+    if (rows.length === 0 && !item.assignee) {
+      try {
+        placedTarget = await readVerifiedAdmissionRecoveryTarget(scope, sql);
+      } catch (error) {
+        if (!(error instanceof AdmissionRecoveryRefused)) throw error;
+        throw new AdmissionAuthorityRefused(error.message);
+      }
+    }
+    if (!placedTarget) throw new AdmissionAuthorityRefused('exact same-fleet placement unknown or ambiguous');
+    const target = await latestFleetMembership(scope.workspaceId, placedTarget, sql);
     if (target?.fleetSlug !== membership.fleetSlug ||
-        item.assignee && item.assignee !== rows[0]!.agent_id) {
+        item.assignee && item.assignee !== placedTarget) {
       throw new AdmissionAuthorityRefused('current membership and review placement disagree');
     }
     const contract = (item.payload as Record<string, unknown>).claim_hold_release as { owner?: unknown } | undefined;

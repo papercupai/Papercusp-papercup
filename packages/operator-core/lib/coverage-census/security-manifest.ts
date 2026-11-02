@@ -214,3 +214,22 @@ export function createSecurityTupleLedger(input: {
   });
   return snapshot({ schemaVersion: 1, manifestSha256: input.manifest.sha256, producer: input.producer, rows });
 }
+
+/** A surface represented once may still omit platform/distribution/channel
+ * tuples. Compare independently derived applicability in BOTH directions;
+ * producer/reviewer identity is authenticated separately by the host gate. */
+export function reconcileSecurityTupleLedger(
+  ledger: SecuritySnapshot<SecurityTupleLedger>,
+  expected: Omit<Parameters<typeof createSecurityTupleLedger>[0], 'producer'>,
+): { missing: string[]; unexpected: string[]; changed: string[]; matches: boolean } {
+  verifySnapshot(ledger);
+  const actual = createSecurityTupleLedger({ ...expected, producer: ledger.body.producer });
+  const rows = (value: SecuritySnapshot<SecurityTupleLedger>) => new Map(value.body.rows.map(row =>
+    [row.rowId, canonicalJson(row)] as const));
+  const frozen = rows(ledger), current = rows(actual);
+  const missing = [...current.keys()].filter(id => !frozen.has(id)).sort();
+  const unexpected = [...frozen.keys()].filter(id => !current.has(id)).sort();
+  const changed = [...current.keys()].filter(id => frozen.has(id) && frozen.get(id) !== current.get(id)).sort();
+  if (ledger.body.manifestSha256 !== actual.body.manifestSha256) changed.push('manifestSha256');
+  return { missing, unexpected, changed, matches: !missing.length && !unexpected.length && !changed.length };
+}

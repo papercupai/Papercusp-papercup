@@ -122,6 +122,18 @@ export function sweepStaleWorkRoots({ root, nowMs, cwds, isAlive, remove, before
     kept: any[];
 }>;
 /**
+ * Run the lint runner's self-sweep under the existing central retention-pin guard.
+ * @param {Parameters<typeof sweepStaleWorkRoots>[0]} [options]
+ * @param {{dir?: string, nowMs?: number}} [pinOptions]
+ */
+export function sweepStaleWorkRootsWithRetentionPins(options?: Parameters<typeof sweepStaleWorkRoots>[0], pinOptions?: {
+    dir?: string;
+    nowMs?: number;
+}): Promise<{
+    removed: any[];
+    kept: any[];
+}>;
+/**
  * Parse argv. Script names are positional; everything else is a flag.
  *
  * The `lint:` prefix guard is not pedantry: this tool runs a command inside an

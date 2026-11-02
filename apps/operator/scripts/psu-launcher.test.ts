@@ -1,8 +1,13 @@
 import { describe, expect, it } from 'vitest';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   consumeGovernedResumeReservation,
   freshSuBootstrapBody,
   GOVERNED_RESUME_RESERVATION_ENV,
+  routeFreshKickoff,
+  tagKickoffProvenance,
 } from './psu-launcher.mjs';
 
 describe('headless task enrollment identity in bootstrap', () => {
@@ -40,5 +45,69 @@ describe('governed exact resume reservation', () => {
     const env = { [GOVERNED_RESUME_RESERVATION_ENV]: JSON.stringify({ ...reservation, ...override }) };
     expect(() => consumeGovernedResumeReservation(env, session, 50_000)).toThrow(/reservation/);
     expect(env).toEqual({});
+  });
+});
+
+describe('loop-fire provenance through a fresh successor launch', () => {
+  const sid = 'su-loop-fire-provenance-test';
+  const identity = { routineId: 'routine-cold-successor', wakeCount: 7 };
+
+  it('recovers a verified inner identity and keeps the loop TTL when the private hint is legacy', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'papercusp-loop-fire-provenance-'));
+    try {
+      const nowMs = Date.now();
+      const seedEnv = { PAPERCUSP_TURN_PROVENANCE_DIR: dir };
+      const taggedWake = tagKickoffProvenance(
+        'Continue from the loop checkpoint', sid, seedEnv, nowMs, 'loop-fire', identity,
+      );
+      const env = {
+        ...seedEnv,
+        PAPERCUSP_SID: sid,
+        PAPERCUSP_KICKOFF_PROMPT: taggedWake,
+        PAPERCUSP_INTERNAL_KICKOFF_ORIGIN: 'loop-fire',
+      };
+
+      const kickoff = routeFreshKickoff('codex', {}, { picker: false }, env);
+      const rows = readFileSync(join(dir, `${sid}.jsonl`), 'utf8')
+        .trim().split('\n').map((line) => JSON.parse(line));
+
+      expect(kickoff.managedKickoff).toContain('⟦turn-origin:loop-fire nonce:');
+      expect(rows).toHaveLength(2);
+      expect(rows[1]).toMatchObject({
+        sid,
+        origin: 'loop-fire',
+        ttlMs: 65 * 60 * 1000,
+        loopFire: identity,
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('does not inherit identity from a prior prompt whose payload hash no longer matches', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'papercusp-loop-fire-provenance-'));
+    try {
+      const nowMs = Date.now();
+      const seedEnv = { PAPERCUSP_TURN_PROVENANCE_DIR: dir };
+      const taggedWake = tagKickoffProvenance(
+        'Continue from the loop checkpoint', sid, seedEnv, nowMs, 'loop-fire', identity,
+      );
+      const tamperedWake = taggedWake.replace('Continue from the loop checkpoint', 'Changed prompt');
+      const env = {
+        ...seedEnv,
+        PAPERCUSP_SID: sid,
+        PAPERCUSP_KICKOFF_PROMPT: tamperedWake,
+        PAPERCUSP_INTERNAL_KICKOFF_ORIGIN: 'loop-fire',
+      };
+
+      routeFreshKickoff('codex', {}, { picker: false }, env);
+      const rows = readFileSync(join(dir, `${sid}.jsonl`), 'utf8')
+        .trim().split('\n').map((line) => JSON.parse(line));
+
+      expect(rows[1]).toMatchObject({ sid, origin: 'loop-fire', ttlMs: 65 * 60 * 1000 });
+      expect(rows[1]).not.toHaveProperty('loopFire');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

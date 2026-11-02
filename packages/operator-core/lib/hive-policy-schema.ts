@@ -138,6 +138,22 @@ export interface HivePolicyFinance {
   funding?: { agreementRef: string };
 }
 
+/** Exact standing resource approval, signed and revoked through the existing
+ * Hive policy editor. It grants no installation or caller capabilities. */
+export interface HivePolicyPluginInvocationApproval {
+  pluginName: string;
+  pluginVersion: string;
+  installationPath: string;
+  installationSource: string;
+  principalSlug: string;
+  principalKind: string;
+  authMethod: string;
+  toolName: string;
+  inputSha256: string;
+  capabilities: string[];
+  expiresAt: number;
+}
+
 /**
  * The typed view of a Hive policy document. This is a forward-compatible OPEN record:
  * the named fields are the EN-1..EN-4 surface, and `[k: string]: unknown` preserves
@@ -145,6 +161,7 @@ export interface HivePolicyFinance {
  */
 export interface HivePolicy {
   finance?: HivePolicyFinance;
+  pluginInvocations?: { approvals: HivePolicyPluginInvocationApproval[] };
   /** Owner-signed governance rules, including exact-plan admission. */
   governance?: HivePolicyGovernance;
   rate?: HivePolicyRate;
@@ -253,6 +270,26 @@ export function coerceHivePolicyInput(
     return { ok: false, error: 'policy must be a JSON object' };
   }
   const p = raw as Record<string, unknown>;
+  if (p.pluginInvocations !== undefined) {
+    const value = p.pluginInvocations as Record<string, unknown> | null;
+    if (!value || typeof value !== 'object' || Array.isArray(value)
+      || !Array.isArray(value.approvals) || value.approvals.length > 1000) {
+      return { ok: false, error: 'policy.pluginInvocations.approvals must be a bounded array' };
+    }
+    for (const rawApproval of value.approvals) {
+      const approval = rawApproval as Record<string, unknown> | null;
+      const exact = (v: unknown) => typeof v === 'string' && v.trim().length > 0 && v.length <= 4096 && !v.includes('*');
+      if (!approval || typeof approval !== 'object' || Array.isArray(approval)
+        || !['pluginName', 'pluginVersion', 'installationPath', 'installationSource', 'principalSlug',
+          'principalKind', 'authMethod', 'toolName'].every(key => exact(approval[key]))
+        || typeof approval.inputSha256 !== 'string' || !/^[a-f0-9]{64}$/.test(approval.inputSha256)
+        || !Array.isArray(approval.capabilities) || approval.capabilities.length === 0
+        || approval.capabilities.length > 256 || !approval.capabilities.every(exact)
+        || !Number.isSafeInteger(approval.expiresAt) || Number(approval.expiresAt) <= 0) {
+        return { ok: false, error: 'policy.pluginInvocations approval must bind exact installation, caller, tool, input, operations and expiry' };
+      }
+    }
+  }
   if (p.finance !== undefined) {
     const finance = p.finance;
     if (!finance || typeof finance !== 'object' || Array.isArray(finance)) return { ok: false, error: 'policy.finance must be an object' };

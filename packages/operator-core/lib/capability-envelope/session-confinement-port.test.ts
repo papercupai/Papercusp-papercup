@@ -49,6 +49,21 @@ describe('ambient context uses the same authoritative session policy', () => {
     setSessionConfinementResolver(() => ({ ...confinement, denyWorkItemsOutside: { ...confinement.denyWorkItemsOutside, harness: '../escape' } }));
     await expect(sessionPromptPolicy(input)).rejects.toThrow(/workflow/);
   });
+  it('keeps observer ledger workflow when only private benchmark planning is delivered', async () => {
+    const confinement = { denyTools: [], denyOutside: ['coord:whoami', 'plans:new', 'plans:add-item', 'plans:get'],
+      denyAmbientContext: true as const,
+      denyWorkItemsOutside: { id: 'F-own', harness: 'bench', checkout: '/private/assignment' },
+      denyPlansOutside: { scratchPrefix: 'benchmark-scratch-abcdef123456-', reviewedSlug: 'observer-private', harness: 'bench' },
+      imposedBy: 'host', reason: 'frozen assignment' };
+    const input = { ownerId: 'su-private', workspaceId: 'private' };
+    setSessionConfinementResolver(() => confinement);
+    expect(await sessionPromptPolicy(input)).toEqual({ ambientContextAllowed: false, workItemWorkflow: 'host-managed' });
+    setSessionConfinementResolver(() => ({ ...confinement, denyOutside: [...confinement.denyOutside, 'work_items:get'] }));
+    expect((await sessionPromptPolicy(input)).workItemWorkflow).toBe('agent-managed');
+    setSessionConfinementResolver(() => ({ ...confinement,
+      denyPlansOutside: { ...confinement.denyPlansOutside, scratchPrefix: 'benchmark-scratch-../foreign-' } }));
+    await expect(sessionPromptPolicy(input)).rejects.toThrow(/scratch plan boundary/);
+  });
   it('refuses bound prompt policy when authority is unreadable, while unbound launches retain normal guidance', async () => {
     expect(await sessionPromptPolicy({ workspaceId: 'private' })).toEqual({ ambientContextAllowed: true, workItemWorkflow: 'agent-managed' });
     await expect(sessionPromptPolicy({ ownerId: 'su-private', workspaceId: 'private' })).rejects.toThrow(/policy/);
@@ -179,7 +194,7 @@ describe('session-confinement port — the deny', () => {
     const resolver = vi.fn(() => CONFINEMENT);
     setSessionConfinementResolver(resolver);
     await checkSessionConfinement({ toolName: 'work_items:complete', ctx: SUPERUSER_CTX });
-    expect(resolver).toHaveBeenCalledWith(SUPERUSER_CTX);
+    expect(resolver).toHaveBeenCalledWith(SUPERUSER_CTX, undefined);
   });
 });
 

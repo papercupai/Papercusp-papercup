@@ -30,7 +30,11 @@ export interface ArchiveScratchPlansDeps {
   archiveByPrefix?: (workspaceId: string, prefix: string) => Promise<number>;
 }
 
-async function archiveScratchPlansByPrefix(workspaceId: string, prefix: string): Promise<number> {
+/** Shared host cleanup for private reviewer and benchmark draft namespaces. */
+export async function archiveScratchPlansByPrefix(workspaceId: string, prefix: string): Promise<number> {
+  if (!workspaceId.trim() || !validScratchPlanBoundary({ scratchPrefix: prefix,
+    reviewedSlug: 'scratch-cleanup', harness: 'scratch-cleanup' }))
+    throw new Error('Scratch plan cleanup requires an exact private namespace.');
   const { withWorkspace } = await import('@papercusp/db-org');
   const rows = await withWorkspace(workspaceId, tx => tx<{ plan_slug: string }[]>`
     UPDATE harness_shared.harness_plans

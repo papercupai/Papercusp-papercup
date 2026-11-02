@@ -14,10 +14,12 @@ import {
   filterAmendmentReviewRoute,
   launchFreshAmendmentReviewer,
   MAX_DEAD_REVIEWER_CHAIN,
+  MAX_FRESH_REVIEWER_MODEL_ATTEMPTS,
   openAcceptanceBarAmendmentReview,
   resolveAmendmentReviewSources,
   routeAcceptanceBarAmendmentReview,
   selectFreshReviewerModelForAccountSteer,
+  selectFreshReviewerModelsForAccountSteer,
   type AmendmentReviewSourceContext,
   type AmendmentReviewerScreen,
 } from './acceptance-bar-amendment-review';
@@ -1221,6 +1223,160 @@ describe('launchFreshAmendmentReviewer (WI-10003299)', () => {
     });
   });
 
+  it('fails over an unanswered retained reviewer after a delayed native 429', async () => {
+    const pending = analyzeClaudeResumeTranscript(JSON.stringify({
+      type: 'user', message: { role: 'user', content: 'Review the amendment' },
+    }));
+    const rateLimited = analyzeClaudeResumeTranscript([
+      JSON.stringify({ type: 'user', message: { role: 'user', content: 'Review the amendment' } }),
+      JSON.stringify({ type: 'assistant', isApiErrorMessage: true, error: 'rate_limit',
+        message: { role: 'assistant', model: '<synthetic>', content: [{ type: 'text', text: 'API Error: Request rejected (429); retry after 60s' }] } }),
+    ].join('\n'));
+    let delayedFailureVisible = false;
+    let stopped = false;
+    const launch = vi.fn()
+      .mockResolvedValueOnce(retainedLaunch())
+      .mockResolvedValueOnce(retainedLaunch(true))
+      .mockResolvedValueOnce({ data: { deduped: false, launch: { tasks: [{ taskId: 'task-2', ownerId: 'judge-2',
+        kickoffProof: { nativeRef: '/retained/review-2.jsonl' } }] } } });
+    const d = deps({
+      launch,
+      resolveSteeredModel: vi.fn(async () => ({ agent: 'claude', model: 'fable' })),
+      resolveSteeredModels: vi.fn(async () => [
+        { agent: 'claude', model: 'fable' }, { agent: 'codex', model: 'sol' },
+      ]),
+      analyzeTranscript: vi.fn((nativeRef: string) => nativeRef.endsWith('review-2.jsonl')
+        ? transcriptReply('I am checking the proposed change.')
+        : delayedFailureVisible ? rateLimited : pending),
+      nowMs: () => 0,
+      sleepMs: vi.fn(async () => {}),
+      readTaskState: vi.fn(async () => stopped ? 'exited' as const : 'running' as const),
+      stopFailedLaunch: vi.fn(async (taskId: string | null | undefined) => {
+        stopped = true;
+        return `stopped task ${taskId}`;
+      }),
+    });
+
+    const first = await launchFreshAmendmentReviewer(input, d as never);
+    expect(first).toMatchObject({ state: 'launched', taskId: 'task-1', firstReply: 'pending' });
+
+    delayedFailureVisible = true;
+    const retried = await launchFreshAmendmentReviewer(input, d as never);
+
+    expect(d.stopFailedLaunch).toHaveBeenCalledWith('task-1', { answeringOwnerId: 'judge-1' });
+    expect(d.readTaskState).toHaveBeenCalledTimes(2);
+    expect(launch).toHaveBeenCalledTimes(3);
+    expect(launch.mock.calls[2]![0]).toMatchObject({
+      account: 'auto', members: [{ role: 'judge', agent: 'codex', model: 'sol' }],
+    });
+    expect((launch.mock.calls[2]![0] as { idempotencyKey: string }).idempotencyKey)
+      .toContain(':after:task-1');
+    expect(retried).toMatchObject({ state: 'launched', taskId: 'task-2', relaunchedAfter: ['task-1'] });
+  });
+
+  it('keeps an explicit reviewer model pinned after a native 429', async () => {
+    const text = 'API Error: Request rejected (429); retry after 60s';
+    const rateLimited = analyzeClaudeResumeTranscript([
+      JSON.stringify({ type: 'user', message: { role: 'user', content: 'Review the amendment' } }),
+      JSON.stringify({ type: 'assistant', isApiErrorMessage: true, error: 'rate_limit',
+        message: { role: 'assistant', model: '<synthetic>', content: [{ type: 'text', text }] } }),
+    ].join('\n'));
+    let stopped = false;
+    const launch = vi.fn().mockResolvedValue(retainedLaunch());
+    const d = deps({
+      launch,
+      resolveSteeredModels: vi.fn(async () => [
+        { agent: 'claude', model: 'fable' }, { agent: 'codex', model: 'sol' },
+      ]),
+      analyzeTranscript: vi.fn(() => rateLimited),
+      readTaskState: vi.fn(async () => stopped ? 'exited' as const : 'running' as const),
+      stopFailedLaunch: vi.fn(async (taskId: string | null | undefined) => {
+        stopped = true;
+        return `stopped task ${taskId}`;
+      }),
+    });
+
+    const result = await launchFreshAmendmentReviewer({
+      ...input, reviewerModel: { agent: 'claude', model: 'fable' },
+    }, d as never);
+
+    expect(result).toMatchObject({ state: 'blocked', reason: 'account-walled', recovery: { state: 'stopped' } });
+    expect(d.resolveSteeredModels).not.toHaveBeenCalled();
+    expect(launch).toHaveBeenCalledTimes(1);
+    expect(launch.mock.calls[0]![0]).toMatchObject({
+      members: [{ role: 'judge', agent: 'claude', model: 'fable' }],
+    });
+  });
+
+  it('fails over a fresh reviewer after a 429 when exact-task containment succeeds', async () => {
+    const rateLimited = analyzeClaudeResumeTranscript([
+      JSON.stringify({ type: 'user', message: { role: 'user', content: 'Review the amendment' } }),
+      JSON.stringify({ type: 'assistant', isApiErrorMessage: true, error: 'rate_limit',
+        message: { role: 'assistant', model: '<synthetic>', content: [{ type: 'text', text: 'API Error: Request rejected (429)' }] } }),
+    ].join('\n'));
+    let stopped = false;
+    const launch = vi.fn()
+      .mockResolvedValueOnce(retainedLaunch())
+      .mockResolvedValueOnce({ data: { deduped: false, launch: { tasks: [{ taskId: 'task-2', ownerId: 'judge-2',
+        kickoffProof: { nativeRef: '/retained/review-2.jsonl' } }] } } });
+    const d = deps({
+      launch,
+      resolveSteeredModels: vi.fn(async () => [
+        { agent: 'claude', model: 'fable' }, { agent: 'codex', model: 'sol' },
+      ]),
+      analyzeTranscript: vi.fn((nativeRef: string) => nativeRef.endsWith('review-2.jsonl')
+        ? transcriptReply('I am checking the proposed change.') : rateLimited),
+      readTaskState: vi.fn(async () => stopped ? 'exited' as const : 'running' as const),
+      stopFailedLaunch: vi.fn(async (taskId: string | null | undefined) => {
+        stopped = true;
+        return `stopped task ${taskId}`;
+      }),
+    });
+
+    const result = await launchFreshAmendmentReviewer(input, d as never);
+
+    expect(d.stopFailedLaunch).toHaveBeenCalledWith('task-1', { answeringOwnerId: 'judge-1' });
+    expect(launch).toHaveBeenCalledTimes(2);
+    expect(launch.mock.calls[1]![0]).toMatchObject({
+      members: [{ role: 'judge', agent: 'codex', model: 'sol' }],
+    });
+    expect(result).toMatchObject({ state: 'launched', taskId: 'task-2', relaunchedAfter: ['task-1'] });
+  });
+
+  it('does not fail over a delayed 429 until the exact retained task is terminal', async () => {
+    const pending = analyzeClaudeResumeTranscript(JSON.stringify({
+      type: 'user', message: { role: 'user', content: 'Review the amendment' },
+    }));
+    const rateLimited = analyzeClaudeResumeTranscript([
+      JSON.stringify({ type: 'user', message: { role: 'user', content: 'Review the amendment' } }),
+      JSON.stringify({ type: 'assistant', isApiErrorMessage: true, error: 'rate_limit',
+        message: { role: 'assistant', model: '<synthetic>', content: [{ type: 'text', text: 'API Error: Request rejected (429)' }] } }),
+    ].join('\n'));
+    let delayedFailureVisible = false;
+    const launch = vi.fn().mockResolvedValueOnce(retainedLaunch()).mockResolvedValueOnce(retainedLaunch(true));
+    const d = deps({
+      launch,
+      resolveSteeredModels: vi.fn(async () => [
+        { agent: 'claude', model: 'fable' }, { agent: 'codex', model: 'sol' },
+      ]),
+      analyzeTranscript: vi.fn(() => delayedFailureVisible ? rateLimited : pending),
+      nowMs: () => 0,
+      sleepMs: vi.fn(async () => {}),
+      readTaskState: vi.fn(async () => 'running' as const),
+      stopFailedLaunch: vi.fn(async () => 'stop refused'),
+    });
+
+    expect(await launchFreshAmendmentReviewer(input, d as never))
+      .toMatchObject({ state: 'launched', taskId: 'task-1', firstReply: 'pending' });
+    delayedFailureVisible = true;
+
+    expect(await launchFreshAmendmentReviewer(input, d as never)).toMatchObject({
+      state: 'blocked', reason: 'account-walled', recovery: { state: 'unverified' },
+    });
+    expect(launch).toHaveBeenCalledTimes(2);
+    expect(d.stopFailedLaunch).toHaveBeenCalledWith('task-1', { answeringOwnerId: 'judge-1' });
+  });
+
   it('keeps an unreadable transcript as uncertainty', async () => {
     const d = deps({ launch: vi.fn().mockResolvedValue(retainedLaunch()), analyzeTranscript: vi.fn(() => null) });
     expect(await launchFreshAmendmentReviewer(input, d as never)).toMatchObject({ state: 'launched', firstReply: 'unreadable' });
@@ -1287,6 +1443,27 @@ describe('selectFreshReviewerModelForAccountSteer', () => {
       accounts: accounts.map((account) => ({ ...account, available: account.provider === 'codex' })),
       ranks,
     })).toEqual({ agent: 'codex', model: 'sol' });
+  });
+
+  it('returns unique available ranks in policy order and bounds the fallback list', () => {
+    const extendedRanks = [
+      ...ranks,
+      { rank: 3, agent: 'claude', model: 'opus' },
+      { rank: 4, agent: 'codex', model: 'sol-2' },
+      { rank: 5, agent: 'claude', model: 'sonnet' },
+      { rank: 6, agent: 'claude', model: 'fable' },
+    ] as const;
+    expect(selectFreshReviewerModelsForAccountSteer({
+      forcedAccounts: [], excludeAccounts: [], accounts, ranks: extendedRanks,
+    })).toEqual([
+      { agent: 'claude', model: 'fable' },
+      { agent: 'codex', model: 'sol' },
+      { agent: 'claude', model: 'opus' },
+      { agent: 'codex', model: 'sol-2' },
+    ]);
+    expect(selectFreshReviewerModelsForAccountSteer({
+      forcedAccounts: [], excludeAccounts: [], accounts, ranks: extendedRanks,
+    })).toHaveLength(MAX_FRESH_REVIEWER_MODEL_ATTEMPTS);
   });
 
   it('never widens the model policy or falls back to a default login when no allowed rank is available', () => {

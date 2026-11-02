@@ -30,8 +30,14 @@ import type postgres from 'postgres';
 import { dispatchProjectedTool, lookupByMcpName } from '@papercusp/agent-mcp';
 // Importing the tool module is what registers `plans:new` in the projection registry.
 import '../new';
+import '../add-item';
+import '../get';
 import { DEFAULT_WORKSPACE_ID } from '../../../workspace-registry';
 import { setupPlanPgFixture, seedPlan, cleanupPlans, type PlanPgFixture } from './_pg-tool-fixture';
+import { BENCHMARK_SCRATCH_PLAN_TOOLS, evaluateSessionConfinement } from '../../../capability-envelope/session-confinement';
+import { setSessionConfinementResolver } from '../../../capability-envelope/session-confinement-port';
+import * as reuseAuthoring from '../../../code-intelligence/reuse-authoring';
+import * as researchTrail from '../../../code-intelligence/research-trail';
 
 const HARNESS = `zzz-newsurf-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 const WS = DEFAULT_WORKSPACE_ID;
@@ -81,6 +87,8 @@ function ctx(): never {
     harnessSlug: HARNESS,
     runId: 'plans-new-surface',
     role: 'su',
+    isSuperuser: true,
+    uiClientId: 'su-private-plan-surface',
     gateBypass: { role: true, capability: true, quota: true },
     transport: 'mcp',
     requestedFormat: 'json',
@@ -189,5 +197,54 @@ describe('plans:new invalid_input — at the tool surface (R-4)', () => {
     expect(d.error?.code, brief({ payload, error: d.error })).not.toBe('invalid_input');
     expect(JSON.stringify(d.error ?? {})).not.toMatch(/corrected call/i);
     expect(d.ok, brief({ payload, error: d.error })).toBe(true);
+  });
+});
+
+describe('benchmark native planning — maintained plan handlers', () => {
+  it('creates a private draft, adds its task and reads it through the real schemas and PostgreSQL', async () => {
+    const boundary = { scratchPrefix: 'benchmark-scratch-abc123def456-', reviewedSlug: 'benchmark-observer-private', harness: HARNESS };
+    const confinement = { denyTools: [], denyOutside: BENCHMARK_SCRATCH_PLAN_TOOLS, denyPlansOutside: boundary,
+      denyAmbientContext: true as const,
+      imposedBy: 'benchmark-host', reason: 'private draft planning' };
+    setSessionConfinementResolver(() => confinement);
+    const reuse = vi.spyOn(reuseAuthoring, 'authoringReuse');
+    const research = vi.spyOn(researchTrail, 'suggestResearchAnchors');
+    try {
+    // Match the native brief's actual argument shape; this is not the harmless
+    // execution witness used by the separate persisted-dispatch boundary suite.
+    const own = { harness: HARNESS, slug: `${boundary.scratchPrefix}solution-2026-11-02` };
+    const create = { ...own, title: 'Private benchmark solution', status: 'draft', force: true };
+    expect(evaluateSessionConfinement({ toolName: 'plans:new', args: create, confinement }).allowed).toBe(true);
+    const { d, payload } = await callNew(create);
+    expect(d.ok, brief({ payload, error: d.error })).toBe(true);
+    expect(payload?.error, brief(payload)).toBeUndefined();
+    expect(await planRowExists(own.slug)).toBe(true);
+    const add = { ...own, phase: 'Phase 1 — Solve', text: 'Inspect the failure and verify the fix', importance: 'normal' };
+    expect(evaluateSessionConfinement({ toolName: 'plans:add-item', args: add, confinement }).allowed).toBe(true);
+    const added = await dispatchProjectedTool(lookupByMcpName('plans:add-item')!, 'plans:add-item', add, ctx(), {});
+    expect(added.ok, brief(added)).toBe(true);
+    expect(added.result?.isError, brief(added.result)).not.toBe(true);
+    expect(evaluateSessionConfinement({ toolName: 'plans:get', args: own, confinement }).allowed).toBe(true);
+    const read = await dispatchProjectedTool(lookupByMcpName('plans:get')!, 'plans:get', own, ctx(), {});
+    expect(read.ok, brief(read)).toBe(true);
+    const text = JSON.stringify(read.result);
+    expect(text).toContain('Inspect the failure and verify the fix');
+    expect(text).toContain('draft');
+    expect(reuse).not.toHaveBeenCalled();
+    expect(research).not.toHaveBeenCalled();
+    expect(JSON.stringify(d.result)).not.toContain('reuseAdvice');
+    expect(JSON.stringify(added.result)).not.toContain('suggestedAnchors');
+    // A frozen-only pass must not hide an accidental blanket removal of advice.
+    setSessionConfinementResolver(() => null);
+    reuse.mockResolvedValue(undefined);
+    research.mockResolvedValue({ anchors: [], manualEntry: true });
+    const control = await callNew({ ...create, slug: `${boundary.scratchPrefix}control-2026-11-02` });
+    expect(control.d.ok, brief(control)).toBe(true);
+    expect(control.payload?.error, brief(control)).toBeUndefined();
+    expect(reuse).toHaveBeenCalledOnce();
+    expect(research).toHaveBeenCalledExactlyOnceWith(WS, 'su-private-plan-surface', HARNESS);
+    } finally {
+      reuse.mockRestore(); research.mockRestore(); setSessionConfinementResolver(undefined);
+    }
   });
 });
