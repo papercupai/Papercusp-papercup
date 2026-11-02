@@ -1,12 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { judgeSamples, runSummaryCohort, validateSummary, mcpIdentityFixture, identityPreparation, identityPreparationProbe, IdentityPreparationError, isolatedIdentityRuntimeContract, identityProcessGroupCensus, identityLoadedHealth, identitySelectedSource, type IdentityRuntime, type Sample, type McpIdentityFixture } from './bench-work-items-get';
+import { judgeSamples, runSummaryCohort, validateSummary, mcpIdentityFixture, identityPreparation, identityPreparationProbe, IdentityPreparationError, isolatedIdentityRuntimeContract, identityProcessGroupCensus, identityLoadedHealth, identitySelectedSource, identityExecutableFingerprint, identityFileMappings, identityMappedFileFingerprints, type IdentityRuntime, type Sample, type McpIdentityFixture } from './bench-work-items-get';
 import { AgentMcpConnectionError } from '../packages/operator-core/lib/agent-mcp-client';
 import { maybeBatchNudge } from '../packages/operator-core/lib/code-run-batch-nudge';
 import type { PerfWorkloadManifest } from '../packages/operator-core/lib/system-health/perf-workload-run';
 import { createHash, randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { open } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { verifierSourceFiles } from '../packages/operator-core/lib/verifier-source';
@@ -53,6 +54,114 @@ describe('independently selected identity source archive', () => {
     const dir = mkdtempSync(join(tmpdir(), 'identity-working-source-'));
     try { expect(identitySelectedSource(dir, {})).toBeNull(); }
     finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+});
+
+describe('actual executable bytes in the identity manifest', () => {
+  it.runIf(process.platform === 'linux')('hashes the actual running executable through its proc link', async () => {
+    const fingerprint = await identityExecutableFingerprint(`/proc/${process.pid}/exe`);
+    expect(fingerprint.sha256).toBe(createHash('sha256').update(readFileSync(process.execPath)).digest('hex'));
+    expect(BigInt(fingerprint.bytes)).toBeGreaterThan(0n);
+    expect(BigInt(fingerprint.ino)).toBeGreaterThan(0n);
+    expect(JSON.parse(JSON.stringify(fingerprint))).toEqual(fingerprint);
+  });
+
+  it.each(['replace', 'mutate', 'retarget'] as const)('rejects executable %s during hashing and closes the descriptor', async change => {
+    const dir = mkdtempSync(join(tmpdir(), 'identity-executable-'));
+    const original = join(dir, 'original');
+    const replacement = join(dir, 'replacement');
+    const link = join(dir, 'exe');
+    writeFileSync(original, 'old executable');
+    writeFileSync(replacement, 'new executable');
+    symlinkSync(original, link);
+    let descriptor: Awaited<ReturnType<typeof open>> | undefined;
+    try {
+      await expect(identityExecutableFingerprint(link, async path => {
+        descriptor = await open(path, 'r');
+        const createReadStream = descriptor.createReadStream.bind(descriptor);
+        descriptor.createReadStream = options => {
+          const stream = createReadStream(options);
+          stream.once('data', () => {
+            if (change === 'replace') renameSync(replacement, original);
+            else if (change === 'mutate') writeFileSync(original, 'changed executable bytes');
+            else { rmSync(link); symlinkSync(replacement, link); }
+          });
+          return stream;
+        };
+        return descriptor;
+      })).rejects.toThrow('executable changed during snapshot');
+      expect(descriptor?.fd).toBe(-1);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('fails closed for missing and non-file executable links', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'identity-executable-'));
+    try {
+      await expect(identityExecutableFingerprint(join(dir, 'missing'))).rejects.toMatchObject({ code: 'ENOENT' });
+      await expect(identityExecutableFingerprint(dir)).rejects.toThrow('not a regular file');
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+});
+
+describe('observed native backing-file bytes', () => {
+  const maps = '1000-2000 r--p 00000000 103:204 123 /lib/native library.so\n' +
+    '2000-3000 r-xp 00001000 103:204 123 /lib/native library.so\n' +
+    '3000-4000 rw-p 00000000 00:00 0 [heap]\n';
+  const fingerprint = { path: '/host/lib/native library.so', sha256: 'a'.repeat(64),
+    bytes: '8192', dev: ((0x103n << 8n) | (0x200n << 12n) | 4n).toString(),
+    ino: '123', mode: '33188', mtimeNs: '1', ctimeNs: '1' };
+  it('deduplicates backing files while retaining their complete mapping census and coverage limits', async () => {
+    const opened: string[] = [];
+    const result = await identityMappedFileFingerprints(123, { maps: async () => maps,
+      start: async () => '456', fingerprint: async path => { opened.push(path); return fingerprint; } });
+    expect(opened).toEqual(['/lib/native library.so']);
+    expect(result.mappings).toHaveLength(2);
+    expect(result.files).toEqual([{ path: '/lib/native library.so', fingerprint }]);
+    expect(result.notCovered).toEqual(['anonymous-and-jit-memory', 'kernel-anonymous-io-uring-buffers', 'modified-private-pages', 'unobserved-dynamic-imports']);
+  });
+  it('retains kernel io_uring mappings without pretending that their buffers have file hashes', async () => {
+    const withRing = maps + '4000-5000 rw-s 00000000 00:10 789 anon_inode:[io_uring]\n';
+    const opened: string[] = [];
+    const result = await identityMappedFileFingerprints(123, { maps: async () => withRing, start: async () => '456',
+      fingerprint: async path => { opened.push(path); return fingerprint; } });
+    expect(opened).toEqual(['/lib/native library.so']);
+    expect(result.mappings.at(-1)).toMatchObject({ path: 'anon_inode:[io_uring]', backing: 'kernel-anonymous', inode: '789' });
+    expect(result.notCovered).toContain('kernel-anonymous-io-uring-buffers');
+  });
+  it.each(['', 'invalid', '1000-1000 r--p 0 00:00 0',
+    maps.replace('2000-3000', '1500-3000'), maps.replace('123 /lib', '123 [unknown] /lib'),
+    maps.replaceAll('library.so', 'library.so (deleted)'), maps.replaceAll('library.so', 'library\\012.so')])(
+    'refuses missing, malformed, overlapping or opaque maps (%s)', value => {
+      expect(() => identityFileMappings(value)).toThrow();
+    });
+  it.each(['dev', 'ino'] as const)('refuses a replaced pathname with a different %s', async key => {
+    await expect(identityMappedFileFingerprints(123, { maps: async () => maps, start: async () => '456',
+      fingerprint: async () => ({ ...fingerprint, [key]: '999' }) })).rejects.toThrow('backing file identity differs');
+  });
+  it.each(['maps', 'start'] as const)('rejects a %s change while hashing', async change => {
+    let changed = false;
+    await expect(identityMappedFileFingerprints(123, {
+      maps: async () => changed && change === 'maps' ? maps.replaceAll('r-xp', 'r--p') : maps,
+      start: async () => changed && change === 'start' ? '457' : '456',
+      fingerprint: async () => { changed = true; return fingerprint; },
+    })).rejects.toThrow('mappings changed during snapshot');
+  });
+  it('fails closed on read permission errors and never invents an empty closure', async () => {
+    await expect(identityMappedFileFingerprints(123, { maps: async () => maps, start: async () => '456',
+      fingerprint: async () => { throw Object.assign(new Error('denied'), { code: 'EACCES' }); } })).rejects.toMatchObject({ code: 'EACCES' });
+    await expect(identityMappedFileFingerprints(123, { maps: async () => '3000-4000 rw-p 0 00:00 0 [heap]',
+      start: async () => '456', fingerprint: async () => fingerprint })).rejects.toThrow('mappings unavailable');
+  });
+  it.runIf(process.platform === 'linux')('pins real libraries of a live process through its mount namespace', async () => {
+    const child = spawn(process.execPath, ['-e', 'process.stdout.write("ready");setInterval(()=>{},1000)'], { stdio: ['ignore', 'pipe', 'ignore'] });
+    try {
+      await once(child.stdout!, 'data');
+      const result = await identityMappedFileFingerprints(child.pid!);
+      expect(result.files.some(file => file.fingerprint.sha256 === createHash('sha256').update(readFileSync(process.execPath)).digest('hex'))).toBe(true);
+      const library = result.files.find(file => /libc\.so/.test(file.path));
+      expect(library).toBeDefined();
+      expect(library!.fingerprint.sha256).toBe(createHash('sha256').update(readFileSync(library!.fingerprint.path)).digest('hex'));
+    } finally { const exited = once(child, 'exit'); child.kill('SIGTERM'); await exited; }
   });
 });
 

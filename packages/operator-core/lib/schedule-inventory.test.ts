@@ -11,6 +11,7 @@ import {
   SCHEDULE_SOURCES,
   collectStartupActivity,
   scheduleStartupFeature,
+  reactionStartupFeature,
   checkStartupActivityCensus,
   STARTUP_ACTIVITY_ENTRYPOINTS,
   type ScheduleInventoryDeps,
@@ -21,6 +22,7 @@ import {
 import type { DbosScheduledEntry } from './dbos/dbos-schedule-introspect';
 import { EXTERNAL_SCHEDULES, SYNC_TRIGGERED_SCHEDULES } from './schedule-descriptors.mjs';
 import { runWithWorkspace } from './workspace-als';
+import { startupReactionFeatureId } from './events/reaction-id';
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore — pure JS guard script, no .d.ts; imported for its allow/baseline sets only.
 import { BASELINE, ALLOWLIST, ALLOWLIST_DIRS } from '../../../scripts/check-no-raw-setinterval.mjs';
@@ -68,6 +70,40 @@ const startupRow = (over: Partial<ScheduleInventoryRow> = {}): ScheduleInventory
 });
 
 describe('startup activity disclosure', () => {
+  it('exposes measured stop state without passing through arbitrary runtime text', () => {
+    const pending = scheduleStartupFeature(startupRow({ source: 'managed',
+      detail: { running: true, cancellable: true, stopStatus: 'pending' } }));
+    expect(pending).toMatchObject({ observed: 'running', stop: { status: 'pending', cancellable: true } });
+    const unsafe = scheduleStartupFeature(startupRow({ source: 'managed',
+      detail: { running: true, cancellable: false, stopStatus: 'secret /private/path' } }));
+    expect(unsafe.stop).toEqual({ status: null, cancellable: false });
+    expect(JSON.stringify(unsafe)).not.toContain('secret');
+  });
+  it('exposes registered reactions under the exact workspace/rule dispatch policy identity', async () => {
+    const rule = { id: 'follow-up', on: ['work:done', 'work:changed'], fire: 'activity:report' };
+    const feature = reactionStartupFeature(rule, 'workspace-a');
+    expect(feature).toMatchObject({ id: startupReactionFeatureId('workspace-a', rule.id), origin: 'event',
+      trigger: 'work:done, work:changed', entrypointIds: ['event-dispatch'],
+      scope: { kind: 'workspace', id: 'workspace-a' }, observed: 'unknown', desired: { automatic: true } });
+    expect(reactionStartupFeature(rule, 'workspace-b').id).not.toBe(feature.id);
+    expect(reactionStartupFeature({ ...rule, id: 'different-rule' }, 'workspace-a').id).not.toBe(feature.id);
+    const snapshot = await runWithWorkspace('workspace-a', () => collectStartupActivity(emptyInventory, {
+      reactions: async () => [feature, reactionStartupFeature(rule, 'workspace-b')],
+      native: async () => [], policy: async item => { expect(item.id).toBe(feature.id); return { automatic: false, pausedUntil: null, revision: 1 }; },
+      history: async ids => { expect(ids).toEqual([feature.id]); return []; },
+    }));
+    expect(snapshot.features).toHaveLength(1);
+    expect(snapshot.features[0].desired.automatic).toBe(false);
+  });
+
+  it('reports an unavailable event registry without leaking its error', async () => {
+    const snapshot = await collectStartupActivity(emptyInventory, {
+      reactions: async () => { throw new Error('secret registry detail'); },
+    });
+    expect(snapshot.unavailable).toContain('events');
+    expect(JSON.stringify(snapshot)).not.toContain('secret registry detail');
+  });
+
   it('uses the managed registration policy identity and filters another workspace before policy/history reads', async () => {
     const featureId = `activity-${'a'.repeat(64)}`;
     const activity = { kind: 'workspace' as const, workspaceId: 'workspace-a', featureId };
@@ -143,11 +179,11 @@ describe('startup activity disclosure', () => {
       getManaged: () => { throw new Error('private path'); },
       getSiblingManaged: async () => { throw new Error('private URL'); },
     });
-    expect(snapshot.unavailable).toEqual(['census', 'federation', 'history', 'managed', 'native', 'policy', 'routines']);
+    expect(snapshot.unavailable).toEqual(['census', 'events', 'federation', 'history', 'managed', 'native', 'policy', 'routines']);
     expect(JSON.stringify(snapshot)).not.toContain('secret');
     expect(JSON.stringify(snapshot)).not.toContain('private');
     const empty = await collectStartupActivity(emptyInventory, { native: async () => [], policy: async () => null, history: async () => [] });
-    expect(empty.unavailable).toEqual(['census']);
+    expect(empty.unavailable).toEqual(['census', 'events']);
     expect(empty.census.complete).toBe(false);
     expect(empty.census.problems).toContain('missing:native-login');
   });
@@ -164,7 +200,7 @@ describe('startup activity disclosure', () => {
     expect(snapshot.features[0]!.desired.automatic).toBe(false);
     expect(snapshot.features[0]!.observed).toBe('unknown');
     expect(historyId).toBe(snapshot.features[0]!.id);
-    expect(snapshot.unavailable).toEqual(['census']);
+    expect(snapshot.unavailable).toEqual(['census', 'events']);
   });
 
   it('bounds history, excludes foreign feature records and strips undeclared nested fields', async () => {

@@ -119,6 +119,15 @@ afterEach(() => {
 });
 
 describe('embed sidecar pressure supervision contract', () => {
+  it('starts the last-known-good bundle after a transient shared-tree build failure', () => {
+    const unit = readFileSync(SIDECAR_UNIT, 'utf8');
+    const environment = unit.split('\n').map((line) => line.trim()).filter((line) => line.startsWith('Environment='));
+
+    expect(unit).toMatch(/^ExecStartPre=.*papercusp-script-snapshot\.sh .*bin\/bundle-host\.sh/m);
+    expect(environment).toContain('Environment=PAPERCUSP_BUNDLE_ALLOW_STALE_START=1');
+    expect(unit).toContain('Restart=always');
+  });
+
   it('bounds sidecar memory and turns an OOM into a restartable unit failure', () => {
     const unit = readFileSync(SIDECAR_UNIT, 'utf8');
 

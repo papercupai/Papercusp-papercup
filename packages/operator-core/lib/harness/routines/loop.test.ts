@@ -85,7 +85,10 @@ vi.mock('@papercusp/flags/server', () => ({ getFlag: getFlagSpy }));
 vi.mock('@papercusp/flags', () => ({ FLAGS: { LOOPS: 'papercusp-loops' } }));
 vi.mock('../../events/await/inbox-wake-arm', () => ({ armInboxWake: armInboxWakeSpy }));
 vi.mock('../../scheduler/claim-spec-store', () => ({ getClaimSpecRecord: getClaimSpecRecordSpy }));
-vi.mock('../../agent-fleets-store', () => ({ getFleetControlStates: getFleetControlStatesSpy }));
+vi.mock('../../agent-fleets-store', () => ({
+  FLEET_TYPES: ['single', 'paired'] as const,
+  getFleetControlStates: getFleetControlStatesSpy,
+}));
 
 const { recordLoopTransitionSpy } = vi.hoisted(() => ({
   recordLoopTransitionSpy: vi.fn(async (..._args: unknown[]) => undefined),

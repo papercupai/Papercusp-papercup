@@ -9,8 +9,7 @@
  * Three layers, so a regression is caught where it originates:
  *   1. the pure decision (`decideConditionAssignment`) over owned / unowned / stale /
  *      stalled / unmeasured / unreadable ownership;
- *   2. the catalog policy (which prefixes are gate-owned, and that frozen-repair LEGS
- *      stay claimable by anyone);
+ *   2. the catalog policy (including current-run frozen-repair legs);
  *   3. the mint itself — `acquireConditionOwner` with every store faked — asserting what
  *      actually reaches `createWorkItem` (assignee, assignedBy, summary).
  */
@@ -170,6 +169,7 @@ describe('catalog assignment policy', () => {
       'green-checkpoint-run-progress:',
       'main-behind-staging:',
       FROZEN_REPAIR_CONVERGENCE_CONDITION_PREFIX,
+      FROZEN_REPAIR_LEG_CONDITION_PREFIX,
     ]) {
       expect(policyOf(prefix), prefix).toBe('live-gate-owner');
     }
@@ -179,14 +179,10 @@ describe('catalog assignment policy', () => {
     const gateFamily = /^(green-|gate-|main-behind-)/;
     const missing = ACTIONABLE_CONDITIONS.filter(
       (c) =>
-        (gateFamily.test(c.prefix) || c.prefix === FROZEN_REPAIR_CONVERGENCE_CONDITION_PREFIX) &&
+        (gateFamily.test(c.prefix) || c.prefix.startsWith('frozen-repair-')) &&
         c.assignTo !== 'live-gate-owner',
     ).map((c) => c.prefix);
     expect(missing).toEqual([]);
-  });
-
-  it('frozen-repair LEGS stay claimable by anyone (D-028/D-029 of green-main-cycle-time-2026-10-08)', () => {
-    expect(policyOf(FROZEN_REPAIR_LEG_CONDITION_PREFIX)).toBeUndefined();
   });
 
   it('non-gate conditions declare no assignment policy', () => {
@@ -227,6 +223,21 @@ describe('acquireConditionOwner assigns the mint at creation (P-004)', () => {
     expect(r.unassignedReason).toBeUndefined();
   });
 
+  it.each(['packages/a/x.test.ts', 'lint:tsc'])(
+    'assigns the current-run repair leg %s to the live gate owner (EI-27206037186017447)',
+    async (entry) => {
+      const readGateOwner = vi.fn(async () => live());
+      const r = await acquireConditionOwner(
+        `${FROZEN_REPAIR_LEG_CONDITION_PREFIX}papercusp:${entry}`, spec, { readGateOwner },
+      );
+      expect(readGateOwner).toHaveBeenCalledWith('papercusp');
+      expect(h.createWorkItem.mock.calls[0][0]).toMatchObject({
+        assignee: 'su-gate-owner', assignedBy: CONDITION_BRIDGE_ACTOR,
+      });
+      expect(r).toMatchObject({ created: true, assignedTo: 'su-gate-owner' });
+    },
+  );
+
   it('unowned: the created row is unassigned and its summary states why', async () => {
     const readGateOwner = vi.fn(async () =>
       notLive({ claimState: 'no-object', assessment: 'unowned', takenBy: null, holderSessionState: null }),
@@ -264,7 +275,7 @@ describe('acquireConditionOwner assigns the mint at creation (P-004)', () => {
 
   it('a condition with no policy never reads gate ownership and mints unassigned, summary untouched', async () => {
     const readGateOwner = vi.fn(async () => live());
-    await acquireConditionOwner('frozen-repair-leg:papercusp:lint:tsc', spec, { readGateOwner });
+    await acquireConditionOwner('single-primary:no-primary', spec, { readGateOwner });
 
     expect(readGateOwner).not.toHaveBeenCalled();
     const input = h.createWorkItem.mock.calls[0][0];
@@ -358,7 +369,7 @@ describe('acquireConditionOwner re-offers an unassigned incumbent on re-fire (pl
   it('a condition with no policy never reads the incumbent row or gate ownership', async () => {
     const readGateOwner = vi.fn(async () => live());
     h.incumbentRows = [];
-    const r = await acquireConditionOwner('frozen-repair-leg:papercusp:lint:tsc', spec, { readGateOwner });
+    const r = await acquireConditionOwner('single-primary:no-primary', spec, { readGateOwner });
     expect(r).toMatchObject({ workItem: 'WI-INCUMBENT', created: false });
     expect(readGateOwner).not.toHaveBeenCalled();
     expect(h.claimWorkItem).not.toHaveBeenCalled();

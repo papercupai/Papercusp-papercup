@@ -24,6 +24,12 @@ import {
 import { parsePushSnapshot } from './push-snapshot';
 import { toolsetFromNames, type RecipientToolset } from './push-toolset';
 
+const cellReadModuleLoaded = vi.hoisted(() => vi.fn());
+vi.mock('../cell-read', () => {
+  cellReadModuleLoaded();
+  return { readCell: vi.fn(() => { throw new Error('file-only code notes must not dispatch a cell read'); }) };
+});
+
 const now = Date.now();
 const snapshot = () => parsePushSnapshot(JSON.stringify({
   schema: 'graph-dependency-snapshot-v1', index: { backend: 'first-party-imports', lastCommit: 'a'.repeat(40) },
@@ -71,6 +77,15 @@ function channel(notes: ReadNotesContextDeps, enabled = async () => true, toolse
 }
 
 describe('R-7: a fresh code note is pushed on first touch of its file', () => {
+  it('initializes and checks file-only notes without loading the cell dispatcher', async () => {
+    writeFileSync(join(root, 'isolated.ts'), 'export const value = 1;\n');
+    const digest = await tokenOf('isolated.ts');
+    const [checked] = await readNoteAnchorStaleness(
+      [note('code-note:file-isolation', [{ path: 'isolated.ts', digest }])], input('isolated.ts'));
+    expect(checked!.depsStale?.status).toBe('fresh');
+    expect(cellReadModuleLoaded).not.toHaveBeenCalled();
+  });
+
   it('pushes the note body for the touched file when its anchor still matches (real file hash)', async () => {
     writeFileSync(join(root, 'target-r7.ts'), 'export const retries = 3; // deliberate\n');
     const digest = await tokenOf('target-r7.ts');

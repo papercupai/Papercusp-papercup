@@ -1,7 +1,8 @@
 import { describe, it, expect, vi } from 'vitest';
-const deps = vi.hoisted(() => ({ loads: 0 }));
+const deps = vi.hoisted(() => ({ loads: 0, loadStack: '' }));
 vi.mock('../projected-tool-deps', () => {
   deps.loads++;
+  deps.loadStack = new Error('Unexpected eager dispatcher import').stack ?? '';
   return { PROJECTED_DEPS: {} };
 });
 vi.mock('../device-operator-actions', () => ({ workspaceBackgroundActivityAllowed: vi.fn(async () => true) }));
@@ -11,9 +12,10 @@ import { buildReactionCtx, fireReactionInProcess, reactionBackgroundActivityAllo
 import { workspaceBackgroundActivityAllowed } from '../device-operator-actions';
 import { CACHE_BUMP_TAGS_ACTION } from './builtin-actions';
 import type { ReactionCause } from './types';
+import { startupReactionFeatureId } from './reaction-id';
 
 it('builds reaction context without loading the product dispatcher', () => {
-  expect(deps.loads).toBe(0);
+  expect(deps.loads, deps.loadStack).toBe(0);
 });
 
 const parent = {
@@ -34,16 +36,29 @@ describe('event execution admission', () => {
     const options = { fire: 'unregistered:optional', args: {}, parentCtx: parent, cause };
     await expect(fireReactionInProcess(options)).resolves.toEqual({ ok: true, withheld: true });
     await expect(fireReactionInProcess(options)).resolves.toMatchObject({ ok: false, error: 'unknown reaction tool "unregistered:optional"' });
-    expect(workspaceBackgroundActivityAllowed).toHaveBeenLastCalledWith('w1');
-    expect(deps.loads).toBe(0);
+    expect(workspaceBackgroundActivityAllowed).toHaveBeenLastCalledWith('w1', startupReactionFeatureId('w1', 'r1'));
+    expect(deps.loads, deps.loadStack).toBe(0);
   });
 
   it('keeps the closed cache/control actions available without reading optional policy', async () => {
     vi.mocked(workspaceBackgroundActivityAllowed).mockClear();
-    await expect(reactionBackgroundActivityAllowed('w1', CACHE_BUMP_TAGS_ACTION)).resolves.toBe(true);
+    await expect(reactionBackgroundActivityAllowed('w1', CACHE_BUMP_TAGS_ACTION, 'r1')).resolves.toBe(true);
     for (const workspaceId of ['', '*', ' '])
-      await expect(reactionBackgroundActivityAllowed(workspaceId, CACHE_BUMP_TAGS_ACTION)).resolves.toBe(false);
+      await expect(reactionBackgroundActivityAllowed(workspaceId, CACHE_BUMP_TAGS_ACTION, 'r1')).resolves.toBe(false);
     expect(workspaceBackgroundActivityAllowed).not.toHaveBeenCalled();
+  });
+
+  it('isolates disabled rules and workspaces and rejects optional work without a rule identity', async () => {
+    const disabled = startupReactionFeatureId('w1', 'r1');
+    vi.mocked(workspaceBackgroundActivityAllowed).mockImplementation(async (_workspace, featureId) => featureId !== disabled);
+    await expect(fireReactionInProcess({ fire: 'unregistered:optional', args: {}, parentCtx: parent, cause }))
+      .resolves.toEqual({ ok: true, withheld: true });
+    await expect(reactionBackgroundActivityAllowed('w1', 'unregistered:optional', 'r2')).resolves.toBe(true);
+    await expect(reactionBackgroundActivityAllowed('w2', 'unregistered:optional', 'r1')).resolves.toBe(true);
+    vi.mocked(workspaceBackgroundActivityAllowed).mockClear();
+    await expect(reactionBackgroundActivityAllowed('w1', 'unregistered:optional', '')).resolves.toBe(false);
+    expect(workspaceBackgroundActivityAllowed).not.toHaveBeenCalled();
+    vi.mocked(workspaceBackgroundActivityAllowed).mockResolvedValue(true);
   });
 });
 

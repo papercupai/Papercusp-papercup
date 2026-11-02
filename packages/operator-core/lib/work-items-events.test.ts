@@ -94,6 +94,15 @@ const edgeRel = (srcId: string, dstId: string, rel: string) => ({
 });
 
 describe('helpers', () => {
+  it.each(['Plan GREEN-MAIN: body-only lane', '', null, undefined])(
+    'preserves canonical summary on claimable payloads (%s)',
+    (summary) => {
+      const item = wi({ summary });
+      expect(workItemClaimableEventPayload(item, 'released')).toHaveProperty('summary', summary ?? null);
+      expect(workItemClaimableEventPayload(item)).toHaveProperty('summary', summary ?? null);
+    },
+  );
+
   it('stamps lifecycle payloads with their capture time without mutating the snapshot', () => {
     const payload = { id: 'WI-OBS', state: 'open' };
     const observedAt = '2026-08-27T10:00:00.000Z';

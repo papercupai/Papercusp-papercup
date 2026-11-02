@@ -18,11 +18,13 @@
  * same call shape (see `./durable`).
  */
 
+// Use the shared registry/dispatcher without agent-mcp's eager tool bootstrap.
+// Admission and context-only imports must not initialize the product graph.
 import {
   lookupByMcpName,
   dispatchProjectedTool,
   type UnifiedToolContext,
-} from '@papercusp/agent-mcp';
+} from '@papercusp/tooldef';
 import { withWorkspace } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../workspace-registry';
 import { fireBuiltinReactionAction, isBuiltinReactionAction, builtinReactionControlPurpose } from './builtin-actions';
@@ -32,6 +34,7 @@ import {
   type ResolveClassFireResult,
 } from './class-fire-target';
 import type { ReactionCause } from './types';
+import { startupReactionFeatureId } from './reaction-id';
 
 export interface FireReactionResult {
   ok: boolean;
@@ -144,13 +147,14 @@ async function resolveClassFire(
  * the reaction ctx, and dispatches. Never throws — returns `{ ok:false, error }`
  * so the caller (the engine) can log without breaking anything.
  */
-export async function reactionBackgroundActivityAllowed(workspaceId: string, fire: string): Promise<boolean> {
+export async function reactionBackgroundActivityAllowed(workspaceId: string, fire: string, ruleId: string): Promise<boolean> {
   if (!workspaceId.trim() || workspaceId === '*') return false;
   // An explicit control purpose grants the exemption, never execution mode,
   // queue priority or caller args. New built-ins are optional until classified.
   if (builtinReactionControlPurpose(fire)) return true;
+  if (typeof ruleId !== 'string' || !ruleId.trim()) return false;
   const { workspaceBackgroundActivityAllowed } = await import('../device-operator-actions');
-  return workspaceBackgroundActivityAllowed(workspaceId);
+  return workspaceBackgroundActivityAllowed(workspaceId, startupReactionFeatureId(workspaceId, ruleId));
 }
 
 export async function fireReactionInProcess(opts: {
@@ -165,7 +169,7 @@ export async function fireReactionInProcess(opts: {
     opts.parentCtx.workspaceId ?? opts.parentCtx.principal?.workspaceId ?? activeWorkspaceId();
 
   if (!workspaceId?.trim() || workspaceId === '*') return { ok: false, error: 'no workspace to scope the reaction' };
-  if (!await reactionBackgroundActivityAllowed(workspaceId, opts.fire))
+  if (!await reactionBackgroundActivityAllowed(workspaceId, opts.fire, opts.cause.ruleId))
     return { ok: true, withheld: true };
 
   // Built-in NON-TOOL reaction actions (e.g. `cache.bumpTags`). These are

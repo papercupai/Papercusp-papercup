@@ -21,10 +21,7 @@ import { FACT_DEPENDENCY_OBSERVED_CHARS, type FactDependency } from '../../agent
 
 const readCellSpy = vi.hoisted(() => vi.fn());
 
-vi.mock('../../cell-read', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../../cell-read')>();
-  return { ...actual, readCell: readCellSpy };
-});
+vi.mock('../../cell-read', () => ({ readCell: readCellSpy }));
 
 const dep = (over: Partial<FactDependency> = {}): FactDependency => ({
   cell: 'pipeline.myChange',
@@ -199,9 +196,9 @@ describe('captureFactDependencies — independent reads share the request budget
 
     const pending = captureFactDependencies(['slow-a', 'slow-b'], {} as never, {} as never);
     try {
-      // A serial implementation starts only slow-a here and makes the second
-      // dependency pay the full first resolver latency again.
-      expect(started).toEqual(['slow-a', 'slow-b']);
+      // Allow lazy dispatcher initialization, but keep both resolvers blocked.
+      // A serial implementation starts only slow-a until that gate opens.
+      await vi.waitFor(() => expect(started).toEqual(['slow-a', 'slow-b']));
     } finally {
       release();
     }

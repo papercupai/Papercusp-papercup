@@ -6,7 +6,7 @@ import { closeSync, copyFileSync, existsSync, lstatSync, mkdirSync, openSync, re
 import { createRequire, isBuiltin } from 'node:module';
 import { tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import type { Plugin } from 'esbuild';
 import { parse as parseToml } from '@iarna/toml';
 import { classifyHttpError } from '@papercusp/papercusp-shared/agent';
@@ -25,6 +25,7 @@ import { decideWatchdogExpiry } from '../../../scripts/lib/batch-watchdog.mjs';
 import { findUnsatisfiedDeclaredDepRanges } from '../../../scripts/check-declared-deps-extracted.mjs';
 // @ts-ignore -- share the unit-test process boundary with other standalone runtimes.
 import { isolatedRuntimeEnv } from '../../../scripts/lib/isolation-child-env.mjs';
+import { readNativeArtifactBytes, readNativeProcessTraceArtifacts } from '../../../scripts/lib/budgeted-task-scheduler.mjs';
 
 export interface PrivateUnrelatedCheckpointObservation {
   workspace: string;
@@ -884,6 +885,111 @@ type CommittedReaderSourceOptions = {
 
 export function qualifyCommittedReaderSource(o: CommittedReaderSourceOptions) {
   return qualifyCommittedReaderArtifacts(o);
+}
+
+/** Bind only the existing loader's returned bytes to independent preparation
+ * pins. This never qualifies evaluation, descendants, config, PG or sidecars.
+ * Missing/limited observations stay unknown; disk bytes cannot fill a load gap.
+ */
+export function observeCommittedReaderLoadedSources(o: CommittedReaderSourceOptions & {
+  traceOut: string; pid: number; startedAtMs: number; finishedAtMs: number;
+  processIdentity?: string;
+}) {
+  const closureBytes = readFileSync(o.receiptPath), sourceBytes = readFileSync(o.sourceReceiptPath);
+  const preparation = qualifyCommittedReaderSource({ ...o,
+    receiptSha256: o.receiptSha256 ?? digestBytes(closureBytes),
+    sourceReceiptSha256: o.sourceReceiptSha256 ?? digestBytes(sourceBytes) });
+  const sources: Array<{ url: string; loadId: number; sha256: string; byteLength: number; ref: string }> = [];
+  const gaps: string[] = [];
+  const result = {
+    schemaVersion: 'committed-reader-loader-source-v1', scope: 'node-loader-returned-source',
+    status: 'unknown' as 'bound' | 'unknown', sourceCommit: preparation.sourceCommit,
+    preparationSha256: digestBytes(closureBytes),
+    sourceReceiptSha256: digestBytes(sourceBytes),
+    traceOut: o.traceOut, pid: o.pid, processIdentity: null as string | null,
+    startedAtMs: o.startedAtMs, finishedAtMs: o.finishedAtMs,
+    population: null as ReturnType<typeof readNativeProcessTraceArtifacts>['population'] | null,
+    entrySha256: null as string | null, exitObserved: false,
+    limits: { loads: 128, sourceBytes: 16 * 1024 ** 2, processBytes: 64 * 1024 ** 2 },
+    sources, gaps, pending: ['module-evaluation', 'runtime-config', 'private-pg', 'sidecars',
+      'descendant-imports', 'complete-runtime-closure'],
+  };
+  try {
+    assert.ok(Number.isSafeInteger(o.pid) && o.pid > 0 && Number.isSafeInteger(o.startedAtMs)
+      && Number.isSafeInteger(o.finishedAtMs) && o.startedAtMs <= o.finishedAtMs, 'invalid observation window');
+    const trace = readNativeProcessTraceArtifacts(o.traceOut, o.startedAtMs, o.finishedAtMs);
+    result.population = trace.population;
+    assert.ok(trace.population.complete, 'native trace population incomplete');
+    const own = trace.rows.filter(({ row }) => row.pid === o.pid);
+    const entries = own.filter(({ row }) => row.event === 'node-entry');
+    assert.equal(entries.length, 1, 'one host entry required');
+    const entry = entries[0];
+    const identity = entry.row.processIdentity;
+    assert.ok(identity && own.every(({ row }) => row.processIdentity === identity), 'mixed host trace identities');
+    if (o.processIdentity) assert.equal(identity, o.processIdentity, 'host trace identity changed');
+    assert.equal(entry.row.cwd, realpathSync(o.root), 'host trace cwd differs');
+    assert.equal(entry.row.executable, process.execPath, 'host trace executable differs');
+    assert.equal(entry.row.argv?.[1], o.bundle, 'host trace bundle argv differs');
+    assert.equal(entry.row.reporterOut, o.traceOut, 'host trace channel differs');
+    assert.ok(own.every(({ row }) => row.atMs >= entry.row.atMs), 'host event predates entry');
+    result.processIdentity = identity;
+    result.entrySha256 = digestBytes(entry.bytes);
+    result.exitObserved = own.some(({ row }) => row.event === 'node-exit' && row.exitListenersComplete === true);
+    const source = JSON.parse(sourceBytes.toString('utf8'));
+    const closure: CommittedReaderClosure = JSON.parse(closureBytes.toString('utf8'));
+    const pins = new Map<string, string>();
+    const pin = (path: string, sha256: string) => {
+      const key = resolve(path), previous = pins.get(key);
+      assert.ok(!previous || previous === sha256, 'conflicting independent source pins');
+      pins.set(key, sha256);
+    };
+    for (const file of source.files as VerifierSourceFile[])
+      if (file.kind === 'file') pin(join(o.root, file.path), file.sha256);
+    for (const file of closure.dependencyFiles)
+      if (file.kind === 'file') pin(join(o.root, 'node_modules', file.path), file.sha256);
+    for (const artifact of closure.artifacts) pin(artifact.path, artifact.sha256);
+    const starts = new Map<number, { url: string; atMs: number }>(), returned = new Set<number>();
+    let bytesRead = 0;
+    for (const { row } of own) {
+      if (['trace-limit', 'trace-event-too-large', 'module-load-limit', 'module-load-unavailable',
+        'module-load-error'].includes(row.event)) gaps.push(row.event);
+      if (row.event !== 'module-load-start') continue;
+      assert.ok(Number.isSafeInteger(row.loadId) && row.loadId > 0 && row.loadId <= result.limits.loads
+        && !starts.has(row.loadId) && typeof row.url === 'string', 'invalid or duplicate load start');
+      starts.set(row.loadId, { url: row.url, atMs: row.atMs });
+    }
+    for (const { row } of own) {
+      if (row.event !== 'module-load-return') continue;
+      try {
+        const start = starts.get(row.loadId);
+        assert.ok(start && start.url === row.url && start.atMs <= row.atMs && !returned.has(row.loadId),
+          'unmatched or duplicate loader return');
+        returned.add(row.loadId);
+        const source = row.source;
+        assert.ok(source?.status === 'hashed' && source.scope === result.scope && !source.artifactUnavailable
+          && /^[a-f0-9]{64}$/.test(source.sha256) && source.ref === `${source.sha256}.source`
+          && Number.isSafeInteger(source.byteLength) && source.byteLength >= 0
+          && source.byteLength <= result.limits.sourceBytes, 'loader source unavailable or limited');
+        const url = new URL(row.url);
+        assert.ok(url.protocol === 'file:' && !url.search && !url.hash, 'unsupported loader source URL');
+        const expected = pins.get(fileURLToPath(url));
+        assert.ok(expected, 'loaded source lacks independent pin');
+        assert.equal(source.sha256, expected, 'returned loader bytes differ from independent pin');
+        const bytes = readNativeArtifactBytes(join(trace.sourceRoot, source.ref), source.byteLength,
+          result.limits.processBytes - bytesRead, count => { bytesRead += count; });
+        assert.equal(digestBytes(bytes), source.sha256, 'retained loader source digest differs');
+        sources.push({ url: row.url, loadId: row.loadId, sha256: source.sha256,
+          byteLength: source.byteLength, ref: source.ref });
+      } catch (error) { gaps.push((error as Error).message.split('\n')[0]); }
+    }
+    if (!starts.size) gaps.push('host loader observations missing');
+    if (starts.size !== returned.size) gaps.push('pending loader calls');
+    if (!sources.some(source => source.url === pathToFileURL(o.bundle).href)) gaps.push('loaded bundle unbound');
+    assert.deepEqual(readFileSync(o.receiptPath), closureBytes, 'preparation receipt changed during observation');
+    assert.deepEqual(readFileSync(o.sourceReceiptPath), sourceBytes, 'source receipt changed during observation');
+    if (!gaps.length) result.status = 'bound';
+  } catch (error) { gaps.push((error as Error).message.split('\n')[0]); }
+  return result;
 }
 
 /** Only the producer can validate an intermediate receipt; public consumers

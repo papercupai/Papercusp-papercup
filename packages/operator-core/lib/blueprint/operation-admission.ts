@@ -13,7 +13,6 @@ import { workItemStorageSlug } from '../pot-membership';
 import { canonicalJson } from '../authority/authority-rpc-envelope';
 import { runWithWorkspace } from '../workspace-als';
 import { readBlueprintHashFromPg, readBlueprintSpecificationSnapshot, retainBlueprintSpecificationSnapshot } from './project-to-pg';
-import { runScheduledPlanFire } from '../harness/routines/plan-run-action';
 import { BlueprintOperationRefusal } from './operation-refusal';
 
 const AcceptedOperationPinSchema = z
@@ -631,6 +630,11 @@ async function acceptBlueprintPlanRunScoped(
           replayed: true,
         };
       }
+      // Admission is also imported by inference launch and the acceptance read
+      // model. Load the scheduling runtime only for a new plan invocation, after
+      // the replay branch above, so importing admission cannot re-enter the
+      // acceptance lifecycle evaluator while its snapshot is initializing.
+      const { runScheduledPlanFire } = await import('../harness/routines/plan-run-action');
       const fired = await runScheduledPlanFire(sql, {
         installSlug: request.harnessSlug,
         workspaceId: request.workspaceId,

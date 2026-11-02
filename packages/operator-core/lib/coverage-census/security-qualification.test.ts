@@ -144,6 +144,17 @@ describe('authenticated host discovery custody', () => {
 });
 
 describe('host-authenticated pre-execution applicability commitment', () => {
+  it('signs the exact immutable runner result and rejects corrupted result evidence', async () => {
+    const { input } = await approved(); h.now = 3000;
+    const measured = { runId: 'actual-router-group', ok: true, files: 1, passed: 2, failed: 0 };
+    const result = await runSecurityQualification(ctx(ids.executor), 'test', input, async () => measured, value => value);
+    expect(load(result.resultRef).event.executionEvidenceSha256).toBe(result.executionEvidenceSha256);
+    const verified = await verifySecurityQualificationResult('test', result);
+    expect(verified.executionEvidence).toEqual(measured);
+    expect(verified.executionEvidenceSha256).toBe(createHash('sha256').update(canonicalJson(measured)).digest('hex'));
+    h.artifacts.set(`test:${result.executionEvidenceSha256}`, canonicalJson({ ...measured, runId: 'substituted' }));
+    await expect(verifySecurityQualificationResult('test', result)).rejects.toThrow('execution_evidence_mismatch');
+  });
   it('persists independent approval and consumes start before any outcome is observed', async () => {
     const { input, request } = await approved(); h.now = 3000;
     const result = await runSecurityQualification(ctx(ids.executor), 'test', input, async pins => {

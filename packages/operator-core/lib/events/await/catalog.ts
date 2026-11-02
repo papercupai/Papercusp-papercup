@@ -611,7 +611,7 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
     // HINT: scheduler:get_next / work_items:claim_next stays the authoritative claim.
     params: [],
     describe:
-      'A work item became CLAIMABLE (created unclaimed, claim released, last blocker cleared, or requeued by a bare set_state into a claimable state). payload carries {id, kind, severity, harness, title, state, reason, plan, tags, goal} for payload_filter narrowing.',
+      'A work item became CLAIMABLE (created unclaimed, claim released, last blocker cleared, or requeued by a bare set_state into a claimable state). payload carries {id, kind, severity, harness, title, summary, state, reason, plan, tags, goal} for payload_filter narrowing.',
     emitter: 'work-items-events (packages/operator-core/lib/work-items-events.ts) — emitWorkItemClaimableEvent',
     exists: true,
     replacesPoll: 'the idle ~60s scheduler:get_next re-poll (and the 3-leaf composed any-spec it replaced)',

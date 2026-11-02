@@ -21,7 +21,7 @@ import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import * as path from 'node:path';
 import { parsePlan, type ParsedPlan, type PlanItem } from './parser';
 import type { PlanIndexItem, PlanIndexDecision } from './derive-index';
-import { readPlanLineNodes } from './plan-line-graph';
+import { readPlanLineItems, readPlanLineItemsByPlan } from './plan-line-graph';
 import { renderPlanLines } from './plan-line-render';
 import { hashPlanContent } from './content-hash';
 import { VALID_PLAN_SLUG } from './run-instance-slug';
@@ -300,10 +300,9 @@ export interface PlanRow {
   runSeq: number | null;
 }
 
-/** The small canonical projection needed by plans:get-item. Indexed plans leave
- * `content` empty so the targeted read does not detoast a potentially large
- * markdown body just to return one stored item. Empty/unindexed rows retain the
- * content fallback used by planItemsForRow. */
+/** The small projection needed by plans:get-item. Graph-backed plans leave
+ * `content` empty to avoid detoasting the markdown. Graphless rows can use the
+ * parent JSON index only after it is verified against canonical content. */
 export type PlanItemSourceRow = Pick<PlanRow, 'planSlug' | 'archived' | 'isLegacy' | 'items' | 'content'>;
 
 interface PlanDbRow {
@@ -733,9 +732,13 @@ export async function getPlanRow(
       `;
       mark('query');
       if (rows[0]) {
-        const nodes = await readPlanLineNodes(tx, { workspaceId, harnessSlug, slug });
-        rows[0].items = nodes;
-        rows[0].content = renderPlanLines(rows[0].content, nodes);
+        const items = await readPlanLineItems(
+          tx,
+          { workspaceId, harnessSlug, slug },
+          { items: rows[0].items, content: rows[0].content },
+        );
+        rows[0].items = items;
+        rows[0].content = renderPlanLines(rows[0].content, items);
       }
       return rows;
     }, timings ? { onAcquisitionPhase: (phase) => {
@@ -805,10 +808,9 @@ export async function getPlanRow(
  * items and otherwise transfers large, irrelevant content blobs for every
  * distinct plan in a cross-plan batch.
  *
- * The CASE expression keeps the legacy fallback: only a non-legacy plan with
- * an empty or absent item index returns its content for parsing. For a populated
- * index the database returns an empty string without detoasting the content
- * value.
+ * A populated graph is read without detoasting the markdown. If the graph is
+ * empty, readPlanLineItems may use a nonempty parent JSON index only when it
+ * matches the canonical content; an explicit empty or stale index stays empty.
  */
 export async function getPlanItemRow(
   slug: string,
@@ -829,7 +831,7 @@ export async function getPlanItemRow(
        WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug}
          AND plan_slug = ${slug}
     `;
-    if (rows[0]) rows[0].items = await readPlanLineNodes(tx, { workspaceId, harnessSlug, slug });
+    if (rows[0]) rows[0].items = await readPlanLineItems(tx, { workspaceId, harnessSlug, slug });
     return rows;
   });
   const row = rows[0];
@@ -1241,13 +1243,11 @@ export async function listPlanIndexRows(
          LIMIT ${filters.limit}
       `;
       if (opts.includeItems !== false && plans.length > 0) {
-        const nodes = await readPlanLineNodes(tx, { workspaceId, harnessSlug, slug: plans.map((p) => p.plan_slug) });
-        const byPlan = new Map<string, PlanIndexItem[]>();
-        for (const node of nodes) {
-          const items = byPlan.get(node.planSlug) ?? [];
-          items.push(node);
-          byPlan.set(node.planSlug, items);
-        }
+        const byPlan = await readPlanLineItemsByPlan(
+          tx,
+          { workspaceId, harnessSlug },
+          plans.map((plan) => plan.plan_slug),
+        );
         for (const plan of plans) plan.items = byPlan.get(plan.plan_slug) ?? [];
       }
       return plans;
@@ -1688,15 +1688,9 @@ export {
   type PlanIndexDecision,
 } from './derive-index';
 
-/**
- * Resolve a plan row's items from the PG-canonical structured `items` index
- * (plans-pg-canonical-migration Stage 3) — no content-blob parse. Falls back to
- * parsing `content` only when the structured index is empty/absent (a federated
- * remote row whose projection didn't fill the derived columns, or a genuinely
- * itemless plan — the parse is cheap either way). The ONE answer to "what items
- * does this plan have" — plans:items, set-status's flip, and declare-intent's
- * lane validation must all agree (EI-356).
- */
+/** Convert the item projection selected by the source reader. Graph precedence
+ * and validated old-writer compatibility are resolved before this mapper; it
+ * never reparses markdown or revives an explicit empty index. */
 export function planItemsForRow(row: Pick<PlanRow, 'items' | 'content'>): PlanItem[] {
   return row.items.map((i) => ({
       id: i.id,

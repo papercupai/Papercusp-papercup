@@ -10,17 +10,10 @@
  * It runs on the goal-owner-report watchdog's managed timer (D-003: no new
  * scheduler) and is gated by the same kill-switch flag.
  *
- * ONE ESCALATION PER BACKLOG, structurally: the escalation is keyed by a stable
- * conditionKey per (workspace, goal), so ticks that observe the same backlog
- * coalesce into one row. The grader wake fires only when that escalation is NEWLY
- * opened. When the goal reads healthy again the open escalation is resolved, so
- * the next backlog opens a fresh row and wakes the grader again.
- *
- * "Re-dispatch" here is a directed wake of the goal's most recent grader (the
- * author of the newest goal-mode-e2e card for its holders), gated on that grader
- * being positively alive. The grading-audit router audits an EXISTING card and
- * cannot dispatch new grading. When no live grader exists the escalation itself
- * tells the owner to dispatch one.
+ * Alerts coalesce per goal. Recovery independently reuses the persisted consult
+ * dispatcher, which owns one outstanding residual-grading request per goal and
+ * recovers dead responders and expired attempts. Auditing a provisional card
+ * does not settle its residual grading.
  */
 import type { Sql } from 'postgres';
 
@@ -37,6 +30,7 @@ import {
 } from '../goal-grading-backlog';
 import { holderCountsAsAlive, resolveHolderLiveness } from '../goals/holder';
 import { broadcastSevereEvent } from '../severe-event-broadcast';
+import { closeGoalTenureGradingRequests, routeGoalTenureGrading, type GoalTenureGradingRouteResult } from '../grading-audit-routing';
 
 const CONDITION_PREFIX = 'alarm:goal-grading-backlog:';
 export function goalGradingBacklogAlarmKey(goal: GoalGradingBacklogGoal): string {
@@ -93,10 +87,10 @@ export interface GoalGradingBacklogSweepDeps {
   readGoals: () => Promise<GoalGradingBacklogGoal[]>;
   readInput: (goal: GoalGradingBacklogGoal, nowMs: number) => Promise<GoalGradingBacklogInput>;
   resolveLiveness: (ownerIds: string[]) => Promise<Map<string, LivenessVerdict>>;
-  /** Open or coalesce the escalation of record; `coalesced` gates the grader wake. */
+  /** Open or coalesce the escalation of record, independently of recovery. */
   escalate: (alert: GoalGradingBacklogAlert) => Promise<{ coalesced: boolean }>;
-  /** Directed wake of a live grader, fired once per newly opened escalation. */
-  wakeGrader: (alert: GoalGradingBacklogAlert & { graderId: string }) => Promise<void>;
+  /** Persistent residual-grading assignment; routed means actual pickup. */
+  dispatchGrading: (alert: GoalGradingBacklogAlert) => Promise<GoalTenureGradingRouteResult>;
   /** Resolve any open escalation for a goal that reads healthy. Returns the count resolved. */
   resolveCleared: (goal: GoalGradingBacklogGoal) => Promise<number>;
   flagEnabled: () => Promise<boolean>;
@@ -113,6 +107,7 @@ export interface GoalGradingBacklogSweepResult {
   alerting: number;
   escalated: number;
   wokeGrader: number;
+  pendingGrader: number;
   resolved: number;
   failed: number;
 }
@@ -141,8 +136,8 @@ function makeReadGoals(sql: Sql): GoalGradingBacklogSweepDeps['readGoals'] {
 function describeGrader(alert: GoalGradingBacklogAlert): string {
   if (!alert.graderId) return `No ${GOAL_GRADING_RUBRIC_REF} card names a grader for this goal's holders.`;
   return alert.graderAlive
-    ? `Most recent grader ${alert.graderId} is alive and has been woken.`
-    : `Most recent grader ${alert.graderId} is not alive, so nobody was woken.`;
+    ? `Most recent grader ${alert.graderId} is alive; residual grading is assigned separately.`
+    : `Most recent grader ${alert.graderId} is not alive; the dispatcher will recruit a residual grader.`;
 }
 
 async function defaultEscalate(alert: GoalGradingBacklogAlert): Promise<{ coalesced: boolean }> {
@@ -162,7 +157,7 @@ async function defaultEscalate(alert: GoalGradingBacklogAlert): Promise<{ coales
       `windows cover the ungraded holder hours. Each holder tenure already has a provisional ` +
       `computed card (author goal-grading-computed): supersede it with terminal:true and rate only ` +
       `the residual criteria — emit adopts the computed pass/idle/not-exercised ratings you omit. ` +
-      `If no live grader exists, dispatch one. ` +
+      `The existing consult dispatcher recruits an independent residual grader, including when no prior grader is alive. ` +
       `This escalation resolves itself once grading catches up.`,
     meta: {
       // A stable conditionKey: one backlog, one row, however many ticks see it.
@@ -175,27 +170,6 @@ async function defaultEscalate(alert: GoalGradingBacklogAlert): Promise<{ coales
     },
   });
   return { coalesced: Boolean((result as { coalesced?: boolean } | null)?.coalesced) };
-}
-
-async function defaultWakeGrader(alert: GoalGradingBacklogAlert & { graderId: string }): Promise<void> {
-  const { wakeRecipients } = await import('../agent-tools/coordination/inbox-wake');
-  const v = alert.verdict;
-  await wakeRecipients([alert.graderId], {
-    summary:
-      `goal-grading-backlog: goal '${alert.goalId}' has ${v.ungradedActiveHours} ungraded holder hour(s) ` +
-      `(newest settled ${GOAL_GRADING_RUBRIC_REF} window ends ${v.lastGradedWindowEnd ?? 'never'}) — ` +
-      `file cards covering them`,
-    payload: {
-      goalId: alert.goalId,
-      rubricRef: GOAL_GRADING_RUBRIC_REF,
-      ungradedActiveHours: v.ungradedActiveHours,
-      lastGradedWindowEnd: v.lastGradedWindowEnd,
-      graderIdleHours: v.graderIdleHours,
-      alerts: v.alerts,
-    },
-    source: 'goal-grading-backlog-watchdog',
-    workspaceId: alert.workspaceId,
-  });
 }
 
 async function defaultResolveCleared(goal: GoalGradingBacklogGoal): Promise<number> {
@@ -222,8 +196,11 @@ function sweepDeps(sql: Sql, overrides: Partial<GoalGradingBacklogSweepDeps>): G
     readInput: (goal, nowMs) => readGoalGradingBacklogInput({ ...goal, nowMs }, { sql }),
     resolveLiveness: (ids) => resolveHolderLiveness(ids),
     escalate: defaultEscalate,
-    wakeGrader: defaultWakeGrader,
-    resolveCleared: defaultResolveCleared,
+    dispatchGrading: alert => routeGoalTenureGrading(alert, { sql }),
+    resolveCleared: async goal => {
+      await closeGoalTenureGradingRequests(goal, sql);
+      return defaultResolveCleared(goal);
+    },
     flagEnabled: defaultFlagEnabled,
     now: () => Date.now(),
     readOpenConditionKeys: readOpenBacklogConditionKeys,
@@ -253,6 +230,7 @@ export async function runGoalGradingBacklogSweepOnce(
     alerting: 0,
     escalated: 0,
     wokeGrader: 0,
+    pendingGrader: 0,
     resolved: 0,
     failed: 0,
   };
@@ -319,13 +297,17 @@ export async function runGoalGradingBacklogSweepOnce(
       }
       const alert: GoalGradingBacklogAlert = { ...goal, verdict, graderId, graderAlive };
 
-      const { coalesced } = await deps.escalate(alert);
-      if (coalesced) continue; // the one wake already went out for this backlog
-      result.escalated += 1;
-      if (graderId && graderAlive) {
-        await deps.wakeGrader({ ...alert, graderId });
-        result.wokeGrader += 1;
+      try {
+        const { coalesced } = await deps.escalate(alert);
+        if (!coalesced) result.escalated += 1;
+      } catch (e) {
+        result.failed += 1;
+        console.warn(`[goal-grading-backlog] escalation failed for ${goal.goalId} (recovery continues): ${String(e)}`);
       }
+      const recovery = await deps.dispatchGrading(alert);
+      if (recovery.state === 'routed') result.wokeGrader += 1;
+      if (recovery.state === 'pending') result.pendingGrader += 1;
+      if (recovery.state === 'retry') result.failed += 1;
     } catch (e) {
       result.failed += 1;
       console.warn(

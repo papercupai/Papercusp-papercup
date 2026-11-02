@@ -219,6 +219,7 @@ export type DeclaredGateInactiveReason =
   | 'cancelled'
   | 'expired'
   | 'superseded'
+  | 'fired-expected-unproven'
   | 'fired-expected-mismatch';
 
 /** A generation outside R-001's domain: terminal or already replaced. Never actionable. */
@@ -366,10 +367,13 @@ export function evaluateDeclaredGateGeneration(input: DeclaredGateEvidenceInput)
     if (a.firedReason !== 'event') {
       return inactive('expired', `generation ${a.generation ?? 'none'} closed with fired_reason='${a.firedReason ?? 'null'}', not an exact event fire`);
     }
-    if (a.expectedVerdict === 'mismatched' || a.expectedVerdict === 'invalid') {
+    if (a.expectedVerdict !== 'matched') {
+      const reason = a.expectedVerdict === 'not-declared' || a.expectedVerdict === 'pending'
+        ? 'fired-expected-unproven'
+        : 'fired-expected-mismatch';
       return inactive(
-        'fired-expected-mismatch',
-        `the exact key fired but its declared expected condition is ${a.expectedVerdict}; a mismatched fire is not success — wait for a fresh generation`,
+        reason,
+        `the exact key fired but its declared expected condition is ${a.expectedVerdict}; only a matching proof is success — wait for a fresh generation`,
       );
     }
     reasons.push(`exact generation ${a.generation ?? 'none'} fired at ${a.firedAt ?? 'unknown'} with expected condition ${a.expectedVerdict}`);

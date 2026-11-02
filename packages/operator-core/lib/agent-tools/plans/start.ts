@@ -609,6 +609,53 @@ export default defineTool({
               message: 'Cannot auto-approve a draft plan without an attributable transactional revision writer.',
             };
           }
+          if (read) {
+            // Recheck after the consult, before opening the plan write transaction.
+            // The version CAS below rejects any plan-body change during these reads.
+            const currentGate = await checkPlanStartable(slug, await ctxToPlanSourceOpts(sctx), null, 'start');
+            if (!currentGate.row) return {
+              ok: false as const,
+              slug,
+              harnessSlug,
+              error: 'plan_not_found',
+              code: 'plan_not_found',
+              message: `Plan '${slug}' disappeared before approval.`,
+            };
+            if (currentGate.row.version !== read.row.version) return {
+              ok: false as const,
+              slug,
+              harnessSlug,
+              error: 'plan_changed',
+              code: 'plan_changed',
+              message: `Plan '${slug}' changed after preflight. Retry against the current revision; no approval or promotion was written.`,
+            };
+            if (!currentGate.ok) return {
+              ok: false as const,
+              slug,
+              harnessSlug,
+              error: currentGate.refusal.code,
+              code: currentGate.refusal.code,
+              message: 'Plan prerequisites no longer permit start at the approval boundary.',
+              detail: currentGate.refusal,
+            };
+            const currentPlanItems = read.row.items.length ? read.row.items : read.parsed.items;
+            const currentSpecQuality = await evaluatePlanSpecQualityGate({
+              harnessSlug,
+              planSlug: slug,
+              planItemIds: specQualityPlanItemIds(currentPlanItems),
+              planItems: currentPlanItems,
+            });
+            if (!currentSpecQuality.satisfied) return {
+              ok: false as const,
+              slug,
+              harnessSlug,
+              error: currentSpecQuality.code ?? 'spec_quality_not_current',
+              code: currentSpecQuality.code ?? 'spec_quality_not_current',
+              message: currentSpecQuality.message ?? 'Current spec policy no longer permits start.',
+              detail: currentSpecQuality,
+            };
+            specQuality = currentSpecQuality;
+          }
           const flipResult = await withPlanLock<boolean | CommitRefusal>(
             ctx as never,
             {
@@ -641,34 +688,6 @@ export default defineTool({
                   message: `Plan '${slug}' changed after preflight. Retry against the current revision; no approval or promotion was written.`,
                 },
               };
-              // Admission/certificates and the acceptance class live outside
-              // this row's version. Reuse their canonical readers at the write
-              // boundary too: an earlier pass must not outlive a revocation or
-              // a changed class/spec policy while the consult was running.
-              const currentGate = await checkPlanStartable(slug, await ctxToPlanSourceOpts(sctx), null, 'start');
-              if (!currentGate.ok) return {
-                newBody: null,
-                value: {
-                  ok: false, code: currentGate.refusal.code,
-                  message: 'Plan prerequisites no longer permit start at the approval boundary.',
-                  detail: currentGate.refusal,
-                },
-              };
-              const currentSpecQuality = await evaluatePlanSpecQualityGate({
-                harnessSlug,
-                planSlug: slug,
-                planItemIds: specQualityPlanItemIds(lockedPlan.items),
-                planItems: lockedPlan.items,
-              });
-              if (!currentSpecQuality.satisfied) return {
-                newBody: null,
-                value: {
-                  ok: false, code: currentSpecQuality.code ?? 'spec_quality_not_current',
-                  message: currentSpecQuality.message ?? 'Current spec policy no longer permits start.',
-                  detail: currentSpecQuality,
-                },
-              };
-              specQuality = currentSpecQuality;
               const flip = flipPlanFrontmatterStatus(current, 'ready', 'draft');
               if (flip.newBody === null) return { newBody: null, value: false };
               return { newBody: bumpUpdatedDate(flip.newBody), value: true };

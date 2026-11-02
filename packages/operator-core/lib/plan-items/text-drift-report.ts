@@ -36,6 +36,9 @@
  */
 
 import { getOrgPg } from '@papercusp/db-org';
+import type { TransactionSql } from 'postgres';
+import { readPlanItemAnchors, type PlanAnchorScope } from './anchor-store';
+import { codePayloadForPlanItems } from '../plan-workitem-promotion';
 import {
   resolveAgentIdentity,
   type AgentIdentity,
@@ -60,6 +63,93 @@ import { ISSUE_FAMILY_ROUTE_KINDS } from '../work-nature/agent-work-predicate';
  * not fan out as a message storm.
  */
 export const MAX_DRIFT_NOTIFICATIONS = 10;
+
+export interface PlanItemAnchorResyncReport {
+  planSlug: string;
+  itemId: string;
+  affected: Array<{ workItemId: string; holder: string | null; paths: string[]; previousPaths: string[] }>;
+  notified: number;
+  notificationErrors?: string[];
+}
+
+/** Runs under the plan write's transaction/lock, so a failed resync rolls back the
+ * anchor edit too. Reuse promotion's payload compiler, including grouped-item
+ * unions and text fallback after the last explicit link is removed. */
+export async function resyncPlanItemAnchors(
+  tx: TransactionSql,
+  scope: PlanAnchorScope,
+  itemId: string,
+): Promise<PlanItemAnchorResyncReport> {
+  const terminal = [...TERMINAL_WORK_ITEM_STATES];
+  const rows = await tx<Array<{
+    feature_id: string;
+    payload: Record<string, unknown> | null;
+    source_plan_slug: string | null;
+    source_plan_item_ids: string[] | null;
+  }>>`SELECT feature_id, payload, source_plan_slug, source_plan_item_ids
+    FROM harness_shared.work_items
+    WHERE workspace_id=${scope.workspaceId} AND harness_slug=${scope.harnessSlug}
+      AND (status IS NULL OR status <> ALL(${terminal}::text[]))
+      AND ((source_plan_slug=${scope.planSlug} AND ${itemId}=ANY(source_plan_item_ids))
+        OR (payload->'plan_item'->>'plan_slug'=${scope.planSlug}
+          AND payload->'plan_item'->>'item_id'=${itemId}))
+    ORDER BY feature_id FOR UPDATE`;
+  const report: PlanItemAnchorResyncReport = { planSlug: scope.planSlug, itemId, affected: [], notified: 0 };
+  if (rows.length === 0) return report;
+  const anchorsByItem = await readPlanItemAnchors(scope, tx);
+  const items = await tx<Array<{ item_id: string; item_text: string }>>`
+    SELECT item_id, item_text FROM harness_shared.plan_items
+    WHERE workspace_id=${scope.workspaceId} AND harness_slug=${scope.harnessSlug} AND plan_slug=${scope.planSlug}`;
+  const textByItem = new Map(items.map(item => [item.item_id, item.item_text]));
+  for (const row of rows) {
+    const stamp = row.payload?.plan_item as { plan_slug?: string; item_id?: string } | undefined;
+    const ids = [...new Set([
+      ...(row.source_plan_slug === scope.planSlug ? row.source_plan_item_ids ?? [] : []),
+      ...(stamp?.plan_slug === scope.planSlug && stamp.item_id ? [stamp.item_id] : []),
+    ])];
+    const compiled = codePayloadForPlanItems(ids, anchorsByItem, ids.map(id => textByItem.get(id) ?? '').join('\n'));
+    const code = { paths: compiled?.paths ?? [], anchors: compiled?.anchors ?? [] };
+    const paths = JSON.stringify(code.paths);
+    const anchors = JSON.stringify(code.anchors);
+    const updated = await tx<Array<{ feature_id: string; taken_by: string | null }>>`
+      UPDATE harness_shared.work_items SET
+        payload=COALESCE(payload, '{}'::jsonb) || ${JSON.stringify(code)}::text::jsonb,
+        updated_ts=${Date.now()}
+      WHERE workspace_id=${scope.workspaceId} AND harness_slug=${scope.harnessSlug} AND feature_id=${row.feature_id}
+        AND (status IS NULL OR status <> ALL(${terminal}::text[]))
+        AND (payload->'paths' IS DISTINCT FROM ${paths}::text::jsonb
+          OR payload->'anchors' IS DISTINCT FROM ${anchors}::text::jsonb)
+      RETURNING feature_id, taken_by`;
+    if (updated[0]) report.affected.push({ workItemId: row.feature_id, holder: updated[0].taken_by,
+      paths: code.paths, previousPaths: Array.isArray(row.payload?.paths)
+        ? row.payload.paths.filter((path): path is string => typeof path === 'string') : [] });
+  }
+  return report;
+}
+
+/** Post-commit inbox inject: one per changed work item, never for an unclaimed
+ * row. A notice failure remains visible on the edit receipt without undoing it. */
+export async function notifyPlanItemAnchorResync(
+  ctx: ResolveIdentityCtx,
+  report: PlanItemAnchorResyncReport,
+  harnessSlug: string,
+): Promise<void> {
+  for (const item of report.affected) {
+    if (!item.holder) continue;
+    try {
+      const result = await notifyAgents(resolveAgentIdentity(ctx), {
+        addressees: [item.holder], objectRef: issueRef(item.workItemId),
+        summary: `${report.planSlug}#${report.itemId} code links changed — ${item.workItemId} was refreshed`,
+        body: `Plan item ${report.planSlug}#${report.itemId} code links changed. Your work item's paths and anchors now match the current linked plan items. ` +
+          `Previous files: ${item.previousPaths.join(', ') || '(none)'}. Current files: ${item.paths.join(', ') || '(none)'}.`,
+        harnessSlug, planSlug: report.planSlug, wake: false,
+      });
+      report.notified += result.notified.length;
+    } catch (error) {
+      (report.notificationErrors ??= []).push(`${item.workItemId}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+}
 
 /** One open work_item stranded on a now-stale copy of its plan item. */
 export interface DriftedWorkItem {

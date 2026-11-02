@@ -9,6 +9,111 @@ import { getFeedbackProd } from './consult/get-feedback-prod';
 import type { RouteResult } from './consult/relevance-router';
 import { resolveSessionStates, type LivenessVerdict } from './agent-tools/coordination/liveness-oracle';
 import { GRADING_INTEGRITY_AUDIT_POLICY } from './consult/selection-policies';
+import { GOAL_TENURE_GRADING_POLICY } from './consult/selection-policies';
+import { goalTenureGradingWakeCopy, type GoalTenureGradingCascadeMeta } from './consult/grading-cascade';
+import { withConditionReplayLock } from './coord/condition-upsert';
+import { GOAL_GRADING_BACKLOG_LOOKBACK_MS } from './goal-grading-backlog';
+
+export type GoalTenureGradingRouteResult = {
+  state: 'routed' | 'pending' | 'deduped' | 'retry' | 'skipped';
+  conversationId?: string;
+  reason?: string;
+};
+
+/** Recover residual grading through the existing persisted dispatcher. The
+ * per-goal replay lock covers lookup AND recruitment; alert coalescing is not
+ * an assignment. A queued launch remains pending until pickup is observed. */
+export async function routeGoalTenureGrading(
+  goal: { workspaceId: string; goalId: string },
+  deps: {
+    sql: Sql;
+    feedback?: typeof getFeedbackProd;
+    lock?: typeof withConditionReplayLock;
+    resolveResponderLiveness?: (ownerId: string) => Promise<Pick<LivenessVerdict, 'sessionState'> | null | undefined>;
+    now?: () => number;
+  },
+): Promise<GoalTenureGradingRouteResult> {
+  const { sql } = deps;
+  return (deps.lock ?? withConditionReplayLock)(goal.workspaceId,
+    `goal-tenure-grading:${JSON.stringify([goal.workspaceId, goal.goalId])}`, async (): Promise<GoalTenureGradingRouteResult> => {
+      const [current] = await sql<{ status: string }[]>`
+        SELECT status FROM harness_shared.goals
+        WHERE workspace_id = ${goal.workspaceId} AND id = ${goal.goalId}`;
+      if (current?.status !== 'active') return { state: 'skipped', reason: 'goal is not active' };
+      const nowMs = (deps.now ?? Date.now)();
+      const [prior] = await sql<{
+        conversation_id: string; state: string; answering_owner_id: string | null;
+        expires_at: Date | string | null; created_at: Date | string;
+      }[]>`
+        SELECT conversation_id, state, expires_at, created_at,
+               routing->'selection'->'selected'->cascade_cursor->>'answeringOwnerId' AS answering_owner_id
+        FROM harness_shared.consult_state
+        WHERE workspace_id = ${goal.workspaceId}
+          AND routing->'cascade'->>'flavor' = 'goal-tenure-grading'
+          AND routing->'cascade'->>'goalId' = ${goal.goalId}
+        ORDER BY created_at DESC LIMIT 1`;
+      if (prior && ['awaiting_responder', 'active'].includes(prior.state)) {
+        // Inspect the ANSWERING identity, never the archived expert it forked.
+        const state = prior.answering_owner_id
+          ? await (deps.resolveResponderLiveness ?? (async ownerId =>
+            (await resolveSessionStates([{ ownerId }], { hydratePerId: true, psuHostPositiveAuthority: true })).get(ownerId)
+          ))(prior.answering_owner_id).catch(() => null)
+          : null;
+        const expired = prior.expires_at !== null && Date.parse(String(prior.expires_at)) <= nowMs;
+        if (!expired && state?.sessionState !== 'ended' && state?.sessionState !== 'recorded') {
+          return { state: 'deduped', conversationId: prior.conversation_id };
+        }
+        await sql`
+          UPDATE harness_shared.consult_state SET state = 'expired', closed_at = now(), updated_at = now()
+          WHERE workspace_id = ${goal.workspaceId} AND conversation_id = ${prior.conversation_id}
+            AND state IN ('awaiting_responder', 'active')`;
+      } else if (prior && nowMs - Date.parse(String(prior.created_at)) < 5 * 60_000) {
+        // An exhausted menu is not an open assignment. Bound re-recruitment,
+        // while leaving the measured backlog and its escalation open.
+        return { state: 'retry', conversationId: prior.conversation_id, reason: 'recent grading attempt ended; retry after cooldown' };
+      }
+      const holders = await sql<{ owner_id: string }[]>`
+        SELECT DISTINCT coord_owner_id AS owner_id FROM harness_shared.tool_invocations
+        WHERE workspace_id = ${goal.workspaceId} AND goal_id = ${goal.goalId}
+          AND goal_actor_class = 'holder-agent' AND coord_owner_id IS NOT NULL
+          AND invoked_at >= ${new Date(nowMs - GOAL_GRADING_BACKLOG_LOOKBACK_MS)}`;
+      const holderOwnerIds = [...new Set(holders.map(row => row.owner_id).filter(Boolean))];
+      if (!holderOwnerIds.length) return { state: 'retry', reason: 'holder attribution unavailable' };
+      const meta: GoalTenureGradingCascadeMeta = {
+        flavor: 'goal-tenure-grading', ...goal, holderOwnerIds,
+      };
+      const identity = {
+        ownerId: 'system:goal-grading-recovery', ownerLabel: 'system · goal grading recovery',
+        source: 'principal' as const, workspaceId: goal.workspaceId, userId: null,
+      };
+      const result = await (deps.feedback ?? getFeedbackProd)({
+        workspaceId: goal.workspaceId, requesterId: identity.ownerId,
+        question: goalTenureGradingWakeCopy(meta, '<assigned conversation>').body,
+        // Exclusions are persisted, so process-loss and cascade recovery keep
+        // the core's existing lineage fence, rather than an in-memory filter.
+        excludeOwners: holderOwnerIds, archiveFloor: 2,
+        policy: GOAL_TENURE_GRADING_POLICY, latencyContract: 'hard-blocked',
+        originTaskRef: goal.goalId, cascade: meta,
+      }, identity);
+      if ('error' in result) return { state: 'retry', reason: result.error };
+      return {
+        state: result.verdict === 'routed' ? (result.wake.pickupConfirmed ? 'routed' : 'pending') : 'retry',
+        conversationId: result.conversation_id,
+        ...(result.verdict !== 'routed' ? { reason: result.verdict } : {}),
+      };
+    });
+}
+
+/** Called only after the backlog ledger reads healthy, not on a consult reply. */
+export async function closeGoalTenureGradingRequests(goal: { workspaceId: string; goalId: string }, sql: Sql): Promise<void> {
+  await sql`
+    UPDATE harness_shared.consult_state SET state = 'closed_answered', closed_at = now(), updated_at = now(),
+      outcome = jsonb_build_object('source', 'goal-grading-backlog-cleared')
+    WHERE workspace_id = ${goal.workspaceId}
+      AND routing->'cascade'->>'flavor' = 'goal-tenure-grading'
+      AND routing->'cascade'->>'goalId' = ${goal.goalId}
+      AND state IN ('awaiting_responder', 'active', 'no_qualified_responder', 'no_launchable_responder')`;
+}
 
 export interface SourceAuditRouteInput {
   card: ScorecardRow;

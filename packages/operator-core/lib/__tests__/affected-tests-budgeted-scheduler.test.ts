@@ -172,10 +172,78 @@ describe('private native proof custody (P002)', () => {
     expect(verifyNativeProofPacket(f.directory, saved.locator, f.contract).status).toBe('complete');
   });
 
+  it('retains evaluator references across the segment object boundary and preserves historical partial packets', () => {
+    const f = fixture(), group = f.contract.expected[0]!, modules = group.out! + '.modules';
+    rmSync(modules, { recursive: true });
+    mkdirSync(modules);
+    const pins = Array.from({ length: 8193 }, (_, index) => {
+      const bytes = Buffer.from(`export const exact = ${index};\n`);
+      const sha256 = createHash('sha256').update(bytes).digest('hex');
+      const codeRef = join(modules, sha256 + '.js');
+      writeFileSync(codeRef, bytes);
+      return { codeRef, sha256, byteLength: bytes.length };
+    });
+    const payload = JSON.parse(readFileSync(group.out!, 'utf8'));
+    payload.rows = [{ moduleEvaluations: { ...payload.rows[0].moduleEvaluations, entries: pins, vmInputs: [] } }];
+    payload.diagnostics = []; payload.nativeRun.files = [];
+    writeFileSync(group.out!, JSON.stringify(payload));
+    const saved = f.save();
+    expect(saved.status).toBe('complete');
+    expect(saved.manifest.groups[0]!.referenceArtifacts).toEqual(pins);
+    expect(saved.manifest.groups[0]!.referenceGaps).toEqual([]);
+    expect(saved.manifest.referenceArtifactLimit).toBe(saved.manifest.archiveLimits!.objects);
+    expect(saved.manifest.segments!.length).toBeGreaterThan(1);
+    for (const segment of saved.manifest.segments!)
+      expect(segment.objectsReadByFamily.B).toBeLessThanOrEqual(saved.manifest.limits.families!.B.objects);
+    rmSync(f.producer, { recursive: true });
+    const consumed = verifyNativeProofPacket(f.directory, saved.locator, f.contract);
+    expect(consumed.status).toBe('complete');
+    expect(consumed.manifest.groups[0]!.referenceArtifacts).toEqual(pins);
+    expect(consumed.manifest.verdicts).toMatchObject({ nativeProof: 'unqualified', acceptance: 'unmeasured' });
+
+    // The original packet used a segment-wide census and remains partial. A new
+    // consumer must neither reject that history nor promote it to complete.
+    const historical = structuredClone(saved.manifest);
+    delete historical.referenceArtifactLimit;
+    historical.groups[0]!.referenceArtifacts = pins.slice(0, 8192);
+    historical.groups[0]!.referenceGaps = ['evaluator-artifact-limit'];
+    historical.gaps = [group.id + ':A:evaluator-artifact-limit'];
+    historical.verdicts.custody = 'partial';
+    const persist = createNativeArtifactPersister(join(f.directory, 'objects')).persist;
+    const historicalPin = persist(Buffer.from(JSON.stringify(historical)), 'native-proof.json');
+    const inventoryHash = createHash('sha256').update(JSON.stringify({ groups: historical.groups,
+      gaps: historical.gaps, segments: historical.segments })).digest('hex');
+    expect(verifyNativeProofPacket(f.directory, { ...saved.locator, manifest: historicalPin, inventoryHash }, f.contract).status)
+      .toBe('partial');
+    const invalid = { ...saved.manifest, referenceArtifactLimit: saved.manifest.archiveLimits!.objects + 1 };
+    const invalidPin = persist(Buffer.from(JSON.stringify(invalid)), 'native-proof.json');
+    expect(() => verifyNativeProofPacket(f.directory, { ...saved.locator, manifest: invalidPin }, f.contract))
+      .toThrow('custody reference artifact limit mismatch');
+  }, 60_000);
+
+  it('keeps an evaluator census above the archive object bound partial', () => {
+    const f = fixture(), group = f.contract.expected[0]!, modules = group.out! + '.modules';
+    const payload = JSON.parse(readFileSync(group.out!, 'utf8'));
+    const pins = Array.from({ length: 16385 }, (_, index) => {
+      const sha256 = index.toString(16).padStart(64, '0');
+      return { codeRef: join(modules, sha256 + '.js'), sha256, byteLength: 0 };
+    });
+    payload.rows = [{ moduleEvaluations: { ...payload.rows[0].moduleEvaluations, entries: pins, vmInputs: [] } }];
+    payload.diagnostics = []; payload.nativeRun.files = [];
+    writeFileSync(group.out!, JSON.stringify(payload));
+    const saved = f.save();
+    expect(saved.status).toBe('partial');
+    expect(saved.manifest.groups[0]!.referenceArtifacts).toHaveLength(16384);
+    expect(saved.manifest.groups[0]!.referenceGaps).toEqual(['evaluator-artifact-limit']);
+    expect(saved.manifest.gaps).toContain(group.id + ':A:evaluator-artifact-limit');
+    expect(verifyNativeProofPacket(f.directory, saved.locator, f.contract).status).toBe('partial');
+  }, 60_000);
+
   it.each(['native-proof-custody-v1', 'native-proof-custody-v2'] as const)
     ('continues to verify retained %s packets', schemaVersion => {
       const f = fixture(), saved = f.save(), manifest = structuredClone(saved.manifest);
       manifest.schemaVersion = schemaVersion;
+      delete manifest.referenceArtifactLimit;
       delete manifest.segments;
       delete manifest.archiveLimits;
       for (const group of manifest.groups) for (const entry of [

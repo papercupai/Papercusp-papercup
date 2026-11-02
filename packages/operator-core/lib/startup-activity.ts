@@ -10,6 +10,7 @@ import { readOperatorState } from './operator-state-pg';
 import { z } from 'zod';
 import {
   collectStartupActivity,
+  reactionStartupFeature,
   STARTUP_ACTIVITY_ENTRYPOINTS,
   startupHistorySchema,
   startupPolicySchema,
@@ -61,6 +62,20 @@ export const savedStartupActivityStateSchema = z.object({
 /** Expiry is evaluated at admission/read time, including the first read after an offline restart. */
 export function startupPauseIsActive(paused: boolean | undefined, until: string | null, now = Date.now()): boolean {
   return until !== null ? Date.parse(until) > now : paused === true;
+}
+
+/** Workspace controls use the same opaque identity and bounded audit store as features. */
+export function workspaceBackgroundActivityFeatureId(workspace: string): string {
+  if (!workspace.trim() || workspace === '*') throw new Error('Startup policy scope unavailable');
+  return `activity-${opaque(['workspace', workspace, 'background-activity'])}`;
+}
+
+export function workspaceBackgroundActivityPolicy(state: unknown, now = Date.now()): StartupActivityPolicy {
+  const row = savedStartupActivityStateSchema.parse(state ?? {});
+  const policy = row.backgroundActivity;
+  const paused = startupPauseIsActive(row.paused, policy?.pausedUntil ?? null, now);
+  return { automatic: policy?.automatic ?? true, paused,
+    pausedUntil: paused ? policy?.pausedUntil ?? null : null, revision: policy?.revision ?? 0 };
 }
 
 /** Project saved preference only: this read never asserts that dispatch obeyed it. */
@@ -241,6 +256,10 @@ export async function collectCurrentStartupActivity(deps: Partial<ScheduleInvent
     ...adapters,
     deviceId: adapters.deviceId ?? native?.features[0]?.scope.id ?? undefined,
     native: adapters.native ?? (async () => native!.features),
+    reactions: adapters.reactions ?? (async () => {
+      const { listReactionRules } = await import('./events/registry');
+      return listReactionRules().map(rule => reactionStartupFeature(rule, activeWorkspaceId()));
+    }),
     census: adapters.census ?? (async features => startupActivityCensus(features)),
     history: adapters.history ?? readStartupActivityHistory,
     policy,

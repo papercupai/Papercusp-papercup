@@ -107,10 +107,32 @@ describe('planFrozenRepairLegRouting (P-013 / D-029)', () => {
     expect(test!.body).toContain(HEAD);
     expect(test!.body).toContain('AssertionError: expected 2 to be 3');
     expect(test!.body).toContain("release:repair-queue { op: 'admit', paths: ['packages/a/x.test.ts'] }");
-    expect(test!.summary).toContain('no gate ownership needed');
+    expect(test!.summary).toContain('live gate owner');
     // A leg name is not a path, so its admit call names the files the fixer changed.
     expect(lint!.body).not.toContain("paths: ['lint:tsc']");
     expect(lint!.body).toContain('none recorded for this leg');
+  });
+
+  it('keeps current-run repair with its gate owner while allowing independent source work (EI-27206037186017447)', () => {
+    const plan = planFrozenRepairLegRouting({
+      pipeline: 'papercusp',
+      queue: queue(['packages/a/x.test.ts', 'lint:tsc']),
+      openLegKeys: [],
+    });
+    for (const leg of plan.open) {
+      expect(leg.summary).not.toContain('no gate ownership needed');
+      expect(leg.body).toContain("state:read { cell: 'gate.greenCheckpoint.ownership' }");
+      expect(leg.body).toContain('held by another live agent');
+      expect(leg.body).toContain('send useful evidence once');
+      expect(leg.body).toContain('stop current-run operations');
+      expect(leg.body).toContain('If you hold the gate');
+      expect(leg.body).toContain('If the gate is genuinely unheld');
+      expect(leg.body).toContain('Independently registered source work');
+      expect(leg.body).toContain('its own work-item and file locks');
+      expect(leg.body).toContain('GATE OWNER ADMISSION');
+      expect(leg.body).not.toContain('Any agent may take it');
+      expect(leg.body).not.toContain('Admission needs no gate ownership');
+    }
   });
 });
 

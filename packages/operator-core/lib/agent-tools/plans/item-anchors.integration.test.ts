@@ -12,6 +12,9 @@ import { setupPlanPgFixture, seedPlan, cleanupPlans, type PlanPgFixture } from '
 import addTool from './add-item';
 import editTool from './edit';
 import getTool from './get';
+import { deriveIndexFromContent } from './derive-index';
+import { writePlanLineNodes, readPlanLineNodes } from './plan-line-graph';
+import { writePlanIndexRows } from './plan-index-rows';
 
 it('round-trips intended changes through add, unrelated plan rewrites and target updates', async () => {
   const change = { action: 'modify', summary: 'Persist recovery state', reason: 'Avoid lost work' };
@@ -86,12 +89,21 @@ beforeAll(async () => {
 beforeEach(async () => {
   vi.restoreAllMocks();
   await fx.admin`DELETE FROM harness_shared.plan_item_anchors WHERE workspace_id=${WS} AND harness_slug=${HARNESS}`;
+  await fx.admin`DELETE FROM harness_shared.work_items WHERE workspace_id=${WS} AND harness_slug=${HARNESS}`;
   await cleanupPlans(fx.admin, WS, HARNESS);
   await seedPlan(fx.admin, WS, HARNESS, SLUG, body());
+  const scope = { workspaceId: WS, harnessSlug: HARNESS, slug: SLUG };
+  const index = deriveIndexFromContent(body());
+  await fx.admin.begin(async tx => {
+    await writePlanLineNodes(tx as never, scope, [], index.items);
+    await writePlanIndexRows(tx as unknown as Parameters<typeof writePlanIndexRows>[0], { ...scope, planSlug: SLUG }, index);
+  });
+  expect((await readPlanLineNodes(fx.admin, scope)).map(item => item.id)).toEqual(['P-001']);
 });
 afterAll(async () => {
   if (fx) {
     await fx.admin`DELETE FROM harness_shared.plan_item_anchors WHERE workspace_id=${WS} AND harness_slug=${HARNESS}`;
+    await fx.admin`DELETE FROM harness_shared.work_items WHERE workspace_id=${WS} AND harness_slug=${HARNESS}`;
     await cleanupPlans(fx.admin, WS, HARNESS);
     await fx.dispose();
   }

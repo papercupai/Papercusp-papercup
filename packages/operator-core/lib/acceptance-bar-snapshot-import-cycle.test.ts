@@ -89,3 +89,37 @@ describe('acceptance-bar-contract-snapshot import graph', () => {
     expect(staticImportChain(snapshot, evaluator)).toBeNull();
   });
 });
+
+describe('spec evidence schema initialization (EI-27689464176702417)', () => {
+  const store = path.join(LIB, 'agent-tools/plans/spec-evidence-store.ts');
+  const consumer = path.join(LIB, 'agent-tools/testing/evidence.ts');
+
+  it('positive control: testing evidence reads the store schemas at module initialization', () => {
+    expect(staticImportChain(consumer, store)).toEqual([
+      'agent-tools/testing/evidence.ts',
+      'agent-tools/plans/spec-evidence-store.ts',
+    ]);
+  });
+
+  it('the store cannot initialize its testing consumer before its schemas are defined', () => {
+    expect(staticImportChain(store, consumer)).toBeNull();
+  });
+});
+
+describe('blueprint operation admission initialization (EI-27690628316181198)', () => {
+  const admission = path.join(LIB, 'blueprint/operation-admission.ts');
+  const runner = path.join(LIB, 'harness/routines/plan-run-action.ts');
+  const evaluator = path.join(LIB, 'acceptance-bar-lifecycle-evaluator.ts');
+
+  it('positive control: the scheduled runner imports the acceptance evaluator', () => {
+    expect(staticImportChain(runner, evaluator)).toEqual([
+      'harness/routines/plan-run-action.ts',
+      'acceptance-bar-lifecycle-evaluator.ts',
+    ]);
+  });
+
+  it('admission loads the scheduled runtime only when executing a plan operation', () => {
+    expect(staticImportChain(admission, runner)).toBeNull();
+    expect(staticImportChain(admission, evaluator)).toBeNull();
+  });
+});

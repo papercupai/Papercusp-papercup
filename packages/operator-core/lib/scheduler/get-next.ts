@@ -1372,56 +1372,68 @@ export function issueClaimCandidateSubquery(
   // temp_buffers. The recorded SQLSTATE 53000 surfaced while the later exclusion aggregate
   // scanned that snapshot. Whitelisting downstream rank/sample/count fields prevents large
   // evidence and prose fields from multiplying across the temp relation.
+  // Extract the top-level fields together. Each independent -> on an out-of-line
+  // payload detoasts it again: EI-27100133609838401 measured 1.43M buffer accesses
+  // for this projection alone, versus 169k with one jsonb_to_record extraction.
+  // Keep fields typed jsonb so malformed/scalar members retain the old -> behavior.
   const claimabilitySnapshotPayload = sql`
-    jsonb_strip_nulls(jsonb_build_object(
-      'paths', wi.payload->'paths',
-      'tags', wi.payload->'tags',
-      'severity', wi.payload->'severity',
+    (SELECT jsonb_strip_nulls(jsonb_build_object(
+      'paths', payload_fields.paths,
+      'tags', payload_fields.tags,
+      'severity', payload_fields.severity,
       '_ei', jsonb_strip_nulls(jsonb_build_object(
-        'severity', wi.payload->'_ei'->'severity'
+        'severity', payload_fields._ei->'severity'
       )),
-      'clusterPriority', wi.payload->'clusterPriority',
+      'clusterPriority', payload_fields."clusterPriority",
       'plan_item', jsonb_strip_nulls(jsonb_build_object(
-        'plan_slug', wi.payload->'plan_item'->'plan_slug',
-        'slug', wi.payload->'plan_item'->'slug',
-        'item_id', wi.payload->'plan_item'->'item_id',
-        'itemId', wi.payload->'plan_item'->'itemId',
-        'item', wi.payload->'plan_item'->'item'
+        'plan_slug', payload_fields.plan_item->'plan_slug',
+        'slug', payload_fields.plan_item->'slug',
+        'item_id', payload_fields.plan_item->'item_id',
+        'itemId', payload_fields.plan_item->'itemId',
+        'item', payload_fields.plan_item->'item'
       )),
       'planItem', jsonb_strip_nulls(jsonb_build_object(
-        'plan_slug', wi.payload->'planItem'->'plan_slug',
-        'slug', wi.payload->'planItem'->'slug',
-        'item_id', wi.payload->'planItem'->'item_id',
-        'itemId', wi.payload->'planItem'->'itemId',
-        'item', wi.payload->'planItem'->'item'
+        'plan_slug', payload_fields."planItem"->'plan_slug',
+        'slug', payload_fields."planItem"->'slug',
+        'item_id', payload_fields."planItem"->'item_id',
+        'itemId', payload_fields."planItem"->'itemId',
+        'item', payload_fields."planItem"->'item'
       )),
-      'source_plan_slug', wi.payload->'source_plan_slug',
-      'source_plan_item_ids', wi.payload->'source_plan_item_ids',
-      'held_open_by', wi.payload->'held_open_by',
-      'held_open_at', wi.payload->'held_open_at',
-      'held_open_reason', wi.payload->'held_open_reason',
-      'claim_hold_by', wi.payload->'claim_hold_by',
-      'claim_hold_at', wi.payload->'claim_hold_at',
-      'claim_hold_reason', wi.payload->'claim_hold_reason',
+      'source_plan_slug', payload_fields.source_plan_slug,
+      'source_plan_item_ids', payload_fields.source_plan_item_ids,
+      'held_open_by', payload_fields.held_open_by,
+      'held_open_at', payload_fields.held_open_at,
+      'held_open_reason', payload_fields.held_open_reason,
+      'claim_hold_by', payload_fields.claim_hold_by,
+      'claim_hold_at', payload_fields.claim_hold_at,
+      'claim_hold_reason', payload_fields.claim_hold_reason,
       'claim_hold_release', jsonb_strip_nulls(jsonb_build_object(
-        'condition', wi.payload->'claim_hold_release'->'condition',
-        'owner', wi.payload->'claim_hold_release'->'owner',
-        'trigger', wi.payload->'claim_hold_release'->'trigger',
-        'reachability', wi.payload->'claim_hold_release'->'reachability',
-        'evidence', wi.payload->'claim_hold_release'->'evidence'
+        'condition', payload_fields.claim_hold_release->'condition',
+        'owner', payload_fields.claim_hold_release->'owner',
+        'trigger', payload_fields.claim_hold_release->'trigger',
+        'reachability', payload_fields.claim_hold_release->'reachability',
+        'evidence', payload_fields.claim_hold_release->'evidence'
       )),
       'agentReview', jsonb_strip_nulls(jsonb_build_object(
-        'status', wi.payload->'agentReview'->'status',
-        'submittedBy', wi.payload->'agentReview'->'submittedBy',
-        'ledgerIdeaId', wi.payload->'agentReview'->'ledgerIdeaId',
-        'round', wi.payload->'agentReview'->'round',
-        'revisionKind', wi.payload->'agentReview'->'revisionKind',
+        'status', payload_fields."agentReview"->'status',
+        'submittedBy', payload_fields."agentReview"->'submittedBy',
+        'ledgerIdeaId', payload_fields."agentReview"->'ledgerIdeaId',
+        'round', payload_fields."agentReview"->'round',
+        'revisionKind', payload_fields."agentReview"->'revisionKind',
         'timing', jsonb_strip_nulls(jsonb_build_object(
-          'round', wi.payload->'agentReview'->'timing'->'round',
-          'enteredAt', wi.payload->'agentReview'->'timing'->'enteredAt',
-          'decidedAt', wi.payload->'agentReview'->'timing'->'decidedAt'
+          'round', payload_fields."agentReview"->'timing'->'round',
+          'enteredAt', payload_fields."agentReview"->'timing'->'enteredAt',
+          'decidedAt', payload_fields."agentReview"->'timing'->'decidedAt'
         ))
       ))
+    )) FROM jsonb_to_record(
+      CASE WHEN jsonb_typeof(wi.payload) = 'object' THEN wi.payload ELSE '{}'::jsonb END
+    ) AS payload_fields(
+      paths jsonb, tags jsonb, severity jsonb, _ei jsonb, "clusterPriority" jsonb,
+      plan_item jsonb, "planItem" jsonb, source_plan_slug jsonb, source_plan_item_ids jsonb,
+      held_open_by jsonb, held_open_at jsonb, held_open_reason jsonb,
+      claim_hold_by jsonb, claim_hold_at jsonb, claim_hold_reason jsonb,
+      claim_hold_release jsonb, "agentReview" jsonb
     ))
   `;
   const baseColumns =

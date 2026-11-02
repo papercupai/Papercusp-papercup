@@ -333,6 +333,34 @@ describe('runScratchGc — retention', () => {
     expect(existsSync(before)).toBe(false);
   });
 
+  it.each(['EACCES', 'EPERM', 'EROFS'])(
+    'keeps an unreclaimable retention run and continues to later runs (%s)',
+    async (code) => {
+      const blocked = makeRunDir('ws-A', 'demo:tool', UUID(800), 100, RETENTION_MS + 3000);
+      const reclaimable = makeRunDir('ws-A', 'demo:tool', UUID(801), 100, RETENTION_MS + 2000);
+      const remove = vi.mocked(rmAsync);
+      const originalRemove = remove.getMockImplementation()!;
+      remove.mockImplementation(async (...args) => {
+        if (String(args[0]) === blocked) throw Object.assign(new Error('protected scratch run'), { code });
+        return originalRemove(...args);
+      });
+      try {
+        const r = await runScratchGc({ workspaceRegistry: ['ws-A'], enforceQuota: false });
+        expect(r.retentionEvictions).toBe(1);
+        expect(r.unreclaimablePaths).toContainEqual({
+          workspaceId: 'ws-A',
+          path: blocked,
+          phase: 'retention',
+          errorCode: code,
+        });
+        expect(existsSync(blocked)).toBe(true);
+        expect(existsSync(reclaimable)).toBe(false);
+      } finally {
+        remove.mockImplementation(originalRemove);
+      }
+    },
+  );
+
   it('does not hold the workspace mutex while sizing retention candidates', async () => {
     const workspaceId = 'ws-retention-admission';
     const staleRun = makeRunDir(workspaceId, 'demo:tool', UUID(20), 100, RETENTION_MS + 1000);
@@ -1113,6 +1141,7 @@ describe('runScratchGc — no synchronous fs on the event loop (WI-10005135)', (
       markersWritten: 0,
       unprovenEntries: 0,
       deadWorkspacesDeferred: [],
+      unreclaimablePaths: [],
     });
   });
 
@@ -1266,6 +1295,38 @@ describe('runScratchGc — deletes only provably-dead, quiet workspace roots (WI
     expect(r.deadWorkspaces).toBe(2);
     expect(existsSync(wsRoot)).toBe(false);
   });
+
+  it.each(['EACCES', 'EPERM', 'EROFS'])(
+    'defers an unreclaimable dead workspace and continues to other roots (%s)',
+    async (code) => {
+      const blocked = makeDeadWorkspace('ws-DEAD-BLOCKED');
+      const reclaimable = makeDeadWorkspace('ws-DEAD-OK');
+      const remove = vi.mocked(rmAsync);
+      const originalRemove = remove.getMockImplementation()!;
+      remove.mockImplementation(async (...args) => {
+        if (String(args[0]) === blocked) throw Object.assign(new Error('protected workspace scratch'), { code });
+        return originalRemove(...args);
+      });
+      try {
+        const r = await runScratchGc({ workspaceRegistry: [], scanOpenPaths: noHolders });
+        expect(r.deadWorkspaces).toBe(1);
+        expect(r.deadWorkspacesDeferred).toContainEqual({
+          workspaceId: 'ws-DEAD-BLOCKED',
+          reason: 'unreclaimable',
+        });
+        expect(r.unreclaimablePaths).toContainEqual({
+          workspaceId: 'ws-DEAD-BLOCKED',
+          path: blocked,
+          phase: 'dead-workspace',
+          errorCode: code,
+        });
+        expect(existsSync(blocked)).toBe(true);
+        expect(existsSync(reclaimable)).toBe(false);
+      } finally {
+        remove.mockImplementation(originalRemove);
+      }
+    },
+  );
 
   it('backfills the marker onto a registered root that predates markers, and never creates a root', async () => {
     const wsRoot = join(root(), 'ws-LEGACY');
@@ -3150,6 +3211,8 @@ describe('deferred scratch quota recovery', () => {
 
   it('bounds a scratch quota write when filesystem mutex admission stalls', async () => {
     const workspaceId = 'ws-Q';
+    const stateRoot = resolveScratchQuotaStateRoot();
+    rmSync(stateRoot, { recursive: true, force: true });
     const workspaceRoot = resolve(scratchRootForWorkspace(workspaceId));
     const mutexDigest = createHash('sha256').update(workspaceRoot).digest('hex').slice(0, 40);
     const mutexName = `papercusp-scratch-quota-${mutexDigest}`;
@@ -3167,23 +3230,27 @@ describe('deferred scratch quota recovery', () => {
     try {
       await holderStarted;
       const startedAt = performance.now();
-      await expect(writeWithScratchQuota({
+      let writeSettled = false;
+      const writePromise = writeWithScratchQuota({
         workspaceId,
         filePath: join(scratchRootForWorkspace(workspaceId), 'mutex-timeout', 'spill'),
         bytes: 1,
         captureSubphaseTimings: true,
-        mutexTimeoutMs: 40,
+        mutexTimeoutMs: 500,
         onTiming: (row) => timings.push(row),
       }, async () => {
         throw new Error('payload writer must not run after admission timeout');
-      })).rejects.toMatchObject({ code: 'ETIMEDOUT' });
+      }).finally(() => { writeSettled = true; });
+      await vi.waitFor(() => expect(existsSync(stateRoot)).toBe(true), { timeout: 1_000 });
+      expect(writeSettled).toBe(false);
+      await expect(writePromise).rejects.toMatchObject({ code: 'ETIMEDOUT' });
       expect(performance.now() - startedAt).toBeLessThan(1_000);
       const settled = timings.find((row) => !row.progress);
       expect(settled).toMatchObject({
         fsMutexAdmissionMs: expect.any(Number),
         quotaWaitMs: expect.any(Number),
       });
-      expect(settled?.fsMutexAdmissionMs).toBeGreaterThanOrEqual(40);
+      expect(settled?.fsMutexAdmissionMs).toBeGreaterThanOrEqual(500);
       expect(settled?.awaitSubphaseTimingsMs).toEqual(expect.objectContaining({
         'fs-mutex-admission.abandoned-lock-reclaim': expect.any(Number),
         'fs-mutex-admission.abandoned-lock.owner-read': expect.any(Number),

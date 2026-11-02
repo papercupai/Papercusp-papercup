@@ -8,7 +8,7 @@
  * Pure: scheduled checks are injected; the default health tick runs against
  * mocked service modules, with no PG/flags/network initialization.
  */
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { installManagedTickAlarm } from './managed-tick-alarm';
 import {
   armInProcessPeriodicChecks,
@@ -25,12 +25,20 @@ const healthCadence = vi.hoisted(() => ({
   readRegistry: vi.fn(),
   tick: vi.fn(),
   sample: vi.fn(),
+  canRun: vi.fn(async () => true),
+  pulse: vi.fn(async () => ({ outcome: 'noop' })),
+  wedge: vi.fn(async () => ({ outcome: 'noop' })),
 }));
 vi.mock('@papercusp/flags/server', () => ({ getFlag: healthCadence.getFlag }));
 vi.mock('../workspace-registry', () => ({ readRegistry: healthCadence.readRegistry }));
 vi.mock('../system-health', () => ({ runSystemHealthTick: healthCadence.tick }));
 vi.mock('../system-health/perf-regression-rig', () => ({ collectPerfRegressionWhenDue: healthCadence.sample }));
+vi.mock('../device-operator-actions', () => ({ workspaceBackgroundActivityAllowed: healthCadence.canRun }));
+vi.mock('../scorecard-emission-pulse', () => ({ runScorecardEmissionPulse: healthCadence.pulse,
+  checkOverwatchEmissionWedge: healthCadence.wedge }));
 vi.mock('./managed-tick-alarm', () => ({ installManagedTickAlarm: vi.fn() }));
+
+beforeEach(() => { healthCadence.canRun.mockReset().mockResolvedValue(true); });
 
 afterEach(() => {
   disarmInProcessPeriodicChecks();
@@ -80,6 +88,45 @@ describe('runPeriodicCheck', () => {
     expect(log).toHaveBeenCalledOnce();
     expect(log.mock.calls[0][0]).toContain('boom tick failed');
     expect(log.mock.calls[0][0]).toContain('kaboom');
+  });
+});
+
+describe('shared optional workspace effects', () => {
+  it.each(['system-health', 'scorecard-emission-pulse'])('withholds %s only in the paused workspace and rechecks on the next fire', async name => {
+    healthCadence.getFlag.mockResolvedValue(true);
+    healthCadence.readRegistry.mockReturnValue({ workspaces: [{ id: 'paused-ws' }, { id: 'active-ws' }] });
+    healthCadence.tick.mockReset().mockResolvedValue({});
+    healthCadence.sample.mockReset().mockResolvedValue({ overdue: false });
+    healthCadence.pulse.mockReset().mockResolvedValue({ outcome: 'noop' });
+    healthCadence.wedge.mockReset().mockResolvedValue({ outcome: 'noop' });
+    healthCadence.canRun.mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+    const check = buildDefaultChecks().find(check => check.name === name)!;
+    await check.tick();
+    const effect = name === 'system-health' ? healthCadence.tick : healthCadence.pulse;
+    expect(effect).toHaveBeenCalledOnce();
+    expect(effect).toHaveBeenCalledWith(name === 'system-health' ? 'active-ws' : { workspaceId: 'active-ws' });
+    const { startupActivityFeatureId } = await import('../schedule-inventory');
+    const { operatorHomeHarnessSlug } = await import('../harness/operator-home-harness');
+    for (const workspaceId of ['paused-ws', 'active-ws']) {
+      const featureId = startupActivityFeatureId({ source: 'routines', installSlug: operatorHomeHarnessSlug(), name, detail: {} }, { workspaceId });
+      expect(healthCadence.canRun).toHaveBeenCalledWith(workspaceId, featureId);
+    }
+    await check.tick();
+    expect(effect).toHaveBeenCalledTimes(3);
+    expect(healthCadence.canRun).toHaveBeenCalledTimes(4);
+  });
+
+  it('withholds failed policy reads without leaking the provider error or blocking another workspace', async () => {
+    healthCadence.getFlag.mockResolvedValue(true);
+    healthCadence.readRegistry.mockReturnValue({ workspaces: [{ id: 'failed-ws' }, { id: 'active-ws' }] });
+    healthCadence.tick.mockReset().mockResolvedValue({});
+    healthCadence.sample.mockReset().mockResolvedValue({ overdue: false });
+    healthCadence.canRun.mockRejectedValueOnce(new Error('secret provider body')).mockResolvedValueOnce(true);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await buildDefaultChecks().find(check => check.name === 'system-health')!.tick();
+    expect(healthCadence.tick).toHaveBeenCalledOnce();
+    expect(healthCadence.tick).toHaveBeenCalledWith('active-ws');
+    expect(warn.mock.calls.flat().join(' ')).not.toContain('secret');
   });
 });
 

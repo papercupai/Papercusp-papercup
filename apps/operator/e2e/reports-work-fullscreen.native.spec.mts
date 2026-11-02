@@ -68,6 +68,19 @@ test('P010 native converse parity', async ({}, info) => {
     // Address the actual product surface so the requested chat is open.
     await native('navigate', '/adv?tab=harnesses&chat=true');
     await wait(`new URLSearchParams(location.search).get('chat') === 'true' && !!document.querySelector('[aria-label="Papercup chat"]')`);
+    // Other browser journeys have already changed this rig's active global
+    // conversation. Direct SQL fixtures do not emit query invalidations, and
+    // native route navigation can retain the previous query-client instance.
+    // Start a fresh document against the verified fixture before testing UI.
+    const previousDocument = await evaluate('performance.timeOrigin');
+    await evaluate('setTimeout(() => window.location.reload(), 0); true');
+    await wait(`performance.timeOrigin !== ${JSON.stringify(previousDocument)} && !!document.querySelector('[aria-label="Papercup chat"]')`);
+    await wait(`!!document.querySelector('[data-turn="${turnId}"]')`);
+    await info.attach('p010-native-conversation-binding', { body: JSON.stringify(await evaluate(`({
+      timeOrigin: performance.timeOrigin,
+      turns: [...document.querySelectorAll('[data-turn]')].map(element => element.getAttribute('data-turn')),
+      workspace: window.__PAPERCUSP_WS__ || null
+    })`)), contentType: 'application/json' });
     const selector = '[data-result-id="p010-native-report"]';
     await wait(`document.querySelector(${JSON.stringify(selector)})?.textContent.includes('P010 authorized native report') === true`);
     await wait(`(() => {

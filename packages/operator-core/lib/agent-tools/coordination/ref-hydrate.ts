@@ -86,6 +86,8 @@ export interface HydratedRef {
   snippet: string;
   /** Failure tag when !ok: 'not_found' | 'resolver_not_installed' | 'resolve_error'. */
   error?: string;
+  /** Resolver completion time; the hydrated state is a point-in-time snapshot. */
+  resolvedAt?: string;
   /** Present when a referenced work-item is already terminal at delivery time. */
   terminalSubject?: TerminalSubject;
 }

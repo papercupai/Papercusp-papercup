@@ -6,6 +6,7 @@ const h = vi.hoisted(() => ({
   getFeedbackCore: vi.fn(),
   acceptFeedbackRequestCore: vi.fn(),
   continueFeedbackRequestCore: vi.fn(),
+  validateBarCritiquePlanOrigin: vi.fn(async () => null),
   reconcileInterestEventAwaits: vi.fn(),
   buildQueryEmbedderResolved: vi.fn(async () => null),
   interactiveEmbedAcquireBudgetMs: vi.fn(() => 4000),
@@ -29,6 +30,7 @@ vi.mock('../../consult/get-feedback-core', () => ({
   getFeedbackCore: h.getFeedbackCore,
   acceptFeedbackRequestCore: h.acceptFeedbackRequestCore,
   continueFeedbackRequestCore: h.continueFeedbackRequestCore,
+  validateBarCritiquePlanOrigin: h.validateBarCritiquePlanOrigin,
 }));
 vi.mock('../../consult/relevance-router', () => ({
   DEFAULT_RECENCY_HALF_LIFE_DAYS: 7,
@@ -89,6 +91,7 @@ const call = async (latencyContract: 'proceed' | 'hard-blocked', extra: Record<s
 
 beforeEach(() => {
   h.getFeedbackCore.mockReset();
+  h.validateBarCritiquePlanOrigin.mockReset().mockResolvedValue(null);
   h.acceptFeedbackRequestCore.mockReset().mockImplementation(async (request) => ({
     ok: true, verdict: 'accepted', state: 'routing', pending: true,
     conversation_id: 'consult-1', thread_id: 'thread-1', request_key: request.requestKey ?? 'auto-key',

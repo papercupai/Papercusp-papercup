@@ -77,13 +77,29 @@ describe('shared adv-session focus service', () => {
     const resolveByTitle = vi
       .fn<(fragment: string) => Promise<string | null>>()
       .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(null)
       .mockResolvedValueOnce('0x01e70b14');
     const rememberWindowId = vi.fn(async () => {});
 
     await expect(
       resolveSessionWindowId({}, row(), { resolveByTitle, rememberWindowId }),
     ).resolves.toBe('0x01e70b14');
-    expect(resolveByTitle.mock.calls).toEqual([['[adv:42]'], ['su-8ee55']]);
+    expect(resolveByTitle.mock.calls).toEqual([['[adv:42]'], [row().sessionId], ['su-8ee55']]);
+    expect(rememberWindowId).toHaveBeenCalledWith(42, '0x01e70b14');
+  });
+
+  it('resolves a restored window by its native session UUID before the owner-title fallback', async () => {
+    const sessionId = row().sessionId!;
+    const resolveByTitle = vi
+      .fn<(fragment: string) => Promise<string | null>>()
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce('0x01e70b14');
+    const rememberWindowId = vi.fn(async () => {});
+
+    await expect(
+      resolveSessionWindowId({}, row(), { resolveByTitle, rememberWindowId }),
+    ).resolves.toBe('0x01e70b14');
+    expect(resolveByTitle.mock.calls).toEqual([['[adv:42]'], [sessionId]]);
     expect(rememberWindowId).toHaveBeenCalledWith(42, '0x01e70b14');
   });
 

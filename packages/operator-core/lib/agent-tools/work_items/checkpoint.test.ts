@@ -78,34 +78,26 @@ vi.mock('../../effort-thread', async (importOriginal) => ({
 vi.mock('../coordination/decision-ref-advisory', () => ({
   unresolvedPlanDecisionRefs: (...a: unknown[]) => unresolvedPlanDecisionRefs(...a),
 }));
-vi.mock('../../work-items', () => ({
-  getWorkItem: (...a: unknown[]) => getWorkItem(...a),
-  // checkpoint.ts fire-and-forgets markFeatureProgress + markIssueProgress (last_progress_at
-  // bump on the matching family; WI-3006). The mock MUST export BOTH or the `void markX(...)`
-  // call throws (undefined is not callable) — the throw lands inside the per-item runBulk fn,
-  // AFTER a successful setWorkItemCheckpoint, so every item that actually WRITES fails ok:false
-  // (agent-activity-liveness-truth integration). Missing markIssueProgress here red-pinned the
-  // 4 write-path tests deterministically (WI-2900 gate triage).
-  markFeatureProgress: () => Promise.resolve(true),
-  markIssueProgress: () => Promise.resolve(true),
-  // EI-19395730805289668: same trap, third instance — checkpoint.ts now also imports
-  // isClaimHoldParked (for the prose-pause nudge), and an unmocked export is `undefined`,
-  // which throws at the call and fails EVERY write-path test ok:false exactly as described
-  // above. Re-implemented rather than importActual'd on purpose: the point of this mock is
-  // to keep work-items.ts (and its DB dependencies) out of a unit test. Mirrors the real
-  // predicate's text-compare, which matches both the boolean and the legacy string form.
-  isClaimHoldParked: (payload: unknown) =>
-    !!payload && typeof payload === 'object' && String((payload as Record<string, unknown>)._claimHold) === 'true',
-  // EI-21921431863111143: same trap, fourth instance — checkpoint.ts now also imports
-  // isSelfOwnerRecord (the not_holder guard's prefix-tolerant identity match). Mirrors the
-  // real predicate: exact match, or `recorded` a non-empty strict prefix of `caller`.
-  isSelfOwnerRecord: (recorded: string | null | undefined, caller: string) => {
-    const holder = recorded?.trim();
-    if (!holder) return false;
-    if (holder === caller) return true;
-    return caller.length > holder.length && caller.startsWith(holder);
-  },
-}));
+vi.mock('../../work-items', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../work-items')>();
+  return {
+    ...actual,
+    getWorkItem: (...a: unknown[]) => getWorkItem(...a),
+    // checkpoint.ts fire-and-forgets markFeatureProgress + markIssueProgress; keep these
+    // side effects isolated while inheriting every other canonical module export.
+    markFeatureProgress: () => Promise.resolve(true),
+    markIssueProgress: () => Promise.resolve(true),
+    // These two predicates are overridden because checkpoint tests pin their exact behavior.
+    isClaimHoldParked: (payload: unknown) =>
+      !!payload && typeof payload === 'object' && String((payload as Record<string, unknown>)._claimHold) === 'true',
+    isSelfOwnerRecord: (recorded: string | null | undefined, caller: string) => {
+      const holder = recorded?.trim();
+      if (!holder) return false;
+      if (holder === caller) return true;
+      return caller.length > holder.length && caller.startsWith(holder);
+    },
+  };
+});
 import checkpoint from './checkpoint';
 import { OrgTxnTimeoutError } from '../../pg-bounded-txn';
 // EI-19400299440742193: the guard asserts against the REAL caps, not literals, so a
@@ -1984,43 +1976,46 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
     });
   });
 
-  describe('EI-19399101595349211: the mock must cover what checkpoint.ts actually imports', () => {
+  describe('EI-19399101595349211: the mock must cover the checkpoint runtime import graph', () => {
     /**
-     * A `vi.mock` factory REPLACES the module wholesale, so the moment checkpoint.ts imports an
-     * ADDITIONAL symbol from work-items, that symbol is `undefined` here, the call throws inside
-     * the per-item runBulk callback — after a successful store write — and every test that
-     * actually WRITES comes back ok:false.
+     * A `vi.mock` factory REPLACES the module wholesale, so an additional work-items import
+     * anywhere on checkpoint.ts's runtime path becomes undefined and can fail module loading
+     * before any test runs. The path includes scheduler/get-next and improvement orchestration,
+     * not only checkpoint.ts itself.
      *
-     * That has now happened three times (markIssueProgress / WI-2900, isClaimHoldParked / today).
-     * What makes it expensive is that the failure names NOTHING: ~20 unrelated-looking tests go
-     * red at once, none mentioning the symbol you just added, so the first hypothesis is always
-     * "I broke the write path" rather than "my import list changed".
+     * Earlier misses made unrelated tests fail at runtime without naming the missing mock export.
      *
-     * This guard turns that into one failure that names the missing symbol. It is deliberately
-     * source-parsing rather than type-level: the drift is between a RUNTIME object's keys and an
-     * import list, which the compiler cannot see (the real module type-checks fine either way).
+     * This guard names each missing symbol. It is deliberately source-parsing rather than
+     * type-level: the drift is between a runtime object's keys and import lists, which the
+     * compiler cannot see (the real module type-checks fine either way).
      */
-    it('every symbol checkpoint.ts imports from work-items is provided by the mock', () => {
-      const src = readFileSync(new URL('./checkpoint.ts', import.meta.url), 'utf8');
-      const m = src.match(/import\s*\{([^}]+)\}\s*from\s*'\.\.\/\.\.\/work-items'/);
-      // A miss here means the import was reshaped (namespace/default/multi-line-with-comments).
-      // Fail loudly rather than silently vacuously passing — a guard that quietly matches nothing
-      // is worse than no guard, because it reads as coverage.
-      expect(m, 'could not locate the work-items import in checkpoint.ts — update this guard').not.toBeNull();
-
-      const imported = m![1]
-        .split(',')
-        .map((s) =>
-          s
-            .trim()
-            .split(/\s+as\s+/)[0]
-            .trim(),
-        )
-        .filter(Boolean);
-      expect(imported.length).toBeGreaterThan(0);
-
+    it('provides every runtime work-items import across the checkpoint dependency path', () => {
+      const sources = [
+        './checkpoint.ts',
+        '../../scheduler/get-next.ts',
+        '../../harness/improvements/agent-review.ts',
+        '../../harness/improvements/triage-core.ts',
+        '../coordination/actionable-work-item-dispatch.ts',
+      ];
       const provided = new Set(Object.keys(workItemsMocked));
-      expect(imported.filter((name) => !provided.has(name))).toEqual([]);
+      for (const sourcePath of sources) {
+        const src = readFileSync(new URL(sourcePath, import.meta.url), 'utf8');
+        const m = src.match(/import\s*\{([^{}]+)\}\s*from\s*['"][^'"]*work-items['"]/);
+        // A miss means the import was reshaped; update this guard rather than letting it pass
+        // vacuously on a module whose runtime import list is no longer measured.
+        expect(m, 'could not locate a work-items import in ' + sourcePath).not.toBeNull();
+
+        const imported = m![1]
+          .split(',')
+          .map((entry) => entry.trim())
+          .filter((entry) => entry && !entry.startsWith('type '))
+          .map((entry) => entry.split(/\s+as\s+/)[0].trim());
+        expect(imported.length, 'no runtime imports found in ' + sourcePath).toBeGreaterThan(0);
+        expect(
+          imported.filter((name) => !provided.has(name)),
+          'mock is missing work-items exports imported by ' + sourcePath,
+        ).toEqual([]);
+      }
     });
   });
 
@@ -5912,6 +5907,23 @@ describe('work_items:checkpoint — launched-but-unread run lint (EI-19455262557
 
     expect(result.ok).toBe(true);
     expect(result).not.toHaveProperty('unreadRunLint');
+  });
+
+  it('does not flag a peer-owned run after its completed log was read (EI-27653632719470676)', async () => {
+    const body = [
+      'The diagnostic test run was launched by peer su-b6e19/thread-post1211309; output at /tmp/bash-b3219787-e09.log.',
+      'This session read the log with tail -n28 and observed JOB END completed/exit0 before writing this checkpoint.',
+      'No parallel implementation repair run was launched.',
+    ].join('\n');
+    getWorkItem.mockResolvedValue({ id: 'WI-UNREAD-PEER-RUN', harness: 'papercup' });
+    setWorkItemCheckpointWithPrior.mockResolvedValue({ stored: body, priorLength: 0 });
+    getWorkItemCheckpoint.mockResolvedValue(body);
+
+    const result = await one({ id: 'WI-UNREAD-PEER-RUN', checkpoint: body });
+
+    expect(result.ok).toBe(true);
+    expect(result).not.toHaveProperty('unreadRunLint');
+    expect(setWorkItemCheckpointWithPrior).toHaveBeenCalled();
   });
 
   it('does not pair historical launch prose with already-read JSON captures', async () => {

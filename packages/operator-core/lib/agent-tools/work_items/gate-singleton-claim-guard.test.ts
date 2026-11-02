@@ -55,7 +55,7 @@ describe('requiresLongLivedOwner', () => {
 });
 
 describe('assessGateSingletonClaim', () => {
-  it('refuses a claimant with no active loop and points at loop:arm and the per-leg items', () => {
+  it('refuses a claimant with no active loop and preserves the gate ownership boundary (EI-27206037186017447)', () => {
     const r = assessGateSingletonClaim({
       conditionKey: 'gate-red-streak:papercusp',
       claimant: 'su-abc',
@@ -70,6 +70,10 @@ describe('assessGateSingletonClaim', () => {
     expect(r?.hint).toMatch(/loop:arm/);
     expect(r?.hint).toMatch(/frozen-repair-leg:/);
     expect(r?.hint).toMatch(/release:repair-queue/);
+    expect(r?.hint).toContain('gate.greenCheckpoint.ownership');
+    expect(r?.hint).toContain('stop current-run operations');
+    expect(r?.hint).toContain('Independently registered source work');
+    expect(r?.hint).not.toContain('neither needs gate ownership');
     expect(r?.hint).toMatch(/refused before mutation/);
   });
 

@@ -247,6 +247,49 @@ describe('evaluateExactPlanAdmission', () => {
     });
   });
 
+  it.each([undefined, 'WI-shadow'])('ignores a parked migration node beside its execution row (parent=%s)', (parent) => {
+    const verdict = evaluateExactPlanAdmission({
+      planSlug: 'plan-a',
+      planItems: [item('P-001')],
+      workItems: [
+        { id: 'WI-shadow', family: 'feature', state: 'open', sourcePlanItemIds: ['P-001'],
+          payload: { _claimHold: true, claim_hold_by: 'migration:plan-line-work-item-nodes' } },
+        { id: 'WI-execution', family: 'issue', state: 'open', parent, sourcePlanItemIds: ['P-001'], payload: null },
+      ],
+      laneHealth: lane({ issue: 1, feature: 0 }),
+    });
+
+    expect(verdict).toMatchObject({ ready: true, reason: 'ready',
+      promotion: { rows: 2, byFamily: { feature: 1, issue: 1 }, duplicateActionable: [] },
+      actionableRows: [{ planItemId: 'P-001', workItemId: 'WI-execution' }] });
+    expect(verdict.claimKinds).toEqual([...ISSUE_FAMILY_KINDS]);
+  });
+
+  it.each([
+    { _claimHold: false, claim_hold_by: 'migration:plan-line-work-item-nodes' },
+    { _claimHold: true, claim_hold_by: 'su-reviewer' },
+  ])('still rejects an actual competing row with hold metadata %j', (payload) => {
+    expect(evaluateExactPlanAdmission({
+      planSlug: 'plan-a', planItems: [item('P-001')],
+      workItems: [
+        { id: 'WI-other', family: 'feature', state: 'open', sourcePlanItemIds: ['P-001'], payload },
+        { id: 'WI-execution', family: 'issue', state: 'open', sourcePlanItemIds: ['P-001'], payload: null },
+      ],
+      laneHealth: lane({ issue: 1, feature: 0 }),
+    })).toMatchObject({ ready: false, reason: 'duplicate-coverage', promotion: {
+      duplicateActionable: [{ planItemId: 'P-001', workItemIds: ['WI-other', 'WI-execution'] }],
+    } });
+  });
+
+  it('does not admit a plan whose only coverage is a parked migration node', () => {
+    expect(evaluateExactPlanAdmission({
+      planSlug: 'plan-a', planItems: [item('P-001')],
+      workItems: [{ id: 'WI-shadow', family: 'feature', state: 'open', sourcePlanItemIds: ['P-001'],
+        payload: { _claimHold: true, claim_hold_by: 'migration:plan-line-work-item-nodes' } }],
+      laneHealth: lane({ issue: 0, feature: 0, featureMatchedByFilter: 1, featureExcluded: { claimHold: 1 } }),
+    })).toMatchObject({ ready: false, promotion: { rows: 1 } });
+  });
+
   it('admits a feature-only exact-plan lane from feature-family truth', () => {
     const verdict = evaluateExactPlanAdmission({
       planSlug: 'plan-a',

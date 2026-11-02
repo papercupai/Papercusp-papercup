@@ -83,11 +83,12 @@ export function capabilityEditAbortCompletionReceipt(
     };
   }
 
-  const path = typeof payload.path === 'string' ? payload.path.trim() : '';
+  const path = typeof payload.path === 'string' ? payload.path : '';
   const replacements = payload.replacements;
   if (
     payload.ok === true
     && path.length > 0
+    && path.trim().length > 0
     && typeof replacements === 'number'
     && Number.isSafeInteger(replacements)
     && replacements > 0

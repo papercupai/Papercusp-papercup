@@ -23,8 +23,8 @@ export async function writePlanItemAnchors(tx: TransactionSql, scope: PlanAnchor
       signature text,"contentHash" text,consumers jsonb,"consumersTotal" int,tests jsonb,resolution text,"unknownReason" text,freshness text,"resolvedCommit" text,change jsonb)`;
 }
 
-export async function readPlanItemAnchors(scope: PlanAnchorScope): Promise<Record<string, PlanItemAnchor[]>> {
-  const { sql } = getOrgPg();
+export async function readPlanItemAnchors(scope: PlanAnchorScope, tx?: TransactionSql): Promise<Record<string, PlanItemAnchor[]>> {
+  const sql = tx ?? getOrgPg().sql;
   const rows = await sql<(PlanItemAnchor & { itemId: string })[]>`
     SELECT a.id::text, a.item_id AS "itemId", a.anchor_kind AS "anchorKind", a.requested,
       a.symbol_id AS "symbolId", a.symbol_name AS "symbolName", a.path, a.line, a.signature,

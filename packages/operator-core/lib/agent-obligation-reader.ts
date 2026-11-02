@@ -246,7 +246,7 @@ export async function readAgentObligationAgenda(input: {
       input.sourceTimeoutMs ?? AGENT_OBLIGATION_OPTIONAL_READ_TIMEOUT_MS,
     ),
   );
-  const deps = { ...defaultAgentObligationReaderDeps(), ...(input.deps ?? {}) };
+  const deps = { ...defaultAgentObligationReaderDeps(sourceTimeoutMs), ...(input.deps ?? {}) };
   const [goalOutcome, plansOutcome] = await Promise.all([
     input.goalId !== undefined
       ? Promise.resolve<ReadOutcome<string | null>>({ value: input.goalId, degraded: false, elapsedMs: 0 })
@@ -949,7 +949,9 @@ export async function readAgentGoalModeState(input: {
   }
 }
 
-export function defaultAgentObligationReaderDeps(): AgentObligationReaderDeps {
+export function defaultAgentObligationReaderDeps(
+  sourceTimeoutMs = AGENT_OBLIGATION_OPTIONAL_READ_TIMEOUT_MS,
+): AgentObligationReaderDeps {
   return {
     // P-005 / D-030 step 6: the brief's own headcount primitives, loaded lazily.
     fleetStaffing: async (workspaceId, ownerId) =>
@@ -1054,11 +1056,11 @@ export function defaultAgentObligationReaderDeps(): AgentObligationReaderDeps {
       throw new Error(observation?.detail ?? `no acceptance-gate observation was read for '${planSlug}'`);
     },
     ownerDirectives: async (workspaceId, ownerId) => {
+      const deadlineAtMs = Date.now() + sourceTimeoutMs;
       const [
         { listOwnerDirectives, OWNER_DIRECTIVES_RENDER_MAX_ROWS },
         { directiveDisplayText },
-        { listWorkItemsByDirective, TERMINAL_WORK_ITEM_STATES },
-      ] = await Promise.all([import('./owner-directives'), import('./owner-directive-display'), import('./work-items')]);
+      ] = await Promise.all([import('./owner-directives'), import('./owner-directive-display')]);
       // The `state` filter is applied in SQL, BEFORE the limit (P-005).
       // viewerOwnerId in the same SQL position: a row THIS session cleared off
       // its own agenda (P-008 / D-008) must stop being an obligation for it.
@@ -1070,29 +1072,38 @@ export function defaultAgentObligationReaderDeps(): AgentObligationReaderDeps {
       // addressed, or the one holding a live work-item on the directive. A
       // failed work-item read degrades to "addressed only" — it must never hide
       // a directive the owner addressed to this session.
-      let heldByMe = new Set<number>();
-      try {
-        const linked = await listWorkItemsByDirective(
-          workspaceId,
-          open.map((row) => row.id),
-        );
-        heldByMe = new Set(
-          linked
-            .filter((item) => item.assignee === ownerId && !TERMINAL_WORK_ITEM_STATES.includes(item.state))
-            .map((item) => item.directiveRef),
-        );
-      } catch {
-        heldByMe = new Set();
-      }
       // P-008 / R-7: a directive whose addressee ENDED passes to the addressee's
       // fleet leader. Fail-soft like the work-item read: a routing failure must
       // never hide the directives this session already owns.
-      let inherited = new Set<number>();
-      try {
-        const { directivesInheritedBy } = await import('./owner-directive-routing');
-        inherited = await directivesInheritedBy({ workspaceId, ownerId, open });
-      } catch {
-        inherited = new Set();
+      // EI-26910011995450250: optional enrichment (including its module load)
+      // must finish before the outer source deadline. Otherwise a stalled
+      // lookup discards even the addressed directives already read above.
+      // Share the remaining budget, run independent lookups concurrently, and
+      // reserve time to project the known rows before that outer timer fires.
+      const enrichmentTimeoutMs = deadlineAtMs - Date.now() - Math.min(50, sourceTimeoutMs / 4);
+      let heldByMe = new Set<number>(), inherited = new Set<number>();
+      if (open.length && enrichmentTimeoutMs > 0) {
+        const [held, routed] = await Promise.all([
+          withBoundedTimeout(async () => {
+            const { listWorkItemsByDirective, TERMINAL_WORK_ITEM_STATES } = await import('./work-items');
+            const linked = await listWorkItemsByDirective(workspaceId, open.map(row => row.id));
+            return new Set(linked
+              .filter(item => item.assignee === ownerId && !TERMINAL_WORK_ITEM_STATES.includes(item.state))
+              .map(item => item.directiveRef));
+          }, {
+            fallback: new Set<number>(), timeoutMs: enrichmentTimeoutMs,
+            label: 'agent-obligations:owner-directives:held-work',
+          }),
+          withBoundedTimeout(async () => {
+            const { directivesInheritedBy } = await import('./owner-directive-routing');
+            return directivesInheritedBy({ workspaceId, ownerId, open });
+          }, {
+            fallback: new Set<number>(), timeoutMs: enrichmentTimeoutMs,
+            label: 'agent-obligations:owner-directives:inheritance',
+          }),
+        ]);
+        heldByMe = held.value;
+        inherited = routed.value;
       }
       const rows = open
         .filter((row) => row.recordedBy === ownerId || heldByMe.has(row.id) || inherited.has(row.id))

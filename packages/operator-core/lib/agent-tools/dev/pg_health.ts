@@ -22,6 +22,8 @@ const ACQUISITION_POOLS = [
   'org-admin',
   'org-admin-lossless-bigint',
   SU_LOCK_TX_POOL_LABEL,
+  'org-admin-priority',
+  'org-app-priority',
 ] as const;
 
 export default defineTool({

@@ -16,7 +16,7 @@
  */
 
 import { execFile } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { createServer, type Server } from 'node:http';
 import { tmpdir } from 'node:os';
@@ -80,11 +80,12 @@ async function runCli(
   args: string[],
   stdin: string,
   env: Record<string, string> = {},
+  cli = CLI,
 ): Promise<{ code: number; stdout: string; stderr: string }> {
   return await new Promise((resolve) => {
     const child = execFile(
       process.execPath,
-      [CLI, ...args],
+      [cli, ...args],
       { env: { ...process.env, ...env }, timeout: 20_000 },
       (err, stdout, stderr) => {
         // Bind to a local before narrowing: two separate `(err as ...).code`
@@ -103,6 +104,39 @@ let running: { stop: () => Promise<void> } | null = null;
 afterEach(async () => {
   await running?.stop();
   running = null;
+});
+
+describe('standalone installed dispatcher', () => {
+  it('loads and injects without repository node_modules in its ancestry', async () => {
+    const home = mkdtempSync(path.join(tmpdir(), 'inject-standalone-'));
+    const installed = path.join(home, '.papercusp', 'hooks', 'inject');
+    const op = fakeOperator({ text: 'STANDALONE-INJECTED' });
+    const base = await op.start();
+    running = op;
+    try {
+      // Match installInjectionHooksUnlocked: only sibling/adapters .mjs files ship.
+      for (const rel of ['', 'adapters']) {
+        const src = path.join(HERE, '..', rel);
+        const dest = path.join(installed, rel);
+        mkdirSync(dest, { recursive: true });
+        for (const name of readdirSync(src)) {
+          if (name.endsWith('.mjs')) copyFileSync(path.join(src, name), path.join(dest, name));
+        }
+      }
+      const result = await runCli(
+        ['--client=claude', '--event=UserPromptSubmit'],
+        JSON.stringify({ prompt: 'standalone installation' }),
+        { PAPERCUSP_SID: 'sid-standalone', PAPERCUSP_OPERATOR_URL: base, PAPERCUSP_HOME: home, NODE_PATH: '' },
+        path.join(installed, 'index.mjs'),
+      );
+      expect(result.code).toBe(0);
+      expect(result.stderr).toBe('');
+      expect(result.stdout).toContain('STANDALONE-INJECTED');
+      expect(op.received).toHaveLength(1);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('event -> port routing', () => {
@@ -346,7 +380,24 @@ describe('identity hook ports through the real CLI (P-011)', () => {
         expect(await runInjection({ adapter, nativeEvent, event: { tool_name: 'exec_command', tool_input: { cmd } },
           env: { PAPERCUSP_SID: 'sid-guard' }, fetchImpl })).toBeNull();
       }
-      for (const cmd of ['rg --pre=cat --files .', 'rg --files; touch source.ts']) {
+      for (const cmd of [
+        'cat apps/operator/scripts/hooks/inject/core.mjs',
+        "sed -n '1,20p' apps/operator/scripts/hooks/inject/core.mjs",
+        'rg --files apps/operator/scripts/hooks/inject',
+        "rg -n -F 'plan_execution_not_ready' apps/operator/scripts/hooks/inject",
+      ]) {
+        expect(await runInjection({ adapter, nativeEvent, event: { tool_name: 'exec_command', tool_input: { cmd } },
+          env: { PAPERCUSP_SID: 'sid-guard' }, fetchImpl })).toBeNull();
+      }
+      for (const cmd of [
+        'rg --pre=cat --files .',
+        'rg --files; touch source.ts',
+        'cat source.ts > copy.ts',
+        "sed -i 's/old/new/' source.ts",
+        "sed -n '1w output' source.ts",
+        "sed -n '1,20p' source.ts; touch output",
+        "sed -n '1,20p' source.ts > output",
+      ]) {
         const output = await runInjection({ adapter, nativeEvent, event: { tool_name: 'exec_command', tool_input: { cmd } },
           env: { PAPERCUSP_SID: 'sid-guard' }, fetchImpl });
         expect(JSON.parse(output!).hookSpecificOutput.permissionDecision).toBe('deny');

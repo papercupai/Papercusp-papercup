@@ -1,0 +1,30 @@
+{
+  "irVersion": "0.1",
+  "surface": "workbench-inbox-b-with-gui-bulk-resolving",
+  "ecosystem": "native-desktop",
+  "a11y": { "landmark": "main", "headingLevel": 1 },
+  "layout": {
+    "kind": "stack",
+    "direction": "vertical",
+    "children": [
+      { "kind": "heading", "copy": { "key": "inbox.title", "default": "Questions, within reach." } },
+      {
+        "kind": "raw",
+        "ecosystem": "native-desktop",
+        "ref": "inbox-artboard",
+        "spec": {
+          "why-raw": "Native registry search returned no matching inbox component. Extend the existing Workbench sidebar mockup, preserving the canonical GUI InboxBulkStrip card, persisted run and grouped review semantics.",
+          "selectedLayout": "split-inbox",
+          "ownerChoice": "Avi: Let's go with B. We should also bring over the bulk resolving functionality we already have in our gui.",
+          "layouts": ["compact-stack", "split-inbox", "focused-queue"],
+          "controls": ["urgency-and-source", "goal-plan-context", "quick-choice", "written-reply", "send-and-next", "snooze", "dismiss", "bulk-resolve-filtered", "stop", "continue-retryable", "grouped-recommendations", "reason", "edit-suggested-reply", "accept-selected"],
+          "bulkStates": ["idle", "running", "review"],
+          "reuse": ["InboxBulkStrip.tsx:variant=card", "use-inbox-bulk-run.ts", "InboxBulkReport.tsx", "InboxBulkRecommendation.tsx", "/api/admin/attention-bulk-resolve", "resolveAttentionAction/replyToAttentionItem before acceptance bookkeeping"],
+          "behavior": "Local sample data only; no live reply. Exact visible question snapshot at start; filter changes do not widen the run. Local preview persists run, edits and progress across reopening/reload. Review opens in the context pane; selection and explicit acceptance required. Native integration must reuse the canonical GUI run and mutation paths. Browser shortcut simulation and Escape dismiss; no OS registration or native acceptance claim."
+        },
+        "interactions": ["select-question", "choose-answer", "write-reply", "send-preview", "snooze-preview", "change-layout", "start-bulk", "stop-bulk", "continue-bulk", "review-bulk", "select-replies", "edit-replies", "accept-selected-preview", "resume-existing-run"]
+      }
+    ]
+  },
+  "components": []
+}

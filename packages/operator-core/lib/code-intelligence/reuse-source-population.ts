@@ -2,7 +2,7 @@
  * Keep database, provider registration and operator initialization out of this graph.
  */
 import { execFile, spawn } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { endianness, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Worker } from 'node:worker_threads';
@@ -36,7 +36,8 @@ export const REUSE_PARENT_OLD_SPACE_MB = 1024;
  * A partition extracts syntax only; global resolution happens after ordered merge.
  */
 export async function parseReuseSourceSymbols(sourceFiles: Map<string, string>, workerPath: string,
-  observeLimits?: (limits: Record<string, unknown>) => void): Promise<ParsedSymbols> {
+  observeLimits?: (limits: Record<string, unknown>) => void,
+  capture?: { sizes: ReadonlyMap<string, number>; ready: (files: readonly string[]) => Promise<void> }): Promise<ParsedSymbols> {
   // V8 carries the parent's effective CLI heap flag into new isolates even
   // when execArgv is cleared. Equal 1024 MiB limits keep all three old spaces
   // within the existing 3072 MiB envelope. Young space is separate from it.
@@ -44,9 +45,24 @@ export async function parseReuseSourceSymbols(sourceFiles: Map<string, string>, 
     || getHeapStatistics().heap_size_limit > (REUSE_PARENT_OLD_SPACE_MB + 192) * 1024 * 1024)
     throw new Error('Source parser parent exceeds its effective heap envelope');
   const files = [...sourceFiles.keys()];
+  // Equal identity counts can put an entire large-source cohort on one parser.
+  // Bound bytes as well, so a finite worker does not wait for an oversized tail
+  // while its other parser has already drained the remaining small files.
+  const batches: { files: string[]; bytes: number }[] = [];
+  let batch: string[] = [], bytes = 0;
+  for (const path of files) {
+    const size = capture ? capture.sizes.get(path)! : statSync(sourceFiles.get(path)!).size;
+    if (!Number.isSafeInteger(size) || size < 0 || size > 2_000_000)
+      throw new Error('Incomplete bounded Git blob population');
+    if (batch.length && (batch.length >= 512 || bytes + size > 4 * 1024 * 1024)) {
+      batches.push({ files: batch, bytes }); batch = []; bytes = 0;
+    }
+    batch.push(path); bytes += size;
+  }
+  if (batch.length) batches.push({ files: batch, bytes });
   const parts: ParsedSymbols[] = [];
   const workers: Worker[] = [];
-  const batchSize = 512, count = Math.ceil(files.length / batchSize);
+  const count = batches.length;
   let next = 0;
   try {
     await Promise.all(Array.from({ length: Math.min(2, count) }, async () => {
@@ -74,7 +90,10 @@ export async function parseReuseSourceSymbols(sourceFiles: Map<string, string>, 
         throw new Error('Source parser effective heap limit unavailable');
       observeLimits?.(ready);
       while (next < count) {
-        const index = next++, batch = files.slice(index * batchSize, (index + 1) * batchSize);
+        const index = next++, { files: batch, bytes } = batches[index]!;
+        // Import resolution uses the complete identity set, but syntax reads
+        // only this partition. Later immutable blobs can still be in flight.
+        await capture?.ready(batch);
         const response = received();
         worker.postMessage({ index, files: batch });
         const result = await response;
@@ -87,7 +106,7 @@ export async function parseReuseSourceSymbols(sourceFiles: Map<string, string>, 
           || parsed.stats.files + parsed.stats.skippedFiles !== eligible.size
           || [...parsed.units.keys()].some(path => !eligible.has(path))) throw new Error('Invalid source parser partition');
         parts[index] = parsed;
-        observeLimits?.({ kind: 'partition', index });
+        observeLimits?.({ kind: 'partition', index, files: batch.length, bytes });
       }
     }));
     const merged: ParsedSymbols = { units: new Map(), symbols: new Map(), immediateCalls: [],
@@ -320,7 +339,17 @@ export async function collectReuseSourcePopulation(root: string, start: string, 
   // blobs spill to this invocation's private directory and are read one at a
   // time by both maintained indexes; no checkout or durable store is created.
   const capture = mkdtempSync(join(captureRoot, 'reuse-source-capture-'));
-  const sourceFiles = new Map<string, string>();
+  const sourceFiles = new Map(selected.map(entry => [entry.path, join(capture, entry.blob!)]));
+  const sourceSizes = new Map(selected.map(entry => [entry.path, entry.size]));
+  const positions = new Map(selected.map((entry, index) => [entry.path, index + 1]));
+  let capturedThrough = 0, captureError: Error | undefined;
+  const waiting = new Set<{ end: number; resolve: () => void; reject: (error: Error) => void }>();
+  const ready = async (files: readonly string[]) => {
+    if (captureError) throw captureError;
+    const end = positions.get(files[files.length - 1]!)!;
+    if (end <= capturedThrough) return;
+    await new Promise<void>((resolve, reject) => waiting.add({ end, resolve, reject }));
+  };
   let capturePending: Promise<Error | null> | undefined;
   let parsePending: Promise<{ parsed?: ParsedSymbols; error?: Error }> | undefined;
   try {
@@ -328,12 +357,13 @@ export async function collectReuseSourcePopulation(root: string, start: string, 
     // capture before cleanup on either path; no writer may outlive its spill.
     capturePending = (async () => {
     onProgress?.('source-capture');
-    // Bound each chunk by bytes as well as identities. Sixteen small files per
-    // process spent most of the finite worker budget repeatedly starting Git.
+    // Bound bytes independently of the identity count: small-file repositories
+    // otherwise spend the finite worker budget repeatedly starting Git. The
+    // byte cap still bounds each reply when individual source files are large.
     for (let i = 0; i < selected.length;) {
       const batch: typeof selected = [];
       let bytes = 0;
-      while (i < selected.length && batch.length < 256) {
+      while (i < selected.length && batch.length < 4096) {
         const entry = selected[i]!;
         if (!Number.isSafeInteger(entry.size) || entry.size < 0 || entry.size > 2_000_000)
           throw new Error('Incomplete bounded Git blob population');
@@ -348,20 +378,29 @@ export async function collectReuseSourcePopulation(root: string, start: string, 
           || out[endHeader + 1 + size] !== 10) throw new Error('Incomplete bounded Git blob population');
         const file = join(capture, blob!);
         writeFileSync(file, out.subarray(endHeader + 1, endHeader + 1 + size));
-        sourceFiles.set(entry.path, file);
         offset = endHeader + 2 + size;
       }
+      capturedThrough = i;
+      for (const waiter of waiting) if (waiter.end <= capturedThrough) {
+        waiting.delete(waiter); waiter.resolve();
+      }
     }
-    })().then(() => null, error => error instanceof Error ? error : new Error(String(error)));
-    // Syntax extraction depends on complete immutable capture, not the diff.
-    // Reuse the same bounded pool while Git computes the independent window;
-    // global resolution still waits for both complete populations below.
-    parsePending = capturePending.then(async captureFailure => {
-      if (captureFailure || !parserWorkerPath || sourceFiles.size <= 512) return {};
+    })().then(() => null, error => {
+      captureError = error instanceof Error ? error : new Error(String(error));
+      for (const waiter of waiting) waiter.reject(captureError);
+      waiting.clear();
+      return captureError;
+    });
+    // Start the existing finite pool against known Git identities immediately.
+    // Each partition waits for its own bytes instead of serializing the full
+    // repository capture before any parsing. Global resolution still waits for
+    // complete capture, diff and syntax populations below.
+    parsePending = (async () => {
+      if (!parserWorkerPath || sourceFiles.size <= 512) return {};
       onProgress?.('source-calls');
       return { parsed: await parseReuseSourceSymbols(sourceFiles, parserWorkerPath,
-        limits => onProgress?.('source-calls', limits)) };
-    }).catch(error => ({ error: error instanceof Error ? error : new Error(String(error)) }));
+        limits => onProgress?.('source-calls', limits), { sizes: sourceSizes, ready }) };
+    })().catch(error => ({ error: error instanceof Error ? error : new Error(String(error)) }));
     onProgress?.('source-diff');
     const rawChanges = (await git(['diff', '--raw', '-z', '--no-abbrev', '--no-renames', base, commit])).split('\0');
     const changes = new Map<string, string>();

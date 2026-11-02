@@ -68,6 +68,37 @@ export const BG_R1_CASE_REGISTRY = Object.freeze([
   ...BG_R1_COMPILER_CASES, BG_R1_COMPILER_POSITIVE_CASE,
 ].map(({ rowId, file, testName }) => r1Case(rowId, file, testName)));
 
+// Reuse R1's selector shape; completed ledger rows establish execution.
+export const BG_R4_PARENT_SELECTORS = Object.freeze({
+  recursive: r1Case("recursive-inventory", "packages/operator-core/lib/source-preview-export.test.ts",
+    "BG-TEARDOWN-RECONCILE keeps recursive inventory append-only through late-child reconciliation"),
+  evidence: r1Case("retained-evidence", "apps/operator/lib/bundle-host-freshness.test.ts",
+    "BG-TEARDOWN-RECONCILE preserves source compiler and boot evidence during cleanup"),
+  restart: r1Case("restart-cleanup", "packages/operator-core/lib/agent-tools/dev/restart.test.ts",
+    "BG-TEARDOWN-RECONCILE refuses stale cleanup of peer and rollback generations"),
+  survivors: r1Case("owned-survivors", "packages/operator-core/lib/release/operator-artifact.test.ts",
+    "BG-TEARDOWN-RECONCILE refuses terminal sealing with owned survivors"),
+  custody: r1Case("parent-custody", "packages/operator-core/lib/source-preview-export.test.ts",
+    "BG-TEARDOWN-RECONCILE preserves original parent fire24 owner origin and errors custody"),
+  deadline: r1Case("original-deadline", "packages/operator-core/lib/source-preview-export.test.ts",
+    "BG-TEARDOWN-RECONCILE refuses terminal success after the predeclared teardown deadline"),
+});
+export const BG_R4_CUSTODY_CASES = Object.freeze(
+  (['parent-fire24', 'owner', 'origin', 'error-history', 'evidence-reference'] as const).flatMap(field =>
+    (['delete', 'reset', 'replace', 'rewrite'] as const).map(action => Object.freeze({ field, action,
+      ...r1Case(`bg-r4-custody-${field}-${action}`, R1_SOURCE_FILE,
+        `bg-r4-custody-${field}-${action} refuses ${action} of original ${field} custody`) }))));
+export const BG_R4_TEARDOWN_CASES = Object.freeze(
+  (['success', 'failure', 'cancellation', 'timeout', 'interruption-recovery'] as const).flatMap(outcome =>
+    (['immediately-before', 'exactly-at', 'after'] as const).map(timing => Object.freeze({ outcome, timing,
+      ...r1Case(`bg-r4-teardown-${outcome}-${timing}`, R1_SOURCE_FILE,
+        `bg-r4-teardown-${outcome}-${timing} reconciles late descendants on ${outcome} at original teardown deadline ${timing}`) }))));
+export const BG_R4_CENSUS_CASE = r1Case('bg-r4-census', R1_SOURCE_FILE,
+  'bg-r4-census requires exact predeclared selector and branch population');
+export const BG_R4_CASE_REGISTRY = Object.freeze([
+  ...Object.values(BG_R4_PARENT_SELECTORS), ...BG_R4_CUSTODY_CASES, ...BG_R4_TEARDOWN_CASES, BG_R4_CENSUS_CASE,
+].map(({ rowId, file, testName }) => r1Case(rowId, file, testName)));
+
 const GIT_ID = ['-c', 'user.name=Fixture Author', '-c', 'user.email=fixture@example.invalid', '-c', 'commit.gpgsign=false'];
 
 /**

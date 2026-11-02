@@ -40,7 +40,7 @@ import { DEFAULT_SIM_FLOOR, selectResponders, selectionSnapshot } from './releva
 import { advanceCascade, digestFromRow, makeDigestEntry, pendingCascadeDispatch, selectionFromRouting } from './cascade-core';
 import { selectConsultEvidenceSource } from './consult-dispatch';
 import { consultCurrentReviewContext, consultResponderVerbMenu } from './responder-verb-menu';
-import { sourceAuditCascadeMetaFromRouting, sourceAuditWakeCopy, type SourceAuditCascadeMeta } from './grading-cascade';
+import { sourceAuditCascadeMetaFromRouting, sourceAuditWakeCopy, goalTenureGradingWakeCopy, type SourceAuditCascadeMeta, type GoalTenureGradingCascadeMeta } from './grading-cascade';
 import { proseProfilePredicateSql } from '../search/prose-vector-dims';
 import { lineagePartyKeys } from '../acceptance-author-identity';
 
@@ -173,7 +173,7 @@ export interface GetFeedbackRequest {
   /** Internal testing:run constraint, included in the saved payload fingerprint. */
   nativeConsult?: import('./native-consult').NativeConsultConstraints;
   /** Internal consumer metadata, persisted before any delivery or revival. */
-  cascade?: SourceAuditCascadeMeta | import('./decision-review').DecisionReviewCascadeMeta;
+  cascade?: SourceAuditCascadeMeta | GoalTenureGradingCascadeMeta | import('./decision-review').DecisionReviewCascadeMeta;
 }
 
 /** P-005 creation-side refusals — structural, BEFORE any conversation/row is
@@ -1234,13 +1234,17 @@ export async function getFeedbackCore(
       ? priorBarCritiqueLineageOwners(sql, req.workspaceId, originRef)
       : Promise.resolve([]),
   ]);
+  const excludedPartyOwners = [...new Set([
+    ...priorCritiqueOwners,
+    ...(req.cascade?.flavor === 'goal-tenure-grading' ? req.cascade.holderOwnerIds : []),
+  ])];
   const excludeOwners = [
     ...new Set([
       ...(req.excludeOwners ?? []),
       ...lineageOwners,
       ...graderExclusions,
       ...priorNonHelpful,
-      ...priorCritiqueOwners,
+      ...excludedPartyOwners,
     ]),
   ];
   // Only NEW exclusions this call contributed (vs. what the caller already
@@ -1257,14 +1261,14 @@ export async function getFeedbackCore(
       : {}),
     ...(req.unresolvedSubjectRefs?.length ? { unresolvedSubjectRefs: req.unresolvedSubjectRefs } : {}),
     ...(excludeOwners.length ? { excludeOwners } : {}),
-    ...(priorCritiqueOwners.length ? { excludePartyOwners: priorCritiqueOwners } : {}),
+    ...(excludedPartyOwners.length ? { excludePartyOwners: excludedPartyOwners } : {}),
   });
   // The production router excludes these parties before qualification and
   // truncation. Keep the same boundary around alternate route implementations.
-  if (priorCritiqueOwners.length > 0) {
+  if (excludedPartyOwners.length > 0) {
     const candidateOwners = [
       ...new Set([
-        ...priorCritiqueOwners,
+        ...excludedPartyOwners,
         ...route.qualified.map((candidate) => candidate.ownerId),
         ...route.snapshot.candidates.map((candidate) => candidate.ownerId),
       ]),
@@ -1274,8 +1278,11 @@ export async function getFeedbackCore(
       req.workspaceId,
       candidateOwners,
     );
+    if (req.cascade?.flavor === 'goal-tenure-grading' && candidateOwners.some(owner => !partyKeys.has(owner))) {
+      throw new Error('goal tenure grading lineage resolution is incomplete');
+    }
     const excludedParties = new Set(
-      priorCritiqueOwners.map((ownerId) => partyKeys.get(ownerId) ?? ownerId),
+      excludedPartyOwners.map((ownerId) => partyKeys.get(ownerId) ?? ownerId),
     );
     const isPriorCritiqueParty = (ownerId: string) =>
       excludedParties.has(partyKeys.get(ownerId) ?? ownerId);
@@ -1608,7 +1615,8 @@ export async function getFeedbackCore(
   const provisionalWillWake = Boolean(finalChosen);
   const briefFor = (candidate: RoutingCandidate, via: SelectionVia | null) => {
     // consult-backed-parking D-013: a decision-review cascade uses the default consult copy.
-    const auditCopy = req.cascade?.flavor === 'grading-integrity' ? sourceAuditWakeCopy(req.cascade, opened.conversation_id) : null;
+    const auditCopy = req.cascade?.flavor === 'grading-integrity' ? sourceAuditWakeCopy(req.cascade, opened.conversation_id)
+      : req.cascade?.flavor === 'goal-tenure-grading' ? goalTenureGradingWakeCopy(req.cascade, opened.conversation_id) : null;
     const reviewCopy = consultCurrentReviewContext(req.policy);
     return {
       summary:

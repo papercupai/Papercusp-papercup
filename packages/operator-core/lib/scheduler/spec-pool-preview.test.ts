@@ -16,6 +16,7 @@ import {
   isProvableSuperset,
 } from './spec-pool-preview';
 import type { FilterNode } from './claim-spec';
+import { matchesClaimSpecFilter, type ClaimSpecSubject } from './claim-spec-match';
 
 describe('evaluateCollapseGuard — refusal shapes', () => {
   it('REFUSES matched=0 of a nonempty pool (starvation #1: kind scope with zero rows)', () => {
@@ -382,6 +383,62 @@ describe('evaluateWideningDisclosure — WI-38283 (destructive widening drops an
     expect(d.widened).toBe(false);
     expect(d.droppedExclusions).toHaveLength(1);
     expect(d.warning).toContain('nothing moved yet');
+  });
+});
+
+describe('evaluateWideningDisclosure — finite exclusion containment (EI-27691326243743909)', () => {
+  const first = 'WI-10006055';
+  const second = 'EI-27667223632942599';
+  const membership = (ids: string[]): FilterNode => ({ field: 'id', op: 'in', value: ids });
+  const exclusion = (node: FilterNode): FilterNode => ({ not: node });
+
+  const cases: [string, FilterNode, FilterNode | undefined, boolean][] = [
+    ['expanded forbidden set', membership([first]), exclusion(membership([first, second])), false],
+    ['reordered equal set with duplicates', membership([first, second]), exclusion(membership([second, first, first])), false],
+    ['equality strengthened to membership', { field: 'id', op: '=', value: first }, exclusion(membership([first, second])), false],
+    ['singleton membership retained as equality', membership([first]), exclusion({ field: 'id', op: '=', value: first }), false],
+    ['numeric membership strengthened', { field: 'priority', op: '=', value: 1 }, exclusion({ field: 'priority', op: 'in', value: [1, 2] }), false],
+    ['weaker forbidden set', membership([first, second]), exclusion(membership([first])), true],
+    ['deleted exclusion', membership([first]), undefined, true],
+    ['same values on a different field', membership([first]), exclusion({ field: 'plan', op: 'in', value: [first] }), true],
+    ['exclusion bypassed by another OR arm', membership([first]), { any: [exclusion(membership([first, second])), { field: 'kind', op: '=', value: 'bug' }] }, true],
+    ['unsupported compound equivalence', { any: [{ field: 'id', op: '=', value: first }, { field: 'id', op: '=', value: second }] }, exclusion(membership([first, second])), true],
+    ['unsupported changed glob', { field: 'title', op: 'glob', value: '*p2p*' }, exclusion({ field: 'title', op: 'glob', value: '*' }), true],
+    ['unchanged unsupported glob', { field: 'title', op: 'glob', value: '*p2p*' }, exclusion({ field: 'title', op: 'glob', value: '*p2p*' }), false],
+    ['numeric string coercion is not set containment', { field: 'priority', op: '=', value: '01' }, exclusion({ field: 'priority', op: 'in', value: ['01', '02'] }), true],
+  ];
+
+  it.each(cases)('%s', (_name, previous, candidate, dropped) => {
+    const disclosure = evaluateWideningDisclosure({
+      matched: 3,
+      previousMatched: 3,
+      previousSource: 'authored',
+      previousFilter: exclusion(previous),
+      filter: candidate,
+    });
+    expect(disclosure.widened).toBe(false);
+    expect(disclosure.droppedExclusions.map(({ node }) => node)).toEqual(dropped ? [previous] : []);
+    if (dropped) expect(disclosure.warning).toContain('DROPS 1 exclusion');
+    else expect(disclosure.warning).toBeUndefined();
+  });
+
+  it('the reported custody-fence expansion still rejects the original forbidden item', () => {
+    const subject = { id: first } as ClaimSpecSubject;
+    const previous = exclusion(membership([first]));
+    const candidate = exclusion(membership([first, second, 'WI-6554700010044749']));
+    expect(matchesClaimSpecFilter(subject, previous)).toBe(false);
+    expect(matchesClaimSpecFilter(subject, candidate)).toBe(false);
+    expect(evaluateWideningDisclosure({
+      matched: 2, previousMatched: 5, previousSource: 'authored', previousFilter: previous, filter: candidate,
+    }).droppedExclusions).toEqual([]);
+  });
+
+  it('numeric string equality and membership can admit different rows', () => {
+    const subject = { priority: 1 } as ClaimSpecSubject;
+    const previous = exclusion({ field: 'priority', op: '=', value: '01' });
+    const candidate = exclusion({ field: 'priority', op: 'in', value: ['01', '02'] });
+    expect(matchesClaimSpecFilter(subject, previous)).toBe(false);
+    expect(matchesClaimSpecFilter(subject, candidate)).toBe(true);
   });
 });
 

@@ -31,7 +31,8 @@
 
 import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
-import { planItemTextDriftForWrite } from '../../plan-items/text-drift-report';
+import { planItemTextDriftForWrite, resyncPlanItemAnchors, notifyPlanItemAnchorResync,
+  type PlanItemAnchorResyncReport } from '../../plan-items/text-drift-report';
 import type { ResolveIdentityCtx } from '../coordination/identity';
 import { resolveCtxHarnessSlug } from './_ctx-opts';
 import { anchorsInputSchema, resolveHarnessAnchors } from '../../plan-items/anchors';
@@ -179,6 +180,7 @@ export default defineTool({
       workspaceId: (ctx as { workspaceId?: string }).workspaceId });
     const anchors = anchorScope ? await resolveHarnessAnchors(anchorScope.workspaceId,
       harnessSlug ?? anchorScope.harnessSlug, args.anchors!) : undefined;
+    let planItemAnchorResync: PlanItemAnchorResyncReport | undefined;
     const result = await withPlanLock<PlanEditValue>(
       ctx as never,
       {
@@ -187,8 +189,11 @@ export default defineTool({
         ...(harnessSlug ? { harnessSlug } : {}),
         afterWrite: rev.afterWrite,
         inTransaction: async (tx, _body, scope, value) => {
-          if (value.ok && anchors !== undefined) await writePlanItemAnchors(tx,
-            { ...scope, planSlug: args.slug }, { itemId: args.itemId!, anchors }, resolveAgentIdentity(ctx).ownerId);
+          if (value.ok && anchors !== undefined) {
+            const anchorWriteScope = { ...scope, planSlug: args.slug };
+            await writePlanItemAnchors(tx, anchorWriteScope, { itemId: args.itemId!, anchors }, resolveAgentIdentity(ctx).ownerId);
+            planItemAnchorResync = await resyncPlanItemAnchors(tx, anchorWriteScope, args.itemId!);
+          }
         },
       },
       async (current, meta) => {
@@ -280,6 +285,8 @@ export default defineTool({
     // holders — their title/summary/brief are mint-time snapshots nothing else
     // refreshes. Post-commit + fully fail-soft.
     if (anchors !== undefined) await notifySyncInvalidate('planItems.byPlan', { planSlug: args.slug });
+    if (planItemAnchorResync) await notifyPlanItemAnchorResync(ctx as ResolveIdentityCtx,
+      planItemAnchorResync, anchorScope!.harnessSlug);
     const planItemDrift = await planItemTextDriftForWrite(
       ctx as ResolveIdentityCtx,
       args.slug,
@@ -302,6 +309,7 @@ export default defineTool({
             revision: rev.recorded.current ? { seq: rev.recorded.current.seq } : null,
             ...(result.activationAudit ? { activationAudit: result.activationAudit } : {}),
             ...(planItemDrift ? { planItemDrift } : {}),
+            ...(planItemAnchorResync ? { planItemAnchorResync } : {}),
             // R-1: advisory only — this edit broke a declaration section that parsed before.
             ...(v.planDeclarations ? { planDeclarations: v.planDeclarations } : {}),
             // Item-parse feedback (WI-3363), computed in evaluateSetContent — a

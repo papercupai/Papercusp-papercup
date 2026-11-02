@@ -602,7 +602,7 @@ const LEGACY_SENTINEL_CLEANUP = [
   'for marker in .papercup-console-active.* .papercusp/scratch/console-active/.papercup-console-active.*; do',
   '[ -f "$marker" ] || continue;',
   'marker_pid="$' + '{marker##*.}";',
-  'case "$marker_pid" in ""|0|*[!0-9]*) continue ;; esac;',
+  'case "$marker_pid" in ""|0|*[!0-9]*) stale_markers+=( "$marker" ); continue ;; esac;',
   'kill -0 "$marker_pid" 2>/dev/null || stale_markers+=( "$marker" );',
   'done;',
   'rm -f "${stale_markers[@]}" 2>/dev/null || true',

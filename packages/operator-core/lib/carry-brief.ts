@@ -1298,7 +1298,16 @@ async function defaultHydrateNoteRefs(
           ? [`${h.label} — unresolved (${h.error ?? 'unknown'})`]
           : [];
       }
-      return [h.snippet ? `${h.label}: "${h.snippet}"` : h.label];
+      const source = h.ref.kind === 'work-item' ? 'work_items:get' : String(h.ref.kind) + '-resolver';
+      const content = h.snippet ? h.label + ': "' + h.snippet + '"' : h.label;
+      return [
+        content +
+          ' (source=' +
+          source +
+          '; lookup_completed_at=' +
+          (h.resolvedAt ?? 'unknown') +
+          ')',
+      ];
     });
   } catch {
     return [];
@@ -1326,11 +1335,11 @@ const CITED_PLAN_ITEM_STATE_TAG = /\b(plan:([a-z0-9][a-z0-9-]*)#(P-\d{3,}))\s+\[
  * diagnostics while matching the bare P-NNN the author actually wrote. */
 export function parseCitedLiveState(
   line: string,
-): { id: string; mention: string; state: string } | null {
+): { id: string; mention: string; state: string; source?: string; lookupCompletedAt?: string } | null {
   const citedRef = parseCitedRefStateTag(line);
   if (citedRef) {
     const requestedPrefix = /\(requested:\s*(conv-[a-z0-9][a-z0-9-]*)\)/i.exec(line)?.[1];
-    return { ...citedRef, mention: requestedPrefix ?? citedRef.id };
+    return { ...citedRef, mention: requestedPrefix ?? citedRef.id, ...parseCitedSnapshotMetadata(line) };
   }
   const planItem = CITED_PLAN_ITEM_STATE_TAG.exec(line);
   if (!planItem) return null;
@@ -1338,6 +1347,16 @@ export function parseCitedLiveState(
     id: planItem[1],
     mention: planItem[3].toUpperCase(),
     state: planItem[4],
+    ...parseCitedSnapshotMetadata(line),
+  };
+}
+
+function parseCitedSnapshotMetadata(line: string): { source?: string; lookupCompletedAt?: string } {
+  const source = /\bsource=([^\s;)]+)/i.exec(line)?.[1];
+  const lookupCompletedAt = /\blookup_completed_at=([^\s;)]+)/i.exec(line)?.[1];
+  return {
+    ...(source ? { source } : {}),
+    ...(lookupCompletedAt ? { lookupCompletedAt } : {}),
   };
 }
 
@@ -1368,23 +1387,33 @@ export function annotateCarryNoteLiveContradictions(
   noteText: string,
   citedRefs: readonly string[],
 ): string {
-  const terminal = citedRefs
-    .map(parseCitedLiveState)
-    .filter(
-      (tag): tag is { id: string; mention: string; state: string } =>
-        tag != null && ANY_FAMILY_TERMINAL_STATES.includes(tag.state),
-    );
+  const terminal = citedRefs.flatMap((line) => {
+    const tag = parseCitedLiveState(line);
+    return tag && ANY_FAMILY_TERMINAL_STATES.includes(tag.state) ? [tag] : [];
+  });
   if (terminal.length === 0) return noteText;
   const escapeRegex = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   return noteText
     .split('\n')
     .map((line) => {
-      if (line.includes('⚠ LIVE:')) return line;
+      if (line.includes('⚠ STATUS SNAPSHOT:')) return line;
       const hits = terminal.filter((tag) =>
         new RegExp(`\\b${escapeRegex(tag.mention)}\\b`, 'i').test(line),
       );
       if (hits.length === 0) return line;
-      return `${line}   ⚠ LIVE: ${hits.map((tag) => `${tag.id} status=${tag.state}`).join('; ')}`;
+      const details = hits
+        .map(
+          (tag) =>
+            tag.id +
+            ' status=' +
+            tag.state +
+            ' source=' +
+            (tag.source ?? 'unknown') +
+            ' lookup_completed_at=' +
+            (tag.lookupCompletedAt ?? 'unknown'),
+        )
+        .join('; ');
+      return line + '   ⚠ STATUS SNAPSHOT: ' + details;
     })
     .join('\n');
 }
@@ -1412,28 +1441,46 @@ export function annotateCarryNoteLiveContradictions(
 export function renderCitedRefLivenessSections(citedRefs: readonly string[]): string[] {
   if (citedRefs.length === 0) return [];
   const sections: string[] = [];
-  const terminalIds = detectTerminalCitedRefs(citedRefs);
-  if (terminalIds.length > 0) {
+  const terminalTags = citedRefs.flatMap((line) => {
+    const tag = parseCitedLiveState(line);
+    return tag && ANY_FAMILY_TERMINAL_STATES.includes(tag.state) ? [tag] : [];
+  });
+  if (terminalTags.length > 0) {
     // EI-18726068732447732: the note's own imperatives ("complete WI-NNN",
     // "verify then close it") can target an id the fold below ALREADY resolves
     // as terminal — flag the contradiction loudly, right at the point a reader
     // would otherwise just follow the stale prose.
-    const idList = terminalIds.join(', ');
-    const plural = terminalIds.length > 1;
+    const idList = terminalTags.map((tag) => tag.id).join(', ');
+    const plural = terminalTags.length > 1;
+    const details = terminalTags
+      .map(
+        (tag) =>
+          tag.id +
+          ' status=' +
+          tag.state +
+          ' source=' +
+          (tag.source ?? 'unknown') +
+          ' lookup_completed_at=' +
+          (tag.lookupCompletedAt ?? 'unknown'),
+      )
+      .join('; ');
     sections.push(
-      `⚠⚠ STALE-NOTE CONTRADICTION: the note above may still instruct action on ${idList} — ` +
-        `but the LIVE status below shows ${plural ? 'they are' : 'it is'} already TERMINAL. ` +
-        `Do NOT follow any instruction to complete/verify/close/work on ${plural ? 'them' : 'it'}; ` +
-        `treat ${plural ? 'them' : 'it'} as already resolved and re-orient before acting on the rest of the note.`,
+      '⚠⚠ STALE-NOTE CONTRADICTION: the note above may still instruct action on ' +
+        idList +
+        ' — the cited lookup showed ' +
+        (plural ? 'them' : 'it') +
+        ' already TERMINAL (' +
+        details +
+        '). The status may have changed since; re-read each exact reference before deciding whether to complete or skip work.',
     );
   }
   sections.push(
-    `Cited in the note — LIVE status (trust these over the note's phrasing):\n` +
+    'Cited in the note — status snapshots (lookup source and completion time when available; re-read before acting):\n' +
       citedRefs
         .map((l) => {
           const tag = parseCitedLiveState(l);
           const flagged = !!tag && ANY_FAMILY_TERMINAL_STATES.includes(tag.state);
-          return `  ${flagged ? '⚠ TERMINAL ' : ''}↪ ${l}`;
+          return '  ' + (flagged ? '⚠ TERMINAL SNAPSHOT ' : '') + '↪ ' + l;
         })
         .join('\n'),
   );

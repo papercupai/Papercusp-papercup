@@ -210,16 +210,22 @@ export function buildFrozenRepairLegBroadcast(input: {
     : `release:repair-queue { op: 'admit', paths: [ <the files you changed to fix ${input.entry}> ] }`;
   const summary =
     `[${input.pipeline}] failing on frozen candidate ${shortSha(input.candidate)}: ${input.entry} — ` +
-    `claimable: fix it and admit the fix (no gate ownership needed).`;
+    `current-run repair belongs to the live gate owner.`;
   const body =
-    `One failing leg of the frozen repair queue (1 of ${input.failingCount}). Any agent may take ` +
-    `it: claim THIS item, fix the leg on the shared staging checkout, wait for git-sync to commit ` +
-    `the fix, then admit it onto the frozen lineage. Admission needs no gate ownership and no ` +
-    `checkpoint run; the queue re-tests repairHead itself.\n\n` +
+    `One failing leg of the frozen repair queue (1 of ${input.failingCount}). Current-run triage, ` +
+    `repair-queue mutation, checkpoint/deploy actions and monitoring belong to the live gate owner.\n\n` +
+    `Before current-run work, read state:read { cell: 'gate.greenCheckpoint.ownership' }. ` +
+    `If held by another live agent, send useful evidence once to that owner and stop current-run operations; ` +
+    `do not claim this leg, admit a fix, re-run or monitor it. If you hold the gate, continue on its ` +
+    `existing owning work-item. If the gate is genuinely unheld, claim the existing gate-owning ` +
+    `work-item before taking current-run actions.\n\n` +
+    `Independently registered source work may proceed on shared staging under its own work-item and file locks: ` +
+    `fix and test the code, then send the verified patch to the gate owner for admission. ` +
+    `The ownership boundary applies to current-run operations, while source development continues.\n\n` +
     `LEG: ${input.entry}\n` +
     `FROZEN CANDIDATE: ${input.candidate}\n` +
     `CONVERGE ONTO (repairHead): ${input.repairHead}\n\n` +
-    `ADMIT WITH (dry run first, then confirm:true):\n    ${admit}\n` +
+    `GATE OWNER ADMISSION (after git-sync commits the fix; dry run first, then confirm:true):\n    ${admit}\n` +
     `Admission is hunk-exact; a refusal 'admission-incomplete' names a sibling path to admit too.\n\n` +
     `RECORDED FAILURE OUTPUT:\n` +
     (tail

@@ -41,6 +41,44 @@ import type { AcceptanceReviewReservationRef } from '../coord/condition-upsert';
 /** The persisted `routing.cascade.flavor` discriminator. */
 export const GRADING_CASCADE_FLAVOR = 'acceptance-grading';
 
+/** A request to finish computed tenure cards, distinct from auditing a card. */
+export interface GoalTenureGradingCascadeMeta {
+  flavor: 'goal-tenure-grading';
+  workspaceId: string;
+  goalId: string;
+  holderOwnerIds: string[];
+}
+
+export function goalTenureGradingMetaFromRouting(routing: unknown): GoalTenureGradingCascadeMeta | null {
+  let snapshot = routing;
+  if (typeof snapshot === 'string') {
+    try { snapshot = JSON.parse(snapshot); } catch { return null; }
+  }
+  const meta = (snapshot as { cascade?: Partial<GoalTenureGradingCascadeMeta> } | null)?.cascade;
+  return meta?.flavor === 'goal-tenure-grading' && typeof meta.workspaceId === 'string' && Boolean(meta.workspaceId.trim()) &&
+    typeof meta.goalId === 'string' && Boolean(meta.goalId.trim()) && Array.isArray(meta.holderOwnerIds) &&
+    meta.holderOwnerIds.length > 0 && meta.holderOwnerIds.every(id => typeof id === 'string' && id.trim())
+    ? meta as GoalTenureGradingCascadeMeta : null;
+}
+
+export function goalTenureGradingWakeCopy(meta: GoalTenureGradingCascadeMeta, conversationId: string): CascadeWakeCopy {
+  return {
+    summary: `Finish residual goal-mode-e2e grading: ${meta.goalId}`,
+    body: `Grade the ungraded holder tenures for goal ${JSON.stringify(meta.goalId)} in workspace ` +
+      `${JSON.stringify(meta.workspaceId)}; holders: ${JSON.stringify(meta.holderOwnerIds)}. ` +
+      `This is independent residual grading, not a grading-integrity audit or implementation task. ` +
+      `Re-read the goal first; if it is no longer active, decline and stop. Do not resume it. ` +
+      `Read the current goal-mode-e2e rubric, goal-stamped holder activity and current scorecards. ` +
+      `For each ungraded tenure, supersede its current goal-grading-computed provisional card with ` +
+      `scorecards:emit using terminal:true and the exact holder subject/window. Rate the residual ` +
+      `criteria with evidence and route computed failures; emit adopts omitted settled computed ratings. ` +
+      `Never count a provisional card, consult reply, or audit as settled grading. ` +
+      `Do not edit implementation or recruit workers. After the cards are durably emitted, use ` +
+      `consult:reply { conversation_id:${JSON.stringify(conversationId)}, answer:'<card refs and remaining gaps>' }. ` +
+      `If unable to grade, use consult:decline for this conversation so the existing cascade can recover.`,
+  };
+}
+
 /** Source-card audits share the cascade, but settle exactly one card. */
 export interface SourceAuditCascadeMeta {
   flavor: 'grading-integrity';

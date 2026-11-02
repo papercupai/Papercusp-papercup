@@ -39,11 +39,11 @@ export type SessionFocusResult =
 /**
  * Resolve the window for a session-control action, cheapest source first.
  *
- * The final owner-title fallback is what makes psu/fleet sessions focusable:
- * those terminals have no per-window pid (gnome-terminal shares one server)
- * and often no recorded window id, but their title contains the short
- * coordination owner id. Resolved ids are cached on the adv row for the next
- * click/call.
+ * The title fallbacks make psu/fleet sessions focusable: those terminals have
+ * no per-window pid (gnome-terminal shares one server) and may have no recorded
+ * window id. A restored terminal can use the native session UUID in its title,
+ * while older titles may contain only the short coordination owner id. Resolved
+ * ids are cached on the adv row for the next click/call.
  */
 export async function resolveSessionWindowId(
   body: SessionWindowControlInput,
@@ -60,6 +60,10 @@ export async function resolveSessionWindowId(
   if (!windowId && latestRow?.id) {
     windowId = await resolveByTitle(`[adv:${latestRow.id}]`);
     if (windowId) await rememberWindowId(latestRow.id, windowId);
+  }
+  if (!windowId && latestRow?.sessionId) {
+    windowId = await resolveByTitle(latestRow.sessionId);
+    if (windowId && latestRow.id) await rememberWindowId(latestRow.id, windowId);
   }
   if (!windowId && latestRow?.coordOwnerId) {
     const shortId = latestRow.coordOwnerId.slice(0, 8);

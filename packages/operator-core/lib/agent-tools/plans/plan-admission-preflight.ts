@@ -9,6 +9,7 @@ import {
 } from '../../fleet/lane-health';
 import {
   ACTIVE_FEATURE_FAMILY_KINDS,
+  isClaimHoldParked,
   isSettledWorkItemState,
   ISSUE_FAMILY_KINDS,
   listWorkItems,
@@ -268,7 +269,15 @@ export function evaluateExactPlanAdmission(args: {
   // only non-terminal rows are CURRENT coverage. Otherwise one dropped retry
   // beside its live successor permanently looks like duplicate actionable
   // coverage and fleet:launch-on-plan can never admit the plan again.
-  const liveRows = promotedRows.filter((item) => !isSettledWorkItemState(item.state));
+  // D-011 of one-work-graph-structured-holds: migration 1601 created parked
+  // plan-line nodes before execution moved onto them. They remain diagnostic
+  // history, not executable coverage, until P-008 lifts that specific park.
+  // Exclude them before parent/child collapse so an unheld execution child is
+  // not hidden by its parked parent. Other holds and lifted parks still count.
+  const liveRows = promotedRows.filter((item) => !isSettledWorkItemState(item.state) && !(
+    isClaimHoldParked(item.payload) &&
+    record(item.payload).claim_hold_by === 'migration:plan-line-work-item-nodes'
+  ));
   const liveById = new Map(liveRows.map((item) => [item.id, item]));
   // Migration 1601/D-010 preserves earlier execution records as children of
   // the plan-line node. They are one execution tree, not competing lanes.

@@ -56,7 +56,7 @@ function deps(overrides: Partial<GoalGradingBacklogSweepDeps> = {}): GoalGrading
     readInput: vi.fn(async (goal) => (goal.goalId === HEALTHY.goalId ? healthyInput(goal) : backlogInput(goal))),
     resolveLiveness: vi.fn(async (ids: string[]) => new Map(ids.map((id) => [id, alive()]))),
     escalate: vi.fn(async () => ({ coalesced: false })),
-    wakeGrader: vi.fn(async () => undefined),
+    dispatchGrading: vi.fn(async () => ({ state: 'routed' as const })),
     resolveCleared: vi.fn(async () => 0),
     flagEnabled: vi.fn(async () => true),
     now: () => NOW,
@@ -86,43 +86,54 @@ describe('runGoalGradingBacklogSweepOnce', () => {
     expect(alert.graderAlive).toBe(true);
     expect(alert.verdict.ungradedActiveHours).toBe(10);
     expect(alert.verdict.alerts).toEqual(['grading-backlog', 'grader-idle']);
-    expect(d.wakeGrader).toHaveBeenCalledTimes(1);
-    expect(vi.mocked(d.wakeGrader).mock.calls[0]![0].graderId).toBe('su-grader');
+    expect(d.dispatchGrading).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(d.dispatchGrading).mock.calls[0]![0].graderId).toBe('su-grader');
     expect(d.resolveCleared).not.toHaveBeenCalled();
   });
 
-  it('does not re-wake the grader when the escalation coalesces', async () => {
+  it('recovers grading even when the escalation coalesces', async () => {
     const d = deps({ escalate: vi.fn(async () => ({ coalesced: true })) });
     const out = await runGoalGradingBacklogSweepOnce(sql, d);
-    expect(out).toMatchObject({ alerting: 1, escalated: 0, wokeGrader: 0 });
-    expect(d.wakeGrader).not.toHaveBeenCalled();
+    expect(out).toMatchObject({ alerting: 1, escalated: 0, wokeGrader: 1 });
+    expect(d.dispatchGrading).toHaveBeenCalledTimes(1);
   });
 
-  it('escalates but does not wake a grader that is not alive', async () => {
+  it('dispatches a replacement when the previous grader ended', async () => {
     const d = deps({ resolveLiveness: vi.fn(async (ids: string[]) => new Map(ids.map((id) => [id, dead()]))) });
     const out = await runGoalGradingBacklogSweepOnce(sql, d);
-    expect(out).toMatchObject({ escalated: 1, wokeGrader: 0 });
+    expect(out).toMatchObject({ escalated: 1, wokeGrader: 1 });
     expect(vi.mocked(d.escalate).mock.calls[0]![0].graderAlive).toBe(false);
-    expect(d.wakeGrader).not.toHaveBeenCalled();
+    expect(d.dispatchGrading).toHaveBeenCalledTimes(1);
   });
 
-  it('treats a failed liveness read as not alive: escalates, no wake', async () => {
+  it('dispatches independently when prior-grader liveness is unavailable', async () => {
     const d = deps({
       resolveLiveness: vi.fn(async () => {
         throw new Error('oracle down');
       }),
     });
     const out = await runGoalGradingBacklogSweepOnce(sql, d);
-    expect(out).toMatchObject({ escalated: 1, wokeGrader: 0, failed: 0 });
-    expect(d.wakeGrader).not.toHaveBeenCalled();
+    expect(out).toMatchObject({ escalated: 1, wokeGrader: 1, failed: 0 });
+    expect(d.dispatchGrading).toHaveBeenCalledTimes(1);
   });
 
   it('escalates with no grader when no card names one, and skips the liveness read', async () => {
     const d = deps({ readInput: vi.fn(async (goal) => backlogInput(goal, null)) });
     const out = await runGoalGradingBacklogSweepOnce(sql, d);
-    expect(out).toMatchObject({ escalated: 1, wokeGrader: 0 });
+    expect(out).toMatchObject({ escalated: 1, wokeGrader: 1 });
     expect(vi.mocked(d.escalate).mock.calls[0]![0].graderId).toBeNull();
     expect(d.resolveLiveness).not.toHaveBeenCalled();
+    expect(d.dispatchGrading).toHaveBeenCalledTimes(1);
+  });
+
+  it('distinguishes a queued launch from pickup and retries failure on a coalesced alert', async () => {
+    const d = deps({ escalate: vi.fn(async () => ({ coalesced: true })),
+      dispatchGrading: vi.fn().mockResolvedValueOnce({ state: 'pending' })
+        .mockResolvedValueOnce({ state: 'retry' }).mockResolvedValueOnce({ state: 'routed' }) });
+    expect(await runGoalGradingBacklogSweepOnce(sql, d)).toMatchObject({ wokeGrader: 0, pendingGrader: 1, failed: 0 });
+    expect(await runGoalGradingBacklogSweepOnce(sql, d)).toMatchObject({ wokeGrader: 0, failed: 1 });
+    expect(await runGoalGradingBacklogSweepOnce(sql, d)).toMatchObject({ wokeGrader: 1, failed: 0 });
+    expect(d.dispatchGrading).toHaveBeenCalledTimes(3);
   });
 
   it('resolves the open escalation for a goal that reads healthy, without escalating', async () => {
@@ -170,11 +181,12 @@ describe('runGoalGradingBacklogSweepOnce', () => {
     try {
       const out = await runGoalGradingBacklogSweepOnce(sql, d);
       expect(out).toMatchObject({ alerting: 2, failed: 2 });
+      expect(d.dispatchGrading).toHaveBeenCalledTimes(2);
       expect(order).toEqual([goalGradingBacklogAlarmKey(BACKLOG), 'legacy', goalGradingBacklogAlarmKey(foreign), 'legacy']);
       const coalesced = deps({ escalate: async () => ({ coalesced: true }) });
       await runGoalGradingBacklogSweepOnce(sql, coalesced);
       expect(coalesced.rail!.broadcast).toHaveBeenCalledTimes(1);
-      expect(coalesced.wakeGrader).not.toHaveBeenCalled();
+      expect(coalesced.dispatchGrading).toHaveBeenCalledTimes(1);
     } finally { warn.mockRestore(); }
   });
 

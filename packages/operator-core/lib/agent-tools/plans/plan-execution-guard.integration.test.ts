@@ -13,9 +13,29 @@ vi.mock('./plan-activation-gate', () => ({ evaluateConversationActivationGate: a
 // The real revision comparison must reach the next policy gate. Its explicit
 // refusal keeps this narrow fixture from claiming complete start admission or
 // provisioning the unrelated registry, scorecard and budget subsystems.
-vi.mock('./plan-start-gate', () => ({ checkPlanStartable: async () => ({
-  ok: false, refusal: { code: 'private-downstream-start-policy' },
-}) }));
+const policy = vi.hoisted(() => ({ realStartGate: false, readLifecycle: vi.fn() }));
+vi.mock('./plan-start-gate', async original => {
+  const actual = await original<typeof import('./plan-start-gate')>();
+  return { ...actual, checkPlanStartable: (...args: Parameters<typeof actual.checkPlanStartable>) =>
+    policy.realStartGate ? actual.checkPlanStartable(...args)
+      : Promise.resolve({ ok: false, refusal: { code: 'private-downstream-start-policy' } }) };
+});
+vi.mock('../../acceptance-bar-lifecycle-evaluator', async original => ({
+  ...(await original<typeof import('../../acceptance-bar-lifecycle-evaluator')>()),
+  readAndEvaluateAcceptanceBarLifecycle: (...args: unknown[]) => policy.readLifecycle(...args),
+}));
+vi.mock('../../plan-types/pins', async original => ({
+  ...(await original<typeof import('../../plan-types/pins')>()),
+  withPinnedPlanTypes: async (_scope: unknown, read: () => Promise<unknown>) => read(),
+}));
+vi.mock('./plan-spec-quality-gate', async original => ({
+  ...(await original<typeof import('./plan-spec-quality-gate')>()),
+  evaluatePlanSpecQualityGate: async () => ({ satisfied: true, applicable: false }),
+}));
+vi.mock('./plan-admission-gate', async original => ({
+  ...(await original<typeof import('./plan-admission-gate')>()),
+  checkPlanAdmission: async () => ({ admitted: true }),
+}));
 
 import { checkExecutionPlan, checkPlanExecutionGuard, readExecutionPlanBindings } from './plan-execution-guard';
 import { toolGuardText } from '../../endpoint-route/routes/agent-mcp/identity-hook-sinks';
@@ -146,6 +166,28 @@ describe('real write-boundary bypass regression', () => {
     expect(await checkPlanExecutionReadiness(binding, WS)).toEqual(['private-downstream-start-policy']);
     await db.sql`UPDATE harness_shared.harness_plans SET content=${after + '\nDiscard failed attempts.\n'}, content_hash='material-change'`;
     expect(await checkPlanExecutionReadiness(binding, WS)).toEqual(['activation_audit_stale']);
+  });
+  it('reads the canonical BAR once per invocation and refuses a changed verdict on the next use', async () => {
+    const content = '---\ntitle: Feature\nstatus: active\n---\n# Feature\n';
+    await db.sql`UPDATE harness_shared.harness_plans SET content=${content}, content_hash='current', status='active', op_status='started'`;
+    await db.sql`INSERT INTO harness_shared.plan_audits VALUES (${WS},'project','draft-feature','activation',1,'current',NULL)`;
+    policy.realStartGate = true;
+    policy.readLifecycle.mockReset();
+    policy.readLifecycle.mockResolvedValueOnce({ satisfied: true, codes: [], blockingBars: [] })
+      .mockResolvedValue({ satisfied: false, codes: ['current-policy-regressed'], blockingBars: [] });
+    try {
+      const { checkPlanExecutionReadiness } = await import('./plan-execution-guard');
+      expect(await checkPlanExecutionReadiness(binding, WS)).toEqual([]);
+      expect(policy.readLifecycle).toHaveBeenCalledTimes(1);
+      expect(policy.readLifecycle).toHaveBeenLastCalledWith('draft-feature', 'pre-start', {
+        harnessSlug: 'project', requireCompleteContractBeforeProof: true,
+      });
+      expect(await checkPlanExecutionReadiness(binding, WS)).toEqual(['acceptance_bar_contract_not_ready']);
+      expect(policy.readLifecycle).toHaveBeenCalledTimes(2);
+    } finally {
+      policy.realStartGate = false;
+      policy.readLifecycle.mockReset();
+    }
   });
   it('does not treat ready status as completion of the standard start process', async () => {
     await db.sql`UPDATE harness_shared.harness_plans SET content=${'---\ntitle: Draft\nstatus: ready\n---\n# Draft\n'}, status='ready'`;

@@ -25,8 +25,8 @@ import type { CodeIntelBackend, CodeIntelIntent } from './contracts.ts';
  * The commit the ground truth below was measured against.
  * Re-pin this together with any fixture re-measurement.
  */
-export const CORPUS_BASELINE_COMMIT = '2cf44c1d91fbb036ed0c8b8008adc8095abc50ef';
-export const CORPUS_BASELINE_MEASURED_AT = '2026-10-12T00:19:52Z';
+export const CORPUS_BASELINE_COMMIT = '1f3058e32bccddfc7783c2403ecfde15ab17eac3';
+export const CORPUS_BASELINE_MEASURED_AT = '2026-11-02T15:15:41Z';
 
 /**
  * A location this corpus asserts exists in the tree, ONE-indexed.
@@ -177,7 +177,7 @@ export const ACCEPTANCE_CORPUS: readonly CorpusCase[] = Object.freeze([
     expectedSites: [
       {
         path: 'libs/generic/scheduled-registry/src/index.ts',
-        line1: 522,
+        line1: 557,
         symbolOnLine: 'export function managedSetInterval',
       },
     ],

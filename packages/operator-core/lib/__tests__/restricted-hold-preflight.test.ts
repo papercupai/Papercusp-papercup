@@ -308,6 +308,27 @@ describe('censusSpawnArgs', () => {
     expect(given).toEqual({ PATH: '/usr/bin' });
   });
 
+  it.each([
+    ['router', runRestrictedHoldPreflight],
+    ['vitest root', runVitestRootPreflight],
+    ['bundle', runBundleRestrictedHoldPreflight],
+  ] as const)('keeps %s admission notices out of test evidence without losing a hold refusal', (_name, runPreflight) => {
+    const given = { PATH: '/usr/bin', PAPERCUSP_COMMITTED_SOURCE_NOTICES: '/parent/test-children.jsonl',
+      PAPERCUSP_COMMITTED_SOURCE_AUDIT: '/parent/census-audit.jsonl', PAPERCUSP_WORKSPACE_ID: 'private-verifier' };
+    const spawn = vi.fn((_command, args, options) => {
+      expect(args.slice(0, CENSUS_PREFIX.length)).toEqual(CENSUS_PREFIX);
+      expect(options.env.PAPERCUSP_COMMITTED_SOURCE_NOTICES).toBeUndefined();
+      expect(options.env).toMatchObject({ NODE_OPTIONS: LOADER_OPTION,
+        PAPERCUSP_COMMITTED_SOURCE_AUDIT: given.PAPERCUSP_COMMITTED_SOURCE_AUDIT,
+        PAPERCUSP_WORKSPACE_ID: given.PAPERCUSP_WORKSPACE_ID });
+      return { status: 3, stdout: line({ verdict: 'refuse', error: 'restricted_write_held', hint: 'source is held' }) };
+    });
+    expect(runPreflight({ repoRoot: '/repo', files: ['/repo/guard.test.ts'], inputsFile: '/repo/inputs.json',
+      env: given, spawn: spawn as never })).toEqual({ verdict: 'refuse', error: 'restricted_write_held', hint: 'source is held' });
+    expect(spawn).toHaveBeenCalledOnce();
+    expect(given.PAPERCUSP_COMMITTED_SOURCE_NOTICES).toBe('/parent/test-children.jsonl');
+  });
+
   it('keeps census Git independent of inherited host sidecar routes', async () => {
     const { gitSidecarEnabled } = await import('../fleet/git-via-sidecar');
     const overrides = ['PAPERCUSP_PLAN_AUDIT_SPAWN_SIDECAR', 'PAPERCUSP_DEV_DEPLOY_SPAWN_SIDECAR',

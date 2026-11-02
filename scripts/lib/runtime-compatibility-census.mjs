@@ -2,15 +2,13 @@
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { createReadStream, promises as fs, realpathSync } from 'node:fs';
-import { createRequire } from 'node:module';
+import ts from 'typescript';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
 // Let bundlers resolve the maintained collector at build time. createRequire
 // would rebase this source-relative path to the relocated operator bundle.
 import { collectImports } from '../../papercusp-desktop/bin/lib/runtime-import-census.cjs';
 
-const require = createRequire(import.meta.url);
-const ts = require('typescript');
 const hash = (bytes) => createHash('sha256').update(bytes).digest('hex');
 const SOURCE = /\.(?:[cm]?[jt]sx?|json|sh|bash|ps1|py|cmd|bat|desktop|plist|nsh|wxs|gyp|gypi|rs|toml|lock|sql|ya?ml|service)$/;
 const CONTROL_FILE = /(?:^|\/)(?:Dockerfile(?:[.-][^/]*)?|[^/]+\.Dockerfile|CMakeLists\.txt)$/;

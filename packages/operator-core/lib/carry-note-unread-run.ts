@@ -231,6 +231,16 @@ const SENTENCE_BOUNDARY_RE =
   /[\n;]|\b(?:but|while|whereas|however|although)\b|,(?=\s+(?:(?:and|but|while|whereas|however|although)\s+)?(?:\w+\s+){0,4}(?:run|test|suite|job|command|process|build|check|lint|typecheck)\b)|[.!?](?=\s|$)/g;
 const RUN_SUBJECT_AFTER_LAUNCH_RE =
   /^\W*(?:(?:a|an|the|my|our|this|that|full|affected|verification|separate)\W+){0,3}\b(?:run|test|suite|job|command|process|build|check|lint|typecheck)\b/i;
+const PEER_LAUNCH_BEFORE_STATUS_RE =
+  /\b(?:the\s+)?(?:peer|agent|worker|member)\s+su-[a-z0-9-]{4,}(?:\/thread-post\d+)?\b[^.!?;\n]{0,100}\b(?:launched|started|ran|executed|spawned|submitted)\b/i;
+const PEER_LAUNCH_AFTER_STATUS_RE =
+  /\b(?:launched|started|ran|executed|spawned|submitted)\b[^.!?;\n]{0,100}\bby\s+(?:the\s+)?(?:peer|agent|worker|member)\s+su-[a-z0-9-]{4,}(?:\/thread-post\d+)?\b/i;
+const COMPLETED_RUN_RE =
+  /\b(?:completed|finished|exited|exit\s*(?:code)?\s*\d+|job\s+end|task\s+end|ended|passed|failed)\b/i;
+const READ_EVIDENCE_RE =
+  /\b(?:read|inspected|reviewed|checked|tailed|parsed)\b[^;\n]{0,120}\b(?:log|output|result|artifact|capture)\b|\b(?:log|output|result|artifact|capture)\b[^;\n]{0,120}\b(?:was|were|is|are|has been|have been)?\s*(?:read|inspected|reviewed|checked|tailed|parsed)\b/i;
+const UNRELATED_RUN_EVIDENCE_RE =
+  /\b(?:separate|different|previous|earlier|historical|another)\s+(?:run|test|suite|job|command|process|build|check|lint|typecheck|log|output|result)\b/i;
 
 function sentenceRange(text: string, index: number, length: number): { start: number; end: number } {
   let start = 0;
@@ -253,6 +263,42 @@ function isRunScopedLaunch(text: string, index: number, length: number): boolean
   const before = text.slice(Math.max(start, index - 80), index);
   const after = text.slice(index + length, Math.min(end, index + length + 80));
   return RUN_SUBJECT_BEFORE_IN_FLIGHT_RE.test(before) || RUN_SUBJECT_AFTER_LAUNCH_RE.test(after);
+}
+
+/** A run explicitly attributed to another agent is not the checkpoint writer's unread run. */
+function isPeerAttributedRun(text: string, index: number, length: number): boolean {
+  const { start, end } = sentenceRange(text, index, length);
+  const clause = text.slice(start, end);
+  return PEER_LAUNCH_BEFORE_STATUS_RE.test(clause) || PEER_LAUNCH_AFTER_STATUS_RE.test(clause);
+}
+
+/**
+ * A concrete run reference with nearby completion and read evidence is measured
+ * evidence, not an unread prediction. Keep the window local, require the same
+ * reference set, and refuse to borrow evidence across a second in-flight signal
+ * or an explicitly separate/historical run.
+ */
+function isCompletedAndReadRun(
+  text: string,
+  range: { start: number; end: number },
+  match: RegExpMatchArray,
+  scopedMatches: RegExpMatchArray[],
+): boolean {
+  const refs = collect(text.slice(range.start, range.end), RUN_REF_RE, false);
+  if (refs.length === 0) return false;
+
+  const windowStart = Math.max(0, range.start - 180);
+  const windowEnd = Math.min(text.length, range.end + 180);
+  const context = text.slice(windowStart, windowEnd);
+  const contextRefs = collect(context, RUN_REF_RE, false);
+  if (contextRefs.some((ref) => !refs.includes(ref))) return false;
+
+  const matchStart = match.index ?? 0;
+  if (scopedMatches.some((candidate) => candidate !== match && Math.abs((candidate.index ?? 0) - matchStart) <= 180)) {
+    return false;
+  }
+  if (UNRELATED_RUN_EVIDENCE_RE.test(context)) return false;
+  return COMPLETED_RUN_RE.test(context) && READ_EVIDENCE_RE.test(context);
 }
 
 function runReferenceRange(text: string, index: number, length: number): { start: number; end: number } | null {
@@ -278,7 +324,8 @@ function runReferenceRange(text: string, index: number, length: number): { start
  * Keep the match local: a completed result elsewhere must not suppress a
  * separate pending run, and `not yet read` is itself an affirmative signal. */
 function isNegatedRunStatus(text: string, index: number): boolean {
-  const before = text.slice(Math.max(0, index - 80), index);
+  const clauseStart = sentenceRange(text, index, 0).start;
+  const before = text.slice(Math.max(clauseStart, index - 120), index);
   const directNegation = /\b(?:not|never|no longer|(?:is|are|was|were|has|have|had|did|does|do|can|could|would|should)n['’]t)\s+(?:(?:currently|actively|actually|still)\s+){0,2}["'`“‘]?\s*$/i;
   // Status phrases often put the negator before the run subject ("No jobs still
   // running"). The old check only handled a negator immediately before the
@@ -288,7 +335,11 @@ function isNegatedRunStatus(text: string, index: number): boolean {
   // e.g. "No product code or runtime launched". Keep the conjunction and its
   // subjects explicit so a later affirmative clause is never swallowed.
   const noCoordinatedSubject = /\bno\s+(?:product\s+)?(?:code|runtime|run|test|job|process|build)(?:\s+(?:or|and)\s+(?:code|runtime|run|test|job|process|build)){1,2}\s+(?:(?:is|are|was|were|has|have|had|been)\s+){0,2}$/i;
-  return directNegation.test(before) || noRunSubject.test(before) || noCoordinatedSubject.test(before);
+  // Some launch statements negate a longer subject ("no parallel implementation
+  // repair run was launched"). Keep this bounded to the current clause so a later
+  // affirmative launch after "but" remains actionable.
+  const noLongSubject = /\b(?:no|zero)(?:\s+[\w'-]+){1,5}\s+(?:(?:is|are|was|were|has|have|had|been)\s+)?\s*$/i;
+  return directNegation.test(before) || noRunSubject.test(before) || noLongSubject.test(before) || noCoordinatedSubject.test(before);
 }
 
 /** A proposed scenario or conditional is not a statement that a run exists.
@@ -335,8 +386,11 @@ export function describeUnreadRun(
       return true;
     });
   const anchoredMatches = scopedMatches.flatMap((match) => {
-    const range = runReferenceRange(inFlightText, match.index ?? 0, match[0].length);
-    return range ? [{ match, range }] : [];
+    const index = match.index ?? 0;
+    const range = runReferenceRange(inFlightText, index, match[0].length);
+    if (!range || isPeerAttributedRun(inFlightText, index, match[0].length)) return [];
+    if (isCompletedAndReadRun(inFlightText, range, match, scopedMatches)) return [];
+    return [{ match, range }];
   });
   // Retain an adjacent diagnosis as signal metadata once a concrete following
   // run admission has independently supplied the execution reference.

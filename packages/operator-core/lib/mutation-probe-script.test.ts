@@ -2005,19 +2005,30 @@ describe('mutation-probe.sh — copy-out overlay reaches the mutant through ever
     writeFileSync(s, 'keep\n');
     writeFileSync(sentinel, 'legacy process marker\n');
     writeFileSync(rootInput, 'visible\n');
+    git(repo, ['-c', 'user.name=fixture', '-c', 'user.email=fixture@example.invalid',
+      'add', 'src/subject.txt', 'root-input.txt']);
+    git(repo, ['-c', 'user.name=fixture', '-c', 'user.email=fixture@example.invalid',
+      'commit', '-qm', 'console marker fixture']);
 
     const guard = [
       `if [ "$PAPERCUSP_MUTATION_PHASE" = baseline ]; then test -f ${JSON.stringify(sentinel)}; else ! compgen -G ${JSON.stringify(join(repo, '.papercup-console-active.*'))} >/dev/null; fi`,
       `test "$(cat ${JSON.stringify(rootInput)})" = visible`,
       "grep -q '^keep$' {}",
     ].join(' && ');
-    const result = runProbeIO(
-      ['--file', s, '--mutate', 's/keep/KEEP/', '--test', guard],
-      { ...process.env, MUTATION_PROBE_CONTAIN_WRITES: '1' },
-      repo,
-    );
+    const emptyMount = join(dir, 'console-sentinel-empty-mount');
+    mkdirSync(emptyMount);
+    mkdirSync(join(repo, 'mnt'));
+    const run = spawnSync('bwrap', [
+      '--dev-bind', '/', '/', '--bind', emptyMount, join(repo, 'mnt'),
+      '--die-with-parent', '--', 'bash', SCRIPT,
+      '--file', s, '--mutate', 's/keep/KEEP/', '--test', guard,
+    ], {
+      encoding: 'utf8', timeout: 60_000, cwd: repo,
+      env: { ...process.env, MUTATION_PROBE_CONTAIN_WRITES: '1' },
+    });
+    const result = { code: run.status ?? -1, out: `${run.stdout ?? ''}${run.stderr ?? ''}` };
 
-    expect(result.out).toContain('MUTATION_PROBE_CONTAINMENT status=contained');
+    expect(result.out).toMatch(/MUTATION_PROBE_CONTAINMENT status=(?:contained|partial) overlays=[1-9]\d* uncovered=0 failed=0/);
     expect(result.out).toContain('MUTATION_PROBE_RESULT verdict=caught');
     expect(result.code, result.out).toBe(0);
     expect(existsSync(sentinel)).toBe(true);

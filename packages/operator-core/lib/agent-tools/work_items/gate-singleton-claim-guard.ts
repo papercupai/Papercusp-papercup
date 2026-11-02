@@ -14,9 +14,10 @@
  * claimant's loop row and its measured wake reachability. Sharing that classifier means the
  * guard and `loop:status` cannot disagree about whether an owner will be woken again.
  *
- * Deliberately NOT guarded (D-028(2)): `frozen-repair-leg:` per-leg items and
- * `release:repair-queue admit`. Fixing a leg needs no gate ownership, and the refusal says so,
- * so a short-lived agent is routed to real work instead of away from it.
+ * This re-wake guard does not cover per-leg items or `release:repair-queue admit`.
+ * That does not grant gate authority: current-run leg triage/admission belongs to the live
+ * gate owner (gate-systems-as-designed-2026-10-27 D-010). Independent source work remains
+ * available under its own work-item and locks; the refusal preserves that distinction.
  *
  * Exempt: `system:*` identities. A routine identity is re-run by its own schedule rather than
  * by a loop row, so the loop verdict does not describe it; D-028(4) requires that exemption to
@@ -80,9 +81,11 @@ export function assessGateSingletonClaim(input: GateSingletonClaimInput): GateSi
       (rewakeReason === 'rewake-unverifiable'
         ? 'The re-wake verdict could not be read; retry the claim. '
         : 'Arm one first with loop:arm { intervalSec, goal } (check loop:status rewake.rewakeGuaranteed), then claim again. ') +
-      'To fix a failing leg without owning the gate, claim its frozen-repair-leg: item instead ' +
-      '(work_items:list { q: "frozen-repair-leg" }) and land the fix with release:repair-queue { op: "admit", paths }; ' +
-      'neither needs gate ownership. The claim was refused before mutation (D-028(4)).',
+      "Read state:read { cell: 'gate.greenCheckpoint.ownership' } before current-run work. " +
+      'Current-run frozen-repair-leg: triage and release:repair-queue admission belong to the live gate owner. ' +
+      'When another live agent holds it, send useful evidence once and stop current-run operations. ' +
+      'Independently registered source work may proceed under its own work-item and file locks; ' +
+      'send the verified patch to the gate owner for admission. The claim was refused before mutation (D-028(4)).',
   };
 }
 

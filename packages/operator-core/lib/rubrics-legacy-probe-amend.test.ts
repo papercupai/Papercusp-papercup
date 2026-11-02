@@ -1,22 +1,21 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { registerProjectedTool, unregisterProjectedToolsForPlugin } from '@papercusp/tooldef';
 
-const projectedTools = vi.hoisted(() => [
-  {
-    expose: { mcp: { name: 'status:read' } },
-    inputSchema: { type: 'object', properties: { id: { type: 'string' } }, additionalProperties: false },
-    effect: 'read',
-  },
-]);
-
-vi.mock('@papercusp/agent-mcp', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('@papercusp/agent-mcp')>()),
-  listAllProjectedTools: () => projectedTools,
-  projectedToolRegistryRevision: (tools: Array<{ expose: { mcp: { name: string } } }>) =>
-    `rev:${tools.map((tool) => tool.expose.mcp.name).join(',')}`,
-}));
-
-import { acceptanceBarMeaningUnchanged, applyRubricAmendment, migrateLegacyCriterionProbeRevisions, type Rubric } from './rubrics';
+import { acceptanceBarAmendmentCriterionChanges, acceptanceBarMeaningUnchanged, applyRubricAmendment, migrateLegacyCriterionProbeRevisions, type Rubric } from './rubrics';
 import { continuityProbeRevision } from './continuity-probes';
+
+// Rubric imports can initialize the continuity reader before a barrel mock.
+// Register the fixture through the same pinned catalog that reader consumes.
+beforeAll(() => registerProjectedTool({
+  pluginName: 'rubrics-legacy-probe-fixture',
+  description: 'Read the fixture status',
+  capabilities: [],
+  expose: { mcp: { name: 'status:read' } },
+  inputSchema: { type: 'object', properties: { id: { type: 'string' } }, additionalProperties: false },
+  effect: 'read',
+  fn: async () => ({ content: [{ type: 'text', text: '{"state":"healthy"}' }] }),
+}));
+afterAll(() => unregisterProjectedToolsForPlugin('rubrics-legacy-probe-fixture'));
 
 describe('acceptance BAR amendments with legacy continuity probes', () => {
   it('classifies meaning from the stored BAR-set hash without rebuilding the old snapshot', () => {
@@ -94,6 +93,43 @@ describe('acceptance BAR amendments with legacy continuity probes', () => {
       ? { kind: 'probe', probe: pinned }
       : { kind: 'probe', all: [pinned] });
     expect(liveProbe.schemaRevision).toBe('live');
+  });
+
+  it('captures generated probe changes alongside a method-only amendment for independent comparison', () => {
+    const before = [{
+      key: 'r-3', barKey: 'R-3', title: 'Frontier', model: 'The frontier is complete.',
+      method: 'Read the old frontier.', driftMarkers: 'A frontier entry is missing.',
+    }, {
+      key: 'r-5', barKey: 'R-5', title: 'Adoption', model: 'The runtime contains the source.',
+      method: 'Read status.', driftMarkers: 'Source containment is missing.',
+      check: { kind: 'probe' as const, probe: {
+        kind: 'tool' as const, tool: 'status:read', args: { id: 'original' },
+        schemaRevision: 'projected-tool-registry-v1:retired',
+        expect: { path: '$.state', op: 'exists' as const },
+      } },
+    }];
+    const rubric = { rubricId: 'legacy-rubric', kind: 'acceptance', criteria: before } as unknown as Rubric;
+    const after = applyRubricAmendment(rubric, { rubricId: rubric.rubricId,
+      criterion: { key: 'r-3', field: 'method', mode: 'replace', text: 'Read the complete frontier.' },
+    }).criteria;
+    const changes = acceptanceBarAmendmentCriterionChanges(before, after, ['R-3', 'R-5']);
+
+    expect(changes).toEqual([
+      { barKey: 'R-3', before: before[0], after: after[0] },
+      { barKey: 'R-5', before: before[1], after: after[1] },
+    ]);
+    expect(changes[1]?.before?.check).toMatchObject({ probe: { schemaRevision: 'projected-tool-registry-v1:retired' } });
+    expect(changes[1]?.after?.check).toMatchObject({ probe: { schemaRevision: continuityProbeRevision('status:read') } });
+  });
+
+  it('represents added and removed criteria explicitly and omits unchanged criteria', () => {
+    const kept = { key: 'kept', barKey: 'R-1' } as Rubric['criteria'][number];
+    const removed = { key: 'removed', barKey: 'R-2' } as Rubric['criteria'][number];
+    const added = { key: 'added', barKey: 'R-3' } as Rubric['criteria'][number];
+    expect(acceptanceBarAmendmentCriterionChanges([kept, removed], [kept, added], ['R-2', 'R-3'])).toEqual([
+      { barKey: 'R-2', before: removed, after: null },
+      { barKey: 'R-3', before: null, after: added },
+    ]);
   });
 
   it.each(['live', 'projected-tool-registry-v1:retired'])('keeps an incompatible %s probe unchanged so current validation still refuses it', (schemaRevision) => {

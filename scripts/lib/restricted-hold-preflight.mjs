@@ -324,7 +324,11 @@ export function censusSpawnArgs(args, env) {
   // Host-only overrides can otherwise route its committed Git-object reads
   // into a foreign shared sidecar and fail publication on that host's circuit.
   // Preserve workspace/database/admission lineage and every restriction check.
+  // Its committed-code substitutions describe the admission verifier, not the
+  // later test assertions. Do not append them to the caller's test-child receipt
+  // channel. The loader, stderr diagnostics and optional audit channel remain on.
   const censusEnv = Object.fromEntries(Object.entries(env).filter(([key]) =>
+    key !== 'PAPERCUSP_COMMITTED_SOURCE_NOTICES' &&
     key !== 'PAPERCUSP_CLUSTER' &&
     key !== 'PAPERCUSP_SPAWNER_IPC_SOCKET' &&
     key !== 'PAPERCUSP_SPAWNER_SIDECAR' &&

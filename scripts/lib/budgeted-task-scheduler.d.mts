@@ -59,6 +59,8 @@ export interface NativeCustodyManifest {
   identity: NativeCustodyIdentity; expected: NativeCustodyGroup[];
   expectedHash: string; groups: NativeCustodyRetainedGroup[]; gaps: string[]; predecessor: NativeCustodyLocator | null;
   limits: NativeCustodyLimits;
+  /** Archive-wide evaluator census bound; absent on older segment-bounded packets. */
+  referenceArtifactLimit?: number;
   /** Bytes and objects read against the capture budgets (retained AND rejected objects). */
   bytesRead: number; bytesReadByFamily?: Record<'A' | 'B' | 'C' | 'D' | 'auxiliary', number>;
   objectsRead?: number; objectsReadByFamily?: Record<'A' | 'B' | 'C' | 'D' | 'auxiliary', number>;

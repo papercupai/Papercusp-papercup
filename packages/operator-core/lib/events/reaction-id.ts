@@ -12,8 +12,16 @@
  */
 
 import type { UnifiedToolContext } from '@papercusp/agent-mcp';
+import { createHash } from 'node:crypto';
 import { computeDedupId as genericComputeDedupId } from '@papercusp/event-reaction';
 import type { DurableReactionInput } from './durable';
+
+/** One workspace/rule policy identity shared by inventory and both dispatch paths. */
+export function startupReactionFeatureId(workspaceId: string, ruleId: string): string {
+  if (!workspaceId.trim() || workspaceId === '*' || !ruleId.trim())
+    throw new Error('Startup reaction scope unavailable');
+  return `activity-${createHash('sha256').update(JSON.stringify([workspaceId, 'event', ruleId])).digest('hex')}`;
+}
 
 /** The JSON-serializable subset of the trigger ctx a durable reaction needs. */
 export interface SerializableReactionParent {

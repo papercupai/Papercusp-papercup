@@ -47,9 +47,10 @@ import { getOrgPg } from '@papercusp/db-org';
 // unrelated suites (WI-39450 gate reds). The pure module has no side effects, so it is
 // unaffected by that mock. Matches recipient-resolve/audience-host/federated-presence.
 import { PRESENCE_STALE_MS } from '@papercusp/coordination/presence';
-import { COORD_INBOX_WAKE_PREFIX } from './inbox-wake';
 import { SESSION_END_MARKER } from '../activity/lifecycle-markers';
-import { WAKE_TURN_CHANNELS } from '../../events/await/types';
+// The key convention is pure; importing its wake executor creates a return path
+// from gate/snapshot reads to plan activation (EI-27690628316181198).
+import { INBOX_WAKE_KEY_PREFIX as COORD_INBOX_WAKE_PREFIX, WAKE_TURN_CHANNELS } from '../../events/await/types';
 import { ACTIVITY_DEAD_MS, ACTIVITY_LOOKBACK_WINDOW_MS } from './activity-liveness-constants';
 
 /**

@@ -5,11 +5,13 @@
  */
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { createServer } from 'node:http';
-import { appendFile, chmod, mkdir, mkdtemp, open, readFile, rm, writeFile } from 'node:fs/promises';
+import { appendFile, chmod, lstat, mkdir, mkdtemp, open, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { liveProcExec } from './grader/index';
+import { canonicalJson } from './reproducibility/canonical-json';
+import { readContainedBenchmarkFile } from './reproducibility/context';
 import type { ProcExec } from './grader/swe-bench-pro';
 import { assertMinecraftTrialIdentity, minecraftRuntimeMeasurementSchema,
   requireMinecraftAssignment, type FrozenMinecraftTrial, type MinecraftAssignment } from './minecraft-protocol';
@@ -30,6 +32,8 @@ export interface MinecraftRuntimeConfig {
   readyTimeoutMs?: number;
   signal?: AbortSignal;
   exec?: ProcExec;
+  /** Issued from an unused, stopped owned runtime; never a participant path. */
+  worldBaseline?: MinecraftWorldBaseline;
 }
 export interface MinecraftStopReport {
   removed: boolean;
@@ -58,11 +62,78 @@ export interface MinecraftRuntimeSnapshot {
     nondeterministicInputs: string[];
   };
 }
-const ownedRuntimes = new WeakMap<MinecraftRuntime, {
+export interface MinecraftWorldBaseline {
+  readonly worldSha256: string;
+  dispose(): Promise<void>;
+}
+const worldBaselines = new WeakMap<MinecraftWorldBaseline, {
+  root: string; identity: string; closed: boolean; readers: Set<Promise<unknown>>;
+}>();
+function worldIdentity(trial: FrozenMinecraftTrial): string {
+  const { taskId, manifestHash, worldSeed, objective, rules, pins } = trial.protocol;
+  return canonicalJson({ taskId, manifestHash, worldSeed, objective, rules, pins });
+}
+/** Reuse the maintained descriptor/path reader. Only regular files below an
+ * owned private root enter the copy; sorted paths and bytes define its hash.
+ * A copy is measured independently again before it can admit a server. */
+async function measureWorld(root: string, destination?: string): Promise<string> {
+  const entries: Array<{ path: string; sha256?: string }> = [];
+  let bytes = 0;
+  const visit = async (ref: string): Promise<void> => {
+    const path = ref ? join(root, ref) : root;
+    const stat = await lstat(path);
+    if (stat.isSymbolicLink() || !stat.isDirectory() && !stat.isFile()) throw Error('Invalid Minecraft world entry');
+    if (entries.length >= 20_000) throw Error('Minecraft world entry limit');
+    if (stat.isDirectory()) {
+      entries.push({ path: `${ref}/` });
+      if (destination && ref) await mkdir(join(destination, ref), { mode: 0o700 });
+      for (const name of (await readdir(path)).sort()) await visit(ref ? `${ref}/${name}` : name);
+    } else {
+      bytes += stat.size;
+      if (bytes > 512 * 1024 * 1024) throw Error('Minecraft world byte limit');
+      const value = readContainedBenchmarkFile(root, ref, 16 * 1024 * 1024);
+      entries.push({ path: ref, sha256: digest(value) });
+      if (destination) await writeFile(join(destination, ref), value, { flag: 'wx', mode: 0o600 });
+    }
+  };
+  await visit('');
+  if (!entries.some(entry => entry.path === 'level.dat')) throw Error('Minecraft world has no saved level.dat');
+  return digest(Buffer.from(canonicalJson(entries)));
+}
+async function restoreWorld(baseline: MinecraftWorldBaseline, trial: FrozenMinecraftTrial, destination: string): Promise<string> {
+  const source = worldBaselines.get(baseline);
+  if (!source || source.closed || source.identity !== worldIdentity(trial)) throw Error('Foreign or closed Minecraft world baseline');
+  const copying = (async () => {
+    const copied = await measureWorld(source.root, destination);
+    if (copied !== baseline.worldSha256 || await measureWorld(destination) !== baseline.worldSha256)
+      throw Error('Minecraft world baseline changed during restore');
+    return copied;
+  })();
+  source.readers.add(copying);
+  try { return await copying; } finally { source.readers.delete(copying); }
+}
+interface MinecraftRuntimeOwner {
   snapshot(): Promise<MinecraftRuntimeSnapshot>;
   active(): boolean;
   bridges: Set<() => Promise<void>>;
-}>();
+  freezeWorld(): Promise<MinecraftWorldBaseline>;
+  initialWorldSha256: string | null;
+  nativeAdmitted: boolean;
+}
+const ownedRuntimes = new WeakMap<MinecraftRuntime, MinecraftRuntimeOwner>();
+/** This operation retires the preparation runtime before capturing its world.
+ * Once gameplay or native assignment admission starts it cannot be a baseline. */
+export async function freezeMinecraftWorldBaseline(runtime: MinecraftRuntime): Promise<MinecraftWorldBaseline> {
+  const owner = ownedRuntimes.get(runtime);
+  if (!owner) throw Error('Minecraft baseline requires an owned runtime');
+  return owner.freezeWorld();
+}
+/** Host measurement made on the fresh copy BEFORE Java can mutate it. */
+export function readMinecraftInitialWorld(runtime: MinecraftRuntime): { worldSha256: string } {
+  const sha256 = ownedRuntimes.get(runtime)?.initialWorldSha256;
+  if (!sha256) throw Error('Minecraft runtime has no measured frozen world restore');
+  return { worldSha256: sha256 };
+}
 /** Host-only: a caller-supplied object or path can never stand in for a runtime. */
 export async function readMinecraftRuntimeSnapshot(runtime: MinecraftRuntime): Promise<MinecraftRuntimeSnapshot> {
   const read = ownedRuntimes.get(runtime);
@@ -75,12 +146,14 @@ export function minecraftOfflinePlayerUuid(name: string): string { return offlin
  * player identity, Docker authority, world paths and scoring stay host-owned.
  * The existing execute path owns program isolation, deadlines and replay. */
 export async function startMinecraftParticipantBridge(runtime: MinecraftRuntime, assignment: MinecraftAssignment): Promise<{
-  endpoint: string; token: string; participantId: string; stop(): Promise<void>;
+  endpoint: string; token: string; participantId: string; signal: AbortSignal; stop(): Promise<void>;
 }> {
   const owner = ownedRuntimes.get(runtime);
   if (!owner?.active()) throw Error('Minecraft gameplay requires an active owned runtime');
   const { participantId } = requireMinecraftAssignment(assignment, runtime.trial.trialId);
+  owner.nativeAdmitted = true;
   const token = randomBytes(32).toString('base64url');
+  const revoked = new AbortController();
   const authorization = Buffer.from(`Bearer ${token}`);
   let closed = false, stopping: Promise<void> | undefined;
   const server = createServer((request, response) => {
@@ -136,6 +209,7 @@ export async function startMinecraftParticipantBridge(runtime: MinecraftRuntime,
       // stopping this runtime after a program deadline.
       server.closeAllConnections();
     });
+    revoked.abort();
     return stopping;
   };
   await new Promise<void>((resolve, reject) => {
@@ -147,7 +221,7 @@ export async function startMinecraftParticipantBridge(runtime: MinecraftRuntime,
   if (!owner.active()) { await stop(); throw Error('Minecraft trial is closed'); }
   const address = server.address();
   if (!address || typeof address === 'string') { await stop(); throw Error('Minecraft gameplay listener unavailable'); }
-  return { endpoint: `http://127.0.0.1:${address.port}/`, token, participantId, stop };
+  return { endpoint: `http://127.0.0.1:${address.port}/`, token, participantId, signal: revoked.signal, stop };
 }
 
 function offlineUuid(name: string): string {
@@ -178,6 +252,8 @@ export async function startMinecraftRuntime(config: MinecraftRuntimeConfig): Pro
   let timer: ReturnType<typeof setTimeout> | undefined;
   let stopped = false;
   let starting = true;
+  let gameplayStarted = false;
+  let initialWorldSha256: string | null = null;
   const startupLogTails: Record<string, string> = {};
   let stoppedAtMs = 0;
   const bridges = new Set<() => Promise<void>>();
@@ -261,6 +337,10 @@ export async function startMinecraftRuntime(config: MinecraftRuntimeConfig): Pro
     '--cpus', '2', '--memory', '2g', '--user', user, '--tmpfs', '/tmp:rw,nosuid,nodev,noexec,size=128m'];
   try {
     await mkdir(world); await mkdir(bridge); await chmod(bridge, 0o777);
+    if (config.worldBaseline) {
+      const restored = join(world, 'world'); await mkdir(restored, { mode: 0o700 });
+      initialWorldSha256 = await restoreWorld(config.worldBaseline, trial, restored);
+    }
     await writeFile(replayFile, '', { mode: 0o600 });
     await writeFile(protocolFile, JSON.stringify(trial.protocol), { mode: 0o444 });
     await writeFile(join(world, 'eula.txt'), 'eula=true\n');
@@ -317,6 +397,7 @@ export async function startMinecraftRuntime(config: MinecraftRuntimeConfig): Pro
         if (!trial.protocol.participants.includes(participant)) throw Error('Unknown Minecraft participant');
         if (typeof source !== 'string' || !source.trim() || Buffer.byteLength(source) > 16384) throw Error('Invalid Minecraft program');
         if (programActive) throw Error('Minecraft program already executing');
+        gameplayStarted = true;
         programActive = true;
         let finishProgram!: () => void;
         programDrained = new Promise(resolve => { finishProgram = resolve; });
@@ -347,7 +428,28 @@ export async function startMinecraftRuntime(config: MinecraftRuntimeConfig): Pro
       },
       async dispose() { const report = await stop(); if (report.removed) await rm(root, { recursive: true, force: true }); return report; },
     };
-    ownedRuntimes.set(runtime, { bridges, active: () => !stopped && !config.signal?.aborted && Date.now() < deadline,
+    const owner: MinecraftRuntimeOwner = { bridges, initialWorldSha256, nativeAdmitted: false,
+      active: () => !stopped && !config.signal?.aborted && Date.now() < deadline,
+      freezeWorld: async () => {
+        if (gameplayStarted || owner.nativeAdmitted) throw Error('Minecraft baseline must precede gameplay and native admission');
+        // stop() marks the runtime closed synchronously, fencing late programs.
+        const report = await stop();
+        if (!report.removed || report.errors.length) throw Error('Minecraft baseline requires verified runtime cleanup');
+        const root = await mkdtemp(join(config.workRoot ?? tmpdir(), 'papercusp-minecraft-baseline-'));
+        try {
+          const worldSha256 = await measureWorld(join(world, 'world'), root);
+          if (await measureWorld(root) !== worldSha256) throw Error('Minecraft baseline copy changed');
+          const record = { root, identity: worldIdentity(trial), closed: false, readers: new Set<Promise<unknown>>() };
+          let disposing: Promise<void> | undefined;
+          const baseline = Object.freeze({ worldSha256, dispose: () => {
+            record.closed = true;
+            return disposing ??= (async () => { await Promise.allSettled([...record.readers]);
+              await rm(root, { recursive: true, force: true }); })();
+          } });
+          worldBaselines.set(baseline, record);
+          return baseline;
+        } catch (error) { await rm(root, { recursive: true, force: true }); throw error; }
+      },
       snapshot: async () => {
       const report = await stop();
       await programDrained;
@@ -375,7 +477,8 @@ export async function startMinecraftRuntime(config: MinecraftRuntimeConfig): Pro
         provenance: { source: 'host-collected-server-files', deterministicReplay: false,
           nondeterministicInputs: ['server-tick-and-process-scheduling', 'entity-behaviour-and-game-randomness',
             'bot-network-and-action-timing'] } };
-    } });
+    } };
+    ownedRuntimes.set(runtime, owner);
     starting = false;
     return runtime;
   } catch (error) {

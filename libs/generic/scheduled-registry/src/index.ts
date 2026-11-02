@@ -68,6 +68,8 @@ export type ManagedActivityPolicy =
 
 export interface ManagedTimerOptions {
   category: ManagedCategory;
+  /** Callback honors its AbortSignal and settles only after its effects have stopped. */
+  cancellable?: boolean;
   /** Bind optional work to its existing policy identity, or explain its control/recovery purpose. */
   activity?: ManagedActivityPolicy;
   /** Keep a one-shot CLI alive until its owner calls stop(); background timers default to unref. */
@@ -129,6 +131,9 @@ export interface ManagedTimerOptions {
 /** The public, listable view of one armed timer. */
 export interface ManagedEntry {
   name: string;
+  /** Last one-time stop request; recurrence and saved policy remain unchanged. */
+  stopStatus?: ManagedStopStatus;
+  cancellable?: boolean;
   category: ManagedCategory;
   /** Absent for registrations whose execution-policy scope has not been classified. */
   activity?: ManagedActivityPolicy;
@@ -164,6 +169,13 @@ export interface ManagedEntry {
 export interface ManagedHandle {
   /** Clear the timer and deregister it from the inventory. Idempotent. */
   stop(): void;
+}
+
+export type ManagedStopStatus = 'pending' | 'draining' | 'completed' | 'failed' | 'unavailable';
+export interface ManagedStopRequest {
+  status: ManagedStopStatus;
+  /** Resolves after the actual callback settles, never merely after abort delivery. */
+  settled: Promise<ManagedStopStatus>;
 }
 
 /** A minimal timer handle — the Node Timeout's `.unref()` is honored when present. */
@@ -234,6 +246,8 @@ export interface ScheduledRegistryConfig {
   /** Host-owned alarm delivery. The registry itself never imports a durable executor. */
   onHungTick?: (episode: ManagedTickEpisode) => void | Promise<void>;
   onHungTickSettled?: (episode: ManagedTickEpisode) => void | Promise<void>;
+  /** Observation after callback invocation, never for a withheld or withdrawn admission. */
+  onTickStarted?: (entry: Readonly<ManagedEntry>) => void | Promise<void>;
 }
 
 export interface ManagedTickEpisode {
@@ -245,8 +259,8 @@ export interface ManagedTickEpisode {
   thresholdMs: number;
 }
 
-type ResolvedConfig = Required<Omit<ScheduledRegistryConfig, 'onHungTick' | 'onHungTickSettled'>> &
-  Pick<ScheduledRegistryConfig, 'onHungTick' | 'onHungTickSettled'>;
+type ResolvedConfig = Required<Omit<ScheduledRegistryConfig, 'onHungTick' | 'onHungTickSettled' | 'onTickStarted'>> &
+  Pick<ScheduledRegistryConfig, 'onHungTick' | 'onHungTickSettled' | 'onTickStarted'>;
 
 export function managedTickThresholdMs(intervalMs: number, customThresholdMs?: number): number {
   return Math.max(
@@ -276,6 +290,13 @@ interface InternalRecord {
   stopped: boolean;
   /** fires skipped during the CURRENT in-flight tick (reset when it settles). */
   episodeSkips: number;
+  admissionVersion?: number;
+  invocation?: {
+    controller: AbortController;
+    settled: Promise<ManagedStopStatus>;
+    resolve: (status: ManagedStopStatus) => void;
+    stopRequested: boolean;
+  };
 }
 
 /**
@@ -376,10 +397,26 @@ function stripUndefined<T extends object>(o: T): Partial<T> {
   return out;
 }
 
-function makeTick(name: string, fn: () => void | Promise<void>, opts: ManagedTimerOptions, rec: InternalRecord): () => void {
+function makeTick(name: string, fn: (context: { signal: AbortSignal }) => void | Promise<void>, opts: ManagedTimerOptions, rec: InternalRecord): () => void {
   let activeHang: { watcher: ManagedHandle; finish: () => void } | undefined;
+  const recordStart = (): void => {
+    try {
+      const observed = state.resolved.onTickStarted?.(Object.freeze({ ...rec.entry }));
+      if (observed) void Promise.resolve(observed).catch(() => {
+        state.resolved.log(`${name} start history unavailable`);
+      });
+    } catch {
+      state.resolved.log(`${name} start history unavailable`);
+    }
+  };
   // Record a fire. fires + lastFireAt count every ATTEMPT (including throws); only lastError differs.
   const settle = (err?: unknown): void => {
+    const invocation = rec.invocation;
+    const cancelled = invocation?.controller.signal.aborted && err instanceof Error && err.name === 'AbortError';
+    const stopStatus = err === undefined || cancelled ? 'completed' : 'failed';
+    if (invocation?.stopRequested) rec.entry.stopStatus = stopStatus;
+    invocation?.resolve(stopStatus);
+    rec.invocation = undefined;
     if (err === undefined) {
       rec.entry.lastError = null;
     } else {
@@ -407,6 +444,11 @@ function makeTick(name: string, fn: () => void | Promise<void>, opts: ManagedTim
   };
   const run = (): void => {
     if (rec.stopped) return;
+    let resolve!: (status: ManagedStopStatus) => void;
+    const settled = new Promise<ManagedStopStatus>(done => { resolve = done; });
+    const invocation = { controller: new AbortController(), settled, resolve, stopRequested: false };
+    rec.invocation = invocation;
+    delete rec.entry.stopStatus;
     rec.running = true;
     rec.entry.running = true;
     rec.entry.runningSince = state.resolved.now();
@@ -417,11 +459,13 @@ function makeTick(name: string, fn: () => void | Promise<void>, opts: ManagedTim
     // still holds across a slow async run.
     let result: void | Promise<void>;
     try {
-      result = fn();
+      result = fn({ signal: invocation.controller.signal });
     } catch (e) {
+      recordStart();
       settle(e);
       return;
     }
+    recordStart();
     if (result && typeof (result as Promise<void>).then === 'function') {
       const onHung = state.resolved.onHungTick;
       const onSettled = state.resolved.onHungTickSettled;
@@ -491,11 +535,13 @@ function makeTick(name: string, fn: () => void | Promise<void>, opts: ManagedTim
     try {
       const allowed = state.resolved.canRun(Object.freeze({ ...rec.entry }));
       if (allowed && typeof (allowed as Promise<boolean>).then === 'function') {
+        const version = rec.admissionVersion ?? 0;
         rec.running = true;
         void Promise.resolve(allowed).then(value => {
+          if ((rec.admissionVersion ?? 0) !== version) return;
           rec.running = false;
           if (value === true) run();
-        }, admissionFailed);
+        }, () => { if ((rec.admissionVersion ?? 0) === version) admissionFailed(); });
       } else if (allowed === true) {
         run();
       }
@@ -557,7 +603,7 @@ function alignedRephaseDelayMs(name: string, intervalMs: number, opts: ManagedTi
 export function managedSetInterval(
   name: string,
   intervalMs: number,
-  fn: () => void | Promise<void>,
+  fn: (context: { signal: AbortSignal }) => void | Promise<void>,
   opts: ManagedTimerOptions,
 ): ManagedHandle {
   const instanced = opts.instanced ?? false;
@@ -595,6 +641,7 @@ export function managedSetInterval(
   }
   const entry: ManagedEntry = {
     name,
+    cancellable: opts.cancellable ?? false,
     category: opts.category,
     ...(opts.activity === undefined ? {} : { activity: Object.freeze({ ...opts.activity }) }),
     intervalMs,
@@ -671,6 +718,24 @@ export function stopManaged(name: string): boolean {
   state.resolved.clearIntervalImpl(rec.timer);
   registry.delete(name);
   return true;
+}
+
+/** Stop only the current invocation, retaining its timer and future automatic-start choice. */
+export function stopManagedInvocation(name: string): ManagedStopRequest {
+  const rec = registry.get(name);
+  if (!rec) return { status: 'unavailable', settled: Promise.resolve('unavailable') };
+  const invocation = rec.invocation;
+  if (!invocation) {
+    // Invalidate an in-flight permission read: it must not start after this stop.
+    rec.admissionVersion = (rec.admissionVersion ?? 0) + 1;
+    rec.running = false;
+    rec.entry.stopStatus = 'completed';
+    return { status: 'completed', settled: Promise.resolve('completed') };
+  }
+  invocation.stopRequested = true;
+  rec.entry.stopStatus = rec.entry.cancellable ? 'pending' : 'draining';
+  if (rec.entry.cancellable && !invocation.controller.signal.aborted) invocation.controller.abort();
+  return { status: rec.entry.stopStatus, settled: invocation.settled };
 }
 
 /**

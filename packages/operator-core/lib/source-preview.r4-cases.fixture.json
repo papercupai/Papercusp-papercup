@@ -1,0 +1,219 @@
+{
+  "schemaVersion": 1,
+  "rubricRef": "acceptance-bg-host-committed-generation-2026-10-24",
+  "revision": 12,
+  "criteriaHash": "45889ecbed455996fbd9248ca82275e00d0bc0d9052220c1ce3f8a74da073111",
+  "criterionKey": "r-4",
+  "cases": [
+    {
+      "rowId": "recursive-inventory",
+      "file": "packages/operator-core/lib/source-preview-export.test.ts",
+      "testName": "BG-TEARDOWN-RECONCILE keeps recursive inventory append-only through late-child reconciliation"
+    },
+    {
+      "rowId": "retained-evidence",
+      "file": "apps/operator/lib/bundle-host-freshness.test.ts",
+      "testName": "BG-TEARDOWN-RECONCILE preserves source compiler and boot evidence during cleanup"
+    },
+    {
+      "rowId": "restart-cleanup",
+      "file": "packages/operator-core/lib/agent-tools/dev/restart.test.ts",
+      "testName": "BG-TEARDOWN-RECONCILE refuses stale cleanup of peer and rollback generations"
+    },
+    {
+      "rowId": "owned-survivors",
+      "file": "packages/operator-core/lib/release/operator-artifact.test.ts",
+      "testName": "BG-TEARDOWN-RECONCILE refuses terminal sealing with owned survivors"
+    },
+    {
+      "rowId": "parent-custody",
+      "file": "packages/operator-core/lib/source-preview-export.test.ts",
+      "testName": "BG-TEARDOWN-RECONCILE preserves original parent fire24 owner origin and errors custody"
+    },
+    {
+      "rowId": "original-deadline",
+      "file": "packages/operator-core/lib/source-preview-export.test.ts",
+      "testName": "BG-TEARDOWN-RECONCILE refuses terminal success after the predeclared teardown deadline"
+    },
+    {
+      "rowId": "bg-r4-custody-parent-fire24-delete",
+      "file": "packages/operator-core/lib/source-preview-export.test.ts",
+      "testName": "bg-r4-custody-parent-fire24-delete refuses delete of original parent-fire24 custody"
+    },
+    {
+      "rowId": "bg-r4-custody-parent-fire24-reset",
+      "file": "packages/operator-core/lib/source-preview-export.test.ts",
+      "testName": "bg-r4-custody-parent-fire24-reset refuses reset of original parent-fire24 custody"
+    },
+    {
+      "rowId": "bg-r4-custody-parent-fire24-replace",
+      "file": "packages/operator-core/lib/source-preview-export.test.ts",
+      "testName": "bg-r4-custody-parent-fire24-replace refuses replace of original parent-fire24 custody"
+    },
+    {
+      "rowId": "bg-r4-custody-parent-fire24-rewrite",
+      "file": "packages/operator-core/lib/source-preview-export.test.ts",
+      "testName": "bg-r4-custody-parent-fire24-rewrite refuses rewrite of original parent-fire24 custody"
+    },
+    {
+      "rowId": "bg-r4-custody-owner-delete",
+      "file": "packages/operator-core/lib/source-preview-export.test.ts",
+      "testName": "bg-r4-custody-owner-delete refuses delete of original owner custody"
+    },
+    {
+      "rowId": "bg-r4-custody-owner-reset",
+      "file": "packages/operator-core/lib/source-preview-export.test.ts",
+      "testName": "bg-r4-custody-owner-reset refuses reset of original owner custody"
+    },
+    {
+      "rowId": "bg-r4-custody-owner-replace",
+      "file": "packages/operator-core/lib/source-preview-export.test.ts",
+      "testName": "bg-r4-custody-owner-replace refuses replace of original owner custody"
+    },
+    {
+      "rowId": "bg-r4-custody-owner-rewrite",
+      "file": "packages/operator-core/lib/source-preview-export.test.ts",
+      "testName": "bg-r4-custody-owner-rewrite refuses rewrite of original owner custody"
+    },
+    {
+      "rowId": "bg-r4-custody-origin-delete",
+      "file": "packages/operator-core/lib/source-preview-export.test.ts",
+      "testName": "bg-r4-custody-origin-delete refuses delete of original origin custody"
+    },
+    {
+      "rowId": "bg-r4-custody-origin-reset",
+      "file": "packages/operator-core/lib/source-preview-export.test.ts",
+      "testName": "bg-r4-custody-origin-reset refuses reset of original origin custody"
+    },
+    {
+      "rowId": "bg-r4-custody-origin-replace",
+      "file": "packages/operator-core/lib/source-preview-export.test.ts",
+      "testName": "bg-r4-custody-origin-replace refuses replace of original origin custody"
+    },
+    {
+      "rowId": "bg-r4-custody-origin-rewrite",
+      "file": "packages/operator-core/lib/source-preview-export.test.ts",
+      "testName": "bg-r4-custody-origin-rewrite refuses rewrite of original origin custody"
+    },
+    {
+      "rowId": "bg-r4-custody-error-history-delete",
+      "file": "packages/operator-core/lib/source-preview-export.test.ts",
+      "testName": "bg-r4-custody-error-history-delete refuses delete of original error-history custody"
+    },
+    {
+      "rowId": "bg-r4-custody-error-history-reset",
+      "file": "packages/operator-core/lib/source-preview-export.test.ts",
+      "testName": "bg-r4-custody-error-history-reset refuses reset of original error-history custody"
+    },
+    {
+      "rowId": "bg-r4-custody-error-history-replace",
+      "file": "packages/operator-core/lib/source-preview-export.test.ts",
+      "testName": "bg-r4-custody-error-history-replace refuses replace of original error-history custody"
+    },
+    {
+      "rowId": "bg-r4-custody-error-history-rewrite",
+      "file": "packages/operator-core/lib/source-preview-export.test.ts",
+      "testName": "bg-r4-custody-error-history-rewrite refuses rewrite of original error-history custody"
+    },
+    {
+      "rowId": "bg-r4-custody-evidence-reference-delete",
+      "file": "packages/operator-core/lib/source-preview-export.test.ts",
+      "testName": "bg-r4-custody-evidence-reference-delete refuses delete of original evidence-reference custody"
+    },
+    {
+      "rowId": "bg-r4-custody-evidence-reference-reset",
+      "file": "packages/operator-core/lib/source-preview-export.test.ts",
+      "testName": "bg-r4-custody-evidence-reference-reset refuses reset of original evidence-reference custody"
+    },
+    {
+      "rowId": "bg-r4-custody-evidence-reference-replace",
+      "file": "packages/operator-core/lib/source-preview-export.test.ts",
+      "testName": "bg-r4-custody-evidence-reference-replace refuses replace of original evidence-reference custody"
+    },
+    {
+      "rowId": "bg-r4-custody-evidence-reference-rewrite",
+      "file": "packages/operator-core/lib/source-preview-export.test.ts",
+      "testName": "bg-r4-custody-evidence-reference-rewrite refuses rewrite of original evidence-reference custody"
+    },
+    {
+      "rowId": "bg-r4-teardown-success-immediately-before",
+      "file": "packages/operator-core/lib/source-preview-export.test.ts",
+      "testName": "bg-r4-teardown-success-immediately-before reconciles late descendants on success at original teardown deadline immediately-before"
+    },
+    {
+      "rowId": "bg-r4-teardown-success-exactly-at",
+      "file": "packages/operator-core/lib/source-preview-export.test.ts",
+      "testName": "bg-r4-teardown-success-exactly-at reconciles late descendants on success at original teardown deadline exactly-at"
+    },
+    {
+      "rowId": "bg-r4-teardown-success-after",
+      "file": "packages/operator-core/lib/source-preview-export.test.ts",
+      "testName": "bg-r4-teardown-success-after reconciles late descendants on success at original teardown deadline after"
+    },
+    {
+      "rowId": "bg-r4-teardown-failure-immediately-before",
+      "file": "packages/operator-core/lib/source-preview-export.test.ts",
+      "testName": "bg-r4-teardown-failure-immediately-before reconciles late descendants on failure at original teardown deadline immediately-before"
+    },
+    {
+      "rowId": "bg-r4-teardown-failure-exactly-at",
+      "file": "packages/operator-core/lib/source-preview-export.test.ts",
+      "testName": "bg-r4-teardown-failure-exactly-at reconciles late descendants on failure at original teardown deadline exactly-at"
+    },
+    {
+      "rowId": "bg-r4-teardown-failure-after",
+      "file": "packages/operator-core/lib/source-preview-export.test.ts",
+      "testName": "bg-r4-teardown-failure-after reconciles late descendants on failure at original teardown deadline after"
+    },
+    {
+      "rowId": "bg-r4-teardown-cancellation-immediately-before",
+      "file": "packages/operator-core/lib/source-preview-export.test.ts",
+      "testName": "bg-r4-teardown-cancellation-immediately-before reconciles late descendants on cancellation at original teardown deadline immediately-before"
+    },
+    {
+      "rowId": "bg-r4-teardown-cancellation-exactly-at",
+      "file": "packages/operator-core/lib/source-preview-export.test.ts",
+      "testName": "bg-r4-teardown-cancellation-exactly-at reconciles late descendants on cancellation at original teardown deadline exactly-at"
+    },
+    {
+      "rowId": "bg-r4-teardown-cancellation-after",
+      "file": "packages/operator-core/lib/source-preview-export.test.ts",
+      "testName": "bg-r4-teardown-cancellation-after reconciles late descendants on cancellation at original teardown deadline after"
+    },
+    {
+      "rowId": "bg-r4-teardown-timeout-immediately-before",
+      "file": "packages/operator-core/lib/source-preview-export.test.ts",
+      "testName": "bg-r4-teardown-timeout-immediately-before reconciles late descendants on timeout at original teardown deadline immediately-before"
+    },
+    {
+      "rowId": "bg-r4-teardown-timeout-exactly-at",
+      "file": "packages/operator-core/lib/source-preview-export.test.ts",
+      "testName": "bg-r4-teardown-timeout-exactly-at reconciles late descendants on timeout at original teardown deadline exactly-at"
+    },
+    {
+      "rowId": "bg-r4-teardown-timeout-after",
+      "file": "packages/operator-core/lib/source-preview-export.test.ts",
+      "testName": "bg-r4-teardown-timeout-after reconciles late descendants on timeout at original teardown deadline after"
+    },
+    {
+      "rowId": "bg-r4-teardown-interruption-recovery-immediately-before",
+      "file": "packages/operator-core/lib/source-preview-export.test.ts",
+      "testName": "bg-r4-teardown-interruption-recovery-immediately-before reconciles late descendants on interruption-recovery at original teardown deadline immediately-before"
+    },
+    {
+      "rowId": "bg-r4-teardown-interruption-recovery-exactly-at",
+      "file": "packages/operator-core/lib/source-preview-export.test.ts",
+      "testName": "bg-r4-teardown-interruption-recovery-exactly-at reconciles late descendants on interruption-recovery at original teardown deadline exactly-at"
+    },
+    {
+      "rowId": "bg-r4-teardown-interruption-recovery-after",
+      "file": "packages/operator-core/lib/source-preview-export.test.ts",
+      "testName": "bg-r4-teardown-interruption-recovery-after reconciles late descendants on interruption-recovery at original teardown deadline after"
+    },
+    {
+      "rowId": "bg-r4-census",
+      "file": "packages/operator-core/lib/source-preview-export.test.ts",
+      "testName": "bg-r4-census requires exact predeclared selector and branch population"
+    }
+  ]
+}

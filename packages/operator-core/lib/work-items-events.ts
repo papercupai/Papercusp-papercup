@@ -428,6 +428,9 @@ export function workItemClaimableEventPayload(
     harness: wi.harness,
     title: wi.title,
     state: wi.state,
+    // Mirror claimSpecSubjectFromWorkItem: preserve the full body and null
+    // semantics so summary-scoped member wakes can be filtered exactly.
+    summary: wi.summary ?? null,
     assignee: wi.assignee,
     // WI-21834327391666056: carry goal provenance so goal-scoped claim specs
     // can narrow the canonical claimable await without falling back to a

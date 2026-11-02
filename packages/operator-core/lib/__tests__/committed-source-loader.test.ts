@@ -775,6 +775,31 @@ describe('committed-source loader — the test router CLI launchers', () => {
 });
 
 describe('committed-source loader — the real census closure', () => {
+  it('isolates census notices while retaining committed execution, audit and test-child substitution detection', () => {
+    const notices = join(scratch, 'census-notice-boundary.jsonl');
+    const audit = join(scratch, 'census-notice-audit.jsonl');
+    writeFileSync(notices, 'parent-receipt\n');
+    put(fixture, 'mod.mjs', "export const v = 'DIRTY';\n");
+    const parentEnv = { ...cleanEnv(), PAPERCUSP_COMMITTED_SOURCE_NOTICES: notices };
+    const census = censusSpawnArgs([], parentEnv);
+    const verifier = run(['--import', COMMITTED_SOURCE_LOADER, 'entry.mjs'], census.env, audit);
+    expect(verifier.status, verifier.stderr).toBe(0);
+    expect(verifier.stdout).toContain('V=HEAD');
+    expect(verifier.stderr).toContain('COMMITTED_SOURCE substituted mod.mjs');
+    expect(readAudit(audit).some(record => record.kind === 'substituted' && record.rel === 'mod.mjs')).toBe(true);
+    expect(readFileSync(notices, 'utf8')).toBe('parent-receipt\n');
+
+    // A real assertion child still writes the original channel. No exemption
+    // was added to the mutation probe's fail-closed receipt classifier.
+    const assertion = run(['--import', COMMITTED_SOURCE_LOADER, 'entry.mjs'], parentEnv);
+    expect(assertion.status, assertion.stderr).toBe(0);
+    const receipt = readFileSync(notices, 'utf8').trim().split('\n').slice(1).map(line => JSON.parse(line));
+    expect(receipt).toEqual(expect.arrayContaining([expect.objectContaining({
+      schemaVersion: 'committed-source-notice-v1', kind: 'substituted', rel: 'mod.mjs',
+    })]));
+    expect(parentEnv.PAPERCUSP_COMMITTED_SOURCE_NOTICES).toBe(notices);
+  }, 60_000);
+
   function census(args: string[], holdings: unknown[]) {
     const dir = mkdtempSync(join(scratch, 'census-'));
     const holdingsFile = join(dir, 'census.json');

@@ -48,7 +48,7 @@
  * a write-time-only guard can always be raced by the pool itself changing shape afterward.
  */
 import { getOrgPg } from '@papercusp/db-org';
-import type { ClaimSpec, FilterLeaf, FilterNode } from './claim-spec';
+import { NUMERIC_ITEM_FIELDS, type ClaimSpec, type FilterLeaf, type FilterNode } from './claim-spec';
 import { compileFilter } from './get-next';
 import { observationLaneExclusionSql, type OrgSql } from '../work-items';
 import { issuesScopeWorkspace } from '../issues-engineer';
@@ -458,6 +458,32 @@ export function collectGuaranteedExclusions(filter: FilterNode | undefined): Fil
   return [];
 }
 
+/**
+ * A larger forbidden set preserves the old exclusion even when its AST changed.
+ * Prove only same-field equality/membership containment; unsupported formulas keep
+ * the exact structural fallback. In particular, numeric string equality coerces
+ * differently from membership in the JS evaluator, so do not infer its containment.
+ */
+function exclusionCovers(candidate: FilterNode, previous: FilterNode): boolean {
+  if (filterNodesEqual(candidate, previous)) return true;
+  if (!('field' in candidate) || !('field' in previous) || candidate.field !== previous.field) return false;
+
+  const values = (leaf: FilterLeaf) => {
+    if (leaf.op === '=' && !Array.isArray(leaf.value)) return [leaf.value];
+    if (leaf.op === 'in' && Array.isArray(leaf.value)) return leaf.value;
+    return null;
+  };
+  const candidateValues = values(candidate);
+  const previousValues = values(previous);
+  if (!candidateValues || !previousValues) return false;
+  if (NUMERIC_ITEM_FIELDS.some((field) => field === candidate.field)
+    && [...candidateValues, ...previousValues].some((value) => typeof value !== 'number' || !Number.isFinite(value))) {
+    return false;
+  }
+  const forbidden = new Set(candidateValues);
+  return previousValues.every((value) => forbidden.has(value));
+}
+
 /** Compact, bounded human rendering of a filter node for a warning string. */
 export function describeFilterNode(node: FilterNode, depth = 0): string {
   if (depth > 3) return '…';
@@ -512,7 +538,7 @@ export function evaluateWideningDisclosure(input: WideningDisclosureInput): Wide
   const widened = previousMatched !== null && matched > previousMatched;
   const kept = collectGuaranteedExclusions(filter);
   const droppedExclusions = collectGuaranteedExclusions(previousFilter)
-    .filter((prev) => !kept.some((k) => filterNodesEqual(k, prev)))
+    .filter((prev) => !kept.some((k) => exclusionCovers(k, prev)))
     .map((node) => ({ node, describe: `not:{ ${describeFilterNode(node)} }` }));
 
   if (droppedExclusions.length === 0) return { widened, droppedExclusions };

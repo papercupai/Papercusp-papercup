@@ -44,8 +44,10 @@ describe('setPaused', () => {
     expect(key).toBe('operator_paused');
     expect(state.paused).toBe(true);
     expect(state.by).toBe('mobile:device-1');
-    expect(typeof state.at).toBe('string');
-    expect(() => new Date(state.at).toISOString()).not.toThrow();
+    const at = state.at;
+    expect(typeof at).toBe('string');
+    if (typeof at !== 'string') throw new Error('Pause timestamp must be a string');
+    expect(() => new Date(at).toISOString()).not.toThrow();
     expect(notifySyncInvalidate).toHaveBeenCalledWith('operatorPauseFlag');
   });
 });

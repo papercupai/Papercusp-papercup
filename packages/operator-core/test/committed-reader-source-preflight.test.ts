@@ -1,11 +1,14 @@
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { verifierSourceFiles } from '../lib/verifier-source';
 import { preparePrivateOperatorApiBundle, produceCommittedReaderPrivateApiBundle, qualifyCommittedReaderSource,
   resolvePreparedCommittedReaderSource, resolvePreparedPrivateApiBundle, preparePrivateWorkerSources,
+  observeCommittedReaderLoadedSources,
   type CommittedReaderClosure, type CommittedReaderPreparationInputs } from './private-http-workspace-preflight';
 
 const digest = (value: string | Uint8Array) => createHash('sha256').update(value).digest('hex');
@@ -80,6 +83,89 @@ function producerFixture(extraScript = '') {
   } });
   return { ...f, inputs, saveInputs, selected, produce, consume };
 }
+
+function loadedFixture() {
+  const f = fixture(), traceOut = join(f.dir, 'host-source.json');
+  const traceRoot = traceOut + '.native-processes';
+  const startedAtMs = Date.now();
+  const child = spawnSync(process.execPath, ['--import', pathToFileURL(resolve(import.meta.dirname,
+    '../../../scripts/lib/vitest-startup-trace.mjs')).href, f.bundle], {
+    cwd: f.root, env: { ...process.env, NODE_OPTIONS: '', NODE_PATH: '', PC_EXECUTED_SOURCE_MAP_OUT: traceOut },
+    encoding: 'utf8', timeout: 15_000,
+  });
+  expect(child.error).toBeUndefined();
+  expect(child.status, child.stderr).toBe(0);
+  const options = { ...f.options, traceOut, pid: child.pid, startedAtMs, finishedAtMs: Date.now() };
+  const rows = readdirSync(traceRoot).filter(name => name.endsWith('.json'))
+    .map(name => ({ name, row: JSON.parse(readFileSync(join(traceRoot, name), 'utf8')) }));
+  const replace = (event: string, mutate: (row: any) => void) => {
+    const entry = rows.find(({ row }) => row.event === event)!;
+    rmSync(join(traceRoot, entry.name)); mutate(entry.row);
+    const bytes = JSON.stringify(entry.row);
+    writeFileSync(join(traceRoot, digest(bytes) + '.json'), bytes);
+  };
+  return { ...f, traceRoot, options, rows, replace, observe: () => observeCommittedReaderLoadedSources(options) };
+}
+
+describe('committed reader loader-return source binding', () => {
+  it('binds real Node returned bundle bytes and preserves all broader runtime gaps', () => {
+    const f = loadedFixture();
+    const observed = f.observe();
+    expect(observed).toMatchObject({ status: 'bound', scope: 'node-loader-returned-source', gaps: [],
+      sourceCommit: f.options.selectedCommit, population: { complete: true }, exitObserved: true,
+      sources: [{ url: pathToFileURL(f.bundle).href, sha256: f.closure.sha256,
+        byteLength: readFileSync(f.bundle).length }] });
+    expect(observed.processIdentity).toBe(f.rows.find(({ row }) => row.event === 'node-entry')!.row.processIdentity);
+    expect(observed.pending).toEqual(['module-evaluation', 'runtime-config', 'private-pg', 'sidecars',
+      'descendant-imports', 'complete-runtime-closure']);
+    expect(observeCommittedReaderLoadedSources({ ...f.options, processIdentity: 'another-process' }).status).toBe('unknown');
+  });
+
+  it.each(['bytes', 'artifact', 'limit', 'load-limit', 'pending', 'entry', 'identity', 'cwd', 'unpinned', 'event-hash'] as const)(
+    'keeps %s evidence unknown instead of substituting the current file', control => {
+      const f = loadedFixture();
+      const load = f.rows.find(({ row }) => row.event === 'module-load-return')!.row;
+      if (control === 'bytes') f.replace('module-load-return', row => {
+        const bytes = 'different loader return'; const sha256 = digest(bytes);
+        writeFileSync(join(f.traceRoot, sha256 + '.source'), bytes);
+        row.source = { ...row.source, sha256, ref: sha256 + '.source', byteLength: Buffer.byteLength(bytes) };
+      });
+      if (control === 'artifact') rmSync(join(f.traceRoot, load.source.ref));
+      if (control === 'limit') f.replace('module-load-return', row => { row.source.status = 'limit'; });
+      if (control === 'load-limit') {
+        const entry = f.rows.find(({ row }) => row.event === 'node-entry')!.row;
+        const bytes = JSON.stringify({ ...entry, event: 'module-load-limit', limit: 128 });
+        writeFileSync(join(f.traceRoot, digest(bytes) + '.json'), bytes);
+      }
+      if (control === 'entry') rmSync(join(f.traceRoot, f.rows.find(({ row }) => row.event === 'node-entry')!.name));
+      if (control === 'pending') {
+        const entry = f.rows.find(({ row }) => row.event === 'module-load-return')!;
+        rmSync(join(f.traceRoot, entry.name));
+      }
+      if (control === 'identity') f.replace('module-load-return', row => { row.processIdentity = 'reused-pid'; });
+      if (control === 'cwd') f.replace('node-entry', row => { row.cwd = f.dir; });
+      if (control === 'unpinned') {
+        const url = pathToFileURL(join(f.root, 'unobserved.mjs')).href;
+        f.replace('module-load-start', row => { row.url = url; });
+        f.replace('module-load-return', row => { row.url = url; });
+      }
+      if (control === 'event-hash') {
+        const entry = f.rows.find(({ row }) => row.event === 'node-entry')!;
+        writeFileSync(join(f.traceRoot, entry.name), JSON.stringify({ ...entry.row, cwd: f.dir }));
+      }
+      const observed = f.observe();
+      expect(observed.status).toBe('unknown');
+      expect(observed.gaps.length).toBeGreaterThan(0);
+      expect(observed.pending).toContain('complete-runtime-closure');
+      expect(readFileSync(f.bundle, 'utf8')).toBe('export const host = 1;');
+    });
+
+  it('refuses drifted independent preparation rather than qualifying a loader claim', () => {
+    const f = loadedFixture();
+    writeFileSync(f.bundle, 'changed artifact');
+    expect(() => f.observe()).toThrow(/Prepared artifact changed/);
+  });
+});
 
 describe('private worker source selection before allocation', () => {
   const committedEnv = { NODE_OPTIONS: '--import=/repo/scripts/lib/committed-source-loader.mjs' };

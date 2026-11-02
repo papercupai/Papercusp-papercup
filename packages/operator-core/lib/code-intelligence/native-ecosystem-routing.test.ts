@@ -58,9 +58,10 @@ describe('native baseline exposed semantic and packing handlers', () => {
   });
 
   it('enumerates every admitted exposed operation even if the inventory omits one', () => {
+    // The frozen baseline stays historical; successor routes extend the current census.
     expect([...graphQuery.args.shape.op.options].sort()).toEqual([
-      'callers', 'callees', 'communities', 'concept-search', 'context', 'contracts', 'diagnostics', 'flows', 'health', 'impact', 'implementations', 'references',
-      'rename-preview', 'structural-search', 'symbol', 'symbol-search', 'text-search', 'trace',
+      'callers', 'callees', 'clones', 'cochange', 'communities', 'concept-search', 'context', 'contracts', 'diagnostics', 'evidence', 'flows', 'health', 'impact', 'implementations', 'provenance', 'references',
+      'rename-preview', 'similar', 'sql-lineage', 'structural-search', 'symbol', 'symbol-search', 'text-search', 'trace',
     ].sort());
     expect(graphOperations.map(row => row.op).sort()).toEqual(['callers', 'callees', 'health', 'impact', 'symbol'].sort());
     expect(semantic.map(row => row.op).sort()).toEqual([...lspQuery.args.shape.op.options].sort());

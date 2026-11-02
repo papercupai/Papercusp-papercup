@@ -2,17 +2,39 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { configureScheduledRegistry, managedSetInterval, resetScheduledRegistry } from '@papercusp/scheduled-registry';
 import { installManagedTickAlarm } from './managed-tick-alarm';
 import { workspaceBackgroundActivityAllowed } from '../device-operator-actions';
+import { recordStartupActivityHistory } from '../startup-activity';
 
 vi.mock('@dbos-inc/dbos-sdk', () => { throw new Error('DBOS unavailable'); });
 vi.mock('../device-operator-actions', () => ({ workspaceBackgroundActivityAllowed: vi.fn() }));
+vi.mock('../startup-activity', () => ({ recordStartupActivityHistory: vi.fn(async () => {}) }));
+vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: 'scoped-test-sql' }) }));
 
 afterEach(() => {
   resetScheduledRegistry();
   vi.mocked(workspaceBackgroundActivityAllowed).mockReset();
+  vi.mocked(recordStartupActivityHistory).mockClear();
   vi.useRealTimers();
 });
 
 describe('production managed tick alarm adapter', () => {
+  it('records the actual timer trigger in the declared workspace after invocation', async () => {
+    vi.useFakeTimers();
+    vi.mocked(workspaceBackgroundActivityAllowed).mockResolvedValue(false);
+    installManagedTickAlarm();
+    const featureId = `activity-${'c'.repeat(64)}`;
+    const tick = vi.fn();
+    managedSetInterval('history-optional', 1000, tick, { category: 'global-sweep',
+      activity: { kind: 'workspace', workspaceId: 'workspace-a', featureId } });
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(recordStartupActivityHistory).not.toHaveBeenCalled();
+    vi.mocked(workspaceBackgroundActivityAllowed).mockResolvedValue(true);
+    await vi.advanceTimersByTimeAsync(1000);
+    await vi.waitFor(() => expect(recordStartupActivityHistory).toHaveBeenCalledOnce());
+    expect(tick).toHaveBeenCalledOnce();
+    expect(recordStartupActivityHistory).toHaveBeenCalledWith(expect.objectContaining({
+      featureId, operation: 'start', status: 'running', trigger: 'timer', source: 'timer', reason: 'automatic-start',
+    }), 'managed-timer', 'system', { sql: 'scoped-test-sql', workspaceId: 'workspace-a' });
+  });
   it('checks the declared workspace before fireOnArm and each later fire, including watchdog categories', async () => {
     vi.useFakeTimers();
     vi.mocked(workspaceBackgroundActivityAllowed).mockResolvedValue(false);

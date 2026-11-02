@@ -88,6 +88,7 @@ vi.mock('../source', async (orig) => {
     ...actual,
     getPlanRow: vi.fn(async () => ({
       planSlug: 'mock',
+      version: 1,
       status: H.state.frontmatterStatus,
       content: `---\ntitle: Fixture\nstatus: ${H.state.frontmatterStatus ?? 'ready'}\n---\n# Fixture\n`,
       template: null,
@@ -511,6 +512,63 @@ describe('plans:start commit-time readiness', () => {
     return writes;
   }
 
+  it('waits for approval-boundary readers before opening the plan transaction', async () => {
+    const source = await import('../source');
+    const qualityGate = await import('../plan-spec-quality-gate');
+    const getPlanRow = vi.mocked(source.getPlanRow);
+    const evaluateQuality = vi.mocked(qualityGate.evaluatePlanSpecQualityGate);
+    const getPlanRowImpl = getPlanRow.getMockImplementation();
+    const evaluateQualityImpl = evaluateQuality.getMockImplementation();
+    expect(getPlanRowImpl).toBeDefined();
+    expect(evaluateQualityImpl).toBeDefined();
+    getPlanRow.mockClear();
+    evaluateQuality.mockClear();
+
+    let releaseAdmission!: () => void;
+    let releaseQuality!: () => void;
+    let signalAdmission!: () => void;
+    let signalQuality!: () => void;
+    const admissionStarted = new Promise<void>((resolve) => { signalAdmission = resolve; });
+    const qualityStarted = new Promise<void>((resolve) => { signalQuality = resolve; });
+    const admissionHold = new Promise<void>((resolve) => { releaseAdmission = resolve; });
+    const qualityHold = new Promise<void>((resolve) => { releaseQuality = resolve; });
+
+    getPlanRow
+      .mockImplementationOnce((...args) => getPlanRowImpl!(...args))
+      .mockImplementationOnce(async (...args) => {
+        signalAdmission();
+        await admissionHold;
+        return getPlanRowImpl!(...args);
+      });
+    evaluateQuality
+      .mockImplementationOnce((...args) => evaluateQualityImpl!(...args))
+      .mockImplementationOnce(async (...args) => {
+        signalQuality();
+        await qualityHold;
+        return evaluateQualityImpl!(...args);
+      });
+
+    const writes = locked({});
+    const pending = run({ slug: 'mock', consulted: true });
+    await admissionStarted;
+    const transactionOpenDuringAdmission = planLockMocks.withPlanLock.mock.calls.length > 0;
+    releaseAdmission();
+    await qualityStarted;
+    const transactionOpenDuringQuality = planLockMocks.withPlanLock.mock.calls.length > 0;
+    releaseQuality();
+    const result = await pending;
+
+    getPlanRow.mockReset();
+    getPlanRow.mockImplementation(getPlanRowImpl!);
+    evaluateQuality.mockReset();
+    evaluateQuality.mockImplementation(evaluateQualityImpl!);
+
+    expect(transactionOpenDuringAdmission).toBe(false);
+    expect(transactionOpenDuringQuality).toBe(false);
+    expect(result.data.results[0]).toMatchObject({ ok: true, autoApproved: true });
+    expect(writes).toHaveLength(1);
+  });
+
   it('rejects a changed revision before approval and promotion', async () => {
     const writes = locked({ version: 2 });
     const result = await run({ slug: 'mock', consulted: true });
@@ -546,15 +604,22 @@ describe('plans:start commit-time readiness', () => {
   });
 
   it('refuses policy/evidence invalidation between preflight and approval', async () => {
-    const writes = locked({}, () => {
+    const writes = locked({});
+    const { evaluatePlanSpecQualityGate } = await import('../plan-spec-quality-gate');
+    // Invalidate after the first verdict was measured, before the independent
+    // approval recheck. The writer must stay unopened while those readers run.
+    vi.mocked(evaluatePlanSpecQualityGate).mockImplementationOnce(async () => {
+      const preflight = H.state.specQuality;
       H.state.specQuality = {
         satisfied: false, applicable: true, mode: 'enforced', planSlug: 'mock', specSetHash: 'changed',
         code: 'spec_quality_scorecard_missing', wouldBlock: ['current-policy-scorecard-missing'],
       };
+      return preflight as Awaited<ReturnType<typeof evaluatePlanSpecQualityGate>>;
     });
     const result = await run({ slug: 'mock', consulted: true });
     expect(result.data.results[0], JSON.stringify(result.data.results[0])).toMatchObject({ ok: false, error: 'spec_quality_scorecard_missing' });
     expect(writes).toEqual([]);
+    expect(planLockMocks.withPlanLock).not.toHaveBeenCalled();
     expect(promotePlanItemsMock).not.toHaveBeenCalled();
   });
 

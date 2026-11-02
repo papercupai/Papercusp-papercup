@@ -1619,6 +1619,28 @@ describe('testing:run (integration)', () => {
     }
   });
 
+  it('keeps reporter-stage tracing off unless the current run opts in', async () => {
+    const root = await makeScratchTestCheckout('papercusp-testing-reporter-stage-trace-');
+    await mkdir(join(root, 'scripts'), { recursive: true });
+    const capture = join(root, 'reporter-stage-trace.json');
+    await writeFile(join(root, 'scripts/test-files.mjs'), [
+      "import { writeFileSync } from 'node:fs';",
+      `writeFileSync(${JSON.stringify(capture)}, JSON.stringify({ reporterStageTrace: process.env.PAPERCUSP_TEST_REPORTER_STAGE_TRACE ?? null }));`,
+      "console.log('ROUTE cwd=packages/x runner=node:test\\n  requested real.test.ts\\n# tests 1\\n# pass 1\\n# fail 0\\n# skipped 0\\nTEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed');",
+    ].join('\n'));
+    await sealScratchTestCheckout(root);
+    const previous = process.env.PAPERCUSP_TEST_REPORTER_STAGE_TRACE;
+    process.env.PAPERCUSP_TEST_REPORTER_STAGE_TRACE = '1';
+    try {
+      const result = await runTestFilesCore({ root, files: ['packages/x/real.test.ts'], timeoutMs: 30_000 });
+      expect(result, JSON.stringify(result)).toMatchObject({ ok: true, passed: 1, failed: 0 });
+      expect(JSON.parse(await readFile(capture, 'utf8'))).toEqual({ reporterStageTrace: null });
+    } finally {
+      if (previous === undefined) delete process.env.PAPERCUSP_TEST_REPORTER_STAGE_TRACE;
+      else process.env.PAPERCUSP_TEST_REPORTER_STAGE_TRACE = previous;
+    }
+  });
+
   it('binds parked scorecard live setup to its authenticated caller before the router starts', async () => {
     const root = await makeScratchTestCheckout('papercusp-testing-scorecard-profile-');
     const suite = 'packages/operator-core/lib/agent-tools/coordination/parked-agent-audit.e2e.test.ts';
@@ -1647,18 +1669,19 @@ describe('testing:run (integration)', () => {
     const capture = join(root, 'captured-deadline.json');
     await writeFile(join(root, 'scripts/test-files.mjs'), [
       "import { writeFileSync } from 'node:fs';",
-      `writeFileSync(${JSON.stringify(capture)}, JSON.stringify({ taskDeadlineAtMs: Number(process.env.PAPERCUSP_TEST_TASK_DEADLINE_AT_MS), childCutoffAtMs: Number(process.env.PAPERCUSP_TEST_CHILD_CUTOFF_AT_MS), cleanupReserveMs: Number(process.env.PAPERCUSP_TEST_CLEANUP_RESERVE_MS) }));`,
+      `writeFileSync(${JSON.stringify(capture)}, JSON.stringify({ taskDeadlineAtMs: Number(process.env.PAPERCUSP_TEST_TASK_DEADLINE_AT_MS), childCutoffAtMs: Number(process.env.PAPERCUSP_TEST_CHILD_CUTOFF_AT_MS), cleanupReserveMs: Number(process.env.PAPERCUSP_TEST_CLEANUP_RESERVE_MS), reporterStageTrace: process.env.PAPERCUSP_TEST_REPORTER_STAGE_TRACE ?? null }));`,
       "console.log('ROUTE cwd=packages/x runner=node:test\\n  requested real.test.ts\\n# tests 1\\n# pass 1\\n# fail 0\\n# skipped 0\\nTEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed');",
     ].join('\n'));
     await sealScratchTestCheckout(root);
     const taskDeadlineAtMs = Date.now() + 20_000;
     const args = runTool.args.parse({ files: ['packages/x/real.test.ts'], timeoutMs: 25_000,
-      taskDeadlineAtMs, cleanupReserveMs: 5_000 });
+      taskDeadlineAtMs, cleanupReserveMs: 5_000, reporterStageTrace: true });
     const out = await body(call(args, { projectDir: root }));
     expect(out, JSON.stringify(out)).toMatchObject({ ok: true, passed: 1,
       deadline: { taskDeadlineAtMs, childCutoffAtMs: taskDeadlineAtMs - 5_000, cleanupReserveMs: 5_000 } });
     expect(JSON.parse(await readFile(capture, 'utf8'))).toEqual({
       taskDeadlineAtMs, childCutoffAtMs: taskDeadlineAtMs - 5_000, cleanupReserveMs: 5_000,
+      reporterStageTrace: '1',
     });
     const manifest = JSON.parse(await readFile(out.artifacts!.manifest, 'utf8'));
     expect(manifest.deadline).toEqual(out.deadline);
@@ -2790,10 +2813,13 @@ describe('testing:run (integration)', () => {
         childCutoffAtMs: taskDeadlineAtMs - 10_000,
         cleanupReserveMs: 10_000,
       },
+      reporterStageTrace: true,
     });
 
     expect(request.originRunId).toBe(originRunId);
     expect(request.args.join('\n')).not.toContain(originRunId);
+    expect(request.args.join('\n')).toContain('"reporterStageTrace":true');
+    expect(request.env?.PAPERCUSP_TEST_REPORTER_STAGE_TRACE).toBe('1');
   });
 
   it('carries the verified work-item onto the detached request (expensive-verification-loops P-001)', () => {
@@ -2810,9 +2836,11 @@ describe('testing:run (integration)', () => {
       groups: [{ root: REPO_ROOT, files: ['packages/example.test.ts'] }],
       workItemId: 'WI-10003898',
       originRunId: 'foreground-origin-3',
+      reporterStageTrace: true,
     });
     expect(mixed.workItemId).toBe('WI-10003898');
     expect(mixed.originRunId).toBe('foreground-origin-3');
+    expect(mixed.env?.PAPERCUSP_TEST_REPORTER_STAGE_TRACE).toBe('1');
     expect(single.requestedFiles).toEqual(['packages/example.test.ts']);
     expect(mixed.requestedFiles).toEqual(['packages/example.test.ts']);
   });

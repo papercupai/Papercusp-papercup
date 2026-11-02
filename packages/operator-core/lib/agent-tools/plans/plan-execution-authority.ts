@@ -5,7 +5,7 @@ import { recordPlanRevisionInTransaction, type PlanRevisionSql } from './revisio
 import { acquirePlanAdvisoryLock, planAdvisoryLockKey } from './plan-lock-key';
 import { planExecutionMeaning } from './plan-execution-meaning';
 import { checkPlanExecutionReadiness, type ExecutionPlanBinding } from './plan-execution-guard';
-import { readPlanLineNodes } from './plan-line-graph';
+import { readPlanLineItems } from './plan-line-graph';
 import { renderPlanLines } from './plan-line-render';
 
 export interface ExecutionStartScope { workspaceId: string; harnessSlug: string; planSlug: string }
@@ -34,8 +34,12 @@ async function readExecutionSnapshot(sql: PlanRevisionSql, scope: ExecutionStart
      ${lock ? sql`FOR UPDATE` : sql``}`;
   const row = rows[0]?.row;
   if (!row) return null;
-  const nodes = await readPlanLineNodes(sql as never, { ...scope, slug: scope.planSlug });
-  return { ...row, rendered_content: renderPlanLines(row.content, nodes) };
+  const items = await readPlanLineItems(
+    sql as never,
+    { ...scope, slug: scope.planSlug },
+    { items: row.items, content: row.content },
+  );
+  return { ...row, rendered_content: renderPlanLines(row.content, items) };
 }
 
 /** Preserve only equivalent local edits, fenced to the exact old and new body hashes. */
@@ -49,12 +53,16 @@ export async function preservePlanExecutionProgress(tx: PlanRevisionSql, scope: 
 /** Canonical start calls this after its final promotion, admission and binding legs. */
 export async function recordPlanExecutionStart(scope: ExecutionStartScope, identity: AgentIdentity,
   expected: ExecutionPlanRow): Promise<{ seq: number; contentHash: string }> {
+  // Readiness uses independent connections and may perform slow policy reads.
+  // Finish it before opening the write transaction: an otherwise idle transaction
+  // can expire while those readers run. The locked, full-snapshot comparison below
+  // fences changes made during readiness before any immutable authority is issued.
+  const blockers = await checkPlanExecutionReadiness({ planSlug: scope.planSlug, harnessSlug: scope.harnessSlug }, scope.workspaceId);
+  if (blockers.length) throw new Error(`plan_start_proof_refused:${blockers.join(',')}`);
   return withWorkspace(scope.workspaceId, async tx => {
     await acquirePlanAdvisoryLock(tx, planAdvisoryLockKey(scope.workspaceId, scope.harnessSlug, scope.planSlug));
     const row = await readExecutionSnapshot(tx, scope, true);
     if (!row || !isDeepStrictEqual(row, expected)) throw new Error('plan_changed_before_start_proof');
-    const blockers = await checkPlanExecutionReadiness({ planSlug: scope.planSlug, harnessSlug: scope.harnessSlug }, scope.workspaceId);
-    if (blockers.length) throw new Error(`plan_start_proof_refused:${blockers.join(',')}`);
     const revision = await recordPlanRevisionInTransaction(tx, {
       ...scope, identity, contentHash: row.content_hash,
       content: JSON.stringify({ schema: 'plan-execution-start-v1', scope, body: row.rendered_content, inputs: executionPlanInputs(row) }),
@@ -95,8 +103,12 @@ export async function readPlanExecutionStart(binding: ExecutionPlanBinding, work
     const scope = { workspaceId, harnessSlug: row.harness_slug, planSlug: binding.planSlug };
     if (receipt.schema !== 'plan-execution-start-v1' || !isDeepStrictEqual(receipt.scope, scope)
       || typeof receipt.body !== 'string') return ['plan_start_revision_invalid'];
-    const nodes = await readPlanLineNodes(sql, { workspaceId, harnessSlug: String(row.harness_slug), slug: binding.planSlug });
-    if (planExecutionMeaning(receipt.body) !== planExecutionMeaning(renderPlanLines(row.content, nodes))
+    const items = await readPlanLineItems(
+      sql,
+      { workspaceId, harnessSlug: String(row.harness_slug), slug: binding.planSlug },
+      { items: row.items, content: row.content },
+    );
+    if (planExecutionMeaning(receipt.body) !== planExecutionMeaning(renderPlanLines(row.content, items))
       || !isDeepStrictEqual(receipt.inputs, executionPlanInputs(row))) return ['plan_start_revision_stale'];
     return [];
   } catch { return ['plan_start_revision_invalid']; }

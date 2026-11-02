@@ -222,7 +222,13 @@ describe('evaluateDeclaredGateGeneration — taxonomy (R-001) and exact next ver
 
   it('already-complete ONLY from the exact generation’s own event fire → resume from events:status', () => {
     const r = classified(
-      evaluateDeclaredGateGeneration(input({ announcement: { state: 'fired', firedReason: 'event', firedAt: 't', expectedVerdict: 'matched' } })),
+      evaluateDeclaredGateGeneration(input({ announcement: {
+        state: 'fired',
+        firedReason: 'event',
+        firedAt: 't',
+        expectedCondition: { kind: 'sha', sha: 'abc' },
+        expectedVerdict: 'matched',
+      } })),
     );
     expect(r.classification).toBe('already-complete');
     expect(r.nextVerb).toEqual({
@@ -248,12 +254,17 @@ describe('no timeout-to-success conversion (R-002)', () => {
     expect(r.evidence.reasons.join(' ')).toMatch(/not success/);
   });
 
-  it.each(['mismatched', 'invalid'] as const)('an exact fire whose expected condition is %s is inactive, never success', (verdict) => {
+  it.each([
+    ['not-declared', null, 'fired-expected-unproven'],
+    ['pending', { kind: 'sha', sha: 'abc' }, 'fired-expected-unproven'],
+    ['mismatched', { kind: 'sha', sha: 'abc' }, 'fired-expected-mismatch'],
+    ['invalid', { kind: 'sha', sha: 'abc' }, 'fired-expected-mismatch'],
+  ] as const)('an exact fire whose expected condition is %s is inactive, never success', (verdict, expectedCondition, reason) => {
     const r = evaluateDeclaredGateGeneration(
-      input({ announcement: { state: 'fired', firedReason: 'event', firedAt: 't', expectedCondition: { kind: 'sha', sha: 'abc' }, expectedVerdict: verdict } }),
+      input({ announcement: { state: 'fired', firedReason: 'event', firedAt: 't', expectedCondition, expectedVerdict: verdict } }),
     );
     expect(r.status).toBe('inactive');
-    expect(r.status === 'inactive' && r.reason).toBe('fired-expected-mismatch');
+    expect(r.status === 'inactive' && r.reason).toBe(reason);
   });
 
   it('a generation closed by a non-event reason (expiry sweep) is inactive, never success', () => {
@@ -307,7 +318,7 @@ describe('no timeout-to-success conversion (R-002)', () => {
                     if (r.classification === 'already-complete') {
                       expect(state).toBe('fired');
                       expect(firedReason).toBe('event');
-                      expect(['matched', 'not-declared', 'pending']).toContain(expectedVerdict);
+                      expect(expectedVerdict).toBe('matched');
                     }
                     // Takeover/escalation never arises from an unmeasured owner.
                     if (ACTIONABLE_CLASSIFICATIONS.has(r.classification)) expect(ownership.status).toBe('measured');
@@ -473,7 +484,13 @@ describe('applyDeclaredGateRecovery — idempotent actions (R-004) with durable 
             : observation({ state: 'unknown' });
       const r =
         cls === 'already-complete'
-          ? evaluateDeclaredGateGeneration(input({ announcement: { state: 'fired', firedReason: 'event', firedAt: 't' } }))
+          ? evaluateDeclaredGateGeneration(input({ announcement: {
+              state: 'fired',
+              firedReason: 'event',
+              firedAt: 't',
+              expectedCondition: { kind: 'sha', sha: 'abc' },
+              expectedVerdict: 'matched',
+            } }))
           : evaluateDeclaredGateGeneration(
               input({ ownership: liveDeclarer, producer: { status: 'measured', value: { certificate: certificate(), observation: obs } } }),
             );

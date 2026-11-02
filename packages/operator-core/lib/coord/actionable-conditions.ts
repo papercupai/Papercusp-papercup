@@ -57,10 +57,9 @@ export interface ActionableCondition {
    * the open queue while the agent already driving the gate never hears of it, and
    * never lands on a dead or stalled holder either.
    *
-   * Omitted = unassigned at creation, claimable by anyone. That is deliberately the
-   * default and the right answer for `frozen-repair-leg:` (D-028/D-029 of
-   * green-main-cycle-time-2026-10-08: any agent may fix a leg, so assigning legs to
-   * the gate owner would re-serialize exactly the labour that entry exists to spread).
+   * Omitted = unassigned at creation, claimable by anyone. Current-run repair legs
+   * use the owner policy too (gate-systems-as-designed-2026-10-27 D-010);
+   * independently registered source development keeps its own assignment.
    */
   assignTo?: 'live-gate-owner';
   /**
@@ -147,10 +146,10 @@ export const ACTIONABLE_CONDITIONS: readonly ActionableCondition[] = [
     severity: 'critical',
     assignTo: 'live-gate-owner',
   },
-  // green-main-cycle-time-2026-10-08 P-013 (D-028/D-029): ONE claimable item per failing
-  // leg of the frozen queue, so the repair is not a single gate owner's serial labour —
-  // any agent may claim a leg, fix it and admit the fix (admission needs no gate
-  // ownership). Durable: opened when a leg enters the queue's failing set, resolved when
+  // ONE item per current-run failing leg (green-main-cycle-time-2026-10-08 P-013).
+  // D-010 of gate-systems-as-designed-2026-10-27 assigns triage/admission to the live
+  // gate owner; independent source fixes proceed on their own registered work-items.
+  // Durable: opened when a leg enters the queue's failing set, resolved when
   // it leaves, never per-tick. Major, not critical: the convergence and red-streak items
   // above already carry the stop-the-line severity for the queue as a whole.
   // `lifecycleOwnedBySource`: the router resolves departed legs (and every leg on a cleared
@@ -159,6 +158,7 @@ export const ACTIONABLE_CONDITIONS: readonly ActionableCondition[] = [
     prefix: FROZEN_REPAIR_LEG_CONDITION_PREFIX,
     harnessFrom: 'leading-segment',
     severity: 'major',
+    assignTo: 'live-gate-owner',
     lifecycleOwnedBySource: true,
   },
   // `main` lagging `staging` is the gate not promoting, so it is the gate owner's too.

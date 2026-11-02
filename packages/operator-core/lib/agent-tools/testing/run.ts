@@ -111,6 +111,8 @@ import {
 } from '../../testing-run-store';
 import { deriveAffectedPlan } from './affected-plan';
 import { nativeConsultScenarioSchema } from './native-consult';
+import { executeSecurityQualification, securityQualificationMetadata, securityQualificationSchema,
+  securityQualificationSelectionError } from './run-security-qualification';
 import { resolveAgentWorkspaceRoot, resolveCapabilityIntegrationRoot } from '../capability/base-dir';
 import { harnessArg, resolveConcreteHarnessSlug } from '../_harness-scope';
 import { REPO_ROOT } from '../docs/_repo-paths';
@@ -487,6 +489,8 @@ export function buildDetachedTestRunRequest(opts: {
   timeoutMs?: number;
   /** Run the detached router inside the maintained throwaway-Postgres wrapper. */
   privatePg?: boolean;
+  /** Emit reporter finalization spans for this run only. */
+  reporterStageTrace?: boolean;
   /** Caller-bound recovery retains the original absolute budget and owns a new artifact packet. */
   deadline?: TestRunDeadline;
   /** Mixed-checkout recovery retains a separate reporter sink for each owning root. */
@@ -525,6 +529,7 @@ export function buildDetachedTestRunRequest(opts: {
       ...(opts.harnessSlug !== undefined ? { harnessSlug: opts.harnessSlug } : {}),
       ...(opts.workItemId !== undefined ? { workItemId: opts.workItemId } : {}),
       ...(opts.privatePg ? { privatePg: true } : {}),
+      ...(opts.reporterStageTrace ? { reporterStageTrace: true } : {}),
     };
     return {
       kind: 'vitest', testRunSource: 'local',
@@ -553,6 +558,7 @@ export function buildDetachedTestRunRequest(opts: {
         ...(opts.privatePg ? { PAPERCUSP_TEST_RUNS_DB_URL: resolveTestRunsPgUrl(process.env) } : {}),
         ...(opts.harnessSlug && opts.harnessSlug !== '*' ? { PAPERCUSP_TEST_RUN_HARNESS: opts.harnessSlug } : {}),
         ...(opts.workspaceId && opts.workspaceId !== '*' ? { PAPERCUSP_WORKSPACE_ID: opts.workspaceId } : {}),
+        ...(opts.reporterStageTrace ? { PAPERCUSP_TEST_REPORTER_STAGE_TRACE: '1' } : {}),
       },
     };
   }
@@ -579,6 +585,7 @@ export function buildDetachedTestRunRequest(opts: {
     PAPERCUSP_TEST_FILE_TIMEOUT_MS: String(detachedRecoveryRouterTimeoutMs(opts.timeoutMs)),
     ...(opts.harnessSlug && opts.harnessSlug !== '*' ? { PAPERCUSP_TEST_RUN_HARNESS: opts.harnessSlug } : {}),
     ...(opts.workspaceId && opts.workspaceId !== '*' ? { PAPERCUSP_WORKSPACE_ID: opts.workspaceId } : {}),
+    ...(opts.reporterStageTrace ? { PAPERCUSP_TEST_REPORTER_STAGE_TRACE: '1' } : {}),
   };
   if (opts.privatePg) env.PAPERCUSP_TEST_RUNS_DB_URL = resolveTestRunsPgUrl(process.env);
   const routerArgs = [join(opts.root, 'scripts', 'test-files.mjs'), ...opts.files, '--', ...vitestArgs];
@@ -627,6 +634,8 @@ export function buildDetachedMixedTestRunRequest(opts: {
   workspaceId?: string;
   harnessSlug?: string;
   timeoutMs?: number;
+  /** Emit reporter finalization spans for this run only. */
+  reporterStageTrace?: boolean;
   deadline?: TestRunDeadline;
   /** expensive-verification-loops P-001: the work-item this run verifies, stamped on
    *  the task-ledger row so a long detached run counts as an attempt against it. */
@@ -715,6 +724,7 @@ export function buildDetachedMixedTestRunRequest(opts: {
     PAPERCUSP_TEST_FILE_TIMEOUT_MS: String(detachedRecoveryRouterTimeoutMs(opts.timeoutMs)),
     ...(opts.harnessSlug && opts.harnessSlug !== '*' ? { PAPERCUSP_TEST_RUN_HARNESS: opts.harnessSlug } : {}),
     ...(opts.workspaceId && opts.workspaceId !== '*' ? { PAPERCUSP_WORKSPACE_ID: opts.workspaceId } : {}),
+    ...(opts.reporterStageTrace ? { PAPERCUSP_TEST_REPORTER_STAGE_TRACE: '1' } : {}),
   };
   return {
     kind: 'vitest',
@@ -3625,6 +3635,8 @@ export interface RunTestFilesCoreOptions {
   recoveryTimeoutMs?: number;
   maxFailures?: number;
   testNamePattern?: string;
+  /** Emit reporter finalization spans for this run only. */
+  reporterStageTrace?: boolean;
   signal?: AbortSignal;
   /** Request scope to stamp on the reporter's durable test-run rows. */
   workspaceId?: string;
@@ -3813,6 +3825,7 @@ async function runTestFilesCoreInternal(opts: RunTestFilesCoreOptions, deps: Tes
             ...(opts.workspaceId !== undefined ? { workspaceId: opts.workspaceId } : {}),
             ...(opts.harnessSlug !== undefined ? { harnessSlug: opts.harnessSlug } : {}),
             ...(opts.workItemId !== undefined ? { workItemId: opts.workItemId } : {}),
+            ...(opts.reporterStageTrace ? { reporterStageTrace: true } : {}),
             timeoutMs: recoveryTimeoutMs,
             ...(opts.deadline ? { deadline: opts.deadline } : {}),
           }),
@@ -3957,6 +3970,8 @@ async function runTestFilesCoreInternal(opts: RunTestFilesCoreOptions, deps: Tes
       ...(opts.harnessSlug && opts.harnessSlug !== '*' ? { PAPERCUSP_TEST_RUN_HARNESS: opts.harnessSlug } : {}),
       ...(opts.workspaceId && opts.workspaceId !== '*' ? { PAPERCUSP_WORKSPACE_ID: opts.workspaceId } : {}),
     };
+    if (opts.reporterStageTrace) childEnv.PAPERCUSP_TEST_REPORTER_STAGE_TRACE = '1';
+    else delete childEnv.PAPERCUSP_TEST_REPORTER_STAGE_TRACE;
     Object.assign(childEnv, parkedAuditScorecardEnvironment(childEnv, {
       files: pathResolution.files, actorId: opts.actorId, workspaceId: opts.workspaceId,
     }));
@@ -4185,6 +4200,7 @@ async function runTestFilesCoreInternal(opts: RunTestFilesCoreOptions, deps: Tes
                 ...(detachedHarnessSlug !== undefined ? { harnessSlug: detachedHarnessSlug } : {}),
                 ...(opts.workItemId !== undefined ? { workItemId: opts.workItemId } : {}),
                 ...(opts.privatePg ? { privatePg: true } : {}),
+                ...(opts.reporterStageTrace ? { reporterStageTrace: true } : {}),
                 timeoutMs: recoveryTimeoutMs,
                 ...(opts.deadline ? { deadline: opts.deadline } : {}),
               }),
@@ -4441,6 +4457,9 @@ export default defineTool({
   // verdict. The dedicated capability grant stays inert for every other tool.
   agentRoles: [...AGENT_ROLES, 'judge'],
   args: z.object({
+    securityQualification: securityQualificationSchema.optional().describe(
+      'Authenticated immutable security custody: produce manifest/ledger, independently commit applicability, execute exact files after approval, or verify the same receipt chain. Metadata phases execute no tests. Execute disables timeout replay; receipts alone never certify row coverage or confinement.',
+    ),
     nativeConsult: nativeConsultScenarioSchema.optional().describe(
       'Run one attributed native consult on this operator through the durable consult lifecycle. Requires work_item_id and concrete harness/workspace. Source/backend constraints survive restart and cascade; accepted pending work is not a passed test or native receipt. Mutually exclusive with Vitest/evidence selectors.',
     ),
@@ -4521,6 +4540,9 @@ export default defineTool({
     privatePg: z.boolean().optional().describe(
       'Run tests from one Papercusp router checkout inside scripts/with-test-pg.mjs. Automatically selected for files that call recordIsolatedIntegrationProof when no PAPERCUSP_TEST_PG_ADMIN_URL is set; pass false to opt out. Product PG is disposable; the durable test-ledger sink stays separate.',
     ),
+    reporterStageTrace: z.boolean().optional().describe(
+      'Emit reporter-stage timing spans for this run only. Enables PAPERCUSP_TEST_REPORTER_STAGE_TRACE in its Vitest child and detached recovery; ordinary runs keep the trace disabled.',
+    ),
     taskDeadlineAtMs: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional().describe(
       'Absolute Unix time in milliseconds for this test task, including preparation, admission and owned cleanup. Never extended or replaced by the foreground transport cap. Recovery beyond that cap retains this deadline and cleanup reserve unchanged.',
     ),
@@ -4544,8 +4566,19 @@ export default defineTool({
     const handlerStartedAt = performance.now();
     const handlerStartedAtMs = Date.now();
     const phaseTimingsMs = createTestingRunPhaseTimings();
+    const securitySelectionError = securityQualificationSelectionError(args);
+    if (securitySelectionError) return { data: { ok: false, error: securitySelectionError } };
+    if (args.securityQualification) {
+      const harness = resolveConcreteHarnessSlug(args.harness, ctx);
+      if (!harness || !ctx.workspaceId || ctx.workspaceId === '*') {
+        return { data: { ok: false, error: 'security_qualification_requires_concrete_scope' } };
+      }
+      if (args.securityQualification.phase !== 'execute') {
+        return { data: await securityQualificationMetadata(ctx, harness, args.securityQualification) };
+      }
+    }
     if (args.nativeConsult) {
-      if (['files', 'changedPaths', 'evidence', 'recoverEvidence', 'remeasureEvidence', 'rootHarnessSlug', 'testNamePattern', 'timeoutMs', 'privatePg', 'taskDeadlineAtMs', 'cleanupReserveMs', 'maxFailures', 'recheckReason']
+      if (['files', 'changedPaths', 'evidence', 'recoverEvidence', 'remeasureEvidence', 'rootHarnessSlug', 'testNamePattern', 'timeoutMs', 'privatePg', 'reporterStageTrace', 'taskDeadlineAtMs', 'cleanupReserveMs', 'maxFailures', 'recheckReason']
         .some(key => (args as Record<string, unknown>)[key] !== undefined)) {
         return { data: { ok: false, error: 'mutually_exclusive_selectors' } };
       }
@@ -4602,7 +4635,7 @@ export default defineTool({
       };
     }
     if (args.recoverEvidence) {
-      if (args.files || args.changedPaths || args.evidence || args.remeasureEvidence || args.work_item_id)
+      if (args.files || args.changedPaths || args.evidence || args.remeasureEvidence || args.work_item_id || args.reporterStageTrace)
         return { data: { ok: false, error: 'mutually_exclusive_selectors' } };
       const harnessSlug = resolveConcreteHarnessSlug(args.harness, ctx);
       if (!harnessSlug || !ctx.workspaceId || ctx.workspaceId === '*')
@@ -4709,6 +4742,9 @@ export default defineTool({
       };
     }
     if (args.changedPaths !== undefined) {
+      if (args.reporterStageTrace) {
+        return { data: { ok: false, error: 'reporter_stage_trace_requires_executed_files' } };
+      }
       if (args.work_item_id) {
         return {
           data: {
@@ -4884,7 +4920,7 @@ export default defineTool({
       }
     }
     setTestingRunPhaseDuration(phaseTimingsMs, 'preparationMs', preparationStartedAt);
-    const result = await runTestFilesCore({
+    const runCore = () => runTestFilesCore({
       files,
       runId,
       root: rootSelection.root,
@@ -4897,10 +4933,15 @@ export default defineTool({
       ...(attemptWorkItemId ? { workItemId: attemptWorkItemId } : {}),
       ...(args.maxFailures !== undefined ? { maxFailures: args.maxFailures } : {}),
       ...(args.testNamePattern !== undefined ? { testNamePattern: args.testNamePattern } : {}),
+      ...(args.reporterStageTrace ? { reporterStageTrace: true } : {}),
       ...(args.privatePg !== undefined ? { privatePg: args.privatePg } : {}),
       allowSiblingCheckoutFallback,
       phaseTimings: phaseTimingsMs,
+      ...(args.securityQualification ? { allowDetachedRecovery: false } : {}),
     });
+    const result = args.securityQualification?.phase === 'execute'
+      ? await executeSecurityQualification(ctx, harnessSlug!, args.securityQualification, runCore)
+      : await runCore();
     const ledgerReadbackStartedAt = performance.now();
     const testRunIdsReadback =
       shouldResolveHarnessTestRunIds(result) && ctx.workspaceId && ctx.workspaceId !== '*' && harnessSlug

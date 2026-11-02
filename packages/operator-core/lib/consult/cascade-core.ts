@@ -23,7 +23,7 @@ import { randomUUID } from 'node:crypto';
 import { HARD_BLOCKED_EXPIRY_MS, PROCEED_EXPIRY_MS } from './get-feedback-core';
 import { qualifyingScoreOf, snapshotCandidateQualifies } from './relevance-router';
 import { consultCurrentReviewContext, consultResponderVerbMenu } from './responder-verb-menu';
-import { gradingCascadeMetaFromRouting, gradingCascadeWakeCopy, sourceAuditCascadeMetaFromRouting, sourceAuditWakeCopy } from './grading-cascade';
+import { gradingCascadeMetaFromRouting, gradingCascadeWakeCopy, sourceAuditCascadeMetaFromRouting, sourceAuditWakeCopy, goalTenureGradingMetaFromRouting, goalTenureGradingWakeCopy } from './grading-cascade';
 
 /** Chain events a digest entry can record: the responder reply kinds, plus
  * the non-reply advance triggers.
@@ -241,6 +241,8 @@ export const consultCascadeWakeCopy: CascadeWakeCopyWriter = (ctx) => ({
  * snapshot the advance is already parsing makes that unrepresentable.
  */
 export function cascadeWakeCopyForRouting(routing: unknown): CascadeWakeCopyWriter {
+  const tenure = goalTenureGradingMetaFromRouting(routing);
+  if (tenure) return (ctx) => goalTenureGradingWakeCopy(tenure, ctx.conversationId);
   const audit = sourceAuditCascadeMetaFromRouting(routing);
   if (audit) return (ctx) => sourceAuditWakeCopy(audit, ctx.conversationId);
   const grading = gradingCascadeMetaFromRouting(routing);

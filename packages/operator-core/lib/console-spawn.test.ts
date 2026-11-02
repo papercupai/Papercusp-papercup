@@ -1889,13 +1889,16 @@ describe('buildConsoleOneliner', () => {
   it('reaps dead legacy markers and removes its marker after the login shell exits', () => {
     const dir = mkdtempSync(join(tmpdir(), 'papercup-console-marker-cleanup-'));
     const deadMarker = join(dir, '.papercup-console-active.4294967295');
+    const malformedMarker = join(dir, '.papercup-console-active.$');
     const liveMarker = join(dir, '.papercup-console-active.' + process.pid);
     try {
       writeFileSync(deadMarker, '');
+      writeFileSync(malformedMarker, '');
       writeFileSync(liveMarker, '');
       const out = buildConsoleOneliner(dir, { SHELL: '/bin/true' }, 'true', APPEARANCE);
       execFileSync('bash', ['-c', out], { stdio: 'ignore' });
       expect(existsSync(deadMarker)).toBe(false);
+      expect(existsSync(malformedMarker)).toBe(false);
       expect(existsSync(liveMarker)).toBe(true);
       expect(readdirSync(join(dir, '.papercusp', 'scratch', 'console-active'))).toEqual([]);
     } finally {

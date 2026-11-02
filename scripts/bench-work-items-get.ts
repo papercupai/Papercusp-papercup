@@ -9,7 +9,7 @@
 import { execFile, spawn } from 'node:child_process';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { existsSync, readFileSync, realpathSync } from 'node:fs';
-import { mkdir, open, readFile, readdir, realpath, writeFile } from 'node:fs/promises';
+import { mkdir, open, readFile, readdir, realpath, stat, writeFile, type FileHandle } from 'node:fs/promises';
 import { performance } from 'node:perf_hooks';
 import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -336,6 +336,95 @@ export function identityPreparation(fixture: ReturnType<typeof mcpIdentityFixtur
   };
 }
 
+/** Hash the opened executable, and reject replacement or mutation while reading.
+ * A pathname alone does not identify the bytes a process is executing. Keep the
+ * descriptor open across hashing and compare it with the current proc link.
+ * This is executable evidence only, not complete native-library/import closure.
+ */
+export async function identityExecutableFingerprint(executableLink: string,
+  openExecutable: (path: string) => Promise<FileHandle> = path => open(path, 'r')) {
+  const path = await realpath(executableLink);
+  const file = await openExecutable(executableLink);
+  try {
+    const before = await file.stat({ bigint: true });
+    if (!before.isFile()) throw new Error('executable is not a regular file');
+    const hash = createHash('sha256');
+    let bytes = 0n;
+    for await (const chunk of file.createReadStream({ autoClose: false })) {
+      bytes += BigInt(chunk.length);
+      hash.update(chunk);
+    }
+    const after = await file.stat({ bigint: true });
+    const current = await stat(executableLink, { bigint: true });
+    const keys = ['dev', 'ino', 'mode', 'size', 'mtimeNs', 'ctimeNs'] as const;
+    if (bytes !== before.size || await realpath(executableLink) !== path ||
+        keys.some(key => before[key] !== after[key] || before[key] !== current[key])) {
+      throw new Error('executable changed during snapshot');
+    }
+    return { path, sha256: hash.digest('hex'), bytes: bytes.toString(),
+      dev: before.dev.toString(), ino: before.ino.toString(), mode: before.mode.toString(),
+      mtimeNs: before.mtimeNs.toString(), ctimeNs: before.ctimeNs.toString() };
+  } finally { await file.close(); }
+}
+
+/** File-backed mappings only: anonymous/JIT memory and private modified pages
+ * are not identified by hashing the backing file. Keep those limits explicit.
+ */
+export function identityFileMappings(maps: string) {
+  if (!maps.trim()) throw new Error('process maps unavailable');
+  let end = 0n;
+  return maps.trimEnd().split('\n').flatMap(line => {
+    const row = /^([0-9a-f]+)-([0-9a-f]+) ([r-][w-][x-][ps]) ([0-9a-f]+) ([0-9a-f]+):([0-9a-f]+) ([0-9]+)(?:\s+(.*))?$/.exec(line);
+    if (!row || BigInt(`0x${row[1]}`) < end || BigInt(`0x${row[2]}`) <= BigInt(`0x${row[1]}`))
+      throw new Error('invalid process mapping');
+    end = BigInt(`0x${row[2]}`);
+    const path = row[8] ?? '';
+    const inode = BigInt(row[7]).toString();
+    if (inode === '0' && (!path || path.startsWith('['))) return [];
+    const kernelAnonymous = path === 'anon_inode:[io_uring]';
+    // The kernel's newline encoding is ambiguous with literal backslash digits.
+    // Deleted/unknown backing identities cannot qualify a byte fingerprint.
+    if ((!path.startsWith('/') && !kernelAnonymous) || inode === '0' || path.endsWith(' (deleted)') || /\\[0-7]{3}/.test(path))
+      throw new Error('opaque file-backed process mapping');
+    return [{ range: `${row[1]}-${row[2]}`, permissions: row[3], offset: row[4],
+      major: BigInt(`0x${row[5]}`).toString(), minor: BigInt(`0x${row[6]}`).toString(), inode, path,
+      backing: kernelAnonymous ? 'kernel-anonymous' as const : 'file' as const }];
+  });
+}
+
+/** Use the process's mount namespace and require the opened file to match the
+ * kernel mapping's device/inode. A replaced pathname is never a valid fallback.
+ * Reuse the fd hashing/race guard already used for executable bytes.
+ */
+export async function identityMappedFileFingerprints(pid: number, proc = {
+  maps: () => readFile(`/proc/${pid}/maps`, 'utf8'),
+  start: async () => linuxStartTicksFromProcStat(await readFile(`/proc/${pid}/stat`, 'utf8')),
+  fingerprint: (path: string) => identityExecutableFingerprint(`/proc/${pid}/root${path}`),
+}) {
+  if (!Number.isSafeInteger(pid) || pid < 1) throw new Error('invalid mapped process identity');
+  const startTicks = await proc.start();
+  if (!startTicks || !/^[0-9]+$/.test(startTicks)) throw new Error('invalid mapped process start identity');
+  const mappings = identityFileMappings(await proc.maps());
+  const fileMappings = mappings.filter(row => row.backing === 'file');
+  if (!fileMappings.length) throw new Error('file-backed process mappings unavailable');
+  const files = [];
+  for (const path of [...new Set(fileMappings.map(row => row.path))].sort()) {
+    const fingerprint = await proc.fingerprint(path);
+    const device = BigInt(fingerprint.dev);
+    const major = (((device >> 8n) & 0xfffn) | ((device >> 32n) & 0xfffff000n)).toString();
+    const minor = ((device & 0xffn) | ((device >> 12n) & 0xffffff00n)).toString();
+    if (fileMappings.filter(row => row.path === path).some(row =>
+      row.major !== major || row.minor !== minor || row.inode !== fingerprint.ino))
+      throw new Error('mapped backing file identity differs');
+    files.push({ path, fingerprint });
+  }
+  if (startTicks !== await proc.start() ||
+      JSON.stringify(mappings) !== JSON.stringify(identityFileMappings(await proc.maps())))
+    throw new Error('process mappings changed during snapshot');
+  return { scope: 'observed-file-backed-mapping-bytes' as const, startTicks, mappings, files,
+    notCovered: ['anonymous-and-jit-memory', 'kernel-anonymous-io-uring-buffers', 'modified-private-pages', 'unobserved-dynamic-imports'] };
+}
+
 /** Real process census and loaded health identity; never retain raw credentials/environment. */
 export async function captureIdentityEnvironment(fixture: ReturnType<typeof mcpIdentityFixture>,
   runtime: IdentityRuntime = { kind: 'staging', origin: 'http://127.0.0.1:3170' }): Promise<PerfWorkloadManifest> {
@@ -363,9 +452,10 @@ export async function captureIdentityEnvironment(fixture: ReturnType<typeof mcpI
     if (!before || !/^[0-9]+$/.test(before)) throw new Error('invalid process start identity');
     const environmentHash = createHash('sha256').update(await readFile(`/proc/${pid}/environ`)).digest('hex');
     const cwd = await realpath(`/proc/${pid}/cwd`);
-    const executable = await realpath(`/proc/${pid}/exe`);
+    const executableFingerprint = await identityExecutableFingerprint(`/proc/${pid}/exe`);
+    const mappedFiles = await identityMappedFileFingerprints(pid);
     if (before !== linuxStartTicksFromProcStat(await stat())) throw new Error('process changed during snapshot');
-    return { pid, startTicks: before, environmentHash, cwd, executable };
+    return { pid, startTicks: before, environmentHash, cwd, executable: executableFingerprint.path, executableFingerprint, mappedFiles };
   }));
   if (JSON.stringify(pids) !== JSON.stringify(await census())) throw new Error('staging census changed during snapshot');
   let bundle: Record<string, unknown> = {};

@@ -1,11 +1,12 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createHash } from 'node:crypto';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { freezeMinecraftTrial } from './minecraft-protocol';
-import { startMinecraftRuntime, type MinecraftRuntime } from './minecraft-runtime';
+import { freezeMinecraftWorldBaseline, readMinecraftInitialWorld, startMinecraftRuntime, type MinecraftRuntime } from './minecraft-runtime';
+import { readRestoredBenchmarkContext, restoreBenchmarkContext, type BenchmarkContextInput } from './reproducibility/context';
 import { collectMinecraftEvidence, exportMinecraftEvidence, gradeMinecraftEvidence,
   readMinecraftEvidenceExport } from './minecraft-evidence';
 import { liveProcExec } from './grader/index';
@@ -46,6 +47,50 @@ function trial(suffix: string) {
     limits: { maxWallClockMs: 240_000, maxProgramMs: 10_000, maxUsd: 1 } });
 }
 describe('real Minecraft/Mineflayer isolation and cancellation (scripted, no model use)', () => {
+  it('resets the real saved world and permitted memory after a completed trial is contaminated', async () => {
+    const frozenTrial = trial('reset');
+    const preparation = await startMinecraftRuntime({ trial: frozenTrial, serverJar: jar, botImage,
+      acceptEula: true, readyTimeoutMs: 180_000 }); runtimes.push(preparation);
+    const baseline = await freezeMinecraftWorldBaseline(preparation);
+    try {
+      const snapshotRoot = join(root, 'reset-context'); await mkdir(snapshotRoot);
+      const corpus = JSON.stringify({ entries: [{ key: 'public:objective', text: 'Obtain iron tools.' }] });
+      const memory = JSON.stringify({ entries: [{ key: 'memory:permitted', text: 'Fresh permitted initial memory.' }] });
+      const sha = (text: string) => createHash('sha256').update(text).digest('hex');
+      await writeFile(join(snapshotRoot, 'corpus.json'), corpus); await writeFile(join(snapshotRoot, 'memory.json'), memory);
+      const context: BenchmarkContextInput['context'] = { corpusRef: 'corpus.json', memoryRef: 'memory.json',
+        corpusHash: sha(corpus), memoryHash: sha(memory), isolation: 'fresh-per-assignment',
+        forbiddenSources: ['other-arm-solutions', 'hidden-grader-answers'] };
+      const restoreMemory = async (ordinal: number) => {
+        const checkout = join(root, `reset-assignment-${ordinal}`); await mkdir(checkout);
+        const input: BenchmarkContextInput = { checkout, snapshotRoot, context,
+          binding: { workspaceId: 'minecraft-reset', runId: frozenTrial.protocol.runId, preregHash: 'a'.repeat(64),
+            assignmentId: `bench-assignment:reset-${ordinal}`, harnessSlug: `xbench-reset-${ordinal}` } };
+        return { input, receipt: restoreBenchmarkContext(input) };
+      };
+      const firstMemory = await restoreMemory(1);
+      const first = await startMinecraftRuntime({ trial: frozenTrial, serverJar: jar, botImage,
+        acceptEula: true, readyTimeoutMs: 180_000, worldBaseline: baseline }); runtimes.push(first);
+      const initialWorld = readMinecraftInitialWorld(first);
+      expect((await first.execute('alice', 'return await bot.position()')).ok).toBe(true);
+      const stopped = await first.stop();
+      expect(stopped).toMatchObject({ removed: true, errors: [] });
+      // Change the COMPLETED assignment only, including its actual saved world.
+      await writeFile(join(stopped.evidenceDir, 'world', 'level.dat'), 'EARLIER_TRIAL_WORLD');
+      await writeFile(firstMemory.receipt.memoryPath, 'EARLIER_TRIAL_MEMORY');
+      expect(() => readRestoredBenchmarkContext(firstMemory.input)).toThrow(/bytes differ/);
+      const secondMemory = await restoreMemory(2);
+      const second = await startMinecraftRuntime({ trial: frozenTrial, serverJar: jar, botImage,
+        acceptEula: true, readyTimeoutMs: 180_000, worldBaseline: baseline }); runtimes.push(second);
+      expect(readMinecraftInitialWorld(second)).toEqual(initialWorld);
+      expect(initialWorld.worldSha256).toBe(baseline.worldSha256);
+      expect(readRestoredBenchmarkContext(secondMemory.input).memoryHash).toBe(sha(memory));
+      expect(await readFile(secondMemory.receipt.memoryPath, 'utf8')).toBe(memory);
+      expect(secondMemory.receipt.contextText).not.toContain('EARLIER_TRIAL');
+      expect(await second.execute('alice', 'return await bot.inventory()')).toEqual({ ok: true, value: [] });
+      expect(await second.stop()).toMatchObject({ removed: true, errors: [] });
+    } finally { await baseline.dispose(); }
+  }, 600_000);
   it('connects an enrolled bot, enforces RPC permissions and host isolation, then cancels an active program with verified cleanup', async () => {
     const controller = new AbortController();
     const runtime = await startMinecraftRuntime({ trial: trial('connect'), serverJar: jar, botImage,

@@ -88,6 +88,7 @@ import {
   PTOOL_PLANS_GET_TIMEOUT_MS,
   PTOOL_PLANS_NEW_TIMEOUT_MS,
   PTOOL_PLANS_START_TIMEOUT_MS,
+  PTOOL_PLAN_STATUS_TIMEOUT_MS,
   PTOOL_REQUIRE_CHECKPOINT_TIMEOUT_MS,
   PTOOL_REPAIR_QUEUE_PREVIEW_TIMEOUT_MS,
   PTOOL_SESSION_REQUEST_COMPACTION_TIMEOUT_MS,
@@ -1735,7 +1736,12 @@ describe('ptool call deadlines', () => {
     expect(PTOOL_PLANS_START_TIMEOUT_MS).toBe(130_000);
     expect(PTOOL_PLANS_START_TIMEOUT_MS).toBeGreaterThan(125_000);
     expect(PTOOL_PLANS_NEW_TIMEOUT_MS).toBeGreaterThan(PTOOL_CALL_TOOL_TIMEOUT_MS);
-    expect(timeoutForTool('plans:set-plan-status')).toBe(60_000);
+    expect(timeoutForTool('plans:set-plan-status')).toBe(PTOOL_PLAN_STATUS_TIMEOUT_MS);
+    expect(timeoutForTool('tools:invoke', {
+      name: 'plans:set-plan-status',
+      args: { slug: 'plan-a', status: 'shipped', dryRun: true },
+    })).toBe(PTOOL_PLAN_STATUS_TIMEOUT_MS);
+    expect(PTOOL_PLAN_STATUS_TIMEOUT_MS).toBeGreaterThan(905_000);
     expect(timeoutForTool('work_items:get')).toBe(PTOOL_WORK_ITEMS_GET_TIMEOUT_MS);
     // EI-23211866726609651: scorecards:get can exceed the ordinary 30s client
     // cutoff while reading an oversized evidence index; the same budget must
@@ -1946,7 +1952,7 @@ describe('ptool call deadlines', () => {
     expect(timeoutForTool('tools:invoke', {
       name: 'plans:set-plan-status',
       args: { slug: 'some-plan', status: 'shipped', expectedCurrent: 'ready' },
-    })).toBe(60_000);
+    })).toBe(PTOOL_PLAN_STATUS_TIMEOUT_MS);
     expect(timeoutForTool('tools:invoke', {
       name: 'coord:orient',
       args: {},
@@ -2765,13 +2771,34 @@ describe('ptool keyed result recovery without concurrent replay', () => {
     expect(isTransportFailure(new Error('tool failed after dispatch'))).toBe(false);
   });
 
-  it.each(['docs:search', 'tools:invoke'])('delivers a valid docs search after 35 seconds through %s without replay', async (route) => {
+  it.each([
+    ['docs:search', 'docs:search'],
+    ['docs:search', 'tools:invoke'],
+    ['plans:evaluate-spec-quality', 'plans:evaluate-spec-quality'],
+    ['plans:evaluate-spec-quality', 'tools:invoke'],
+    ['scorecards:evaluate', 'scorecards:evaluate'],
+    ['scorecards:evaluate', 'tools:invoke'],
+    ['rubrics:get', 'rubrics:get'],
+    ['rubrics:get', 'tools:invoke'],
+    ['facts:list', 'facts:list'],
+    ['facts:list', 'tools:invoke'],
+    ['conversations:get', 'conversations:get'],
+    ['conversations:get', 'tools:invoke'],
+  ])('delivers a valid %s after 35 seconds through %s without replay', async (toolName, route) => {
     vi.useFakeTimers();
     try {
-      const searchArgs = { query: 'disk consumer census', harness: 'engineering', limit: 3, semantic: false };
-      const args = route === 'tools:invoke' ? { name: 'docs:search', args: searchArgs } : searchArgs;
-      const params = buildCallToolParams(route, args, { idempotencyKey: 'docs-search-delayed' });
-      const result = { content: [{ type: 'text', text: 'retained keyword result' }] };
+      const inputs: Record<string, Record<string, unknown>> = {
+        'docs:search': { query: 'disk consumer census', harness: 'engineering', limit: 3, semantic: false },
+        'plans:evaluate-spec-quality': { slug: 'quality-plan', harness: 'engineering' },
+        'scorecards:evaluate': { rubricRef: 'papercusp-app-performance', eligibilityOnly: true },
+        'rubrics:get': { rubricRef: 'papercusp-app-performance' },
+        'facts:list': { scope: 'workspace' },
+        'conversations:get': { id: 'conversation-1' },
+      };
+      const toolArgs = inputs[toolName];
+      const args = route === 'tools:invoke' ? { name: toolName, args: toolArgs } : toolArgs;
+      const params = buildCallToolParams(route, args, { idempotencyKey: 'bounded-read-delayed' });
+      const result = { content: [{ type: 'text', text: 'retained structured result' }] };
       const delayedClient = () => ({
         callTool: vi.fn((_params: unknown, _schema: unknown, options: { timeout: number; maxTotalTimeout: number }) =>
           new Promise((resolve, reject) => {

@@ -39,8 +39,9 @@ vi.mock('@papercusp/db-org', async (orig) => {
   const actual = await vi.importActual<typeof import('@papercusp/db-org')>('@papercusp/db-org');
   return { ...(await orig<typeof import('@papercusp/db-org')>()), ...actual, getOrgPg: () => ({ sql: h.sql }) };
 });
-// getWorkItem returns a stub for any id (null for ids starting 'missing'); the
-// other work-items exports are convert-only — stubbed so the import resolves.
+// Partially import work-items so static dependencies added to this runtime graph keep resolving;
+// override the conversion reads/writes whose behavior this real-PG fixture controls.
+// getWorkItem returns a stub for any id (null for ids starting 'missing').
 // ISSUE_FAMILY_KINDS must be the REAL value (not a stub array) — findConvertedWorkItemByStamp
 // binds it into a `= ANY(...)` SQL filter against a real Postgres, so a wrong/missing value
 // silently changes which rows match rather than throwing.
@@ -49,14 +50,25 @@ vi.mock('@papercusp/db-org', async (orig) => {
 // one, so the stub's state is load-bearing. `wiState.states` overrides it per id; the
 // default stays 'open' so every test written before this distinction existed is unaffected.
 const wiState = vi.hoisted(() => ({ states: {} as Record<string, string> }));
-vi.mock('../work-items', () => ({
-  getWorkItem: (id: string, harness?: string) =>
-    id.startsWith('missing') ? null : { id, harness: harness ?? null, state: wiState.states[id] ?? 'open' },
-  ISSUE_FAMILY_KINDS: ['bug', 'change', 'task'],
-  createWorkItem: vi.fn(), claimWorkItem: vi.fn(), releaseWorkItem: vi.fn(), linkWorkItem: vi.fn(),
-  isWorkItemKind: () => true,
-  isClaimHoldParked: () => false,
-}));
+vi.mock('../work-items', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../work-items')>();
+  return {
+    ...actual,
+    getWorkItem: (id: string, harness?: string) =>
+      id.startsWith('missing') ? null : { id, harness: harness ?? null, state: wiState.states[id] ?? 'open' },
+    getWorkItemDetail: vi.fn().mockResolvedValue(null),
+    createWorkItem: vi.fn(),
+    claimWorkItem: vi.fn(),
+    releaseWorkItem: vi.fn(),
+    linkWorkItem: vi.fn(),
+    updateWorkItem: vi.fn(async (id: string, patch: Record<string, unknown>, _owner?: string, opts?: { harness?: string }) => ({
+      ok: true,
+      item: { id, harness: opts?.harness ?? null, state: wiState.states[id] ?? 'open', ...patch },
+    })),
+    isWorkItemKind: () => true,
+    isClaimHoldParked: () => false,
+  };
+});
 vi.mock('../agent-tools/plans/source', () => ({ readPlanBySlug: vi.fn() }));
 // The dynamic half of the split implements-link plane. Controlled here so the union
 // default is deterministic — with a real coordScopeWorkspace() the two scopes can
@@ -108,6 +120,10 @@ beforeAll(async () => {
   await applyPlanItemAnchorMigrationsForTest(rootSql);
   await applyMigrationForTest(rootSql, fileURLToPath(new URL(
     '../../../../libs/papercusp/libs/db/sql/832-plan-audits.sql', import.meta.url,
+  )));
+  // The draft item-start gate reads the activation audit payload from plan_audits.
+  await applyMigrationForTest(rootSql, fileURLToPath(new URL(
+    '../../../../libs/papercusp/libs/db/sql/938-plan-activation-audits.sql', import.meta.url,
   )));
   // WI-6993 / EI-19342686955096692 / migration 725: the shared fixture DDL deliberately
   // omits check constraints (see _work-items-schema.ts's doc comment — "add it in the

@@ -59,12 +59,21 @@ async function removeUnpinnedScratchPath(
   path: string,
   dryRun = false,
   onRmAsync?: (elapsedMs: number) => void,
+  onUnreclaimable?: (code: string) => void,
 ): Promise<boolean> {
   return withUnpinnedPath(path, async () => {
     if (!dryRun) {
       const startedAt = performance.now();
       try {
         await rmAsync(path, { recursive: true, force: true });
+      } catch (error) {
+        const code = scratchFsErrorCode(error);
+        if (code === 'EACCES' || code === 'EPERM' || code === 'EROFS') {
+          if (!onUnreclaimable) throw error;
+          onUnreclaimable(code);
+          return false;
+        }
+        throw error;
       } finally {
         onRmAsync?.(Math.max(0, performance.now() - startedAt));
       }
@@ -177,7 +186,12 @@ function sharedScratchQuotaStatePath(workspaceId: string): string {
   return path;
 }
 
-function withScratchWorkspaceMutex<T>(
+async function ensureScratchQuotaStateParent(workspaceId: string): Promise<void> {
+  const parent = dirname(sharedScratchQuotaStatePath(workspaceId));
+  await mkdirAsync(parent, { recursive: true, mode: 0o700 });
+}
+
+async function withScratchWorkspaceMutex<T>(
   workspaceId: string,
   operation: string,
   run: () => Promise<T>,
@@ -197,6 +211,9 @@ function withScratchWorkspaceMutex<T>(
     admissionSubphaseTimingsMs?: Record<string, number>;
   }) => void,
 ): Promise<T> {
+  // Directory creation is idempotent but can touch the filesystem. Prepare it before
+  // joining the serialized quota-mutex queue so that work is not charged to lock holders.
+  await ensureScratchQuotaStateParent(workspaceId);
   const mutexName = scratchWorkspaceMutexName(workspaceId);
   const intent = {
     subsystem: 'scratch-quota',
@@ -495,11 +512,9 @@ async function writeSharedScratchQuotaState(
   currentState?: SharedScratchQuotaState | null,
 ): Promise<number> {
   const path = sharedScratchQuotaStatePath(workspaceId);
-  const parent = dirname(path);
   const publishAwait = <T>(subphase: string, operation: () => Promise<T>) => observeAwait
     ? observeAwait('quota-state-publish', subphase, operation)
     : operation();
-  await publishAwait('ensure-parent', () => mkdirAsync(parent, { recursive: true, mode: 0o700 }));
   // Reservation callers already read this state while holding the same workspace mutex.
   // Reuse that validated snapshot instead of reading the shared file twice in one critical
   // section. Other callers pass no snapshot and read the latest revision under the mutex.
@@ -669,7 +684,12 @@ async function isProvenWorkspaceScratchRoot(dir: string, name: string): Promise<
 }
 
 /** Why a provably-dead workspace root was kept this sweep. */
-export type DeadWorkspaceDeferral = 'recent-write' | 'open-writer' | 'process-scan-incomplete' | 'retention-pin';
+export type DeadWorkspaceDeferral =
+  | 'recent-write'
+  | 'open-writer'
+  | 'process-scan-incomplete'
+  | 'retention-pin'
+  | 'unreclaimable';
 
 /** Default open-writer scan: descendants + cwd, fail-closed, deadline-bounded (as fleet-logs-gc). */
 function defaultScanOpenPaths(paths: readonly string[]): Promise<OpenWriterScan> {
@@ -735,6 +755,13 @@ export interface ScratchGcSummary {
   unprovenEntries: number;
   /** Provably-dead workspace roots this sweep kept, and why. */
   deadWorkspacesDeferred: Array<{ workspaceId: string; reason: DeadWorkspaceDeferral }>;
+  /** Protected filesystem paths retained after permission-denied removal attempts. */
+  unreclaimablePaths: Array<{
+    workspaceId: string;
+    path: string;
+    phase: 'retention' | 'dead-workspace';
+    errorCode: string;
+  }>;
   /** The caller's wall-time budget expired before the full sweep completed. */
   truncated?: boolean;
 }
@@ -781,6 +808,7 @@ export async function runScratchGc(opts: {
     markersWritten: 0,
     unprovenEntries: 0,
     deadWorkspacesDeferred: [],
+    unreclaimablePaths: [],
   };
 
   const registrySet = new Set(opts.workspaceRegistry);
@@ -820,7 +848,14 @@ export async function runScratchGc(opts: {
           return false;
         }
         if (!current.isDirectory() || now - current.mtimeMs <= retentionMs) return false;
-        return removeUnpinnedScratchPath(candidate.dir);
+        return removeUnpinnedScratchPath(candidate.dir, false, undefined, (errorCode) => {
+          summary.unreclaimablePaths.push({
+            workspaceId,
+            path: candidate.dir,
+            phase: 'retention',
+            errorCode,
+          });
+        });
       }));
       if (!evicted) continue;
       removed = true;
@@ -922,8 +957,21 @@ export async function runScratchGc(opts: {
           summary.deadWorkspacesDeferred.push({ workspaceId: c.workspaceId, reason: 'recent-write' });
           return;
         }
-        if (!(await removeUnpinnedScratchPath(c.dir))) {
-          summary.deadWorkspacesDeferred.push({ workspaceId: c.workspaceId, reason: 'retention-pin' });
+        const unreclaimableCount = summary.unreclaimablePaths.length;
+        if (!(await removeUnpinnedScratchPath(c.dir, false, undefined, (errorCode) => {
+          summary.unreclaimablePaths.push({
+            workspaceId: c.workspaceId,
+            path: c.dir,
+            phase: 'dead-workspace',
+            errorCode,
+          });
+        }))) {
+          summary.deadWorkspacesDeferred.push({
+            workspaceId: c.workspaceId,
+            reason: summary.unreclaimablePaths.length > unreclaimableCount
+              ? 'unreclaimable'
+              : 'retention-pin',
+          });
           return;
         }
         await removeSharedScratchQuotaState(c.workspaceId);

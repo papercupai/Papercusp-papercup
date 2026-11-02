@@ -24,6 +24,7 @@
  */
 
 import { defineTool } from '@papercusp/agent-mcp';
+import { withPriorityOrgPg } from '@papercusp/db-org';
 import { tagTurnForInjection } from '../../../turn-provenance/turn-provenance';
 import { checkPlanExecutionGuard } from '../../../agent-tools/plans/plan-execution-guard';
 import {
@@ -102,11 +103,23 @@ export function guardRefusalText(verdict: GuardVerdict): string {
 export async function toolGuardText(
   input: { ownerId: string; workspaceId: string; call: PendingToolCall },
   readWornRules: (ownerId: string, workspaceId: string) => Promise<WornSyncRules | null> = readAppliedWornRules,
+  recordTiming?: (phase: 'plan' | 'identity', durationMs: number) => void,
 ): Promise<string> {
-  const refused = await checkPlanExecutionGuard({ ownerId: input.ownerId, workspaceId: input.workspaceId,
-    toolName: input.call.tool, args: input.call.input });
+  const planStartedAt = performance.now();
+  let refused;
+  try {
+    refused = await checkPlanExecutionGuard({ ownerId: input.ownerId, workspaceId: input.workspaceId,
+      toolName: input.call.tool, args: input.call.input });
+  } finally {
+    recordTiming?.('plan', performance.now() - planStartedAt);
+  }
   if (refused) return `${refused.code}: ${refused.reason}`;
-  return guardRefusalText(await evaluateToolGuard(input.call, () => readWornRules(input.ownerId, input.workspaceId)));
+  const identityStartedAt = performance.now();
+  try {
+    return guardRefusalText(await evaluateToolGuard(input.call, () => readWornRules(input.ownerId, input.workspaceId)));
+  } finally {
+    recordTiming?.('identity', performance.now() - identityStartedAt);
+  }
 }
 
 /**
@@ -133,21 +146,41 @@ const toolGuard = defineTool({
   path: '/agent-mcp/tool-guard',
   auth: 'loopback',
   async handler(req) {
+    const startedAt = performance.now();
     const body = await readBody(req);
     const ownerId = (body?.owner ?? '').trim();
     const tool = typeof body?.tool === 'string' ? body.tool : '';
     if (!body || !ownerId || !tool) return empty();
-    const text = await toolGuardText({
-      ownerId,
-      workspaceId: await resolveWorkspace(body),
-      call: {
-        tool,
-        input: body.inputTruncated === true ? null : body.input ?? null,
-        client: typeof body.client === 'string' ? body.client : '',
-        ...(body.inputTruncated === true ? { inputTruncated: true } : {}),
-      },
-    });
-    return Response.json({ ok: true, text });
+    const phases: Partial<Record<'plan' | 'identity', number>> = {};
+    const workspaceId = await resolveWorkspace(body);
+    const setupMs = performance.now() - startedAt;
+    let text;
+    try {
+      text = await withPriorityOrgPg(() => toolGuardText({
+        ownerId,
+        workspaceId,
+        call: {
+          tool,
+          input: body.inputTruncated === true ? null : body.input ?? null,
+          client: typeof body.client === 'string' ? body.client : '',
+          ...(body.inputTruncated === true ? { inputTruncated: true } : {}),
+        },
+      }, readAppliedWornRules, (phase, durationMs) => { phases[phase] = durationMs; }));
+    } finally {
+      const totalMs = performance.now() - startedAt;
+      // Keep attribution after the client has aborted too. No tool inputs, plan
+      // content or refusal text belongs in this timing-only diagnostic.
+      if (totalMs >= 500) console.warn('[tool-guard-timing]', JSON.stringify({
+        totalMs: Math.round(totalMs), setupMs: Math.round(setupMs),
+        planMs: phases.plan === undefined ? null : Math.round(phases.plan),
+        identityMs: phases.identity === undefined ? null : Math.round(phases.identity),
+        aborted: req.signal.aborted,
+      }));
+    }
+    const timings = { guard: performance.now() - startedAt, setup: setupMs, ...phases };
+    return Response.json({ ok: true, text }, { headers: {
+      'Server-Timing': Object.entries(timings).map(([phase, duration]) => `${phase};dur=${duration.toFixed(1)}`).join(', '),
+    } });
   },
 });
 

@@ -8,7 +8,7 @@
  * These tests drive the real CLI against a throwaway git repo.
  */
 import { execFileSync, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -16,6 +16,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import { buildSync } from 'esbuild';
 import { makeBgCompilerCandidate, BG_R1_BUILDER_CASES, BG_R1_PARENT_SELECTORS } from '../../../packages/operator-core/lib/source-preview.fixture';
 import { prepareBgVerifierBuildRecord, verifyBgVerifierBuildRecord } from '../../../scripts/source-preview.mjs';
+import { verifierResourceInventory } from '../../../packages/operator-core/lib/verifier-source';
 
 // Overridable so scripts/mutation-probe.sh can point the suite at a mutated COPY.
 const HELPER_SOURCE =
@@ -73,6 +74,48 @@ beforeEach(() => {
 
 afterEach(() => {
   rmSync(repo, { recursive: true, force: true });
+});
+
+it('BG-TEARDOWN-RECONCILE preserves source compiler and boot evidence during cleanup', async () => {
+  expect(run('stamp').status).toBe(0);
+  const privateRoot = mkdtempSync(join(tmpdir(), 'bg-cleanup-evidence-'));
+  try {
+    const candidate = join(privateRoot, 'candidate'); mkdirSync(candidate);
+    const retained = [join(repo, 'entry.ts'), join(repo, 'node_modules/.package-lock.json'),
+      join(outdir, '.bundle-fresh.json'), join(outdir, 'hono-host.mjs')];
+    for (const name of ['active', 'rollback', 'peer']) {
+      const path = join(privateRoot, name); writeFileSync(path, `original ${name} sentinel`); retained.push(path);
+    }
+    const before = retained.map(path => ({ path, bytes: readFileSync(path), identity: statSync(path) }));
+    const custody = { source: retained[0], compilerInputs: retained[1], bootEvidence: retained[2] };
+    const ledger = verifierResourceInventory({ path: join(privateRoot, 'cleanup.jsonl'),
+      owner: 'bundle-cleanup-fixture', custody, deadlineEpochMs: 200, now: () => 100 });
+    ledger.record({ id: 'candidate', kind: 'root', path: candidate });
+    before.forEach(({ path }, i) => ledger.record({ id: `retained:${i}`, kind: 'binding', path,
+      retain: 'original source/compiler/boot evidence or active/rollback/peer sentinel' }));
+    const prefix = readFileSync(join(privateRoot, 'cleanup.jsonl'), 'utf8');
+    rmSync(candidate, { recursive: true });
+    const terminal = await ledger.reconcile({ outcome: 'success', custody });
+    expect(terminal).toMatchObject({ sealed: true, status: 'completed', deadlineExceeded: false, survivors: [] });
+    expect(terminal.observations.filter(row => row.state === 'retained')).toHaveLength(before.length);
+    for (const { path, bytes, identity } of before) {
+      expect(readFileSync(path)).toEqual(bytes);
+      expect(statSync(path)).toMatchObject({ dev: identity.dev, ino: identity.ino });
+    }
+    expect(readFileSync(join(privateRoot, 'cleanup.jsonl'), 'utf8').startsWith(prefix)).toBe(true);
+    expect(run('check').status).toBe(0);
+    const negative = verifierResourceInventory({ path: join(privateRoot, 'unsettled.jsonl'),
+      owner: 'bundle-cleanup-fixture', custody, deadlineEpochMs: 200, now: () => 100 });
+    negative.record({ id: 'original-boot-evidence', kind: 'binding', path: retained[2]!, retain: 'original boot evidence' });
+    const unchanged = readFileSync(join(privateRoot, 'unsettled.jsonl'));
+    writeFileSync(retained[2]!, 'replaced boot evidence');
+    await expect(negative.reconcile({ outcome: 'success', custody })).rejects.toThrow('retained inventory resource changed');
+    expect(readFileSync(join(privateRoot, 'unsettled.jsonl'))).toEqual(unchanged);
+    expect(run('check').status).not.toBe(0);
+    writeFileSync(retained[2]!, before[2]!.bytes);
+    expect(await negative.reconcile({ outcome: 'success', custody })).toMatchObject({ sealed: true, status: 'completed' });
+    expect(run('check').status).toBe(0);
+  } finally { rmSync(privateRoot, { recursive: true, force: true }); }
 });
 
 describe('BG original builder identity', () => {

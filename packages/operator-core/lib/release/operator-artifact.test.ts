@@ -9,6 +9,7 @@ import { measureBootOperatorArtifact as measureArtifact, operatorArtifactSource,
 import { BG_INPUTS, makeBgCompilerCandidate, BG_R1_PARENT_CASES, BG_R1_PARENT_SELECTORS,
   BG_R1_COMPILER_CASES, BG_R1_COMPILER_POSITIVE_CASE } from '../source-preview.fixture';
 import { captureVerifierDependencies, createBgVerifierCompilerCustody, verifyBgVerifierSource } from '../../../../scripts/source-preview.mjs';
+import { verifierResourceInventory } from '../verifier-source';
 
 // Fixtures represent files written before a fresh child would be launched.
 const measureBootOperatorArtifact = (entry: string, sha: string | null) => measureArtifact(entry, sha, Date.now() + 1000);
@@ -40,6 +41,35 @@ function fixture() {
 }
 
 describe('operator release artifact provenance', () => {
+  it('BG-TEARDOWN-RECONCILE refuses terminal sealing with owned survivors', async () => {
+    for (const outcome of ['success', 'failure', 'cancellation', 'timeout', 'interruption-recovery'] as const) {
+      const f = fixture();
+      const manifest = f.manifest();
+      const original = readFileSync(manifest);
+      const candidate = join(f.root, 'private-candidate');
+      const binding = join(f.root, 'private-binding');
+      mkdirSync(candidate); symlinkSync(candidate, binding);
+      const custody = { originalEvidence: manifest, owner: 'artifact-cleanup-fixture' };
+      const ledger = verifierResourceInventory({ path: join(f.root, 'cleanup.jsonl'),
+        owner: custody.owner, custody, deadlineEpochMs: 200, now: () => 100 });
+      ledger.record({ id: 'candidate', kind: 'root', path: candidate });
+      ledger.record({ id: 'binding', kind: 'binding', path: binding });
+      ledger.record({ id: 'original-evidence', kind: 'binding', path: manifest, retain: 'original boot evidence' });
+      const pending = await ledger.reconcile({ outcome, custody });
+      expect(pending).toMatchObject({ sealed: false, status: 'incomplete', survivors: ['candidate', 'binding'] });
+      const prefix = readFileSync(join(f.root, 'cleanup.jsonl'), 'utf8');
+      rmSync(candidate, { recursive: true });
+      // A dangling temporary binding remains owned even after its target exits.
+      expect(await ledger.reconcile({ outcome, custody })).toMatchObject({ sealed: false, survivors: ['binding'] });
+      rmSync(binding);
+      expect(await ledger.reconcile({ outcome, custody })).toMatchObject({ sealed: true, survivors: [],
+        deadlineExceeded: false, status: outcome === 'success' ? 'completed' : 'failed' });
+      expect(readFileSync(join(f.root, 'cleanup.jsonl'), 'utf8').startsWith(prefix)).toBe(true);
+      expect(readFileSync(manifest)).toEqual(original);
+      expect(measureBootOperatorArtifact(f.entry, f.sourceSha).status).toBe('measured');
+    }
+  });
+
   it('binds source blobs to real built bytes and measures the boot entry independently', () => {
     const f = fixture(); const written = f.write();
     expect(written).toMatchObject({ status: 'measured', sourceSha: f.sourceSha, sourceBlobs: { [f.rel]: f.sourceBlob } });

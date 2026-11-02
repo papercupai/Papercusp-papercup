@@ -157,6 +157,21 @@ const dbosHistoryCeilingCheck: PeriodicCheck = {
 // A warning is one line per sampling interval while persistence stays broken;
 // the ordinary 30-second health tick must not flood the journal.
 const perfSnapshotWarningAt = new Map<string, number>();
+/** A shared timer grants no workspace permission. Recheck before each workspace's effects. */
+async function workspaceSweepAllowed(name: string, workspaceId: string): Promise<boolean> {
+  try {
+    const [{ workspaceBackgroundActivityAllowed }, { startupActivityFeatureId }, { operatorHomeHarnessSlug }] = await Promise.all([
+      import('../device-operator-actions'), import('../schedule-inventory'), import('../harness/operator-home-harness'),
+    ]);
+    // Same identity as seedInProcessSweepRoutines and its inventory row, including after re-arm.
+    const featureId = startupActivityFeatureId({ source: 'routines', installSlug: operatorHomeHarnessSlug(), name, detail: {} }, { workspaceId });
+    return await workspaceBackgroundActivityAllowed(workspaceId, featureId);
+  } catch {
+    console.warn('[in-process-periodic] optional workspace effect withheld: policy unavailable');
+    return false;
+  }
+}
+
 function warnPerfSnapshot(workspaceId: string, message: string): void {
   const now = Date.now();
   const prior = perfSnapshotWarningAt.get(workspaceId);
@@ -187,6 +202,7 @@ const systemHealthCheck: PeriodicCheck = {
     const { readRegistry } = await import('../workspace-registry');
     const { runSystemHealthTick } = await import('../system-health');
     for (const ws of readRegistry().workspaces.map((w) => w.id)) {
+      if (!await workspaceSweepAllowed('system-health', ws)) continue;
       await runSystemHealthTick(ws).catch((e) => {
         console.warn(`[system-health] tick failed for ${ws}: ${e instanceof Error ? e.message : e}`);
       });
@@ -1484,6 +1500,7 @@ const scorecardEmissionPulseCheck: PeriodicCheck = {
       '../scorecard-emission-pulse'
     );
     for (const ws of readRegistry().workspaces.map((w) => w.id)) {
+      if (!await workspaceSweepAllowed('scorecard-emission-pulse', ws)) continue;
       const r = await runScorecardEmissionPulse({ workspaceId: ws });
       if (r.outcome === 'filed') {
         console.warn(`[scorecard-emission-pulse] ${ws}: ${r.reason}`);

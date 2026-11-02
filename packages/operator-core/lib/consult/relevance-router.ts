@@ -312,6 +312,7 @@ export interface RoutingSnapshot {
   /** Consumer copy persists so generic decline/expiry/revival keeps its subject. */
   cascade?:
     | import('./grading-cascade').SourceAuditCascadeMeta
+    | import('./grading-cascade').GoalTenureGradingCascadeMeta
     | import('./grading-cascade').GradingCascadeMeta
     | import('./decision-review').DecisionReviewCascadeMeta;
 }

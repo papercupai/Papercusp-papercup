@@ -100,12 +100,16 @@ export async function runSyncWithAsyncExec<T>(
  * Async exec with `spawnSync`-compatible result semantics: `status` is the exit code, or null
  * when the child was killed (timeout) or never started (ENOENT). Never rejects.
  */
-export function execFileResult(cmd: string, args: string[], options: { timeout?: number } = {}): Promise<ExecResult> {
+export function execFileResult(
+  cmd: string,
+  args: string[],
+  options: { timeout?: number; env?: NodeJS.ProcessEnv } = {},
+): Promise<ExecResult> {
   return new Promise((resolve) => {
     execFile(
       cmd,
       args,
-      { encoding: 'utf8', timeout: options.timeout, maxBuffer: 16 * 1024 * 1024 },
+      { encoding: 'utf8', timeout: options.timeout, maxBuffer: 16 * 1024 * 1024, env: options.env },
       (err, stdout, stderr) => {
         if (!err) return resolve({ status: 0, stdout, stderr });
         const code = err.code;
@@ -130,8 +134,8 @@ export function execFileResult(cmd: string, args: string[], options: { timeout?:
  * ready`), arriving in bursts of 4-9 identical calls within ~1 s from concurrent callers. Replaying
  * the census through a 2 s memo keyed on the exact argv leaves 45 of the 191.
  *
- * A reused answer is at most `ttlMs` old. These probes already race the tree they read (git-sync
- * can move HEAD between any two of their calls), so that staleness adds no new class of error.
+ * Mutable queries reuse answers for at most `ttlMs`. Small successful object reads are
+ * retained by exact argv in a bounded LRU; HEAD, history and failed reads keep the window.
  * Only git subcommands that never write are shared, and a result with no exit status (timeout,
  * kill, missing binary) is shared only while in flight, never reused afterwards.
  */
@@ -209,19 +213,45 @@ export interface GitReadMemo {
 interface MemoEntry {
   promise: Promise<ExecResult>;
   settledAt: number | null;
+  immutable: boolean;
+}
+
+// Retain only small, successful object reads, never ref/history/time queries.
+// Reuse object reads across slow evidence evaluations without extending
+// the freshness window for mutable refs, policy, or failed reads.
+function immutableGitObjectRead(args: readonly string[]): boolean {
+  if (!gitReadIsContentAddressed(args)) return false;
+  const at = gitSubcommandIndex(args);
+  const allowed = args[at] === 'ls-tree'
+    ? new Set(['-z', '-l', '-r', '--full-tree', '--full-name'])
+    : args[at] === 'rev-parse' ? new Set(['--verify', '--quiet']) : null;
+  if (!allowed) return false;
+  for (const arg of args.slice(at + 1)) {
+    if (arg === '--') break;
+    if (arg.startsWith('-') && !allowed.has(arg)) return false;
+  }
+  return true;
 }
 
 /** Wrap `exec` so identical read-only git calls share one child (see GIT_READ_MEMO_TTL_MS). */
 export function createGitReadMemo(
   exec: AsyncExec,
-  opts: { ttlMs?: number; now?: () => number } = {},
+  opts: { ttlMs?: number; now?: () => number; maxEntries?: number } = {},
 ): GitReadMemo {
   const ttlMs = opts.ttlMs ?? GIT_READ_MEMO_TTL_MS;
+  const maxEntries = opts.maxEntries ?? 512;
   const now = opts.now ?? Date.now;
   const entries = new Map<string, MemoEntry>();
   let hits = 0;
   let misses = 0;
-  const fresh = (e: MemoEntry, t: number) => e.settledAt === null || t - e.settledAt < ttlMs;
+  const fresh = (e: MemoEntry, t: number) => e.immutable || e.settledAt === null || t - e.settledAt < ttlMs;
+  const trim = () => {
+    for (const [key, entry] of entries) {
+      if (entries.size <= maxEntries) break;
+      // An in-flight child must remain single-flight until it settles.
+      if (entry.settledAt !== null) entries.delete(key);
+    }
+  };
 
   const memoExec: AsyncExec = (cmd, args, options) => {
     const sub = cmd === 'git' ? gitSubcommand(args) : null;
@@ -231,19 +261,24 @@ export function createGitReadMemo(
     const hit = entries.get(key);
     if (hit && fresh(hit, t)) {
       hits++;
+      entries.delete(key);
+      entries.set(key, hit);
       return hit.promise;
     }
     misses++;
     if (entries.size >= GIT_READ_MEMO_PRUNE_AT) {
       for (const [k, e] of entries) if (!fresh(e, t)) entries.delete(k);
     }
-    const entry: MemoEntry = { promise: Promise.resolve(PENDING), settledAt: null };
+    const immutable = immutableGitObjectRead(args);
+    const entry: MemoEntry = { promise: Promise.resolve(PENDING), settledAt: null, immutable: false };
     entry.promise = exec(cmd, [...args], options).then(
       (r) => {
         if (r.status === null) {
           if (entries.get(key) === entry) entries.delete(key);
         } else {
           entry.settledAt = now();
+          entry.immutable = r.status === 0 && immutable && r.stdout.length + r.stderr.length <= 65_536;
+          trim();
         }
         return r;
       },
@@ -294,8 +329,9 @@ export interface SidecarFirstExecDeps {
 export function createSidecarFirstExec(deps: SidecarFirstExecDeps = {}): AsyncExec {
   return async (cmd, args, options) => {
     const timeout = typeof options?.timeout === 'number' ? options.timeout : undefined;
+    const env = options?.env ?? process.env;
     const local = (): Promise<ExecResult> =>
-      deps.local ? deps.local(cmd, args, options) : execFileResult(cmd, args, { timeout });
+      deps.local ? deps.local(cmd, args, options) : execFileResult(cmd, args, { timeout, env: options?.env });
     const mod = deps.viaSidecar && deps.enabled && deps.noteFallback
       ? null
       : await import('./fleet/git-via-sidecar');
@@ -308,7 +344,7 @@ export function createSidecarFirstExec(deps: SidecarFirstExecDeps = {}): AsyncEx
       res = await viaSidecar(cmd, [...args], {
         cwd: process.cwd(),
         timeoutMs: timeout ?? SIDECAR_DEFAULT_TIMEOUT_MS,
-        env: process.env,
+        env,
       });
     } catch (error) {
       noteFallback(error);

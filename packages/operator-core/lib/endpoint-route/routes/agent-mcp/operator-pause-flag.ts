@@ -6,7 +6,7 @@
  */
 import { getSessionUser } from '../../../auth';
 import { assertBackgroundActivityAuthority, featureBackgroundActivityChangeSchema, setFeatureBackgroundActivityPolicy,
-  setPaused, setResumed, isPaused } from '../../../device-operator-actions';
+  setWorkspaceBackgroundActivityPolicy, stopFeatureBackgroundActivity, isPaused } from '../../../device-operator-actions';
 import { defineTool } from '@papercusp/agent-mcp';
 import { z } from 'zod';
 
@@ -37,7 +37,7 @@ const post = defineTool({
     }
     try {
       assertBackgroundActivityAuthority(user);
-      await setPaused(user.username);
+      await setWorkspaceBackgroundActivityPolicy({ action: 'pause', until: null }, undefined, user);
     } catch (error) { return policyFailure(error); }
     return Response.json({ ok: true, paused: true });
   },
@@ -54,7 +54,7 @@ const del = defineTool({
     }
     try {
       assertBackgroundActivityAuthority(user);
-      await setResumed();
+      await setWorkspaceBackgroundActivityPolicy({ action: 'resume' }, undefined, user);
     } catch (error) { return policyFailure(error); }
     return Response.json({ ok: true, paused: false });
   },
@@ -65,6 +65,11 @@ const featureChange = z.object({
   revision: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
   change: featureBackgroundActivityChangeSchema,
 }).strict();
+const policyChange = z.union([featureChange, z.object({
+  scope: z.literal('workspace'),
+  revision: featureChange.shape.revision,
+  change: featureBackgroundActivityChangeSchema,
+}).strict(), z.object({ featureId: featureChange.shape.featureId, action: z.literal('stop') }).strict()]);
 
 const patch = defineTool({
   method: 'PATCH', path: '/agent-mcp/operator-pause-flag', auth: 'loopback',
@@ -72,11 +77,18 @@ const patch = defineTool({
     const user = await getSessionUser(req.headers);
     if (!user) return Response.json({ ok: false, error: 'unauthenticated' }, { status: 401 });
     try { assertBackgroundActivityAuthority(user); } catch (error) { return policyFailure(error); }
-    const parsed = featureChange.safeParse(await req.json().catch(() => null));
+    const parsed = policyChange.safeParse(await req.json().catch(() => null));
     if (!parsed.success) return Response.json({ ok: false, error: 'startup_policy_invalid' }, { status: 400 });
     try {
-      const { featureId, change, revision } = parsed.data;
-      const policy = await setFeatureBackgroundActivityPolicy(featureId, change, revision, user);
+      if ('action' in parsed.data) {
+        const result = await stopFeatureBackgroundActivity(parsed.data.featureId, user);
+        return Response.json({ ok: result.status !== 'unavailable', ...result },
+          { status: result.status === 'unavailable' ? 503 : 200 });
+      }
+      const { change, revision } = parsed.data;
+      const policy = 'featureId' in parsed.data
+        ? await setFeatureBackgroundActivityPolicy(parsed.data.featureId, change, revision, user)
+        : await setWorkspaceBackgroundActivityPolicy(change, revision, user);
       return Response.json({ ok: true, policy });
     } catch (error) { return policyFailure(error); }
   },

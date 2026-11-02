@@ -1,0 +1,90 @@
+{
+  "capturedAt": "2026-11-02T15:59:44.854Z",
+  "purpose": "Visual mockup and sample interaction verification; not native product acceptance.",
+  "captures": [
+    {
+      "layout": "a",
+      "file": "inbox-a.png",
+      "geometry": {
+        "x": 1002,
+        "y": 32,
+        "width": 438,
+        "height": 848,
+        "right": 1440,
+        "bottom": 880,
+        "scrollWidth": 437,
+        "clientWidth": 437
+      }
+    },
+    {
+      "layout": "b",
+      "file": "inbox-b.png",
+      "geometry": {
+        "x": 616,
+        "y": 32,
+        "width": 824,
+        "height": 848,
+        "right": 1440,
+        "bottom": 880,
+        "scrollWidth": 823,
+        "clientWidth": 823
+      }
+    },
+    {
+      "layout": "c",
+      "file": "inbox-c.png",
+      "geometry": {
+        "x": 950,
+        "y": 32,
+        "width": 490,
+        "height": 848,
+        "right": 1440,
+        "bottom": 880,
+        "scrollWidth": 489,
+        "clientWidth": 489
+      }
+    },
+    {
+      "file": "inbox-b-running.png",
+      "layout": "b",
+      "state": "running"
+    },
+    {
+      "file": "inbox-b-review.png",
+      "layout": "b",
+      "state": "review"
+    },
+    {
+      "file": "inbox-bulk-states.png",
+      "comparison": true
+    },
+    {
+      "file": "compare-inbox.png",
+      "comparison": true
+    }
+  ],
+  "interactions": [
+    "a: quick answer advances queue and confirms sample-only save",
+    "a: written reply with Ctrl+Enter advances queue",
+    "a: snooze removes one sample question",
+    "a: Escape dismisses; browser shortcut summons",
+    "b: quick answer advances queue and confirms sample-only save",
+    "b: written reply with Ctrl+Enter advances queue",
+    "b: snooze removes one sample question",
+    "b: Escape dismisses; browser shortcut summons",
+    "c: quick answer advances queue and confirms sample-only save",
+    "c: written reply with Ctrl+Enter advances queue",
+    "c: snooze removes one sample question",
+    "c: Escape dismisses; browser shortcut summons",
+    "b: blocking filter retains only the blocking question",
+    "b: selecting a question changes the reading pane",
+    "b bulk: starts from exact visible filtered rows; later filter changes do not widen the run",
+    "b bulk: Stop preserves questions and Continue resumes the same run",
+    "b bulk: existing run survives dismiss/summon and page reload; assessment alone sends no answers",
+    "b bulk: grouped reasons and editable replies; owner decision excluded; explicit selection required",
+    "b bulk: empty replies cannot apply; edits and selection survive reload; accepts only selected edited reply",
+    "b bulk: grouped acceptance leaves owner-only question for manual answer; empty queue cannot start a run"
+  ],
+  "browserErrors": [],
+  "externalRequests": []
+}

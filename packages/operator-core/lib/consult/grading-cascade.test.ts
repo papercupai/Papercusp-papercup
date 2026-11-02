@@ -32,10 +32,28 @@ import {
   gradingCascadeWakeCopy,
   sourceAuditCascadeMetaFromRouting,
   sourceAuditWakeCopy,
+  goalTenureGradingMetaFromRouting,
+  goalTenureGradingWakeCopy,
   type SourceAuditCascadeMeta,
   type GradingCascadeMeta,
 } from './grading-cascade';
 import { acceptanceReviewTargetConditionKey } from '../coord/condition-upsert';
+import { cascadeWakeCopyForRouting } from './cascade-core';
+
+describe('goal tenure residual grading copy', () => {
+  const meta = { flavor: 'goal-tenure-grading' as const, workspaceId: 'ws', goalId: 'goal', holderOwnerIds: ['su-holder'] };
+  it('preserves the grading contract on recovery instead of asking for a transcript answer', () => {
+    expect(goalTenureGradingMetaFromRouting(JSON.stringify({ cascade: meta }))).toEqual(meta);
+    expect(goalTenureGradingMetaFromRouting({ cascade: { ...meta, holderOwnerIds: [] } })).toBeNull();
+    const initial = goalTenureGradingWakeCopy(meta, 'conv-tenure');
+    expect(cascadeWakeCopyForRouting({ cascade: meta })(wakeCtx({ conversationId: 'conv-tenure' }))).toEqual(initial);
+    expect(initial.body).toContain('terminal:true');
+    expect(initial.body).toContain('supersede its current goal-grading-computed provisional card');
+    expect(initial.body).toContain('if it is no longer active, decline and stop');
+    expect(initial.body).toContain('Never count a provisional card, consult reply, or audit as settled grading');
+    expect(initial.body).not.toContain('Answer FROM the transcript');
+  });
+});
 
 const META: GradingCascadeMeta = {
   flavor: 'acceptance-grading',

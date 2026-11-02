@@ -65,6 +65,27 @@ export default defineTool({
       snapshotUnavailable = true;
     }
     if (snapshot) {
+      if (snapshot.kind === 'vitest' && (snapshot.status === 'running' || snapshot.status === 'error')) {
+        let ledgerRecovery: DetachedRunLedgerRecovery | null = null;
+        try {
+          ledgerRecovery = await getTestRunLedgerRecoveryAsync(args.runId);
+        } catch (error) {
+          if (!(error instanceof TestingRunSnapshotUnavailableError)) throw error;
+        }
+        if (ledgerRecovery?.status === 'pass') {
+          return {
+            data: {
+              ok: true,
+              ledgerRecovery: {
+                ...ledgerRecovery,
+                message:
+                  `Recovered pass from ${ledgerRecovery.fileCount} latest per-file test_runs row(s); ` +
+                  `the stale ${snapshot.status} lifecycle snapshot was superseded by terminal ledger evidence.`,
+              },
+            },
+          };
+        }
+      }
       const fullOutputRequested =
         ctx.payloadTierOverride === 'full' && ctx.sourceMaterialization?.promotedToFull !== true;
       return { data: { ok: true, snapshot: fullOutputRequested ? snapshot : {

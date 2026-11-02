@@ -6,11 +6,12 @@ vi.mock('../../../auth', () => ({ getSessionUser: vi.fn() }));
 vi.mock('../../../device-operator-actions', async orig => ({
   ...await orig<typeof import('../../../device-operator-actions')>(),
   assertBackgroundActivityAuthority: vi.fn(), setFeatureBackgroundActivityPolicy: vi.fn(),
-  setPaused: vi.fn(), setResumed: vi.fn(),
+  setWorkspaceBackgroundActivityPolicy: vi.fn(),
+  stopFeatureBackgroundActivity: vi.fn(),
 }));
 import routes from './operator-pause-flag';
 import { getSessionUser } from '../../../auth';
-import { assertBackgroundActivityAuthority, setFeatureBackgroundActivityPolicy, setPaused, setResumed } from '../../../device-operator-actions';
+import { assertBackgroundActivityAuthority, setFeatureBackgroundActivityPolicy, setWorkspaceBackgroundActivityPolicy, stopFeatureBackgroundActivity } from '../../../device-operator-actions';
 
 const featureId = `activity-${'a'.repeat(64)}`;
 const body = { featureId, revision: 2, change: { action: 'automatic', automatic: false } };
@@ -25,8 +26,24 @@ beforeEach(() => {
   vi.mocked(getSessionUser).mockResolvedValue(user);
   vi.mocked(assertBackgroundActivityAuthority).mockReturnValue('test');
   vi.mocked(setFeatureBackgroundActivityPolicy).mockResolvedValue({ automatic: false, pausedUntil: null, revision: 3 });
+  vi.mocked(setWorkspaceBackgroundActivityPolicy).mockResolvedValue({ automatic: false, pausedUntil: null, revision: 3 });
 });
 describe('existing pause endpoint feature controls', () => {
+  it('routes a one-time stop separately from durable preferences and preserves pending acknowledgment', async () => {
+    vi.mocked(stopFeatureBackgroundActivity).mockResolvedValueOnce({ status: 'pending',
+      policy: { automatic: true, pausedUntil: null, revision: 2 } });
+    const response = await handle(request('PATCH', { featureId, action: 'stop' }));
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ ok: true, status: 'pending', policy: { automatic: true } });
+    expect(stopFeatureBackgroundActivity).toHaveBeenCalledWith(featureId, user);
+    expect(setFeatureBackgroundActivityPolicy).not.toHaveBeenCalled();
+    expect(setWorkspaceBackgroundActivityPolicy).not.toHaveBeenCalled();
+    vi.mocked(stopFeatureBackgroundActivity).mockResolvedValueOnce({ status: 'unavailable',
+      reason: 'runtime-control-unavailable', policy: { automatic: true, pausedUntil: null, revision: 2 } });
+    const unsupported = await handle(request('PATCH', { featureId, action: 'stop' }));
+    expect(unsupported.status).toBe(503);
+    expect(await unsupported.json()).toMatchObject({ ok: false, status: 'unavailable' });
+  });
   it('binds an authenticated identity to the strict feature request and returns the saved revision', async () => {
     const response = await handle(request());
     expect(response.status).toBe(200);
@@ -39,8 +56,7 @@ describe('existing pause endpoint feature controls', () => {
     vi.mocked(assertBackgroundActivityAuthority).mockImplementation(() => { throw Object.assign(new Error('private'), { code: 'startup_policy_forbidden' }); });
     for (const method of ['PATCH', 'POST', 'DELETE']) expect((await handle(request(method))).status).toBe(403);
     expect(setFeatureBackgroundActivityPolicy).not.toHaveBeenCalled();
-    expect(setPaused).not.toHaveBeenCalled();
-    expect(setResumed).not.toHaveBeenCalled();
+    expect(setWorkspaceBackgroundActivityPolicy).not.toHaveBeenCalled();
   });
   it.each([
     { ...body, workspaceId: 'foreign' }, { ...body, revision: -1 }, { ...body, featureId: '/private/path' },
@@ -58,5 +74,25 @@ describe('existing pause endpoint feature controls', () => {
     const failed = await handle(request());
     expect(failed.status).toBe(503);
     expect(await failed.json()).toEqual({ ok: false, error: 'startup_policy_unavailable' });
+  });
+  it('binds workspace changes and legacy pause/resume to the authenticated principal', async () => {
+    const change = { action: 'pause', until: '2099-01-01T00:00:00Z' };
+    expect((await handle(request('PATCH', { scope: 'workspace', revision: 2, change }))).status).toBe(200);
+    expect(setWorkspaceBackgroundActivityPolicy).toHaveBeenLastCalledWith(change, 2, user);
+    expect((await handle(request('POST'))).status).toBe(200);
+    expect(setWorkspaceBackgroundActivityPolicy).toHaveBeenLastCalledWith({ action: 'pause', until: null }, undefined, user);
+    expect((await handle(request('DELETE'))).status).toBe(200);
+    expect(setWorkspaceBackgroundActivityPolicy).toHaveBeenLastCalledWith({ action: 'resume' }, undefined, user);
+    expect(setFeatureBackgroundActivityPolicy).not.toHaveBeenCalled();
+  });
+  it.each([
+    { scope: 'workspace', revision: 0, change: body.change, workspaceId: 'foreign' },
+    { scope: 'workspace', revision: 0, change: body.change, featureId },
+    { scope: 'workspace', change: body.change },
+    { scope: 'device', revision: 0, change: body.change },
+  ])('rejects widened or unversioned workspace requests', async payload => {
+    expect((await handle(request('PATCH', payload))).status).toBe(400);
+    expect(setWorkspaceBackgroundActivityPolicy).not.toHaveBeenCalled();
+    expect(setFeatureBackgroundActivityPolicy).not.toHaveBeenCalled();
   });
 });

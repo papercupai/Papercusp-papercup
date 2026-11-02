@@ -22,10 +22,11 @@ import type { SerializableReactionParent } from './reaction-id';
 export type DurableReactionPayload = GenericDurableReactionPayload<SerializableReactionParent>;
 
 export async function executeDurableReaction(payload: DurableReactionPayload): Promise<void> {
+  if (payload.ruleId !== payload.cause.ruleId) return;
   // Read at actual execution, not enqueue time. A queued or recovered reaction
   // withheld by policy must not consume a claim or pretend an effect completed.
   if (payload.parent.workspaceId
-    && !await reactionBackgroundActivityAllowed(payload.parent.workspaceId, payload.fire)) return;
+    && !await reactionBackgroundActivityAllowed(payload.parent.workspaceId, payload.fire, payload.ruleId)) return;
   await genericExecuteDurableReaction(payload, {
     // The PG idempotency ledger (migration 153) — `harness_shared.event_reactions`.
     store: { claim: claimReaction, release: releaseReaction, markFailed: markReactionFailed,

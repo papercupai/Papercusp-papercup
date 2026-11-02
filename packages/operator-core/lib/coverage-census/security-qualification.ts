@@ -30,6 +30,7 @@ const eventSchema = z.object({
   manifestProducerRef: hash.nullable(), ledgerProducerRef: hash.nullable(),
   executor: text.nullable(), reviewRef: text.nullable(),
   result: z.enum(['passed', 'failed']).nullable(),
+  executionEvidenceSha256: hash.optional(),
 }).strict();
 type Event = z.infer<typeof eventSchema>;
 const signedSchema = z.object({ event: eventSchema, signature: hash }).strict();
@@ -213,7 +214,8 @@ export async function commitSecurityApplicability(ctx: UnifiedToolContext, harne
  */
 export async function runSecurityQualification<T>(ctx: UnifiedToolContext, harness: string, input: {
   approvalRef: string; manifestSha256: string; ledgerSha256: string;
-}, execute: (pins: { manifestSha256: string; ledgerSha256: string; startRef: string }) => Promise<T>) {
+}, execute: (pins: { manifestSha256: string; ledgerSha256: string; startRef: string }) => Promise<T>,
+captureResult?: (value: T) => unknown) {
   input = z.object({ approvalRef: hash, manifestSha256: hash, ledgerSha256: hash }).strict().parse(input);
   const executor = actor(ctx, harness), approval = await read(harness, input.approvalRef);
   if (approval.phase !== 'approval' || approval.ordinal !== 1 || approval.parent !== null || approval.result !== null ||
@@ -248,11 +250,15 @@ export async function runSecurityQualification<T>(ctx: UnifiedToolContext, harne
       ordinal: 3, parent: startRef, executor, result: 'failed' }));
     throw error;
   }
+  const executionEvidenceSha256 = captureResult
+    ? (await saveImmutableTextArtifact(harness, canonicalJson(captureResult(value)))).sha256 : undefined;
   const resultRef = await persist(event(harness, executor, 'result', {
     manifestSha256: pins.manifestSha256, ledgerSha256: pins.ledgerSha256, ordinal: 3, parent: startRef,
     executor, result: 'passed',
+    ...(executionEvidenceSha256 ? { executionEvidenceSha256 } : {}),
   }));
-  return { value, resultRef, approvalRef: input.approvalRef, ...pins };
+  return { value, resultRef, approvalRef: input.approvalRef, ...pins,
+    ...(executionEvidenceSha256 ? { executionEvidenceSha256 } : {}) };
 }
 
 /** Acceptance/P-020 reads the SAME immutable chain and row identities. This
@@ -283,5 +289,15 @@ export async function verifySecurityQualificationResult(harness: string, input: 
     executor: approval.executor, reviewRef: approval.reviewRef });
   if (approval.at < current.producedAt) refuse('scope_or_order_mismatch');
   await independent(approval.actor, current.producers, approval.executor);
-  return { manifest: current.manifest, ledger: current.ledger, approvalRef: start.parent, startRef: result.parent };
+  let executionEvidence: unknown;
+  if (result.executionEvidenceSha256) {
+    const bytes = await loadImmutableTextArtifact(harness, result.executionEvidenceSha256);
+    if (bytes === null || createHash('sha256').update(bytes).digest('hex') !== result.executionEvidenceSha256) {
+      refuse('execution_evidence_mismatch');
+    }
+    executionEvidence = JSON.parse(bytes);
+    if (canonicalJson(executionEvidence) !== bytes) refuse('execution_evidence_mismatch');
+  }
+  return { manifest: current.manifest, ledger: current.ledger, approvalRef: start.parent, startRef: result.parent,
+    executionEvidenceSha256: result.executionEvidenceSha256, executionEvidence };
 }

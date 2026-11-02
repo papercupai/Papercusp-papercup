@@ -112,6 +112,16 @@ describe('execFileResult', () => {
     expect((await execFileResult('/nonexistent/wi10005261-binary', [])).status).toBeNull();
   });
 
+  it('passes an explicit child environment to execFile', async () => {
+    const env = { PAPERCUSP_EXEC_FILE_ENV_TEST: 'resolved' };
+    const result = await execFileResult(
+      process.execPath,
+      ['-e', 'process.stdout.write(process.env.PAPERCUSP_EXEC_FILE_ENV_TEST ?? "unset")'],
+      { env },
+    );
+    expect(result).toMatchObject({ status: 0, stdout: 'resolved' });
+  });
+
   it('preserves native failure evidence instead of conflating a missing binary with a killed child', async () => {
     const missing = await execFileResult('/nonexistent/ei25735005110182664-binary', []);
     expect(missing.status).toBeNull();
@@ -186,6 +196,62 @@ describe('createGitReadMemo (EI-24852529885337741)', () => {
     expect(calls).toHaveLength(2);
     calls[1].resolve(ok('2\n'));
     expect(await later).toEqual(ok('2\n'));
+  });
+
+  it('retains successful immutable object reads beyond the ref window and reads a changed commit', async () => {
+    let t = 1_000;
+    const { calls, exec } = deferredExec();
+    const memo = createGitReadMemo(exec, { now: () => t });
+    const args = ['-C', '/r', 'ls-tree', '-z', 'a'.repeat(40), '--', 'f.ts'];
+    const first = memo.exec('git', args);
+    calls[0].resolve(ok('old-object'));
+    await first;
+    t += GIT_READ_MEMO_TTL_MS * 10;
+    expect(await memo.exec('git', args)).toEqual(ok('old-object'));
+    const changed = memo.exec('git', ['-C', '/r', 'ls-tree', '-z', 'b'.repeat(40), '--', 'f.ts']);
+    expect(calls).toHaveLength(2);
+    calls[1].resolve(ok('new-object'));
+    expect(await changed).toEqual(ok('new-object'));
+  });
+
+  it('retries failed object reads and option-dependent queries after the ref window', async () => {
+    let t = 1_000;
+    const { calls, exec } = deferredExec();
+    const memo = createGitReadMemo(exec, { now: () => t });
+    for (const args of [
+      ['-C', '/r', 'rev-parse', '--verify', 'a'.repeat(40) + ':f.ts'],
+      ['-C', '/r', 'rev-parse', '--short', 'a'.repeat(40)],
+    ]) {
+      const first = memo.exec('git', args);
+      calls[calls.length - 1].resolve(args.includes('--short')
+        ? ok('old-short') : { status: 128, stdout: '', stderr: 'missing' });
+      await first;
+      t += GIT_READ_MEMO_TTL_MS;
+      const retried = memo.exec('git', args);
+      calls[calls.length - 1].resolve(ok('available'));
+      expect(await retried).toEqual(ok('available'));
+    }
+    expect(calls).toHaveLength(4);
+  });
+
+  it('evicts settled immutable reads at its capacity while keeping a pending child shared', async () => {
+    const { calls, exec } = deferredExec();
+    const memo = createGitReadMemo(exec, { maxEntries: 2 });
+    const args = (n: number) => ['-C', '/r', 'ls-tree', '-z', String(n).padStart(40, '0')];
+    const pending = memo.exec('git', args(0));
+    for (const n of [1, 2, 3]) {
+      const read = memo.exec('git', args(n));
+      calls[calls.length - 1].resolve(ok(String(n)));
+      await read;
+    }
+    const shared = memo.exec('git', args(0));
+    expect(calls).toHaveLength(4);
+    calls[0].resolve(ok('pending'));
+    expect(await Promise.all([pending, shared])).toEqual([ok('pending'), ok('pending')]);
+    const evicted = memo.exec('git', args(1));
+    expect(calls).toHaveLength(5);
+    calls[4].resolve(ok('reloaded'));
+    expect(await evicted).toEqual(ok('reloaded'));
   });
 
   it('never shares a different argv, a writing git subcommand, or a non-git command', async () => {
@@ -328,9 +394,10 @@ describe('gitReadIsContentAddressed (EI-24852529885337741)', () => {
 });
 
 describe('createSidecarFirstExec (WI-10005145 / P-017: no fork from the big host)', () => {
-  type Call = { where: 'sidecar' | 'local'; cmd: string; args: string[]; timeoutMs?: number };
+  type Call = { where: 'sidecar' | 'local'; cmd: string; args: string[]; timeoutMs?: number; env?: NodeJS.ProcessEnv };
   function harness(opts: {
     enabled: boolean;
+    captureEnv?: boolean;
     sidecar?: () => Promise<{ code: number; stdout: string; stderr: string; error?: ExecResult['error'] }>;
   }) {
     const calls: Call[] = [];
@@ -338,11 +405,17 @@ describe('createSidecarFirstExec (WI-10005145 / P-017: no fork from the big host
     const exec = createSidecarFirstExec({
       enabled: () => opts.enabled,
       viaSidecar: async (cmd, args, o) => {
-        calls.push({ where: 'sidecar', cmd, args, timeoutMs: o.timeoutMs });
+        calls.push({
+          where: 'sidecar',
+          cmd,
+          args,
+          timeoutMs: o.timeoutMs,
+          ...(opts.captureEnv ? { env: o.env } : {}),
+        });
         return (opts.sidecar ?? (async () => ({ code: 0, stdout: 'remote\n', stderr: '' })))();
       },
-      local: async (cmd, args) => {
-        calls.push({ where: 'local', cmd, args });
+      local: async (cmd, args, options) => {
+        calls.push({ where: 'local', cmd, args, ...(opts.captureEnv ? { env: options?.env } : {}) });
         return { status: 0, stdout: 'local\n', stderr: '' };
       },
       noteFallback: (e) => fallbacks.push(e),
@@ -355,6 +428,17 @@ describe('createSidecarFirstExec (WI-10005145 / P-017: no fork from the big host
     expect(await h.exec('git', ['rev-parse', 'HEAD'], { timeout: 5_000 })).toEqual({ status: 1, stdout: '', stderr: 'no' });
     expect(h.calls).toEqual([{ where: 'sidecar', cmd: 'git', args: ['rev-parse', 'HEAD'], timeoutMs: 5_000 }]);
     expect(h.fallbacks).toEqual([]);
+  });
+
+  it('forwards an explicit child environment to both sidecar and local execution', async () => {
+    const env = { PAPERCUSP_EXEC_FILE_ENV_TEST: 'resolved' };
+    const remote = harness({ enabled: true, captureEnv: true });
+    await remote.exec('probe', [], { env });
+    expect(remote.calls[0]).toMatchObject({ where: 'sidecar', env });
+
+    const local = harness({ enabled: false, captureEnv: true });
+    await local.exec('probe', [], { env });
+    expect(local.calls[0]).toMatchObject({ where: 'local', env });
   });
 
   it('runs locally, without touching the sidecar, when disabled', async () => {

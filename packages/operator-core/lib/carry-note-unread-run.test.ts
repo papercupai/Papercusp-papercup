@@ -164,6 +164,18 @@ describe('describeUnreadRun', () => {
     expect(describeUnreadRun(body, 0)?.signals.runRefs).toEqual(['/tmp/publish.log']);
   });
 
+  it('ignores a launch explicitly attributed to a peer', () => {
+    const body = 'The diagnostic test run was launched by peer su-b6e19/thread-post1211309; ' +
+      'output at /tmp/peer-probe.log.';
+    expect(describeUnreadRun(body, 0)).toBeNull();
+  });
+
+  it('ignores a completed run whose referenced log was read before checkpointing', () => {
+    const body = 'The verification test run was launched; output at /tmp/verification.log. ' +
+      'The run completed exit0 and I read the log with tail -n28 before writing this checkpoint.';
+    expect(describeUnreadRun(body, 0)).toBeNull();
+  });
+
   it.each(['output at', 'output:', 'log:', 'Handle:'])(
     'preserves an explicitly attached unread output clause introduced by %s', (label) => {
       const body = `The typecheck is still running; ${label} /tmp/types.log.`;
@@ -178,6 +190,11 @@ describe('describeUnreadRun', () => {
       'That peer-authored receipt was already read through the managed task; no unread local run exists.',
     ].join(' ');
 
+    expect(describeUnreadRun(body, 0)).toBeNull();
+  });
+
+  it('does not treat a negated long-subject launch as an unread run with a retained log', () => {
+    const body = 'No parallel implementation repair run was launched; output at /tmp/no-repair.log.';
     expect(describeUnreadRun(body, 0)).toBeNull();
   });
 

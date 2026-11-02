@@ -10,6 +10,17 @@ export function installManagedTickAlarm(deps: AlarmAttentionDeps = {}): void {
   const conditionKey = (episode: ManagedTickEpisode): string =>
     `alarm:managed-tick:${processEpoch}:${episode.id}`;
   configureScheduledRegistry({
+    onTickStarted: async entry => {
+      const activity = entry.activity;
+      if (activity?.kind !== 'workspace') return;
+      const [{ recordStartupActivityHistory }, { getOrgPg }] = await Promise.all([
+        import('../startup-activity'), import('@papercusp/db-org'),
+      ]);
+      await recordStartupActivityHistory({ featureId: activity.featureId, operation: 'start', status: 'running',
+        at: new Date(entry.runningSince!).toISOString(), actor: 'system', trigger: 'timer', source: 'timer',
+        reason: 'automatic-start', previous: null, resulting: null,
+      }, 'managed-timer', 'system', { sql: getOrgPg().sql, workspaceId: activity.workspaceId });
+    },
     canRun: (entry) => {
       const activity = entry.activity;
       // Unclassified legacy timers have no workspace switch yet. Their inventory must

@@ -19,6 +19,8 @@ import { getOrgPg } from '@papercusp/db-org';
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import { activeWorkspaceId } from './workspace-registry';
+import { startupReactionFeatureId } from './events/reaction-id';
+import type { ReactionRule } from './events/types';
 import {
   listDbosScheduledWorkflows,
   type DbosScheduledEntry,
@@ -446,6 +448,8 @@ export async function collectScheduleInventory(
         instanced: m.instanced ?? false,
         classification: m.classification ?? null,
         ...(m.activity === undefined ? {} : { activity: m.activity }),
+        ...(m.stopStatus === undefined ? {} : { stopStatus: m.stopStatus }),
+        ...(m.cancellable === undefined ? {} : { cancellable: m.cancellable }),
       },
     });
   }
@@ -724,13 +728,14 @@ export interface StartupActivityFeature {
   name: string;
   purpose: string;
   trigger: string;
-  origin: ScheduleSource | 'native';
+  origin: ScheduleSource | 'native' | 'event';
   entrypointIds: string[];
   scope: { kind: 'device' | 'workspace' | 'unknown'; id: string | null };
   /** null means unmeasured; [] is reserved for an adapter that established no dependencies. */
   dependencies: string[] | null;
   desired: StartupActivityPolicy;
   observed: 'running' | 'idle' | 'unknown';
+  stop?: { status: string | null; cancellable: boolean };
   network: 'local' | 'external' | 'unknown';
   spend: 'llm' | 'none' | 'unknown';
   resources: { cpuUsec: number | null; rssBytes: number | null; costCents: number | null };
@@ -754,6 +759,8 @@ export interface StartupActivityAdapters {
   deviceId?: string;
   /** Native adapter reads the current OS user's registrations, including disabled ones. */
   native?: () => Promise<StartupActivityFeature[]>;
+  /** Existing event-rule registry, projected separately from timer registration. */
+  reactions?: () => Promise<StartupActivityFeature[]>;
   /** Policy/history adapters authorize their workspace/device scope before reading. */
   policy?: (feature: Readonly<StartupActivityFeature>) => Promise<StartupActivityPolicy | null>;
   history?: (featureIds: readonly string[], limit: number) => Promise<StartupActivityHistoryEntry[]>;
@@ -762,6 +769,24 @@ export interface StartupActivityAdapters {
 
 const unknownPolicy = (): StartupActivityPolicy => ({ automatic: null, pausedUntil: null, revision: null });
 const unknownPurpose = 'Purpose has not been described for this feature.';
+
+/** Registration explains the trigger; it does not establish an invocation's state. */
+export function reactionStartupFeature(
+  rule: Pick<ReactionRule, 'id' | 'on' | 'fire'>,
+  workspaceId: string,
+): StartupActivityFeature {
+  const trigger = (Array.isArray(rule.on) ? rule.on : [rule.on]).join(', ');
+  return {
+    id: startupReactionFeatureId(workspaceId, rule.id),
+    name: rule.id.replace(/[-_:]+/g, ' '),
+    purpose: `Responds to ${trigger} by running ${rule.fire}.`,
+    trigger, origin: 'event', entrypointIds: ['event-dispatch'],
+    scope: { kind: 'workspace', id: workspaceId }, dependencies: null,
+    desired: { ...unknownPolicy(), automatic: true }, observed: 'unknown',
+    network: 'unknown', spend: 'unknown',
+    resources: { cpuUsec: null, rssBytes: null, costCents: null },
+  };
+}
 
 const managedWorkspaceActivitySchema = z.object({
   kind: z.literal('workspace'),
@@ -812,6 +837,7 @@ export function scheduleStartupFeature(
       ? Object.entries(EXTERNAL_SCHEDULES).filter(([, entry]) => entry.name === row.name).map(([key]) => `external:${key}`)
       : [row.source === 'dbos' ? 'dbos-registration' : row.source === 'routines' ? 'routine-dispatch' : 'managed-fire-on-arm'];
   if (row.source === 'routines' && row.detail.triggerKind === 'event') entrypointIds.push('event-dispatch');
+  const stopStatus = z.enum(['pending', 'draining', 'completed', 'failed', 'unavailable']).safeParse(row.detail.stopStatus);
   return {
     id: startupActivityFeatureId(row, context),
     name: label,
@@ -826,6 +852,10 @@ export function scheduleStartupFeature(
     dependencies: null,
     desired: { ...unknownPolicy(), automatic: row.source === 'routines' || sync ? row.armed : null },
     observed: live && typeof row.detail.running === 'boolean' ? row.detail.running ? 'running' : 'idle' : 'unknown',
+    ...(live && typeof row.detail.cancellable === 'boolean' ? { stop: {
+      status: stopStatus.success ? stopStatus.data : null,
+      cancellable: row.detail.cancellable,
+    } } : {}),
     network: 'unknown',
     spend,
     // Neither a spend classification nor an enabled flag is a resource/cost sample.
@@ -895,6 +925,13 @@ export async function collectStartupActivity(
     }
   }
   const features = [...byId.values()];
+  if (adapters.reactions) {
+    try {
+      const reactions = await adapters.reactions();
+      features.push(...reactions.filter(feature => feature.scope.kind === 'workspace'
+        && feature.scope.id === context.workspaceId));
+    } catch { unavailable.add('events'); }
+  } else unavailable.add('events');
   if (adapters.native) {
     try { features.push(...await adapters.native()); }
     catch { unavailable.add('native'); }

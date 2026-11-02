@@ -24,6 +24,8 @@ import type { BenchmarkContextReceipt } from './reproducibility/context';
 import { evaluateSessionConfinement, type SessionToolConfinement } from '../capability-envelope/session-confinement';
 import { runManagedPreCompact } from '../../../../apps/operator/scripts/hooks/cc/precompact-managed-carry.mjs';
 import type { PsuPtyHost } from '../events/await/psu-pty-discovery';
+import { mockResolvedTyped } from '../testing/typed-mock';
+import type { TaskRow } from '../task-manager/types';
 
 const NEVER_EMIT_MARKER = 'never-emit-me';
 
@@ -1791,7 +1793,13 @@ describe('current benchmark native terminal failure observation', () => {
   it('reads a current host refusal through production task ports without changing the stored process row', async () => {
     const f = nativeFailureFixture();
     const store = await import('../task-manager/store'), discovery = await import('../events/await/psu-pty-discovery');
-    const readTask = vi.spyOn(store, 'getTask').mockResolvedValue(f.row as never);
+    const readTask = vi.spyOn(store, 'getTask');
+    const taskRow = Object.assign(f.row, {
+      launchedBy: 'test', rootTaskId: f.row.taskId, class: 'test-run', title: 'native benchmark fixture',
+      argv: [], confined: false, startedAt: f.row.startedAt ?? new Date(f.now).toISOString(),
+      lastSeenAt: new Date(f.now).toISOString(),
+    }) satisfies TaskRow;
+    mockResolvedTyped(readTask, taskRow);
     const readHost = vi.spyOn(discovery, 'findLiveHostAsync').mockResolvedValue(f.host);
     try {
       const ports = liveCurrentSuBenchPorts({ workspaceId: options.workspaceId } as PapercuspUnifiedToolContext,

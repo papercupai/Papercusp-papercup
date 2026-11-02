@@ -18,15 +18,7 @@
  */
 
 import type { FireReactionResult } from "./dispatch-reaction";
-import { getOperatorCache } from "../cache/instance";
-import { coalescedInvalidateByTags } from "../cache/debounced-invalidate";
-import { invalidateL2ByTags } from "../cache/l2-tier";
-import {
-  reconcileLinkedWorkItemsForCompletedPlanItems,
-  resyncDependentPlanItemLanesNow,
-  resyncPlanItemLaneNow,
-  type CompletedPlanItem,
-} from "../plan-items/reconcile-linked-work-items";
+import type { CompletedPlanItem } from "../plan-items/reconcile-linked-work-items";
 
 /** The action name the cache-invalidation reaction fires. */
 export const CACHE_BUMP_TAGS_ACTION = "cache.bumpTags";
@@ -243,6 +235,10 @@ export async function fireBuiltinReactionAction(
         return { ok: true };
       }
       try {
+        // Admission and recovery classification must not load effect handlers.
+        const [{ getOperatorCache }, { coalescedInvalidateByTags }, { invalidateL2ByTags }] = await Promise.all([
+          import("../cache/instance"), import("../cache/debounced-invalidate"), import("../cache/l2-tier"),
+        ]);
         coalescedInvalidateByTags(getOperatorCache(), workspaceId, tags);
         // D-082: the same bust must reach the DURABLE tier, or an L2 row would keep
         // serving a value every worker's L1 has already discarded — turning L2 from a
@@ -260,6 +256,7 @@ export async function fireBuiltinReactionAction(
     case PLAN_ITEM_RECONCILE_ACTION: {
       const items = toCompletedPlanItems(args.completedItems);
       if (items.length === 0) return { ok: true };
+      const { reconcileLinkedWorkItemsForCompletedPlanItems } = await import("../plan-items/reconcile-linked-work-items");
       await reconcileLinkedWorkItemsForCompletedPlanItems(items);
       return { ok: true };
     }
@@ -267,6 +264,7 @@ export async function fireBuiltinReactionAction(
       const items = toLaneResyncItems(args.items);
       const dependencies = toLaneResyncItems(args.dependencies);
       if (items.length === 0 && dependencies.length === 0) return { ok: true };
+      const { resyncPlanItemLaneNow, resyncDependentPlanItemLanesNow } = await import("../plan-items/reconcile-linked-work-items");
       // Per-item best-effort — resyncPlanItemLaneNow itself never throws, but keep
       // the loop resilient to a stray rejection either way.
       for (const it of items) {

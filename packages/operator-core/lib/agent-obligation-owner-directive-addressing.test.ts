@@ -15,6 +15,7 @@
  * reads mocked, so the filter under test is the one that ships.
  */
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { withBoundedTimeout } from './bounded-timeout';
 import type { OwnerDirectiveRow } from './owner-directives';
 
 const h = vi.hoisted(() => ({
@@ -92,13 +93,73 @@ describe('a directive whose session ended passes to its fleet leader (P-008 / R-
   });
 
   it('a routing failure never hides the directives this session owns', async () => {
-    h.listOwnerDirectives.mockResolvedValue([directive(1, ME), directive(2, PEER)]);
-    h.directivesInheritedBy.mockRejectedValue(new Error('pg down'));
-    expect((await read()).map((r) => r.id)).toEqual([1]);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      h.listOwnerDirectives.mockResolvedValue([directive(1, ME), directive(2, PEER)]);
+      h.directivesInheritedBy.mockRejectedValue(new Error('pg down'));
+      expect((await read()).map((r) => r.id)).toEqual([1]);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('owner-directives:inheritance failed: pg down'));
+    } finally {
+      warn.mockRestore();
+    }
   });
 });
 
 describe('owner-directive obligations belong only to the addressed or holding session (D-003)', () => {
+  it.each(['work-item', 'routing', 'both'] as const)(
+    'keeps known addressed directives inside the source deadline when %s enrichment never settles', async (stalled) => {
+      vi.useFakeTimers();
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        h.listOwnerDirectives.mockResolvedValue([directive(1, ME), directive(2, PEER), directive(3, PEER)]);
+        h.listWorkItemsByDirective.mockImplementation(() => stalled === 'routing'
+          ? Promise.resolve([{ directiveRef: 2, id: 'WI-2', state: 'wip', assignee: ME }])
+          : new Promise(() => {}));
+        h.directivesInheritedBy.mockImplementation(() => stalled === 'work-item'
+          ? Promise.resolve(new Set([3]))
+          : new Promise(() => {}));
+
+        const result = withBoundedTimeout(
+          defaultAgentObligationReaderDeps(50).ownerDirectives('papercusp-workspace', ME),
+          { fallback: null, timeoutMs: 50, label: 'test-owner-directive-source' },
+        );
+        await vi.advanceTimersByTimeAsync(50);
+        const observed = await result;
+        expect(observed.degraded).toBe(false);
+        expect(observed.value?.map(row => row.id)).toEqual(
+          stalled === 'work-item' ? [1, 3] : stalled === 'routing' ? [1, 2] : [1],
+        );
+        expect(h.directivesInheritedBy).toHaveBeenCalledTimes(1);
+        expect(warn.mock.calls.flat().join(' ')).toContain('agent-obligations:owner-directives');
+      } finally {
+        warn.mockRestore();
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  it('charges the canonical read against the enrichment budget', async () => {
+    vi.useFakeTimers();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      h.listOwnerDirectives.mockImplementation(async () => {
+        await new Promise(resolve => setTimeout(resolve, 30));
+        return [directive(1, ME)];
+      });
+      h.listWorkItemsByDirective.mockImplementation(() => new Promise(() => {}));
+      h.directivesInheritedBy.mockImplementation(() => new Promise(() => {}));
+      const result = withBoundedTimeout(
+        defaultAgentObligationReaderDeps(50).ownerDirectives('papercusp-workspace', ME),
+        { fallback: null, timeoutMs: 50, label: 'test-owner-directive-source' },
+      );
+      await vi.advanceTimersByTimeAsync(50);
+      expect(await result).toMatchObject({ degraded: false, value: [{ id: 1 }] });
+    } finally {
+      warn.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
   it('keeps a directive addressed to this session and drops an unclaimed peer directive', async () => {
     h.listOwnerDirectives.mockResolvedValue([directive(1, ME), directive(2, PEER)]);
     expect((await read()).map((r) => r.id)).toEqual([1]);
@@ -117,9 +178,15 @@ describe('owner-directive obligations belong only to the addressed or holding se
   });
 
   it('a failed work-item read degrades to addressed-only — it never hides the session’s own directive', async () => {
-    h.listOwnerDirectives.mockResolvedValue([directive(1, ME), directive(2, PEER)]);
-    h.listWorkItemsByDirective.mockRejectedValue(new Error('pool exhausted'));
-    expect((await read()).map((r) => r.id)).toEqual([1]);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      h.listOwnerDirectives.mockResolvedValue([directive(1, ME), directive(2, PEER)]);
+      h.listWorkItemsByDirective.mockRejectedValue(new Error('pool exhausted'));
+      expect((await read()).map((r) => r.id)).toEqual([1]);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('owner-directives:held-work failed: pool exhausted'));
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('fetches the WHOLE open queue, so peer rows ahead of ours cannot starve ours out of a page', async () => {

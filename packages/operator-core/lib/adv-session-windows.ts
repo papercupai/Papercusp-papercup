@@ -52,10 +52,17 @@ interface FocusWindowIdDeps extends FocusWindowOptions {
  * it (#1155). Even against a healthy X server each synchronous fork of the ~1.7 GB operator costs
  * ~160 ms of main-thread time (EI-24852529885337741), and one focus click issues up to ~14.
  */
-async function runX11Command(command: string, args: string[]): Promise<FocusCommandResult> {
-  const { execFileResult } = await import('./sync-exec-replay');
-  const r = await execFileResult(command, args, { timeout: X11_FOCUS_TIMEOUT_MS });
-  return { status: r.status, stdout: r.stdout };
+async function createX11CommandRunner(): Promise<X11CommandRunner> {
+  const [{ execFileResult }, { resolveLinuxDesktopEnv }] = await Promise.all([
+    import('./sync-exec-replay'),
+    import('./console-spawn'),
+  ]);
+  const { env: desktopEnv } = resolveLinuxDesktopEnv(process.env);
+  const env = { ...process.env, ...desktopEnv };
+  return async (command, args) => {
+    const r = await execFileResult(command, args, { timeout: X11_FOCUS_TIMEOUT_MS, env });
+    return { status: r.status, stdout: r.stdout };
+  };
 }
 
 function parseX11WindowId(value: string): bigint | null {
@@ -120,7 +127,8 @@ async function waitForActiveX11Window(
 export async function resolveWindowIdForPid(pid: number): Promise<string | null> {
   if (process.platform === 'darwin') return resolveMacWindow({ pid });
   try {
-    const r = await runX11Command('wmctrl', ['-lp']);
+    const runCommand = await createX11CommandRunner();
+    const r = await runCommand('wmctrl', ['-lp']);
     if (r.status !== 0) return null;
     // wmctrl -lp output: <wid> <desktop> <pid> <host> <title>
     for (const line of r.stdout.split('\n')) {
@@ -186,7 +194,8 @@ export async function resolveWindowIdForTitleFragment(fragment: string): Promise
     }
   }
   try {
-    const r = await runX11Command('wmctrl', ['-lp']);
+    const runCommand = await createX11CommandRunner();
+    const r = await runCommand('wmctrl', ['-lp']);
     if (r.status !== 0) return null;
     // A psu/fleet terminal titles itself "▶ · ☕2 · 3p · su-78d15 · 🔭 …" — the
     // matched fragment (e.g. a coord-owner short id) can sit DEEP in the title,
@@ -222,7 +231,7 @@ export async function focusWindowId(
   if (platform === 'darwin') return deps.workspace !== 'current' && focusMacWindow(windowId);
   if (platform !== 'linux' || parseX11WindowId(windowId) === null) return false;
   try {
-    const runCommand: X11CommandRunner = deps.runCommand ?? runX11Command;
+    const runCommand: X11CommandRunner = deps.runCommand ?? (await createX11CommandRunner());
     const settle = deps.settle ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
 
     const desktops = await readX11Desktops(windowId, runCommand);
@@ -300,7 +309,8 @@ export async function closeWindowId(windowId: string): Promise<boolean> {
     return false;
   }
   try {
-    const r = await runX11Command('wmctrl', ['-ic', windowId]);
+    const runCommand = await createX11CommandRunner();
+    const r = await runCommand('wmctrl', ['-ic', windowId]);
     return r.status === 0;
   } catch {
     return false;

@@ -594,7 +594,13 @@ export default defineTool({
     const coordReceiptTarget = !patternAwait && args.payload_filter == null
       ? /^coord:receipt:(.+)$/.exec(eventKey)
       : null;
-    const monotonicLatchTarget = gitSyncEgressTarget ?? taskTerminalTarget ?? coordReceiptTarget;
+    // A scorecard's grading-audit settlement is a level after its first fire. An
+    // exact late waiter must inspect the latch instead of waiting for another edge;
+    // payload-filtered waits remain edge-triggered because this probe has no payload.
+    const scorecardAuditTarget = !patternAwait && args.payload_filter == null
+      ? /^scorecard:grading-audit:([^:]+)$/.exec(eventKey)
+      : null;
+    const monotonicLatchTarget = gitSyncEgressTarget ?? taskTerminalTarget ?? coordReceiptTarget ?? scorecardAuditTarget;
     if (monotonicLatchTarget) {
       const probe = await withBoundedTimeout(probeKeyFireEvidence(eventKey), {
         fallback: null,
@@ -615,6 +621,8 @@ export default defineTool({
                   ? `The managed-task terminal key "${eventKey}" ALREADY FIRED at ${probe.value.lastFiredAt ?? 'an earlier time'} — this task has already entered its first authoritative terminal ledger state. Do not wait; inspect the terminal result and continue now.`
                   : coordReceiptTarget
                     ? `The coordination receipt key "${eventKey}" ALREADY FIRED at ${probe.value.lastFiredAt ?? 'an earlier time'} — inspect the receipt payload and continue now. A receipt does not prove the requested action was completed.`
+                    : scorecardAuditTarget
+                      ? `The grading-audit settlement key "${eventKey}" ALREADY FIRED at ${probe.value.lastFiredAt ?? 'an earlier time'} — re-read scorecards:get { issueId: "${scorecardAuditTarget[1]}" } to verify the current verdict before acting; a later correction may supersede this settlement.`
                   : `The git-sync egress key "${eventKey}" ALREADY FIRED at ${probe.value.lastFiredAt ?? 'an earlier time'} — origin/staging has already contained this commit. Do not wait; proceed with the work this egress unblocks now.`,
               }),
             },
@@ -1455,6 +1463,8 @@ export default defineTool({
                     ? `The managed-task terminal key "${eventKey}" fired during registration at ${postRegisterProbe.value.lastFiredAt ?? 'an earlier time'} — the still-pending await was retired because this task has already entered its first authoritative terminal ledger state. Do not wait; inspect the terminal result and continue now.`
                     : coordReceiptTarget
                       ? `The coordination receipt key "${eventKey}" fired during registration at ${postRegisterProbe.value.lastFiredAt ?? 'an earlier time'} — the still-pending await was retired. Inspect the receipt payload; a receipt does not prove the requested action was completed.`
+                      : scorecardAuditTarget
+                        ? `The grading-audit settlement key "${eventKey}" fired during registration at ${postRegisterProbe.value.lastFiredAt ?? 'an earlier time'} — the still-pending await was retired. Re-read scorecards:get { issueId: "${scorecardAuditTarget[1]}" } to verify the current verdict; a later correction may supersede this settlement.`
                     : `The git-sync egress key "${eventKey}" fired during registration at ${postRegisterProbe.value.lastFiredAt ?? 'an earlier time'} — the still-pending await was retired and the commit is already on origin/staging. Proceed with the work this egress unblocks now.`,
                 }),
               },

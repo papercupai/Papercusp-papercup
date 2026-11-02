@@ -140,10 +140,14 @@ async function scratchGcTick(): Promise<void> {
       const s = await runScratchGc({ workspaceRegistry });
       // WI-10006512: what the sweep deleted, what it deliberately kept, and how much unowned
       // top-level scratch exists, so a surprising deletion (or growth) is visible in the log.
+      const unreclaimablePaths = s.unreclaimablePaths
+        .map((path) => [path.phase, path.workspaceId, path.errorCode, path.path].join(':'))
+        .join(',') || 'none';
       console.log(
         `[scratch-gc] deadWorkspaces=${s.deadWorkspaces} (${s.deadWorkspaceBytes}B) ` +
           `deferred=${s.deadWorkspacesDeferred.map((d) => `${d.workspaceId}:${d.reason}`).join(',') || 'none'} ` +
           `unprovenEntries=${s.unprovenEntries} markersWritten=${s.markersWritten} ` +
+          `unreclaimablePaths=${unreclaimablePaths} ` +
           `retentionEvictions=${s.retentionEvictions} quotaEvictions=${s.quotaEvictions}`,
       );
     },

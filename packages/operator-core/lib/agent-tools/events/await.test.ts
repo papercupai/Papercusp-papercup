@@ -2426,6 +2426,50 @@ describe('EI-23156083757639548 — task terminal exact-key latch', () => {
   });
 });
 
+describe('EI-27662039712481868 — scorecard grading-audit exact-key latch', () => {
+  const auditKey = 'scorecard:grading-audit:EI-audited-card';
+  const firedAt = '2026-11-02T07:45:53.061Z';
+  const noFire = {
+    prefix: 'scorecard:grading-audit', exact: false, distinctKeys: 0, fires: 0, lastFiredAt: null,
+  };
+  const exactFire = {
+    prefix: 'scorecard:grading-audit', exact: true, distinctKeys: 1, fires: 1, lastFiredAt: firedAt,
+  };
+
+  it('answers already_fired when the grading audit settled before registration', async () => {
+    vi.mocked(probeKeyFireEvidence).mockResolvedValueOnce(exactFire);
+
+    const out = await call({ event: auditKey });
+
+    expect(out).toMatchObject({ ok: true, already_fired: true, event: auditKey, fired_at: firedAt });
+    expect(out.advice).toMatch(/scorecards:get.*EI-audited-card/);
+    expect(registerAwait).not.toHaveBeenCalled();
+    expect(probeKeyFireEvidence).toHaveBeenCalledWith(auditKey);
+  });
+
+  it('retires a still-pending await when the grading audit fires during registration', async () => {
+    vi.mocked(probeKeyFireEvidence).mockResolvedValueOnce(noFire).mockResolvedValueOnce(exactFire);
+    vi.mocked(cancelAwait).mockResolvedValueOnce(true);
+
+    const out = await call({ event: auditKey });
+
+    expect(out).toMatchObject({ ok: true, already_fired: true, event: auditKey, fired_at: firedAt });
+    expect(out.advice).toMatch(/fired during registration.*scorecards:get/);
+    expect(registerAwait).toHaveBeenCalledTimes(1);
+    expect(cancelAwait).toHaveBeenCalledWith({ awaitId: 99, subscriberId: 'su-awaiter' });
+  });
+
+  it('does not satisfy a payload-filtered grading-audit wait from an unqualified fire', async () => {
+    vi.mocked(probeKeyFireEvidence).mockResolvedValueOnce(exactFire);
+
+    const out = await call({ event: auditKey, payload_filter: { state: 'passed' } });
+
+    expect(out.already_fired).toBeUndefined();
+    expect(registerAwait).toHaveBeenCalledTimes(1);
+    expect(probeKeyFireEvidence).not.toHaveBeenCalled();
+  });
+});
+
 /**
  * EI-19928976726540168 — the SAME auto-narrow as EI-19344528739076339 above, for the GLOB form
  * of a gate-verdict key. The exact-key auto-narrow requires `!patternAwait`, so it never ran

@@ -26,7 +26,7 @@ import { appendFileSync } from 'node:fs';
 import { readFile, stat } from 'node:fs/promises';
 import { execFile } from 'node:child_process';
 import { join } from 'node:path';
-import { parse as parseShellCommand } from 'shell-quote';
+import { parse as parseShellCommand } from './shell-quote.mjs';
 import { codeIntelDelivery } from './delivery-ledger.mjs';
 
 /**
@@ -679,6 +679,37 @@ function isReadOnlyRipgrepCommand(command, env) {
 }
 
 /**
+ * Permit file readers while the execution-authority server is unavailable.
+ * cat accepts only input paths; sed accepts only explicit line-range printing.
+ * Reject shell operators, substitutions, in-place edits, and sed write/exec scripts.
+ * @param {string} command
+ */
+function isReadOnlyFileReadCommand(command) {
+  if (command.length > 16_384 ||
+      command.includes(String.fromCharCode(0)) ||
+      command.includes(String.fromCharCode(10)) ||
+      command.includes(String.fromCharCode(13)) ||
+      command.includes(String.fromCharCode(96)) ||
+      command.includes('$')) return false;
+
+  let tokens;
+  try {
+    tokens = parseShellCommand(command);
+  } catch {
+    return false;
+  }
+  if (!Array.isArray(tokens) || tokens.length < 2 || tokens.some(token => typeof token !== 'string')) return false;
+  const [tool, ...args] = tokens;
+  if (tool === 'cat') {
+    return args.length > 0 && args.every(arg => arg.length > 0 && !arg.startsWith('-'));
+  }
+  if (tool !== 'sed' || args.length < 3 || args[0] !== '-n') return false;
+  if (!/^(?:\d+|\$)(?:,(?:\d+|\$))?p$/.test(args[1])) return false;
+  const inputFiles = args.slice(2);
+  return inputFiles.length > 0 && inputFiles.every(arg => arg.length > 0 && !arg.startsWith('-'));
+}
+
+/**
  * Permit the typed canonical plan-anchor repair path. The quoted heredoc makes
  * its JSON data inert to the shell, and the allowlisted payload cannot replace
  * plan prose or requirements. The operator still validates and authorizes the
@@ -724,7 +755,9 @@ function isSafeWithoutExecutionAuthority(partial, env) {
   if (!SHELL_PRE_TOOL_NAMES.has(partial?.tool ?? '')) return false;
   const command = shellCommandFromPartial(partial);
   if (command === null) return false;
-  return isReadOnlyRipgrepCommand(command, env) || isCanonicalPlanAnchorRepairCommand(command);
+  return isReadOnlyRipgrepCommand(command, env) ||
+    isReadOnlyFileReadCommand(command) ||
+    isCanonicalPlanAnchorRepairCommand(command);
 }
 
 /**

@@ -167,6 +167,54 @@ describe('text-artifacts (drizzle, PG)', () => {
       .rejects.toThrow('result_pin_substitution');
   });
 
+  it('routes authenticated security custody through testing adapters with real PG result readback', async () => {
+    const a = await import('./agent-tools/testing/run-security-qualification');
+    const { SECURITY_POPULATIONS, securityTupleId } = await import('./coverage-census/security-manifest');
+    const context = (owner: string): UnifiedToolContext => ({ uiClientId: `su-${owner}`, workspaceId: WS,
+      harnessSlug: 'web', isSuperuser: true, log: () => {}, signal: new AbortController().signal,
+      progress: async () => {}, emit: async () => {}, principal: { kind: 'system', slug: 'system:superuser',
+        workspaceId: WS, authMethod: 'bearer-token', trust: 'trusted', capabilities: new Set() } });
+    const source = { revision: 'adapter-storage-fixture', sha256: 'a'.repeat(64) };
+    const produced = await a.securityQualificationMetadata(context('producer'), 'web', { phase: 'manifest',
+      manifest: { source, runtime: source, inputs: SECURITY_POPULATIONS.map(population => ({ id: population,
+        population, source, surfaces: [{ kind: population, surfaceId: population, fidelity: 'declared' }] })) } });
+    if (!('manifestSha256' in produced) || !('producerRef' in produced)) throw Error('no manifest');
+    const tuples = SECURITY_POPULATIONS.map(population => ({ population, kind: population, surfaceId: population,
+      distribution: 'fixture', platform: 'linux', runtime: 'node', enforcementMode: 'strict', effect: 'fs', channel: 'mcp' }));
+    const planned = await a.securityQualificationMetadata(context('producer'), 'web', { phase: 'ledger',
+      manifestSha256: produced.manifestSha256, tuples, dispositions: tuples.map(tuple => ({
+        rowId: securityTupleId(tuple), applicability: 'notApplicable', reason: 'Storage fixture, no security acceptance',
+        sourceRefs: ['fixture:adapter-storage'] })) });
+    if (!('ledgerSha256' in planned) || !('producerRef' in planned)) throw Error('no ledger');
+    const review = { phase: 'review' as const, manifestSha256: produced.manifestSha256,
+      ledgerSha256: planned.ledgerSha256, manifestProducerRef: produced.producerRef,
+      ledgerProducerRef: planned.producerRef, executor: 'su-executor', reviewRef: 'fixture:review' };
+    await expect(a.securityQualificationMetadata(context('producer'), 'web', review)).rejects.toThrow('reviewer_not_independent');
+    const approved = await a.securityQualificationMetadata(context('reviewer'), 'web', review);
+    if (!('approvalRef' in approved)) throw Error('no approval');
+    const input = { phase: 'execute' as const, manifestSha256: review.manifestSha256,
+      ledgerSha256: review.ledgerSha256, approvalRef: approved.approvalRef };
+    // The callback is a storage fixture: this tests real signing/SQL/adapter
+    // ordering and replay protection, not a router or confinement verdict.
+    const core = vi.fn(async () => ({ ok: true, runId: 'adapter-storage-run', files: 1, passed: 1, failed: 0 }));
+    const result = await a.executeSecurityQualification(context('executor'), 'web', input, core);
+    expect(result.securityQualification).toMatchObject({ custodyOnly: true, securityVerdict: 'unmeasured' });
+    const resultRef = result.securityQualification?.resultRef;
+    if (typeof resultRef !== 'string') throw Error('no result ref');
+    const verified = await a.securityQualificationMetadata(context('reviewer'), 'web', {
+      phase: 'verify', manifestSha256: input.manifestSha256, ledgerSha256: input.ledgerSha256, resultRef });
+    expect(verified).toMatchObject({ readbackVerified: true, runId: 'adapter-storage-run', rows: 7,
+      custodyOnly: true, securityVerdict: 'unmeasured' });
+    await expect(a.executeSecurityQualification(context('executor'), 'web', input, core)).rejects.toThrow('already_consumed');
+    expect(core).toHaveBeenCalledTimes(1);
+    const evidenceRef = result.securityQualification?.executionEvidenceSha256;
+    if (typeof evidenceRef !== 'string') throw Error('no execution evidence');
+    await rootSql`UPDATE harness_shared.harness_text_artifacts SET content='{}'
+      WHERE harness_slug='web' AND rel_path=${`immutable/sha256/${evidenceRef}.json`}`;
+    await expect(a.securityQualificationMetadata(context('reviewer'), 'web', {
+      phase: 'verify', manifestSha256: input.manifestSha256, ledgerSha256: input.ledgerSha256, resultRef })).rejects.toThrow();
+  });
+
   it('permanently consumes an immutable execution slot exactly once under concurrency', async () => {
     const slot = 'security-qualification:start:approval';
     const results = await Promise.all(Array.from({ length: 5 }, () => claimImmutableTextArtifact('web', slot, 'start')));

@@ -134,12 +134,10 @@ export async function checkPlanExecutionReadiness(binding: ExecutionPlanBinding,
         (!audit.content_snapshot || planExecutionMeaning(audit.content_snapshot) !== planExecutionMeaning(plan.content)))
         return ['activation_audit_stale'];
     }
-    const [{ evaluatePlanStartReadiness }, { readAndEvaluateAcceptanceBarLifecycle },
-      { checkPlanAdmission }, { withPinnedPlanTypes }, { checkPlanStartable },
+    const [{ evaluatePlanStartReadiness }, { checkPlanAdmission }, { checkPlanStartable },
       { evaluatePlanSpecQualityGate }, { evaluatePlanStartBarCritique }, { specQualityPlanItemIds },
       { validatePlanCandidateDependencies }] = await Promise.all([
-      import('./plan-input-validation'), import('../../acceptance-bar-lifecycle-evaluator'),
-      import('./plan-admission-gate'), import('../../plan-types/pins'),
+      import('./plan-input-validation'), import('./plan-admission-gate'),
       import('./plan-start-gate'), import('./plan-spec-quality-gate'), import('./plan-start-critique-gate'),
       import('./spec-quality'),
       import('./plan-candidate-dependencies'),
@@ -161,9 +159,9 @@ export async function checkPlanExecutionReadiness(binding: ExecutionPlanBinding,
     }
     const inputs = evaluatePlanStartReadiness({ template: plan.template, inputSchema: plan.inputSchema }, plan.templateData);
     if (!inputs.ready) return [inputs.code];
-    const bars = await withPinnedPlanTypes(scope, () => readAndEvaluateAcceptanceBarLifecycle(binding.planSlug,
-      'pre-start', { harnessSlug: row.harness_slug, requireCompleteContractBeforeProof: true }));
-    if (!bars.satisfied) return bars.codes.length ? bars.codes : ['acceptance_bar_contract_not_ready'];
+    // checkPlanStartable already evaluates the complete pre-start BAR under pinned
+    // plan types on this invocation. Repeating it remeasures every evidence binding.
+    // Keep that canonical check fresh on every use; do not cache its verdict.
     const admission = await checkPlanAdmission({ slug: binding.planSlug, door: 'run-now', opts, row: plan });
     return admission.admitted ? [] : [admission.refusal.code];
   });

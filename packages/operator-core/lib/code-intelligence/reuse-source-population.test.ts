@@ -73,6 +73,46 @@ describe('finite code-intelligence worker source collection', () => {
   });
   afterAll(() => { if (dir) rmSync(dir, { recursive: true, force: true }); });
 
+  it('captures a small-file census without starting Git once per tiny identity batch', async () => {
+    const root = join(dir, 'many-small-sources'), trace = join(dir, 'small-source-git.jsonl');
+    execFileSync('git', ['init', '-q', root]);
+    const git = (date: string, ...args: string[]) => execFileSync('git', ['-C', root, '-c', 'core.hooksPath=/dev/null', ...args], {
+      env: { ...process.env, GIT_AUTHOR_NAME: 'Fixture', GIT_AUTHOR_EMAIL: 'fixture@example.invalid',
+        GIT_COMMITTER_NAME: 'Fixture', GIT_COMMITTER_EMAIL: 'fixture@example.invalid',
+        GIT_AUTHOR_DATE: date, GIT_COMMITTER_DATE: date },
+    });
+    writeFileSync(join(root, 'base.ts'), 'export const base = 1;\n');
+    git('2026-10-01T00:00:00Z', 'add', '.');
+    git('2026-10-01T00:00:00Z', 'commit', '-qm', 'baseline');
+    const paths = Array.from({ length: 300 }, (_, i) => `source-${i}.ts`);
+    for (const [i, path] of paths.entries()) writeFileSync(join(root, path), `export function target${i}() {} target${i}();\n`);
+    git('2026-10-01T01:00:00Z', 'add', '.');
+    git('2026-10-01T01:00:00Z', 'commit', '-qm', 'small source population');
+    const child = fork(worker, [], { execArgv: [], serialization: 'advanced',
+      env: { ...process.env, GIT_TRACE2_EVENT: trace }, stdio: ['ignore', 'ignore', 'pipe', 'ipc'] });
+    let stderr = '';
+    child.stderr!.on('data', chunk => { stderr += chunk; });
+    try {
+      const result: any = await new Promise((resolveResult, reject) => {
+        const timer = setTimeout(() => reject(new Error('Small-source census deadline: ' + stderr)), 15_000);
+        child.on('error', error => { clearTimeout(timer); reject(error); });
+        child.on('exit', code => { clearTimeout(timer); reject(new Error('Small-source worker exited: ' + code + ': ' + stderr)); });
+        child.on('message', (value: any) => {
+          if (value?.kind !== 'reuse-source-population') return;
+          clearTimeout(timer); resolveResult(value);
+        });
+        child.send({ kind: 'reuse-source-population', root, start: '2026-10-01T00:30:00Z', end: '2026-10-01T01:30:00Z', captureRoot: dir });
+      });
+      expect(result.ok, result.error ?? stderr).toBe(true);
+      expect(result.population.method.sourcePopulation).toEqual(['base.ts', ...paths].sort());
+      expect(result.population.calls).toHaveLength(paths.length);
+      expect(result.population.calls.every((call: any) => call.resolved && call.from === call.to)).toBe(true);
+      const captures = readFileSync(trace, 'utf8').trim().split('\n').map(line => JSON.parse(line))
+        .filter(event => event.event === 'start' && event.argv?.includes('cat-file') && event.argv.includes('--batch'));
+      expect(captures).toHaveLength(1);
+    } finally { child.kill(); }
+  });
+
   it('keeps operator initialization, fixture payloads and database clients outside the emitted worker', () => {
     const operatorInputs = inputs.filter(path => path.startsWith('packages/operator-core/lib/'));
     expect(operatorInputs).toContain('packages/operator-core/lib/code-intelligence/reuse-source-population.ts');
@@ -156,7 +196,7 @@ describe('finite code-intelligence worker source collection', () => {
     expect(result.calls).toEqual([expect.objectContaining({ from: 'a.ts', to: 'a.ts', resolved: true })]);
   });
 
-  it('overlaps immutable parsing with diff collection while preserving serial resolution and ordered call identities', async () => {
+  it('pipelines immutable capture and parsing with diff collection, preserving serial resolution and ordered identities', async () => {
     const root = join(dir, 'partitioned');
     execFileSync('git', ['init', '-q', root]);
     const git = (date: string, ...args: string[]) => execFileSync('git', ['-C', root, ...args], {
@@ -173,6 +213,12 @@ describe('finite code-intelligence worker source collection', () => {
     for (const path of parserExcluded) {
       mkdirSync(dirname(join(root, path)), { recursive: true });
       writeFileSync(join(root, path), 'export function excluded() {} excluded();\n');
+    }
+    // A run of large files must split by bytes even though it fits the old
+    // 512-identity chunk. Keep the independently computed serial oracle below.
+    for (let i = 100; i < 108; i++) {
+      const path = join(root, `f${String(i).padStart(4, '0')}.ts`);
+      writeFileSync(path, `/*${'x'.repeat(1024 * 1024)}*/\n` + readFileSync(path, 'utf8'));
     }
     git('2026-10-01T00:00:00Z', 'add', '.'); git('2026-10-01T00:00:00Z', 'commit', '-qm', 'base');
     writeFileSync(join(root, 'f1024.ts'), 'import {target} from "./f0500"; target();\n');
@@ -208,7 +254,19 @@ describe('finite code-intelligence worker source collection', () => {
           if (!source.includes(site)) throw new Error('Diff overlap observation site moved');
           // Hold the independent diff until parsing starts. Serial scheduling
           // fails here; the complete ordered result must still match its oracle.
-          return { contents: `import {existsSync as overlapExists} from 'node:fs';\n` + source.replace(site, `${site}
+          const captureSite = "      const out = await gitBytes(['cat-file', '--batch'],";
+          if (!source.includes(captureSite)) throw new Error('Capture overlap observation site moved');
+          const pipelined = source.replace('batch.length < 4096', 'batch.length < 256').replace(captureSite, `
+            if (i > batch.length) {
+              const captureDeadline = Date.now() + 3000;
+              while (!overlapExists(${JSON.stringify(marker)})) {
+                if (Date.now() > captureDeadline) throw new Error('Source parser did not overlap blob capture');
+                await new Promise(resolve => setTimeout(resolve, 10));
+              }
+              if (process.env.P019_TEST_CASE === 'capture') throw new Error('Injected blob capture failure');
+            }
+${captureSite}`);
+          return { contents: `import {existsSync as overlapExists} from 'node:fs';\n` + pipelined.replace(site, `${site}
             const overlapDeadline = Date.now() + 3000;
             while (!overlapExists(${JSON.stringify(marker)})) {
               if (Date.now() > overlapDeadline) throw new Error('Source parser did not overlap diff collection');
@@ -233,7 +291,10 @@ describe('finite code-intelligence worker source collection', () => {
       expect(result.population).toEqual(serial);
       const partitions = observations.filter(x => x.kind === 'partition').map(x => x.index);
       expect(partitions.indexOf(1)).toBeLessThan(partitions.indexOf(0));
-      expect([...partitions].sort()).toEqual([0, 1, 2]);
+      expect([...partitions].sort()).toEqual([0, 1, 2, 3]);
+      const chunks = observations.filter(x => x.kind === 'partition');
+      expect(chunks.every(x => x.bytes <= 4 * 1024 * 1024 && x.files <= 512)).toBe(true);
+      expect(chunks.reduce((sum, x) => sum + x.files, 0)).toBe(1027);
       const limits = observations.filter(x => x.kind === 'ready');
       expect(limits).toHaveLength(2);
       expect(limits.every(x => x.oldSpaceMb === 1024 && x.heapLimitMb <= 1056
@@ -243,11 +304,13 @@ describe('finite code-intelligence worker source collection', () => {
     } finally { child.kill(); }
     const previous = process.env.P019_TEST_CASE;
     try {
-      for (const fault of ['error', 'missing', 'timeout']) {
+      for (const fault of ['error', 'missing', 'timeout', 'capture']) {
         process.env.P019_TEST_CASE = fault;
-        await expect(collectReuseSourcePopulationOffthread(root, start, end,
-          { workerPath: instrumented, heapMb: 3072, budgetMs: fault === 'timeout' ? 3000 : 15_000 }))
-          .rejects.toThrow(fault === 'timeout' ? 'deadline' : /parser/i);
+        const failure = await collectReuseSourcePopulationOffthread(root, start, end,
+          { workerPath: instrumented, heapMb: 3072, budgetMs: fault === 'timeout' ? 3000 : 15_000 })
+          .then(() => null, error => error as Error);
+        expect(failure, `fault=${fault}`).toBeInstanceOf(Error);
+        expect(failure!.message, `fault=${fault}`).toMatch(fault === 'timeout' ? /deadline/ : fault === 'capture' ? /capture/i : /parser/i);
         const lifetime = JSON.parse(readFileSync(marker, 'utf8'));
         expect(existsSync(dirname(dirname(lifetime.source)))).toBe(false);
         expect(() => process.kill(lifetime.pid, 0)).toThrow();

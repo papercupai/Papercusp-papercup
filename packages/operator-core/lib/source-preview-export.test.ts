@@ -71,10 +71,11 @@ import {
 import { BG_INPUTS, DROPPED, INTERNAL_DOC_CONTENTS, SHIPPED, childEnv, git, makeBgCandidate, makeBgCompilerCandidate, makeSuperproject, write, type Superproject } from './source-preview.fixture';
 import { BG_R1_CASE_REGISTRY, BG_R1_SOURCE_CASES, BG_R1_MEMBER_CASES, BG_R1_PARENT_SELECTORS } from './source-preview.fixture';
 import r1Manifest from './source-preview.r1-cases.fixture.json';
+import { BG_R4_CASE_REGISTRY, BG_R4_CUSTODY_CASES, BG_R4_TEARDOWN_CASES } from './source-preview.fixture';
+import r4Manifest from './source-preview.r4-cases.fixture.json';
 import { captureTestSourceSnapshot } from './testing-worktree';
 import { measureBootOperatorArtifact } from './release/operator-artifact';
-import { cleanupEndedVerifierDirectories, verifierResourceInventory, verifierSourceFiles, writeVerifierTaskReceipt,
-  type VerifierTeardownOutcome } from './verifier-source';
+import { cleanupEndedVerifierDirectories, verifierResourceInventory, verifierSourceFiles, writeVerifierTaskReceipt } from './verifier-source';
 import { readProcessIdentity } from './process-identity';
 import { bindFrozenDependencyGeneration } from './dependency-generation-proof';
 import { closeTask } from './task-manager/store';
@@ -177,10 +178,8 @@ describe('BG teardown resource inventory source controls', () => {
       .toThrow('original owner, custody or deadline changed');
   });
 
-  const custodyFields = ['parent-fire24', 'owner', 'origin', 'error-history', 'evidence-reference'] as const;
-  const custodyActions = ['delete', 'reset', 'replace', 'rewrite'] as const;
-  for (const field of custodyFields) for (const action of custodyActions) {
-    it(`bg-r4-custody-${field}-${action} refuses ${action} of original ${field} custody`, async () => {
+  for (const { field, action, testName } of BG_R4_CUSTODY_CASES) {
+    it(testName, async () => {
       const f = fixture();
       rmSync(f.owned, { recursive: true });
       const changed: Record<string, unknown> = structuredClone(f.custody);
@@ -194,9 +193,8 @@ describe('BG teardown resource inventory source controls', () => {
     });
   }
 
-  const outcomes: VerifierTeardownOutcome[] = ['success', 'failure', 'cancellation', 'timeout', 'interruption-recovery'];
-  for (const outcome of outcomes) for (const timing of ['immediately-before', 'exactly-at', 'after'] as const) {
-    it(`bg-r4-teardown-${outcome}-${timing} reconciles late descendants on ${outcome} at original teardown deadline ${timing}`, async () => {
+  for (const { outcome, timing, testName } of BG_R4_TEARDOWN_CASES) {
+    it(testName, async () => {
       const f = fixture();
       // A new root is first inventoried during cleanup; it must be present in
       // the terminal census even though the candidate has already been removed.
@@ -265,6 +263,25 @@ describe('BG teardown resource inventory source controls', () => {
     expect(() => verifierResourceInventory({ ...f.options, resume: true, expectedHistory: history }))
       .toThrow('recovery history anchor changed');
   });
+});
+
+// Ordinary CI checks declarations. Acceptance also uses resolveTestCasePopulation
+// with one completed canonical receipt for every row, including this census and
+// P-002's restart case. This declaration guard does not manufacture those receipts.
+it('bg-r4-census requires exact predeclared selector and branch population', () => {
+  const key = (row: { rowId: string; file: string; testName: string }) =>
+    JSON.stringify([row.rowId, row.file, row.testName]);
+  expect(r4Manifest.revision).toBe(12);
+  expect(r4Manifest.cases).toHaveLength(42);
+  expect(BG_R4_CASE_REGISTRY.map(key).sort()).toEqual(r4Manifest.cases.map(key).sort());
+  expect(new Set(BG_R4_CASE_REGISTRY.map(row => row.rowId)).size).toBe(42);
+  expect(new Set(BG_R4_CASE_REGISTRY.map(row => JSON.stringify([row.file, row.testName]))).size).toBe(42);
+  expect(new Set(BG_R4_CASE_REGISTRY.map(row => row.file))).toEqual(new Set([
+    'packages/operator-core/lib/source-preview-export.test.ts',
+    'apps/operator/lib/bundle-host-freshness.test.ts',
+    'packages/operator-core/lib/release/operator-artifact.test.ts',
+    'packages/operator-core/lib/agent-tools/dev/restart.test.ts',
+  ]));
 });
 
 // This ordinary CI guard proves declarations only. Acceptance additionally needs

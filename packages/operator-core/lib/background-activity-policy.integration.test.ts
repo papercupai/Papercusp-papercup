@@ -1,7 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import postgres from 'postgres';
-import { randomBytes } from 'node:crypto';
-import { getTestPg, markManagedTestDatabase } from '@papercusp/test-config/pg';
+import type postgres from 'postgres';
+import { createOrgTestDb, type OrgTestDb } from '../test/_org-test-db';
 import type { StartupActivityFeature } from './schedule-inventory';
 
 const state = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql, workspace: 'policy-a' }));
@@ -11,10 +10,9 @@ vi.mock('@papercusp/db-org', async original => ({
 vi.mock('./workspace-registry', () => ({ activeWorkspaceId: () => state.workspace }));
 vi.mock('./sync-sse', () => ({ notifySyncInvalidate: vi.fn().mockResolvedValue(undefined) }));
 import { setPaused, setResumed, setBackgroundActivityAutomatic, isPaused } from './device-operator-actions';
-import { savedStartupActivityPolicy } from './startup-activity';
+import { readStartupActivityHistory, savedStartupActivityPolicy, workspaceBackgroundActivityFeatureId } from './startup-activity';
 
-let admin: postgres.Sql;
-let database: string;
+let db: OrgTestDb;
 const featureId = `activity-${'a'.repeat(64)}`;
 const initial = () => ({ paused: false, futureRoot: { keep: true }, backgroundActivity: {
   version: 1, revision: 10, automatic: true, pausedUntil: null, futurePolicy: 'keep', features: {
@@ -34,29 +32,25 @@ const seed = async () => { await state.sql`
   VALUES (${state.workspace}, ${JSON.stringify(initial())}::text::jsonb, 0)`; };
 
 beforeAll(async () => {
-  const url = await getTestPg();
-  database = `background_policy_${randomBytes(5).toString('hex')}`;
-  admin = postgres(url, { max: 1, onnotice: () => {} });
-  await admin.unsafe(`CREATE DATABASE "${database}"`);
-  await markManagedTestDatabase(admin, database);
-  const target = new URL(url); target.pathname = `/${database}`;
-  state.sql = postgres(target.toString(), { max: 4, onnotice: () => {} });
-  await state.sql`CREATE SCHEMA harness_shared`;
-  await state.sql`CREATE TABLE harness_shared.operator_paused (
-    workspace_id text PRIMARY KEY, payload jsonb NOT NULL, updated_at bigint NOT NULL)`;
+  // Lifecycle writes now include audit_log in the same transaction. Use the
+  // project's migrated schema rather than a hand-maintained one-table replica.
+  db = await createOrgTestDb({ adminPoolMax: 4 });
+  state.sql = db.adminSql;
+}, 180_000);
+afterAll(async () => { await db?.cleanup(); });
+beforeEach(async () => {
+  state.workspace = 'policy-a';
+  await state.sql`TRUNCATE harness_shared.operator_paused`;
+  await state.sql`DELETE FROM harness_shared.audit_log WHERE action = 'background-activity'`;
 });
-afterAll(async () => {
-  await state.sql?.end({ timeout: 5 });
-  if (database) await admin.unsafe(`DROP DATABASE IF EXISTS "${database}" WITH (FORCE)`);
-  await admin?.end({ timeout: 5 });
-});
-beforeEach(async () => { state.workspace = 'policy-a'; await state.sql`TRUNCATE harness_shared.operator_paused`; });
 
 describe('durable background activity policy lifecycle', () => {
   it('serializes simultaneous first pause and disable writes under the existing row lock', async () => {
     await Promise.all([setPaused('settings'), setBackgroundActivityAutomatic(false)]);
     const row = await readRow();
     expect(row).toMatchObject({ paused: true, backgroundActivity: { version: 1, revision: 2, automatic: false } });
+    const history = await readStartupActivityHistory([workspaceBackgroundActivityFeatureId(state.workspace)]);
+    expect(history.map(entry => entry.resulting?.revision).sort()).toEqual([1, 2]);
   });
 
   it('preserves feature disables and unknown newer fields through concurrent writes and resume', async () => {

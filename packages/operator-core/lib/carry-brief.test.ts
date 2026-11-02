@@ -468,7 +468,7 @@ describe('note-citation hydration + post-note delta (cold-carry-system-hardening
     expect(parseCitedRefStateTag(resolvedLine)).toEqual({ id: 'conv-resolved-full', state: 'resolved' });
     expect(detectTerminalCitedRefs([activeLine, resolvedLine])).toEqual(['conv-resolved-full']);
     expect(annotateCarryNoteLiveContradictions(note, [resolvedLine])).toContain(
-      '⚠ LIVE: conv-resolved-full status=resolved',
+      '⚠ STATUS SNAPSHOT: conv-resolved-full status=resolved source=conversation-resolver lookup_completed_at=',
     );
     expect(carryConversationMocks.getConsultStates).not.toHaveBeenCalled();
   });
@@ -729,7 +729,8 @@ describe('stale-note contradiction detector (EI-18726068732447732)', () => {
     expect(ids).toEqual(['WI-5397', 'WI-6054']);
   });
 
-  it('renderCarryBriefText surfaces a loud contradiction banner + inline flag when a cited ref is terminal', async () => {
+  it('renderCarryBriefText marks terminal status as a timestamped snapshot and asks for a fresh read', async () => {
+    const lookupCompletedAt = '2026-11-02T10:36:22.000Z';
     const brief = await buildCarryBrief(
       'su-abc',
       fullOpts({
@@ -737,28 +738,44 @@ describe('stale-note contradiction detector (EI-18726068732447732)', () => {
           note: '## Next action\nverify then work_items:complete WI-6054 citing that line',
           updatedAtMs: Date.now() - 60_000,
         }),
-        hydrateNoteRefsFn: async () => ['WI-6054 [bug/done @su-397]: "already fixed + closed…"'],
+        hydrateNoteRefsFn: async () => [
+          'WI-6054 [bug/done @su-397]: "already fixed + closed…" (source=work_items:get; lookup_completed_at=' +
+            lookupCompletedAt +
+            ')',
+        ],
       }),
     );
     const text = renderCarryBriefText(brief);
     expect(text).toContain('STALE-NOTE CONTRADICTION');
     expect(text).toContain('WI-6054');
     expect(text).toContain('already TERMINAL');
-    expect(text).toContain('⚠ TERMINAL ↪ WI-6054 [bug/done');
-    expect(text).toContain('WI-6054 citing that line   ⚠ LIVE: WI-6054 status=done');
+    expect(text).toContain('⚠ TERMINAL SNAPSHOT ↪ WI-6054 [bug/done');
+    expect(text).toContain('source=work_items:get; lookup_completed_at=' + lookupCompletedAt);
+    expect(text).toContain(
+      'WI-6054 citing that line   ⚠ STATUS SNAPSHOT: WI-6054 status=done source=work_items:get lookup_completed_at=' +
+        lookupCompletedAt,
+    );
+    expect(text).toContain('The status may have changed since; re-read each exact reference');
   });
 
   it('qualifies a terminal plan item and marks the stale prose on the same line', async () => {
     const note = 'P-026 (wip, claimed) — SCOPED via D-083, BUILD NOT STARTED';
+    const lookupCompletedAt = '2026-11-02T10:36:22.000Z';
     const live =
-      'plan:learning-tab-surface-public-release-2026-07-27#P-026 [done]: "already shipped"';
+      'plan:learning-tab-surface-public-release-2026-07-27#P-026 [done]: "already shipped" (source=plan-item-resolver; lookup_completed_at=' +
+      lookupCompletedAt +
+      ')';
     expect(parseCitedLiveState(live)).toEqual({
       id: 'plan:learning-tab-surface-public-release-2026-07-27#P-026',
       mention: 'P-026',
       state: 'done',
+      source: 'plan-item-resolver',
+      lookupCompletedAt,
     });
     expect(annotateCarryNoteLiveContradictions(note, [live])).toBe(
-      `${note}   ⚠ LIVE: plan:learning-tab-surface-public-release-2026-07-27#P-026 status=done`,
+      note +
+        '   ⚠ STATUS SNAPSHOT: plan:learning-tab-surface-public-release-2026-07-27#P-026 status=done source=plan-item-resolver lookup_completed_at=' +
+        lookupCompletedAt,
     );
 
     const brief = await buildCarryBrief(
@@ -783,8 +800,12 @@ describe('stale-note contradiction detector (EI-18726068732447732)', () => {
       }),
     );
     const text = renderCarryBriefText(brief);
-    expect(text).toContain(`${note}   ⚠ LIVE: plan:learning-tab-surface-public-release-2026-07-27#P-026 status=done`);
-    expect(text).toContain('⚠ TERMINAL ↪ plan:learning-tab-surface-public-release-2026-07-27#P-026 [done]');
+    expect(text).toContain(
+      note +
+        '   ⚠ STATUS SNAPSHOT: plan:learning-tab-surface-public-release-2026-07-27#P-026 status=done source=plan-item-resolver lookup_completed_at=' +
+        lookupCompletedAt,
+    );
+    expect(text).toContain('⚠ TERMINAL SNAPSHOT ↪ plan:learning-tab-surface-public-release-2026-07-27#P-026 [done]');
     expect(text).toContain('STALE-NOTE CONTRADICTION');
   });
 

@@ -359,7 +359,7 @@ function custodyInventory(directory, objectLimit = custodyLimits.objects) {
     throw new Error('custody inventory changed');
   return names.sort();
 }
-function custodyReferences(payload) {
+function custodyReferences(payload, artifactLimit = custodyLimits.families.B.objects) {
   const occurrences = [], artifacts = new Map(), gaps = new Set();
   const scan = (rows, prefix, observation) => {
     if (rows === undefined) return;
@@ -386,7 +386,7 @@ function custodyReferences(payload) {
           if (known && (known.sha256 !== artifact.sha256 || known.byteLength !== artifact.byteLength))
             throw new Error('custody evaluator reference conflict');
           if (!known) {
-            if (artifacts.size === custodyLimits.families.B.objects) gaps.add('evaluator-artifact-limit');
+            if (artifacts.size === artifactLimit) gaps.add('evaluator-artifact-limit');
             else artifacts.set(pin.codeRef, artifact);
           }
           occurrences.push({ location: `${prefix}/${index}/${role}/${i}`, ...pin });
@@ -587,7 +587,7 @@ export function retainNativeProofPacket(directory, input) {
           const payload = JSON.parse(custodyOutBytes(entry.entries[0], artifact =>
             readNativeArtifactBytes(join(objectRoot, artifact.ref), artifact.byteLength,
               custodyLimits.objectBytes)).toString('utf8'));
-          const refs = custodyReferences(payload);
+          const refs = custodyReferences(payload, custodyArchiveLimits.objects);
           group.references = refs.occurrences;
           group.referenceArtifacts = refs.artifacts;
           group.referenceGaps = refs.gaps;
@@ -647,6 +647,9 @@ export function retainNativeProofPacket(directory, input) {
       index: segment.index, entries: segment.entries })), 'native-segment.json') }));
   const manifest = { schemaVersion: 'native-proof-custody-v3', identity: input.identity,
     expected: input.expected, expectedHash: custodyHash(input.expected), groups, limits: custodyLimits,
+    // Reference census spans the archive; capture still enforces each segment's
+    // family budget. Older packets omit this field and retain their old census.
+    referenceArtifactLimit: custodyArchiveLimits.objects,
     bytesRead: budget.bytes, bytesReadByFamily: budget.bytesByFamily,
     objectsRead: budget.objects, objectsReadByFamily: budget.objectsByFamily,
     segments: retainedSegments, archiveLimits: custodyArchiveLimits,
@@ -705,6 +708,10 @@ export function verifyNativeProofPacket(directory, locator, contract) {
   const legacy = manifest.schemaVersion === 'native-proof-custody-v1';
   segmented = manifest.schemaVersion === 'native-proof-custody-v3';
   const current = manifest.schemaVersion === 'native-proof-custody-v2' || segmented;
+  const referenceArtifactLimit = manifest.referenceArtifactLimit ?? custodyLimits.families.B.objects;
+  if (manifest.referenceArtifactLimit !== undefined &&
+      (!segmented || manifest.referenceArtifactLimit !== custodyArchiveLimits.objects))
+    throw new Error('custody reference artifact limit mismatch');
   readLimits = legacy ? legacyCustodyLimits : custodyLimits;
   if ((!legacy && !current) || JSON.stringify(manifest.limits) !== JSON.stringify(readLimits) ||
       JSON.stringify(manifest.identity) !== JSON.stringify(contract.identity) ||
@@ -798,7 +805,7 @@ export function verifyNativeProofPacket(directory, locator, contract) {
     if (out && group.families.find(row => row.family === 'A').state === 'produced') {
       // Validate the exact bytes already read above; charging another read can
       // reject a correctly retained packet near the bounded capture limit.
-      const refs = custodyReferences(JSON.parse(reporter.toString('utf8')));
+      const refs = custodyReferences(JSON.parse(reporter.toString('utf8')), referenceArtifactLimit);
       if (JSON.stringify(refs.occurrences) !== JSON.stringify(group.references))
         throw new Error('custody reference occurrences missing');
       if (current && (JSON.stringify(refs.artifacts) !== JSON.stringify(group.referenceArtifacts) ||

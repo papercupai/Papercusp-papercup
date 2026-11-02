@@ -288,22 +288,32 @@ export async function hydrateRefs(
           label: canonicalRefKey(ref),
           snippet: '',
           error: 'resolver_not_installed',
+          resolvedAt: new Date().toISOString(),
         };
       }
       try {
         const hit = await resolver(ref, budget);
+        const resolvedAt = new Date().toISOString();
         if (!hit) {
-          return { ref, ok: false, label: canonicalRefKey(ref), snippet: '', error: 'not_found' };
+          return { ref, ok: false, label: canonicalRefKey(ref), snippet: '', error: 'not_found', resolvedAt };
         }
         return {
           ref,
           ok: true,
           label: hit.label,
           snippet: hit.snippet,
+          resolvedAt,
           ...(hit.terminalSubject ? { terminalSubject: hit.terminalSubject } : {}),
         };
       } catch {
-        return { ref, ok: false, label: canonicalRefKey(ref), snippet: '', error: 'resolve_error' };
+        return {
+          ref,
+          ok: false,
+          label: canonicalRefKey(ref),
+          snippet: '',
+          error: 'resolve_error',
+          resolvedAt: new Date().toISOString(),
+        };
       }
     }),
   );

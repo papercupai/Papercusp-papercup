@@ -3,22 +3,28 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 import { createFreshPgDb, type FreshPgDb } from '../../../test/_pg-helpers';
 import { hashPlanContent } from './content-hash';
 
-const gates = vi.hoisted(() => ({ blocker: '', unavailable: false }));
-const connection = vi.hoisted(() => ({ sql: null as unknown }));
+const gates = vi.hoisted(() => ({ blocker: '', unavailable: false,
+  beforeReadiness: null as (() => Promise<void>) | null }));
+const connection = vi.hoisted(() => ({ sql: null as unknown, idleTimeout: '0' }));
 vi.mock('@papercusp/db-org', async original => ({
   ...(await original<typeof import('@papercusp/db-org')>()),
   getOrgPg: () => ({ sql: connection.sql }),
-  withWorkspace: async (_workspace: string, fn: (tx: unknown) => Promise<unknown>) => db.sql.begin(tx => fn(tx)),
+  withWorkspace: async (_workspace: string, fn: (tx: unknown) => Promise<unknown>) => db.sql.begin(async tx => {
+    await tx`SELECT set_config('idle_in_transaction_session_timeout', ${connection.idleTimeout}, true)`;
+    return fn(tx);
+  }),
 }));
 // Policy readers have their own maintained suites. Control their verdicts here;
 // the canonical writer, scoped SQL, revision insert, trigger, native guard and GC
 // remain real so a ready verdict alone cannot manufacture a start receipt.
 vi.mock('./plan-activation-gate', () => ({ evaluateConversationActivationGate: async () => {
+  await gates.beforeReadiness?.();
   if (gates.unavailable) throw new Error('policy reader unavailable');
   return { satisfied: gates.blocker !== 'conversation_audit_required', grandfathered: true,
     code: 'conversation_audit_required' };
 } }));
-vi.mock('./plan-start-gate', () => ({ checkPlanStartable: async () => gates.blocker === 'initial_change_scope_missing'
+// The canonical start gate includes the pre-start BAR contract check.
+vi.mock('./plan-start-gate', () => ({ checkPlanStartable: async () => ['initial_change_scope_missing', 'bar_contract_not_ready'].includes(gates.blocker)
   ? { ok: false, refusal: { code: gates.blocker } } : { ok: true } }));
 vi.mock('./plan-spec-quality-gate', () => ({ evaluatePlanSpecQualityGate: async () => ({
   satisfied: gates.blocker !== 'spec_quality_not_current', applicable: true, mode: 'enforced', code: 'spec_quality_not_current',
@@ -105,6 +111,7 @@ beforeAll(async () => {
 afterAll(async () => { connection.sql = null; await db?.cleanup(); });
 beforeEach(async () => {
   gates.blocker = ''; gates.unavailable = false;
+  gates.beforeReadiness = null; connection.idleTimeout = '0';
   await db.sql.unsafe('TRUNCATE harness_shared.harness_plans,harness_shared.plan_revisions,harness_shared.plan_audits,harness_shared.session_briefs,harness_shared.work_items,harness_shared.work_item_deps RESTART IDENTITY');
   await db.sql`INSERT INTO harness_shared.harness_plans (workspace_id,harness_slug,plan_slug,content,content_hash,status)
     VALUES (${scope.workspaceId},${scope.harnessSlug},${scope.planSlug},${body},${hashPlanContent(body)},'ready')`;
@@ -115,6 +122,47 @@ describe('canonical successful-start revision authority (real PG)', () => {
     INSERT INTO harness_shared.work_items (workspace_id,harness_slug,feature_id,item_kind,status,
       plan_slug,plan_line_id,plan_line_text,plan_importance,plan_decision_refs,plan_deliverable,plan_seq)
     VALUES ('execution-ws','project',${id},'feature','open','feature',${id},'Preserve findings','normal','{}','doc',${seq})`;
+
+  it('survives independent readiness slower than the write transaction idle timeout', async () => {
+    const slowRead = async () => { await db.sql`SELECT pg_sleep(0.3)`; };
+    // Positive control: the former transaction/read/query ordering really loses
+    // its backend under this timeout; a merely slow or disabled timer cannot pass.
+    const expired = db.sql.begin(async tx => {
+      await tx`SELECT set_config('idle_in_transaction_session_timeout', '100ms', true)`;
+      await slowRead();
+      await tx`SELECT 1`;
+    });
+    await expect(expired).rejects.toHaveProperty('code', expect.stringMatching(/^(25P03|CONNECTION_CLOSED)$/));
+    connection.idleTimeout = '100ms';
+    gates.beforeReadiness = slowRead;
+    await expect(issue()).resolves.toMatchObject({ seq: 1 });
+    expect(await readPlanExecutionStart(binding, scope.workspaceId)).toEqual([]);
+  });
+
+  it('leaves the plan advisory lock available to independent readiness readers', async () => {
+    gates.beforeReadiness = async () => {
+      await db.sql.begin(async tx => {
+        const [row] = await tx`SELECT pg_try_advisory_xact_lock(hashtext('harness_plans'),
+          hashtext(${`${scope.workspaceId}:${scope.harnessSlug}:${scope.planSlug}`})) AS acquired`;
+        expect(row.acquired).toBe(true);
+      });
+    };
+    await expect(issue()).resolves.toMatchObject({ seq: 1 });
+  });
+
+  it.each(['body', 'structured input', 'rendered line'])('fences a %s change during independent readiness', async change => {
+    await seedLine('P-001');
+    const expected = await readExecutionPlanRow(scope);
+    if (!expected) throw new Error('missing plan');
+    gates.beforeReadiness = async () => {
+      if (change === 'body') await db.sql`UPDATE harness_shared.harness_plans SET content=content || ' changed'`;
+      else if (change === 'structured input') await db.sql`UPDATE harness_shared.harness_plans SET template_data='{"changed":true}'::jsonb`;
+      else await db.sql`UPDATE harness_shared.work_items SET plan_line_text='Discard findings'`;
+    };
+    await expect(recordPlanExecutionStart(scope, identity, expected)).rejects.toThrow('plan_changed_before_start_proof');
+    expect(await db.sql`SELECT seq FROM harness_shared.plan_revisions`).toHaveLength(0);
+    expect((await readExecutionPlanRow(scope))?.execution_start_revision_seq).toBeNull();
+  });
 
   it('records rendered work-graph scope, preserves progress, and invalidates a line edit even after revert', async () => {
     await seedLine('P-001');
@@ -171,7 +219,12 @@ describe('canonical successful-start revision authority (real PG)', () => {
   it.each(['conversation_audit_required','initial_change_scope_missing','spec_quality_not_current',
     'critique_missing','bar_contract_not_ready','governance_refused'])('rechecks current %s after a successful start', async blocker => {
     await issue(); gates.blocker = blocker;
-    expect(await checkExecutionPlan(binding, scope.workspaceId)).toEqual([blocker]);
+    const current = await checkExecutionPlan(binding, scope.workspaceId);
+    if (blocker === 'initial_change_scope_missing') {
+      expect(current).toEqual(['initial_change_scope_missing']);
+    } else {
+      expect(current).toEqual([blocker]);
+    }
     await expect(issue()).rejects.toThrow(blocker);
     const rows = await db.sql`SELECT seq FROM harness_shared.plan_revisions`;
     expect(rows).toHaveLength(1);

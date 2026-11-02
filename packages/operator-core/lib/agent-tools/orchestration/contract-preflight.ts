@@ -1,3 +1,4 @@
+import { withWorkspace } from '@papercusp/db-org';
 import {
   checkScript,
   durableRuntimeTools,
@@ -13,6 +14,7 @@ import {
   deriveLegacyForegroundManifest,
   preflightRecipeContract,
   projectedToolName,
+  toolRequirementFor,
   type CapabilityManifestV1,
   type CurrentCallerCapabilityCatalog,
   type LogicalCapability,
@@ -23,6 +25,8 @@ import {
 } from '../../recipe-contract';
 import { validateRecipeScriptAgainstCatalog } from '../recipes/recipe-schema-validation';
 import type { OrchestrationScriptSource } from './public-contract';
+import { loadRoleCapabilities } from '../../endpoint-route/routes/transport/role-principal-caps';
+import { resolveConcreteHarnessSlug } from '../_harness-scope';
 
 /** Prevent a script from recursively entering either public execution door. */
 export const ORCHESTRATION_RECURSION_EXCLUSIONS = new Set([
@@ -104,6 +108,8 @@ export interface OrchestrationCallerSurface {
   tools: ReturnType<typeof listAllProjectedTools>;
   allowed: ReadonlySet<string>;
   catalog: CurrentCallerCapabilityCatalog;
+  /** Test seam for the durable worker's role-derived grants; never the live caller's grants. */
+  durableWorkerCapabilities?: ReadonlySet<string>;
 }
 
 export function orchestrationCallerSurface(
@@ -119,6 +125,89 @@ export function orchestrationCallerSurface(
     if (name) allowed.add(name);
   }
   return { tools, allowed, catalog: currentCallerRecipeCatalog(tools, allowed) };
+}
+
+function durableCapabilityFailure(
+  toolName: string,
+  requiredCapability: string,
+  role: string | null | undefined,
+  reason: string,
+): RecipeContractFailure {
+  return {
+    ok: false,
+    phase: 'preflight',
+    executed: false,
+    error: {
+      code: 'capability_denied',
+      message:
+        `durable worker principal for role ${role ?? '(unknown)'} ${reason} capability ` +
+        `"${requiredCapability}" required by ${toolName}; durable execution does not inherit ` +
+        'the invocation’s authenticated principal or superuser bypass',
+      path: 'script.source',
+      capability: toolRequirementFor(toolName),
+    },
+  };
+}
+
+async function durableWorkerCapabilityFailure(input: {
+  ctx: UnifiedToolContext;
+  staticToolNames: readonly string[];
+  surface: OrchestrationCallerSurface;
+}): Promise<RecipeContractFailure | undefined> {
+  const toolsByName = new Map<string, ProjectedTool>();
+  for (const tool of input.surface.tools) {
+    const name = tool.expose.mcp?.name;
+    if (name) toolsByName.set(projectedToolName(name), tool);
+  }
+
+  const required = input.staticToolNames.flatMap((staticName) => {
+    const toolName = projectedToolName(staticName);
+    const tool = toolsByName.get(toolName);
+    return (tool?.capabilities ?? []).map((capability) => ({ toolName, capability }));
+  });
+  if (required.length === 0) return undefined;
+
+  let capabilities = input.surface.durableWorkerCapabilities;
+  if (!capabilities) {
+    const { workspaceId, role } = input.ctx;
+    const first = required[0]!;
+    if (!workspaceId || workspaceId === '*' || !role) {
+      return durableCapabilityFailure(
+        first.toolName,
+        first.capability,
+        role,
+        'cannot reconstruct a workspace-scoped role principal to verify',
+      );
+    }
+
+    try {
+      const harnessSlug = resolveConcreteHarnessSlug(undefined, input.ctx) ?? undefined;
+      capabilities = input.ctx.tx
+        ? await loadRoleCapabilities(input.ctx.tx, workspaceId, role, harnessSlug)
+        : await withWorkspace(workspaceId, (tx) =>
+            loadRoleCapabilities(tx, workspaceId, role, harnessSlug),
+          );
+    } catch {
+      return durableCapabilityFailure(
+        first.toolName,
+        first.capability,
+        role,
+        'could not reconstruct the role capability envelope for',
+      );
+    }
+  }
+
+  const denied = required.find(({ capability }) =>
+    !capabilities!.has(capability) && !capabilities!.has('*'),
+  );
+  return denied
+    ? durableCapabilityFailure(
+        denied.toolName,
+        denied.capability,
+        input.ctx.role,
+        'lacks',
+      )
+    : undefined;
 }
 
 export interface ScriptContractInspection {
@@ -189,6 +278,15 @@ export async function inspectScriptContract(input: {
   }
 
   const staticToolNames = [...new Set(schema.staticToolNames.map(projectedToolName))].sort();
+  if (input.lifecycle === 'background') {
+    const durableCapabilityRefusal = await durableWorkerCapabilityFailure({
+      ctx: input.ctx,
+      staticToolNames,
+      surface,
+    });
+    if (durableCapabilityRefusal) return durableCapabilityRefusal;
+  }
+
   let manifest = input.manifest;
   if (manifest === undefined) {
     const derived = deriveLegacyForegroundManifest(staticToolNames);

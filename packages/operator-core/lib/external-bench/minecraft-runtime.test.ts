@@ -1,10 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createHash } from 'node:crypto';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { assignMinecraftTask, freezeMinecraftManifest, freezeMinecraftSelection, freezeMinecraftTrial } from './minecraft-protocol';
-import { startMinecraftParticipantBridge, startMinecraftRuntime } from './minecraft-runtime';
+import { freezeMinecraftWorldBaseline, readMinecraftInitialWorld, startMinecraftParticipantBridge, startMinecraftRuntime } from './minecraft-runtime';
 import type { ProcExec } from './grader/swe-bench-pro';
 
 const roots: string[] = [];
@@ -44,6 +44,81 @@ async function fixture(runId = 'run') {
   return { trial, assignment, serverJar, workRoot: root, botImage: `sha256:${sha}`, acceptEula: true, exec, commands };
 }
 describe('Minecraft owned runtime lifecycle', () => {
+  async function preparedWorld() {
+    const f = await fixture();
+    const runtime = await startMinecraftRuntime(f);
+    const report = await runtime.stop();
+    const world = join(report.evidenceDir, 'world');
+    await mkdir(join(world, 'region'), { recursive: true });
+    await writeFile(join(world, 'level.dat'), 'frozen-level');
+    await writeFile(join(world, 'region', 'r.0.0.mca'), 'frozen-chunks');
+    return { f, runtime, world };
+  }
+  it('restores identical physical world bytes after earlier gameplay changes a trial copy', async () => {
+    const { f, runtime } = await preparedWorld();
+    const baseline = await freezeMinecraftWorldBaseline(runtime);
+    const first = await startMinecraftRuntime({ ...f, worldBaseline: baseline });
+    const firstWorld = readMinecraftInitialWorld(first);
+    const firstReport = await first.stop();
+    await writeFile(join(firstReport.evidenceDir, 'world', 'level.dat'), 'earlier-trial-progress');
+    await writeFile(join(firstReport.evidenceDir, 'world', 'region', 'r.0.0.mca'), 'earlier-chunks');
+    const second = await startMinecraftRuntime({ ...f, worldBaseline: baseline });
+    try {
+      expect(readMinecraftInitialWorld(second)).toEqual(firstWorld);
+      expect(firstWorld.worldSha256).toBe(baseline.worldSha256);
+      const secondReport = await second.stop();
+      expect(secondReport.evidenceDir).not.toBe(firstReport.evidenceDir);
+      expect(await readFile(join(secondReport.evidenceDir, 'world', 'level.dat'), 'utf8')).toBe('frozen-level');
+      expect(await readFile(join(secondReport.evidenceDir, 'world', 'region', 'r.0.0.mca'), 'utf8')).toBe('frozen-chunks');
+      await expect(startMinecraftRuntime({ ...f, worldBaseline: { ...baseline } })).rejects.toThrow(/Foreign/);
+    } finally { await first.dispose(); await second.dispose(); await runtime.dispose(); await baseline.dispose(); }
+  });
+  it('refuses a changed baseline or foreign world identity before Docker admission', async () => {
+    const { f, runtime } = await preparedWorld();
+    const baseline = await freezeMinecraftWorldBaseline(runtime);
+    try {
+      const commands = f.commands.length;
+      const foreign = freezeMinecraftTrial({ ...f.trial.protocol, worldSeed: '4' });
+      await expect(startMinecraftRuntime({ ...f, trial: foreign, worldBaseline: baseline })).rejects.toThrow(/Foreign/);
+      // Failed restore may perform cleanup but must not admit a container.
+      expect(f.commands.slice(commands).some(args => args[0] === 'run')).toBe(false);
+      const directory = (await readdir(f.workRoot)).find(name => name.startsWith('papercusp-minecraft-baseline-'))!;
+      await writeFile(join(f.workRoot, directory, 'level.dat'), 'tampered');
+      const before = f.commands.length;
+      await expect(startMinecraftRuntime({ ...f, worldBaseline: baseline })).rejects.toThrow(/baseline changed/);
+      expect(f.commands.slice(before).some(args => args[0] === 'run')).toBe(false);
+    } finally { await runtime.dispose(); await baseline.dispose(); }
+  });
+  it('refuses links in a baseline and never follows their outside content', async () => {
+    const { f, runtime, world } = await preparedWorld();
+    await symlink(f.serverJar, join(world, 'outside'));
+    try {
+      await expect(freezeMinecraftWorldBaseline(runtime)).rejects.toThrow(/world entry/);
+      expect((await readdir(f.workRoot)).some(name => name.startsWith('papercusp-minecraft-baseline-'))).toBe(false);
+      expect(await readFile(f.serverJar, 'utf8')).toBe('jar-fixture');
+    } finally { await runtime.dispose(); }
+  });
+  it('refuses baseline capture after gameplay or native admission and rejects forged runtime measurements', async () => {
+    const f = await fixture(); const runtime = await startMinecraftRuntime(f);
+    const bridge = await startMinecraftParticipantBridge(runtime, f.assignment);
+    await expect(freezeMinecraftWorldBaseline(runtime)).rejects.toThrow(/native admission/);
+    await bridge.stop();
+    await expect(freezeMinecraftWorldBaseline(runtime)).rejects.toThrow(/native admission/);
+    await runtime.execute('alice', 'return 1');
+    await expect(freezeMinecraftWorldBaseline(runtime)).rejects.toThrow(/precede gameplay/);
+    await expect(freezeMinecraftWorldBaseline({ ...runtime })).rejects.toThrow(/owned/);
+    expect(() => readMinecraftInitialWorld(runtime)).toThrow(/no measured/);
+    await runtime.dispose();
+  });
+  it('retires the baseline explicitly and refuses later restore without admitting a server', async () => {
+    const { f, runtime } = await preparedWorld();
+    const baseline = await freezeMinecraftWorldBaseline(runtime);
+    await baseline.dispose(); await baseline.dispose();
+    const before = f.commands.length;
+    await expect(startMinecraftRuntime({ ...f, worldBaseline: baseline })).rejects.toThrow(/closed/);
+    expect(f.commands.slice(before).some(args => args[0] === 'run')).toBe(false);
+    await runtime.dispose();
+  });
   it('binds the native gameplay connection to its issued player and reuses isolated program execution', async () => {
     const f = await fixture(); const runtime = await startMinecraftRuntime(f);
     const bridge = await startMinecraftParticipantBridge(runtime, f.assignment);
@@ -88,6 +163,7 @@ describe('Minecraft owned runtime lifecycle', () => {
     const f = await fixture(); const runtime = await startMinecraftRuntime(f);
     const bridge = await startMinecraftParticipantBridge(runtime, f.assignment);
     await runtime.stop();
+    expect(bridge.signal.aborted).toBe(true);
     await expect(fetch(bridge.endpoint, { method: 'POST', headers: { authorization: `Bearer ${bridge.token}` },
       body: JSON.stringify({ source: 'return 1' }) })).rejects.toThrow();
     await expect(startMinecraftParticipantBridge(runtime, f.assignment)).rejects.toThrow(/active/);

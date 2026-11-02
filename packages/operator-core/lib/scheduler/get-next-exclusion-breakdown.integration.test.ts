@@ -380,6 +380,98 @@ describe('WI-6673 — listIssueClaimableRows projects severity from payload._ei,
  * only a real database can.
  */
 describe('EI-18802055183255275 — readIssueClaimability (materialized temp-table path) agrees with the direct (unmaterialized) reads', () => {
+  const projectedCandidates = () => issueClaimCandidateSubquery(db.sql as never, {
+    compiled: db.sql`TRUE` as never,
+    filterPushdown: db.sql`TRUE` as never,
+    projection: 'claimability-snapshot',
+    harness: H, issueWs: WS, operatorScopeSlug: `operator:${WS}`,
+    states: ['open'], assignee: 'projection-test', cooldown: 300,
+  });
+
+  it('preserves snapshot payload values and pruning across object, null and scalar inputs', async () => {
+    const empty = {
+      _ei: {}, plan_item: {}, planItem: {}, claim_hold_release: {}, agentReview: { timing: {} },
+    };
+    const expected = {
+      paths: ['lib/a.ts', null], tags: ['urgent'], severity: 0, _ei: { severity: 'major' },
+      clusterPriority: { score: 2 },
+      plan_item: { plan_slug: 'one', slug: 'legacy', item_id: 'P-001', itemId: 4, item: ['P-002'] },
+      planItem: { slug: 'two', itemId: 'P-003' },
+      source_plan_slug: 'source', source_plan_item_ids: ['P-004'],
+      held_open_by: 'holder', held_open_at: 123, held_open_reason: false,
+      claim_hold_by: 'claimant', claim_hold_at: 'now', claim_hold_reason: ['reason'],
+      claim_hold_release: { condition: 'event', owner: 'peer', trigger: 2, reachability: false, evidence: [] },
+      agentReview: {
+        status: 'passed', submittedBy: 'author', ledgerIdeaId: 'idea', round: 2, revisionKind: 'repair',
+        timing: { round: 2, enteredAt: 'before', decidedAt: 'after' },
+      },
+    };
+    const fixtures = [
+      { input: null, expected: empty },
+      { input: 'scalar', expected: empty },
+      { input: 42, expected: empty },
+      { input: ['array'], expected: empty },
+      { input: { paths: null, _ei: 7, plan_item: 'bad', planItem: [], agentReview: false }, expected: empty },
+      { input: {
+        ...expected, body: 'discard this prose',
+        _ei: { ...expected._ei, created_by: 'discard' },
+        plan_item: { ...expected.plan_item, discarded: 1 },
+        agentReview: { ...expected.agentReview, discarded: 1,
+          timing: { ...expected.agentReview.timing, discarded: 1 } },
+      }, expected },
+    ];
+    for (const [i, fixture] of fixtures.entries()) {
+      await seedIssue(`WI-payload-${i}`, null);
+      await db.sql`UPDATE harness_shared.work_items
+        SET payload = ${db.sql.json(fixture.input as postgres.JSONValue)}
+        WHERE workspace_id = ${WS} AND harness_slug = ${H} AND feature_id = ${`WI-payload-${i}`}`;
+    }
+    const rows = await db.sql`SELECT feature_id, payload FROM (${projectedCandidates()}) q ORDER BY feature_id`;
+    expect(rows.map(row => row.feature_id)).toEqual(fixtures.map((_, i) => `WI-payload-${i}`));
+    expect(rows.map(row => row.payload)).toEqual(fixtures.map(fixture => fixture.expected));
+  });
+
+  it('bounds snapshot projection buffer work for a complete out-of-line payload cohort', async () => {
+    // Incompressible archival prose forces real TOAST reads. Compare buffer work,
+    // rather than wall time, against independent repeated extraction of the same
+    // retained values; returning no rows or omitting a retained field cannot pass.
+    await db.sql`INSERT INTO harness_shared.work_items
+      (workspace_id, harness_slug, feature_id, item_kind, status, created_ts, updated_ts, title, payload)
+      SELECT ${WS}, ${H}, 'WI-toast-' || n, 'change', 'open', 0, 0, 'body retained',
+        jsonb_build_object('body', (SELECT string_agg(md5(n::text || ':' || b::text), '')
+          FROM generate_series(1, 2048) b),
+          'paths', jsonb_build_array('lib/a.ts'), 'tags', jsonb_build_array('urgent'),
+          'severity', 'minor', '_ei', jsonb_build_object('severity', 'major'),
+          'clusterPriority', 2, 'source_plan_slug', 'source',
+          'source_plan_item_ids', jsonb_build_array('P-001'), 'held_open_by', 'holder')
+      FROM generate_series(1, 64) n`;
+    const optimized = db.sql`SELECT feature_id, payload FROM (${projectedCandidates()}) q ORDER BY feature_id`;
+    const reference = db.sql`SELECT feature_id, jsonb_build_object(
+      'paths', wi.payload->'paths', 'tags', wi.payload->'tags',
+      'severity', wi.payload->'severity', '_ei', wi.payload->'_ei',
+      'clusterPriority', wi.payload->'clusterPriority',
+      'source_plan_slug', wi.payload->'source_plan_slug',
+      'source_plan_item_ids', wi.payload->'source_plan_item_ids',
+      'held_open_by', wi.payload->'held_open_by',
+      'plan_item', '{}'::jsonb, 'planItem', '{}'::jsonb, 'claim_hold_release', '{}'::jsonb,
+      'agentReview', '{"timing":{}}'::jsonb) AS payload
+      FROM harness_shared.work_items wi
+      WHERE workspace_id = ${WS} AND harness_slug = ${H} ORDER BY feature_id`;
+    const actual = await optimized;
+    expect(actual).toHaveLength(64);
+    expect([...actual]).toEqual([...(await reference)]);
+    const buffers = async (query: typeof optimized) => {
+      const rows = await db.sql`EXPLAIN (ANALYZE, BUFFERS, TIMING OFF, FORMAT JSON) ${query}`;
+      const plan = rows[0]['QUERY PLAN'][0].Plan;
+      return Number(plan['Shared Hit Blocks'] ?? 0) + Number(plan['Shared Read Blocks'] ?? 0);
+    };
+    const referenceBuffers = await buffers(reference);
+    const optimizedBuffers = await buffers(optimized);
+    expect(referenceBuffers, 'fixture must exercise out-of-line storage').toBeGreaterThan(128);
+    expect(optimizedBuffers, `optimized=${optimizedBuffers}, reference=${referenceBuffers}`)
+      .toBeLessThan(referenceBuffers / 2);
+  });
+
   it('cancels a work_items lock wait at its transaction-local statement timeout (EI-266693)', async () => {
     const holder = await db.sql.reserve();
     let releasePromise: Promise<void> | undefined;

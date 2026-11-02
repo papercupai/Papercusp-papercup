@@ -51,11 +51,19 @@ describe('executeDurableReaction', () => {
   it('checks current policy before claiming a queued reaction, and permits a later resumed execution', async () => {
     vi.mocked(reactionBackgroundActivityAllowed).mockResolvedValueOnce(false).mockResolvedValueOnce(true);
     await executeDurableReaction(payload());
+    expect(reactionBackgroundActivityAllowed).toHaveBeenLastCalledWith('w1', 'activity:report', 'r1');
     expect(claim).not.toHaveBeenCalled();
     expect(fire).not.toHaveBeenCalled();
     await executeDurableReaction(payload());
     expect(claim).toHaveBeenCalledOnce();
     expect(fire).toHaveBeenCalledOnce();
+  });
+
+  it('refuses inconsistent stored rule identities before policy, dedup or dispatch', async () => {
+    await executeDurableReaction(payload({ ruleId: 'different-rule' }));
+    expect(reactionBackgroundActivityAllowed).not.toHaveBeenCalled();
+    expect(claim).not.toHaveBeenCalled();
+    expect(fire).not.toHaveBeenCalled();
   });
 
   it('releases a fresh claim when the final effect fence withholds after preclaim admission', async () => {

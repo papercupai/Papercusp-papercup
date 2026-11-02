@@ -38,6 +38,9 @@ export const ACCEPTANCE_GRADING_POLICY = 'acceptance-grading';
  */
 export const GRADING_INTEGRITY_AUDIT_POLICY = 'grading-integrity-audit';
 
+/** One independent residual grader per outstanding goal-backlog request. */
+export const GOAL_TENURE_GRADING_POLICY = 'goal-tenure-grading';
+
 /**
  * Outside-lineage review of a started acceptance-BAR amendment
  * (review-routing-through-relevance-router-2026-09-26 D-001/D-002 [owner]).
@@ -89,6 +92,7 @@ export const SELECTION_POLICIES: Readonly<Record<string, SelectionBounds>> = Obj
   [RUBRIC_VETTING_POLICY]: { min: 1, max: 2 },
   [ACCEPTANCE_GRADING_POLICY]: { min: 1, max: 2 },
   [GRADING_INTEGRITY_AUDIT_POLICY]: { min: 1, max: 1 },
+  [GOAL_TENURE_GRADING_POLICY]: { min: 1, max: 1 },
   [ACCEPTANCE_BAR_AMENDMENT_REVIEW_POLICY]: { min: 1, max: 1 },
   [METHOD_REVIEW_POLICY]: { min: 1, max: 1 },
   [BAR_CRITIQUE_POLICY]: { min: 1, max: 2 },

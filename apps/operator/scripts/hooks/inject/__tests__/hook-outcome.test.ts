@@ -130,7 +130,8 @@ describe('unavailable mutation authority reports its transport branch', () => {
   it('names HTTP status without exposing response bodies', async () => {
     const out = await run((async () => ({ ok: false, status: 503,
       json: async () => ({ secret: 'must-not-appear' }) })) as unknown as typeof fetch);
-    expect(out).toContain('execution authority is unavailable');
+    expect(out).toContain('execution-authority lookup failed');
+    expect(out).toContain('no server verdict was received');
     expect(out).toContain('stage=http-error');
     expect(out).toContain('httpStatus=503');
     expect(out).not.toContain('must-not-appear');

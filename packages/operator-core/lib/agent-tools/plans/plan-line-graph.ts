@@ -1,6 +1,6 @@
 /** Plan-line storage over the existing work graph (migration 1601). */
 import type { Sql } from 'postgres';
-import type { PlanIndexItem } from './derive-index';
+import { deriveIndexFromContent, type PlanIndexItem } from './derive-index';
 import { ISSUE_FAMILY_ROUTE_KINDS } from '../../work-nature/agent-work-predicate';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import type { WorkItemDependencyMutation } from '../../dbos/work-item-deps-store';
@@ -48,6 +48,104 @@ export async function readPlanLineNodes(tx: Sql, scope: Omit<PlanLineScope, 'slu
         : r.status === 'wip' ? 'wip' : r.status === 'needs-human' ? 'needs-human' : 'todo',
     blockedBy: r.blocked_by,
   }));
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((entry) => typeof entry === 'string');
+}
+
+function isPlanIndexItem(value: unknown): value is PlanIndexItem {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const item = value as Partial<PlanIndexItem>;
+  return typeof item.id === 'string' && typeof item.status === 'string' &&
+    typeof item.text === 'string' && typeof item.importance === 'string' &&
+    isStringArray(item.blockedBy) && isStringArray(item.decisionRefs) &&
+    (item.phase == null || typeof item.phase === 'string') &&
+    (item.ownerGateMarker == null || typeof item.ownerGateMarker === 'string') &&
+    (item.deliverable == null || typeof item.deliverable === 'string');
+}
+
+function planIndexFingerprint(items: readonly PlanIndexItem[]): string {
+  return JSON.stringify(items.map((item) => [
+    item.id, item.status, item.text, item.importance, item.blockedBy, item.decisionRefs,
+    item.phase ?? null, item.ownerGateMarker ?? null, item.deliverable ?? null,
+  ]));
+}
+
+/**
+ * A pre-1601 writer persisted the derived JSON index but did not create work-graph
+ * line nodes. Use that index only as a verified witness for the canonical bytes:
+ * an explicit empty index or a mismatching/stale JSON twin never resurrects text.
+ */
+function matchingLegacyPlanItems(items: unknown, content: string): PlanIndexItem[] | null {
+  if (!Array.isArray(items) || items.length === 0 || !items.every(isPlanIndexItem)) return null;
+  const legacyItems = items as PlanIndexItem[];
+  try {
+    const canonicalItems = deriveIndexFromContent(content).items;
+    return canonicalItems.length > 0 &&
+      planIndexFingerprint(legacyItems) === planIndexFingerprint(canonicalItems)
+      ? legacyItems
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+async function readValidatedLegacyPlanItems(
+  tx: Sql,
+  scope: Omit<PlanLineScope, 'slug'>,
+  slugs: readonly string[],
+): Promise<Map<string, PlanIndexItem[]>> {
+  const uniqueSlugs = [...new Set(slugs)];
+  if (uniqueSlugs.length === 0) return new Map();
+  // The graph path avoids detoasting plan content. Only graphless rows with a
+  // nonempty JSON index reach this query, and only those rows return content.
+  const rows = await tx<{ plan_slug: string; items: unknown; content: string | null }[]>`
+    SELECT plan_slug, items, content
+      FROM harness_shared.harness_plans
+     WHERE workspace_id = ${scope.workspaceId} AND harness_slug = ${scope.harnessSlug}
+       AND plan_slug = ANY(${uniqueSlugs}::text[])
+       AND items IS NOT NULL AND items <> '[]'::jsonb
+  `;
+  const result = new Map<string, PlanIndexItem[]>();
+  for (const row of rows) {
+    const items = matchingLegacyPlanItems(row.items, row.content ?? '');
+    if (items) result.set(row.plan_slug, items);
+  }
+  return result;
+}
+
+/** Read graph rows first; consult the validated old JSON index only when the graph is empty. */
+export async function readPlanLineItems(
+  tx: Sql,
+  scope: PlanLineScope,
+  parentRow?: { items: unknown; content: string | null },
+): Promise<PlanIndexItem[]> {
+  const nodes = await readPlanLineNodes(tx, scope);
+  if (nodes.length > 0) return nodes;
+  if (parentRow) return matchingLegacyPlanItems(parentRow.items, parentRow.content ?? '') ?? [];
+  const legacy = await readValidatedLegacyPlanItems(tx, scope, [scope.slug]);
+  return legacy.get(scope.slug) ?? [];
+}
+
+/** Batched graph-first item read for one harness; legacy JSON is queried only for graphless plans. */
+export async function readPlanLineItemsByPlan(
+  tx: Sql,
+  scope: Omit<PlanLineScope, 'slug'>,
+  slugs: readonly string[],
+): Promise<Map<string, PlanIndexItem[]>> {
+  const uniqueSlugs = [...new Set(slugs)];
+  const nodes = await readPlanLineNodes(tx, { ...scope, slug: uniqueSlugs });
+  const result = new Map<string, PlanIndexItem[]>();
+  for (const node of nodes) {
+    const items = result.get(node.planSlug) ?? [];
+    items.push(node);
+    result.set(node.planSlug, items);
+  }
+  const graphless = uniqueSlugs.filter((slug) => !result.has(slug));
+  const legacy = await readValidatedLegacyPlanItems(tx, scope, graphless);
+  for (const [slug, items] of legacy) result.set(slug, items);
+  return result;
 }
 
 /** Under the plan lock; admit the returned edge changes in the SAME transaction. */

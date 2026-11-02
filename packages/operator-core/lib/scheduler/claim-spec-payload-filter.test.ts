@@ -25,6 +25,7 @@ function payloadOf(p: {
   id?: string;
   kind?: string;
   title?: string;
+  summary?: string | null;
   assignee?: string | null;
   plan?: string | null;
   tags?: string[];
@@ -36,6 +37,7 @@ function payloadOf(p: {
     severity: null,
     harness: null,
     title: p.title ?? '',
+    summary: p.summary ?? null,
     assignee: p.assignee ?? null,
     state: 'todo',
     reason: 'created',
@@ -50,6 +52,7 @@ function subjectOf(p: {
   id?: string;
   kind?: string;
   title?: string;
+  summary?: string | null;
   plan?: string | null;
   tags?: string[];
   goal?: string | null;
@@ -57,7 +60,7 @@ function subjectOf(p: {
   return {
     id: p.id ?? 'X-1',
     title: p.title ?? '',
-    summary: null,
+    summary: p.summary ?? null,
     kind: p.kind ?? 'task',
     priority: null,
     tags: p.tags ?? [],
@@ -76,6 +79,58 @@ function subjectOf(p: {
     goal: p.goal ?? null,
   };
 }
+
+describe('summary-scoped member wakes (EI-27692065520622700)', () => {
+  const plan = 'green-main-ratchet-convergence-2026-10-17';
+  const filter: FilterNode = {
+    all: [
+      { any: [
+        { field: 'plan', op: '=', value: plan },
+        { field: 'id', op: '=', value: 'WI-PREP' },
+        { field: 'summary', op: 'glob', value: `*${plan}*` },
+      ] },
+      { not: { field: 'id', op: 'in', value: ['WI-HELD', 'WI-GATE'] } },
+    ],
+  };
+
+  it.each([
+    ['body-only lane', { summary: `Plan ${plan}: independent source preparation` }, true],
+    ['case-insensitive body', { summary: plan.toUpperCase() }, true],
+    ['plan linkage', { plan }, true],
+    ['known id', { id: 'WI-PREP' }, true],
+    ['unrelated area', { plan: 'another-plan', summary: 'another area' }, false],
+    ['missing summary', {}, false],
+    ['null summary', { summary: null }, false],
+    ['empty summary', { summary: '' }, false],
+    ['excluded body match', { id: 'WI-HELD', summary: plan }, false],
+    ['excluded plan match', { id: 'WI-GATE', plan }, false],
+  ] as const)('%s', (_label, item, expected) => {
+    expect(matchesClaimSpecFilter(subjectOf(item), filter)).toBe(expected);
+    expect(payloadMatchesFilter(claimSpecFilterToClaimablePayloadFilter(filter), payloadOf(item))).toBe(expected);
+  });
+
+  it('preserves summary leaf and NOT semantics across empty, absent and literal text', () => {
+    const filters: FilterNode[] = [
+      { field: 'summary', op: '=', value: 'lane' },
+      { field: 'summary', op: '!=', value: 'lane' },
+      { field: 'summary', op: 'in', value: ['lane', ''] },
+      { field: 'summary', op: 'glob', value: '*LANE*' },
+      { field: 'summary', op: 'contains', value: 'lane.[x]' },
+      { field: 'summary', op: 'word', value: 'lane' },
+      { not: { field: 'summary', op: 'contains', value: 'LANE' } },
+      { not: filter },
+    ];
+    for (const current of filters) {
+      const translated = claimSpecFilterToClaimablePayloadFilter(current);
+      expect(translated).toBeDefined();
+      for (const item of [{}, { summary: null }, { summary: '' }, { summary: 'lane' },
+        { summary: 'LANE.[x]' }, { summary: 'lane_prep' }, { summary: 'airplane' }]) {
+        expect(payloadMatchesFilter(translated, payloadOf(item)), JSON.stringify({ current, item }))
+          .toBe(matchesClaimSpecFilter(subjectOf(item), current));
+      }
+    }
+  });
+});
 
 describe('claimSpecFilterToClaimablePayloadFilter — translated shapes', () => {
   it('empty / undefined filter → undefined (no narrowing)', () => {

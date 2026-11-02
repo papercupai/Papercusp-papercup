@@ -79,6 +79,64 @@ describe('testing:run-status foreground verdict (WI-6554700010018414)', () => {
 });
 
 describe('testing:run-status handler', () => {
+  it('uses exact terminal pass rows to supersede a stale error snapshot', async () => {
+    const runId = 'stale-run';
+    const snapshot: RunSnapshot = {
+      runId,
+      kind: 'vitest',
+      label: 'stale detached test',
+      command: ['node', 'scripts/test-files.mjs'],
+      status: 'error',
+      exitCode: null,
+      startedAt: 123,
+      finishedAt: 456,
+      output: 'stale ended_unobserved snapshot',
+      truncated: false,
+    };
+    const ledgerRecovery: DetachedRunLedgerRecovery = {
+      runId,
+      status: 'pass',
+      exitCode: 0,
+      finishedAt: 789,
+      fileCount: 1,
+      files: [{
+        filePath: 'lib/example.test.ts',
+        status: 'pass',
+        finishedAt: 789,
+        executionDetails: {
+          schemaVersion: 1,
+          root: '/tmp',
+          filePath: 'lib/example.test.ts',
+          runGroupId: runId,
+          workspaceId: null,
+          harnessSlug: null,
+          testNamePattern: 'selected assertion',
+          passed: 1,
+          failed: 0,
+          skipped: 0,
+          collectionFailed: false,
+          mutationPhase: null,
+          commitSha: null,
+          worktreeDirty: false,
+        },
+      }],
+      message: 'Recovered pass from terminal per-file rows.',
+    };
+    getRunMock.mockResolvedValue(snapshot);
+    ledgerRecoveryMock.mockResolvedValue(ledgerRecovery);
+
+    const out = await call(runId);
+
+    expect(out.data).toMatchObject({
+      ok: true,
+      ledgerRecovery: { runId, status: 'pass', exitCode: 0, fileCount: 1 },
+    });
+    expect(String((out.data.ledgerRecovery as DetachedRunLedgerRecovery).message))
+      .toContain('stale error lifecycle snapshot was superseded');
+    expect(ledgerRecoveryMock).toHaveBeenCalledWith(runId);
+    expect(foregroundMock).not.toHaveBeenCalled();
+  });
+
   it('returns the bounded snapshot for a known detached run', async () => {
     const snapshot: RunSnapshot = {
       runId: 'run-1',

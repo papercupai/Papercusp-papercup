@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { listAllProjectedTools } from '@papercusp/agent-mcp';
 import { z } from 'zod';
 import type { UnifiedToolContext } from '@papercusp/agent-mcp';
-import type { ToolResult } from '@papercusp/tooldef';
+import { durableRuntimeTools, type ToolResult } from '@papercusp/tooldef';
 import { DEFAULT_OUTPUT_SUMMARY_BUDGET_CHARS } from '../../output-envelope';
 import { FOREGROUND_TIMEOUT_CEILING_MS } from '../capability/foreground-transport-cap';
 import orchestrateRunTool, {
@@ -11,8 +11,11 @@ import orchestrateRunTool, {
   serverScriptRunArgsSchema,
   type ServerScriptRunDeps,
 } from './run';
+import '../testing/run';
 import type { SavedRecipeAdapter } from './saved-recipe-adapter';
 import { inspectOrchestration } from './inspect';
+import { inspectScriptContract, orchestrationCallerSurface } from './contract-preflight';
+import { inspectDurability } from './durability-inspection';
 
 function codeResult(payload: Record<string, unknown>, media: ToolResult['content'] = []): ToolResult {
   return {
@@ -333,6 +336,112 @@ describe('orchestrate:run server-script adapter', () => {
     });
     expect(JSON.parse(body.summary)).toEqual({
       durableRun: { workflowId: 'orchestrate-durable:ws-durable:run-1', status: 'admitted' },
+    });
+  });
+
+  it('preflights durable nested tools against reconstructed worker grants, not caller privilege', async () => {
+    const ctx = {
+      workspaceId: 'ws-durable',
+      harnessSlug: 'papercusp',
+      role: 'operator',
+      isSuperuser: true,
+      uiClientId: 'su-durable',
+      principal: {
+        slug: 'native-owner',
+        workspaceId: 'ws-durable',
+        capabilities: new Set(['testing:run']),
+      },
+    } as unknown as UnifiedToolContext;
+    const script = {
+      source: "return await tools.testing.run({ files: ['packages/operator-core/lib/agent-tools/code/durable-run.test.ts'] });",
+    };
+    const surface = orchestrationCallerSurface(ctx);
+    const testingTool = surface.tools.find((tool) => tool.expose.mcp?.name === 'testing:run');
+    expect(testingTool?.capabilities).toContain('testing:run');
+    expect(surface.allowed.has('testing:run')).toBe(true);
+
+    // The same source is valid for this direct, superuser-authorized caller.
+    const direct = await inspectScriptContract({ script, ctx, surface });
+    expect(direct.ok, JSON.stringify(direct)).toBe(true);
+    if (!direct.ok) return;
+
+    // A durable worker reconstructs the operator role's own grants. The outer
+    // caller's native principal and superuser bypass are deliberately absent.
+    const workerWithoutGrant = { ...surface, durableWorkerCapabilities: new Set<string>() };
+    const durableDenied = await inspectScriptContract({
+      script,
+      ctx,
+      lifecycle: 'background',
+      surface: workerWithoutGrant,
+    });
+    expect(durableDenied).toMatchObject({
+      ok: false,
+      phase: 'preflight',
+      executed: false,
+      error: {
+        code: 'capability_denied',
+        capability: 'tools:testing:run',
+        message: expect.stringContaining('does not inherit'),
+      },
+    });
+
+    // Calibration: a worker with the exact required role grant passes the same preflight.
+    const workerWithGrant = { ...surface, durableWorkerCapabilities: new Set(['testing:run']) };
+    const durableAllowed = await inspectScriptContract({
+      script,
+      ctx,
+      lifecycle: 'background',
+      surface: workerWithGrant,
+    });
+    expect(durableAllowed.ok, JSON.stringify(durableAllowed)).toBe(true);
+
+    // Admission itself must stop before the existing DBOS workflow is enqueued.
+    const inspectedDurability = await inspectDurability({
+      script: script.source,
+      bindings: direct.contract.bindings,
+      calls: direct.staticCalls,
+      tools: [...surface.tools, ...durableRuntimeTools()],
+    });
+    const startDurable = vi.fn();
+    const runCode = vi.fn<ServerScriptRunDeps['runCode']>();
+    const refused = await runServerScriptAdapter(
+      {
+        script,
+        execution: { lifecycle: 'background', durability: 'durable' },
+        inspectionPin: inspectedDurability.pin,
+      },
+      ctx,
+      {
+        runCode,
+        startDurable,
+        projectedTools: surface.tools,
+        inspectScript: (input) => inspectScriptContract({
+          ...input,
+          surface: workerWithoutGrant,
+        }),
+      },
+    );
+    expect(envelope(refused)).toMatchObject({
+      state: 'error',
+      error: { code: 'capability_denied', message: expect.stringContaining('does not inherit') },
+      metrics: { phase: 'preflight', executed: false },
+    });
+    expect(startDurable).not.toHaveBeenCalled();
+    expect(runCode).not.toHaveBeenCalled();
+
+    // Unauthorized-role control: the direct facade still rejects a caller
+    // outside testing:run's role allowlist.
+    const unauthorizedCtx = { ...ctx, role: 'unlisted-role', isSuperuser: false } as UnifiedToolContext;
+    const unauthorized = await inspectScriptContract({
+      script,
+      ctx: unauthorizedCtx,
+      surface: orchestrationCallerSurface(unauthorizedCtx),
+    });
+    expect(unauthorized).toMatchObject({
+      ok: false,
+      phase: 'preflight',
+      executed: false,
+      error: { code: 'capability_denied' },
     });
   });
 

@@ -16,6 +16,7 @@ import {
   managedTickThresholdMs,
   resetScheduledRegistry,
   stopAllManaged,
+  stopManagedInvocation,
   type TimerHandle,
 } from './index';
 
@@ -70,6 +71,112 @@ function harness() {
 }
 
 afterEach(() => resetScheduledRegistry());
+
+describe('one-time invocation stop', () => {
+  it('observes actual callback starts, excluding withheld and withdrawn admission', async () => {
+    const h = harness();
+    const started = vi.fn();
+    configureScheduledRegistry({ canRun: () => false, onTickStarted: started });
+    const tick = vi.fn();
+    managedSetInterval('observed', 100, tick, { category: 'global-sweep' });
+    await h.fire();
+    expect(started).not.toHaveBeenCalled();
+    let allow!: (value: boolean) => void;
+    configureScheduledRegistry({ canRun: () => new Promise<boolean>(resolve => { allow = resolve; }) });
+    await h.fire();
+    stopManagedInvocation('observed');
+    allow(true);
+    await flush();
+    expect(started).not.toHaveBeenCalled();
+    configureScheduledRegistry({ canRun: () => true });
+    await h.fire();
+    expect(started).toHaveBeenCalledOnce();
+    expect(started).toHaveBeenCalledWith(expect.objectContaining({ name: 'observed', running: true }));
+    expect(tick).toHaveBeenCalledOnce();
+  });
+
+  it('records failed callback attempts and redacts observer failures without changing execution', async () => {
+    const h = harness();
+    const log = vi.fn();
+    const started = vi.fn(async () => { throw new Error('secret observer body'); });
+    configureScheduledRegistry({ log, onTickStarted: started });
+    managedSetInterval('throws', 100, () => { throw new Error('callback failed'); }, { category: 'global-sweep' });
+    await h.fire();
+    expect(started).toHaveBeenCalledOnce();
+    expect(getManaged('throws')).toMatchObject({ fires: 1, running: false });
+    expect(log).toHaveBeenCalledWith('throws start history unavailable');
+    expect(JSON.stringify(log.mock.calls)).not.toContain('secret');
+  });
+  it('keeps noncancellable work visibly draining until it settles and retains recurrence', async () => {
+    const h = harness();
+    let finish!: () => void;
+    const tick = vi.fn(() => new Promise<void>(resolve => { finish = resolve; }));
+    managedSetInterval('drain', 100, tick, { category: 'global-sweep' });
+    await h.fire();
+    const stop = stopManagedInvocation('drain');
+    expect(stop.status).toBe('draining');
+    expect(getManaged('drain')).toMatchObject({ running: true, stopStatus: 'draining' });
+    expect(stopManagedInvocation('drain').settled).toBe(stop.settled);
+    await h.fire();
+    expect(tick).toHaveBeenCalledOnce();
+    finish();
+    await expect(stop.settled).resolves.toBe('completed');
+    expect(getManaged('drain')).toMatchObject({ running: false, stopStatus: 'completed' });
+    expect(h.intervals[0].cleared).toBe(false);
+    await h.fire();
+    expect(tick).toHaveBeenCalledTimes(2);
+    finish();
+    await flush();
+  });
+
+  it('does not acknowledge cooperative cancellation until callback cleanup is complete', async () => {
+    const h = harness();
+    let acknowledge!: () => void;
+    let signal!: AbortSignal;
+    managedSetInterval('cancel', 100, context => {
+      signal = context.signal;
+      return new Promise<void>(resolve => { acknowledge = resolve; });
+    }, { category: 'global-sweep', cancellable: true });
+    await h.fire();
+    const stop = stopManagedInvocation('cancel');
+    expect(signal.aborted).toBe(true);
+    expect(stop.status).toBe('pending');
+    expect(getManaged('cancel')).toMatchObject({ running: true, stopStatus: 'pending' });
+    acknowledge();
+    await expect(stop.settled).resolves.toBe('completed');
+    expect(getManaged('cancel')).toMatchObject({ running: false, stopStatus: 'completed' });
+  });
+
+  it('reports failed cancellation cleanup rather than asserting stopped', async () => {
+    const h = harness();
+    let fail!: (error: Error) => void;
+    managedSetInterval('fails', 100, () => new Promise<void>((_resolve, reject) => { fail = reject; }),
+      { category: 'global-sweep', cancellable: true });
+    await h.fire();
+    const stop = stopManagedInvocation('fails');
+    fail(new Error('cleanup failed'));
+    await expect(stop.settled).resolves.toBe('failed');
+    expect(getManaged('fails')).toMatchObject({ running: false, stopStatus: 'failed' });
+  });
+
+  it('withdraws queued admission without disabling the next scheduled fire', async () => {
+    const h = harness();
+    let allow!: (value: boolean) => void;
+    configureScheduledRegistry({ canRun: () => new Promise<boolean>(resolve => { allow = resolve; }) });
+    const tick = vi.fn();
+    managedSetInterval('queued', 100, tick, { category: 'global-sweep' });
+    await h.fire();
+    expect(stopManagedInvocation('queued').status).toBe('completed');
+    allow(true);
+    await flush();
+    expect(tick).not.toHaveBeenCalled();
+    await h.fire();
+    allow(true);
+    await flush();
+    expect(tick).toHaveBeenCalledOnce();
+    expect(stopManagedInvocation('missing').status).toBe('unavailable');
+  });
+});
 
 describe('execution eligibility', () => {
   it('pins the declared workspace identity before handing a timer to the host policy', async () => {
