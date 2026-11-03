@@ -703,6 +703,32 @@ describe('evaluatePlanSpecQuality', () => {
   });
 
   it.each([
+    'A card is absent after refresh by the existing goal scheduling path.',
+    'A card is absent after publication by existing scheduling.',
+    'A card is absent after refresh using the existing scheduled sweep.',
+  ])('detects passive machinery prescriptions in item and sourceBar falsifiers: %s', (observation) => {
+    const behavior = 'Computed cards are refreshed during the tenure and at its end.';
+    const result = evaluatePlanSpecQuality({
+      planSlug: 'quality-plan', harnessSlug: 'papercusp', planItemIds: ['P-001'],
+      classRef: 'plan-class-feature-ship',
+      clauses: [clause({ behavior, falsifier: { observation } }), clause({
+        specId: 'AUTO-BAR-R-4-P-004', sourceValId: null, behavior,
+        falsifier: { observation },
+        sourceBar: { barKey: 'R-4', barHash: 'a'.repeat(64), barSetHash: 'b'.repeat(64),
+          rubricSlug: 'acceptance-quality-plan', rubricRevision: 1, evidencePlane: 'tree' },
+      })],
+    });
+
+    expect(result.ratings['implementation-independence'].rating).toBe('fail');
+    for (const specId of ['SPEC-001-01', 'AUTO-BAR-R-4-P-004']) {
+      expect(result.details.implementationIndependenceClauseDiagnostics).toContainEqual(
+        expect.objectContaining({ specId, behavior, disposition: 'evaluated', rating: 'fail',
+          reason: expect.stringContaining('falsifier observation prescribes implementation reuse or selection') }),
+      );
+    }
+  });
+
+  it.each([
     'Reuse prior clean receipts when current; do not recreate proof just for recovery.',
     'Reuse current verification evidence.',
     'Reuse prior passing test results when their source fingerprints are current.',

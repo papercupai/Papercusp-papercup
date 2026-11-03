@@ -467,17 +467,18 @@ function implementationCouplingReason(behavior: string, publicContract?: string)
     return 'names an internal operation ' + JSON.stringify(operationReference[0]);
   }
   const existingSurfaceReuse =
-    /\b(?:extend|extends|reuse|reuses|modify|modifies|wire|wires|integrate|integrates)\b[^.\n]{0,80}\bexisting\s+(?:[\w/-]+\s+){0,6}(?:page|screen|route|endpoint|component|handler|operation|op|module|service|runtime|flow|ledger|diagnostics|instrumentation|mechanism|pipeline|records?|capability)\b/i.exec(behavior);
+    /\b(?:extend|extends|reuse|reuses|modify|modifies|wire|wires|integrate|integrates)\b[^.\n]{0,80}\bexisting\s+(?:[\w/-]+\s+){0,6}(?:page|screen|route|endpoint|component|handler|operation|op|module|service|runtime|flow|ledger|diagnostics|instrumentation|mechanism|pipeline|path|scheduling|scheduler|sweep|records?|capability)\b/i.exec(behavior);
   if (existingSurfaceReuse) {
     return 'prescribes reuse of an existing implementation surface ' + JSON.stringify(existingSurfaceReuse[0].trim());
   }
   // A contract can prescribe machinery without a reuse verb ("through the
-  // existing runtime"), or name the machinery directly ("Reuse PostHog").
+  // existing runtime", "refreshed by existing scheduling"), or name the
+  // machinery directly ("Reuse PostHog").
   // Restrict the former to implementation nouns and usage/subject positions:
   // an existing customer/account is an observable identity, not code coupling.
   const implementationPrescription =
-    /\b(?:through|via|using)\s+(?:the\s+)?existing\s+(?:[\w/-]+\s+){0,6}(?:page|screen|route|endpoint|component|handler|operation|op|module|service|runtime|flow|ledger|diagnostics|instrumentation|mechanism|pipeline|records?|capability)\b/i.exec(behavior) ??
-    /\bexisting\s+(?:[\w/-]+\s+){0,6}(?:page|screen|route|endpoint|component|handler|operation|op|module|service|runtime|flow|ledger|diagnostics|instrumentation|mechanism|pipeline|records?|capability)\s+(?:implements?|handles?|runs?|invokes?|provides?)\b/i.exec(behavior);
+    /\b(?:through|via|using|by)\s+(?:the\s+)?existing\s+(?:[\w/-]+\s+){0,6}(?:page|screen|route|endpoint|component|handler|operation|op|module|service|runtime|flow|ledger|diagnostics|instrumentation|mechanism|pipeline|path|scheduling|scheduler|sweep|records?|capability)\b/i.exec(behavior) ??
+    /\bexisting\s+(?:[\w/-]+\s+){0,6}(?:page|screen|route|endpoint|component|handler|operation|op|module|service|runtime|flow|ledger|diagnostics|instrumentation|mechanism|pipeline|path|scheduling|scheduler|sweep|records?|capability)\s+(?:implements?|handles?|runs?|invokes?|provides?)\b/i.exec(behavior);
   if (implementationPrescription) {
     return 'prescribes implementation reuse or selection ' + JSON.stringify(implementationPrescription[0].trim());
   }
@@ -972,6 +973,11 @@ export function evaluatePlanSpecQuality(input: {
     { behavior: 'The existing cloud subscription flow implements the approved offer.', expected: 'coupled' as const },
     { behavior: 'A failure produces an alarm through the existing alarm subscription mechanism.', expected: 'coupled' as const },
     { behavior: 'FAQ content stays synchronized through the existing source-linked maintenance pipeline.', expected: 'coupled' as const },
+    { behavior: 'Computed tenure cards are refreshed by the existing goal scheduling path.', expected: 'coupled' as const },
+    { behavior: 'Computed cards are produced by existing scheduling without a new scheduler.', expected: 'coupled' as const },
+    { behavior: 'The publisher reuses the existing goal scheduling path.', expected: 'coupled' as const },
+    { behavior: 'Computed cards are refreshed using the existing scheduled sweep.', expected: 'coupled' as const },
+    { behavior: 'Computed cards are refreshed by the existing runtime.', expected: 'coupled' as const },
     { behavior: 'Reuse the runtime usage ledger for per-call token counts.', expected: 'coupled' as const },
     { behavior: 'Reuse PostHog for consented portal events.', expected: 'coupled' as const },
     { behavior: 'Reuse prior clean receipts when current; reuse PostHog for consented portal events.', expected: 'coupled' as const },
@@ -986,6 +992,8 @@ export function evaluatePlanSpecQuality(input: {
     { behavior: 'GET /architecture/index.html returns 200 with the map.', expected: 'independent' as const },
     { behavior: 'A visitor who opts out/in keeps that choice after a reload.', expected: 'independent' as const },
     { behavior: 'The customer reuses an existing account when accepting an invitation.', expected: 'independent' as const },
+    { behavior: 'A change is requested by the existing customer.', expected: 'independent' as const },
+    { behavior: 'An invitation is accepted by the existing account holder.', expected: 'independent' as const },
     { behavior: 'Reuse of an expired invitation is refused.', expected: 'independent' as const },
     { behavior: 'Reuse prior clean receipts when current; do not recreate proof just for recovery.', expected: 'independent' as const },
   ].map((control) => {
@@ -995,7 +1003,7 @@ export function evaluatePlanSpecQuality(input: {
   const implementationIndependenceControlsPassed = implementationIndependenceDetectorControls.every((control) => control.passed);
   const implementationIndependenceCoverage =
     ' Fields inspected per clause: behavior and falsifier.observation (falsifier.probeMethod is excluded because it legitimately names the test or probe).' +
-    ' Detector coverage: implementation filenames, explicitly qualified/quoted construct symbols (including snake_case identifiers), bare lowerCamel identifiers (excluding recognized public platform/device names), repository paths, internal route literals, named operations, mandated reuse of existing surfaces (including runtimes, flows, pipelines, ledgers and mechanisms), imperative implementation selection, filesystem permission modes, named storage backends, encryption, and mirroring. Inspected ' +
+    ' Detector coverage: implementation filenames, explicitly qualified/quoted construct symbols (including snake_case identifiers), bare lowerCamel identifiers (excluding recognized public platform/device names), repository paths, internal route literals, named operations, mandated reuse of existing surfaces (including runtimes, flows, pipelines, ledgers, mechanisms, scheduling paths and sweeps, including passive by prescriptions), imperative implementation selection, filesystem permission modes, named storage backends, encryption, and mirroring. Inspected ' +
     behavioral.length + ' active/accepted behavior clause(s), including ' +
     behavioral.filter(isProjectedBar).length + ' sourceBar-pinned acceptance BAR projection(s).' +
     ` ${currentSet.length - behavioral.length} draft/exempt clause(s) excluded; per-clause dispositions are in details.implementationIndependenceClauseDiagnostics.` +
