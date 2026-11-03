@@ -2076,7 +2076,7 @@ function stateLabel(entry) {
   const repo = repoEvidenceLabel(entry);
   if (entry.state === 'clean') return `[clean${repo}]`;
   if (entry.state === 'untracked') return `[UNTRACKED — exists only on this box${repo}]`;
-  if (entry.state === PROVENANCE_UNKNOWN) return `[state UNKNOWN — git could not be read${repo}]`;
+  if (entry.state === PROVENANCE_UNKNOWN) return `[state UNKNOWN — provenance could not be determined${repo}]`;
   const counts =
     typeof entry.added === 'number' && typeof entry.deleted === 'number'
       ? ` +${entry.added}/-${entry.deleted}`
@@ -2136,6 +2136,9 @@ export function formatProvenanceBanner(snapshot, phase) {
       `uncommitted=${unreproducible.length} unknown=${unknown.length} phase=${phase}${startedAtSuffix}`,
     `  HEAD         : ${head}`,
   ];
+  if (snapshot.provenanceError) {
+    lines.push(`  provenanceError: ${snapshot.provenanceError}`);
+  }
   entries.forEach((entry, index) => {
     lines.push(`  ${index === 0 ? 'tested files :' : '              '} ${entry.path}  ${stateLabel(entry)}`);
   });

@@ -2182,7 +2182,32 @@ describe('work_items:complete (keyed-array)', () => {
       const refusal = "completion gate unavailable for work_item 'WI-1': could not verify announced event gates before closing (db-call-deadline); no terminal state transition was written.";
       setWorkItemStateWithAliasInfo.mockRejectedValue(new Error(refusal));
 
-      const r = await one({ id: 'WI-1', state: 'resolved', completion: { summary: 'fixed it', tests: '5 green' } });
+      const trackedPhases: string[] = [];
+      const r = await (async () => {
+        const previousPhases = Object.getOwnPropertyDescriptor(ctxFields, 'phases');
+        Object.assign(ctxFields, {
+          phases: {
+            track: async (phase: string, work: () => Promise<unknown>) => {
+              trackedPhases.push(phase);
+              return work();
+            },
+            snapshot: () => ({
+              activePhase: null,
+              activePhases: [],
+              activePhaseElapsedMs: null,
+              completedDurationsMs: [],
+              omittedCompletedCount: 0,
+              activePhaseSelection: 'latest-started-pending',
+            }),
+          },
+        });
+        try {
+          return await one({ id: 'WI-1', state: 'resolved', completion: { summary: 'fixed it', tests: '5 green' } });
+        } finally {
+          if (previousPhases) Object.defineProperty(ctxFields, 'phases', previousPhases);
+          else Reflect.deleteProperty(ctxFields, 'phases');
+        }
+      })();
 
       expect(r).toMatchObject({
         ok: false,
@@ -2193,6 +2218,7 @@ describe('work_items:complete (keyed-array)', () => {
       expect(r.stateWarning).toMatch(/returned a completion, but it was not persisted/i);
       expect(r.stateWarning).not.toMatch(/recorded a completion/i);
       expect(r.completion).toMatchObject({ summary: 'fixed it' });
+      expect(trackedPhases).toContain('completion:state-transition');
     });
 
     it('a state write that THROWS (peer HOLD-OPEN) returns ok:false — but still records + carries the completion (EI-24)', async () => {

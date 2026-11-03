@@ -8,8 +8,28 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pruneRuns, runHarness } from '@papercusp/verification-harness';
 import { assertIsolatedFileRunBudget, assertIsolatedWorkerReaped, captureIsolatedWorker, isolatedIntegrationDiagnosticArtifacts, isolatedTestFileWorkerOptions, isolatedWorkerOptions, isolatedWorkerFailureDetail, isolatedWorkerPendingStage, preflightCurrentSuNativeEgress, recordIsolatedIntegrationProof, retainIsolatedNativeTaskDiagnostics, retainIsolatedWorkerProgress, withIsolatedNativeLaunchDiagnostics } from '../test/isolated-integration-proof';
-import { assertPrivateUnrelatedCheckpointObservation, privateClaudeModelConfig, privateCodexModelConfig, retainPrivateProviderResponse, stopPrivateOperatorHost, type PrivateUnrelatedCheckpointObservation } from '../test/private-http-workspace-preflight';
+import { assertPrivateUnrelatedCheckpointObservation, privateClaudeModelConfig, privateCodexModelConfig, privateNativeDockerHost, retainPrivateProviderResponse, stopPrivateOperatorHost, type PrivateUnrelatedCheckpointObservation } from '../test/private-http-workspace-preflight';
 const NEVER_EMIT_MARKER = 'never-emit-me';
+
+it('restores the explicit native Docker endpoint after environment sanitization', () => {
+  expect(privateNativeDockerHost(['--prepared-api-sha=abc', '--native-docker-host=unix:///run/docker-bench.sock']))
+    .toBe('unix:///run/docker-bench.sock');
+});
+
+it.for([[], ['--native-docker-host='], ['--native-docker-host=tcp://127.0.0.1:2375'],
+  ['--native-docker-host=unix:///'], ['--native-docker-host=unix:///run/a.sock', '--native-docker-host=unix:///run/b.sock']])(
+  'refuses absent, ambiguous or nonlocal native Docker handoffs (%j)', argv => {
+    expect(() => privateNativeDockerHost(argv)).toThrow(/explicit.*Docker endpoint/);
+  });
+
+it.each([undefined, '', '   '])('refuses implicit native benchmark Docker selection (%s) before allocation', async value => {
+  vi.stubEnv('DOCKER_HOST', value);
+  const directory = join(tmpdir(), 'native-egress-must-not-allocate-' + createHash('sha256').update(String(value)).digest('hex'));
+  try {
+    await expect(preflightCurrentSuNativeEgress(directory)).rejects.toThrow('requires explicit DOCKER_HOST');
+    expect(existsSync(directory)).toBe(false);
+  } finally { vi.unstubAllEnvs(); }
+});
 
 it.each(['ready', 'sidecar-timeout', 'missing-image'] as const)(
   'retains native egress prerequisite %s before private API preparation', async outcome => {
@@ -26,11 +46,13 @@ it.each(['ready', 'sidecar-timeout', 'missing-image'] as const)(
       return { code: 0, stdout, stderr: '' };
     };
     try {
+      vi.stubEnv('DOCKER_HOST', 'unix:///run/docker-bench.sock');
       const operation = preflightCurrentSuNativeEgress(directory, exec);
       if (outcome === 'ready') await expect(operation).resolves.toBeUndefined();
       else await expect(operation).rejects.toThrow(outcome === 'missing-image' ? /requires local image/ : /sidecar start failed/);
       const receipt = JSON.parse(readFileSync(join(directory, 'native-egress-preflight.json'), 'utf8'));
-      expect(receipt).toMatchObject({ status: outcome === 'ready' ? 'ready' : 'failed', cleanupErrors: [] });
+      expect(receipt).toMatchObject({ status: outcome === 'ready' ? 'ready' : 'failed', cleanupErrors: [],
+        dockerHost: 'unix:///run/docker-bench.sock' });
       expect(receipt.runId).toMatch(/^native-preflight-[a-f0-9-]+$/);
       expect(existsSync(receipt.workRoot)).toBe(false);
       expect(receipt.commands.length).toBe(calls.length);
@@ -38,7 +60,7 @@ it.each(['ready', 'sidecar-timeout', 'missing-image'] as const)(
       if (outcome === 'ready') expect(receipt.relayConnections).toBe(0);
       if (outcome === 'sidecar-timeout') expect(calls.some(args => args[0] === 'rm')).toBe(true);
       if (outcome === 'missing-image') expect(calls.some(args => args[0] === 'network' && args[1] === 'create')).toBe(false);
-    } finally { rmSync(directory, { recursive: true, force: true }); }
+    } finally { vi.unstubAllEnvs(); rmSync(directory, { recursive: true, force: true }); }
   });
 
 it('keeps a native tool refusal visible after verbose connection phase clocks', () => {

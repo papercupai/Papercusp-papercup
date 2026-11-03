@@ -78,8 +78,17 @@ export const isolatedIntegrationCases = it.for([false, true]);
  * The relay has no model service and readiness sends no endpoint requests. */
 export async function preflightCurrentSuNativeEgress(evidenceDir: string,
   exec?: import('../lib/external-bench/grader/swe-bench-pro').ProcExec) {
+  // Match the maintained benchmark runners: never allocate on the fleet's
+  // main daemon merely because the caller forgot to select the bench engine.
+  // Injected unit ports need no live daemon. Pin live commands to the selected
+  // endpoint so the prerequisite receipt identifies the engine it exercised.
+  const dockerHost = process.env.DOCKER_HOST?.trim() || null;
+  assert.ok(exec || dockerHost,
+    'Native benchmark requires explicit DOCKER_HOST (for the isolated bench engine: unix:///run/docker-bench.sock)');
   const { startBenchEgress, sweepBenchEgress } = await import('../lib/external-bench/bench-egress');
-  const execute = exec ?? (await import('../lib/external-bench/grader/index')).liveProcExec;
+  const liveExec = exec ? undefined : (await import('../lib/external-bench/grader/index')).liveProcExec;
+  const execute: NonNullable<typeof exec> = exec ?? ((command, args, options) =>
+    liveExec!(command, ['--host', dockerHost!, ...args], options));
   const runId = 'native-preflight-' + randomUUID();
   const workRoot = await mkdtemp(join(tmpdir(), 'pc-egr-check-'));
   const commands: Array<{ args: string[]; elapsedMs: number; code?: number; error?: string }> = [];
@@ -100,7 +109,7 @@ export async function preflightCurrentSuNativeEgress(evidenceDir: string,
   const cleanupErrors: string[] = [];
   const receiptPath = join(evidenceDir, 'native-egress-preflight.json');
   // Persist the exact scoped cleanup key before the first Docker allocation.
-  await writeFile(receiptPath, JSON.stringify({ runId, workRoot, status: 'starting' }));
+  await writeFile(receiptPath, JSON.stringify({ runId, workRoot, dockerHost, status: 'starting' }));
   try {
     for (const image of ['alpine', 'nginx:alpine']) {
       const result = await measured('docker', ['image', 'inspect', image], { timeoutMs: 15_000 });
@@ -118,7 +127,7 @@ export async function preflightCurrentSuNativeEgress(evidenceDir: string,
       cleanupErrors.push(...(await sweepBenchEgress(runId, measured)).errors);
     } catch (error) { cleanupErrors.push(String(error)); }
     await rm(workRoot, { recursive: true, force: true });
-    await writeFile(receiptPath, JSON.stringify({ runId, workRoot, observedAt: new Date().toISOString(),
+    await writeFile(receiptPath, JSON.stringify({ runId, workRoot, dockerHost, observedAt: new Date().toISOString(),
       status: failure || cleanupErrors.length ? 'failed' : 'ready', commands, relayConnections,
       cleanupErrors, ...(failure ? { error: String(failure) } : {}) }, null, 2));
   }

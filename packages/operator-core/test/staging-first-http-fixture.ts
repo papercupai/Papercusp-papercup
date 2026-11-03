@@ -10,7 +10,7 @@ import { readPgBackendCensus } from './_pg-backend-census';
 import { loadHarnessRegistry, saveHarnessRegistry } from '../lib/harness-registry';
 import { readProcessIdentity } from '../lib/process-identity';
 import { resolvePlanScope } from '../lib/agent-tools/plans/source';
-import { buildPrivateOperatorApiBundle, privateBundleRuntimeEnv, waitForPrivateOperator, stopPrivateOperatorHost, qualifyCommittedReaderSource, observeCommittedReaderLoadedSources, resolvePreparedCommittedReaderSource, resolvePreparedPrivateApiBundle } from './private-http-workspace-preflight';
+import { buildPrivateOperatorApiBundle, privateBundleRuntimeEnv, privateNativeDockerHost, waitForPrivateOperator, stopPrivateOperatorHost, qualifyCommittedReaderSource, observeCommittedReaderLoadedSources, resolvePreparedCommittedReaderSource, resolvePreparedPrivateApiBundle } from './private-http-workspace-preflight';
 import { captureIsolatedWorker, isolatedTestFileWorkerOptions, retainIsolatedWorkerProgress } from './isolated-integration-proof';
 import { measurePrivateUnrelatedCheckpointScenario } from './private-unrelated-write-http-scenario';
 
@@ -170,6 +170,9 @@ async function main() {
   const isBlueprintRoute = e.STAGING_FIRST_HTTP_SCENARIO === 'blueprint-account-route';
   const isCurrentSuNative = ['current-su-native', 'current-su-native-carry',
     'current-su-native-frozen-carry-on', 'current-su-native-frozen-carry-off'].includes(e.STAGING_FIRST_HTTP_SCENARIO ?? '');
+  // The supervisor deliberately strips DOCKER_* credentials and routing.
+  // Reconstitute only this run's selected local endpoint before host launch.
+  if (isCurrentSuNative) e.DOCKER_HOST = privateNativeDockerHost(process.argv.slice(2));
   const isCodexManagedTools = e.STAGING_FIRST_HTTP_SCENARIO === 'codex-managed-tools';
   const isOmpManagedTools = e.STAGING_FIRST_HTTP_SCENARIO === 'omp-managed-tools';
   const requiresPrepared = isCommittedReader || isBlueprintRoute || isCurrentSuNative || isCodexManagedTools || isOmpManagedTools
@@ -375,7 +378,8 @@ async function main() {
       ...(e.STAGING_FIRST_HTTP_SCENARIO === 'current-su-native-frozen-carry-off' ? { frozenCarryMode: 'off' as const } : {}),
     });
     await stopHost();
-    console.log('CURRENT_SU_NATIVE_RECEIPT ' + JSON.stringify({ ...receipt, hostStopped: true, bundleSha256, health }));
+    console.log('CURRENT_SU_NATIVE_RECEIPT ' + JSON.stringify({ ...receipt, hostStopped: true, bundleSha256, health,
+      dockerHost: e.DOCKER_HOST }));
     return;
   }
   if (e.STAGING_FIRST_HTTP_SCENARIO === 'compaction-warm') {

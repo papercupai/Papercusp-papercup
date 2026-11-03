@@ -2471,6 +2471,7 @@ export async function launchManagedTestProcess(
         title: `testing:run foreground ${opts.runGroup}`,
         argv: [opts.command, ...opts.args],
         cwd: opts.cwd,
+        logPath: opts.outputPath,
         harnessSlug: opts.env.PAPERCUSP_TEST_RUN_HARNESS ?? null,
         workItemId: opts.env.PAPERCUSP_TEST_RUN_WORK_ITEM?.trim() || null,
         // Detached testing-run-store owns this marker. Linking its nested router
@@ -3794,7 +3795,7 @@ export async function runTestFilesCore(opts: RunTestFilesCoreOptions, deps: Test
       error = `report retention failed: ${cause instanceof Error ? cause.message : String(cause)}`;
       throw cause;
     } finally {
-      packet.finish({ result, error, cleanup, executedRoot: result?.root ?? null, phaseTimings: opts.phaseTimings ?? null });
+      await packet.finish({ result, error, cleanup, executedRoot: result?.root ?? null, phaseTimings: opts.phaseTimings ?? null });
     }
   }
 }
@@ -4170,7 +4171,7 @@ async function runTestFilesCoreInternal(opts: RunTestFilesCoreOptions, deps: Tes
           const cleanup = await cleanupOwnedTestDatabases({ dir: packet.paths.ownedDatabases, runId,
             deadlineAtMs: deadline.taskDeadlineAtMs, drop: dropDatabaseOnDedicatedConnection });
           packet.write('late-cleanup.json', cleanup);
-          packet.finish({ result: { code: outcome.code, signal: outcome.signal, lateChildClose: true }, cleanup });
+          await packet.finish({ result: { code: outcome.code, signal: outcome.signal, lateChildClose: true }, cleanup });
         }).catch(cause => packet.stage('late-cleanup-error', { error: String(cause) }));
       }
       const error = outcome.aborted ? 'aborted' : 'timeout';

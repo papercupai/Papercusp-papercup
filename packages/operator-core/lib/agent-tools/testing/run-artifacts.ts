@@ -5,7 +5,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { papercuspPath } from '@papercusp/host-platform/home';
 import type { OwnedTestDbCleanupResult } from '@papercusp/test-config/pg';
-import { retainNativeProofPacket, verifyNativeProofPacket,
+import { retainNativeProofPacketAsync, verifyNativeProofPacket,
   type NativeCustodyAuxiliary, type NativeCustodyGroup, type NativeCustodyIdentity,
   type NativeCustodyLocator } from '../../../../../scripts/lib/budgeted-task-scheduler.mjs';
 
@@ -174,7 +174,7 @@ export class TestRunArtifactPacket {
   captureOutputLogs(paths: string[]): void { this.outputLogs = [...paths]; }
   /** Seal after cleanup has its own outcome. No retention failure may prevent
    * confirmed-close cleanup, and a pending edition cannot be rewritten by a late close. */
-  private retainNative(detail: Record<string, unknown>): unknown {
+  private async retainNative(detail: Record<string, unknown>): Promise<unknown> {
     const identity = this.custodyIdentity ?? { workspace: 'unscoped', harness: 'unscoped', runId: this.runId };
     const auxiliary: NativeCustodyAuxiliary[] = [];
     const required = ['source.json', 'configuration.json', 'router.json', 'ledger.json', 'phases.jsonl'];
@@ -211,7 +211,7 @@ export class TestRunArtifactPacket {
     const pending = this.childState === 'pending';
     const group: NativeCustodyGroup = { id: 'packet', attempt: 'primary', selected: this.selectedFiles.length
       ? this.selectedFiles : [this.root], runner: 'unsupported', armed: false, out: null, auxiliary };
-    const saved = retainNativeProofPacket(this.paths.nativeProof, { identity, expected: [group],
+    const saved = await retainNativeProofPacketAsync(this.paths.nativeProof, { identity, expected: [group],
       observations: [{ id: group.id, out: null }], execution: { childState: this.childState, result: detail.result ?? null },
       cleanup: detail.cleanup ?? null, ...(this.nativeLocator ? { predecessor: this.nativeLocator } : {}) });
     this.nativeLocator = saved.locator;
@@ -219,10 +219,10 @@ export class TestRunArtifactPacket {
       writerState: pending ? 'pending' : 'settled', routerCustody: routerVerdicts,
       nativeProof: 'unqualified', acceptance: 'unmeasured', producerRetirement: 'not-performed' };
   }
-  finish(detail: Record<string, unknown>): void {
+  async finish(detail: Record<string, unknown>): Promise<void> {
     this.stage('retained', { childState: this.childState });
     let nativeCustody: unknown;
-    try { nativeCustody = this.retainNative(detail); }
+    try { nativeCustody = await this.retainNative(detail); }
     catch (error) { nativeCustody = { byteCustody: 'unavailable', error: String(error),
       nativeProof: 'unqualified', acceptance: 'unmeasured', producerRetirement: 'retained' }; }
     this.write('manifest.json', { schemaVersion: 1, runId: this.runId, root: this.root,

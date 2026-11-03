@@ -89,7 +89,7 @@ describe('auditTree', () => {
     expect(summary.audited).toBe(1);
   });
 
-  it.each([{}, { 'node_modules/platform-only': { version: '1.0.0', optional: true } }])(
+  it.each<Record<string, Record<string, unknown>>>([{}, { 'node_modules/platform-only': { version: '1.0.0', optional: true } }])(
     'permits an absent root install with no required locked packages: %j', (packages) => {
       const root = makeRoot();
       writeJson(join(root, 'package-lock.json'), lock(packages));
@@ -265,6 +265,22 @@ describe('lockfilesFromManifest', () => {
 });
 
 describe('CLI', () => {
+  it('can be imported by an eval caller whose first argument is a URL-bearing option', () => {
+    const probe = `await import(${JSON.stringify(pathToFileURL(HELPER).href)}); console.log('AUDIT_IMPORTED');`;
+    const result = spawnSync(process.execPath, ['--input-type=module', '--eval', probe,
+      '--', '--native-docker-host=unix:///run/docker-bench.sock'], { encoding: 'utf8' });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout.trim()).toBe('AUDIT_IMPORTED');
+  });
+
+  it('runs directly from a script path containing spaces and URL metacharacters', () => {
+    const script = join(makeRoot(), 'audit #100%.mjs');
+    writeFileSync(script, readFileSync(HELPER));
+    const result = spawnSync(process.execPath, [script, '--tree-root', makeRoot()], { encoding: 'utf8' });
+    expect(result.status, result.stderr).toBe(2);
+    expect(result.stderr).toContain('dependency-lock-tree-audit: --lock-root is required');
+  });
+
   function run(root: string): { status: number | null; stdout: string } {
     const manifest = join(root, 'manifest');
     writeFileSync(manifest, 'package-lock.json\tdeadbeef\n');

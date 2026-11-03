@@ -1,12 +1,13 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { open as openAsync } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { TestRunArtifactPacket, testRunDeadline } from './run-artifacts';
 import { verifyNativeProofPacket } from '../../../../../scripts/lib/budgeted-task-scheduler.mjs';
 
 const roots: string[] = [];
-afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
+afterEach(() => { vi.restoreAllMocks(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 describe('maintained run deadlines and retained artifacts', () => {
   function nativePacket() {
     const root = mkdtempSync(join(tmpdir(), 'run-artifacts-custody-')); roots.push(root);
@@ -20,10 +21,10 @@ describe('maintained run deadlines and retained artifacts', () => {
     packet.captureOutputLogs([log]);
     return { root, source, packet };
   }
-  it('preserves private bytes after producer removal without upgrading pending execution or cleanup', () => {
+  it('preserves private bytes after producer removal without upgrading pending execution or cleanup', async () => {
     const { source, packet } = nativePacket();
     packet.childState = 'pending';
-    packet.finish({ cleanup: { complete: false } });
+    await packet.finish({ cleanup: { complete: false } });
     const manifest = JSON.parse(readFileSync(packet.paths.manifest, 'utf8'));
     expect(manifest.nativeCustody).toMatchObject({ byteCustody: 'complete', writerState: 'pending',
       nativeProof: 'unqualified', acceptance: 'unmeasured' });
@@ -39,24 +40,58 @@ describe('maintained run deadlines and retained artifacts', () => {
     const log = read.manifest.groups[0].auxiliary.find(row => row.role === 'router-output/0')!.artifact!;
     expect(readFileSync(join(packet.paths.nativeProof, 'objects', log.ref))).toEqual(Buffer.from([0, 255, 10]));
   });
-  it('links late-close settlement without changing a sealed pending edition', () => {
+  it('links late-close settlement without changing a sealed pending edition', async () => {
     const { packet } = nativePacket();
-    packet.childState = 'pending'; packet.finish({ cleanup: { complete: false } });
+    packet.childState = 'pending'; await packet.finish({ cleanup: { complete: false } });
     const first = JSON.parse(readFileSync(packet.paths.manifest, 'utf8')).nativeCustody.locator;
     const original = readFileSync(join(packet.paths.nativeProof, 'objects', first.manifest.ref));
-    packet.childState = 'closed'; packet.stage('late-child-close'); packet.finish({ cleanup: { complete: true } });
+    packet.childState = 'closed'; packet.stage('late-child-close'); await packet.finish({ cleanup: { complete: true } });
     const second = JSON.parse(readFileSync(packet.paths.manifest, 'utf8')).nativeCustody;
     expect(second.writerState).toBe('settled');
     expect(second.locator.manifest.sha256).not.toBe(first.manifest.sha256);
     expect(JSON.parse(readFileSync(join(packet.paths.nativeProof, 'objects', second.locator.manifest.ref), 'utf8')).predecessor).toEqual(first);
     expect(readFileSync(join(packet.paths.nativeProof, 'objects', first.manifest.ref))).toEqual(original);
   });
-  it('retains actual cleanup outcome when custody refuses a redirected root', () => {
+  it('retains actual cleanup outcome when custody refuses a redirected root', async () => {
     const { source, packet } = nativePacket();
     symlinkSync(source, packet.paths.nativeProof);
-    packet.childState = 'closed'; packet.finish({ cleanup: { complete: true } });
+    packet.childState = 'closed'; await packet.finish({ cleanup: { complete: true } });
     expect(JSON.parse(readFileSync(packet.paths.manifest, 'utf8'))).toMatchObject({ cleanup: { complete: true },
       nativeCustody: { byteCustody: 'unavailable', nativeProof: 'unqualified', acceptance: 'unmeasured' } });
+  });
+  it('keeps native-proof fsync waits off the request event loop', async () => {
+    const { packet, root } = nativePacket();
+    const probe = await openAsync(join(root, 'sync-probe'), 'w');
+    const fileHandlePrototype = Object.getPrototypeOf(probe);
+    const realSync = fileHandlePrototype.sync;
+    await probe.close();
+    let releaseFirstSync!: () => void;
+    let enteredFirstSync!: () => void;
+    const firstSyncEntered = new Promise<void>(resolve => { enteredFirstSync = resolve; });
+    const firstSyncGate = new Promise<void>(resolve => { releaseFirstSync = resolve; });
+    let first = true;
+    const sync = vi.spyOn(fileHandlePrototype, 'sync').mockImplementation(async function () {
+      if (first) {
+        first = false;
+        enteredFirstSync();
+        await firstSyncGate;
+      }
+      return realSync.call(this);
+    });
+
+    let finished = false;
+    const finishing = packet.finish({ cleanup: { complete: true } }).then(() => { finished = true; });
+    await firstSyncEntered;
+    let eventLoopTurned = false;
+    await new Promise<void>(resolve => setImmediate(() => { eventLoopTurned = true; resolve(); }));
+    expect(eventLoopTurned).toBe(true);
+    expect(finished).toBe(false);
+    expect(sync).toHaveBeenCalled();
+    releaseFirstSync();
+    await finishing;
+    expect(JSON.parse(readFileSync(packet.paths.manifest, 'utf8'))).toMatchObject({
+      nativeCustody: { byteCustody: 'complete', nativeProof: 'unqualified' },
+    });
   });
   it('holds an explicit cleanup reserve behind one absolute child cutoff', () => {
     expect(testRunDeadline(45_000, { now: 1000, cleanupReserveMs: 10_000 })).toEqual({
@@ -75,7 +110,7 @@ describe('maintained run deadlines and retained artifacts', () => {
     expect(testRunDeadline(45_000, { now: 40_000, taskDeadlineAtMs: 46_000, cleanupReserveMs: 10_000 }))
       .toMatchObject({ taskDeadlineAtMs: 46_000, childCutoffAtMs: 36_000, cleanupReserveMs: 10_000 });
   });
-  it.each(['closed', 'pending'] as const)('retains reports, channels, source pins and receipts when child state is %s', childState => {
+  it.each(['closed', 'pending'] as const)('retains reports, channels, source pins and receipts when child state is %s', async childState => {
     const root = mkdtempSync(join(tmpdir(), 'run-artifacts-')); roots.push(root);
     writeFileSync(join(root, 'subject.test.ts'), 'export {};');
     const packet = new TestRunArtifactPacket('run-1', root, testRunDeadline(1000), join(root, 'retained'));
@@ -84,7 +119,7 @@ describe('maintained run deadlines and retained artifacts', () => {
     writeFileSync(join(packet.paths.reports, 'report.json'), '{"complete":true}');
     writeFileSync(join(packet.paths.directory, 'stdout.log'), 'first byte\nlast byte\n');
     writeFileSync(join(packet.paths.directory, 'stderr.log'), 'separate error\n');
-    packet.stage('router-result'); packet.finish({ cleanup: { complete: childState === 'closed' } });
+    packet.stage('router-result'); await packet.finish({ cleanup: { complete: childState === 'closed' } });
     expect(JSON.parse(readFileSync(packet.paths.manifest, 'utf8'))).toMatchObject({ state: 'retained', childState });
     expect(readFileSync(join(packet.paths.reports, 'report.json'), 'utf8')).toContain('complete');
     expect(readFileSync(join(packet.paths.directory, 'stdout.log'), 'utf8')).toContain('first byte');

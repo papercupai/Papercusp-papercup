@@ -33,6 +33,7 @@ registerSystemAction('consult-expiry-sweep', async () => {
     {
       consultExpiryEmitReplyEvent,
       consultExpiryFindSilentResponders,
+      consultExpiryRejudgeAnsweringTask,
       consultExpiryNotifyRequester,
       consultExpiryDispatch,
       consultExpiryFileReviewWorkItem,
@@ -100,6 +101,12 @@ registerSystemAction('consult-expiry-sweep', async () => {
       },
     }),
     findSilentResponders: consultExpiryFindSilentResponders({
+      rejudgeAnsweringTask: consultExpiryRejudgeAnsweringTask({
+        resolveResumeTarget: async (ref) => (await import('../../agent-launch-core')).resolveResumeTarget(ref),
+        checkTranscript: async (target) =>
+          (await import('../../consult/resume-transcript-preflight')).checkConsultResumeTranscript(target),
+        rejudgeFirstTurn,
+      }),
       listAnsweringTasks: async (workspaceId, answeringOwnerId) => {
         const filter = { workspaceId, coordOwnerId: answeringOwnerId, classes: ['agent-session'], limit: 20 };
         // Read live rows separately so a capped terminal-history window cannot

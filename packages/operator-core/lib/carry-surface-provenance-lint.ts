@@ -270,6 +270,23 @@ function isOwnerAttributionReportedAgentMention(line: string): boolean {
 }
 
 /**
+ * A technical owner-state note can contain the words "owner required action" while
+ * reporting a coordination action that was already sent. Require both its opaque
+ * message token and the surrounding live-presence / unconfirmed-pickup state; a token
+ * by itself is not enough to exempt an owner attribution.
+ */
+const TECHNICAL_OWNER_ACTION_REPORT_RE =
+  /\bowner\s+required\s+action\s+[a-f0-9]{8,}(?:-[a-f0-9]{4,})*\s+sent\b/i;
+
+function isTechnicalOwnerActionReport(line: string): boolean {
+  return (
+    TECHNICAL_OWNER_ACTION_REPORT_RE.test(line) &&
+    /presence\s*(?:is\s*)?(?:live|recent)/i.test(line) &&
+    /(?:response|pickup)[\s/,-]{0,12}(?:is\s+)?not\s+(?:yet\s+)?proven/i.test(line)
+  );
+}
+
+/**
  * EI-22787623747935751: OWNER_ATTRIBUTION_RE can begin at the `owner` suffix of
  * a peer-owned domain role — "Gate owner asked for ..." — and misclassify that
  * role's report as an attribution to the interactive human owner. Keep this
@@ -930,7 +947,8 @@ export function lintCarrySurfaceProvenance(text: string | null | undefined): Pro
     if (
       (ownerAttributionMatch &&
         !isPeerRoleOwnerAttribution(line, ownerAttributionMatch) &&
-        !isOwnerAttributionReportedAgentMention(line)) ||
+        !isOwnerAttributionReportedAgentMention(line) &&
+        !isTechnicalOwnerActionReport(line)) ||
       isPassiveOwnerAttribution(line)
     ) {
       matches.push({ line: line.slice(0, MATCH_LINE_CAP), kind: 'owner-attribution' });

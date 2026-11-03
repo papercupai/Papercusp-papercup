@@ -650,6 +650,11 @@ describe('evaluatePlanSpecQuality', () => {
     'FAQ content stays synchronized through the existing source-linked maintenance pipeline.',
     'The FAQ maintenance process extends the existing source-linked pipeline.',
     'The existing source-linked maintenance pipeline provides FAQ revision tracking.',
+    'Computed tenure cards are refreshed by the existing goal scheduling path during the tenure and at its end.',
+    'Computed tenure cards are produced by existing scheduling without a new scheduler.',
+    'The publisher reuses the existing goal scheduling path.',
+    'Computed cards are refreshed using the existing scheduled sweep.',
+    'Computed cards are refreshed by the existing runtime.',
     'Reuse the runtime usage ledger and existing workspace diagnostics for per-call token counts.',
     'Reuse PostHog for disclosed, consented hosted portal events.',
     'Extend existing lifecycle, health, public-ingress and API instrumentation.',
@@ -682,6 +687,8 @@ describe('evaluatePlanSpecQuality', () => {
     'An existing customer sees their subscription after signing in.',
     'The customer reuses an existing account when accepting an invitation.',
     'The customer completes a job with the reported provider cost.',
+    'A change is requested by the existing customer.',
+    'An invitation is accepted by the existing account holder.',
     'Reuse of an expired invitation is refused.',
   ])('keeps observable existing-customer and reuse outcomes independent: %s', (behavior) => {
     const result = evaluatePlanSpecQuality({

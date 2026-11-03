@@ -499,7 +499,7 @@ function readCustodyManifest(pin, read) {
 /** Publish an immutable edition; failures preserve useful bytes and explicit gaps.
  * `expected` is the independent routing contract, including conditional objects.
  * Every auxiliary object needs a role and a producer-backed applicability state. */
-export function retainNativeProofPacket(directory, input) {
+function prepareNativeProofPacket(directory, input) {
   const startedAt = performance.now();
   const progress = (phase, detail = {}) => {
     // Diagnostics must not change custody, including when an output sink fails.
@@ -691,26 +691,71 @@ export function retainNativeProofPacket(directory, input) {
   // Segment/manifest metadata is separately object-bounded, not capture content.
   const syncNames = custodyInventory(objectRoot,
     custodyLimits.objects + custodyArchiveLimits.segments + custodyMetadataParts + 1);
-  progress('sync-start', { total: syncNames.length });
-  for (const [index, name] of syncNames.entries()) {
-    const fd = openSync(join(objectRoot, name), constants.O_RDONLY | constants.O_NOFOLLOW);
-    try { fsyncSync(fd); } finally { closeSync(fd); }
-    // One bounded heartbeat per batch, rather than one line for each artifact.
-    if ((index + 1) % 128 === 0) progress('sync-progress', { completed: index + 1, total: syncNames.length });
-  }
-  for (const path of [objectRoot, root, dirname(root)]) {
-    const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
-    try { fsyncSync(fd); } finally { closeSync(fd); }
-  }
-  progress('sync-complete', { completed: syncNames.length, total: syncNames.length });
   // Keep the producer's observed inventory and partial states in the original
   // locator. A newly sealed manifest cannot redefine which objects were captured.
   const locator = { manifest: manifestPin, identity: input.identity, expectedHash: manifest.expectedHash,
     inventoryHash: custodyHash({ groups, gaps, segments: retainedSegments }) };
-  progress('verification-start');
-  const verified = verifyNativeProofPacket(root, locator, { identity: input.identity, expected: input.expected });
-  progress('verification-complete', { status: verified.status });
-  return { directory: root, locator, ...verified };
+  const directoryPaths = [objectRoot, root, dirname(root)];
+  progress('sync-start', { total: syncNames.length });
+  return { root, locator, identity: input.identity, expected: input.expected,
+    objectRoot, syncNames, directoryPaths, progress };
+}
+
+function finishNativeProofPacket(prepared) {
+  prepared.progress('sync-complete', {
+    completed: prepared.syncNames.length, total: prepared.syncNames.length,
+  });
+  prepared.progress('verification-start');
+  const verified = verifyNativeProofPacket(prepared.root, prepared.locator,
+    { identity: prepared.identity, expected: prepared.expected });
+  prepared.progress('verification-complete', { status: verified.status });
+  return { directory: prepared.root, locator: prepared.locator, ...verified };
+}
+
+function syncNativeProofPath(path) {
+  const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try { fsyncSync(fd); } finally { closeSync(fd); }
+}
+
+async function syncNativeProofPathAsync(path) {
+  const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try { await handle.sync(); } finally { await handle.close(); }
+}
+
+function syncNativeProofPacket(prepared) {
+  for (const [index, name] of prepared.syncNames.entries()) {
+    syncNativeProofPath(join(prepared.objectRoot, name));
+    if ((index + 1) % 128 === 0) {
+      prepared.progress('sync-progress', { completed: index + 1, total: prepared.syncNames.length });
+    }
+  }
+  for (const path of prepared.directoryPaths) syncNativeProofPath(path);
+  return finishNativeProofPacket(prepared);
+}
+
+async function syncNativeProofPacketAsync(prepared) {
+  for (const [index, name] of prepared.syncNames.entries()) {
+    await syncNativeProofPathAsync(join(prepared.objectRoot, name));
+    if ((index + 1) % 128 === 0) {
+      prepared.progress('sync-progress', { completed: index + 1, total: prepared.syncNames.length });
+    }
+  }
+  for (const path of prepared.directoryPaths) await syncNativeProofPathAsync(path);
+  return finishNativeProofPacket(prepared);
+}
+
+/** Synchronous custody path for isolated command-line consumers. */
+export function retainNativeProofPacket(directory, input) {
+  return syncNativeProofPacket(prepareNativeProofPacket(directory, input));
+}
+
+/**
+ * Request-handler counterpart: retain the same packet and durability guarantees,
+ * but await each fsync through FileHandle.sync so slow storage never parks the
+ * operator's main event loop.
+ */
+export async function retainNativeProofPacketAsync(directory, input) {
+  return syncNativeProofPacketAsync(prepareNativeProofPacket(directory, input));
 }
 
 /** Consumer reads only retained objects. Callers MUST provide independently

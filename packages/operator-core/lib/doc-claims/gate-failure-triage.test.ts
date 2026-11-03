@@ -218,6 +218,20 @@ describe('doc corpus gate-failure triage claim', () => {
       expect(banner).toContain('gitlink');
     });
 
+    it('labels frozen-source receipt failures as unknown provenance, not unreadable Git', () => {
+      const banner = formatProvenanceBanner(
+        {
+          head: null,
+          provenanceError: 'Error: missing independent verifier source receipt',
+          entries: [{ absolute: '/repo/example.test.ts', path: 'example.test.ts', state: 'unknown' }],
+        },
+        'pre-run',
+      );
+      expect(banner).toContain('provenanceError: Error: missing independent verifier source receipt');
+      expect(banner).toContain('[state UNKNOWN — provenance could not be determined]');
+      expect(banner).not.toContain('git could not be read');
+    });
+
     it('the multi-file fallback re-lists individually and clears healthy files by name', () => {
       // Pin the I/O seam as well as the pure marker: a refactor that stops performing
       // the per-file `vitest list` calls must not leave the prose claiming it does. Match

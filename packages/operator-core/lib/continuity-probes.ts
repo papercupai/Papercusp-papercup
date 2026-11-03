@@ -24,7 +24,8 @@ import { withBoundedTimeout } from './bounded-timeout';
 import { mapWithConcurrency } from './gym/concurrency';
 import type { CheckEntry } from './carry-note';
 import { CONTINUITY_PROBE_MAX_PER_WAKE, LIMITS } from './agent-tools/limits';
-import { assertSingleReadStatement, PG_READ_QUERY_HARD_MAX_ROWS } from './pg-read-query';
+import { assertSingleReadStatement, PG_READ_QUERY_HARD_MAX_ROWS, pgReadQuery } from './pg-read-query';
+import { compileRetainedSql, retainedSqlCaptureExpression, retainedSqlImplementationSha256, SQL_INPUT_COLUMN } from './retained-sql';
 export { CONTINUITY_PROBE_MAX_PER_WAKE } from './agent-tools/limits';
 
 export const CONTINUITY_PROBE_MAX_BYTES = 12_000;
@@ -707,8 +708,10 @@ function observedScalar(value: unknown): unknown {
 
 /** Pin the local predicate evaluator separately from the original tool contract.
  * Historical response evaluation never resolves or dispatches that tool again. */
-export function retainedProbeProcedure(probe: ContinuityProbe) {
-  return { ...continuityProbeShapeSchema.parse(probe), replayDependencySha256: createHash('sha256')
+export function retainedProbeProcedure(probe: ContinuityProbe, sqlInputs?: unknown) {
+  return { ...continuityProbeShapeSchema.parse(probe),
+    ...(sqlInputs === undefined ? {} : { sqlInputs, sqlReplayImplementation: retainedSqlImplementationSha256() }),
+    replayDependencySha256: createHash('sha256')
     .update(canonicalJson({ version: 1, helpers: [predicatePath, valueAtPredicatePath,
       evaluateContinuityPredicate, observedScalar].map(fn => fn.toString()) })).digest('hex') };
 }
@@ -716,7 +719,7 @@ export function retainedProbeProcedure(probe: ContinuityProbe) {
 type ReplayScalar = number | string | boolean | null;
 export interface RetainedProbeReplay {
   mode: 'historical';
-  scope: 'probe-predicate';
+  scope: 'probe-predicate' | 'sql-query';
   status: 'reproduced' | 'mismatch' | 'unavailable';
   value: ReplayScalar;
   recordedValue: ReplayScalar;
@@ -746,10 +749,10 @@ export function replayRetainedProbe(input: {
     return unavailable('Original typed probe provenance is missing or invalid.');
   }
   if (p.truncated || p.redacted || p.gaps.length) return unavailable('Original inputs have retention gaps; exact predicate replay is unavailable.');
-  const { replayDependencySha256: _identity, ...probe } = descriptor;
+  const { replayDependencySha256: _identity, sqlInputs, sqlReplayImplementation: _sqlIdentity, ...probe } = descriptor;
   const shape = continuityProbeShapeSchema.safeParse(probe);
   if (!shape.success || shape.data.schemaRevision === LIVE_SCHEMA_REVISION) return unavailable('Original typed probe descriptor is invalid.');
-  const encoded = canonicalJson(retainedProbeProcedure(shape.data));
+  const encoded = canonicalJson(retainedProbeProcedure(shape.data, sqlInputs));
   if (p.procedure.snapshot !== encoded || p.procedure.sha256 !== createHash('sha256').update(encoded).digest('hex')) {
     return unavailable('Original descriptor or registered predicate evaluator identity differs.');
   }
@@ -777,6 +780,34 @@ export function replayRetainedProbe(input: {
     window: { startedAt: p.startedAt, finishedAt: p.finishedAt },
     ...(p.transactionAt ? { transactionAt: p.transactionAt } : {}),
     reason: 'Re-evaluated the original retained response scalar and predicate only; no query, tool or current measurement ran. Underlying SQL rows and query calculations are not reconstructed.' };
+}
+
+/** Re-execute the supported original SQL against retained literal source rows
+ * and the original transaction clock. Never fall back to a live source read. */
+export async function replayRetainedSqlProbe(input: {
+  value: ReplayScalar; unit: string | null; provenance?: RecordedMeasurementProvenance;
+}, read: typeof pgReadQuery = pgReadQuery): Promise<RetainedProbeReplay> {
+  const predicate = replayRetainedProbe(input);
+  const base = { mode: 'historical' as const, scope: 'sql-query' as const,
+    value: null, recordedValue: input.value, unit: input.unit };
+  const unavailable = (reason: string): RetainedProbeReplay => ({ ...base, status: 'unavailable', reason });
+  if (!predicate || predicate.status === 'unavailable') return unavailable(predicate?.reason ?? 'Original SQL inputs are unavailable.');
+  const p = input.provenance!;
+  const descriptor = JSON.parse(p.procedure.snapshot);
+  if (descriptor.kind !== 'sql' || !p.transactionAt) return unavailable('This measurement has no original SQL source snapshot.');
+  const query = compileRetainedSql(descriptor.sql, descriptor.sqlInputs, p.transactionAt);
+  if (!query) return unavailable('Original SQL source inputs are missing, unsupported or incomplete; no current source was queried.');
+  try {
+    const result = await read(query, { maxRows: descriptor.maxRows, timeoutMs: CONTINUITY_PROBE_TIMEOUT_MS });
+    if (result.truncated) return unavailable('The historical SQL replay exceeded its original result cap.');
+    const verdict = evaluateContinuityPredicate(descriptor.expect, result);
+    const value = observedScalar(verdict.actual);
+    if (value === undefined) return unavailable('The historical SQL result is not a retained scalar.');
+    return { ...base, value: value as ReplayScalar, verdict: verdict.matches ? 'pass' : 'fail',
+      status: Object.is(value, input.value) ? 'reproduced' : 'mismatch',
+      window: predicate.window, transactionAt: p.transactionAt,
+      reason: 'Re-executed the original supported SQL using only retained typed source rows and the original transaction clock; no current source relation or clock was read.' };
+  } catch { return unavailable('The closed historical SQL query could not be executed; no live-source fallback was attempted.'); }
 }
 
 function continuityProbeTimeoutLabel(probe: ContinuityProbe, name: string): string {
@@ -872,7 +903,8 @@ async function runOne(
   // The clock is PostgreSQL's original transaction time used by now() windows.
   const wrappedClock = ctx.retainMeasurement && probe.kind === 'sql' && !probe.sql.includes(clockColumn);
   if (wrappedClock && probe.kind === 'sql') {
-    args.sql = `SELECT "__pc_data".*, transaction_timestamp()::text AS "${clockColumn}" FROM (${probe.sql.trim().replace(/;\s*$/, '')}) AS "__pc_data"`;
+    const capture = retainedSqlCaptureExpression(probe.sql);
+    args.sql = `SELECT "__pc_data".*, transaction_timestamp()::text AS "${clockColumn}"${capture ? `, ${capture} AS "${SQL_INPUT_COLUMN}"` : ''} FROM (${probe.sql.trim().replace(/;\s*$/, '')}) AS "__pc_data"`;
   }
   const dispatched = await withBoundedTimeout(
     (signal) => dispatchTool(name, args, signal),
@@ -904,16 +936,18 @@ async function runOne(
   }
   let decoded = decodeToolResult(dispatched.value);
   let transactionAt: string | undefined;
+  let sqlInputs: unknown;
   if (wrappedClock && decoded && typeof decoded === 'object' && !Array.isArray(decoded)) {
     const body = decoded as Record<string, unknown>;
     if (Array.isArray(body.rows)) {
       const rows = body.rows.map(row => {
         if (!row || typeof row !== 'object' || Array.isArray(row)) return row;
-        const { [clockColumn]: clock, ...original } = row as Record<string, unknown>;
+        const { [clockColumn]: clock, [SQL_INPUT_COLUMN]: inputs, ...original } = row as Record<string, unknown>;
         if (typeof clock === 'string' && Number.isFinite(Date.parse(clock))) transactionAt = new Date(clock).toISOString();
+        if (inputs !== undefined) sqlInputs = inputs;
         return original;
       });
-      decoded = { ...body, rows, ...(Array.isArray(body.fields) ? { fields: body.fields.filter(field => field !== clockColumn) } : {}) };
+      decoded = { ...body, rows, ...(Array.isArray(body.fields) ? { fields: body.fields.filter(field => field !== clockColumn && field !== SQL_INPUT_COLUMN) } : {}) };
     }
   }
   // WI-10005537: the budget bounds what the predicate JUDGES, not the whole tool
@@ -944,7 +978,7 @@ async function runOne(
     executed: true,
     ...(observed !== undefined ? { observed } : {}),
     ...(ctx.retainMeasurement ? { provenance: retainMeasurementProvenance({
-      procedure: retainedProbeProcedure(probe), result: decoded, startedAt, finishedAt,
+      procedure: retainedProbeProcedure(probe, sqlInputs), result: decoded, startedAt, finishedAt,
       ...(transactionAt ? { transactionAt } : {}), needsTransactionClock: probe.kind === 'sql',
     }) } : {}),
   };

@@ -7,7 +7,7 @@ import { CHARS_PER_TOKEN_ESTIMATE, computeTurnDoors } from '../../context-doors'
 import { getDoorConstantsSync } from '../../context-doors-config';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { replayRetainedInstrument } from '../../rubric-instrument-registry';
-import { replayRetainedProbe } from '../../continuity-probes';
+import { replayRetainedProbe, replayRetainedSqlProbe } from '../../continuity-probes';
 import { COORD_ROLES } from '../coordination/roles';
 import {
   classifyGradingAuditCurrentness,
@@ -60,8 +60,8 @@ export const scorecardGetArgs = z.object({
     .describe('Compatibility alias for issueId for generic id-based read callers; issueId wins when both are supplied.'),
   criterionKey: z.string().min(1).max(200).optional()
     .describe('Read one criterion from an oversized card index. Evidence remains exact; follow evidenceRead.next until complete.'),
-  replay: z.literal('retained-measurement').optional()
-    .describe('Replay one criterion original retained command inputs or scalar probe predicate. Requires criterionKey; no commands, SQL or current-state measurements run. Probe scope covers retained response evaluation, not reconstruction of SQL source rows. Missing or incompatible inputs stay unavailable.'),
+  replay: z.enum(['retained-measurement', 'retained-sql-query']).optional()
+    .describe('Replay one criterion. retained-measurement evaluates original command inputs/scalar probe predicates without execution. retained-sql-query executes supported SQL using only bounded original typed source rows and its original clock. Requires criterionKey. Missing, incompatible or oversized inputs stay unavailable; never reads current source data.'),
   indexOffset: z.number().int().min(0).optional()
     .describe('Resume a paged criterion index at evidenceRead.next.args.indexOffset.'),
   evidenceOffset: z.number().int().min(0).optional()
@@ -426,7 +426,7 @@ const scorecardGetResultSchema = z.object({
     value: z.union([z.number().finite(), z.string(), z.boolean(), z.null()]),
     recordedValue: z.union([z.number(), z.string(), z.boolean(), z.null()]),
     unit: z.string().nullable(), reason: z.string(),
-    scope: z.literal('probe-predicate').optional(), verdict: z.enum(['pass', 'fail']).optional(),
+    scope: z.enum(['probe-predicate', 'sql-query']).optional(), verdict: z.enum(['pass', 'fail']).optional(),
     transactionAt: z.string().optional(),
     window: z.object({ startedAt: z.string(), finishedAt: z.string() }).optional(),
   }).optional(),
@@ -734,7 +734,9 @@ export default defineTool({
                 issueId, criterionKey: criterion.key, rubricRef: result.scorecard.rubricRef,
                 evidenceFingerprint: result.scorecard.evidenceFingerprint,
                 testRunId: criterion.ledgerResult.testRunId,
-                ...(replayRetainedProbe(criterion.ledgerResult) ?? replayRetainedInstrument(criterion.ledgerResult)),
+                ...(args.replay === 'retained-sql-query'
+                  ? await replayRetainedSqlProbe(criterion.ledgerResult)
+                  : replayRetainedProbe(criterion.ledgerResult) ?? replayRetainedInstrument(criterion.ledgerResult)),
               } });
             }
             const gradingAuditRubric = result.scorecard.gradingAudit

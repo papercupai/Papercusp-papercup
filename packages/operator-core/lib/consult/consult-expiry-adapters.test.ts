@@ -27,6 +27,7 @@ import {
   consultExpiryFindSilentResponders,
   consultExpiryNotifyRequester,
   consultExpiryDispatch,
+  consultExpiryRejudgeAnsweringTask,
   consultExpiryStopAnsweringSession,
   sweepIdentity,
   type AnsweringSessionTaskSeams,
@@ -36,6 +37,7 @@ import {
 import { requesterAlertForRow, reviewConsultKind, type DueConsultRow } from './consult-expiry-core';
 import { currentRequestWorkspaceId, runWithWorkspace } from '../workspace-als';
 import type { TaskRow } from '../task-manager/types';
+import type { ResumeTarget } from '../agent-launch-core';
 
 /** A row workspace that could not be mistaken for an ambient/default one. */
 const ROW_WS = 'ws-row-7f3a';
@@ -227,6 +229,75 @@ describe('consultExpiryDispatch', () => {
 });
 
 describe('consultExpiryFindSilentResponders', () => {
+  it('pins the native refusal reader to the tagged task incarnation and retains unknown bindings', async () => {
+    const task = { class: 'agent-session', sessionId: 'native-exact', workspaceId: ROW_WS, logPath: '/exact.log',
+      detail: { consultAnswer: { conversationId: 'conv', sourceOwnerId: 'source', answeringOwnerId: 'answerer' } } } as unknown as TaskRow;
+    const target = { ok: true, ownerId: 'answerer', workspaceId: ROW_WS, agent: 'claude', sessionId: 'native-exact',
+      binding: { coordOwnerId: 'answerer', sessionId: 'native-exact' } };
+    const judge = vi.fn(async () => ({ status: 'pending' as const }));
+    const resolve = vi.fn(async () => target as never);
+    const checkTranscript = vi.fn(async (_target: ResumeTarget) => ({ available: true, transcriptPath: '/native.jsonl', detail: 'exact' }));
+    const read = consultExpiryRejudgeAnsweringTask({ resolveResumeTarget: resolve, checkTranscript, rejudgeFirstTurn: judge });
+    expect(await read(task)).toEqual({ status: 'pending' });
+    expect(resolve).toHaveBeenCalledExactlyOnceWith({ sessionId: 'native-exact' });
+    expect(judge).toHaveBeenCalledExactlyOnceWith({ agent: 'claude', transcriptPath: '/native.jsonl', launchLogPath: '/exact.log' });
+    judge.mockClear();
+    for (const changed of [
+      { ownerId: 'another-owner' }, { workspaceId: 'another-workspace' }, { sessionId: 'another-native' },
+      { binding: { coordOwnerId: 'answerer', sessionId: 'successor' } },
+      { binding: { coordOwnerId: 'another-owner', sessionId: 'native-exact' } }, { binding: null }, { agent: 'unsupported' },
+    ]) {
+      resolve.mockResolvedValueOnce({ ...target, ...changed } as never);
+      expect(await read(task)).toEqual({ status: 'unreadable' });
+    }
+    for (const changed of [{ sessionId: null }, { logPath: null }, { class: 'bash-job' }, { detail: {} }]) {
+      expect(await read({ ...task, ...changed })).toEqual({ status: 'unreadable' });
+    }
+    checkTranscript.mockResolvedValueOnce({ available: false, transcriptPath: '', detail: 'absent' });
+    expect(await read(task)).toEqual({ status: 'unreadable' });
+    resolve.mockRejectedValueOnce(new Error('reader unavailable'));
+    expect(await read(task)).toEqual({ status: 'unreadable' });
+    expect(judge).not.toHaveBeenCalled();
+  });
+
+  it.each(['live', 'parked'])('recovers exact native refusals before recent-log progress vetoes a %s answerer', async (sessionState) => {
+    const now = new Date('2026-11-03T06:10:00Z');
+    const routedAt = '2026-11-03T05:00:00Z';
+    const cases = ['rejected', 'replied', 'pending', 'unreadable', 'reader-error', 'live-sibling', 'posted', 'carry', 'wrong-tag'];
+    const task = (id: string, suffix = '') => ({
+      taskId: id + suffix, workspaceId: ROW_WS, class: 'agent-session', state: 'running',
+      startedAt: routedAt, endedAt: null, logPath: '/logs/' + id + suffix,
+      detail: { consultAnswer: { conversationId: id === 'wrong-tag' ? 'another-consult' : id,
+        sourceOwnerId: 'su-source', answeringOwnerId: 'su-' + id } },
+    }) as unknown as TaskRow;
+    const judge = vi.fn(async (t: TaskRow) => {
+      if (t.taskId === 'reader-error') throw new Error('native reader unavailable');
+      return { status: t.taskId.endsWith('-sibling') ? 'pending' :
+        ['replied', 'pending', 'unreadable'].includes(t.taskId) ? t.taskId : 'rejected' } as never;
+    });
+    const found = await consultExpiryFindSilentResponders({
+      now: () => now,
+      getPresence: async (owner) => ({ lastActiveAt: owner === 'su-wrong-tag' ? null : '2026-11-03T06:00:00Z' }),
+      resolveSessionStates: async () => new Map(cases.map((id) => ['su-' + id, { sessionState }])),
+      listAnsweringTasks: async (_ws, owner) => {
+        const id = owner.slice(3);
+        return id === 'live-sibling' ? [task(id), task(id, '-sibling')] : [task(id)];
+      },
+      rejudgeAnsweringTask: judge,
+      statMtimeMs: () => now.getTime() - 60_000,
+      getCarryRespawnOutcome: async (owner) => owner === 'su-carry'
+        ? { outcome: 'delivered', ts: '2026-11-03T06:09:00Z' } : { outcome: 'none', ts: routedAt },
+      getThreadStore: () => ({
+        getThreadByParent: async (parent) => ({ thread_id: parent.ref }) as never,
+        listRecentPosts: async (id) => id === 'posted'
+          ? { total: 1, posts: [{ author_id: 'su-posted' }] } : { total: 0, posts: [] },
+      }),
+    })(cases.map((id) => ({ workspaceId: ROW_WS, conversationId: id, sourceOwnerId: 'su-source',
+      answeringOwnerId: 'su-' + id, requesterId: 'su-requester', routedAt })));
+    expect(found).toEqual(new Set(['rejected']));
+    expect(judge.mock.calls.some(([t]) => t.taskId === 'wrong-tag')).toBe(false);
+  });
+
   it('recovers a missing reserved answerer only from exact terminal consult-task evidence, retaining live-task and post guards', async () => {
     const now = new Date('2026-08-27T06:00:00.000Z');
     const task = (conversationId: string, overrides: Partial<TaskRow> = {}) => ({

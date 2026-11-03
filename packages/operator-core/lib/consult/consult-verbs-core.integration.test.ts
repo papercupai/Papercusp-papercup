@@ -32,8 +32,10 @@ import {
   type ConsultVerbDeps,
 } from './consult-verbs-core';
 import { advanceCascade, continueCascadeDispatchCore, makeDigestEntry } from './cascade-core';
+import { HARD_BLOCKED_EXPIRY_MS, PROCEED_EXPIRY_MS } from './get-feedback-core';
 import { acquireConsultSpawnLease, makeDeferredConsultReachDispatcher } from './consult-dispatch';
 import { readConsultReview } from './review-findings';
+import { mockOrgPgSql } from '../testing/mock-org-pg';
 
 const WS = 'ws-consult-verbs';
 const NOW = new Date('2026-08-16T00:00:00Z');
@@ -152,19 +154,33 @@ describe('preserving review findings through consult settlement', () => {
       import('./consult-expiry-adapters'), import('../events/await/engine'),
       import('../agent-tools/consult/reply'), import('../agent-tools/consult/close'),
     ]);
+    const orgPg = vi.spyOn(db, 'getOrgPg');
+    mockOrgPgSql(orgPg, rootSql);
     const spies = [
-      vi.spyOn(db, 'getOrgPg').mockReturnValue({ sql: rootSql } as never),
-      vi.spyOn(conversations, 'postReply').mockImplementation((_identity, input) => deps.post(input as never)),
+      orgPg,
+      vi.spyOn(conversations, 'postReply').mockImplementation(async (_identity, input) => {
+        const result = await deps.post({ ...input, via_consult_verb: true });
+        if ('error' in result) throw new Error(`Unexpected public-tool fixture post failure: ${result.error}`);
+        return result;
+      }),
       vi.spyOn(conversations, 'conversationsScopeWorkspace').mockReturnValue(WS),
       vi.spyOn(conversations, 'settleConsultConversation').mockImplementation(async (_identity, input, tx) => {
-        await deps.settleConversation?.(input as never, tx as never);
+        await deps.settleConversation?.(input, tx);
       }),
-      vi.spyOn(notify, 'notifyAgents').mockResolvedValue({ woke: 0 } as never),
-      vi.spyOn(liveness, 'reportIdleRecipients').mockResolvedValue({ degraded: false, confirmedDead: [] } as never),
+      vi.spyOn(notify, 'notifyAgents').mockResolvedValue({ notified: [], subscribed: [], woke: 0 }),
+      vi.spyOn(liveness, 'reportIdleRecipients').mockResolvedValue({
+        idle: [], live: [], dormantScheduled: [], unknown: [], degraded: false, aliveNotWakeable: [], confirmedDead: [],
+      }),
       vi.spyOn(deadSessions, 'lookupEndedSessions').mockResolvedValue(new Map()),
-      vi.spyOn(dispatch, 'makeDeferredConsultReachDispatcher').mockReturnValue(deps.dispatch as never),
-      vi.spyOn(stopper, 'consultExpiryStopAnsweringSession').mockReturnValue(async () => 'none' as never),
-      vi.spyOn(events, 'emitAwaitedEvent').mockResolvedValue({} as never),
+      vi.spyOn(dispatch, 'makeDeferredConsultReachDispatcher').mockReturnValue(async (opts) => {
+        if (!deps.dispatch) return { woke: 0, answeringOwnerId: null };
+        await deps.dispatch(opts);
+        return { woke: 0, pending: true };
+      }),
+      vi.spyOn(stopper, 'consultExpiryStopAnsweringSession').mockReturnValue(async () => 'stopped task fixture'),
+      vi.spyOn(events, 'emitAwaitedEvent').mockImplementation(async (opts) => ({
+        ok: true, key: opts.key, woken: 0, notified: [], msgId: null, waiters: 0,
+      })),
     ];
     type PublicTool = { args: { parse: (args: unknown) => unknown }; handler: (args: unknown, ctx: unknown) => Promise<unknown> };
     const invoke = (tool: unknown) => async (args: Record<string, unknown>, owner: string, transport: string) => {
@@ -196,13 +212,13 @@ describe('preserving review findings through consult settlement', () => {
     const before = await snapshot(id, posts);
     await publicTools(deps, async ({ reply, close }) => {
       for (const owner of ['unrelated-peer', RESPONDER]) {
-        // A caller-supplied authorId must not override the verified transport.
+        // The exact same valid payload is judged under each verified transport.
         const reviewDispositions = [disposition(findingId)];
         expect(await reply({ conversation_id: id, kind: 'new_fact', body: 'Dismissed',
-          authorId: REQUESTER, reviewDispositions }, owner, `mcp-${owner}`))
+          reviewDispositions }, owner, `mcp-${owner}`))
           .toMatchObject({ data: { error: expect.stringMatching(/not_a_participant|invalid_review/) } });
         expect(await close({ conversation_id: id, outcome: 'answered', answer: 'Dismissed',
-          authorId: REQUESTER, reviewDispositions }, owner, `mcp-${owner}-close`))
+          reviewDispositions }, owner, `mcp-${owner}-close`))
           .toMatchObject({ data: { error: expect.stringMatching(/not_a_participant|invalid_review/) } });
         expect(await snapshot(id, posts)).toEqual(before);
       }
@@ -212,10 +228,15 @@ describe('preserving review findings through consult settlement', () => {
   async function overlapping(id: string, deps: ConsultVerbDeps, first: Parameters<typeof consultReplyCore>[0],
     second: Parameters<typeof consultReplyCore>[0]) {
     const sql = postgres(fixtureDb.url, { max: 4, onnotice: () => {}, connection: { application_name: 'egm-disposition-overlap' } });
-    const locked = Promise.withResolvers<void>();
-    const unlock = Promise.withResolvers<void>();
-    const secondPosted = Promise.withResolvers<void>();
-    const permitSecond = Promise.withResolvers<void>();
+    function latch() {
+      let resolve!: () => void;
+      const promise = new Promise<void>((done) => { resolve = done; });
+      return { promise, resolve };
+    }
+    const locked = latch();
+    const unlock = latch();
+    const secondPosted = latch();
+    const permitSecond = latch();
     const commits: number[] = [];
     const hold = rootSql.begin(async tx => {
       await tx`SELECT outcome FROM harness_shared.consult_state
@@ -264,6 +285,21 @@ describe('preserving review findings through consult settlement', () => {
   });
 
   const sentinel = { acceptedBeforeReview: { nested: ['keep', 17] }, reconciliation: { status: 'confirmed', ref: 'WI-existing' } };
+  it('retains earlier reviewer findings and unrelated accepted data when the last reviewer declines', async () => {
+    const id = await seedConsult({ routing: menuSnapshot([RESPONDER, 'resp-2']) });
+    const { deps } = makeDeps();
+    await rootSql`UPDATE harness_shared.consult_state SET outcome=${rootSql.json(sentinel)} WHERE conversation_id=${id}`;
+    const answer = await consultReplyCore({ workspaceId: WS, conversationId: id, authorId: RESPONDER,
+      kind: 'answer', body: 'Review findings', evidence: [{ session_id: 'review-session', turn_idx: 1 }], review }, deps);
+    if ('error' in answer) throw new Error(answer.error);
+    const before = readConsultReview((await stateRow(id)).outcome);
+    expect(await consultDeclineCore({ workspaceId: WS, conversationId: id, authorId: 'resp-2-fork',
+      reason: 'No further findings' }, deps)).toMatchObject({ ok: true, state: 'declined' });
+    const stored = (await stateRow(id)).outcome;
+    expect(stored).toMatchObject(sentinel);
+    expect(readConsultReview(stored)).toEqual(before);
+    expect(before?.findings[0]).toMatchObject({ text: review.findings[0].text, reviewerId: RESPONDER });
+  });
   it('preserves unrelated accepted outcome data through review reply, disposition, close and canonical round trips', async () => {
     const id = await seedConsult({ maxExchanges: 20 });
     const { deps } = makeDeps({ withDispatch: false });
@@ -456,6 +492,67 @@ describe('durable cascade acknowledgement and restart recovery', () => {
     expect(await continueCascadeDispatchCore(WS, id, deps)).toBe(false);
     expect(launches).toBe(1);
     expect((await queuedRow(id)).routing.cascadeDispatch).toBeUndefined();
+  });
+
+  it('expires a refused dispatch after kickoff refreshed its hard-blocked reply window', async () => {
+    const id = await queue();
+    await rootSql`UPDATE harness_shared.consult_state SET latency_contract='hard-blocked'
+      WHERE workspace_id=${WS} AND conversation_id=${id}`;
+    await continueCascadeDispatchCore(WS, id, {
+      getSql: () => rootSql, now: () => NOW,
+      dispatch: () => async (opts) => {
+        // Each provider may start before its first turn is rejected. The final
+        // refusal must compare against the last window this dispatch wrote.
+        for (const owner of ['credit-rejected-fork', 'capacity-rejected-fork']) {
+          await opts.onAnsweringOwner?.(owner);
+          expect(await opts.onKickoff?.(NOW.toISOString(), owner)).toBe(true);
+        }
+        expect(new Date((await queuedRow(id)).expires_at).getTime()).toBe(NOW.getTime() + HARD_BLOCKED_EXPIRY_MS);
+        return { woke: 0, answeringOwnerId: null };
+      },
+    });
+    const row = await queuedRow(id);
+    expect(row.routing.cascadeDispatch).toBeUndefined();
+    expect(row.routing.selection.selected[1].answeringOwnerId).toBeUndefined();
+    expect(new Date(row.expires_at).getTime()).toBeLessThan(NOW.getTime());
+  });
+
+  it('preserves a kickoff reply window for a launched answerer even before pickup', async () => {
+    const id = await queue();
+    const kickoffAt = new Date(NOW.getTime() + 5 * 60_000).toISOString();
+    await continueCascadeDispatchCore(WS, id, {
+      getSql: () => rootSql, now: () => NOW,
+      dispatch: () => async (opts) => {
+        await opts.onAnsweringOwner?.('live-fork');
+        expect(await opts.onKickoff?.(kickoffAt, 'live-fork')).toBe(true);
+        return { woke: 0, answeringOwnerId: 'live-fork' };
+      },
+    });
+    const row = await queuedRow(id);
+    expect(row.routing.cascadeDispatch).toBeUndefined();
+    expect(row.routing.selection.selected[1].answeringOwnerId).toBe('live-fork');
+    expect(new Date(row.expires_at).getTime()).toBe(Date.parse(kickoffAt) + PROCEED_EXPIRY_MS);
+  });
+
+  it('preserves a concurrent reply refresh when a dispatch refuses after kickoff', async () => {
+    const id = await queue();
+    const repliedExpiry = new Date(NOW.getTime() + 45 * 60_000).toISOString();
+    await continueCascadeDispatchCore(WS, id, {
+      getSql: () => rootSql, now: () => NOW,
+      dispatch: () => async (opts) => {
+        await opts.onAnsweringOwner?.('replying-fork');
+        expect(await opts.onKickoff?.(NOW.toISOString(), 'replying-fork')).toBe(true);
+        // A real reply can commit while the launch path is still observing
+        // first-turn state. Its later deadline/identity outrank that refusal.
+        await rootSql`UPDATE harness_shared.consult_state SET state='active', expires_at=${repliedExpiry}::timestamptz
+          WHERE workspace_id=${WS} AND conversation_id=${id}`;
+        return { woke: 0, answeringOwnerId: null };
+      },
+    });
+    const row = await queuedRow(id);
+    expect(row.state).toBe('active');
+    expect(row.routing.selection.selected[1].answeringOwnerId).toBe('replying-fork');
+    expect(new Date(row.expires_at).toISOString()).toBe(repliedExpiry);
   });
 
   it('revalidates an unreplaced dispatch lease after slow preflight', async () => {
@@ -686,7 +783,7 @@ function makeDeps(
         body: input.body,
         created_ts: NOW.toISOString(),
       };
-      return { post, delivered: 1 };
+      return { post, delivered: 1, author_origin: 'agent' };
     },
     emitReplyEvent: async (e) => {
       emits.push(e);
@@ -1688,6 +1785,55 @@ function menuSnapshot(owners: string[]) {
 }
 
 describe('cascade advance (D-005/P-013)', () => {
+  it('carries initial design simplicity questions through the actual review dispatch', async () => {
+    const id = await seedConsult({ routing: menuSnapshot([RESPONDER, 'design-reviewer']) });
+    const { deps, dispatchCalls, reachCalls } = makeDeps();
+    expect(await consultDeclineCore({ workspaceId: WS, authorId: RESPONDER, conversationId: id,
+      reason: 'The next expert covers this design' }, deps)).toMatchObject({ ok: true });
+    expect(dispatchCalls).toHaveLength(1);
+    expect(dispatchCalls[0]).toMatchObject({ responder: 'design-reviewer', conversationId: id });
+    expect(dispatchCalls[0].body).toContain('initial review: is this the simplest design that meets the original scenarios?');
+    expect(dispatchCalls[0].body).toContain('What existing components can be reused');
+    expect(reachCalls).toEqual([]);
+    expect((await stateRow(id)).cascade_cursor).toBe(1);
+  });
+  it('carries material-revision simplicity guidance in requester follow-ups', async () => {
+    const id = await seedConsult({ state: 'active' });
+    const { deps, reachCalls, dispatchCalls } = makeDeps();
+    expect(await consultReplyCore({ workspaceId: WS, authorId: REQUESTER, conversationId: id,
+      kind: 'new_fact', body: 'Material design revision: reuse the queue instead of adding another scheduler.' }, deps))
+      .toMatchObject({ ok: true, exchanges_used: 1 });
+    expect(reachCalls).toHaveLength(1);
+    expect(reachCalls[0].body).toContain('After a material design revision, reassess the revised design as a whole');
+    expect(reachCalls[0].body).toContain('against those original scenarios');
+    expect(dispatchCalls).toEqual([]);
+  });
+  it('keeps the existing exchange cap after material design follow-ups', async () => {
+    const id = await seedConsult({ state: 'active', maxExchanges: 2 });
+    const { deps, posts } = makeDeps();
+    const req = { workspaceId: WS, authorId: REQUESTER, conversationId: id, kind: 'new_fact' as const,
+      body: 'Material design revision: reuse the existing data layer.' };
+    expect(await consultReplyCore(req, deps)).toMatchObject({ ok: true, exchanges_used: 1, max_exchanges: 2 });
+    expect(await consultReplyCore(req, deps)).toMatchObject({ ok: true, exchanges_used: 2, max_exchanges: 2 });
+    expect(await consultReplyCore(req, deps)).toMatchObject({ error: 'exchange_cap' });
+    expect(posts).toHaveLength(2);
+    expect((await stateRow(id)).max_exchanges).toBe(2);
+  });
+  it('does not add a review round for cosmetic-only follow-ups', async () => {
+    const id = await seedConsult({ state: 'active', routing: menuSnapshot([RESPONDER, 'resp-2']) });
+    const before = await stateRow(id);
+    const { deps, posts, reachCalls, dispatchCalls } = makeDeps();
+    expect(await consultReplyCore({ workspaceId: WS, authorId: REQUESTER, conversationId: id,
+      kind: 'new_fact', body: 'Cosmetic-only: fix a heading typo.' }, deps)).toMatchObject({ ok: true });
+    const after = await stateRow(id);
+    expect(after.cascade_cursor).toBe(before.cascade_cursor);
+    expect(after.routing).toEqual(before.routing);
+    expect(after.max_exchanges).toBe(before.max_exchanges);
+    expect(posts).toHaveLength(1);
+    expect(dispatchCalls).toEqual([]);
+    expect(reachCalls).toHaveLength(1);
+    expect(reachCalls[0].body).toContain('Cosmetic-only changes do not trigger another simplicity review');
+  });
   it('a perspective reply ADVANCES the chain: cursor+responder move, digest carries the reply, next selectee DISPATCHED with the feedback so far', async () => {
     const id = await seedConsult({ routing: menuSnapshot([RESPONDER, 'resp-2', 'resp-3']) });
     const { deps, reachCalls, dispatchCalls } = makeDeps();
@@ -1928,6 +2074,30 @@ describe.each(['selected', 'refill'] as const)('failed cascade dispatch — %s m
       { ownerId: RESPONDER, kind: 'decline' }, { ownerId: 'unlaunchable', kind: 'dispatch_failed' },
     ]);
     expect(emits).toEqual([]);
+  });
+
+  it('skips a refused launch after kickoff refreshes the deadline', async () => {
+    const id = await seedConsult({ routing: routingFor(['unlaunchable', 'available']) });
+    const { deps, dispatchCalls } = makeDeps();
+    deps.dispatch = async (opts) => {
+      dispatchCalls.push(opts);
+      const owner = `${opts.responder}-fork`;
+      await opts.onAnsweringOwner?.(owner);
+      expect(await opts.onKickoff?.(new Date(NOW.getTime() + 5 * 60_000).toISOString(), owner)).toBe(true);
+      return opts.responder === 'unlaunchable'
+        ? { woke: 0, answeringOwnerId: null }
+        : { woke: 1, answeringOwnerId: owner };
+    };
+    const result = await consultDeclineCore(
+      { workspaceId: WS, authorId: RESPONDER, conversationId: id, reason: 'conflict' }, deps,
+    );
+    expect(result).toMatchObject({ cascade: { advanced_to: 'available', exhausted: false, woke: 1 } });
+    expect(dispatchCalls.map(opts => opts.responder)).toEqual(['unlaunchable', 'available']);
+    const row = await stateRow(id);
+    expect(row).toMatchObject({ responder_id: 'available', cascade_cursor: 2, closed_at: null });
+    expect(row.cascade_digest).toMatchObject([
+      { ownerId: RESPONDER, kind: 'decline' }, { ownerId: 'unlaunchable', kind: 'dispatch_failed' },
+    ]);
   });
 
   it('treats a zero-row answering-owner stamp as a refused launch and advances', async () => {

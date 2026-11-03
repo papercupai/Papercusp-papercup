@@ -125,7 +125,33 @@ describe('releaseReclaimedWorkItemLocks', () => {
     readQueue.mockRejectedValue(new Error('side db unavailable'));
     const result = await releaseReclaimedWorkItemLocks({ ownerId: 'holder', paths: ['target.ts'] });
     expect(result).toMatchObject({ releases: [], failures: 1, skipped: null });
+    expect(readQueue).toHaveBeenCalledTimes(1);
     expect(tryRelease).not.toHaveBeenCalled();
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('side db unavailable'));
+  });
+
+  it('retries a transient statement timeout before reporting a lock-read failure', async () => {
+    let calls = 0;
+    readQueue.mockImplementation(async () => {
+      calls += 1;
+      if (calls === 1) {
+        const error = new Error('canceling statement due to statement timeout') as Error & { code: string };
+        error.code = '57014';
+        throw error;
+      }
+      return { active_locks: [], waiting: [] };
+    });
+
+    vi.useFakeTimers();
+    try {
+      const resultPromise = releaseReclaimedWorkItemLocks({ ownerId: 'holder', paths: ['target.ts'] });
+      await vi.advanceTimersByTimeAsync(500);
+      const result = await resultPromise;
+
+      expect(calls).toBe(2);
+      expect(result).toMatchObject({ releases: [], failures: 0, skipped: null });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

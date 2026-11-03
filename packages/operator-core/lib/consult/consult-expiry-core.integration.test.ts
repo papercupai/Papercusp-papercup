@@ -24,7 +24,7 @@ import { createFreshTestDb, type MigratedTestDb } from '@papercusp/test-config/p
 import { FIRST_TURN_REJUDGE_WINDOW_MS, sweepExpiredConsults, type ExpirySweepDeps } from './consult-expiry-core';
 import { launchLogFailureReason, rejudgeFirstTurn } from './consult-dispatch';
 import { continueCascadeDispatchCore } from './cascade-core';
-import { consultExpiryFindSilentResponders, consultExpiryNotifyRequester } from './consult-expiry-adapters';
+import { consultExpiryFindSilentResponders, consultExpiryNotifyRequester, consultExpiryRejudgeAnsweringTask } from './consult-expiry-adapters';
 import { PgCoordLog, ensureCoordEventLogTable } from '@papercusp/coordination/event-log';
 import type { CoordEnvelope } from '@papercusp/coordination/core';
 import { currentRequestWorkspaceId } from '../workspace-als';
@@ -799,7 +799,7 @@ describe('sweepExpiredConsults — cascade advance (D-005/P-013)', () => {
     expect(reachCalls).toHaveLength(1);
   });
 
-  it('wires the production detector into the real-PG cascade for a parked no-pickup responder', async () => {
+  it.each(['quiet', 'active', 'unreadable'] as const)('wires the production detector into the real-PG cascade for a parked no-pickup responder (%s log)', async (progress) => {
     const routedAt = new Date(NOW.getTime() - 60 * 60_000).toISOString();
     const id = await seedConsult({
       latency: 'hard-blocked',
@@ -808,22 +808,40 @@ describe('sweepExpiredConsults — cascade advance (D-005/P-013)', () => {
       routing: menuSnapshot(['resp-1', 'resp-2'], ['resp-1-fork', 'resp-2-fork']),
     });
     const { deps, reachCalls } = makeDeps({ withReach: true });
-    deps.findSilentResponders = consultExpiryFindSilentResponders({
+    const detector = consultExpiryFindSilentResponders({
       getPresence: async () => ({ lastActiveAt: null }),
       resolveSessionStates: async () =>
         new Map([
           ['resp-1-fork', { sessionState: 'parked' }],
           ['resp-2-fork', { sessionState: 'parked' }],
         ]),
+      listAnsweringTasks: async (workspaceId, answeringOwnerId) => [{
+        workspaceId, taskId: `task-${answeringOwnerId}`, class: 'agent-session', state: 'running',
+        startedAt: routedAt, logPath: `/fixture/${answeringOwnerId}.log`,
+        detail: { consultAnswer: { conversationId: id, sourceOwnerId: 'resp-1', answeringOwnerId } },
+      } as unknown as TaskRow],
+      // A parked presence alone does not prove failed pickup. Measure the
+      // exact answerer's task log, including active/unknown counterexamples.
+      statMtimeMs: () => progress === 'unreadable' ? null
+        : progress === 'active' ? NOW.getTime() : Date.parse(routedAt),
       getThreadStore: () => ({
         getThreadByParent: async (parent) => ({ thread_id: `thread-${parent.ref}` }) as never,
         listRecentPosts: async () => ({ total: 0 }),
       }),
       now: () => NOW,
     });
+    deps.findSilentResponders = rows => detector(rows.filter(row => row.conversationId === id));
 
     const r = await sweepExpiredConsults(deps);
 
+    if (progress !== 'quiet') {
+      expect(r).toMatchObject({ advanced: 0, expired: 0, woke: [], saturated: false });
+      expect(await cascadeRow(id)).toMatchObject({
+        state: 'awaiting_responder', closed_at: null, responder_id: 'resp-1', cascade_cursor: 0,
+      });
+      expect(reachCalls).toHaveLength(0);
+      return;
+    }
     expect(r).toMatchObject({ advanced: 1, expired: 0, woke: [], saturated: false });
     expect(await cascadeRow(id)).toMatchObject({
       state: 'awaiting_responder',
@@ -936,6 +954,48 @@ describe('sweepExpiredConsults — cascade advance (D-005/P-013)', () => {
       }
     },
   );
+
+  it('advances a reserved native refusal with a fresh task log and no completed dispatch record exactly once', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'consult-reserved-native-'));
+    try {
+      const routedAt = new Date(NOW.getTime() - 31 * 60_000).toISOString();
+      const id = await seedConsult({ latency: 'hard-blocked', expiresAt: FUTURE, updatedAt: routedAt,
+        routing: menuSnapshot(['resp-1', 'resp-2'], ['reserved-fork', 'resp-2-fork']) });
+      const [before] = await rootSql`SELECT dispatch_attempts FROM harness_shared.consult_state
+        WHERE workspace_id = ${WS} AND conversation_id = ${id}`;
+      expect(before!.dispatch_attempts).toEqual([]);
+      const transcriptPath = join(directory, 'native.jsonl');
+      const logPath = join(directory, 'launch.log');
+      writeFileSync(transcriptPath, JSON.stringify({ type: 'user', message: { role: 'user', content: 'Review the current subject.' } }) + '\n');
+      writeFileSync(logPath, '[psu] native-turn-failed agent=claude code=api_error_400 retryable=false retryAfterMs=unknown\n');
+      const task = { taskId: 'reserved-task', workspaceId: WS, class: 'agent-session', state: 'running',
+        sessionId: 'exact-native', startedAt: routedAt, logPath,
+        detail: { consultAnswer: { conversationId: id, sourceOwnerId: 'resp-1', answeringOwnerId: 'reserved-fork' } },
+      } as unknown as TaskRow;
+      const { deps, reachCalls } = makeDeps({ withReach: true });
+      const detector = consultExpiryFindSilentResponders({
+        getPresence: async () => ({ lastActiveAt: null }),
+        resolveSessionStates: async () => new Map([['reserved-fork', { sessionState: 'live' }]]),
+        listAnsweringTasks: async () => [task], statMtimeMs: () => NOW.getTime() - 60_000, now: () => NOW,
+        rejudgeAnsweringTask: consultExpiryRejudgeAnsweringTask({
+          resolveResumeTarget: async () => ({ ok: true, ownerId: 'reserved-fork', workspaceId: WS, agent: 'claude',
+            sessionId: 'exact-native', binding: { coordOwnerId: 'reserved-fork', sessionId: 'exact-native' } }) as never,
+          checkTranscript: async () => ({ available: true, transcriptPath, detail: 'fixture' }),
+          rejudgeFirstTurn,
+        }),
+        getThreadStore: () => ({ getThreadByParent: async () => null, listRecentPosts: async () => ({ total: 0 }) }),
+      });
+      deps.findSilentResponders = (rows) => detector(rows.filter((row) => row.conversationId === id));
+      await sweepExpiredConsults(deps);
+      expect(await cascadeRow(id)).toMatchObject({ responder_id: 'resp-2', cascade_cursor: 1 });
+      expect(reachCalls.filter((call) => call.conversationId === id)).toHaveLength(1);
+      expect((await cascadeRow(id)).cascade_digest).toMatchObject([{ ownerId: 'resp-1', kind: 'dispatch_failed' }]);
+      await sweepExpiredConsults(deps);
+      expect(reachCalls.filter((call) => call.conversationId === id)).toHaveLength(1);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
 
   it('does not treat a parked knowledge source as silent while its forked answerer is live', async () => {
     const routedAt = new Date(NOW.getTime() - 60_000).toISOString();

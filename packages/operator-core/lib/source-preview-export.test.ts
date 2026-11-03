@@ -1625,6 +1625,42 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     }
   });
 
+  it('checks the committed runtime asset pin before allocating verifier source', async () => {
+    const fixture = makeSuperproject(join(tmp, 'verifier-runtime-asset-preflight'));
+    const setup = 'apps/operator/scripts/setup-porcupine-runtime.sh';
+    const model = 'apps/operator/public/porcupine/porcupine_params.pv';
+    const helper = 'papercusp-desktop/bin/lib/pinned-deps.sh';
+    const validModel = 'pinned-model-fixture';
+    const checksum = createHash('sha256').update(validModel).digest('hex');
+    write(fixture.repo, setup, [
+      '#!/bin/bash', 'set -eu', 'test "$1" = --check-source',
+      'if ! test -f "$2" || test "$(sha256sum "$2" | cut -d\' \' -f1)" != ' + checksum + '; then',
+      '  echo "pinned runtime model missing or invalid" >&2; exit 75', 'fi', '',
+    ].join('\n'));
+    write(fixture.repo, helper, [
+      '#!/bin/bash', 'case "$1" in',
+      '  preflight-generation) echo "runtime cache accepted; generation guard reached" >&2; exit 74 ;;',
+      '  snapshot-generation-locked) exit 93 ;;', '  *) exit 94 ;;', 'esac', '',
+    ].join('\n'));
+    git(fixture.repo, ['add', setup, helper]);
+    git(fixture.repo, ['commit', '-qm', 'pinned runtime asset admission fixture']);
+    const ref = git(fixture.repo, ['rev-parse', 'HEAD']).trim();
+    // A mutable donor helper must not replace the selected commit's checksum pin.
+    write(fixture.repo, setup, '#!/bin/bash\nexit 0\n');
+    const receiptPath = join(tmp, 'runtime-asset-preflight.json');
+    const options = { repo: fixture.repo, ref, receiptPath,
+      env: { ...childEnv(), PAPERCUSP_DEPENDENCY_GENERATION_ROOT: join(tmp, 'runtime-asset-store') },
+      command: [process.execPath, '-e', 'throw Error("provider must not start")'] };
+    await expect(runVerifierCommand(options)).rejects.toThrow('pinned runtime model missing or invalid');
+    write(fixture.repo, model, 'wrong-model');
+    await expect(runVerifierCommand(options)).rejects.toThrow('pinned runtime model missing or invalid');
+    write(fixture.repo, model, validModel);
+    await expect(runVerifierCommand(options)).rejects.toThrow('runtime cache accepted; generation guard reached');
+    expect(existsSync(receiptPath)).toBe(false);
+    expect(existsSync(receiptPath + '.task.json')).toBe(false);
+    expect(existsSync(join(fixture.repo, '.papercusp/scratch'))).toBe(false);
+  });
+
   it('rejects a source-only candidate missing a generated workspace bin before allocating verifier source', async () => {
     const fixture = makeSuperproject(join(tmp, 'verifier-workspace-bin-donor'));
     const manifest = 'packages/omp-plugin/package.json';

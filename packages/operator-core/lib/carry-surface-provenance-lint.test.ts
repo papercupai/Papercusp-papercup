@@ -39,6 +39,24 @@ describe('lintCarrySurfaceProvenance', () => {
     expect(lintCarrySurfaceProvenance('owner requires a second review before merge').flagged).toBe(true);
   });
 
+  it('does not treat a technical owner action receipt as a human-owner directive', () => {
+    const line =
+      'Existing su-32ef73d7 owner required action fab0ac47 sent, actual presence live/recent 35s verified at 01:53, response/pickup not yet proven.';
+    expect(lintCarrySurfaceProvenance(line)).toEqual({ flagged: false, matches: [] });
+  });
+
+  it('keeps an unqualified human-owner requirement flagged', () => {
+    const r = lintCarrySurfaceProvenance('the owner required a second review before deployment');
+    expect(r.flagged).toBe(true);
+    expect(r.matches.map((match) => match.kind)).toContain('owner-attribution');
+  });
+
+  it('does not exempt an owner action receipt without the technical state evidence', () => {
+    const r = lintCarrySurfaceProvenance('the owner required action fab0ac47 sent');
+    expect(r.flagged).toBe(true);
+    expect(r.matches.map((match) => match.kind)).toContain('owner-attribution');
+  });
+
   describe('EI-22787623747935751: peer-owned role prefixes are not human-owner attribution', () => {
     it.each([
       'Gate owner asked for an exact frozen0d6 shared-chat source/test closure.',

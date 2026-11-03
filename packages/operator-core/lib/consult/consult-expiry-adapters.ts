@@ -47,6 +47,9 @@ import { runWithWorkspace } from '../workspace-als';
 import { consultAnswerFacts } from '../task-manager/reaper';
 import { censusAgentSessionProgress, DEFAULT_QUIET_MS } from '../task-manager/agent-session-progress-census';
 import { isLiveOwnedState, isTerminalState, type TaskRow } from '../task-manager/types';
+import type { ResolveResumeResult, ResumeTarget } from '../agent-launch-core';
+import type { FirstTurnRejudge, rejudgeFirstTurn } from './consult-dispatch';
+import type { ConsultResumeTranscriptCheck } from './resume-transcript-preflight';
 
 /** The ownerId this sweep acts under. Exported so a test asserts the real constant
  *  rather than re-typing the string it is checking against. */
@@ -92,6 +95,8 @@ export interface SilentResponderDetectorDeps {
   getThreadStore: (workspaceId: string) => SilentResponderThreadStore;
   /** Exact-owner task history, including live rows that veto stale terminal proof. */
   listAnsweringTasks?: (workspaceId: string, answeringOwnerId: string) => Promise<readonly TaskRow[]>;
+  /** Reuse the dispatch classifier on this task's exact native incarnation. */
+  rejudgeAnsweringTask?: (task: TaskRow) => Promise<FirstTurnRejudge>;
   /** Null or a throw means the task log cannot be measured; it is never quiet evidence. */
   statMtimeMs?: (path: string) => number | null;
   /** Injectable clock for the bounded live-busy pickup window. */
@@ -111,6 +116,33 @@ export interface SilentResponderThreadStore {
     total: number;
     posts?: Array<{ author_id: string | null }>;
   }>;
+}
+
+/** A reservation can survive a dispatcher that never recorded its completed walk.
+ * Recover its native proof from the task ledger, never from the source expert or
+ * a newer incarnation of the answering owner. */
+export function consultExpiryRejudgeAnsweringTask(deps: {
+  resolveResumeTarget: (ref: { sessionId: string }) => Promise<ResolveResumeResult>;
+  checkTranscript: (target: ResumeTarget) => Promise<ConsultResumeTranscriptCheck>;
+  rejudgeFirstTurn: typeof rejudgeFirstTurn;
+}): NonNullable<SilentResponderDetectorDeps['rejudgeAnsweringTask']> {
+  return async (task) => {
+    const facts = consultAnswerFacts(task);
+    if (task.class !== 'agent-session' || !facts || !task.sessionId || !task.logPath) return { status: 'unreadable' };
+    try {
+      const target = await deps.resolveResumeTarget({ sessionId: task.sessionId });
+      if (!target.ok || target.ownerId !== facts.answeringOwnerId || target.workspaceId !== task.workspaceId ||
+          target.sessionId !== task.sessionId || target.binding?.sessionId !== task.sessionId ||
+          target.binding.coordOwnerId !== facts.answeringOwnerId) return { status: 'unreadable' };
+      const agent = target.agent === 'claude-code' ? 'claude' : target.agent;
+      if (agent !== 'claude' && agent !== 'codex') return { status: 'unreadable' };
+      const transcript = await deps.checkTranscript(target);
+      if (!transcript.available || !transcript.transcriptPath) return { status: 'unreadable' };
+      return await deps.rejudgeFirstTurn({ agent, transcriptPath: transcript.transcriptPath, launchLogPath: task.logPath });
+    } catch {
+      return { status: 'unreadable' };
+    }
+  };
 }
 
 /** Bound the history we inspect. More posts than this are unknown, not silent. */
@@ -294,7 +326,7 @@ export function consultExpiryFindSilentResponders(
     const answerTaskProgress = async (
       row: SilentResponderCandidate,
       routedMs: number,
-    ): Promise<'unknown' | 'not-picked-up' | 'active' | 'stalled'> => {
+    ): Promise<'unknown' | 'not-picked-up' | 'active' | 'stalled' | 'rejected'> => {
       if (!deps.listAnsweringTasks || !deps.statMtimeMs || !row.answeringOwnerId || !row.sourceOwnerId) {
         return 'unknown';
       }
@@ -314,6 +346,17 @@ export function consultExpiryFindSilentResponders(
         });
         const liveTasks = tasks.filter((task) => isLiveOwnedState(task.state));
         if (liveTasks.length === 0) return 'unknown';
+
+        // Terminal refusal text also writes the log. Its fresh mtime is not
+        // useful answer progress. Every exact live sibling must agree; a real
+        // reply, a pending turn or unreadable native proof vetoes this shortcut.
+        if (deps.rejudgeAnsweringTask) {
+          const verdicts = await Promise.all(liveTasks.map(async (task) => {
+            try { return await deps.rejudgeAnsweringTask!(task); }
+            catch { return { status: 'unreadable' } as const; }
+          }));
+          if (verdicts.every((verdict) => verdict.status === 'rejected')) return 'rejected';
+        }
 
         const census = censusAgentSessionProgress(liveTasks, {
           statMtimeMs: (path) => {
@@ -385,9 +428,8 @@ export function consultExpiryFindSilentResponders(
           const taskProgress = shouldCheckTaskProgress
             ? await answerTaskProgress(row, routedMs)
             : 'unknown';
-          // A recent exact-task log write proves the answerer picked up the consult,
-          // even when no consult post has landed yet. Missing or unreadable logs are
-          // unknown and cannot justify the early recovery.
+          // Keep recent activity unless exact native proof classified it above
+          // as a refusal. Missing/unreadable logs remain unknown.
           if (taskProgress === 'active') return;
           const inactivePastPickupWindow =
             (sessionState === 'live' || sessionState === 'parked') &&
@@ -395,7 +437,8 @@ export function consultExpiryFindSilentResponders(
             checkedAtMs - routedMs >= HARD_BLOCKED_EXPIRY_MS &&
             (taskProgress === 'not-picked-up' || taskProgress === 'stalled');
           const terminalLaunch = sessionState == null && await endedLaunch(row);
-          if (!terminalAfterRoute && !reparkedAfterRoute && !inactivePastPickupWindow && !terminalLaunch) return;
+          if (!terminalAfterRoute && !reparkedAfterRoute && !inactivePastPickupWindow && !terminalLaunch &&
+              taskProgress !== 'rejected') return;
           // A context-death ends the old native child before the watchdog's fresh
           // context is available. A recent accepted/delivered carry is positive
           // evidence that the logical responder can still continue; don't advance

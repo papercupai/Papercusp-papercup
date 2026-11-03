@@ -14,6 +14,8 @@ const seams = vi.hoisted(() => ({
   makeSeams: vi.fn(() => ({})),
   makeConsultReachDispatcher: vi.fn(() => ({})),
   rejudgeFirstTurn: vi.fn(),
+  resolveResumeTarget: vi.fn(),
+  checkTranscript: vi.fn(),
   upsertConditionWorkItem: vi.fn(),
   sweepDeliveries: vi.fn(async (_args: unknown) => ({ checked: [], failures: [], saturated: false })),
   listTasks: vi.fn(async (_filter: unknown) => [] as unknown[]),
@@ -48,6 +50,11 @@ vi.mock('../../consult/consult-dispatch', () => ({
   makeConsultReachDispatcher: seams.makeConsultReachDispatcher,
   rejudgeFirstTurn: seams.rejudgeFirstTurn,
 }));
+vi.mock('../../agent-launch-core', () => ({ resolveResumeTarget: seams.resolveResumeTarget }));
+vi.mock('../../consult/resume-transcript-preflight', () => ({ checkConsultResumeTranscript: seams.checkTranscript }));
+vi.mock('@papercusp/coordination/capabilities', () => ({
+  PgThreadStore: class { async getThreadByParent() { return null; } },
+}));
 vi.mock('../../coord/condition-upsert', () => ({ upsertConditionWorkItem: seams.upsertConditionWorkItem }));
 vi.mock('../../events/await/engine', () => ({ emitAwaitedEvent: vi.fn() }));
 vi.mock('../../agent-tools/coordination/messages', () => ({ sendMessage: seams.send }));
@@ -57,6 +64,38 @@ vi.mock('../../agent-tools/coordination/presence', () => ({ getPresence: seams.g
 vi.mock('../../agent-tools/coordination/liveness-oracle', () => ({ resolveSessionStates: seams.resolveSessionStates }));
 
 describe('consult expiry production wiring', () => {
+  it('binds the exact task native classifier before recent activity can hide a refusal', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'consult-expiry-native-'));
+    const logPath = join(directory, 'answer.log');
+    try {
+      writeFileSync(logPath, 'terminal provider refusal\n');
+      const routedAt = new Date(Date.now() - 31 * 60_000).toISOString();
+      seams.listTasks.mockResolvedValue([{
+        taskId: 'exact-task', workspaceId: 'row-workspace', class: 'agent-session', state: 'running',
+        sessionId: 'native-exact', startedAt: routedAt, logPath,
+        detail: { consultAnswer: { conversationId: 'conv-native', sourceOwnerId: 'su-source', answeringOwnerId: 'su-answerer' } },
+      }]);
+      seams.resolveResumeTarget.mockResolvedValue({ ok: true, ownerId: 'su-answerer', workspaceId: 'row-workspace',
+        agent: 'claude', sessionId: 'native-exact', binding: { coordOwnerId: 'su-answerer', sessionId: 'native-exact' } });
+      seams.checkTranscript.mockResolvedValue({ available: true, transcriptPath: '/native-exact.jsonl' });
+      seams.rejudgeFirstTurn.mockResolvedValue({ status: 'rejected' });
+      await import('./consult-expiry-action');
+      await seams.register.mock.calls.find(([name]) => name === 'consult-expiry-sweep')![1]();
+      const found = await seams.sweep.mock.calls.at(-1)![0].findSilentResponders!([{
+        workspaceId: 'row-workspace', conversationId: 'conv-native', sourceOwnerId: 'su-source',
+        answeringOwnerId: 'su-answerer', requesterId: 'su-requester', routedAt,
+      }]);
+      expect(found).toEqual(new Set(['conv-native']));
+      expect(seams.resolveResumeTarget).toHaveBeenCalledWith({ sessionId: 'native-exact' });
+      expect(seams.rejudgeFirstTurn).toHaveBeenCalledWith({ agent: 'claude', transcriptPath: '/native-exact.jsonl', launchLogPath: logPath });
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+      for (const mock of [seams.sweep, seams.pollParks, seams.sweepParks, seams.makeSeams, seams.sweepDeliveries]) mock.mockClear();
+      seams.listTasks.mockReset();
+      seams.listTasks.mockResolvedValue([]);
+    }
+  });
+
   it('registers an executable sweep with the durable requester-alert adapter bound', async () => {
     await import('./consult-expiry-action');
     const registration = seams.register.mock.calls.find(([name]) => name === 'consult-expiry-sweep');

@@ -8,6 +8,7 @@
  * `lock_id` + `paths` release preserves unrelated paths in the same lock set.
  */
 import { inWorkspaceTxn } from './agent-tools/locks/in-workspace-txn';
+import { acquireWithContentionRetry } from './agent-tools/locks/contention-retry';
 import { ensureBootstrap, getTxPool, readQueue, tryRelease } from './agent-tools/locks/su-lock-store';
 import { observeFallback } from './degradation/fallback-observations';
 
@@ -72,8 +73,10 @@ export async function releaseReclaimedWorkItemLocks(
   let activeLocks: ActiveLock[];
   try {
     await ensureBootstrap();
-    const queue = await readQueue(getTxPool(), { coordinationDomain: null, owner: ownerId });
-    activeLocks = queue.active_locks as ActiveLock[];
+    activeLocks = await acquireWithContentionRetry(async () => {
+      const queue = await readQueue(getTxPool(), { coordinationDomain: null, owner: ownerId });
+      return queue.active_locks as ActiveLock[];
+    });
   } catch (error) {
     observeFallback('work-item-lock-reclaim', { eligible: 1, applied: 0, reason: 'lock-read-failed' });
     console.warn(

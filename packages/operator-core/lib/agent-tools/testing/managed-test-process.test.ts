@@ -119,6 +119,7 @@ it('keeps the detached core in its serving checkout while preserving an external
 it.each([true, false])('preserves foreground task ownership with parent context present=%s', async nested => {
   const outputDir = await mkdtemp(join(tmpdir(), 'papercusp-testing-task-context-'));
   directories.push(outputDir);
+  const outputPath = join(outputDir, 'router.log');
   const child = Object.assign(new EventEmitter(), { pid: 4242, kill: vi.fn(() => true) }) as unknown as ChildProcess;
   const spawn = vi.fn<NonNullable<ManagedTestProcessDeps['managedSpawnFn']>>(async () => ({
     child, taskId: 'foregroundtask', scopeUnit: null, confined: false,
@@ -131,11 +132,12 @@ it.each([true, false])('preserves foreground task ownership with parent context 
       ...(nested ? { PAPERCUSP_CAPABILITY_BASH_BACKGROUND_TASK_ID: 'parenttask1234' } : {}),
     },
     timeoutMs: 60_000, runGroup: 'task-context', workspaceId: 'papercusp-workspace',
-    outputPath: join(outputDir, 'router.log'),
+    outputPath,
   }, { managedSpawnFn: spawn });
   expect(spawn.mock.calls[0]?.[2]).toMatchObject({
     workItemId: 'WI-context', harnessSlug: 'papercusp',
     parentTaskId: nested ? 'parenttask1234' : null,
+    logPath: outputPath,
   });
 });
 

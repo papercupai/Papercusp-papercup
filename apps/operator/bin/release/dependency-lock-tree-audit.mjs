@@ -38,6 +38,7 @@
 import { lstatSync, readFileSync, readdirSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { join, posix, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 export const MAX_DEFECTS = 50;
 
@@ -287,7 +288,7 @@ function main(argv) {
 
 function isDirectCliInvocation(entryPath = process.argv[1]) {
   if (!entryPath) return false;
-  return import.meta.url === new URL(`file://${entryPath}`).href;
+  return import.meta.url === pathToFileURL(resolve(entryPath)).href;
 }
 
 if (isDirectCliInvocation()) process.exitCode = main(process.argv.slice(2));

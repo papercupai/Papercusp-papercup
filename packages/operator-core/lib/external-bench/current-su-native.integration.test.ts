@@ -10,7 +10,7 @@ import type {} from '../../test/current-su-native-http-scenario';
 import type {} from '../../test/staging-first-http-fixture';
 import { captureIsolatedWorker, currentSuNativeRetainedArtifacts, isolatedWorkerFailureDetail, isolatedWorkerOptions,
   preflightCurrentSuNativeEgress, recordIsolatedIntegrationProof } from '../../test/isolated-integration-proof';
-import { preparePrivateOperatorApiBundle } from '../../test/private-http-workspace-preflight';
+import { preparePrivateOperatorApiBundle, privateNativeDockerHost } from '../../test/private-http-workspace-preflight';
 import { CC_HOOK_FILES } from '../desktop-install/papercusp-files';
 
 const root = resolve(import.meta.dirname, '../../../..');
@@ -22,6 +22,7 @@ const hookInputs = [...CC_HOOK_FILES.map(name => `${hookSources}/cc/${name}`),
 
 async function nativeScenario(scenario: 'current-su-native' | 'current-su-native-carry'
   | 'current-su-native-frozen-carry-on' | 'current-su-native-frozen-carry-off', context: TestContext) {
+  const dockerHost = privateNativeDockerHost(['--native-docker-host=' + (process.env.DOCKER_HOST ?? '')]);
   let prepared: Awaited<ReturnType<typeof preparePrivateOperatorApiBundle>> | undefined;
   const runId = await recordIsolatedIntegrationProof({ root,
     filePath: 'packages/operator-core/lib/external-bench/current-su-native.integration.test.ts',
@@ -72,7 +73,8 @@ async function nativeScenario(scenario: 'current-su-native' | 'current-su-native
       await mkdir(join(evidenceDir, 'tmp'));
       const child = fork(join(root, 'scripts/with-test-pg.mjs'), ['--isolated-runtime=operator-api', '--managed-tasks', '--',
         process.execPath, '--import', 'tsx', join(root, 'packages/operator-core/test/staging-first-http-fixture.ts'),
-        '--prepared-api-sha=' + prepared!.sha256, '--prepared-receipt-sha=' + prepared!.receiptSha256],
+        '--prepared-api-sha=' + prepared!.sha256, '--prepared-receipt-sha=' + prepared!.receiptSha256,
+        '--native-docker-host=' + dockerHost],
       { cwd: root, detached: true, execArgv: [], stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
         env: { ...process.env, PC_ISOLATED_RUNTIME_PROOF: '1', FORCE_COLOR: '0',
           STAGING_FIRST_HTTP_SCENARIO: scenario, STAGING_FIRST_HTTP_EVIDENCE_DIR: evidenceDir,
@@ -93,7 +95,7 @@ async function nativeScenario(scenario: 'current-su-native' | 'current-su-native
       expect(receipt).toMatchObject({ workspace: expect.stringMatching(/^test-runtime-/),
         hostStopped: true, providerForwarding: false, modelRequests: expect.any(Number),
         nativeSessionId: expect.stringMatching(/^[a-f0-9-]{36}$/), autoRegistered: true,
-        hooksBridged: true, containerWorkdir: '/app', mcpConfined: true });
+        hooksBridged: true, containerWorkdir: '/app', mcpConfined: true, dockerHost });
       expect(receipt.modelRequests).toBeGreaterThan(0);
       if (scenario !== 'current-su-native') {
         expect(receipt.managedCarry).toMatchObject({ requested: true, distinctNativeSession: true,

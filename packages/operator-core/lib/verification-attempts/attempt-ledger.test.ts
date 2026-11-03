@@ -8,6 +8,7 @@
 import { describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
 import {
+  ATTEMPT_EVIDENCE_MAX_CHARS,
   SLOW_ATTEMPT_MIN_MS,
   attemptOutcome,
   commandFingerprint,
@@ -176,13 +177,32 @@ describe('recordAttemptOnClose', () => {
     expect(writtenStamp(first.calls[0]!).fingerprint).toBe(first.stamp!.fingerprint);
   });
 
+  it('retains a bounded, redacted source excerpt for a later audit', async () => {
+    const { sql, calls } = fakeSql();
+    const logTail = `${'ordinary context '.repeat(500)}\napi_key=attempt-secret\nError: the task did not settle`;
+    const stamp = await recordAttemptOnClose(closed({ exitCode: 1 }), {
+      sql,
+      now: () => NOW,
+      readTail: async () => logTail,
+    });
+
+    expect(stamp?.evidenceExcerpt).toHaveLength(ATTEMPT_EVIDENCE_MAX_CHARS);
+    expect(stamp?.evidenceExcerptTruncated).toBe(true);
+    expect(stamp?.evidenceExcerpt).not.toContain('attempt-secret');
+    expect(stamp?.evidenceExcerpt).toContain('Error: the task did not settle');
+    expect(writtenStamp(calls[0]!).evidenceExcerpt).toBe(stamp?.evidenceExcerpt);
+    expect(writtenStamp(calls[0]!).evidenceExcerptTruncated).toBe(true);
+  });
+
   it('falls back to the exit fingerprint when a failed attempt has no log', async () => {
     const { sql } = fakeSql();
     const stamp = await recordAttemptOnClose(
       closed({ state: 'timed_out', exitCode: null, exitReason: 'deadline', logPath: null }),
       { sql, now: () => NOW },
     );
-    expect(stamp).toMatchObject({ outcome: 'fail', source: 'exit' });
+    expect(stamp).toMatchObject({
+      outcome: 'fail', source: 'exit', evidenceExcerpt: null, evidenceExcerptTruncated: false,
+    });
     expect(stamp!.label).toContain('deadline');
   });
 

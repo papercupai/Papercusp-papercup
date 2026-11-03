@@ -2488,6 +2488,20 @@ export async function runVerifierCommand({ repo, ref, receiptPath, inputs = [], 
   const sourceCommit = resolveCommit(sourceRepo, ref);
   const explicitGeneration = Boolean(env.PAPERCUSP_DEPENDENCY_GENERATION_ROOT);
   const donor = explicitGeneration ? sourceRepo : committedWorkRootDependencyDonor(sourceRepo);
+  const runtimeSetupPath = 'apps/operator/scripts/setup-porcupine-runtime.sh';
+  if (git(sourceRepo, ['ls-tree', sourceCommit, '--', runtimeSetupPath]).trim()) {
+    // Ignored runtime assets are not covered by node/workspace generation custody.
+    // Use the selected commit's checksum pin before allocating the source tree;
+    // the eventual snapshot still copies and rechecks the donor bytes.
+    const runtimeSetup = git(sourceRepo, ['show', sourceCommit + ':' + runtimeSetupPath]);
+    const modelDonor = join(donor, 'apps/operator/public/porcupine/porcupine_params.pv');
+    const check = spawnSync('bash', ['-c', runtimeSetup, join(sourceRepo, runtimeSetupPath),
+      '--check-source', modelDonor], { cwd: sourceRepo, env: verifierDependencyEnv(env),
+      encoding: 'utf8', timeout: 120_000, maxBuffer: 1024 * 1024 });
+    if (check.error || check.status !== 0)
+      throw new PreviewError('verifier runtime asset preflight failed: ' +
+        (check.error?.message || check.stderr || check.status), 2);
+  }
   const donorOnRootDevice = process.platform === 'linux' &&
     (await fs.stat(donor)).dev === (await fs.stat('/')).dev;
   const helper = join(sourceRepo, 'papercusp-desktop/bin/lib/pinned-deps.sh');

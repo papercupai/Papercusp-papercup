@@ -42,10 +42,11 @@ function emptyOwnedScope(taskId: string, value: Record<string, any> | undefined)
     typeof row.detail === 'string' && row.detail.includes('holds no live process right now; nothing to reap');
 }
 
-function call(name: string, args: Record<string, unknown>, origin: string) {
+function call(name: string, args: Record<string, unknown>, origin: string, idempotencyKey?: string) {
   const env: NodeJS.ProcessEnv = { ...process.env, PAPERCUSP_CONTEXT_TIER: 'full' };
   delete env.PAPERCUSP_SCRATCH_ROOT;
   const result = spawnSync(process.execPath, [resolve(root, 'apps/operator/scripts/ptool.mjs'),
+    ...(idempotencyKey ? ['--idempotency-key', idempotencyKey] : []),
     'tools:invoke', `--url=${origin}`, '--json', '-'], {
     cwd: root, env, encoding: 'utf8', timeout: 180_000, maxBuffer: 2 * 1024 * 1024,
     input: JSON.stringify({ name, args: { ...args, payloadTier: 'full' } }),
@@ -178,13 +179,59 @@ function assertMatrixSourceLock(receipt: Record<string, any>) {
   return receipt.lock_id as string;
 }
 
-function releaseMatrixSourceLocks(locks: MatrixSourceLock[], sourceRoot: string, origin: string) {
+type MatrixLockCall = (name: string, args: Record<string, unknown>, origin: string,
+  idempotencyKey?: string) => Record<string, any>;
+
+function matrixLockReleaseState(lock: MatrixSourceLock, sourceRoot: string, origin: string,
+  invoke: MatrixLockCall) {
+  const resolvedRoot = resolve(sourceRoot);
+  const args = {
+    paths: [...MATRIX_SOURCE_PATHS],
+    ...(lock.domain === resolvedRoot ? {} : { coordination_domain: lock.domain }),
+  };
+  let latest: Record<string, any> | undefined;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    latest = invoke('locks:queue', args, origin);
+    if (!Array.isArray(latest.active_locks)) {
+      throw new Error(`Source-lock verification returned no active_locks array for ${lock.lockId}`);
+    }
+    const held = latest.active_locks.some((row: Record<string, unknown>) => row.lock_id === lock.lockId);
+    if (held) return { held: true, state: latest };
+    if (!latest._dataPlaneMayBeDegraded && latest._partial !== true) return { held: false, state: latest };
+  }
+  throw new Error(`Source-lock absence for ${lock.lockId} remains unverified after degraded queue reads: ` +
+    JSON.stringify(latest));
+}
+
+function releaseMatrixSourceLocks(locks: MatrixSourceLock[], sourceRoot: string, origin: string,
+  invoke: MatrixLockCall = call) {
   const resolvedRoot = resolve(sourceRoot);
   for (const lock of [...locks].reverse()) {
-    call('locks:release', {
+    const args = {
       lock_id: lock.lockId,
       ...(lock.domain === resolvedRoot ? {} : { coordination_domain: lock.domain }),
-    }, origin);
+    };
+    try {
+      invoke('locks:release', args, origin);
+      continue;
+    } catch (releaseError) {
+      const observed = matrixLockReleaseState(lock, sourceRoot, origin, invoke);
+      if (!observed.held) continue;
+      const idempotencyKey = String(releaseError instanceof Error ? releaseError.message : releaseError)
+        .match(/idempotencyKey=([0-9a-f-]{36})/i)?.[1];
+      if (!idempotencyKey) {
+        throw new Error(`Source lock ${lock.lockId} is still held after release failed, and no replay key was returned: ` +
+          String(releaseError));
+      }
+      try {
+        invoke('locks:release', args, origin, idempotencyKey);
+      } catch (retryError) {
+        const afterRetry = matrixLockReleaseState(lock, sourceRoot, origin, invoke);
+        if (!afterRetry.held) continue;
+        throw new Error(`Source lock ${lock.lockId} remains held after same-key release replay. ` +
+          `First failure: ${String(releaseError)}; replay failure: ${String(retryError)}`);
+      }
+    }
   }
 }
 
@@ -324,6 +371,53 @@ describe('owned matrix capacity preflight', () => {
     expect(assertMatrixSourceLock({ lock_id: 'lock-1', held: [...MATRIX_SOURCE_PATHS] })).toBe('lock-1');
     expect(() => assertMatrixSourceLock({ lock_id: 'lock-1', held: [MATRIX_SOURCE_PATHS[0]] }))
       .toThrow('could not secure both launcher source files');
+  });
+
+  it('accepts a lost release reply only after a clean exact-lock absence read', () => {
+    const key = '11111111-1111-4111-8111-111111111111';
+    const lock = { lockId: 'lock-1', domain: '/source' };
+    const calls: string[] = [];
+    const queueReads = [
+      { active_locks: [], waiting: [], _dataPlaneMayBeDegraded: 'retry' },
+      { active_locks: [], waiting: [] },
+    ];
+    const invoke: MatrixLockCall = (name) => {
+      calls.push(name);
+      if (name === 'locks:release') throw new Error(`request timed out idempotencyKey=${key}`);
+      return queueReads.shift()!;
+    };
+
+    expect(() => releaseMatrixSourceLocks([lock], '/source', 'origin', invoke)).not.toThrow();
+    expect(calls).toEqual(['locks:release', 'locks:queue', 'locks:queue']);
+  });
+
+  it('replays the same release key when the exact source lock is still held', () => {
+    const key = '22222222-2222-4222-8222-222222222222';
+    const lock = { lockId: 'lock-1', domain: '/source' };
+    const releaseKeys: Array<string | undefined> = [];
+    const invoke: MatrixLockCall = (name, _args, _origin, idempotencyKey) => {
+      if (name === 'locks:release') {
+        releaseKeys.push(idempotencyKey);
+        if (releaseKeys.length === 1) throw new Error(`request timed out idempotencyKey=${key}`);
+        return { ok: true };
+      }
+      return { active_locks: [{ lock_id: lock.lockId }], waiting: [] };
+    };
+
+    expect(() => releaseMatrixSourceLocks([lock], '/source', 'origin', invoke)).not.toThrow();
+    expect(releaseKeys).toEqual([undefined, key]);
+  });
+
+  it('keeps cleanup failure visible when the exact lock survives the release replay', () => {
+    const key = '33333333-3333-4333-8333-333333333333';
+    const lock = { lockId: 'lock-1', domain: '/source' };
+    const invoke: MatrixLockCall = (name) => {
+      if (name === 'locks:release') throw new Error(`request timed out idempotencyKey=${key}`);
+      return { active_locks: [{ lock_id: lock.lockId }], waiting: [] };
+    };
+
+    expect(() => releaseMatrixSourceLocks([lock], '/source', 'origin', invoke))
+      .toThrow('remains held after same-key release replay');
   });
 
   it('follows psu route policy: refuse unavailable routes but allow a temporary-cooldown warning', () => {

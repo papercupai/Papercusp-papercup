@@ -5765,26 +5765,28 @@ async function completeOneTracked(
       // brief lock-timeout dip does not record completion evidence while leaving the
       // item claimable. Non-contention errors still propagate immediately through the
       // shared helper and land in stateError below.
-      const res = await acquireWithContentionRetry(() =>
-        setWorkItemStateWithAliasInfo(it.id, effectiveState, {
-          harness: it.harness,
-          by: ident.ownerId,
-          // NO `completionRef` — see the block comment above. The narrative is not
-          // lost: `completionEvidenceToPersist` (EI-19319623239777505) carries the
-          // caller's free-text `summary` alongside whatever structured fields exist,
-          // so it lands durably on the row's `_completionEvidence`, not just in this
-          // call's return value.
-          completionEvidence: completionEvidenceToPersist,
-          outputPayload: it.outputPayload,
-          ...(recoveredAttempt ? { deferredOperationCompletion: recoveredAttempt } : {}),
-          // P-008 (d): the resolved declaration, persisted under
-          // TERMINAL_ASSUMPTIONS_KEY beside the evidence it rests on.
-          assumptions: resolvedAssumptions,
-          ...(externalRuntimeAttempt ? { externalRuntimeAttempt } : { completionAuthority }),
-          onTerminalConflict: (info) => {
-            terminalConflict = info;
-          },
-        }),
+      const res = await track('state-transition', () =>
+        acquireWithContentionRetry(() =>
+          setWorkItemStateWithAliasInfo(it.id, effectiveState, {
+            harness: it.harness,
+            by: ident.ownerId,
+            // NO `completionRef` — see the block comment above. The narrative is not
+            // lost: `completionEvidenceToPersist` (EI-19319623239777505) carries the
+            // caller's free-text `summary` alongside whatever structured fields exist,
+            // so it lands durably on the row's `_completionEvidence`, not just in this
+            // call's return value.
+            completionEvidence: completionEvidenceToPersist,
+            outputPayload: it.outputPayload,
+            ...(recoveredAttempt ? { deferredOperationCompletion: recoveredAttempt } : {}),
+            // P-008 (d): the resolved declaration, persisted under
+            // TERMINAL_ASSUMPTIONS_KEY beside the evidence it rests on.
+            assumptions: resolvedAssumptions,
+            ...(externalRuntimeAttempt ? { externalRuntimeAttempt } : { completionAuthority }),
+            onTerminalConflict: (info) => {
+              terminalConflict = info;
+            },
+          }),
+        ),
       );
       workItem = res.workItem ?? existing;
       aliasNote = res.aliasNote;

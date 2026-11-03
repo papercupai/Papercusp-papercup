@@ -104,6 +104,12 @@ describe('verification attempt ledger (R-1)', () => {
     expect(a!.fingerprint).toMatch(/^log:[0-9a-f]{12}$/);
     expect(a!.label).toContain('phase D (phase_d_worktree_materialization)');
     expect(a!.commandFingerprint).toMatch(/^[0-9a-f]{12}$/);
+    expect(a!.evidenceExcerpt).toContain('did not converge within 180s');
+    const [task] = await store.listTasks({ taskId: 't-fail', includeEnded: true }, db.sql);
+    expect(task?.detail.verificationAttempt).toMatchObject({
+      evidenceExcerpt: expect.stringContaining('did not converge within 180s'),
+      evidenceExcerptTruncated: false,
+    });
   });
 
   it('gives the same failure the same fingerprint across runs, and a different failure a different one', async () => {

@@ -11,6 +11,7 @@ import { mockResolvedOnceTyped, mockResolvedTyped } from '../../../testing/typed
 import type { ReconcileTickResult } from '../../../task-manager/reconcile-tick';
 import { summarizeReconcile, type ReconcileResult } from '../../../task-manager/reconcile';
 import type { TaskRow } from '../../../task-manager/types';
+import { ATTEMPT_EVIDENCE_MAX_CHARS } from '../../../verification-attempts/attempt-ledger';
 
 const { LOCAL_SUPERUSER_BEARER, listTasksMock } = vi.hoisted(() => ({
   LOCAL_SUPERUSER_BEARER: '8c91f74d2e6a4bbf90f44a71d142d095',
@@ -1156,10 +1157,63 @@ describe('processes:list confinement (P-023/D-111)', () => {
             insideOperatorCgroup?: boolean;
             reason?: string;
           };
+        verificationAttempt?: Record<string, unknown> | null;
         }>;
       }
     ).tasks;
   }
+
+  it('returns a redacted attempt excerpt only for an exact opted-in task read', async () => {
+    const row = confinedRow({
+      taskId: 'attempt-row',
+      logPath: '/tmp/attempt-row.log',
+      detail: {
+        verificationAttempt: {
+          schemaVersion: 1,
+          outcome: 'fail',
+          fingerprint: 'log:0123456789ab',
+          label: 'Error: verification failed',
+          source: 'log',
+          structured: null,
+          commandFingerprint: '0123456789ab',
+          durationMs: 180_000,
+          recordedAt: '2026-11-03T00:00:00.000Z',
+          evidenceExcerpt: 'Error: password=attempt-secret was rejected',
+          evidenceExcerptTruncated: false,
+        },
+      },
+    });
+    const [defaultTask] = await tasksFor(row, { taskId: 'attempt-row', includeEnded: true });
+    expect(defaultTask).not.toHaveProperty('verificationAttempt');
+
+    const [task] = await tasksFor(row, {
+      taskId: 'attempt-row', includeEnded: true, includeAttemptEvidence: true,
+    });
+    expect(task!.verificationAttempt).toMatchObject({
+      outcome: 'fail',
+      fingerprint: 'log:0123456789ab',
+      evidenceExcerptTruncated: false,
+    });
+    const excerpt = String(task!.verificationAttempt?.evidenceExcerpt);
+    expect(excerpt).not.toContain('attempt-secret');
+    expect(excerpt).toContain('Error: password=');
+    expect(excerpt.length).toBeLessThanOrEqual(ATTEMPT_EVIDENCE_MAX_CHARS);
+  });
+
+  it('refuses attempt excerpts without an exact task selector', async () => {
+    const dispatched = await dispatchProjectedTool(
+      projected,
+      'processes:list',
+      { includeAttemptEvidence: true },
+      ctx('attempt-evidence-selector-test'),
+      {},
+    );
+    expect(dispatched.ok, JSON.stringify(dispatched)).toBe(true);
+    expect(dispatched.result?.structuredContent).toMatchObject({
+      ok: false,
+      reason: expect.stringContaining('requires an exact taskId'),
+    });
+  });
 
   it('derives the path from scope_unit and does NOT echo the stored spawner cgroup', async () => {
     const [task] = await tasksFor(confinedRow());

@@ -11,6 +11,28 @@ import { isolatedWorkerFailureDetail } from '../test/isolated-integration-proof'
 const root = resolve(__dirname, '../../..');
 
 describe('current-build execution route contract', () => {
+  it('retains explicit native Docker selection across the real private supervisor without forwarding Docker credentials', () => {
+    const selected = 'unix:///run/docker-bench.sock';
+    const probe = `
+      import assert from 'node:assert/strict';
+      import { privateNativeDockerHost } from './packages/operator-core/test/private-http-workspace-preflight.ts';
+      assert.equal(process.env.DOCKER_HOST, undefined);
+      assert.equal(process.env.DOCKER_TLS_VERIFY, undefined);
+      assert.equal(process.env.DOCKER_CERT_PATH, undefined);
+      process.env.DOCKER_HOST = privateNativeDockerHost(process.argv.slice(1));
+      assert.equal(process.env.DOCKER_HOST, ${JSON.stringify(selected)});
+      console.log('PRIVATE_NATIVE_DOCKER_SELECTED ' + process.env.DOCKER_HOST);
+    `;
+    const result = spawnSync(process.execPath, [join(root, 'scripts/with-test-pg.mjs'),
+      '--isolated-runtime=operator-api', '--', process.execPath, '--import', 'tsx', '--input-type=module', '-e', probe,
+      '--', '--native-docker-host=' + selected], {
+      cwd: root, encoding: 'utf8', timeout: 180_000, maxBuffer: 4 * 1024 * 1024,
+      env: { ...process.env, DOCKER_HOST: selected, DOCKER_TLS_VERIFY: '1', DOCKER_CERT_PATH: '/must-not-forward' },
+    });
+    expect(result.status, isolatedWorkerFailureDetail(result.stdout + '\n' + result.stderr)).toBe(0);
+    expect(result.stdout).toContain('PRIVATE_NATIVE_DOCKER_SELECTED ' + selected);
+  }, 200_000);
+
   it('reaps a real detached private task scope when the supervisor is cancelled without an agent', async () => {
     const evidenceDir = mkdtempSync(join(tmpdir(), 'private-scope-cancel-'));
     const pidPath = join(evidenceDir, 'payload.pid');

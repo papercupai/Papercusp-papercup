@@ -65,34 +65,47 @@ export async function sweepOrphanSnapshots(opts?: {
   const cutoffIso = new Date(Date.now() - olderThanMs).toISOString();
   const errorTag = `orphan-sweep: status='running' for >${minutes}min`;
 
-  const sql = backupHost().getSql();
-  const rows = await sql<{ id: string; workspace_id: string }[]>`
-    UPDATE harness_shared.backup_snapshots AS snapshot
-       SET status      = 'failed',
-           finished_at = now(),
-           error_text  = ${errorTag}
-     WHERE snapshot.status = 'running'
-       AND snapshot.started_at < ${cutoffIso}::timestamptz
-       AND NOT EXISTS (
-         SELECT 1
-           FROM harness_shared.backup_events AS event
-          WHERE event.workspace_id = snapshot.workspace_id
-            AND event.snapshot_id = snapshot.id
-            AND event.at >= ${cutoffIso}::timestamptz
-       )
-     RETURNING snapshot.id::text AS id, snapshot.workspace_id AS workspace_id
-  `;
-  const sweptIds = rows.map((r) => r.id);
+  const host = backupHost();
+  // Event writes are best-effort; missing heartbeats do not prove producer death.
+  // Take the same cross-process fence held through snapshot finalization before
+  // writing any orphan verdict. A busy fence defers this sweep without waiting.
+  const migrationLock = await host.acquireMigrationLock?.({ tryOnly: true });
+  if (host.acquireMigrationLock && !migrationLock) {
+    return { swept: 0, sweptIds: [], reapedTempFiles: 0 };
+  }
 
-  // A row just confirmed orphaned is exactly the signal that its writer died
-  // without cleaning up its own transaction file. Reap each affected
-  // workspace's dead-writer temp files now rather than waiting on that
-  // workspace's next hook run to reach the same reaper at its own start.
-  const reapedTempFiles = await reapDeadWriterTempFilesFor(
-    [...new Set(rows.map((r) => r.workspace_id))],
-  );
+  try {
+    const sql = host.getSql();
+    const rows = await sql<{ id: string; workspace_id: string }[]>`
+      UPDATE harness_shared.backup_snapshots AS snapshot
+         SET status      = 'failed',
+             finished_at = now(),
+             error_text  = ${errorTag}
+       WHERE snapshot.status = 'running'
+         AND snapshot.started_at < ${cutoffIso}::timestamptz
+         AND NOT EXISTS (
+           SELECT 1
+             FROM harness_shared.backup_events AS event
+            WHERE event.workspace_id = snapshot.workspace_id
+              AND event.snapshot_id = snapshot.id
+              AND event.at >= ${cutoffIso}::timestamptz
+         )
+       RETURNING snapshot.id::text AS id, snapshot.workspace_id AS workspace_id
+    `;
+    const sweptIds = rows.map((r) => r.id);
 
-  return { swept: sweptIds.length, sweptIds, reapedTempFiles };
+    // A row just confirmed orphaned is exactly the signal that its writer died
+    // without cleaning up its own transaction file. Reap each affected
+    // workspace's dead-writer temp files now rather than waiting on that
+    // workspace's next hook run to reach the same reaper at its own start.
+    const reapedTempFiles = await reapDeadWriterTempFilesFor(
+      [...new Set(rows.map((r) => r.workspace_id))],
+    );
+
+    return { swept: sweptIds.length, sweptIds, reapedTempFiles };
+  } finally {
+    await migrationLock?.release();
+  }
 }
 
 /**

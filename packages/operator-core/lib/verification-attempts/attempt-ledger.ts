@@ -20,12 +20,16 @@ import { createHash } from 'node:crypto';
 import { open } from 'node:fs/promises';
 import { getOrgPg } from '@papercusp/db-org';
 import type { Sql } from 'postgres';
+import { redactSensitiveText } from '../sensitive-text';
+import { readSuperuserToken } from '../superuser-token';
 import { failureFingerprint, type StructuredFailure } from './failure-fingerprint';
 
 /** An attempt shorter than this is not "slow" and is not recorded as an attempt. */
 export const SLOW_ATTEMPT_MIN_MS = 120_000;
 /** Bytes of log read from the end to fingerprint a failure. */
 export const ATTEMPT_LOG_TAIL_BYTES = 64 * 1024;
+/** Maximum redacted source excerpt retained for a failed slow attempt. */
+export const ATTEMPT_EVIDENCE_MAX_CHARS = 4_000;
 
 export type AttemptOutcome = 'pass' | 'fail' | 'cancelled' | 'unknown';
 
@@ -36,6 +40,9 @@ export interface VerificationAttemptStamp {
   label: string | null;
   source: 'structured' | 'log' | 'exit' | null;
   structured: StructuredFailure | null;
+  /** Redacted tail of the source log, retained so later audits can inspect the cause. */
+  evidenceExcerpt: string | null;
+  evidenceExcerptTruncated: boolean;
   commandFingerprint: string;
   durationMs: number;
   recordedAt: string;
@@ -64,6 +71,8 @@ export interface WorkItemAttempt {
   fingerprint: string | null;
   label: string | null;
   source: VerificationAttemptStamp['source'];
+  evidenceExcerpt?: string | null;
+  evidenceExcerptTruncated?: boolean;
   commandFingerprint: string | null;
   /** The harness's own phase / step / reason code, when the attempt reported one. */
   structured?: StructuredFailure | null;
@@ -133,11 +142,21 @@ export async function recordAttemptOnClose(
     if (!Number.isFinite(durationMs) || durationMs < (deps.minDurationMs ?? SLOW_ATTEMPT_MIN_MS)) return null;
     const outcome = attemptOutcome(closed.state, closed.exitCode);
     let fp: ReturnType<typeof failureFingerprint> | null = null;
+    let evidenceExcerpt: string | null = null;
+    let evidenceExcerptTruncated = false;
     // An unknown exit is unobserved, not evidence of failure. Log text can be
     // partial or harmless stderr, so only a classified failure gets a fingerprint.
     if (outcome === 'fail') {
       const logTail = closed.logPath ? await (deps.readTail ?? readLogTail)(closed.logPath) : null;
       fp = failureFingerprint({ exitCode: closed.exitCode, exitReason: closed.exitReason, logTail });
+      if (logTail !== null) {
+        const superuserToken = readSuperuserToken();
+        const redacted = redactSensitiveText(logTail, superuserToken ? [superuserToken] : []);
+        evidenceExcerptTruncated = redacted.length > ATTEMPT_EVIDENCE_MAX_CHARS;
+        evidenceExcerpt = evidenceExcerptTruncated
+          ? redacted.slice(-ATTEMPT_EVIDENCE_MAX_CHARS)
+          : redacted;
+      }
     }
     const stamp: VerificationAttemptStamp = {
       schemaVersion: 1,
@@ -146,6 +165,8 @@ export async function recordAttemptOnClose(
       label: fp?.label ?? null,
       source: fp?.source ?? null,
       structured: fp?.structured ?? null,
+      evidenceExcerpt,
+      evidenceExcerptTruncated,
       commandFingerprint: commandFingerprint(closed.argv),
       durationMs,
       recordedAt: (deps.now?.() ?? new Date()).toISOString(),
@@ -236,6 +257,8 @@ export async function listWorkItemAttempts(
       fingerprint: r.attempt?.fingerprint ?? null,
       label: r.attempt?.label ?? null,
       source: r.attempt?.source ?? null,
+      evidenceExcerpt: r.attempt?.evidenceExcerpt ?? null,
+      evidenceExcerptTruncated: r.attempt?.evidenceExcerptTruncated ?? false,
       commandFingerprint: r.attempt?.commandFingerprint ?? null,
       structured: r.attempt?.structured ?? null,
     };

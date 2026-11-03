@@ -24,6 +24,7 @@ import { TASK_STATES, taskIdFromScopeUnit } from '../../task-manager/types';
 import type { TaskRow } from '../../task-manager/types';
 import { redactSensitiveText } from '../../sensitive-text';
 import { readSuperuserToken } from '../../superuser-token';
+import { ATTEMPT_EVIDENCE_MAX_CHARS } from '../../verification-attempts/attempt-ledger';
 
 function mb(bytes: number | null | undefined): number | null {
   return bytes == null ? null : Math.round(bytes / 1048576);
@@ -58,6 +59,74 @@ function sampleFreshness(
 function safeDiagnosticText(text: string, maxChars?: number, knownSecrets: readonly string[] = []): string {
   const redacted = redactSensitiveText(text, knownSecrets);
   return maxChars === undefined ? redacted : redacted.slice(0, maxChars);
+}
+
+const verificationAttemptSchema = z.object({
+  schemaVersion: z.literal(1).nullable(),
+  outcome: z.enum(['pass', 'fail', 'cancelled', 'unknown']).nullable(),
+  fingerprint: z.string().nullable(),
+  label: z.string().nullable(),
+  source: z.enum(['structured', 'log', 'exit']).nullable(),
+  structured: z.object({
+    phase: z.string(),
+    step: z.string().nullable(),
+    reasonCode: z.string(),
+  }).nullable(),
+  commandFingerprint: z.string().nullable(),
+  durationMs: z.number().int().nonnegative().nullable(),
+  recordedAt: z.string().nullable(),
+  evidenceExcerpt: z.string().nullable(),
+  evidenceExcerptTruncated: z.boolean(),
+});
+
+function projectVerificationAttempt(
+  detail: Record<string, unknown>,
+  knownSecrets: readonly string[],
+): z.infer<typeof verificationAttemptSchema> | null {
+  const value = detail.verificationAttempt;
+  if (value == null || typeof value !== 'object' || Array.isArray(value)) return null;
+  const raw = value as Record<string, unknown>;
+  const outcome = raw.outcome === 'pass' || raw.outcome === 'fail' || raw.outcome === 'cancelled' || raw.outcome === 'unknown'
+    ? raw.outcome
+    : null;
+  const source = raw.source === 'structured' || raw.source === 'log' || raw.source === 'exit' ? raw.source : null;
+  const structuredValue = raw.structured;
+  const structuredRaw = structuredValue != null && typeof structuredValue === 'object' && !Array.isArray(structuredValue)
+    ? structuredValue as Record<string, unknown>
+    : null;
+  const phase = structuredRaw && typeof structuredRaw.phase === 'string' ? structuredRaw.phase : null;
+  const step = structuredRaw && typeof structuredRaw.step === 'string' ? structuredRaw.step : null;
+  const reasonCode = structuredRaw && typeof structuredRaw.reasonCode === 'string' ? structuredRaw.reasonCode : null;
+  const redactedExcerpt = typeof raw.evidenceExcerpt === 'string'
+    ? redactSensitiveText(raw.evidenceExcerpt, knownSecrets)
+    : null;
+
+  return {
+    schemaVersion: raw.schemaVersion === 1 ? 1 : null,
+    outcome,
+    fingerprint: typeof raw.fingerprint === 'string' ? safeDiagnosticText(raw.fingerprint, 80, knownSecrets) : null,
+    label: typeof raw.label === 'string' ? safeDiagnosticText(raw.label, 300, knownSecrets) : null,
+    source,
+    structured: phase !== null && reasonCode !== null
+      ? {
+          phase: safeDiagnosticText(phase, 160, knownSecrets),
+          step: step === null ? null : safeDiagnosticText(step, 200, knownSecrets),
+          reasonCode: safeDiagnosticText(reasonCode, 200, knownSecrets),
+        }
+      : null,
+    commandFingerprint: typeof raw.commandFingerprint === 'string'
+      ? safeDiagnosticText(raw.commandFingerprint, 80, knownSecrets)
+      : null,
+    durationMs: typeof raw.durationMs === 'number' && Number.isSafeInteger(raw.durationMs) && raw.durationMs >= 0
+      ? raw.durationMs
+      : null,
+    recordedAt: typeof raw.recordedAt === 'string' ? safeDiagnosticText(raw.recordedAt, 64, knownSecrets) : null,
+    evidenceExcerpt: redactedExcerpt === null
+      ? null
+      : redactedExcerpt.slice(-ATTEMPT_EVIDENCE_MAX_CHARS),
+    evidenceExcerptTruncated: raw.evidenceExcerptTruncated === true ||
+      (redactedExcerpt !== null && redactedExcerpt.length > ATTEMPT_EVIDENCE_MAX_CHARS),
+  };
 }
 
 function localDiagnosticSecrets(): readonly string[] {
@@ -192,6 +261,7 @@ const taskResultSchema = z.object({
         })
         .nullable(),
       logPath: z.string().nullable().optional(),
+      verificationAttempt: verificationAttemptSchema.nullable().optional(),
     }),
   ),
 });
@@ -211,11 +281,11 @@ export default defineTool({
     'Ledger-backed inventory of tasks this operator launched: provenance `ps` cannot give — launcher, work-item/plan, budget/deadline, log path, CPU/RSS/pid-count, and cgroup confinement. Also surfaces `unaccounted` rows — processes inside our slice with no registered chokepoint — and verifier-owned scopes in `live.verifierGroups`. Pass `live:true` to reconcile with the kernel (slower, authoritative). `taskPage` reports ledger-page coverage separately from kernel scan bounds.',
   capability: 'intel:read',
   guidance: {
-    when: 'You want to know WHAT IS RUNNING AND WHY — who started a job, what a work-item costs, which task uses CPU or memory, whether anything bypassed the spawn chokepoint, or whether a managedSpawn job is still alive.',
+    when: 'You want to know WHAT IS RUNNING AND WHY — who started a job, what a work-item costs, which task uses CPU or memory, whether anything bypassed the spawn chokepoint, whether a managedSpawn job is still alive, or to inspect one slow-attempt failure excerpt.',
     notWhen:
       "NOT a `ps` substitute — a process nothing in this operator launched is invisible unless it landed in our cgroup slice. For the six tracked AGENT process kinds use `dev:processes`; for a raw host process list, plain `ps`/`pgrep` is correct and is never gated. For a capability:bash job's OUTPUT use `capability:bash_output`.",
     chaining:
-      'Pass `taskId`, `scopeUnit`, `invocationId` or `dispatchCallId` for one exact ledger row (matched before the limit). Lost a capability:bash launch response? Pass its `dispatchCallId` with `includeEnded:true` instead of relaunching. Then `processes:kill { taskId }` (whole cgroup subtree), or `{ scopeUnit }` for a `live.unaccountedGroups` entry; `processes:freeze` pauses without losing work; `processes:limit` retunes the budget live. Check `taskPage.truncated` before treating a task missing from `tasks[]` as absent; `live.ownedTruncated` and `live.foreignTruncated` only describe the kernel scan.',
+      'Pass `taskId`, `scopeUnit`, `invocationId` or `dispatchCallId` for one exact ledger row (matched before the limit). To read a saved slow-attempt source excerpt, pass its exact `taskId` with `includeAttemptEvidence:true`; the excerpt is bounded and redacted. Lost a capability:bash launch response? Pass its `dispatchCallId` with `includeEnded:true` instead of relaunching. Then `processes:kill { taskId }` (whole cgroup subtree), or `{ scopeUnit }` for a `live.unaccountedGroups` entry; `processes:freeze` pauses without losing work; `processes:limit` retunes the budget live. Check `taskPage.truncated` before treating a task missing from `tasks[]` as absent; `live.ownedTruncated` and `live.foreignTruncated` only describe the kernel scan.',
     returns:
       '{ ok, counts:{ byState, byClass }, tasks:[{ taskId, class, title, state, launchedBy, workItemId, planSlug, ageSec, rssMb, peakRssMb, cpuSec, cpuBusyPercent, pids: number|null (PID count), livePids: number[]|null (PID array for live unaccounted tasks; null otherwise), confined, scopeUnit, confinement, deadlineAt, logPath }], live?: { unaccountedGroups?: Array<{ pids: number[] (PID array) }> } } — `confinement` answers "what confines this task, and therefore what can kill it": `{ confined, cgroupPath, scopeUnit, source, insideOperatorCgroup?, reason? }`. Read `source` before the path. `derived-from-scope-unit` is the trustworthy case — the path is DERIVED, because the stored `cgroup_path` column holds the SPAWNER cgroup on ~1300 historical rows and would answer "would restarting the operator kill this agent?" with the pre-EI-9748 YES (D-111). `insideOperatorCgroup` IS that answer, and is absent — never false — when unknown. `not-derivable` means confined but no scope unit was recorded: that is UNKNOWN, not unconfined, so `confined` stays true. `recorded-at-spawn` is the unconfined case, where the /proc read is correct. `observed-at-reconcile` means an unaccounted residue had an exact `pc-<taskId>` scope and matching kernel-scanned path; it uses that observed path because its original task class is unknown. To find your OWN row pass `coordOwnerId` (your coord owner id) — `launchedBy` is whoever spawned you, and `pgrep -f <ownerId>` self-matches your own command line. `cpuSec` is cumulative CPU time; `cpuBusyPercent` is derived from two cumulative samples (100% = one saturated core) and is null until a second valid sample exists. Unfiltered `live:true` reads include `live.verifierGroups` and other reconciler groups; a task-filtered live read keeps the compact reconciliation summary but omits unrelated global group samples. `confined:false` means the task is ledgered but NOT cgroup-isolated, so a kill falls back to a pid signal and freeze is unavailable. An exact-identity lookup (`dispatchCallId` especially) that finds nothing is not proof no command ran: legacy jobs may lack that identity.',
   },
@@ -257,6 +327,7 @@ export default defineTool({
     workItemId: z.string().max(120).optional().describe('only tasks attributed to this work-item'),
     rootTaskId: z.string().max(64).optional().describe('one task tree'),
     includeEnded: z.boolean().optional().describe('include finished tasks (the "what ran overnight" read)'),
+    includeAttemptEvidence: z.boolean().optional().describe('include the redacted, bounded verification-attempt stamp; requires an exact taskId'),
     live: z
       .boolean()
       .optional()
@@ -269,6 +340,19 @@ export default defineTool({
   // door-truncated JSON string is not a valid machine-readable response.
   result: taskResultSchema,
   async handler(args) {
+    if (args.includeAttemptEvidence && !args.taskId) {
+      return {
+        content: [{
+          type: 'text' as const,
+          text: JSON.stringify({
+            ok: false,
+            reason: 'includeAttemptEvidence requires an exact taskId to keep the evidence read bounded',
+            counts: { total: 0, byState: {}, byClass: {} },
+            tasks: [],
+          }),
+        }],
+      };
+    }
     // WI-6499: with the task manager flag-OFF nothing enrols, so the ledger is
     // frozen at whatever it last held. Serving those rows would be worse than
     // serving none — they read as "what is running" while describing processes
@@ -505,6 +589,9 @@ export default defineTool({
                     }
                   : null,
                 logPath: r.logPath == null ? r.logPath : safeDiagnosticText(r.logPath, undefined, diagnosticSecrets),
+                ...(args.includeAttemptEvidence
+                  ? { verificationAttempt: projectVerificationAttempt(r.detail, diagnosticSecrets) }
+                  : {}),
                 };
               }),
             },

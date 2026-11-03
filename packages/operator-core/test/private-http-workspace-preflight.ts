@@ -239,6 +239,17 @@ export function privateCodexModelConfig(argv: readonly string[], config: Record<
   return { model: modelFlag ?? model, effort };
 }
 
+/** The isolated PG supervisor strips Docker environment and credentials.
+ * Restore only the explicitly selected local endpoint from the fixture argv. */
+export function privateNativeDockerHost(argv: readonly string[]): string {
+  const selections = argv.filter(arg => arg.startsWith('--native-docker-host='));
+  assert.equal(selections.length, 1, 'Native fixture requires exactly one explicit Docker endpoint');
+  const selected = selections[0].slice('--native-docker-host='.length);
+  assert.match(selected, /^unix:\/\/\/[^\s?#]+$/,
+    'Native fixture requires an explicit local unix Docker endpoint');
+  return selected;
+}
+
 /** Read only routing fields from the actual Claude argv/env and signed MCP file.
  * Never return the environment, token, or full MCP URL to the evidence recorder. */
 export function privateClaudeModelConfig(argv: readonly string[], env: NodeJS.ProcessEnv,
