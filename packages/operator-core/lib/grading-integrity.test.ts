@@ -2235,7 +2235,67 @@ describe('dispatchPendingGradingAudits', () => {
     expect(d.route).toHaveBeenCalledOnce();
   });
 
-  it('launches a current standard target and maps a replay to a deduped receipt', async () => {
+  it('keeps an incomplete pre-spawn duplicate fenced and marks it retryable only after the claim lease', async () => {
+    const d = deps();
+    const issueId = 'EI-incomplete-pre-spawn';
+    d.listScorecards.mockResolvedValue([card(issueId)]);
+    d.launch.mockResolvedValue(launchResult({
+      deduped: true,
+      launch: {
+        launchState: 'spawning',
+        status: 'reconciliation-required',
+        reconciliationRequired: true,
+        spawnAttempted: false,
+        nativeSpawnAttempted: [],
+        ownerIds: ['su-pre-spawn'],
+        processHandles: {},
+        memberResults: {},
+      },
+    }));
+
+    const result = await dispatchPendingGradingAudits({ targetIds: [issueId], ctx, harness: 'papercusp' }, d);
+
+    expect(result.receipts[0]).toMatchObject({
+      issueId,
+      state: 'reconciliation-required',
+      reason: expect.stringContaining('proves no member process was attempted'),
+      launch: { spawnAttempted: false, nativeSpawnAttempted: [], ownerIds: ['su-pre-spawn'] },
+    });
+    expect(d.launch).toHaveBeenCalledOnce();
+    expect(d.release).not.toHaveBeenCalled();
+  });
+
+  it('does not retry or release an incomplete duplicate whose spawn may have started', async () => {
+    const d = deps();
+    const issueId = 'EI-incomplete-ambiguous-spawn';
+    d.listScorecards.mockResolvedValue([card(issueId)]);
+    d.launch.mockResolvedValue(launchResult({
+      deduped: true,
+      launch: {
+        launchState: 'spawning',
+        status: 'reconciliation-required',
+        reconciliationRequired: true,
+        spawnAttempted: true,
+        nativeSpawnAttempted: [0],
+        ownerIds: ['su-ambiguous'],
+        processHandles: {},
+        memberResults: { '0': { status: 'starting', outcome: 'unknown' } },
+      },
+    }));
+
+    const result = await dispatchPendingGradingAudits({ targetIds: [issueId], ctx, harness: 'papercusp' }, d);
+
+    expect(result.receipts[0]).toMatchObject({
+      issueId,
+      state: 'reconciliation-required',
+      reason: expect.stringContaining('does not prove that no process started'),
+      launch: { spawnAttempted: true, nativeSpawnAttempted: [0], ownerIds: ['su-ambiguous'] },
+    });
+    expect(d.launch).toHaveBeenCalledOnce();
+    expect(d.release).not.toHaveBeenCalled();
+  });
+
+  it('launches a current standard target and maps a completed replay to a deduped receipt', async () => {
     const d = deps();
     d.listScorecards.mockResolvedValue([card('EI-audit-1')]);
     d.launch
@@ -4108,6 +4168,51 @@ describe('dispatchPendingGradingAudits', () => {
       else expect(killTask).not.toHaveBeenCalled();
     },
   );
+
+  it('recovers a fresh reserved auditor from its exact terminal native transcript during a periodic no-target sweep', async () => {
+    const d = deps();
+    const issueId = 'EI-periodic-reserved-terminal';
+    const sessionId = 'native-periodic-reserved';
+    const ownerId = 'su-failed-periodic-auditor';
+    const prior = { key: `grading-audit:${issueId}`, reservedAt: '2026-10-23T22:44:48.945Z' };
+    const target = card(issueId);
+    target.gradingAudit = { ...target.gradingAudit!, dispatchReservation: prior };
+    d.listScorecards.mockResolvedValue([target]);
+    d.reserve.mockResolvedValueOnce({ status: 'already-reserved' });
+    const task = {
+      taskId: 'task-periodic-reserved', sessionId, workspaceId: 'ws-test', class: 'agent-session',
+      state: 'running', logPath: '/tmp/periodic-reserved.log',
+      detail: { label: prior.key, coordOwnerId: ownerId },
+    } as unknown as TaskRow;
+    d.listTasks.mockResolvedValueOnce([task]);
+    const killTask = vi.fn(async (taskId: string) => ({ ok: true as const, taskId, action: 'kill' as const }));
+    const nativeTranscript = JSON.stringify({
+      type: 'assistant', sessionId, isSidechain: false, isApiErrorMessage: true, apiErrorStatus: 400,
+      message: { role: 'assistant', stop_reason: 'end_turn', content: [{ type: 'text',
+        text: 'Credit balance is too low' }] },
+    });
+
+    const result = await dispatchPendingGradingAudits({ ctx, harness: 'papercusp' }, {
+      ...d,
+      killTask,
+      listNativeSessionsByTranscriptHandles: async () => [{ sessionId, coordOwnerId: ownerId, agent: 'claude' }],
+      findSessionTranscript: async () => '/tmp/periodic-reserved.jsonl',
+      readLogTail: path => path.endsWith('.jsonl') ? nativeTranscript : 'Credit balance is too low',
+      terminalLogRecheckDelayMs: 0,
+      terminalLogMaxRechecks: 0,
+    });
+
+    expect(killTask).toHaveBeenCalledExactlyOnceWith(task.taskId, { includeSubtree: true, escalateAfterMs: 5_000 });
+    expect(d.release).toHaveBeenCalledWith(issueId, prior.key,
+      expect.objectContaining({ workspaceId: 'ws-test', reservedAt: prior.reservedAt }));
+    expect(d.reserve).toHaveBeenCalledTimes(2);
+    expect(d.launch).toHaveBeenCalledOnce();
+    expect(result.receipts[0]).toMatchObject({
+      issueId,
+      state: 'launched',
+      terminalRecovery: { retiredTaskIds: [task.taskId], codes: ['inference_gateway_error'] },
+    });
+  });
 
   it.each([false, true])('uses the exact retained Claude session transcript (missing task binding: %s) to recover a gateway failure without a PTY footer', async (missingBinding) => {
     const d = deps();

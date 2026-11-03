@@ -76,6 +76,7 @@ import { dirname, join, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { PSU_REQUEST_TIMEOUT_MS } from '../lib/mcp-proxy/budgets.mjs';
 import { AGENT_LAUNCH_CLIENT_TIMEOUT_MS } from '../../../packages/operator-core/lib/agent-kickoff/launch-budgets.mjs';
+import { SCORECARD_EMIT_CLIENT_TIMEOUT_MS } from '../../../packages/operator-core/lib/agent-tools/scorecards/emit-timeout-budget.mjs';
 import { discoverOperatorUrl, rebaseUrl, resolveOperatorBase, validLocalPort } from './operator-discovery.mjs';
 
 /** @typedef {Record<string, string | undefined>} EnvironmentMap */
@@ -2137,15 +2138,11 @@ export const PTOOL_BACKUP_RESTORE_TIMEOUT_MS = 60_000;
 // server would have completed, which is the failure this constant exists to prevent.
 export const PTOOL_TEMPLATES_NEW_APP_TIMEOUT_MS = 900_000;
 
-// `scorecards:emit` is intentionally long-running. Its deterministic
-// criterion-check leg owns a 13-minute check budget inside a 15-minute tool
-// timeout, then still has to persist the card and serialize the response. The
-// previous 195s client budget was left behind when that server budget grew and
-// returned MCP -32001 with the write outcome unknown while the card was still
-// being evaluated (EI-21402752040470797). The MCP transport adds a 5s buffer to
-// the declared timeout; keep the client above that effective 905s deadline so
-// the typed success/refusal is the first outcome observed.
-export const PTOOL_SCORECARD_EMIT_TIMEOUT_MS = 915_000;
+// `scorecards:emit` and ptool share the handler deadline in operator-core's
+// plain-ESM budget module. Keep the CLI deadline derived there so it cannot
+// drift behind the server's 27-minute check-and-write budget. The 15s margin
+// covers MCP settlement plus caller-side response handling.
+export const PTOOL_SCORECARD_EMIT_TIMEOUT_MS = SCORECARD_EMIT_CLIENT_TIMEOUT_MS;
 
 // scorecards:repair can dispatch independent auditors for up to fifty pending
 // cards. Its handler declares a 900s budget, and MCP adds 5s for settlement.

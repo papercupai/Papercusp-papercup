@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { readRestoredBenchmarkContext, restoreBenchmarkContext, type BenchmarkContextInput } from './context';
+import { readRestoredBenchmarkContext, restoreBenchmarkContext, readFrozenBenchmarkMemory, type BenchmarkContextInput } from './context';
 
 const roots: string[] = [];
 const sha = (s: string) => createHash('sha256').update(s).digest('hex');
@@ -29,6 +29,16 @@ function fixture() {
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 
 describe('physical frozen benchmark context', () => {
+  it('recalls only pinned snapshot bytes and refuses altered or linked memory', () => {
+    const f = fixture(), restored = restoreBenchmarkContext(f.input);
+    expect(readFrozenBenchmarkMemory(f.input.checkout, f.input.context.memoryHash))
+      .toEqual([{ key: 'memory:permitted', text: 'Shared starting memory.' }]);
+    expect(() => readFrozenBenchmarkMemory(f.input.checkout, 'f'.repeat(64))).toThrow(/bytes differ/);
+    writeFileSync(restored.memoryPath, JSON.stringify({ entries: [{ key: 'foreign', text: 'PRIVATE' }] }));
+    expect(() => readFrozenBenchmarkMemory(f.input.checkout, f.input.context.memoryHash)).toThrow(/bytes differ/);
+    rmSync(restored.memoryPath); symlinkSync(join(f.input.snapshotRoot, 'memory.json'), restored.memoryPath);
+    expect(() => readFrozenBenchmarkMemory(f.input.checkout, f.input.context.memoryHash)).toThrow(/symbolic link/);
+  });
   it('restores byte-identical permitted context for both matched arms and independently reads each receipt', () => {
     const f = fixture(); const a = restoreBenchmarkContext(f.input);
     const second = join(f.root, 'assignment-b'); mkdirSync(second);

@@ -1478,6 +1478,55 @@ describe('Vitest main-process close timeout is a finalization error', () => {
     expect(hasVitestCloseTimeoutWarning('"close timed out after 10000ms"\n')).toBe(false);
     expect(hasVitestCloseTimeoutWarning('close timed out after 10000ms was expected\n')).toBe(false);
   });
+
+  it.each([['--reporter=hanging-process'], ['--reporter', 'hanging-process']])(
+    'preloads the selected tracker before config imports: %j', (...vitestArgs) => {
+      const env = Object.freeze({ NODE_OPTIONS: '--conditions=test', PC_EXECUTED_SOURCE_MAP_OUT: '/tmp/sources.json' });
+      const options = { vitestArgs, cwd: REPO_ROOT };
+      const child = perGroupVitestEnv(env, 1, 2, options);
+      expect(child.NODE_OPTIONS).toContain('--conditions=test');
+      expect(child.NODE_OPTIONS).toMatch(/--require=.*why-is-node-running/);
+      expect(child.PC_EXECUTED_SOURCE_MAP_OUT).toBe('/tmp/sources.1.json');
+      expect(perGroupVitestEnv(child, 0, 1, options).NODE_OPTIONS).toBe(child.NODE_OPTIONS);
+      expect(perGroupVitestEnv(env, 0, 1, { vitestArgs: ['--reporter=default'], cwd: REPO_ROOT }).NODE_OPTIONS)
+        .toBe(env.NODE_OPTIONS);
+      expect(env.NODE_OPTIONS).toBe('--conditions=test');
+    },
+  );
+
+  it('attributes a real Vitest config resource that the late tracker misses', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'vitest-preinit-handles-'));
+    const config = join(dir, 'preinit-resource.config.mjs');
+    writeFileSync(config, `
+      setInterval(() => {}, 60_000);
+      export default { test: { root: ${JSON.stringify(dir)}, include: ['probe.test.mjs'],
+        globals: true, watch: false, teardownTimeout: 100 } };
+    `);
+    writeFileSync(join(dir, 'probe.test.mjs'), "it('passes before the main process timeout', () => { expect(1).toBe(1); });\n");
+    const vitestArgs = ['--reporter=default', '--reporter=hanging-process'];
+    const env = { ...process.env, NODE_OPTIONS: '', PAPERCUSP_TEST_STARTUP_TRACE: '0' };
+    const run = (childEnv: NodeJS.ProcessEnv) => spawnSync(process.execPath,
+      [join(REPO_ROOT, 'node_modules/vitest/vitest.mjs'), 'run', '--config', config, ...vitestArgs],
+      { cwd: dir, env: childEnv, encoding: 'utf8', timeout: 25_000 });
+    try {
+      const late = run(env);
+      const early = run(perGroupVitestEnv(env, 0, 1, { vitestArgs, cwd: REPO_ROOT }));
+      const output = (result: ReturnType<typeof run>) => `${result.stdout}\n${result.stderr}`;
+      for (const result of [late, early]) {
+        expect(result.error, output(result)).toBeUndefined();
+        expect(result.status, output(result)).toBe(0);
+        expect(output(result)).toMatch(/Tests\s+1 passed/);
+        expect(hasVitestCloseTimeoutWarning(output(result)), output(result)).toBe(true);
+      }
+      // Vite bundles config into a timestamped .mjs file; retain that actual
+      // creation-site identity rather than requiring an unbundled filename.
+      expect(output(late)).not.toMatch(/preinit-resource\.config\.mjs[^\n]*:\d+/);
+      expect(output(early)).toMatch(/preinit-resource\.config\.mjs[^\n]*:\d+/);
+      expect(output(early)).toContain('# Timeout');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 60_000);
 });
 
 describe('collection child identity evidence (WI-10007991)', () => {

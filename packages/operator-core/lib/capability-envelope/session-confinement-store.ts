@@ -46,7 +46,7 @@ import { pinModuleState } from '@papercusp/module-singleton';
 import { isTransportOnlyIdentity, resolveAgentIdentity } from '../agent-tools/coordination/identity';
 import { readOperatorState, updateOperatorState } from '../operator-state-pg';
 import type { UnifiedToolContext } from '@papercusp/agent-mcp';
-import { validProductReadBoundary, validScratchPlanBoundary, validWorkItemBoundary, type SessionToolConfinement } from './session-confinement';
+import { validProductReadBoundary, validScratchPlanBoundary, validWorkItemBoundary, validFrozenMemoryBoundary, type SessionToolConfinement } from './session-confinement';
 import { setSessionConfinementResolver } from './session-confinement-port';
 
 type ConfinementPhases = NonNullable<UnifiedToolContext['phases']>;
@@ -121,7 +121,10 @@ async function readStoredSessionConfinement(ownerId: string | null | undefined,
         row.confinement.denyProductReadsOutside !== undefined &&
           (row.confinement.denyOutside === undefined || !validProductReadBoundary(row.confinement.denyProductReadsOutside)) ||
         row.confinement.denyPlansOutside !== undefined &&
-          (row.confinement.denyOutside === undefined || !validScratchPlanBoundary(row.confinement.denyPlansOutside)))
+          (row.confinement.denyOutside === undefined || !validScratchPlanBoundary(row.confinement.denyPlansOutside)) ||
+        row.confinement.denyMemoryOutside !== undefined &&
+          (row.confinement.denyOutside === undefined || !validFrozenMemoryBoundary(row.confinement.denyMemoryOutside) ||
+           !validWorkItemBoundary(row.confinement.denyWorkItemsOutside)))
       throw new Error('Stored session confinement is malformed');
     state.cache[ownerId] = row;
     return row;
@@ -256,6 +259,7 @@ export async function declareSessionConfinement(args: {
       testFiles: [...args.confinement.denyProductReadsOutside.testFiles],
     } }),
     ...(args.confinement.denyPlansOutside === undefined ? {} : { denyPlansOutside: { ...args.confinement.denyPlansOutside } }),
+    ...(args.confinement.denyMemoryOutside === undefined ? {} : { denyMemoryOutside: { ...args.confinement.denyMemoryOutside } }),
     ...(args.confinement.denyWorkItemsOutside === undefined ? {} : { denyWorkItemsOutside: { ...args.confinement.denyWorkItemsOutside } }) };
   if (!confinement.reason?.trim() || !confinement.imposedBy?.trim() ||
       confinement.denyTools.some(name => typeof name !== 'string' || !name.trim()) ||
@@ -266,7 +270,10 @@ export async function declareSessionConfinement(args: {
       confinement.denyProductReadsOutside !== undefined &&
         (confinement.denyOutside === undefined || !validProductReadBoundary(confinement.denyProductReadsOutside)) ||
       confinement.denyPlansOutside !== undefined &&
-        (confinement.denyOutside === undefined || !validScratchPlanBoundary(confinement.denyPlansOutside)))
+        (confinement.denyOutside === undefined || !validScratchPlanBoundary(confinement.denyPlansOutside)) ||
+      confinement.denyMemoryOutside !== undefined &&
+        (confinement.denyOutside === undefined || !validFrozenMemoryBoundary(confinement.denyMemoryOutside) ||
+         !validWorkItemBoundary(confinement.denyWorkItemsOutside)))
     return { ok: false, reason: 'confinement requires valid canonical ceiling names and attribution' };
 
   const ttlSec = args.ttlSec && args.ttlSec > 0 ? args.ttlSec : DEFAULT_TTL_SEC;

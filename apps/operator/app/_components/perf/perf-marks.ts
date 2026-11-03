@@ -60,6 +60,8 @@
 /** The curated set of named interactions we budget + measure. Keep this small
  *  and intentional — one entry per user-perceived interaction worth a budget. */
 export const PERF_INTERACTIONS = {
+  /** Native process entry → the landing Overview's usable content has committed. */
+  startupUsable: "startup-usable",
   /** Work-tab gesture → the selected harness's rows and summary have rendered. */
   workListOpen: "work-list-open",
   /** Work grid selection → the matching detail has committed usable content. */
@@ -233,6 +235,62 @@ export function getLatestMeasure(
   // Round at the public boundary so this matches endInteraction()'s return and
   // the recorder's stored duration (both Math.round the same measure).
   return d === null ? null : Math.round(d);
+}
+
+declare global {
+  interface Window {
+    /** Written by the native initialization script, before application code. */
+    readonly __papercuspStartupOrigin?: {
+      readonly startedAtEpochMs: number;
+      readonly pid: number;
+      readonly primaryWindow: boolean;
+    };
+  }
+}
+
+/** Record native entry to usable content once, after the landing DOM commits.
+ * Native entry precedes page timeOrigin. User Timing cannot represent that
+ * negative start, so duration carries the full span and detail the real epoch
+ * endpoints. Synthetic startTime=0 is NOT navigation-to-usable time. Drivers
+ * consume duration + detail. No origin/storage/connection means unknown.
+ */
+export function endStartupUsable(): number | null {
+  const p = perf();
+  if (!p || typeof window === 'undefined') return null;
+  const origin = window.__papercuspStartupOrigin;
+  const connection = window as Window & {
+    __papercuspServerConnectionRestored?: boolean;
+    __papercuspServerConnectionRequired?: string;
+    __papercuspBootError?: string;
+  };
+  if (!origin?.primaryWindow || connection.__papercuspServerConnectionRestored !== true ||
+      connection.__papercuspServerConnectionRequired || connection.__papercuspBootError ||
+      !Number.isSafeInteger(origin.pid) || origin.pid <= 0 ||
+      !Number.isSafeInteger(origin.startedAtEpochMs) || origin.startedAtEpochMs <= 0 ||
+      !Number.isFinite(p.timeOrigin) || origin.startedAtEpochMs > p.timeOrigin) return null;
+  try {
+    const latch = 'papercusp:startup-usable:' + origin.pid + ':' + origin.startedAtEpochMs;
+    if (window.sessionStorage.getItem(latch) !== null) return null;
+    const endedAtEpochMs = p.timeOrigin + p.now();
+    const duration = endedAtEpochMs - origin.startedAtEpochMs;
+    if (!Number.isFinite(duration) || duration < 0) return null;
+    // Persist before emitting so an unavailable latch cannot duplicate success
+    // on remount/reload. Native attach may itself reload the first document.
+    window.sessionStorage.setItem(latch, 'recorded');
+    try {
+      p.measure(PERF_INTERACTIONS.startupUsable, {
+        start: 0, duration,
+        detail: { ...origin, endedAtEpochMs, pageTimeOrigin: p.timeOrigin,
+          clock: 'native-entry-epoch', endpoint: 'overview-usable' },
+      });
+    } catch {
+      window.sessionStorage.removeItem(latch);
+      return null;
+    }
+    return Math.round(duration);
+  } catch {
+    return null;
+  }
 }
 
 /** Drop any pending start mark for a name (the interaction was aborted). */

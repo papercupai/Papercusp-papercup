@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useEffect, useMemo } from 'react';
 import { parseAsBoolean, parseAsString, useQueryState, useQueryStates } from 'nuqs';
 import {
   ArrowRight,
@@ -14,7 +14,7 @@ import {
   FileText,
 } from 'lucide-react';
 import { useSyncQuery } from '@papercusp/sync';
-import { beginInteraction, PERF_INTERACTIONS } from '@/app/_components/perf/perf-marks';
+import { beginInteraction, endStartupUsable, PERF_INTERACTIONS } from '@/app/_components/perf/perf-marks';
 import { operatorUi } from '@papercusp/operator-ui/seam';
 import FleetRateControl from './FleetRateControl';
 import { isRunningAgent, type RosterAgent } from './AgentsRunningPill';
@@ -518,7 +518,7 @@ export default function AdvOverviewTab() {
   // Each host selects surfaces through its own URL key. Reuse the host seam
   // rather than writing the desktop-only `tab` selector in the Portal.
   const navigation = operatorUi().advNavigation;
-  const [, setDestination] = useQueryState(navigation?.param ?? 'tab', parseAsString);
+  const [destination, setDestination] = useQueryState(navigation?.param ?? 'tab', parseAsString);
   const setActiveTab = (tab: string) => setDestination(navigation?.targets[tab] ?? tab);
   // Deep-link the inbox tier bar (Brief 21, ?inboxTier=) when a tile targets
   // the inbox. SEQUENTIAL awaits — the custom nuqs adapter merges each write
@@ -655,6 +655,22 @@ export default function AdvOverviewTab() {
     queryName: 'accounts.pool',
     staleTime: 30_000,
   });
+
+  // Usable means actual Overview data/empty states, not shell placeholders.
+  // Valid cached data remains usable during a background refresh.
+  const startupUsable = !navigation && (!destination || destination === 'overview') &&
+    potScope.ready && [plansQ, attentionQ, rosterQ, activityQ, statsQ, deltaQ,
+      healthQ, readinessQ, pipelineQ, reportsQ, spendQ, accountsQ]
+      .every((query) => query.data !== undefined && query.data !== null && !query.error);
+  useEffect(() => {
+    if (!startupUsable) return;
+    endStartupUsable();
+    // Rust may attach after cached content commits. Retry on its existing
+    // restoration event; connection errors never count as usable startup.
+    const restored = () => endStartupUsable();
+    window.addEventListener('papercusp:server-connection-restored', restored);
+    return () => window.removeEventListener('papercusp:server-connection-restored', restored);
+  }, [startupUsable]);
 
   // ── derive tile data (pure helpers, exported + unit-tested) ────────────
   const plans = useMemo(() => selectActivePlans(plansQ.data?.plans ?? []), [plansQ.data]);

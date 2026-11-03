@@ -65,7 +65,8 @@ export const CAPABILITY_ABLATIONS: Readonly<Record<AblatedCapability, Capability
       use: 'successful agent-originated retrieval calls',
     },
     inadmissibleWhen: ['the off arm received any recall injection or retrieval result'],
-    nativeControl: { status: 'unavailable', reason: NO_SCOPED_CONTROL },
+    nativeControl: { status: 'bound', topologies: ['solo'],
+      ref: 'current-su.ts:currentBenchSoloCapabilityControl + memory:search host-pinned snapshot; explicit local lexical recall only, ambient injection withheld' },
   },
   'carry-respawn': {
     capability: 'carry-respawn', variant: 'carry-respawn-off',

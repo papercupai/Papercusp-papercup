@@ -534,6 +534,9 @@ interface CorpusLegResult {
   sessionDedup: number;
   legs: Record<string, unknown> | null;
   stages?: Record<string, unknown>[];
+  correlationIds?: string[];
+  partialSourceCalls?: Record<string, unknown>[];
+  partialSourceCallsTruncated?: boolean;
   retrievalDepth: number;
   rerank: string;
 }
@@ -556,6 +559,9 @@ function corpusAdmissionStats(corpus: CorpusLegResult | null): CorpusAdmissionSt
     legs: corpus.legs,
     ...(corpus.timeout ? { timeout: corpus.timeout } : {}),
     ...(corpus.stages ? { stages: corpus.stages } : {}),
+    ...(corpus.correlationIds?.length ? { correlationIds: [...corpus.correlationIds] } : {}),
+    ...(corpus.partialSourceCalls?.length ? { partialSourceCalls: [...corpus.partialSourceCalls] } : {}),
+    ...(corpus.partialSourceCallsTruncated ? { partialSourceCallsTruncated: true } : {}),
     retrievalDepth: corpus.retrievalDepth,
     rerank: corpus.rerank,
   } : null;
@@ -597,7 +603,9 @@ function emptyCorpusLeg(
   gate: CorpusGateDecision | null = null,
   telemetry: Pick<
     CorpusLegResult,
-    'outcome' | 'selected' | 'dropped' | 'sessionDedup' | 'legs' | 'timeout' | 'retrievalDepth' | 'rerank'
+    'outcome' | 'selected' | 'dropped' | 'sessionDedup' | 'legs' | 'timeout' | 'stages'
+    | 'correlationIds' | 'partialSourceCalls' | 'partialSourceCallsTruncated'
+    | 'retrievalDepth' | 'rerank'
   > = {
     outcome: 'ok',
     selected: 0,
@@ -761,6 +769,33 @@ function startCorpusLeg(input: MemoryInjectionInput): Promise<CorpusLegResult | 
 
       const { recallCorpusContext } = await import('./corpus-recall-io');
       const { CORPUS_BLOCK_HEADING } = await import('./corpus-recall');
+      const diagnostics: NonNullable<Parameters<typeof recallCorpusContext>[1]> = {
+        correlationIds: [],
+        stages: [],
+        partialSourceCalls: [],
+        partialSourceCallsTruncated: false,
+      };
+      const diagnosticTelemetry = (fallback?: Awaited<ReturnType<typeof recallCorpusContext>>) => {
+        const correlationIds = diagnostics.correlationIds.length
+          ? diagnostics.correlationIds : fallback?.correlationIds ?? [];
+        const stages = diagnostics.stages.length ? diagnostics.stages : fallback?.stages ?? [];
+        const includePartialSourceCalls = fallback === undefined
+          || fallback.outcome !== 'ok'
+          || fallback.partialSourceCalls !== undefined;
+        const partialSourceCalls = includePartialSourceCalls
+          ? diagnostics.partialSourceCalls.length
+            ? diagnostics.partialSourceCalls : fallback?.partialSourceCalls ?? []
+          : [];
+        return {
+          ...(correlationIds.length ? { correlationIds: [...correlationIds] } : {}),
+          ...(stages.length ? { stages: stages as unknown as Record<string, unknown>[] } : {}),
+          ...(partialSourceCalls.length
+            ? { partialSourceCalls: partialSourceCalls as unknown as Record<string, unknown>[] } : {}),
+          ...(includePartialSourceCalls
+            && (diagnostics.partialSourceCallsTruncated || fallback?.partialSourceCallsTruncated)
+            ? { partialSourceCallsTruncated: true } : {}),
+        };
+      };
 
       // Cross-moment dedup (migration 712): a warm session must not be handed
       // the same pointer every turn. The compaction `epoch` is resolved here
@@ -815,7 +850,7 @@ function startCorpusLeg(input: MemoryInjectionInput): Promise<CorpusLegResult | 
         // production (EI-19460887729945170). The corpus leg now resolves the owner's
         // whole session chain, which is the unit this always meant.
         excludeOwnerId: sessionId,
-      }), 'corpus retrieval');
+      }, diagnostics), 'corpus retrieval');
       // P-003: what is this retrieval ENTITLED to claim? Evaluated from the
       // coverage samples the alarm already persists — one indexed read,
       // TTL-memoised, fail-open to `unknown` (never to healthy).
@@ -834,12 +869,14 @@ function startCorpusLeg(input: MemoryInjectionInput): Promise<CorpusLegResult | 
         sessionDedup: 0,
         legs: (res.legs as Record<string, unknown> | null | undefined) ?? null,
         ...(res.timeout ? { timeout: res.timeout } : {}),
-        ...(res.stages ? { stages: res.stages as unknown as Record<string, unknown>[] } : {}),
+        ...diagnosticTelemetry(res),
         retrievalDepth: res.retrievalDepth ?? 0,
         rerank: res.rerank ?? 'nothing-to-reorder',
       } satisfies Pick<
         CorpusLegResult,
-        'outcome' | 'selected' | 'dropped' | 'sessionDedup' | 'legs' | 'timeout' | 'retrievalDepth' | 'rerank'
+        'outcome' | 'selected' | 'dropped' | 'sessionDedup' | 'legs' | 'timeout' | 'stages'
+        | 'correlationIds' | 'partialSourceCalls' | 'partialSourceCallsTruncated'
+        | 'retrievalDepth' | 'rerank'
       >;
 
       // P-001: a leg that ran and admitted nothing still reports HOW it ran.
@@ -928,6 +965,7 @@ function startCorpusLeg(input: MemoryInjectionInput): Promise<CorpusLegResult | 
         retrievalDepth: 0,
         rerank: 'nothing-to-reorder',
         timeout: memoryTimeoutTelemetry(error),
+        ...diagnosticTelemetry(),
       });
     }
   })();

@@ -396,6 +396,9 @@ describe('recallCorpusContext — the contract handed to the search engine', () 
     };
     try {
       const result = await recallCorpusContext({ ...base, knowledgeSourcesAllowed: false });
+      const correlationId = runHybridSearch.mock.calls[0][1].correlationId;
+      expect(correlationId).toMatch(/^[0-9a-f-]{36}$/i);
+      expect(result.correlationIds).toContain(correlationId);
       const sourceCall = result.stages?.[0]?.lexical.sourceCalls?.find(call => call.source === 'session_turn');
       expect(sourceCall?.queryDiagnostics).toMatchObject({
         attemptId: expect.any(String),
@@ -417,6 +420,68 @@ describe('recallCorpusContext — the contract handed to the search engine', () 
       else delete mutableSource.lexical;
       runHybridSearch.mockReset();
     }
+  });
+
+  it('retains correlated source diagnostics when the outer deadline aborts a search', async () => {
+    const engine = await vi.importActual<typeof import('@papercusp/search')>('@papercusp/search');
+    runHybridSearch.mockImplementation(engine.runHybridSearch);
+    let startSource!: () => void;
+    const sourceStarted = new Promise<void>((resolve) => { startSource = resolve; });
+    planSource.mockImplementation(() => ({ name: 'plan', lexical: async () => {
+      startSource();
+      return await new Promise<never>(() => {});
+    } }));
+    const parent = new AbortController();
+    try {
+      const recall = recallCorpusContext({ ...base, harnessSlugs: ['papercusp'], signal: parent.signal });
+      await sourceStarted;
+      const correlationId = runHybridSearch.mock.calls[0][1].correlationId;
+      parent.abort(new Error('outer recall budget expired'));
+      const result = await recall;
+      expect(result.outcome).toBe('timed-out');
+      expect(result.correlationIds).toContain(correlationId);
+      expect(result.partialSourceCalls).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          correlationId,
+          stage: 'and',
+          source: 'plan',
+          ranker: 'lexical',
+          outcome: 'timed-out',
+          queryDiagnostics: expect.objectContaining({
+            attemptId: expect.any(String),
+            coverage: 'completed-query-results-only',
+          }),
+        }),
+      ]));
+      expect(result.partialSourceCalls?.length).toBeLessThanOrEqual(16);
+    } finally {
+      planSource.mockImplementation(() => ({ name: 'plan' }));
+      runHybridSearch.mockReset();
+    }
+  });
+
+  it('caps source-call details retained for an interrupted corpus search', async () => {
+    let finishSources!: () => void;
+    const sourcesFinished = new Promise<void>((resolve) => { finishSources = resolve; });
+    runHybridSearch.mockImplementationOnce(async (...args: unknown[]) => {
+      const options = args[1] as {
+        sourceCallInstrumentation?: (source: string, ranker: string) => {
+          finish: (outcome: 'fulfilled' | 'rejected' | 'timed-out') => unknown;
+        } | undefined;
+      };
+      for (let i = 0; i < 20; i++) {
+        options.sourceCallInstrumentation?.('partial-' + i, 'lexical').finish('timed-out');
+      }
+      finishSources();
+      return await new Promise<never>(() => {});
+    });
+    const parent = new AbortController();
+    const recall = recallCorpusContext({ ...base, signal: parent.signal });
+    await sourcesFinished;
+    parent.abort(new Error('outer recall budget expired'));
+    const result = await recall;
+    expect(result.partialSourceCalls).toHaveLength(16);
+    expect(result.partialSourceCallsTruncated).toBe(true);
   });
 
   it('keeps a doc section and source receipts through the real engine when a plan source stalls', async () => {

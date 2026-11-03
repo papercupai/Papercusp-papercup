@@ -1757,6 +1757,39 @@ describe('AcceptanceBarContractSnapshot — fixed-call loader', () => {
     expect(observed.completeness.complete).toBe(!sourceFails);
   });
 
+  it.each([false, true])('metadata preserves the pre-start contract while deferring proof readers (clause failure: %s)', async (clauseFailure) => {
+    const source = fixture(1);
+    const deps: AcceptanceBarSnapshotDeps = {
+      readPlans: async () => source.planRows, readRubrics: async () => source.rubrics,
+      readPlanItems: async () => source.planItems,
+      readClauses: async () => { if (clauseFailure) throw Error('clause read down'); return source.clauses; },
+      readWorkContracts: async () => source.workContracts, readEvidence: async () => source.evidence,
+      readLineage: vi.fn(async () => source.lineage),
+      readScorecards: vi.fn(async () => source.scorecards),
+      readVettingScorecards: vi.fn(async () => source.vettingScorecards),
+      readCurrentCritique: vi.fn(async () => null),
+      readParties: vi.fn(async () => new Map(source.partyByIdentity)),
+      readGraderSelectionVia: vi.fn(async () => new Map(source.graderSelectionVia)),
+    };
+    const proofReaders = [deps.readLineage, deps.readScorecards, deps.readVettingScorecards,
+      deps.readCurrentCritique, deps.readParties, deps.readGraderSelectionVia];
+    const metadata = await readAcceptanceBarContractSnapshot('plan-a', deps, { proofMode: 'metadata' });
+    for (const reader of proofReaders) expect(reader).not.toHaveBeenCalled();
+    expect(metadata.proofMeasured).toBe(false);
+    expect(evaluateAcceptanceBarLifecycle(metadata, 'pre-grading').satisfied).toBe(false);
+    expect(evaluateAcceptanceBarLifecycle(metadata, 'ship').satisfied).toBe(false);
+
+    const full = await readAcceptanceBarContractSnapshot('plan-a', deps);
+    for (const reader of proofReaders) expect(reader).toHaveBeenCalled();
+    const contract = { requireCompleteContractBeforeProof: true };
+    const before = evaluateAcceptanceBarLifecycle(full, 'pre-start', contract);
+    const after = evaluateAcceptanceBarLifecycle(metadata, 'pre-start', contract);
+    expect(after.satisfied).toBe(before.satisfied);
+    expect(after.codes).toEqual(before.codes);
+    expect(after.blockingBars).toEqual(before.blockingBars);
+    if (clauseFailure) expect(after.codes).toContain('bar_snapshot_source_unavailable');
+  });
+
   it('marks metadata snapshots and keeps source failures and bounded binding rows visible', async () => {
     const source = fixture(1);
     const readEvidence = vi.fn(async () => source.evidence);

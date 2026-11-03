@@ -2060,7 +2060,11 @@ describe('corpus leg carries its own retrieval health (P-001)', () => {
       queryContext: 'repair the queue boundary',budgetChars: 1800 });
     expect(block).toContain('retain verified snapshot');
     for (const kind of ['plan','doc','report']) expect(block).toContain(`[${kind} fixture] cited ${kind} section`);
-    expect(recallCorpusContext).toHaveBeenCalledWith(expect.objectContaining({ harnessSlugs: ['papercusp'],workspaceId: 'ws' }));
+    expect(recallCorpusContext).toHaveBeenCalledOnce();
+    expect(recallCorpusContext.mock.calls[0]?.[0]).toMatchObject({
+      harnessSlugs: ['papercusp'],
+      workspaceId: 'ws',
+    });
   });
 
   it('suppresses a previously delivered report at turn start while retaining a new doc and mem0 control', async () => {
@@ -2361,9 +2365,28 @@ describe('records the corpus admission funnel on the same recall row (P-009)', (
       { source: 'plan',ranker: 'lexical',status: 'timed-out' as const,rows: null,durationMs: 200,reason: 'source deadline' },
     ] } };
     const second = legsWith(1);
-    corpusIoResult = oneLine({ legs: second,stages: [first,second] });
+    const correlationIds = ['650e8400-e29b-41d4-a716-446655440000'];
+    const partialSourceCalls = [{
+      correlationId: correlationIds[0],
+      stage: 'and' as const,
+      source: 'plan',
+      ranker: 'lexical',
+      outcome: 'timed-out' as const,
+    }];
+    corpusIoResult = oneLine({
+      legs: second,
+      stages: [first,second],
+      correlationIds,
+      partialSourceCalls,
+      partialSourceCallsTruncated: true,
+    });
     const corpus = await run();
-    expect(corpus).toMatchObject({ stages: [first,second] });
+    expect(corpus).toMatchObject({
+      stages: [first,second],
+      correlationIds,
+      partialSourceCalls,
+      partialSourceCallsTruncated: true,
+    });
     expect(recordRecallStatsMock).toHaveBeenCalledTimes(1);
   });
   const flush = async (): Promise<void> => {
@@ -2412,6 +2435,9 @@ describe('records the corpus admission funnel on the same recall row (P-009)', (
             rerank: string;
             dropped: Record<string, number>;
             gate: { verdict: string; dropped: number } | null;
+            correlationIds?: string[];
+            partialSourceCalls?: Record<string, unknown>[];
+            partialSourceCallsTruncated?: boolean;
           };
         };
       }

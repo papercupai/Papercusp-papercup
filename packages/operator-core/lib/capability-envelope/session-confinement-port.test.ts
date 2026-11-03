@@ -12,6 +12,7 @@ import {
   setSessionConfinementResolver,
   sessionAllowsAmbientContext,
   sessionPromptPolicy,
+  sessionMemoryReadPolicy,
 } from './session-confinement-port';
 
 const CONFINEMENT = directedImplementerConfinement({
@@ -29,6 +30,30 @@ const SUPERUSER_CTX = {
 const PLAIN_CTX = { isSuperuser: false } as unknown as UnifiedToolContext;
 
 afterEach(() => setSessionConfinementResolver(undefined));
+
+describe('explicit frozen recall host policy', () => {
+  const confinement = { denyTools: [], denyOutside: ['memory:search'], denyAmbientContext: true as const,
+    denyWorkItemsOutside: { id: 'F-own', harness: 'bench', checkout: '/private/assignment' },
+    denyMemoryOutside: { snapshotSha256: 'a'.repeat(64) }, reason: 'frozen', imposedBy: 'host' };
+  const args = { query: 'iron', harness_slug: 'bench', harnessOnly: true };
+  it('reads the authoritative caller policy and never enables ambient injection', async () => {
+    const resolve = vi.fn(() => confinement); setSessionConfinementResolver(resolve);
+    expect(await sessionMemoryReadPolicy(SUPERUSER_CTX, args)).toEqual({ checkout: '/private/assignment', snapshotSha256: 'a'.repeat(64) });
+    expect(resolve).toHaveBeenCalledWith(SUPERUSER_CTX);
+    expect(await sessionAllowsAmbientContext({ ownerId: 'su-private', workspaceId: 'private' })).toBe(false);
+    await expect(sessionMemoryReadPolicy(SUPERUSER_CTX, { ...args, harness_slug: 'other' })).rejects.toThrow(/outside/);
+    setSessionConfinementResolver(() => ({ ...confinement, denyMemoryOutside: undefined }));
+    await expect(sessionMemoryReadPolicy(SUPERUSER_CTX, args)).rejects.toThrow(/not enabled/);
+  });
+  it('fails closed on missing/unreadable bound policy and leaves unconfined recall ordinary', async () => {
+    setSessionConfinementResolver(undefined);
+    await expect(sessionMemoryReadPolicy({ uiClientId: 'su-private' } as UnifiedToolContext, args)).rejects.toThrow(/unavailable/);
+    setSessionConfinementResolver(async () => { throw new Error('policy read failed'); });
+    await expect(sessionMemoryReadPolicy(SUPERUSER_CTX, args)).rejects.toThrow(/policy read failed/);
+    setSessionConfinementResolver(() => null);
+    expect(await sessionMemoryReadPolicy(SUPERUSER_CTX, args)).toBeUndefined();
+  });
+});
 
 describe('ambient context uses the same authoritative session policy', () => {
   it('derives workflow ownership from the immutable exact-item ceiling without caller options', async () => {

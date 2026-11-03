@@ -3,6 +3,7 @@ import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Sql } from 'postgres';
+import { getOrgPg } from '@papercusp/db-org';
 import { expect } from 'vitest';
 import { setupPlanPgFixture, seedPlan, type PlanPgFixture } from '../agent-tools/plans/__tests__/_pg-tool-fixture';
 import { deriveIndexFromContent } from '../agent-tools/plans/source';
@@ -16,7 +17,7 @@ import graphQuery from '../agent-tools/gitnexus/query';
 
 /** Shared private canonical records for reader and public-handler integration. */
 export async function setupEngineeringEvidenceFixture(registerPublicRoot = false) {
-  let fixture: PlanPgFixture;
+  let fixture: PlanPgFixture | undefined;
   let db: Sql;
   let scope: EngineeringScope;
   let root: string;
@@ -41,14 +42,36 @@ export async function setupEngineeringEvidenceFixture(registerPublicRoot = false
     } as never) as { data: EngineeringQueryReport };
     return result.data;
   };
+  const dispose = async () => {
+    try { if (root) await rm(root, { recursive: true, force: true }); }
+    finally { await fixture?.dispose(); }
+  };
 
+  try {
     fixture = await setupPlanPgFixture({ isolated: true });
     db = fixture.admin;
     root = await mkdtemp(join(tmpdir(), 'ee-reader-'));
     await mkdir(join(root, 'src'));
     await writeFile(join(root, path), source);
     scope = { workspaceId: fixture.workspaceId, harness, root };
-    if (registerPublicRoot) await writeOperatorState('harness_registry', { projects: [{ slug: harness, path: root }] }, scope.workspaceId);
+    if (registerPublicRoot) {
+      // Measure both clients before the first canonical write. Only include
+      // allowlisted endpoint fields: connection URLs contain credentials.
+      const canonical = getOrgPg().sql;
+      const endpoint = (client: Sql) => ({ host: client.options.host, port: client.options.port,
+        database: client.options.database });
+      const targets = { direct: endpoint(db), canonical: endpoint(canonical) };
+      try {
+        const [direct, routed] = await Promise.all([
+          db`SELECT current_database() AS database, inet_server_addr()::text AS address, inet_server_port() AS port`,
+          canonical`SELECT current_database() AS database, inet_server_addr()::text AS address, inet_server_port() AS port`,
+        ]);
+        expect(routed[0], JSON.stringify(targets)).toEqual(direct[0]);
+      } catch (cause) {
+        throw new Error(`Engineering evidence fixture database route probe failed: ${JSON.stringify(targets)}`, { cause });
+      }
+      await writeOperatorState('harness_registry', { projects: [{ slug: harness, path: root }] }, scope.workspaceId);
+    }
     await seedPlan(db, scope.workspaceId, harness, plan, body);
     await db.begin(async tx => {
       await writePlanIndexRows(tx as never, { workspaceId: scope.workspaceId, harnessSlug: harness, planSlug: plan }, deriveIndexFromContent(body));
@@ -91,10 +114,10 @@ export async function setupEngineeringEvidenceFixture(registerPublicRoot = false
     await db`INSERT INTO harness_shared.plan_item_anchors
       (workspace_id,harness_slug,plan_slug,item_id,anchor_kind,requested,path,content_hash,resolution,freshness,created_by)
       VALUES ('ee-foreign',${harness},'foreign-plan','P-001','path',${path},${path},${digest},'resolved','fresh','foreign-author')`;
-  return { fixture, db, scope, root, runId, bindingId, plan, harness, path, source, digest, store, query, publicQuery,
-    async dispose() {
-      try { if (root) await rm(root, { recursive: true, force: true }); }
-      finally { await fixture?.dispose(); }
-    },
-  };
+    return { fixture, db, scope, root, runId, bindingId, plan, harness, path, source, digest, store, query, publicQuery, dispose };
+  } catch (cause) {
+    try { await dispose(); }
+    catch (cleanupCause) { throw new AggregateError([cause, cleanupCause], 'Engineering evidence fixture setup and cleanup failed'); }
+    throw cause;
+  }
 }

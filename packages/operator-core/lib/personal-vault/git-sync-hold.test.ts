@@ -135,6 +135,20 @@ describe('readRestrictedEditHoldings', () => {
     expect(calls).toBe(2);
   });
 
+  it('recovers a one-time CONNECT_TIMEOUT on the read-only census query', async () => {
+    let calls = 0;
+    const { sql } = fakeSql(() => {
+      calls++;
+      if (calls === 1) {
+        throw Object.assign(new Error('write CONNECT_TIMEOUT localhost:32769'), { code: 'CONNECT_TIMEOUT' });
+      }
+      return [ROW];
+    });
+
+    await expect(readRestrictedEditHoldings(sql)).resolves.toHaveLength(1);
+    expect(calls).toBe(2);
+  });
+
   it('still fails closed after bounded ECONNREFUSED retries', async () => {
     let calls = 0;
     const { sql } = fakeSql(() => {

@@ -27,6 +27,7 @@
  *     this a separate leg rather than a fourth mem0 pool — see D-037.
  */
 
+import { randomUUID } from 'node:crypto';
 import { acquireSnapshot, acquireTicketSnapshot, getOrgPg, pgResultDiagnosticSnapshot } from '@papercusp/db-org';
 import { runHybridSearch, type SearchHit, type SearchLegs, type SourceCallInstrumentation } from '@papercusp/search';
 import { SEARCH_SOURCES } from '../agent-tools/search/sources';
@@ -73,8 +74,36 @@ import {
 // drag the whole live retrieval stack into the DBOS alarm process.
 export const CORPUS_SOURCE_NAMES = ['session_turn', 'work_item', 'plan', 'doc', 'report'] as const;
 
+const MAX_CORPUS_PARTIAL_SOURCE_CALLS = 16;
+const MAX_CORPUS_PARTIAL_QUERIES = 8;
+type CorpusSourceOutcome = Parameters<SourceCallInstrumentation['finish']>[0];
+type CorpusSourceQueryDiagnostics = NonNullable<ReturnType<SourceCallInstrumentation['finish']>>;
+type BoundedCorpusSourceQueryDiagnostics = Omit<CorpusSourceQueryDiagnostics, 'queries'> & {
+  queryCount: number;
+  queries: CorpusSourceQueryDiagnostics['queries'];
+  queriesTruncated?: true;
+};
+
+interface CorpusPartialSourceCall {
+  correlationId: string;
+  stage: 'and' | 'coverage-graded';
+  source: string;
+  ranker: string;
+  outcome: CorpusSourceOutcome;
+  queryDiagnostics?: BoundedCorpusSourceQueryDiagnostics;
+}
+
+export interface CorpusRecallDiagnosticsSink {
+  correlationIds: string[];
+  stages: SearchLegs[];
+  partialSourceCalls: CorpusPartialSourceCall[];
+  partialSourceCallsTruncated: boolean;
+}
+
 /** Attribute terminal PG query timings to one exact corpus source/ranker call. */
-function createCorpusSourceCallInstrumentation(): SourceCallInstrumentation {
+function createCorpusSourceCallInstrumentation(
+  onFinish?: (outcome: CorpusSourceOutcome, diagnostics: CorpusSourceQueryDiagnostics | undefined) => void,
+): SourceCallInstrumentation {
   const attempt = createStageAttempt({ rowId: '', onEvent: () => {} });
   return {
     run: action => withStageAttempt(attempt, action),
@@ -92,6 +121,7 @@ function createCorpusSourceCallInstrumentation(): SourceCallInstrumentation {
           // The bounded acquisition view is diagnostic-only; it cannot block recall.
         }
       }
+      let diagnostics: CorpusSourceQueryDiagnostics | undefined;
       try {
         const snapshot = pgResultDiagnosticSnapshot('org-admin', 32);
         const queries = snapshot.results
@@ -99,7 +129,7 @@ function createCorpusSourceCallInstrumentation(): SourceCallInstrumentation {
           .map(({ connectionId, queryId, backendPid, queryFamily, elapsedMs, preBuildMs, status }) => ({
             connectionId, queryId, backendPid, queryFamily, elapsedMs, preBuildMs, status,
           }));
-        return {
+        diagnostics = {
           attemptId: attempt.context.attemptId,
           timing: 'query-build-to-terminal-not-acquisition',
           coverage: 'completed-query-results-only',
@@ -109,8 +139,10 @@ function createCorpusSourceCallInstrumentation(): SourceCallInstrumentation {
           ...(acquisitionAtTimeout ? { acquisitionAtTimeout } : {}),
         };
       } catch {
-        return undefined;
+        // Instrumentation is best-effort and cannot block retrieval.
       }
+      try { onFinish?.(outcome, diagnostics); } catch { /* diagnostics cannot fail retrieval */ }
+      return diagnostics;
     },
   };
 }
@@ -427,6 +459,44 @@ export interface CorpusRecallResult {
   retrievalDepth: number;
   /** Every executed cascade stage; the final leg alone can hide a stage-1 failure. */
   stages?: SearchLegs[];
+  /** Opaque per-runHybridSearch keys, joined to fallback observations and recall stats. */
+  correlationIds?: string[];
+  /** Bounded source attempts retained when an outer deadline interrupts fusion. */
+  partialSourceCalls?: CorpusPartialSourceCall[];
+  /** True when the partial source or query sample limit was reached. */
+  partialSourceCallsTruncated?: boolean;
+}
+
+function boundedSourceQueryDiagnostics(
+  diagnostics: CorpusSourceQueryDiagnostics,
+): BoundedCorpusSourceQueryDiagnostics {
+  const queryCount = diagnostics.queries.length;
+  return {
+    attemptId: diagnostics.attemptId,
+    timing: diagnostics.timing,
+    coverage: diagnostics.coverage,
+    snapshotCapacity: diagnostics.snapshotCapacity,
+    snapshotDropped: diagnostics.snapshotDropped,
+    queryCount,
+    queries: diagnostics.queries.slice(0, MAX_CORPUS_PARTIAL_QUERIES),
+    ...(queryCount > MAX_CORPUS_PARTIAL_QUERIES ? { queriesTruncated: true as const } : {}),
+    ...(diagnostics.acquisitionAtTimeout ? { acquisitionAtTimeout: diagnostics.acquisitionAtTimeout } : {}),
+    ...(diagnostics.phaseTimings ? { phaseTimings: diagnostics.phaseTimings.slice(0, 8) } : {}),
+  };
+}
+
+function recallDiagnosticsResult(
+  diagnostics: CorpusRecallDiagnosticsSink,
+  includePartialSourceCalls: boolean,
+): Pick<CorpusRecallResult, 'correlationIds' | 'stages' | 'partialSourceCalls' | 'partialSourceCallsTruncated'> {
+  return {
+    ...(diagnostics.correlationIds.length > 0 ? { correlationIds: [...diagnostics.correlationIds] } : {}),
+    ...(diagnostics.stages.length > 0 ? { stages: [...diagnostics.stages] } : {}),
+    ...(includePartialSourceCalls && diagnostics.partialSourceCalls.length > 0
+      ? { partialSourceCalls: [...diagnostics.partialSourceCalls] } : {}),
+    ...(includePartialSourceCalls && diagnostics.partialSourceCallsTruncated
+      ? { partialSourceCallsTruncated: true } : {}),
+  };
 }
 
 const empty = (outcome: CorpusRecallOutcome, timeout?: MemoryTimeoutTelemetry): CorpusRecallResult => ({
@@ -662,7 +732,15 @@ async function rerankStage1(
  * failure — PG down, embedder missing, search throwing, flag read failing —
  * returns an empty result and the caller's prompt is unaffected. Never throws.
  */
-export async function recallCorpusContext(input: CorpusRecallInput): Promise<CorpusRecallResult> {
+export async function recallCorpusContext(
+  input: CorpusRecallInput,
+  diagnostics: CorpusRecallDiagnosticsSink = {
+    correlationIds: [],
+    stages: [],
+    partialSourceCalls: [],
+    partialSourceCallsTruncated: false,
+  },
+): Promise<CorpusRecallResult> {
   // An abort signal alone only tells the engine AFTER the caller's wall is
   // exhausted. Size its source/embedding stages from that caller's remaining
   // lifetime too, so stalled sources settle before they erase healthy siblings.
@@ -673,10 +751,17 @@ export async function recallCorpusContext(input: CorpusRecallInput): Promise<Cor
   const startedAt = Date.now();
   const deadline = createMemoryWorkDeadline(timeoutMs, signal);
   try {
-    return await deadline.run(() => recallCorpusContextInner({ ...input, signal: deadline.signal }, () => deadline.remainingMs()), 'corpus recall');
+    return await deadline.run(() => recallCorpusContextInner(
+      { ...input, signal: deadline.signal },
+      () => deadline.remainingMs(),
+      diagnostics,
+    ), 'corpus recall');
   } catch (error) {
     if (deadline.signal.aborted || error instanceof MemoryTimeoutError) {
-      return empty('timed-out', corpusTimeoutTelemetry(error, deadline, input.deadline, startedAt));
+      return {
+        ...empty('timed-out', corpusTimeoutTelemetry(error, deadline, input.deadline, startedAt)),
+        ...recallDiagnosticsResult(diagnostics, true),
+      };
     }
     throw error;
   } finally { deadline.close(); }
@@ -698,6 +783,7 @@ export function corpusSourceNamesFor(
 async function recallCorpusContextInner(
   input: CorpusRecallInput,
   remainingMs: () => number,
+  diagnostics: CorpusRecallDiagnosticsSink,
 ): Promise<CorpusRecallResult> {
   const rawText = input.queryText?.trim() ?? '';
   if (!rawText) return empty('no-query');
@@ -742,7 +828,7 @@ async function recallCorpusContextInner(
   // deep inside `run`. Defaults to the honest "we never got there": every early
   // return below leaves the leg short of stage 1.
   let rerankOutcome: CorpusRerankOutcome = 'nothing-to-reorder';
-  const stages: SearchLegs[] = [];
+  const stages = diagnostics.stages;
 
   try {
     const { sql } = getOrgPg();
@@ -812,6 +898,8 @@ async function recallCorpusContextInner(
 
       const search = async (lexicalMode: 'and' | 'coverage-graded', queryFor: string) => {
         input.signal?.throwIfAborted();
+        const correlationId = randomUUID();
+        diagnostics.correlationIds.push(correlationId);
         // Give stage 1 the largest safe source window; the helper reserves the
         // minimum room needed for the optional cascade. The outer deadline
         // remains the hard bound for this stage and the recall.
@@ -819,6 +907,7 @@ async function recallCorpusContextInner(
         const result = await runHybridSearch(sources, {
           signal: input.signal,
           caller: 'midturn:related-context',
+          correlationId,
           sql,
           query: queryFor,
           workspaceId: input.workspaceId,
@@ -831,7 +920,24 @@ async function recallCorpusContextInner(
           limit: retrievalDepth,
           mode: 'hybrid',
           embedder,
-          sourceCallInstrumentation: () => createCorpusSourceCallInstrumentation(),
+          sourceCallInstrumentation: (source, ranker) => createCorpusSourceCallInstrumentation((outcome, sourceDiagnostics) => {
+            const queryDiagnostics = sourceDiagnostics
+              ? boundedSourceQueryDiagnostics(sourceDiagnostics)
+              : undefined;
+            if (diagnostics.partialSourceCalls.length >= MAX_CORPUS_PARTIAL_SOURCE_CALLS) {
+              diagnostics.partialSourceCallsTruncated = true;
+              return;
+            }
+            if (queryDiagnostics?.queriesTruncated) diagnostics.partialSourceCallsTruncated = true;
+            diagnostics.partialSourceCalls.push({
+              correlationId,
+              stage: lexicalMode,
+              source,
+              ranker,
+              outcome: input.signal?.aborted ? 'timed-out' : outcome,
+              ...(queryDiagnostics ? { queryDiagnostics } : {}),
+            });
+          }),
           embedTimeoutMs: Math.min(embedBudget, stageBudget),
           sourceTimeoutMs: stageBudget,
           // Highlights ARE used — the teaser and the relevance guard both read the
@@ -1035,7 +1141,11 @@ async function recallCorpusContextInner(
     const out = await run;
     // The bound expired. This is NOT "the corpus had nothing" — say so, so a
     // caller (and any benchmark) can tell the two apart (EI-19460902984682209).
-    if (!out) return { ...empty('timed-out'), rerank: rerankOutcome };
+    if (!out) return {
+      ...empty('timed-out'),
+      rerank: rerankOutcome,
+      ...recallDiagnosticsResult(diagnostics, true),
+    };
 
     return {
       block: renderCorpusBlock(out.lines),
@@ -1049,14 +1159,17 @@ async function recallCorpusContextInner(
       // is stage 2 (when it runs) that produced the final admitted set, so its
       // leg accounting is the one that describes this result.
       legs: out.fused.legs,
-      stages,
       retrievalDepth,
+      ...recallDiagnosticsResult(diagnostics, false),
     };
   } catch (err) {
     if (input.signal?.aborted) throw err;
     if (process.env.NODE_ENV !== 'test') {
       console.warn('[memory-corpus-recall] failed:', (err as Error).message);
     }
-    return empty('failed');
+    return {
+      ...empty('failed'),
+      ...recallDiagnosticsResult(diagnostics, true),
+    };
   }
 }

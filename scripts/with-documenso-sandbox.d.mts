@@ -161,6 +161,15 @@ export function waitForSandboxChild(child: any, { runtime, run, probe, report, }
     probe?: typeof fetch | undefined;
     report?: ((value: any) => void) | undefined;
 }): Promise<any>;
+/** Select only roots accepted by scratch-git-clone for an explicit destination. */
+export function selectSandboxSourceScratchRoot({ donor, tempRoot, platformName, dataRoot, stat, realpath, mkdir }?: {
+    tempRoot?: string | undefined;
+    platformName?: NodeJS.Platform | undefined;
+    dataRoot?: string | undefined;
+    stat?: import("fs").StatSyncFn | undefined;
+    realpath?: typeof realpathSync | undefined;
+    mkdir?: typeof mkdirSync | undefined;
+}): string;
 export function runSandbox({ image, command, signal }: {
     image: any;
     command: any;
@@ -170,3 +179,5 @@ export function runSandbox({ image, command, signal }: {
 }): Promise<any>;
 import { getContainerRuntimeClient } from 'testcontainers';
 import { spawn } from 'node:child_process';
+import { realpathSync } from 'node:fs';
+import { mkdirSync } from 'node:fs';

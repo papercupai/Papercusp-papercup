@@ -145,12 +145,37 @@ describe('unavailable mutation authority reports its transport branch', () => {
 
   it('names a wall abort while retaining the hard deadline', async () => {
     vi.useFakeTimers();
+    let guardRequestId: string | undefined;
     const pending = run(((_url: unknown, init: RequestInit) => new Promise((_resolve, reject) => {
+      guardRequestId = JSON.parse(String(init.body)).guardRequestId;
       init.signal!.addEventListener('abort', () => reject(new Error('aborted')));
     })) as unknown as typeof fetch);
     await vi.advanceTimersByTimeAsync(PORTS['pre-tool']!.timeoutMs);
-    expect(await pending).toContain('stage=wall-during-fetch');
-    expect(await pending).toContain(`timeoutMs=${PORTS['pre-tool']!.timeoutMs}`);
+    const out = await pending;
+    expect(guardRequestId).toMatch(/^[0-9a-f-]{36}$/);
+    expect(out).toContain(`requestId=${guardRequestId}`);
+    expect(out).toContain('stage=wall-during-fetch');
+    expect(out).toContain(`timeoutMs=${PORTS['pre-tool']!.timeoutMs}`);
+  });
+
+  it('uses a fresh opaque id per lookup and preserves it across fallback origins', async () => {
+    const ids: string[] = [];
+    for (let call = 0; call < 2; call++) {
+      let attempts = 0;
+      await runInjection({ adapter, nativeEvent: 'PreToolUse', event: {},
+        env: { PAPERCUSP_SID: 'su-test', PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:3170' },
+        fetchImpl: (async (_url: unknown, init: RequestInit) => {
+          ids.push(JSON.parse(String(init.body)).guardRequestId);
+          if (++attempts === 1) throw new Error('unreachable');
+          return { ok: false, status: 503 };
+        }) as unknown as typeof fetch,
+      });
+    }
+    expect(ids).toHaveLength(4);
+    expect(ids.every(id => /^[0-9a-f-]{36}$/.test(id))).toBe(true);
+    expect(ids[0]).toBe(ids[1]);
+    expect(ids[2]).toBe(ids[3]);
+    expect(ids[0]).not.toBe(ids[2]);
   });
 
   it('reports the attempted origin without leaking URL credentials or request details', async () => {

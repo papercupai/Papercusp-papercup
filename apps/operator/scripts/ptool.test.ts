@@ -121,6 +121,10 @@ import {
   createPtoolHttpTraceFetch,
 } from './ptool.mjs';
 import {
+  SCORECARD_EMIT_CLIENT_TIMEOUT_MS,
+  SCORECARD_EMIT_TIMEOUT_SEC,
+} from '../../../packages/operator-core/lib/agent-tools/scorecards/emit-timeout-budget.mjs';
+import {
   HANDSHAKE_UPSTREAM_TIMEOUT_MS,
   MAX_HANDSHAKE_TIMEOUT_RETRIES,
 } from '../lib/mcp-proxy/proxy';
@@ -1977,6 +1981,12 @@ describe('ptool call deadlines', () => {
       name: 'scorecards:emit',
       args: { rubricRef: 'acceptance-demo' },
     })).toBe(PTOOL_SCORECARD_EMIT_TIMEOUT_MS);
+    expect(timeoutForTool('scorecards:emit')).toBe(SCORECARD_EMIT_CLIENT_TIMEOUT_MS);
+    expect(timeoutForTool('plans:certify-spec-clauses')).toBe(SCORECARD_EMIT_CLIENT_TIMEOUT_MS);
+    expect(timeoutForTool('tools:invoke', {
+      name: 'plans:certify-spec-clauses',
+      args: { slug: 'acceptance-demo' },
+    })).toBe(SCORECARD_EMIT_CLIENT_TIMEOUT_MS);
     expect(timeoutForTool('tools:invoke', {
       name: 'events:await',
       args: { event: 'wi-40086-qualified-current-tip' },
@@ -1989,8 +1999,12 @@ describe('ptool call deadlines', () => {
     expect(PTOOL_GIT_SYNC_RUN_TIMEOUT_MS).toBeGreaterThanOrEqual(2 * (45_000 + 5_000 + 5_000 + 5_000));
     expect(PTOOL_BACKUP_SNAPSHOT_CREATE_TIMEOUT_MS).toBeGreaterThan(PTOOL_CALL_TOOL_TIMEOUT_MS);
     expect(PTOOL_BACKUP_RESTORE_TIMEOUT_MS).toBeGreaterThan(PTOOL_CALL_TOOL_TIMEOUT_MS);
-    // scorecards:emit declares 900s; the MCP transport adds a 5s buffer.
-    expect(PTOOL_SCORECARD_EMIT_TIMEOUT_MS).toBeGreaterThan(905_000);
+    // The client derives from the server budget and keeps 10s beyond MCP's 5s
+    // settlement buffer for local response handling.
+    expect(PTOOL_SCORECARD_EMIT_TIMEOUT_MS).toBe(SCORECARD_EMIT_CLIENT_TIMEOUT_MS);
+    expect(SCORECARD_EMIT_CLIENT_TIMEOUT_MS).toBe(
+      SCORECARD_EMIT_TIMEOUT_SEC * 1_000 + 15_000,
+    );
   });
 
   it('passes the selected deadline to both MCP timeout guards', async () => {

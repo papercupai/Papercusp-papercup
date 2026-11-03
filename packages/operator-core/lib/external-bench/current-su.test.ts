@@ -2371,15 +2371,16 @@ describe('current benchmark restart and live binding', () => {
     await expect(recoverCurrentBenchRun(f.ports, options)).rejects.toThrow(/census exceeded/);
     expect(f.ports.killTask).not.toHaveBeenCalled();
   });
-  it.each([[undefined, 'off'], ['on', 'off'], ['off', 'off'], ['on', 'on'], ['off', 'on']] as const)
-    ('binds native ledger exposure %s and planning %s while retaining authenticated observer ownership', async (ledger, planning) => {
+  it.each([[undefined, 'off', 'off'], ['on', 'off', 'off'], ['off', 'off', 'off'], ['on', 'on', 'off'],
+    ['off', 'on', 'off'], ['on', 'off', 'on'], ['off', 'off', 'on']] as const)
+    ('binds native ledger exposure %s planning %s memory %s while retaining authenticated observer ownership', async (ledger, planning, memory) => {
     const f = fixture();
     const archivedBefore = native.archivePlans.mock.calls.length;
     const ctx = { workspaceId: 'bench-private', authenticatedPrincipal: { retained: true } } as unknown as PapercuspUnifiedToolContext;
     const protocol = currentProtocolFixture(), preregHash = 'a'.repeat(64);
     if (ledger) {
       protocol.arms[0].control = { topology: 'solo', solverGroup: 'ledger-control',
-        solverToolsHash: 'f'.repeat(64), capabilities: { ...allCapabilities('off'), 'work-item-ledger': ledger, planning } };
+        solverToolsHash: 'f'.repeat(64), capabilities: { ...allCapabilities('off'), 'work-item-ledger': ledger, planning, 'memory-recall': memory } };
       protocol.arms[1].control = { topology: 'stock-native-reference', solverGroup: 'stock-control',
         solverToolsHash: 'f'.repeat(64), capabilities: allCapabilities('off') };
     }
@@ -2431,6 +2432,18 @@ describe('current benchmark restart and live binding', () => {
     expect(launched.brief.includes('work_items:complete')).toBe(ledger !== 'off');
     expect(launched.brief).toContain(context.contextText);
     const confinement = forwarded[Symbol.for('benchmark-test-server-ceiling')] as SessionToolConfinement;
+    const memoryArgs = { query: 'Frozen', harness_slug: restoredHandle.slug, harnessOnly: true };
+    expect(evaluateSessionConfinement({ toolName: 'memory:search', args: memoryArgs, confinement }).allowed).toBe(memory === 'on');
+    if (memory === 'on') {
+      expect(confinement.denyMemoryOutside).toEqual({ snapshotSha256: protocol.context.memoryHash });
+      expect(args.brief).toContain(`harness_slug=${restoredHandle.slug}`);
+      expect(args.brief).toContain('local lexical matching');
+      for (const args of [{ ...memoryArgs, harness_slug: 'neighbor' }, { ...memoryArgs, workspace: 'production' },
+        { ...memoryArgs, harnessOnly: false }])
+        expect(evaluateSessionConfinement({ toolName: 'memory:search', args, confinement }).allowed).toBe(false);
+      for (const toolName of ['memory:remember', 'memory:list', 'memory:get'])
+        expect(evaluateSessionConfinement({ toolName, args: memoryArgs, confinement }).allowed).toBe(false);
+    } else expect(confinement.denyMemoryOutside).toBeUndefined();
     for (const toolName of ['work_items:get', 'work_items:checkpoint', 'work_items:complete']) {
       const own = { id: restoredHandle.featureId, harness: restoredHandle.slug,
         ...(toolName === 'work_items:complete' ? { state: 'done', assumptions: 'none',
@@ -2585,7 +2598,7 @@ describe('current benchmark restart and live binding', () => {
       expect(readFileSync(again.codex.command, 'utf8')).toContain('fswe-task-1');
     } finally { await hosted.stop(); rmSync(snapshotRoot, { recursive: true, force: true }); }
   });
-  it.each(['memory-recall', 'carry-respawn', 'fleet-leader', 'locks', 'consult-router', 'review'] as const)
+  it.each(['carry-respawn', 'fleet-leader', 'locks', 'consult-router', 'review'] as const)
     ('refuses unsupported native %s delivery before admission', async capability => {
       const protocol = currentProtocolFixture();
       protocol.arms[0].control = { topology: 'solo', solverGroup: 'solver', solverToolsHash: 'f'.repeat(64),

@@ -18,6 +18,7 @@
  * @property {string} [detectorSessionKey] private failure-loop detector key
  * @property {string | null} [confirmedDelivery] turn-start ACK-ON-PROOF token (delivery-ledger.mjs)
  * @property {string} [turnStartRequestId] opaque per-request receipt key
+ * @property {string} [guardRequestId] opaque correlation key for one authority lookup
  */
 /** Loopback operator. */
 export function operatorBase(env?: NodeJS.ProcessEnv): string;
@@ -284,4 +285,8 @@ export type InjectionRequest = {
      * opaque per-request receipt key
      */
     turnStartRequestId?: string | undefined;
+    /**
+     * opaque correlation key for one authority lookup
+     */
+    guardRequestId?: string | undefined;
 };

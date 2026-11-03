@@ -2122,6 +2122,11 @@ export async function readAcceptanceBarContractSnapshot(
   } = {},
 ): Promise<AcceptanceBarContractSnapshot> {
   const d: AcceptanceBarSnapshotDeps = { ...DEFAULT_DEPS, ...deps };
+  // Pre-start metadata enforces the live contract. Vetting, grading and grader
+  // identity are proof obligations deferred by that phase; do not read them and
+  // then discard their verdict on every native call. This snapshot remains
+  // explicitly unmeasured and cannot authorize a proof-consuming phase.
+  const measureProof = options.proofMode !== 'metadata';
   const capture = <T>(source: AcceptanceBarSnapshotSource, read: () => Promise<T>, fallback: T) => {
     if (!options.onRead) return captured(source, read, fallback);
     return captured(source, async () => {
@@ -2160,7 +2165,7 @@ export async function readAcceptanceBarContractSnapshot(
     truncated: false,
   };
   const critique = await capture('vetting',
-    () => rubric && d.readCurrentCritique ? d.readCurrentCritique(rubric, rubric.revision ?? null) : Promise.resolve(null), null);
+    () => measureProof && rubric && d.readCurrentCritique ? d.readCurrentCritique(rubric, rubric.revision ?? null) : Promise.resolve(null), null);
   if (critique.failure) failures[critique.failure[0]] = critique.failure[1];
   const [planItems, clauses, workContracts, evidence, lineage, scorecards, vetting] = await Promise.all([
     capture('plan-items', () => (plan ? d.readPlanItems(plan) : Promise.resolve(emptyPlanItems)), emptyPlanItems),
@@ -2173,11 +2178,11 @@ export async function readAcceptanceBarContractSnapshot(
     capture('evidence', () => (plan ? options.proofMode === 'metadata'
       ? d.readEvidence(plan, undefined, 'metadata') : d.readEvidence(plan, options.current)
       : Promise.resolve(emptyEvidence)), emptyEvidence),
-    capture('lineage', () => (plan ? d.readLineage(plan) : Promise.resolve(emptyLineage)), emptyLineage),
-    capture('grading', () => (rubric ? d.readScorecards(rubric) : Promise.resolve(emptyScorecards)), emptyScorecards),
+    capture('lineage', () => (measureProof && plan ? d.readLineage(plan) : Promise.resolve(emptyLineage)), emptyLineage),
+    capture('grading', () => (measureProof && rubric ? d.readScorecards(rubric) : Promise.resolve(emptyScorecards)), emptyScorecards),
     capture(
       'vetting',
-      () => (rubric && !critique.value ? d.readVettingScorecards(rubric) : Promise.resolve(emptyScorecards)),
+      () => (measureProof && rubric && !critique.value ? d.readVettingScorecards(rubric) : Promise.resolve(emptyScorecards)),
       emptyScorecards,
     ),
   ]);
@@ -2193,12 +2198,12 @@ export async function readAcceptanceBarContractSnapshot(
   const [parties, selectionVia] = await Promise.all([
     capture(
       'lineage-parties',
-      () => (plan ? d.readParties(partyIds, plan.workspaceId) : Promise.resolve(new Map<string, string>())),
+      () => (measureProof && plan ? d.readParties(partyIds, plan.workspaceId) : Promise.resolve(new Map<string, string>())),
       new Map<string, string>(),
     ),
     capture(
       'grading',
-      () => (rubric ? d.readGraderSelectionVia(rubric.workspaceId, rubric.rubricId) : Promise.resolve(new Map())),
+      () => (measureProof && rubric ? d.readGraderSelectionVia(rubric.workspaceId, rubric.rubricId) : Promise.resolve(new Map())),
       new Map<string, SelectionVia>(),
     ),
   ]);

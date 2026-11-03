@@ -47,6 +47,7 @@ import { codeIntelDelivery } from './delivery-ledger.mjs';
  * @property {string} [detectorSessionKey] private failure-loop detector key
  * @property {string | null} [confirmedDelivery] turn-start ACK-ON-PROOF token (delivery-ledger.mjs)
  * @property {string} [turnStartRequestId] opaque per-request receipt key
+ * @property {string} [guardRequestId] opaque correlation key for one authority lookup
  */
 
 /** Loopback operator. */
@@ -203,6 +204,9 @@ export async function postInjection(port, body, opts = {}) {
   if (!spec) return null;
   const requestId = port === 'turn-start' && typeof body.turnStartRequestId === 'string' &&
     /^[A-Za-z0-9_-]{1,80}$/.test(body.turnStartRequestId) ? body.turnStartRequestId : null;
+  // One id spans every attempted origin and the eventual timeout diagnostic.
+  // Generate it here so callers cannot smuggle tool content into server logs.
+  const guardRequestId = port === 'pre-tool' ? randomUUID() : null;
   let outcomeReported = false;
   const reportTurnStartOutcome = (hookOutcome, payload = null) => {
     if (port !== 'turn-start' || !requestId || outcomeReported) return;
@@ -247,6 +251,7 @@ export async function postInjection(port, body, opts = {}) {
     try {
       opts.onHookOutcome({
         port, stage, timeoutMs: spec.timeoutMs, elapsedMs: Math.max(0, now() - startedAt), collectMs,
+        ...(guardRequestId ? { guardRequestId } : {}),
         ...(attemptedOperatorOrigin ? { operatorOrigin: attemptedOperatorOrigin } : {}),
         ...(collectErrors.length ? { collectErrors } : {}), ...extra,
       });
@@ -297,7 +302,7 @@ export async function postInjection(port, body, opts = {}) {
     // spent, so a slow server answer was aborted here and nothing was injected.
     // Derived from the spec, never a second copy of the number on the server.
     const wallMs = Math.max(1, spec.timeoutMs - Math.max(0, now() - startedAt));
-    const payloadBody = JSON.stringify({ ...body, wallMs });
+    const payloadBody = JSON.stringify({ ...body, wallMs, ...(guardRequestId ? { guardRequestId } : {}) });
     let res = null;
     // WI-10005007: the next base is tried ONLY when the previous one could not be
     // reached at all (the fetch rejected before the wall fired — refused, reset,
@@ -896,6 +901,7 @@ export async function runInjection({ adapter, nativeEvent, event, env = process.
         // bodies or exception messages, which may contain sensitive material.
         const detail = post
           ? `stage=${post.stage}; elapsedMs=${post.elapsedMs}; timeoutMs=${post.timeoutMs}` +
+            (post.guardRequestId ? `; requestId=${post.guardRequestId}` : '') +
             (Number.isInteger(post.status) ? `; httpStatus=${post.status}` : '') +
             (post.operatorOrigin ? `; operatorOrigin=${post.operatorOrigin}` : '')
           : `stage=guard-threw; errorType=${error?.name ?? 'unknown'}`;

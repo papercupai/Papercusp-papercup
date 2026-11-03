@@ -94,6 +94,8 @@ const h = vi.hoisted(() => {
     captureScratchWriteTimings: false,
     spillWriteGate: null as Promise<void> | null,
     spillWriteEntered: null as (() => void) | null,
+    spillToolGate: null as Promise<void> | null,
+    spillToolEntered: null as (() => void) | null,
     spillWritePathSegment: 'deadlinetest:spill',
     spillPaths: [] as string[],
     handlers: new Map<string, (req: unknown, extra: unknown) => Promise<unknown>>(),
@@ -511,6 +513,8 @@ beforeEach(() => {
   h.captureScratchWriteTimings = false;
   h.spillWriteGate = null;
   h.spillWriteEntered = null;
+  h.spillToolGate = null;
+  h.spillToolEntered = null;
   h.spillWritePathSegment = 'deadlinetest:spill';
   h.spillPaths = [];
   h.resultDoorCalls = 0;
@@ -528,6 +532,22 @@ beforeEach(() => {
 // guarantees each test starts with no async work still in flight.
 afterEach(async () => {
   await sleep(SLOW_TOOL_MS + 100);
+});
+
+registerProjectedTool({
+  pluginName: 'mcp-deadline-receipt-test',
+  description: 'test-only probe: returns an oversized checkpoint after the request deadline',
+  inputSchema: { type: 'object', additionalProperties: true },
+  capabilities: [],
+  agentRoles: ['scoper'],
+  expose: { mcp: { name: 'deadlinetest:late-spill' } },
+  fn: async () => {
+    h.spillToolEntered?.();
+    await h.spillToolGate;
+    return { content: [{ type: 'text' as const, text: JSON.stringify({
+      ok: true, results: [{ id: 'EI-mcp-spill-test', checkpoint: SPILL_CHECKPOINT }],
+    }) }] };
+  },
 });
 
 describe('P2-5 deadline path — background persist + real-outcome receipt (WI-6914)', () => {
@@ -990,6 +1010,10 @@ describe('P2-5 deadline path — background persist + real-outcome receipt (WI-6
     delete process.env.PAPERCUSP_RESULT_DOOR_OFF;
     _resetScratchUsageForTests();
     h.captureScratchWriteTimings = true;
+    h.spillWritePathSegment = 'deadlinetest:late-spill';
+    let releaseTool!: () => void;
+    h.spillToolGate = new Promise<void>((resolve) => { releaseTool = resolve; });
+    const enteredTool = new Promise<void>((resolve) => { h.spillToolEntered = resolve; });
     let releaseWrite!: () => void;
     h.spillWriteGate = new Promise<void>((resolve) => { releaseWrite = resolve; });
     const enteredWrite = new Promise<void>((resolve) => { h.spillWriteEntered = resolve; });
@@ -998,10 +1022,10 @@ describe('P2-5 deadline path — background persist + real-outcome receipt (WI-6
     const receiptKey = 'idem-real-checkpoint-spill';
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
     try {
-      const response = callTool('deadlinetest:spill', {},
+      const response = callTool('deadlinetest:late-spill', {},
         superuserExtra('&workspace=ws-test', { [MCP_REQUEST_TRACE_HEADER]: traceId }),
         { idempotencyKey: receiptKey });
-      await waitForSignal(enteredWrite, 'scratch spill write entry', 5_000, () => ({
+      await waitForSignal(enteredTool, 'late spill tool entry', 5_000, () => ({
         traceEvents: traceEvents(info.mock.calls).filter((event) => event.traceId === traceId),
         resultDoorCalls: h.resultDoorCalls,
         spillPaths: [...h.spillPaths],
@@ -1009,9 +1033,6 @@ describe('P2-5 deadline path — background persist + real-outcome receipt (WI-6
       expect(traceEvents(info.mock.calls)).toContainEqual(
         expect.objectContaining({ traceId, stage: 'inner_dispatch_started' }),
       );
-      // Let dispatch and the scratch writer reach the intended post-deadline gate
-      // before expiring the request-entry timer. This keeps unrelated pre-dispatch
-      // startup variation from turning the spill-path test into a setup timeout.
       await vi.advanceTimersByTimeAsync(TEST_DEADLINE_MS);
       const timedOut = await response;
       expect(timedOut.isError).toBe(true);
@@ -1021,6 +1042,12 @@ describe('P2-5 deadline path — background persist + real-outcome receipt (WI-6
         event.traceId === traceId && event.stage === 'inner_dispatch_settled')).toBe(false);
 
       vi.useRealTimers();
+      releaseTool();
+      await waitForSignal(enteredWrite, 'late scratch spill write entry', 5_000, () => ({
+        traceEvents: traceEvents(info.mock.calls).filter((event) => event.traceId === traceId),
+        resultDoorCalls: h.resultDoorCalls,
+        spillPaths: [...h.spillPaths],
+      }));
       releaseWrite();
       await vi.waitFor(() => expect(h.replayStores.some((store) =>
         store.idempotencyKey === receiptKey)).toBe(true));
@@ -1061,6 +1088,7 @@ describe('P2-5 deadline path — background persist + real-outcome receipt (WI-6
       expect(JSON.stringify(receipt)).toContain(h.spillPaths[0]);
     } finally {
       vi.useRealTimers();
+      releaseTool();
       releaseWrite();
       await sleep(SLOW_TOOL_MS + 100);
       info.mockRestore();

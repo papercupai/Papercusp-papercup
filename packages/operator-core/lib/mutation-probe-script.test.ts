@@ -101,8 +101,8 @@ function runProbe(args: string[]): number {
 }
 
 /** Run the probe and return its exit code AND combined output (for asserting guidance text). */
-function runProbeIO(args: string[], env: NodeJS.ProcessEnv = process.env, cwd?: string): { code: number; out: string } {
-  const r = spawnSync('bash', [SCRIPT, ...args], { encoding: 'utf8', timeout: 60_000, env, cwd });
+function runProbeIO(args: string[], env: NodeJS.ProcessEnv = process.env, cwd?: string, script = SCRIPT): { code: number; out: string } {
+  const r = spawnSync('bash', [script, ...args], { encoding: 'utf8', timeout: 60_000, env, cwd });
   return { code: r.status ?? -1, out: `${r.stdout ?? ''}${r.stderr ?? ''}` };
 }
 
@@ -3992,6 +3992,91 @@ fi
     expect(out).toContain('verdict=caught');
     expect(read()).toBe(ORIGINAL);
   });
+
+  it('attributes real lazy launcher imports separately from the child that asserts on the mutant', () => {
+    const repo = join(dir, 'lazy-launcher');
+    mkdirSync(join(repo, 'scripts'), { recursive: true });
+    git(repo, ['init', '-q']);
+    git(repo, ['config', 'user.email', 'mutation-probe-test@example.invalid']);
+    git(repo, ['config', 'user.name', 'mutation-probe-test']);
+    const file = join(repo, 'subject.txt');
+    writeFileSync(file, ORIGINAL);
+    writeFileSync(join(repo, 'support.mjs'), 'export const support = 1;\n');
+    const launcher = join(repo, 'scripts/test-files.mjs');
+    const probe = join(repo, 'scripts/mutation-probe.sh');
+    writeFileSync(probe, readFileSync(SCRIPT));
+    writeFileSync(launcher, [
+      "import { readFileSync, statSync } from 'node:fs';",
+      "import { spawnSync } from 'node:child_process';",
+      'const sink = process.env.PAPERCUSP_COMMITTED_SOURCE_NOTICES;',
+      'const offset = statSync(sink).size;',
+      "await import('../support.mjs');",
+      'const child = spawnSync(process.execPath, [\'-e\', "require(\'node:assert/strict\').equal(require(\'node:fs\').readFileSync(process.argv[1], \'utf8\'), " + JSON.stringify(' + JSON.stringify(ORIGINAL) + ') + ")", process.argv[2]], { stdio: \'inherit\' });',
+      "const count = readFileSync(sink).subarray(offset).toString('utf8').trim().split('\\n').filter(Boolean).length;",
+      "console.log('TEST_FILE_FINALIZATION ' + JSON.stringify({ pid: process.pid, phase: 'provenance-complete', status: 'measured' }));",
+      "console.log('TEST_FILE_RESULT requested=1 childSubstituted=' + count + ' childNoticeOffsetBytes=' + offset + ' skippedTests=0');",
+      'if (child.status !== 0) console.log(\'TEST_FILE_ASSERTION_FAILURE file="fixture.test.ts" name="behavior" message="AssertionError"\');',
+      'process.exit(child.status ?? 2);',
+    ].join('\n'));
+    git(repo, ['add', 'subject.txt', 'support.mjs', 'scripts/test-files.mjs', 'scripts/mutation-probe.sh']);
+    git(repo, ['commit', '-qm', 'committed launcher fixture']);
+    writeFileSync(join(repo, 'support.mjs'), 'export const support = 2;\n');
+    const loader = resolve(__dirname, '../../../scripts/lib/committed-source-loader.mjs');
+    const { code, out } = runProbeIO([
+      '--file', file, '--mutate', 's/beta/BETA/',
+      '--test', `node --import ${JSON.stringify(loader)} ${JSON.stringify(launcher)} {}`,
+    ], { ...process.env, PAPERCUSP_TEST_RUNS_DB_URL: 'postgresql://ledger.example:5444/papercusp',
+      PAPERCUSP_MUTATION_DESCRIPTOR_EXPORT: 'never' }, repo, probe);
+    expect(code, out).toBe(0);
+    expect(out).toContain('launcherNotices=1 childRecords=0');
+    expect(out).toContain('verdict=caught');
+    expect(out).toContain('AssertionError');
+    expect(readFileSync(file, 'utf8')).toBe(ORIGINAL);
+  });
+
+  it.each(['subject', 'different-pid', 'unverified-pid', 'refused', 'cjs', 'count-mismatch', 'pid-mismatch'])(
+    'keeps the launcher boundary closed for %s notices', (variant) => {
+      const top = join(dir, 'launcher-boundary');
+      mkdirSync(join(top, 'scripts'), { recursive: true });
+      git(top, ['init', '-q']);
+      const probe = join(top, 'scripts/mutation-probe.sh');
+      writeFileSync(probe, readFileSync(SCRIPT));
+      const file = join(top, 'subject.txt');
+      writeFileSync(file, ORIGINAL);
+      const original = readFileSync(file, 'utf8');
+      const launcher = {
+        schemaVersion: 'committed-source-notice-v1', kind: 'substituted', via: 'esm',
+        top, rel: 'scripts/test-files.mjs', entry: 'scripts/test-files.mjs', pid: 42,
+      };
+      const prefix = variant === 'unverified-pid' ? '' : JSON.stringify(launcher) + '\n';
+      const notice = { ...launcher,
+        rel: variant === 'subject' ? 'subject.txt' : 'support.mjs',
+        pid: variant === 'different-pid' ? 43 : 42,
+        kind: variant === 'refused' ? 'refused' : 'substituted',
+        via: variant === 'cjs' ? 'cjs' : 'esm',
+      };
+      const guard = join(dir, 'unsafe-launcher.sh');
+      writeFileSync(guard, [
+        '#!/usr/bin/env bash',
+        `printf '%s' '${prefix}' >> "$PAPERCUSP_COMMITTED_SOURCE_NOTICES"`,
+        `printf '%s\\n' '${JSON.stringify(notice)}' >> "$PAPERCUSP_COMMITTED_SOURCE_NOTICES"`,
+        ...(variant === 'pid-mismatch' ? ["printf '%s\\n' 'TEST_FILE_FINALIZATION {\"pid\":43,\"phase\":\"provenance-complete\",\"status\":\"measured\"}'"] : []),
+        `printf 'TEST_FILE_RESULT requested=1 status=passed childSubstituted=${variant === 'count-mismatch' ? 0 : 1} childNoticeOffsetBytes=${Buffer.byteLength(prefix)} skippedTests=0\\n'`,
+      ].join('\n'));
+      const { code, out } = runProbeIO([
+        '--file', file, '--mutate', 's/beta/BETA/',
+        '--test', `bash ${guard} {}`,
+      ], { ...process.env, PAPERCUSP_TEST_RUNS_DB_URL: 'postgresql://ledger.example:5444/papercusp',
+        PAPERCUSP_MUTATION_DESCRIPTOR_EXPORT: 'never' }, top, probe);
+      expect(code, out).toBe(2);
+      expect(out).toContain(variant === 'subject' ? 'launcher-subject-substituted'
+        : variant === 'count-mismatch' ? 'runner-count-mismatch'
+        : variant === 'pid-mismatch' ? 'launcher-pid-mismatch' : 'subject-dependent-or-unknown-child');
+      expect(out).toContain('verdict=harness-error');
+      expect(out).not.toContain('VERDICT: MUTANT CAUGHT');
+      expect(readFileSync(file, 'utf8')).toBe(original);
+    },
+  );
 
   it('refuses a notice prefix that does not come from the test-files launcher', () => {
     const guard = join(dir, 'unverified-launcher-router.sh');

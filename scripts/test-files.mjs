@@ -623,8 +623,20 @@ export function perGroupVitestArgs(vitestArgs, groupIndex, groupCount) {
  * before module collection: production React omits act, and Vite's production
  * browser placeholders cannot represent Node setup imports.
  */
-export function perGroupVitestEnv(env, groupIndex, groupCount) {
+export function perGroupVitestEnv(env, groupIndex, groupCount, { vitestArgs = [], cwd = REPO_ROOT } = {}) {
   const testEnv = { ...env, NODE_ENV: 'test' };
+  // Vitest initializes hanging-process in onInit, after loading its config.
+  // Preload that SAME tracker when requested, so resources opened by config
+  // imports also have creation stacks when onProcessTimeout reports them.
+  const hangingProcess = vitestArgs.some((arg, index) => arg === '--reporter=hanging-process'
+    || (arg === '--reporter' && vitestArgs[index + 1] === 'hanging-process'));
+  if (hangingProcess) {
+    const vitestPackage = createRequire(join(cwd, 'package.json')).resolve('vitest/package.json');
+    const tracker = createRequire(vitestPackage).resolve('why-is-node-running');
+    const preload = `--require=${JSON.stringify(tracker)}`;
+    const options = env.NODE_OPTIONS ?? '';
+    testEnv.NODE_OPTIONS = options.includes(preload) ? options : `${options} ${preload}`.trim();
+  }
   const outPath = env.PC_EXECUTED_SOURCE_MAP_OUT?.trim();
   if (!outPath) return testEnv;
   return { ...testEnv,
@@ -4126,7 +4138,8 @@ export async function main(
     // `--outputFile` but would keep `--reporter=json`, and would then print JSON where a human is
     // meant to read a failure — never sees these args.
     const injectedReportDir = injectedReportDirFor();
-    const groupChildEnv = perGroupVitestEnv(receiptChildEnv, groupIndex, groups.length);
+    const groupChildEnv = perGroupVitestEnv(receiptChildEnv, groupIndex, groups.length,
+      { vitestArgs, cwd: group.cwd });
     try { assertExecutedProofOutputCustody(repoRoot, groupChildEnv); }
     catch (error) { console.error(formatRouteError(error.message)); return 2; }
     const { args: groupVitestArgs, injectedReportPath } = withInjectedJsonReport(

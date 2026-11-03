@@ -13,7 +13,7 @@ import path from 'node:path';
 import postgres, { type Sql } from 'postgres';
 import { GenericContainer, Wait, type StartedTestContainer } from 'testcontainers';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import { lexicalEngine, resetBm25Availability } from '@papercusp/operator-core/lib/search/lexical/rank';
+import { bm25LegIfAvailable, lexicalEngine, resetBm25Availability } from '@papercusp/operator-core/lib/search/lexical/rank';
 import featuresSearch from '../features/search';
 import tool from './query';
 
@@ -80,6 +80,23 @@ beforeAll(async () => {
   features.push({ harness_slug: 'h', feature_id: 'EI-1', item_kind: 'bug', title: 'quokka bug', summary: 'routine summary', notes: null });
   await sql`INSERT INTO harness_shared.work_items ${sql(features)}`;
   const goals = Array.from({ length: 50 }, (_, i) => ({ id: `g${i + 1}`, title: `goal ${i + 1} quokka habitat`, body: 'routine' }));
+  goals.push(
+    {
+      id: 'g-fragment-target',
+      title: 'A working, browsable field-guide website to common North American owls — running and viewable, not a design document',
+      body: 'A browsable field guide to common North American owls — species index + a detail page per species — actually running and viewable. Content accuracy outranks visual polish; no invented bird facts.',
+    },
+    {
+      id: 'g-fragment-exact-decoy',
+      title: 'Ship a runnable, browsable field guide website to common North American owls (species index + per-species detail pages)',
+      body: 'A real, running website for a person to open and browse. An index page lists common North American owl species. A detail view per species. It actually runs and is viewable. Content accuracy is required.',
+    },
+    {
+      id: 'g-fragment-bm25-decoy',
+      title: 'Ship a runnable, browsable field-guide website to common North American owls (species index + per-species detail), hosted outside the repo',
+      body: 'Species index and detail page per species; actually running and viewable. Species index detail page per species actually running and viewable. A species index has a detail page per species, running and viewable.',
+    },
+  );
   await sql`INSERT INTO harness_shared.goals ${sql(goals)}`;
   await sql`INSERT INTO harness_shared.projects ${sql([{ id: 'p1', slug: 'quokka-park', name: 'quokka park' }])}`;
   await sql`INSERT INTO harness_shared.audit_log ${sql([
@@ -106,6 +123,24 @@ describe('search:query on BM25', () => {
     const res = await search({ query: 'quokka', kinds: ['tasks'] });
     expect(res.data.map(h => h.id)).toEqual(['h/F-1']);
     expect(res.data[0]!.kindScore).toBeGreaterThan(0);
+  });
+
+  it('interleaves the exact goals list before a small per-kind limit drops a fragment match', async () => {
+    const query = 'species index detail page per species actually running and viewable content accuracy';
+    expect(await lexicalEngine(sql, 'goals')).toBe('bm25');
+    const leg = await bm25LegIfAvailable(sql, 'goals', query);
+    expect(leg).not.toBeNull();
+    const bm25Only = await sql<Array<{ id: string }>>`
+      SELECT id FROM harness_shared.goals
+       WHERE ${leg!.match}
+       ORDER BY ${leg!.order}
+       LIMIT 2
+    `;
+    expect(bm25Only.map((row) => row.id)).not.toContain('g-fragment-target');
+
+    const res = await search({ query, kinds: ['goals'], limit: 2 });
+    expect(res.engines.goals).toBe('bm25');
+    expect(res.data.map((hit) => hit.id)).toContain('g-fragment-target');
   });
 
   it("gives each kind's best hit a top slot, whatever its engine's score scale", async () => {

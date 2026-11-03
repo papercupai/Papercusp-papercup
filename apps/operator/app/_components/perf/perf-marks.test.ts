@@ -12,6 +12,7 @@ import {
   STALE_START_MS,
   beginInteraction,
   endInteraction,
+  endStartupUsable,
   getLatestMeasure,
   clearInteraction,
   markInteractionPhase,
@@ -83,6 +84,88 @@ describe("PERF_INTERACTIONS registry", () => {
       expect(d).toBeGreaterThanOrEqual(0);
       expect(performance.getEntriesByName(name, "measure")).toHaveLength(1);
     }
+  });
+});
+
+describe('native startup to usable content', () => {
+  let measure: ReturnType<typeof vi.fn>;
+  beforeEach(() => {
+    window.sessionStorage.clear();
+    Object.defineProperty(window, '__papercuspStartupOrigin', { configurable: true,
+      value: { startedAtEpochMs: 8000, pid: 42, primaryWindow: true } });
+    window.__papercuspServerConnectionRestored = true;
+    delete window.__papercuspServerConnectionRequired;
+    delete window.__papercuspBootError;
+    measure = vi.fn();
+    vi.stubGlobal('performance', { timeOrigin: 10000, now: () => 250,
+      mark: vi.fn(), measure });
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+    Reflect.deleteProperty(window, '__papercuspStartupOrigin');
+    delete window.__papercuspServerConnectionRestored;
+    delete window.__papercuspServerConnectionRequired;
+    delete window.__papercuspBootError;
+    window.sessionStorage.clear();
+  });
+
+  it('includes native work before navigation and keeps real endpoints', () => {
+    expect(endStartupUsable()).toBe(2250);
+    expect(measure).toHaveBeenCalledWith('startup-usable', {
+      start: 0, duration: 2250,
+      detail: { startedAtEpochMs: 8000, endedAtEpochMs: 10250,
+        pageTimeOrigin: 10000, pid: 42, primaryWindow: true,
+        clock: 'native-entry-epoch', endpoint: 'overview-usable' },
+    });
+    expect(endStartupUsable()).toBeNull();
+    // A new document can lose its timeline; the process latch survives.
+    measure.mockClear();
+    expect(endStartupUsable()).toBeNull();
+    expect(measure).not.toHaveBeenCalled();
+  });
+
+  it('does not report before attachment or while a boot error blocks input', () => {
+    window.__papercuspServerConnectionRestored = false;
+    expect(endStartupUsable()).toBeNull();
+    window.__papercuspServerConnectionRestored = true;
+    window.__papercuspBootError = 'connection lost';
+    expect(endStartupUsable()).toBeNull();
+    delete window.__papercuspBootError;
+    window.__papercuspServerConnectionRequired = 'server unavailable';
+    expect(endStartupUsable()).toBeNull();
+    expect(measure).not.toHaveBeenCalled();
+    delete window.__papercuspServerConnectionRequired;
+    expect(endStartupUsable()).toBe(2250);
+  });
+
+  it.each([
+    undefined,
+    { startedAtEpochMs: 10001, pid: 42, primaryWindow: true },
+    { startedAtEpochMs: 0, pid: 42, primaryWindow: true },
+    { startedAtEpochMs: NaN, pid: 42, primaryWindow: true },
+    { startedAtEpochMs: 8000, pid: 0, primaryWindow: true },
+    { startedAtEpochMs: 8000, pid: 42, primaryWindow: false },
+  ])('keeps missing/invalid/non-primary origin unknown: %j', (origin) => {
+    Object.defineProperty(window, '__papercuspStartupOrigin', { configurable: true, value: origin });
+    expect(endStartupUsable()).toBeNull();
+    expect(measure).not.toHaveBeenCalled();
+  });
+
+  it('does not fall back to another clock when storage is unavailable', () => {
+    // jsdom Storage is an exotic proxy: assigning/spying on a method can
+    // create a storage entry instead of replacing the callable method.
+    vi.spyOn(window, 'sessionStorage', 'get').mockImplementation(() => { throw new Error('blocked'); });
+    expect(() => window.sessionStorage).toThrow('blocked');
+    expect(endStartupUsable()).toBeNull();
+    expect(measure).not.toHaveBeenCalled();
+  });
+
+  it('permits a retry after a failed User Timing write without recording a success', () => {
+    measure.mockImplementationOnce(() => { throw new Error('User Timing unavailable'); });
+    expect(endStartupUsable()).toBeNull();
+    expect(window.sessionStorage.length).toBe(0);
+    expect(endStartupUsable()).toBe(2250);
   });
 });
 

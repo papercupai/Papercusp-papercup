@@ -423,6 +423,12 @@ export interface CorpusAdmissionStats {
   legs: Record<string, unknown> | null;
   /** Execution receipts from every automatic corpus cascade stage. */
   stages?: Record<string, unknown>[];
+  /** Opaque per-search keys joining leg-health fallback observations to this recall. */
+  correlationIds?: string[];
+  /** Bounded source attempts retained when an outer retrieval deadline interrupts a search. */
+  partialSourceCalls?: Record<string, unknown>[];
+  /** True when the bounded partial diagnostics were truncated. */
+  partialSourceCallsTruncated?: boolean;
   retrievalDepth: number;
   /** Whether stage-1 reranking actually ran, rather than merely being enabled. */
   rerank: string;

@@ -11,9 +11,9 @@
  */
 import { randomBytes, randomUUID } from 'node:crypto';
 import { spawn, spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync, chmodSync, appendFileSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, chmodSync, appendFileSync, mkdirSync, writeFileSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
 import { createServer, createConnection } from 'node:net';
@@ -612,6 +612,42 @@ export async function waitForSandboxChild(child, { runtime,
 }
 
 /** Freeze an explicitly pinned source tree before the Documenso providers start. */
+function pathContains(root, candidate) {
+  const rel = relative(root, candidate);
+  return rel === '' || (rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel));
+}
+
+/** Select only roots accepted by scratch-git-clone for an explicit destination. */
+export function selectSandboxSourceScratchRoot({ donor, tempRoot = tmpdir(),
+  platformName = process.platform, dataRoot = '/mnt/data', stat = statSync,
+  realpath = realpathSync, mkdir = mkdirSync } = {}) {
+  const sourceRoot = realpath(donor);
+  const temporaryRoot = realpath(tempRoot);
+  const rootDevice = platformName === 'linux' ? stat('/').dev : undefined;
+  const acceptedExternalRoot = candidate => !pathContains(sourceRoot, candidate) &&
+    (rootDevice === undefined || stat(candidate).dev !== rootDevice);
+  if (acceptedExternalRoot(temporaryRoot)) return temporaryRoot;
+
+  if (platformName === 'linux') {
+    try {
+      const data = realpath(dataRoot);
+      const dataDevice = stat(data).dev;
+      if (dataDevice !== rootDevice) {
+        const dataTemp = join(data, 'tmp');
+        mkdir(dataTemp, { recursive: true });
+        const resolvedDataTemp = realpath(dataTemp);
+        if (stat(resolvedDataTemp).dev === dataDevice && !pathContains(sourceRoot, resolvedDataTemp)) {
+          return resolvedDataTemp;
+        }
+      }
+    } catch (error) {
+      if (error?.code !== 'ENOENT') throw error;
+    }
+  }
+
+  throw new Error('No supported Documenso source scratch root: scratchClone requires an external OS temp filesystem or a separate /mnt/data/tmp mount.');
+}
+
 async function prepareSandboxSource(env = process.env, { signal } = {}) {
   const sourceReceiptPath = env.VERIFY_TAURI_SOURCE_RECEIPT?.trim();
   const sourceRef = env.VERIFY_TAURI_SOURCE_REF?.trim();
@@ -632,7 +668,7 @@ async function prepareSandboxSource(env = process.env, { signal } = {}) {
   }
 
   const donor = resolve(env.PAPERCUSP_REPO_DIR || process.cwd());
-  const scratch = join(donor, '.papercusp', 'scratch');
+  const scratch = selectSandboxSourceScratchRoot({ donor });
   mkdirSync(scratch, { recursive: true });
   const directory = mkdtempSync(join(scratch, 'documenso-sandbox-source-'));
   const sourceRoot = join(directory, 'invoked-source');

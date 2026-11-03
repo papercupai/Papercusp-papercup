@@ -2141,7 +2141,14 @@ try {
 
 const reportedCounts = [];
 const reportedOffsets = [];
+const launcherPids = new Set();
 for (const line of output.split(/\r?\n/)) {
+  if (line.startsWith('TEST_FILE_FINALIZATION ')) {
+    let receipt;
+    try { receipt = JSON.parse(line.slice('TEST_FILE_FINALIZATION '.length)); } catch { continue; }
+    if (receipt.phase === 'provenance-complete' && receipt.status === 'measured'
+      && Number.isSafeInteger(receipt.pid) && receipt.pid > 0) launcherPids.add(receipt.pid);
+  }
   if (line.startsWith('TEST_FILE_CHILD_SUBSTITUTED ')) {
     const count = line.match(/\bcount=(\d+)\b/);
     const malformed = line.match(/\bmalformed=(\d+)\b/);
@@ -2184,7 +2191,35 @@ const launcherPrefix = noticeBytes.subarray(0, childNoticeOffsetBytes);
 const childSuffix = noticeBytes.subarray(childNoticeOffsetBytes);
 const launcherRecords = parseRecords(launcherPrefix);
 const parsedRecords = parseRecords(childSuffix);
+// The byte offset separates startup from later activity, not processes. The
+// governed runner lazily imports its own dependencies after opening the sink.
+// Bind those notices to the runner's existing finalization receipt (or its
+// exact startup notice); entry text alone cannot distinguish a test child.
+for (const record of launcherRecords) {
+  if (record?.schemaVersion === 'committed-source-notice-v1'
+    && record.kind === 'substituted' && record.via === 'esm'
+    && typeof record.top === 'string' && isAbsolute(record.top)
+    && canonical(record.top) === repoRoot && record.rel === 'scripts/test-files.mjs'
+    && record.entry === 'scripts/test-files.mjs'
+    && Number.isSafeInteger(record.pid) && record.pid > 0) launcherPids.add(record.pid);
+}
+if (launcherPids.size > 1) fail('launcher-pid-mismatch');
+const launcherPid = [...launcherPids][0];
 const acceptedLauncherRecords = [];
+function acceptLauncherRecord(record) {
+  if (record.kind !== 'substituted' || record.via !== 'esm'
+    || !isAbsolute(record.top) || canonical(record.top) !== repoRoot
+    || typeof record.rel !== 'string' || isAbsolute(record.rel) || record.rel.includes('\\')
+    || record.entry !== 'scripts/test-files.mjs'
+    || !Number.isSafeInteger(record.pid) || record.pid < 1 || record.pid !== launcherPid) return false;
+  const sourcePath = canonical(resolve(repoRoot, record.rel));
+  if (!within(repoRoot, sourcePath)) fail('notice-path-outside-repository', record);
+  // A launcher import of the intentional mutant is still a substitution,
+  // including a subject reached transitively through a support dependency.
+  if (sourcePath === canonical(subjectInput)) fail('launcher-subject-substituted', record);
+  acceptedLauncherRecords.push(record);
+  return true;
+}
 for (const record of launcherRecords) {
   if (record?.schemaVersion !== 'committed-source-notice-v1'
     || typeof record.rel !== 'string' || typeof record.top !== 'string') {
@@ -2192,18 +2227,9 @@ for (const record of launcherRecords) {
   }
   const top = canonical(record.top);
   if (!within(repoRoot, top)) continue;
-  const exactLauncher = isAbsolute(record.top) && record.kind === 'substituted' && record.via === 'esm'
-    && top === repoRoot && record.rel === 'scripts/test-files.mjs'
-    && record.entry === 'scripts/test-files.mjs'
-    && Number.isSafeInteger(record.pid) && record.pid > 0;
-  if (!exactLauncher) fail('launcher-entry-unverified', record);
-  const sourcePath = canonical(resolve(top, record.rel));
-  const entryPath = canonical(resolve(top, record.entry));
-  if (!within(top, sourcePath) || !within(repoRoot, entryPath)) fail('notice-path-outside-repository', record);
-  if (sourcePath === canonical(subjectInput)) fail('launcher-subject-substituted', record);
-  acceptedLauncherRecords.push(record);
+  if (!acceptLauncherRecord(record)) fail('launcher-entry-unverified', record);
 }
-const records = [];
+const suffixRecords = [];
 for (const record of parsedRecords) {
   if (record?.schemaVersion !== 'committed-source-notice-v1'
     || typeof record.rel !== 'string' || typeof record.top !== 'string') {
@@ -2211,9 +2237,12 @@ for (const record of parsedRecords) {
   }
   // Match test-files.mjs: a test's own external scratch checkout does not
   // describe the source tree measured by this probe.
-  if (within(repoRoot, canonical(record.top))) records.push(record);
+  if (within(repoRoot, canonical(record.top))) suffixRecords.push(record);
 }
-if (reportedCounts.some((count) => count !== records.length)) fail('runner-count-mismatch');
+// test-files reports every notice appended after its cursor, including its own
+// lazy imports. Validate that complete count before separating process roles.
+if (reportedCounts.some((count) => count !== suffixRecords.length)) fail('runner-count-mismatch');
+const records = suffixRecords.filter((record) => !acceptLauncherRecord(record));
 if (records.length === 0) {
   console.error('MUTATION_PROBE_CHILD_SOURCE_NOTICES records=' + acceptedLauncherRecords.length
     + ' gitReaders=0 unclassified=0 launcherNotices=' + acceptedLauncherRecords.length + ' childRecords=0');

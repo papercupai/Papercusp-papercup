@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 994,
+  "count": 995,
   "tools": [
     {
       "name": "ablation:report",
@@ -4637,6 +4637,37 @@
         "when": "You need the gate verdict — green (your change cleared into main) or held/red — before proceeding, instead of re-polling dev:pipeline_position / dev:build_status.",
         "notWhen": "Waiting for the DEPLOY (past the gate, live on :3070) — that is deploy:await. Configuring the gate — release:checkpoint-config. Unsure your commit will be the EXACT judged candidate (a cron tick may race ahead) — omit candidateSha rather than bind to a sha that may never verdict; lineage-check with release:trace on wake.",
         "chaining": "checkpoint:await { candidateSha } → end turn → on wake, payload tells you green (advanced) or red (payload.summary = failing tail) for this pipeline/candidate; resume or go fix the red."
+      }
+    },
+    {
+      "name": "checkpoint:state_snapshot",
+      "http": {
+        "path": "/api/agent-tools/checkpoint/state_snapshot",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Resolver for gate.harnessCheckpoint: recorded checkpoint authority for the authenticated caller harness.",
+      "capabilities": [
+        "intel:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "mug",
+        "documenter",
+        "curator",
+        "release-fixer"
+      ],
+      "guidance": {
+        "when": "As the resolver for state:read { cell:\"gate.harnessCheckpoint\" }.",
+        "notWhen": "To inspect another harness or treat a stored runner as proof of liveness.",
+        "chaining": "Read scoped ownership before a live gate action; verify the exact recorded runner before recovery."
       }
     },
     {

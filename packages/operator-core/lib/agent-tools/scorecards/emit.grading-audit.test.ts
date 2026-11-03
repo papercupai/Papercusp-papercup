@@ -48,6 +48,7 @@ vi.mock('../../rubrics', async (importOriginal) => {
   return {
     ...real,
     getRubric: (...a: unknown[]) => getRubric(...a),
+    getRubricCriteriaHash: async (rubricId: string) => (await getRubric(rubricId))?.criteriaHash ?? null,
     // scorecards:emit now uses the failure-aware writer read; keep this unit
     // suite on the same mocked rubric fixtures instead of falling through to PG.
     readRubric: async (rubricId: string) => {

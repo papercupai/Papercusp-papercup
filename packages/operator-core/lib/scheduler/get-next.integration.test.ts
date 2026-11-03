@@ -1035,7 +1035,7 @@ describe('get_next — fallback ladder (WI-1407): widenPastKind (tier 2) + issue
       .toEqual(['start', 'end']);
   });
 
-  it('tier 3 skips a promoter-held issue even when the spec selects it', async () => {
+  it('tier 3 skips a promoter-held issue deferred on a blocked twin even when the spec selects it', async () => {
     setFlagOverridesForTest({ [FLAGS.SCHEDULER_ISSUES_CLAIMABLE]: true });
     await seedIssue('EI-held-admission', { kind: 'bug', createdTs: 100 });
     await seedIssue('EI-actionable-after-held', { kind: 'bug', createdTs: 200 });
@@ -1044,7 +1044,7 @@ describe('get_next — fallback ladder (WI-1407): widenPastKind (tier 2) + issue
       admissionHold: {
         reason: 'protected-duplicate',
         actor: 'system:work-item-admission-promoter',
-        screeningDeferred: false,
+        screeningDeferred: true,
       },
     };
     await db.sql`UPDATE harness_shared.work_items

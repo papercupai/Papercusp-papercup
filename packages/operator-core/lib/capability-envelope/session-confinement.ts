@@ -92,6 +92,9 @@ export interface SessionToolConfinement {
    * D-050). This narrows the SCRATCH_PLAN_TOOLS a ceiling admits. It never admits a
    * plan verb by itself, and it never reaches the reviewed plan. */
   readonly denyPlansOutside?: ScratchPlanBoundary;
+  /** Explicit recall is confined to the frozen bytes in the exact assignment
+   * checkout. This does not enable automatic ambient injection. */
+  readonly denyMemoryOutside?: { readonly snapshotSha256: string };
   /** Why this session is confined — surfaced verbatim in the refusal. */
   readonly reason: string;
   /** Who imposed it (the launching director/fleet), for audit and for the refusal text. */
@@ -220,6 +223,21 @@ export function validScratchPlanBoundary(value: unknown): value is ScratchPlanBo
     typeof row.scratchPrefix === 'string' && /^(?:blind-review|benchmark)-scratch-[a-z0-9]{6,32}-$/.test(row.scratchPrefix) &&
     typeof row.reviewedSlug === 'string' && /^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/.test(row.reviewedSlug) &&
     typeof row.harness === 'string' && /^[A-Za-z0-9][A-Za-z0-9_-]{0,119}$/.test(row.harness) && row.harness !== 'all';
+}
+
+export function validFrozenMemoryBoundary(value: unknown): value is NonNullable<SessionToolConfinement['denyMemoryOutside']> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const row = value as Record<string, unknown>;
+  return Object.keys(row).length === 1 && typeof row.snapshotSha256 === 'string' && /^[a-f0-9]{64}$/.test(row.snapshotSha256);
+}
+
+function withinFrozenMemoryBoundary(tool: string, args: unknown, harness: string): boolean {
+  if (tool !== 'memory:search' || !args || typeof args !== 'object' || Array.isArray(args)) return false;
+  const row = args as Record<string, unknown>;
+  return Object.keys(row).every(key => ['query', 'limit', 'harness_slug', 'harnessOnly', 'projection', 'payloadTier'].includes(key)) &&
+    typeof row.query === 'string' && row.query.trim().length > 0 && row.query.length <= 500 &&
+    row.harness_slug === harness && row.harnessOnly === true &&
+    (row.limit === undefined || Number.isSafeInteger(row.limit) && Number(row.limit) >= 1 && Number(row.limit) <= 20);
 }
 
 function withinScratchPlanBoundary(tool: string, args: unknown, boundary: ScratchPlanBoundary): boolean {
@@ -400,6 +418,13 @@ export function evaluateSessionConfinement(args: {
     return { allowed: false, applied: true, matchedGlob: 'outside-exact-carry',
       reason: `managed self-compaction must use empty arguments inside the assignment imposed by ${confinement.imposedBy}: ${confinement.reason}` };
   }
+  if (confinement.denyMemoryOutside !== undefined &&
+      (!validFrozenMemoryBoundary(confinement.denyMemoryOutside) || !validWorkItemBoundary(confinement.denyWorkItemsOutside) ||
+       args.purpose !== 'listing' && toDenyMatchKey(toolName).startsWith('memory_') &&
+       !withinFrozenMemoryBoundary(toolName.trim(), args.args, confinement.denyWorkItemsOutside.harness))) {
+    return { allowed: false, applied: true, matchedGlob: 'outside-frozen-memory',
+      reason: `memory recall must use the launch-declared frozen assignment imposed by ${confinement.imposedBy}: ${confinement.reason}` };
+  }
   if (confinement.denyProductReadsOutside !== undefined &&
       (!validProductReadBoundary(confinement.denyProductReadsOutside) ||
        args.purpose !== 'listing' && ['docs:get', 'testing:runs', 'testing:run', 'testing:run-status'].includes(toolName.trim()) &&
@@ -418,7 +443,8 @@ export function evaluateSessionConfinement(args: {
   }
   if (confinement.denyTools.length === 0)
     return confinement.denyOutside === undefined && confinement.denyWorkItemsOutside === undefined &&
-      confinement.denyProductReadsOutside === undefined && confinement.denyPlansOutside === undefined ? UNCONFINED : ALLOWED;
+      confinement.denyProductReadsOutside === undefined && confinement.denyPlansOutside === undefined &&
+      confinement.denyMemoryOutside === undefined ? UNCONFINED : ALLOWED;
 
   const key = toDenyMatchKey(toolName);
   for (const glob of confinement.denyTools) {

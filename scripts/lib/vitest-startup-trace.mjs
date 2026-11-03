@@ -227,6 +227,42 @@ function installNativeProcessTrace(out) {
     } catch { /* Return the exact native child even if observation fails. */ }
     return child;
   };
+  // Synchronous probes bypass spawn's exported wrapper. Retain their call
+  // boundary even when a preload never reaches our node-entry observation.
+  // An absent child entry remains unknown; only the native result supplies
+  // its PID, exit/signal and transport error. Never alter arguments or result.
+  const originalSpawnSync = childProcess.spawnSync;
+  childProcess.spawnSync = function(command, ...args) {
+    const childIdentity = randomUUID(), started = performance.now();
+    try {
+      const argv = Array.isArray(args[0]) ? args[0].slice() : [];
+      const options = (Array.isArray(args[0]) ? args[1] : args[0]) ?? {};
+      emit('child-spawn-sync-start', { childIdentity, command, argv,
+        cwd: options.cwd == null ? process.cwd() : String(options.cwd),
+        shell: options.shell ?? false, timeout: options.timeout ?? null,
+        lifecycle: lifecycle(options.env ?? process.env) });
+    } catch { /* Observation cannot prevent the native call. */ }
+    let result;
+    try { result = originalSpawnSync.call(this, command, ...args); }
+    catch (error) {
+      // A diagnostic must not invoke a user error's getter or replace the
+      // original exception if inspecting it throws (including a Proxy trap).
+      let errorCode = null;
+      try {
+        const descriptor = Object.getOwnPropertyDescriptor(error ?? {}, 'code');
+        if (descriptor && 'value' in descriptor && typeof descriptor.value === 'string') errorCode = descriptor.value;
+      } catch { /* The native thrown value is still authoritative. */ }
+      emit('child-spawn-sync-error', { childIdentity, errorCode,
+        elapsedMs: performance.now() - started });
+      throw error;
+    }
+    try {
+      emit('child-spawn-sync-return', { childIdentity, childPid: result.pid ?? null,
+        code: result.status, signal: result.signal, errorCode: result.error?.code ?? null,
+        elapsedMs: performance.now() - started });
+    } catch { /* Return the exact native result despite observation failure. */ }
+    return result;
+  };
   syncBuiltinESMExports();
 
   // Process entry alone cannot distinguish a loader wait from Vitest startup.

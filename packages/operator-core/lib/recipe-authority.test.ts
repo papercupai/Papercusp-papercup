@@ -100,6 +100,34 @@ describe('recipe recommendation authority (P-008)', () => {
     })).resolves.toMatchObject({ proof: { version: 1 }, refs: { items: ['WI-4655'] } });
   });
 
+  it('keeps filtered lock discovery unbound while exact resource reads stay holder-bound', async () => {
+    const filteredScript = `
+      const resource = 'git-sync:papercusp';
+      const locks = await tools.locks.list({ q: resource, limit: 500 });
+      const registry = locks.registryCount;
+      if (registry?.qApplied !== true || registry?.truncatedByLimit !== false ||
+          registry?.matched !== registry?.returned || registry?.returned !== locks.resources.length) {
+        throw new Error('Filtered lock registry is incomplete.');
+      }
+      const rows = locks.resources.filter(row => row.resource === resource);
+      if (rows.length !== 1) throw new Error('Exact resource row is missing or ambiguous.');
+      return rows[0].held;
+    `;
+    await expect(deriveRecipeAuthority(filteredScript)).resolves.toMatchObject({
+      bound: false,
+      unresolved: false,
+      refs: { resources: [] },
+    });
+
+    await expect(deriveRecipeAuthority(`
+      return await tools.locks.list({ resource: 'git-sync:papercusp' });
+    `)).resolves.toMatchObject({
+      bound: true,
+      unresolved: false,
+      refs: { resources: ['git-sync:papercusp'] },
+    });
+  });
+
   it('fails closed for opaque SQL and dynamic entity arguments', async () => {
     await expect(deriveRecipeAuthority(`await tools.dev.pg_query({ sql: 'SELECT 1' });`)).resolves.toMatchObject({
       unresolved: true,

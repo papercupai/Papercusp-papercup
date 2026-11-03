@@ -1982,16 +1982,17 @@ export function currentBenchSoloCapabilityControl(arm: CurrentBenchmarkProtocol[
   if (arm.control?.topology !== 'solo' || arm.agent !== 'codex')
     throw new Error('Native capability control requires a frozen Codex solo arm.');
   const unsupported = Object.entries(arm.control.capabilities)
-    .filter(([capability, toggle]) => toggle === 'on' && capability !== 'work-item-ledger' && capability !== 'planning')
+    .filter(([capability, toggle]) => toggle === 'on' && !['work-item-ledger', 'planning', 'memory-recall'].includes(capability))
     .map(([capability]) => capability);
   if (unsupported.length)
     throw new Error(`Native capability control is unavailable for: ${unsupported.join(', ')}.`);
   return Object.freeze({ topology: 'solo' as const,
     capabilities: Object.freeze({ ...arm.control.capabilities }),
-    // No managed carry, recall, dispatch, consult or ambient context in this
+    // No managed carry, dispatch, consult or ambient context in this
     // control. Observer ownership remains outside the experimental ceiling.
     toolNames: Object.freeze(['coord:whoami',
       ...(currentBenchLedgerEnabled(arm) ? ['work_items:get', 'work_items:checkpoint', 'work_items:complete'] : []),
+      ...(arm.control.capabilities['memory-recall'] === 'on' ? ['memory:search'] : []),
       ...(arm.control.capabilities.planning === 'on' ? BENCHMARK_SCRATCH_PLAN_TOOLS : [])]),
   });
 }
@@ -2020,7 +2021,8 @@ export function currentBenchLaunchRequest(opts: CurrentSuBenchOptions, handle: B
   if (!arm) throw new Error('Current benchmark launch arm is not in the frozen protocol.');
   return {
     harness: handle.slug, cwd: handle.worktreePath, feature: handle.featureId, workItem: handle.featureId,
-    brief: `${currentBenchTaskInstruction(handle, currentBenchLedgerEnabled(arm), currentBenchPlanningBoundary(opts, handle))}\n\n${problem}${context?.contextText ?? ''}`,
+    brief: `${currentBenchTaskInstruction(handle, currentBenchLedgerEnabled(arm), currentBenchPlanningBoundary(opts, handle))}\n\n${problem}${arm.control?.capabilities['memory-recall'] === 'on'
+      ? `\nFor explicit recall of the frozen memory snapshot, use memory:search with harness_slug=${handle.slug}, harnessOnly=true and your query. Retrieval is local lexical matching; ambient workspace memory is withheld.` : ''}${context?.contextText ?? ''}`,
     independent: true, headless: true, count: 1, mcpTarget: 'spawn-host',
     // No human is present at this bounded assignment's console. Independent
     // launches have no fleet AUTO default; register it explicitly at bootstrap.
@@ -3371,6 +3373,8 @@ export function liveCurrentSuBenchPorts(
           ? ['coord:whoami', 'session:request-compaction', 'work_items:get', 'work_items:checkpoint', 'work_items:complete']
           : ['coord:whoami', 'session:request-compaction']),
         denyAmbientContext: true as const,
+        ...(control?.capabilities['memory-recall'] === 'on'
+          ? { denyMemoryOutside: Object.freeze({ snapshotSha256: input.context.memoryHash }) } : {}),
         ...(planning ? { denyPlansOutside: planning } : {}),
         // Observer ownership/authorization is identical in both arms; the
         // experimental tool ceiling cannot widen this exact-item boundary.

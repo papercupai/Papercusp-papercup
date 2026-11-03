@@ -145,6 +145,7 @@ import AdvOverviewTab from './AdvOverviewTab';
 import type { AttentionItem, PlanListRow } from '@/app/admin/plans/plans-api';
 import { advRosterArgs } from '@/lib/adv-roster-args';
 import { configureOperatorUi } from '@papercusp/operator-ui/seam';
+import * as perfMarks from '@/app/_components/perf/perf-marks';
 import { ADV_TAB_SURFACE_KINDS } from '@papercusp/operator-ui/adv-navigation';
 
 const plan = (over: Partial<PlanListRow>): PlanListRow =>
@@ -248,6 +249,62 @@ describe('AdvOverviewTab component', () => {
     configureOperatorUi({ advNavigation: undefined });
     cleanup();
     vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  const makeStartupContentReady = () => {
+    healthResult = { data: [], loading: false };
+    readinessResult = { data: [], loading: false };
+    pipelineResult = { data: [], loading: false };
+    spendResult = { data: [], loading: false };
+  };
+
+  it('ends startup only after the last primary data state has committed', () => {
+    const end = vi.spyOn(perfMarks, 'endStartupUsable').mockImplementation(() => {
+      expect(document.querySelector('.pc-overview')).toBeTruthy();
+      expect(screen.getByText('No active plans')).toBeTruthy();
+      return null;
+    });
+    const view = render(<AdvOverviewTab />);
+    expect(end).not.toHaveBeenCalled();
+    makeStartupContentReady();
+    activityResult = { data: undefined, loading: true };
+    view.rerender(<AdvOverviewTab />);
+    expect(end).not.toHaveBeenCalled();
+    activityResult = { data: [], loading: false };
+    view.rerender(<AdvOverviewTab />);
+    expect(end).toHaveBeenCalledTimes(1);
+    view.rerender(<AdvOverviewTab />);
+    expect(end).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not count a failed read, unresolved scope, or hidden Overview as usable', () => {
+    const end = vi.spyOn(perfMarks, 'endStartupUsable').mockReturnValue(null);
+    makeStartupContentReady();
+    planListResult.error = 'read failed';
+    const view = render(<AdvOverviewTab />);
+    expect(end).not.toHaveBeenCalled();
+    planListResult.error = null;
+    advScope.ready = false;
+    view.rerender(<AdvOverviewTab />);
+    expect(end).not.toHaveBeenCalled();
+    advScope.ready = true;
+    nuqsState.tab = 'harnesses';
+    view.rerender(<AdvOverviewTab />);
+    expect(end).not.toHaveBeenCalled();
+  });
+
+  it('retries cached committed content on native attach and removes its listener on unmount', () => {
+    const end = vi.spyOn(perfMarks, 'endStartupUsable').mockReturnValue(null);
+    makeStartupContentReady();
+    rosterResult.loading = true; // valid cached rows remain usable
+    const view = render(<AdvOverviewTab />);
+    expect(end).toHaveBeenCalledTimes(1);
+    window.dispatchEvent(new Event('papercusp:server-connection-restored'));
+    expect(end).toHaveBeenCalledTimes(2);
+    view.unmount();
+    window.dispatchEvent(new Event('papercusp:server-connection-restored'));
+    expect(end).toHaveBeenCalledTimes(2);
   });
 
   it('renders the ten tiles, the top-bar rate control, and the empty states', async () => {

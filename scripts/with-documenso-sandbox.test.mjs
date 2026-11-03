@@ -6,7 +6,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync, writeFileSync, readFileSync, mkdirSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { parseSandboxArgs, loopbackPort, sandboxEnvironment, runSandbox, dockerAllocation, dockerAllocationScope, startDockerAllocationOwner, startSandboxContainer, prepareSandboxImages, waitForSandboxPostgres, registerSandboxReaper, startSandboxReaper, cleanupSandboxResources, waitForSandboxChild, sandboxProviderFailureSignals } from './with-documenso-sandbox.mjs';
+import { parseSandboxArgs, loopbackPort, sandboxEnvironment, runSandbox, dockerAllocation, dockerAllocationScope, startDockerAllocationOwner, startSandboxContainer, prepareSandboxImages, waitForSandboxPostgres, registerSandboxReaper, startSandboxReaper, cleanupSandboxResources, waitForSandboxChild, sandboxProviderFailureSignals, selectSandboxSourceScratchRoot } from './with-documenso-sandbox.mjs';
 
 const failureRuntime = { container: 'owned-app', network: 'owned', appUrl: 'http://127.0.0.1:32123', mailUrl: 'http://127.0.0.1:32124' };
 
@@ -290,6 +290,26 @@ test('pinned source receipt preparation precedes providers and is required by th
     'the native bootstrap must fail closed instead of freezing after providers have started');
   assert.match(daoBootstrap, /env\.VERIFY_TAURI_SOURCE_INPUTS\s*=\s*NATIVE_SOURCE_INPUTS\.join\(','\)/,
     'native verifier inputs must use the comma delimiter accepted by verifier-inputs-check');
+});
+
+test('source snapshots avoid a split-mounted repository scratch root and use supported external scratch', () => {
+  const devices = new Map([['/', 1], ['/repo', 2], ['/tmp', 3]]);
+  assert.equal(selectSandboxSourceScratchRoot({ donor: '/repo', tempRoot: '/tmp',
+    platformName: 'linux', realpath: path => path,
+    stat: path => ({ dev: devices.get(path) }),
+    mkdir: () => assert.fail('the separate OS temp root should be selected') }), '/tmp');
+
+  const fallbackDevices = new Map([['/', 1], ['/repo', 2], ['/tmp', 1], ['/mnt/data', 4]]);
+  const made = [];
+  assert.equal(selectSandboxSourceScratchRoot({ donor: '/repo', tempRoot: '/tmp',
+    platformName: 'linux', dataRoot: '/mnt/data', realpath: path => path,
+    stat: path => ({ dev: fallbackDevices.get(path) }),
+    mkdir: path => { made.push(path); fallbackDevices.set(path, 4); } }), '/mnt/data/tmp');
+  assert.deepEqual(made, ['/mnt/data/tmp']);
+
+  assert.throws(() => selectSandboxSourceScratchRoot({ donor: '/repo', tempRoot: '/tmp',
+    platformName: 'linux', dataRoot: '/mnt/data', realpath: path => path,
+    stat: () => ({ dev: 1 }), mkdir: () => {} }), /No supported Documenso source scratch root/);
 });
 
 test('pinned verifier preparation seeds the gitignored Porcupine model through the committed source helper', () => {

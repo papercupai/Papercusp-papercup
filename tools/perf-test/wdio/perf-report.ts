@@ -238,6 +238,40 @@ export interface PerfMeasure {
   invariant?: boolean;
 }
 
+export interface NativeStartupReading {
+  origin: { startedAtEpochMs: number; pid: number; primaryWindow: boolean } | null;
+  entries: Array<{ duration: number; detail: unknown }>;
+  capturedAtEpochMs: number;
+  overview: boolean;
+  connectionReady: boolean;
+}
+
+/** Validate the producer's complete native span, not synthetic startTime=0.
+ * The session boundary only rejects a long-lived process; duration comes
+ * entirely from the in-app measurement and its real endpoints.
+ */
+export function nativeStartupDuration(reading: NativeStartupReading, sessionStartedAtMs: number): number | null {
+  const origin = reading.origin;
+  if (!reading.overview || !reading.connectionReady || !origin || origin.primaryWindow !== true ||
+      !Number.isSafeInteger(origin.pid) || origin.pid <= 0 ||
+      !Number.isSafeInteger(origin.startedAtEpochMs) ||
+      !Number.isSafeInteger(sessionStartedAtMs) || sessionStartedAtMs <= 0 ||
+      origin.startedAtEpochMs < sessionStartedAtMs || reading.entries.length !== 1) return null;
+  const entry = reading.entries[0];
+  const detail = entry.detail as Record<string, unknown> | null;
+  if (!detail || detail.clock !== 'native-entry-epoch' || detail.endpoint !== 'overview-usable' ||
+      detail.primaryWindow !== true || detail.pid !== origin.pid ||
+      detail.startedAtEpochMs !== origin.startedAtEpochMs ||
+      typeof detail.pageTimeOrigin !== 'number' || !Number.isFinite(detail.pageTimeOrigin) ||
+      detail.pageTimeOrigin < origin.startedAtEpochMs ||
+      typeof detail.endedAtEpochMs !== 'number' || !Number.isFinite(detail.endedAtEpochMs) ||
+      detail.endedAtEpochMs < detail.pageTimeOrigin ||
+      !Number.isFinite(reading.capturedAtEpochMs) || detail.endedAtEpochMs > reading.capturedAtEpochMs ||
+      !Number.isFinite(entry.duration) || entry.duration < 0 ||
+      Math.abs(entry.duration - (detail.endedAtEpochMs - origin.startedAtEpochMs)) > 0.01) return null;
+  return Math.round(entry.duration);
+}
+
 const RESULTS_DIR = path.resolve(__dirname, "results");
 
 // The launcher initializes this BEFORE forking spec workers; workers inherit its

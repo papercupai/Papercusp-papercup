@@ -1254,7 +1254,7 @@ describe('recoverable interactive feedback requests', () => {
   });
 
   it.each(['embed-unavailable', 'evidence-unavailable', undefined] as const)(
-    'preserves the recorded routing outcome on retry instead of inferring it from lifecycle state (%s)', async (degraded) => {
+    'retains measured outcomes and preserves unmeasured history through explicit retry (%s)', async (degraded) => {
       const fixture = makeDeps(routeOf([], { degraded }));
       const request = { ...baseReq, requestKey: `recoverable-result-${degraded ?? 'measured'}`, minResponders: 0 };
       const accepted = await acceptFeedbackRequestCore(request, fixture.deps);
@@ -1263,18 +1263,176 @@ describe('recoverable interactive feedback requests', () => {
         getSql: () => rootSql, now: () => NOW,
         execute: (payload, context) => getFeedbackCore(payload, { ...fixture.deps, acceptedRequest: context }),
       });
+      const stored = await stateRow(accepted.conversation_id);
+      const previous = (stored.routing as { request: { result: GetFeedbackResult } }).request.result;
+      expect(previous).toMatchObject({
+        state: 'no_qualified_responder', verdict: degraded ? 'relevance_unmeasured' : 'no_qualified_responder',
+        reason: degraded === 'embed-unavailable' ? 'embed_unavailable'
+          : degraded === 'evidence-unavailable' ? 'evidence_unavailable' : 'below_floor' });
       const retry = await acceptFeedbackRequestCore(request, fixture.deps);
       if ('error' in retry) throw new Error(retry.error);
-      expect(retry).toMatchObject({ conversation_id: accepted.conversation_id, pending: false,
-        state: 'no_qualified_responder', result: { verdict: degraded ? 'relevance_unmeasured' : 'no_qualified_responder',
-          reason: degraded === 'embed-unavailable' ? 'embed_unavailable'
-            : degraded === 'evidence-unavailable' ? 'evidence_unavailable' : 'below_floor' } });
-      if (degraded === 'evidence-unavailable') expect(retry.hint).toContain('does not prove no expert exists');
-      expect((await stateRow(accepted.conversation_id)).routing).toMatchObject({ request: { result: retry.result } });
+      expect(retry).toMatchObject({ conversation_id: accepted.conversation_id,
+        pending: Boolean(degraded), state: degraded ? 'routing' : 'no_qualified_responder' });
+      if (degraded) {
+        expect(retry).not.toHaveProperty('result');
+        expect((await stateRow(accepted.conversation_id)).routing).toMatchObject({ request: {
+          payload: request, recoveryHistory: [{ at: NOW.toISOString(), result: previous }],
+        } });
+        // Still unavailable is another honest outcome, never a launch or an
+        // automatic retry loop. A later attempt requires another requester call.
+        expect(await continueFeedbackRequestCore(WS, accepted.conversation_id, {
+          getSql: () => rootSql, now: () => NOW,
+          execute: (payload, context) => getFeedbackCore(payload, { ...fixture.deps, acceptedRequest: context }),
+        })).toBe(true);
+        expect((await stateRow(accepted.conversation_id)).routing).toMatchObject({ request: {
+          result: previous, recoveryHistory: [{ result: previous }],
+        } });
+      } else expect(retry.result).toEqual(previous);
+      expect(await continueFeedbackRequestCore(WS, accepted.conversation_id, {
+        getSql: () => rootSql, execute: async () => { throw new Error('no automatic reroute'); },
+      })).toBe(false);
+      expect(fixture.routeCalls).toHaveLength(degraded ? 2 : 1);
+      expect(fixture.reached).toHaveLength(0);
+    },
+  );
+
+  it.each(['embed-unavailable', 'evidence-unavailable'] as const)(
+    'recovers the same unmeasured request once under concurrent retries (%s)', async (degraded) => {
+      const fixture = makeDeps(routeOf([], { degraded }));
+      const request = { ...baseReq, requestKey: `unmeasured-concurrent-${degraded}` };
+      const accepted = await acceptFeedbackRequestCore(request, fixture.deps);
+      const run = (execute: Parameters<typeof continueFeedbackRequestCore>[2]['execute']) =>
+        continueFeedbackRequestCore(WS, accepted.conversation_id, { getSql: () => rootSql, now: () => NOW, execute });
+      await run((payload, context) => getFeedbackCore(payload, { ...fixture.deps, acceptedRequest: context }));
+      const previous = (await stateRow(accepted.conversation_id)).routing;
+      expect(await acceptFeedbackRequestCore({ ...request, excludeOwners: ['changed-payload'] }, fixture.deps))
+        .toMatchObject({ error: 'request_key_conflict' });
+      expect((await stateRow(accepted.conversation_id)).routing).toEqual(previous);
+      const retries = await Promise.all([
+        acceptFeedbackRequestCore(request, fixture.deps), acceptFeedbackRequestCore(request, fixture.deps),
+      ]);
+      for (const retry of retries) expect(retry).toMatchObject({ conversation_id: accepted.conversation_id,
+        request_key: request.requestKey, state: 'routing', pending: true });
+      const history = (await stateRow(accepted.conversation_id)).routing as {
+        request: { recoveryHistory: Array<{ result: GetFeedbackResult }> };
+      };
+      expect(history.request.recoveryHistory).toHaveLength(1);
+      expect(history.request.recoveryHistory[0].result.verdict).toBe('relevance_unmeasured');
+      const recovered = makeDeps(routeOf([cand('recovered-qualified-expert')]));
+      let release!: () => void;
+      let entered!: () => void;
+      const barrier = new Promise<void>(resolve => { release = resolve; });
+      const started = new Promise<void>(resolve => { entered = resolve; });
+      const execute = vi.fn(async (payload: GetFeedbackRequest, context: NonNullable<GetFeedbackDeps['acceptedRequest']>) => {
+        entered(); await barrier;
+        return getFeedbackCore(payload, { ...recovered.deps, acceptedRequest: context });
+      });
+      const first = run(execute);
+      await started;
+      const contender = await run(execute);
+      release();
+      expect(await first).toBe(true);
+      expect(contender).toBe(false);
+      expect(execute).toHaveBeenCalledTimes(1);
+      expect(recovered.reached).toHaveLength(1);
+      expect(recovered.opened).toHaveLength(0);
+      expect(await acceptFeedbackRequestCore(request, fixture.deps)).toMatchObject({
+        conversation_id: accepted.conversation_id, state: 'awaiting_responder', pending: false,
+        result: { verdict: 'routed' },
+      });
+      expect((await stateRow(accepted.conversation_id)).routing).toMatchObject({ request: {
+        payload: request, recoveryHistory: history.request.recoveryHistory,
+      } });
+    },
+  );
+
+  it.each(['selected', 'responder', 'dispatch-attempt', 'pending-dispatch', 'wake', 'exchange',
+    'cascade', 'closed', 'closed-conversation', 'reply', 'retrieval-only', 'unexpired-lease',
+    'result-dispatch', 'result-wake', 'missing-selection'] as const)(
+    'does not rearm an unmeasured request with a %s fence', async (fence) => {
+      const fixture = makeDeps(routeOf([], { degraded: 'embed-unavailable' }));
+      const request = { ...baseReq, requestKey: `unmeasured-fence-${fence}`,
+        ...(fence === 'retrieval-only' ? { allowDispatch: false } : {}) };
+      const accepted = await acceptFeedbackRequestCore(request, fixture.deps);
+      await continueFeedbackRequestCore(WS, accepted.conversation_id, { getSql: () => rootSql, now: () => NOW,
+        execute: (payload, context) => getFeedbackCore(payload, { ...fixture.deps, acceptedRequest: context }),
+      });
+      const patch = fence === 'selected' ? { selection: { selected: [{ ownerId: 'possibly-launched' }] } }
+        : fence === 'pending-dispatch' ? { cascadeDispatch: { state: 'pending' } } : {};
+      await rootSql`UPDATE harness_shared.consult_state SET
+        routing = routing || ${rootSql.json(patch)},
+        responder_id = ${fence === 'responder' ? 'reserved-owner' : null},
+        dispatch_attempts = ${rootSql.json(fence === 'dispatch-attempt' ? [{ dispatched: false, attempts: [] }] : [])},
+        wakes_used = ${fence === 'wake' ? 1 : 0}, exchanges_used = ${fence === 'exchange' ? 1 : 0},
+        cascade_digest = ${rootSql.json(fence === 'cascade' ? [{ ownerId: 'old-owner', kind: 'expired' }] : [])},
+        closed_at = ${fence === 'closed' ? NOW.toISOString() : null}::timestamptz
+        WHERE workspace_id = ${WS} AND conversation_id = ${accepted.conversation_id}`;
+      if (fence === 'unexpired-lease') await rootSql`UPDATE harness_shared.consult_state
+        SET routing = jsonb_set(routing, '{request,leaseUntil}',
+          ${rootSql.json(new Date(NOW.getTime() + 60_000).toISOString())})
+        WHERE workspace_id = ${WS} AND conversation_id = ${accepted.conversation_id}`;
+      if (fence === 'result-dispatch' || fence === 'result-wake') await rootSql`UPDATE harness_shared.consult_state
+        SET routing = jsonb_set(routing, '{request,result}', (routing #> '{request,result}') ||
+          ${rootSql.json(fence === 'result-dispatch' ? { dispatch: { answeringOwnerId: 'reserved-owner' } }
+            : { wake: { attempted: true, queued: 0, woke: 0 } })})
+        WHERE workspace_id = ${WS} AND conversation_id = ${accepted.conversation_id}`;
+      if (fence === 'missing-selection') await rootSql`UPDATE harness_shared.consult_state
+        SET routing = routing - 'selection'
+        WHERE workspace_id = ${WS} AND conversation_id = ${accepted.conversation_id}`;
+      if (fence === 'reply') await rootSql`INSERT INTO harness_shared.consult_post_meta
+        (workspace_id, post_id, conversation_id, author_id, kind)
+        VALUES (${WS}, 990201, ${accepted.conversation_id}, 'prior-answer', 'answer')`;
+      if (fence === 'closed-conversation') await rootSql`INSERT INTO harness_shared.coord_conversations
+        (workspace_id, id, state) VALUES (${WS}, ${accepted.conversation_id}, 'closed')`;
+      const before = await stateRow(accepted.conversation_id);
+      expect(await acceptFeedbackRequestCore(request, fixture.deps)).toMatchObject({
+        conversation_id: accepted.conversation_id, state: 'no_qualified_responder', pending: false,
+      });
+      expect(await stateRow(accepted.conversation_id)).toEqual(before);
+      expect(await continueFeedbackRequestCore(WS, accepted.conversation_id, {
+        getSql: () => rootSql, execute: async () => { throw new Error('fenced request executed'); },
+      })).toBe(false);
       expect(fixture.routeCalls).toHaveLength(1);
       expect(fixture.reached).toHaveLength(0);
     },
   );
+
+  it('recomputes bar-critique independence from the saved payload after instrument recovery', async () => {
+    const planSlug = `unmeasured-critique-${randomBytes(5).toString('hex')}`;
+    await rootSql`INSERT INTO harness_shared.harness_plans (workspace_id, harness_slug, plan_slug)
+      VALUES (${WS}, 'papercusp', ${planSlug})`;
+    const fixture = makeDeps(routeOf([], { degraded: 'embed-unavailable' }));
+    const request = { ...baseReq, requestKey: planSlug, policy: 'bar-critique', originTaskRef: planSlug,
+      harnessSlug: 'papercusp', excludeOwners: ['explicitly-excluded'], maxResponders: 1 };
+    const accepted = await acceptFeedbackRequestCore(request, fixture.deps);
+    await continueFeedbackRequestCore(WS, accepted.conversation_id, { getSql: () => rootSql, now: () => NOW,
+      execute: (payload, context) => getFeedbackCore(payload, { ...fixture.deps, acceptedRequest: context }),
+    });
+    // The first critic finishes while the second request's instrument is down.
+    const priorId = `first-${planSlug}`;
+    await rootSql`INSERT INTO harness_shared.consult_state
+      (workspace_id, conversation_id, requester_id, responder_id, state, question, origin_task_ref, routing, closed_at)
+      VALUES (${WS}, ${priorId}, 'first-requester', 'first-source', 'closed_answered', 'first critique',
+        ${planSlug}, ${rootSql.json({ policy: 'bar-critique' })}, ${NOW.toISOString()}::timestamptz)`;
+    await rootSql`INSERT INTO harness_shared.consult_post_meta (workspace_id, post_id, conversation_id, author_id, kind)
+      VALUES (${WS}, 990202, ${priorId}, 'first-answerer', 'answer')`;
+    const recovered = makeDeps(routeOf([cand('first-source'), cand('first-answerer'),
+      cand('same-first-party'), cand('explicitly-excluded'), cand('distinct-qualified-critic')]));
+    recovered.deps.getPartyKeys = async (_workspace, owners) => new Map(owners.map(owner =>
+      [owner, ['first-source', 'first-answerer', 'same-first-party'].includes(owner) ? 'first-party' : owner]));
+    expect(await acceptFeedbackRequestCore(request, fixture.deps)).toMatchObject({ state: 'routing' });
+    await continueFeedbackRequestCore(WS, accepted.conversation_id, { getSql: () => rootSql, now: () => NOW,
+      execute: (payload, context) => getFeedbackCore(payload, { ...recovered.deps, acceptedRequest: context }),
+    });
+    expect(recovered.routeCalls[0]).toMatchObject({
+      excludeOwners: expect.arrayContaining(['explicitly-excluded']),
+      excludePartyOwners: expect.arrayContaining(['first-source', 'first-answerer']),
+    });
+    expect(recovered.reached.map(call => call.responder)).toEqual(['distinct-qualified-critic']);
+    expect((await stateRow(accepted.conversation_id)).routing).toMatchObject({ policy: 'bar-critique', request: {
+      key: request.requestKey, payload: request, result: { verdict: 'routed' },
+    } });
+  });
 
   it.each(['terminal', 'refill-launched', 'refill-exhausted'] as const)(
     'retains accepted request identity and outcome through initial cascade %s', async (scenario) => {

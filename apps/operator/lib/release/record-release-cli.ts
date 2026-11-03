@@ -40,7 +40,7 @@ import {
   type OwnerDirectiveRow,
 } from '@papercusp/operator-core/lib/owner-directives';
 import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
-import { getHarnessAdminUrl } from '@papercusp/operator-core/lib/embedded-pg-discovery';
+import { getHarnessAdminUrlWithSource } from '@papercusp/operator-core/lib/embedded-pg-discovery';
 import { operatorHomeHarnessSlug } from '@papercusp/operator-core/lib/harness/operator-home-harness';
 import { POSTHOG_PUBLIC_DEFAULTS } from '@papercusp/operator-core/lib/posthog-public-defaults';
 import {
@@ -1355,6 +1355,55 @@ export const FULL_SITE_SCOPE: SiteScope = {
   reason: null,
 };
 
+function assertEmptyRegistryDoesNotEraseHistory(
+  registryRows: readonly unknown[],
+  outDir: string,
+  siteScope: SiteScope,
+  registrySource: string,
+): void {
+  // A reachable but foreign Postgres can return a valid empty result. Use the
+  // previously published feed as a local cross-check before replacing it.
+  if (!siteScope.surfaces.has('index') || registryRows.length > 0) return;
+
+  const historyPath = path.join(outDir, 'history.json');
+  let rawHistory: string;
+  try {
+    rawHistory = fs.readFileSync(historyPath, 'utf8');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
+    throw error;
+  }
+  if (!rawHistory.trim()) return;
+
+  const refusal =
+    '[record-release] REFUSING TO REPLACE existing release history: registry source=' +
+    registrySource +
+    ' returned no release rows; ';
+  let releases: unknown;
+  try {
+    const parsed = JSON.parse(rawHistory) as { releases?: unknown } | null;
+    releases = parsed && typeof parsed === 'object' ? parsed.releases : undefined;
+  } catch {
+    throw new Error(
+      refusal +
+        'existing history.json is not valid JSON. Verify the registry target before retrying.',
+    );
+  }
+  if (!Array.isArray(releases)) {
+    throw new Error(
+      refusal +
+        'existing history.json has no readable releases array. Verify the registry target before retrying.',
+    );
+  }
+  if (releases.length === 0) return;
+  throw new Error(
+    refusal +
+      'existing history.json contains ' +
+      releases.length +
+      ' release(s). Verify the registry target before retrying.',
+  );
+}
+
 /**
  * `--only <surface,…> --reason "<why>"` — the generic force (owner #821, 2026-09-28: "there
  * should be a generic force feature that agents can use when they judge appropriate").
@@ -1396,6 +1445,7 @@ export async function generateSite(
   scope: Scope,
   outDir: string,
   siteScope: SiteScope = FULL_SITE_SCOPE,
+  registrySource = 'unknown',
 ): Promise<{ pages: number; written: number; unchanged: number }> {
   assertPublicDesktopInterface();
   const want = (surface: SiteSurface) => siteScope.surfaces.has(surface);
@@ -1439,7 +1489,9 @@ export async function generateSite(
 
   // Every surface but `assets` renders registry content; an assets-only force skips the reads.
   const needsRegistry = [...siteScope.surfaces].some((surface) => surface !== 'assets');
-  const rows = needsRegistry ? releasesToRender(await listReleases(sql, scope.workspaceId), siteScope) : [];
+  const registryRows = needsRegistry ? await listReleases(sql, scope.workspaceId) : [];
+  assertEmptyRegistryDoesNotEraseHistory(registryRows, outDir, siteScope, registrySource);
+  const rows = releasesToRender(registryRows, siteScope);
   // Historical published rows may predate interface provenance. New cuts are
   // validated by scanArtifacts; an explicitly marked candidate never renders.
   for (const row of rows) {
@@ -1562,6 +1614,12 @@ export async function auditScopedRegenerate(
   );
 }
 
+function openReleaseRegistrySql(): { sql: postgres.Sql; source: string } {
+  const resolved = getHarnessAdminUrlWithSource();
+  console.log('[record-release] registry database source=' + resolved.source);
+  return { sql: postgres(resolved.url, { max: 1 }), source: resolved.source };
+}
+
 export async function run(opts: RecordOpts): Promise<number> {
   assertPublicDesktopInterface();
   // Check before opening Postgres or scanning multi-gigabyte artifact roots. A
@@ -1578,10 +1636,12 @@ export async function run(opts: RecordOpts): Promise<number> {
   // --scan-mobile path. The registry is workspace-level, so harness filtering
   // cannot isolate a foreign product once this function records the row.
   assertPapercuspMobileProductName(opts.mobileProductName);
-  const sql = postgres(getHarnessAdminUrl(), { max: 1 });
+  const { sql, source: registrySource } = openReleaseRegistrySql();
   try {
     const tag = releaseTag(opts.version, opts.channel);
-    const priorReleases = await listReleases(sql, opts.scope.workspaceId, opts.channel);
+    const registryRows = await listReleases(sql, opts.scope.workspaceId);
+    assertEmptyRegistryDoesNotEraseHistory(registryRows, opts.outDir, FULL_SITE_SCOPE, registrySource);
+    const priorReleases = registryRows.filter((release) => release.channel === opts.channel);
     const reRecordingExistingVersion = priorReleases.some((release) => release.version === opts.version);
 
     const prev = await previousCutAt(
@@ -1778,7 +1838,7 @@ export async function run(opts: RecordOpts): Promise<number> {
     await recordRelease(sql, opts.scope.workspaceId, row);
     console.log('[record-release] recorded.');
 
-    const { pages } = await generateSite(sql, opts.scope, opts.outDir);
+    const { pages } = await generateSite(sql, opts.scope, opts.outDir, FULL_SITE_SCOPE, registrySource);
     console.log(`[record-release] generated ${pages} page(s) → ${opts.outDir}`);
     console.log('[record-release] publish with: papercusp-desktop/bin/publish-release-history.sh');
     return 0;
@@ -1845,7 +1905,7 @@ export async function regenerateOnly(
     return 1;
   }
 
-  const sql = postgres(getHarnessAdminUrl(), { max: 1 });
+  const { sql, source: registrySource } = openReleaseRegistrySql();
   try {
     if (siteScope.forced) {
       const surfaces = [...siteScope.surfaces].join(', ');
@@ -1856,7 +1916,7 @@ export async function regenerateOnly(
       );
       await auditScopedRegenerate(sql, scope, siteScope);
     }
-    const { pages, written, unchanged } = await generateSite(sql, scope, outDir, siteScope);
+    const { pages, written, unchanged } = await generateSite(sql, scope, outDir, siteScope, registrySource);
     console.log(
       `[record-release] regenerated ${pages} page(s) → ${outDir}  (registry untouched; ` +
         `${written} file(s) changed, ${unchanged} unchanged)`,

@@ -574,7 +574,17 @@ export function gradingAuditorLaunchCtx(ctx: GradingAuditLaunchContext): Grading
   } as never;
 }
 
-export type PendingGradingAuditDispatchState = 'routed' | 'launched' | 'deduped' | 'skipped' | 'failed';
+export type PendingGradingAuditDispatchState =
+  | 'routed'
+  | 'launched'
+  | 'deduped'
+  | 'reconciliation-required'
+  | 'skipped'
+  | 'failed';
+
+function isEmptyLaunchEvidenceRecord(value: unknown): boolean {
+  return typeof value === 'object' && value !== null && !Array.isArray(value) && Object.keys(value).length === 0;
+}
 
 /**
  * The dispatcher performs several independent DB-backed and process-backed phases for one
@@ -2891,13 +2901,13 @@ export async function dispatchPendingGradingAudits(
           ...reservationOptions, allowRecoveredQuotaBackoff: true,
         });
       }
-      // Targeted repair must reach an auditor's proven terminal provider error
-      // even while its original dispatch lease is fresh. Reuse the native
-      // identity proof; a healthy/unreadable peer or an incomplete scan keeps
-      // the lease. The exact timestamp CAS fences concurrent lease renewals.
+      // Targeted repair and periodic sweeps must both recover an auditor's
+      // proven terminal provider error while its dispatch lease is fresh.
+      // Reuse the native identity proof; a healthy/unreadable peer or an
+      // incomplete scan keeps the lease. The timestamp CAS fences renewals.
       const heldReservation = card.gradingAudit?.dispatchReservation;
-      if (reservation.status === 'already-reserved' && explicitTargetIds.includes(issueId) &&
-          heldReservation?.key === idempotencyKey && heldReservation.reservedAt) {
+      if (reservation.status === 'already-reserved' && heldReservation?.key === idempotencyKey &&
+          heldReservation.reservedAt) {
         const cleanup = await retireProvenTerminalAuditTasks(issueId);
         retiredTaskIds.push(...cleanup.retiredTaskIds);
         terminalCodes.push(...cleanup.codes);
@@ -3493,6 +3503,14 @@ export async function dispatchPendingGradingAudits(
         const launchData = result.data?.launch as
           | (NativeTranscriptLaunchReceipt & {
               agentStarted?: boolean | null;
+              launchState?: unknown;
+              status?: unknown;
+              reconciliationRequired?: unknown;
+              spawnAttempted?: unknown;
+              nativeSpawnAttempted?: unknown;
+              ownerIds?: unknown;
+              processHandles?: unknown;
+              memberResults?: unknown;
             })
           | undefined;
         const launchedTask = launchTaskForKickoffRecovery(launchData);
@@ -3645,6 +3663,47 @@ export async function dispatchPendingGradingAudits(
           launchBackend = await terminalRetryBackend(nativeProof?.nativeBackend ?? launchBackend, launchBackend);
           currentIdempotencyKey = recoveryKeyFor(taskId, terminalFailure.code);
           continue;
+        }
+
+        // A duplicate launch with no task id is not a settled dedupe when the
+        // launcher explicitly says its prior attempt needs reconciliation.
+        // Keep the scorecard lease and idempotency key fenced, and return the
+        // exact spawn evidence so callers can distinguish a safe pre-spawn
+        // retry from a possible orphaned process.
+        const incompleteDuplicateLaunch =
+          result.data?.deduped === true &&
+          !taskId &&
+          (launchData?.reconciliationRequired === true || launchData?.status === 'reconciliation-required');
+        if (incompleteDuplicateLaunch && launchData) {
+          const preSpawnProven =
+            launchData.spawnAttempted === false &&
+            Array.isArray(launchData.nativeSpawnAttempted) &&
+            launchData.nativeSpawnAttempted.length === 0 &&
+            isEmptyLaunchEvidenceRecord(launchData.processHandles) &&
+            isEmptyLaunchEvidenceRecord(launchData.memberResults);
+          const targetOwnerIds = Array.isArray(launchData.ownerIds)
+            ? launchData.ownerIds.filter(
+                (ownerId): ownerId is string => typeof ownerId === 'string' && Boolean(ownerId.trim()),
+              ).map(ownerId => ownerId.trim())
+            : [];
+          const ownerEvidence = targetOwnerIds.length
+            ? ' targetOwnerIds=' + JSON.stringify(targetOwnerIds) + '.'
+            : ' The receipt has no targetOwnerIds.';
+          receipt = {
+            issueId,
+            rubricRef: card.rubricRef,
+            state: 'reconciliation-required',
+            idempotencyKey: currentIdempotencyKey,
+            launch: launchData,
+            phase,
+            reason: preSpawnProven
+              ? 'The durable receipt proves no member process was attempted. Preserve the same idempotency key and retry only after the launcher claim lease permits takeover.' +
+                ownerEvidence
+              : 'The receipt does not prove that no process started. Keep the reservation and idempotency key; do not retry until the exact owner, process, task, or native-session identity is reconciled.' +
+                ownerEvidence,
+            ...recoveryFields(),
+          };
+          break;
         }
 
         if (result.isError) {

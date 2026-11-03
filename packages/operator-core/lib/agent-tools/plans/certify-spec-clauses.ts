@@ -123,6 +123,7 @@ async function findBuildStrandedPendingCard(
   const pending = ((await listScorecards({ rubricRef, subjectRef: subject.ref, limit: 100 })) ?? []).filter(
     (card) =>
       card.gradingAudit?.state === 'pending' &&
+      card.auditTarget?.current !== false &&
       card.subject?.ref === subject.ref &&
       (card.subject?.kind ?? null) === (subject.kind ?? null) &&
       card.supersededBy == null &&

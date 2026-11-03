@@ -23,6 +23,31 @@ const CONFINEMENT: SessionToolConfinement = directedImplementerConfinement({
 const evaluate = (toolName: string) =>
   evaluateSessionConfinement({ toolName, confinement: CONFINEMENT });
 
+describe('frozen assignment memory confinement', () => {
+  const boundary = { id: 'F-own', harness: 'bench-private', checkout: '/private/assignment' };
+  const confinement: SessionToolConfinement = { denyTools: [], denyOutside: ['memory:search', 'memory:list', 'memory:remember'],
+    denyWorkItemsOutside: boundary, denyMemoryOutside: { snapshotSha256: 'a'.repeat(64) },
+    denyAmbientContext: true, reason: 'frozen memory', imposedBy: 'host' };
+  const own = { query: 'iron pickaxe', harness_slug: boundary.harness, harnessOnly: true };
+  it('admits explicit search only in the exact pool and denies selector widening even under a broader ceiling', () => {
+    expect(evaluateSessionConfinement({ toolName: 'memory:search', args: own, confinement }).allowed).toBe(true);
+    for (const args of [{ ...own, harness_slug: 'other' }, { ...own, harnessOnly: false }, { query: own.query },
+      { ...own, workspace: 'production' }, { ...own, as_of: '2026-01-01' }, { ...own, limit: 100 }, { ...own, query: '' }])
+      expect(evaluateSessionConfinement({ toolName: 'memory:search', args, confinement }))
+        .toMatchObject({ allowed: false, matchedGlob: 'outside-frozen-memory' });
+    for (const toolName of ['memory:list', 'memory:remember'])
+      expect(evaluateSessionConfinement({ toolName, args: own, confinement }).allowed).toBe(false);
+    expect(evaluateSessionConfinement({ toolName: 'memory:search', args: own,
+      confinement: { ...confinement, denyOutside: [] } }).allowed).toBe(false);
+  });
+  it('fails closed when host memory or assignment bindings are malformed', () => {
+    for (const change of [{ denyMemoryOutside: { snapshotSha256: 'bad' } }, { denyWorkItemsOutside: undefined },
+      { denyMemoryOutside: { snapshotSha256: 'a'.repeat(64), file: '/private/other' } }])
+      expect(evaluateSessionConfinement({ toolName: 'memory:search', args: own,
+        confinement: { ...confinement, ...change } }).allowed).toBe(false);
+  });
+});
+
 describe('benchmark planning reuses private scratch plans', () => {
   const boundary = { scratchPrefix: 'benchmark-scratch-abcdef123456-', reviewedSlug: 'observer-private', harness: 'bench-private' };
   const confinement: SessionToolConfinement = { denyTools: [], denyOutside: SCRATCH_PLAN_TOOLS,

@@ -52,6 +52,7 @@ interface HookBody {
   tool?: string;
   input?: unknown;
   inputTruncated?: boolean;
+  guardRequestId?: string;
   // compaction
   source?: string;
 }
@@ -151,6 +152,11 @@ const toolGuard = defineTool({
     const ownerId = (body?.owner ?? '').trim();
     const tool = typeof body?.tool === 'string' ? body.tool : '';
     if (!body || !ownerId || !tool) return empty();
+    // Correlate a timed-out native hook with its eventual handler phases. Never
+    // log inputs or accept arbitrary caller prose as a diagnostic identifier.
+    const guardRequestId = typeof body.guardRequestId === 'string' &&
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(body.guardRequestId)
+      ? body.guardRequestId : null;
     const phases: Partial<Record<'plan' | 'identity', number>> = {};
     const workspaceId = await resolveWorkspace(body);
     const setupMs = performance.now() - startedAt;
@@ -171,6 +177,7 @@ const toolGuard = defineTool({
       // Keep attribution after the client has aborted too. No tool inputs, plan
       // content or refusal text belongs in this timing-only diagnostic.
       if (totalMs >= 500) console.warn('[tool-guard-timing]', JSON.stringify({
+        ...(guardRequestId ? { guardRequestId } : {}),
         totalMs: Math.round(totalMs), setupMs: Math.round(setupMs),
         planMs: phases.plan === undefined ? null : Math.round(phases.plan),
         identityMs: phases.identity === undefined ? null : Math.round(phases.identity),
@@ -179,6 +186,7 @@ const toolGuard = defineTool({
     }
     const timings = { guard: performance.now() - startedAt, setup: setupMs, ...phases };
     return Response.json({ ok: true, text }, { headers: {
+      ...(guardRequestId ? { 'X-Papercusp-Guard-Request-Id': guardRequestId } : {}),
       'Server-Timing': Object.entries(timings).map(([phase, duration]) => `${phase};dur=${duration.toFixed(1)}`).join(', '),
     } });
   },

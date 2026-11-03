@@ -604,6 +604,13 @@ export const config: WebdriverIO.Config = {
   // information. See SPEC_TIMEOUT_MS's doc comment in app-mount.ts.
   mochaOpts: { ui: "bdd", timeout: SPEC_TIMEOUT_MS },
 
+  beforeSession() {
+    // The next WebDriver session launches a fresh app. This is a freshness
+    // bound only; startup duration is emitted by the application itself.
+    process.env.PAPERCUSP_PERF_NATIVE_SESSION_STARTED_MS = String(Date.now());
+    process.env.TAURI_APP_PATH = TAURI_APP_PATH;
+  },
+
   // Preflight-check the native driver, allocate two DISTINCT ephemeral ports
   // (see assertNativeWebDriverAvailable's doc comment for why they must
   // differ), spawn tauri-driver, and publish the chosen port via env (see

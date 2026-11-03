@@ -26,6 +26,7 @@ import {
 } from './grading-audit-source-pin';
 
 const LABEL = 'grading-audit-runtime:';
+const READINESS_ATTEMPTS = 30;
 
 /** Persisted before spawn; sufficient to recover without the staging alias. */
 export interface GradingAuditRuntimeLocator extends GradingAuditSourcePin {
@@ -338,6 +339,11 @@ function probeFailure(error: unknown, fallback: 'fetch-error' | 'body-read-error
   return { status: 'unready', reason, ...(errorCode ? { errorCode } : {}) };
 }
 
+function mayBeRecovering(probe: GradingAuditRuntimeProbeFailure): boolean {
+  return probe.reason === 'connection-error' || probe.reason === 'timeout' ||
+    (probe.reason === 'http-error' && [502, 503, 504].includes(probe.httpStatus ?? 0));
+}
+
 async function probe(baseUrl: string): Promise<GradingAuditRuntimeProbeResult> {
   try {
     const response = await fetch(`${baseUrl}/api/health`, { signal: AbortSignal.timeout(2000) });
@@ -495,23 +501,41 @@ export async function ensureGradingAuditRuntime(input: {
         lastProbe, attempts, readiness: { method: 'GET', url: `${locator.baseUrl}/api/health`, timeoutMs: 2000 },
         taskRead: { tool: 'processes:list', args: { taskId } },
         recovery: { tool: 'scorecards:repair', args: { targetIds: [input.issueId] } } });
-    const liveProbe = isLive ? await readProbe() : null;
+    let liveProbe = isLive ? await readProbe() : null;
+    let attached = false;
     if (isLive && liveProbe?.status === 'unready') {
       // HTTP readiness is not process-lifetime evidence. Preserve the enrolled
-      // task and every audit reference so the existing repair sweep can reuse
-      // it after startup or a missed probe, rather than restarting its warmup.
+      // task and references while its supervisor restores a recycled child.
+      // Use the existing startup budget on this SAME endpoint; a ledger-running
+      // supervisor does not imply its child is already listening. Unclassified
+      // or invalid health remains unknown, never permission to replace it.
       await (deps.attach ?? attach)(taskId, input.workspaceId, issueIds, acceptanceRefs);
-      throw readinessError(liveProbe, 1);
+      attached = true;
+      let attempts = 1;
+      while (liveProbe.status === 'unready' && mayBeRecovering(liveProbe) && attempts < READINESS_ATTEMPTS &&
+        Math.floor((deps.now?.() ?? Date.now()) / 1000) < locator.expiresAtSec) {
+        await (deps.sleep ?? (ms => new Promise(resolve => setTimeout(resolve, ms))))(1000);
+        if (Math.floor((deps.now?.() ?? Date.now()) / 1000) >= locator.expiresAtSec) break;
+        liveProbe = await readProbe();
+        attempts += 1;
+        if (liveProbe.status === 'ready' && !sameBuild(liveProbe.build, input.evaluatorBuild)) {
+          throw new Error('Audit runtime evaluator identity mismatch');
+        }
+      }
+      if (liveProbe.status === 'unready') throw readinessError(liveProbe, attempts);
+      if (Math.floor((deps.now?.() ?? Date.now()) / 1000) >= locator.expiresAtSec) {
+        throw new Error('Audit runtime expired during readiness recovery');
+      }
     }
     if (isLive && liveProbe?.status === 'ready' && sameBuild(liveProbe.build, input.evaluatorBuild)) {
-      await (deps.attach ?? attach)(taskId, input.workspaceId, issueIds, acceptanceRefs);
+      if (!attached) await (deps.attach ?? attach)(taskId, input.workspaceId, issueIds, acceptanceRefs);
     } else {
       if (isLive) await (deps.stop ?? stopRuntime)(taskId);
       taskId = await (deps.spawn ?? ((workspaceId, current) => spawnRuntime(workspaceId, current, deps.logDir)))(
         input.workspaceId, locator);
       let ready = false;
       let lastProbe: GradingAuditRuntimeProbeFailure = { status: 'unready', reason: 'unknown' };
-      for (let attempt = 0; attempt < 30; attempt += 1) {
+      for (let attempt = 0; attempt < READINESS_ATTEMPTS; attempt += 1) {
         const result = await readProbe();
         const actual = result.status === 'ready' ? result.build : null;
         if (actual && !sameBuild(actual, input.evaluatorBuild)) {
@@ -525,7 +549,7 @@ export async function ensureGradingAuditRuntime(input: {
       // Keep an unready task under its existing confined deadline. Its locator
       // and pin let the next canonical repair retry the same exact evaluator;
       // expiry and authoritative task termination still govern replacement.
-      if (!ready) throw readinessError(lastProbe, 30);
+      if (!ready) throw readinessError(lastProbe, READINESS_ATTEMPTS);
     }
     return { taskId, baseUrl: locator.baseUrl, evaluatorBuild: input.evaluatorBuild,
       bundleSha256: locator.bundleSha256, expiresAtSec: locator.expiresAtSec,

@@ -74,6 +74,29 @@ export function hasSessionConfinementResolver(): boolean {
   return state.resolver !== undefined;
 }
 
+/** Resolve explicit recall from the same authoritative policy as dispatch.
+ * Frozen callers never fall back to workspace memory on a denied read. */
+export async function sessionMemoryReadPolicy(ctx: UnifiedToolContext, args: unknown): Promise<
+  { checkout: string; snapshotSha256: string } | undefined
+> {
+  if (!state.resolver) {
+    if (ctx.uiClientId) throw new Error('Session memory policy is unavailable.');
+    return undefined;
+  }
+  await state.ensureReady?.();
+  const confinement = await state.resolver(ctx);
+  if (!confinement) return undefined;
+  if (confinement.denyMemoryOutside === undefined) {
+    if (confinement.denyAmbientContext && confinement.denyWorkItemsOutside)
+      throw new Error('Explicit memory recall is not enabled for this frozen assignment.');
+    return undefined;
+  }
+  if (!evaluateSessionConfinement({ toolName: 'memory:search', args, confinement }).allowed)
+    throw new Error('Explicit memory recall is outside the frozen assignment.');
+  return { checkout: confinement.denyWorkItemsOutside!.checkout,
+    snapshotSha256: confinement.denyMemoryOutside.snapshotSha256 };
+}
+
 /** Read the same host policy as dispatch before producing OR serving context.
  * The lookup context identifies the hook's session; it executes no tool and
  * grants no authority. Missing/unreadable policy suppresses optional context.

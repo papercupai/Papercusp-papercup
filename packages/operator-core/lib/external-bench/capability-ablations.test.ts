@@ -75,6 +75,19 @@ describe('FSWE-P011-ONETOGGLE: one registered ablation per capability shipped si
       budget: { maxUsd: 3, maxWallClockMs: 100 }, topology: 'solo' })).not.toThrow();
   });
 
+  it('binds frozen-memory recall ablation only to the implemented solo topology', () => {
+    const protocol = ablationOf('memory-recall');
+    expect(() => launchAblation(protocol)).toThrow(/not runnable.*only solo/);
+    const treatment = protocol.arms.find(arm => arm.id === 'coordinated')!;
+    treatment.control!.topology = 'solo';
+    treatment.control!.capabilities = { ...allCapabilities('off'), 'memory-recall': 'on' };
+    const off = protocol.arms.find(arm => arm.id === 'coordinated-no-locks')!;
+    off.control!.topology = 'solo'; off.control!.capabilities = allCapabilities('off');
+    expect(currentBenchmarkProtocolSchema.safeParse(protocol).success).toBe(true);
+    expect(requireRunnableAblation(protocol, off.id)).toBe(CAPABILITY_ABLATIONS['memory-recall']);
+    expect(CAPABILITY_ABLATIONS['memory-recall'].nativeControl).toMatchObject({ status: 'bound', topologies: ['solo'] });
+  });
+
   it.each(D018_CAPABILITIES.filter(capability => CAPABILITY_ABLATIONS[capability as AblatedCapability].nativeControl.status === 'unavailable'))
     ('refuses to launch %s-off while its native control is unavailable', capability => {
       const protocol = ablationOf(capability as AblatedCapability);

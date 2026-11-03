@@ -813,6 +813,77 @@ describe('focused runner startup tracing', () => {
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 
+  it('retains synchronous subprocess success and timeout without inventing child entry', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'native-sync-child-'));
+    const out = join(dir, 'sources.json');
+    const stall = join(dir, 'stall.cjs');
+    writeFileSync(stall, 'Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,30000);');
+    try {
+      const source = `const cp=require('node:child_process');
+        const success=cp.spawnSync(process.execPath,['-e',"process.stdout.write('ok')"],{encoding:'utf8'});
+        const timeout=cp.spawnSync(process.execPath,['--require',${JSON.stringify(stall)},'-e',''],{timeout:300});
+        process.stdout.write(JSON.stringify({success:{pid:success.pid,status:success.status,stdout:success.stdout},
+          timeout:{pid:timeout.pid,status:timeout.status,signal:timeout.signal,errorCode:timeout.error?.code}}));`;
+      const { stdout } = await promisify(execFile)(process.execPath, ['-e', source], {
+        env: nativeProcessTraceEnv({ ...process.env, PC_EXECUTED_SOURCE_MAP_OUT: out,
+          PAPERCUSP_TEST_STARTUP_TRACE: '0' }), timeout: 15_000,
+      });
+      const result = JSON.parse(stdout);
+      expect(result.success).toMatchObject({ status: 0, stdout: 'ok' });
+      expect(result.timeout).toMatchObject({ status: null, signal: 'SIGTERM', errorCode: 'ETIMEDOUT' });
+      const rows = readdirSync(`${out}.native-processes`).filter(name => name.endsWith('.json')).map(name =>
+        JSON.parse(readFileSync(join(`${out}.native-processes`, name), 'utf8')));
+      const starts = rows.filter(row => row.event === 'child-spawn-sync-start');
+      expect(starts).toHaveLength(2);
+      for (const [index, native] of [result.success, result.timeout].entries()) {
+        const start = starts.find(row => index === 0 ? row.argv[0] === '-e' : row.argv[0] === '--require');
+        const end = rows.find(row => row.event === 'child-spawn-sync-return' && row.childIdentity === start.childIdentity);
+        expect(end).toMatchObject({ pid: start.pid, processIdentity: start.processIdentity,
+          childPid: native.pid, code: native.status, signal: native.signal ?? null, errorCode: native.errorCode ?? null });
+        expect(end.atMs).toBeGreaterThanOrEqual(start.atMs);
+        expect(end.elapsedMs).toBeGreaterThanOrEqual(0);
+      }
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it.each(['plain', 'getter', 'proxy'])('delegates synchronous subprocess receiver, arguments, result and thrown %s error unchanged', async errorKind => {
+    const dir = mkdtempSync(join(tmpdir(), 'native-sync-contract-'));
+    const out = join(dir, 'sources.json');
+    const preload = new URL('../../../../scripts/lib/vitest-startup-trace.mjs?sync-contract', import.meta.url).href;
+    try {
+      const source = `import cp from 'node:child_process';
+        const receiver={}, argv=['argument'], options={timeout:123}, nativeError=new Error('native');
+        let getterCalls=0;
+        const error=${JSON.stringify(errorKind)}==='proxy' ? new Proxy(nativeError,{
+          getOwnPropertyDescriptor(){throw new Error('observation trap');}
+        }) : nativeError;
+        if(${JSON.stringify(errorKind)}==='getter')Object.defineProperty(error,'code',{
+          get(){getterCalls++;throw new Error('observation getter');}
+        });
+        const result={pid:321,status:null,signal:'SIGTERM',error:{code:'ETIMEDOUT'}}, calls=[];
+        cp.spawnSync=function(...args){calls.push({receiver:this===receiver,command:args[0],argv:args[1]===argv,options:args[2]===options});
+          if(args[0]==='throw')throw error;return result;};
+        process.env.PC_EXECUTED_SOURCE_MAP_OUT=${JSON.stringify(out)};
+        await import(${JSON.stringify(preload)});
+        const sameResult=cp.spawnSync.call(receiver,'probe',argv,options)===result;
+        let sameError=false;try{cp.spawnSync.call(receiver,'throw',argv,options);}catch(caught){sameError=caught===error;}
+        process.stdout.write(JSON.stringify({sameResult,sameError,getterCalls,calls}));`;
+      const env: NodeJS.ProcessEnv = { ...process.env, PAPERCUSP_TEST_STARTUP_TRACE: '0' };
+      delete env.PC_EXECUTED_SOURCE_MAP_OUT;
+      const { stdout } = await promisify(execFile)(process.execPath, ['--input-type=module', '-e', source], { env, timeout: 10_000 });
+      expect(JSON.parse(stdout)).toEqual({ sameResult: true, sameError: true, getterCalls: 0, calls: [
+        { receiver: true, command: 'probe', argv: true, options: true },
+        { receiver: true, command: 'throw', argv: true, options: true },
+      ] });
+      const rows = readdirSync(`${out}.native-processes`).filter(name => name.endsWith('.json')).map(name =>
+        JSON.parse(readFileSync(join(`${out}.native-processes`, name), 'utf8')));
+      const thrown = rows.find(row => row.event === 'child-spawn-sync-start' && row.command === 'throw');
+      expect(rows.find(row => row.event === 'child-spawn-sync-error' && row.childIdentity === thrown.childIdentity))
+        .toMatchObject({ errorCode: null, pid: thrown.pid, processIdentity: thrown.processIdentity });
+      expect(rows.some(row => row.event === 'child-spawn-sync-return' && row.childIdentity === thrown.childIdentity)).toBe(false);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
   it('marks the stream bound explicitly while leaving the full native write intact', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'native-write-bound-'));
     const out = join(dir, 'sources.json');

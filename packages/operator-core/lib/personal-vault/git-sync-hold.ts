@@ -48,6 +48,7 @@ import path from 'node:path';
 import type postgres from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import { liveLockHoldingsStrict, type LiveLockHolding } from '../agent-tools/locks/live-lock-paths';
+import { isRetriablePgConnectError, withPgRetry } from '../pg-transient-retry';
 import { DisclosureRefused } from './disclosure-ledger';
 
 type Db = postgres.Sql | postgres.TransactionSql;
@@ -146,7 +147,7 @@ export async function readRestrictedEditHoldings(sql: Db = getOrgPg().sql): Prom
   return restrictedHoldingsFromRows(rows);
 }
 
-const MAX_CONNECT_REFUSED_RETRIES = 2;
+const MAX_CONNECT_RETRIES = 2;
 
 function isConnectRefused(error: unknown): boolean {
   let current = error;
@@ -162,13 +163,13 @@ function isConnectRefused(error: unknown): boolean {
 }
 
 /**
- * This census query is read-only. Retry only a refused TCP connection, which can
- * be a one-off at the local Postgres endpoint; every other error still fails closed.
+ * This census query is read-only. Retry a refused TCP connection, which can be a
+ * one-off at the local Postgres endpoint, and a postgres-js CONNECT_TIMEOUT, which
+ * occurs before the queued query reaches the server. Every other error still fails closed.
  */
 async function readRestrictedEditRows(sql: Db): Promise<RestrictedEditRow[]> {
-  for (let attempt = 0; ; attempt++) {
-    try {
-      return await sql<RestrictedEditRow[]>`
+  return withPgRetry(
+    () => sql<RestrictedEditRow[]>`
         SELECT DISTINCT ON (l.repo_root, l.file)
                l.repo_root, l.file, l.agent_id, l.work_item_id
           FROM harness_shared.personal_disclosures d
@@ -176,12 +177,14 @@ async function readRestrictedEditRows(sql: Db): Promise<RestrictedEditRow[]> {
             ON l.agent_id = d.agent_owner_id
            AND l.ts >= d.delivered_at
          WHERE d.released_at IS NULL
-         ORDER BY l.repo_root, l.file, l.ts DESC`;
-    } catch (error) {
-      if (!isConnectRefused(error) || attempt >= MAX_CONNECT_REFUSED_RETRIES) throw error;
-      await new Promise<void>((resolve) => setTimeout(resolve, 100 * (attempt + 1)));
-    }
-  }
+         ORDER BY l.repo_root, l.file, l.ts DESC`,
+    {
+      retries: MAX_CONNECT_RETRIES,
+      backoffMs: 100,
+      label: 'personal-vault:git-sync-hold:restricted-edit-census',
+      classifier: (error) => isConnectRefused(error) || isRetriablePgConnectError(error),
+    },
+  );
 }
 
 // ── turn-scoped hold (git-sync-turn-scoped-commit-hold-2026-10-11) ─────────

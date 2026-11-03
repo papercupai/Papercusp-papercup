@@ -248,6 +248,45 @@ describe('runDegradationSweepOnce — one alarm per episode against a durable op
     window = windowOf(40, 0);
   });
 
+  it('resolves opted-in inactive scopes only after their full observation window, without claiming recovery', async () => {
+    const nowMs = Date.parse('2026-11-02T22:10:00.000Z');
+    const windowMs = 60_000;
+    const scoped: DegradationMechanism = {
+      mechanism: 'bounded-operation',
+      description: 'bounded operation',
+      scopeKeyed: true,
+      resolveOnScopeInactivity: true,
+      windowMs,
+    };
+    const oldScope = 'coord:inbox-wake:s-old';
+    const youngScope = 'coord:inbox-wake:s-young';
+    const unknownScope = 'coord:inbox-wake:s-unknown';
+    const oldKey = degradationConditionKey(scoped.mechanism, oldScope, 'timeout');
+    const youngKey = degradationConditionKey(scoped.mechanism, youngScope, 'timeout');
+    const unknownKey = degradationConditionKey(scoped.mechanism, unknownScope, 'timeout');
+    open = new Set([oldKey, youngKey, unknownKey]);
+
+    const result = await runDegradationSweepOnce({
+      ...deps(),
+      mechanisms: () => [scoped],
+      now: () => new Date(nowMs),
+      readWindows: async () => [],
+      readOpenConditionKeys: async () => [...open],
+      readOpenConditionEpisodes: async () => [
+        { conditionKey: oldKey, openedAtMs: nowMs - windowMs },
+        { conditionKey: youngKey, openedAtMs: nowMs - windowMs + 1 },
+      ],
+    });
+
+    expect(result.resolved).toEqual([oldKey]);
+    expect(resolutions).toHaveLength(1);
+    expect(resolutions[0].summary).toMatch(/^STALE: bounded-operation/);
+    expect(resolutions[0].summary).not.toMatch(/^RECOVERED/);
+    expect(open.has(oldKey)).toBe(false);
+    expect(open.has(youngKey)).toBe(true);
+    expect(open.has(unknownKey)).toBe(true);
+  });
+
   it('three sweeps over a collapsed window broadcast exactly once, one-shot, on the rail', async () => {
     for (let i = 0; i < 3; i++) await runDegradationSweepOnce(deps());
     expect(broadcasts).toHaveLength(1);

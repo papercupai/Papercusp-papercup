@@ -5,6 +5,7 @@ import { resolve } from 'node:path';
 import { judgePortalPlaywrightRows, mergeCriterionTestRuns, partitionCriterionTestFiles } from '../../rubrics-playwright-checks';
 import { defineTool } from '@papercusp/agent-mcp';
 import { decode } from '@papercusp/result-encoding';
+import { SCORECARD_EMIT_TIMEOUT_SEC } from './emit-timeout-budget.mjs';
 import { isNonCodeAuditVerdict } from '../../plan-verification-profile';
 import { DbCallDeadlineError } from '@papercusp/db-org';
 import {
@@ -211,7 +212,7 @@ import type { SessionState } from '../coordination/presence-wakeability';
  * with ~40% headroom; two more minutes stay outside the runner for process-group
  * settlement, the ledger write, and MCP serialization.
  */
-export const SCORECARD_EMIT_TIMEOUT_SEC = 27 * 60;
+export { SCORECARD_EMIT_TIMEOUT_SEC };
 export const SCORECARD_TEST_CHECK_TIMEOUT_MS = 25 * 60_000;
 
 /**
@@ -3741,6 +3742,7 @@ export async function emitScorecard(
       ).filter(
         (card) =>
           card.gradingAudit?.state === 'pending' &&
+          card.auditTarget?.current !== false &&
           card.subject?.ref === args.subject?.ref &&
           (card.subject?.kind ?? null) === (args.subject?.kind ?? null) &&
           card.supersededBy == null &&

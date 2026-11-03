@@ -45,6 +45,7 @@ export const DESKTOP_PERF_BUDGETS: DesktopPerfBudgets = {
   maxProcessRssKb: 3584 * 1024,
   interactions: {
     // Approved application-performance rubric journey limits (provisional).
+    'startup-usable': 4000,
     'work-list-open': 1500,
     'work-item-open': 1500,
     'work-item-claim': 1500,

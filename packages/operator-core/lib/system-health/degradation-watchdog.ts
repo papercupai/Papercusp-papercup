@@ -113,6 +113,8 @@ export interface DegradationMechanism {
   scopeKeyed?: boolean;
   /** The scope is a coord owner id; an ended owner makes its scoped condition obsolete. */
   scopeIsSessionOwner?: boolean;
+  /** Resolve an open scoped condition as stale after a full observation window has no samples for it. */
+  resolveOnScopeInactivity?: boolean;
   /** Optional observation tenant partition for mechanisms owned by one workspace. */
   observationWorkspaceId?: string;
   /** Optional producer tag when other producers share the same mechanism. */
@@ -356,7 +358,7 @@ registerDegradationMechanism({
   description: 'Eligible command and stdin executions served by the spawner sidecar; primary child exits count as applied, local fallbacks and rejected execution count as unavailable. Disabled routing is excluded.',
 });
 registerDegradationMechanism({
-  mechanism: 'bounded-operation', scopeKeyed: true,
+  mechanism: 'bounded-operation', scopeKeyed: true, resolveOnScopeInactivity: true,
   description: 'Named bounded operations that completed before the deadline rather than returning a timeout/error fallback; caller cancellation is excluded.',
 });
 registerDegradationMechanism({
@@ -660,7 +662,7 @@ export function renderDegradationAlarm(
       `min eligible ${minEligible}).\n` +
       `Top reasons:\n  - ${top || '(none)'}\n\n` +
       `This condition is owned by one auto-filed work item and resolves itself once the rate reaches ` +
-      `${t.recoverRate}${m.scopeIsSessionOwner ? ' or the scoped owner session ends' : ''}. ` +
+      `${t.recoverRate}${m.scopeIsSessionOwner ? ' or the scoped owner session ends' : ''}${m.resolveOnScopeInactivity ? ' or after a full trailing window with no observations for this scope (resolved as stale, not recovered)' : ''}. ` +
       `Data: harness_shared.fallback_observations WHERE mechanism = '${m.mechanism}'` +
       (scope ? ` AND scope = '${scope}'` : '') +
       `.`,
@@ -1037,6 +1039,45 @@ export async function runDegradationSweepOnce(
       out.errors.push(`${m.mechanism}: ${errMsg(e)}`);
       continue;
     }
+    if (m.scopeKeyed && m.resolveOnScopeInactivity) {
+      const presentScopes = new Set(
+        windows
+          .map(({ scope }) => scope)
+          .filter((scope): scope is string => scope != null)
+          .map(degradationKeySegment),
+      );
+      const prefix = degradationKeyPrefix(m.mechanism);
+      const openedAtByKey = new Map(openEpisodes.map(({ conditionKey, openedAtMs }) => [conditionKey, openedAtMs]));
+
+      // No rows in a full trailing window means this scoped, on-demand operation
+      // is no longer actively measured. Clear the stale condition without calling
+      // it recovered; owner-scoped mechanisms still require positive liveness.
+      for (const key of openKeys) {
+        if (!key.startsWith(prefix)) continue;
+        const remainder = key.slice(prefix.length);
+        const separator = remainder.lastIndexOf(':');
+        if (separator <= 0) continue;
+        const scopeSegment = remainder.slice(0, separator);
+        if (presentScopes.has(scopeSegment)) continue;
+        const openedAtMs = openedAtByKey.get(key);
+        if (openedAtMs == null || !Number.isFinite(openedAtMs) || now.getTime() - openedAtMs < windowMs) continue;
+        try {
+          const ok = await deps.resolve({
+            conditionKey: key,
+            summary:
+              `STALE: ${m.mechanism} has no qualifying observations in the trailing ` +
+              `${Math.round(windowMs / 60_000)}min window; resolved as inactive, not recovered.`,
+          });
+          if (ok) {
+            openKeys.delete(key);
+            out.resolved.push(key);
+          } else out.errors.push(`resolve failed for inactive scoped condition: ${key}`);
+        } catch (error) {
+          out.errors.push(`resolve failed for inactive scoped condition ${key}: ${errMsg(error)}`);
+        }
+      }
+    }
+
     let previousByScope = new Map<string | null, FallbackWindow>();
     if (m.yieldDrop) {
       try {

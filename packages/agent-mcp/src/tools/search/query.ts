@@ -20,7 +20,12 @@ import { z } from 'zod';
 import type { Sql } from 'postgres';
 import { defineTool } from '@papercusp/tooldef';
 import type { PapercuspToolContext } from '@papercusp/operator-core/lib/agent-tools/_tool-context';
-import { bm25LegIfAvailable, fuseByPosition } from '@papercusp/operator-core/lib/search/lexical/rank';
+import {
+  bm25LegIfAvailable,
+  boundedExactTopK,
+  fuseByPosition,
+  mergeExactAndBm25,
+} from '@papercusp/operator-core/lib/search/lexical/rank';
 
 const KINDS = ['tasks', 'goals', 'projects', 'audit'] as const;
 type Kind = (typeof KINDS)[number];
@@ -172,15 +177,46 @@ export default defineTool({
           degradedReasons,
           async () => {
             const bm25 = await bm25LegIfAvailable(sql, 'goals', args.query);
-            const rows = bm25
-              ? await tx<Array<GoalSearchRow>>`
+            if (bm25) {
+              const rows = await tx<Array<GoalSearchRow>>`
                   SELECT id, title, ${bm25.score} AS rank
                     FROM harness_shared.goals
                    WHERE ${bm25.match}
                    ORDER BY ${bm25.order}
                    LIMIT ${args.limit}
-                `
-              : await tx<Array<GoalSearchRow>>`
+                `;
+              const exactRows = await tx<Array<{ id: string; title: string; exact_rank: number }>>`
+                ${boundedExactTopK(sql, {
+                  columns: sql`id,title`,
+                  from: sql`harness_shared.goals`,
+                  where: sql`TRUE`,
+                  tsv: sql`_search`,
+                  query: args.query,
+                  limit: args.limit,
+                })}
+              `;
+              const bm25Hits = rows.map((r: GoalSearchRow) => ({
+                kind: 'goals' as const,
+                id: r.id,
+                snippet: r.title,
+                kindScore: Number(r.rank),
+                rank: Number(r.rank),
+              }));
+              const exactHits = exactRows.map((r) => ({
+                kind: 'goals' as const,
+                id: r.id,
+                snippet: r.title,
+                kindScore: Number(r.exact_rank),
+                rank: Number(r.exact_rank),
+              }));
+              return {
+                engine: 'bm25',
+                hits: mergeExactAndBm25(exactHits, bm25Hits, (hit) => hit.id, args.limit)
+                  .map(({ rank: _rank, fusionRank: _fusionRank, ...hit }) => hit),
+              };
+            }
+
+            const rows = await tx<Array<GoalSearchRow>>`
                   SELECT id, title, ts_rank_cd(_search, plainto_tsquery('english', ${args.query})) AS rank
                     FROM harness_shared.goals
                    WHERE _search @@ plainto_tsquery('english', ${args.query})
@@ -188,7 +224,7 @@ export default defineTool({
                    LIMIT ${args.limit}
                 `;
             return {
-              engine: bm25 ? 'bm25' : 'fts',
+              engine: 'fts',
               hits: rows.map((r: GoalSearchRow) => ({ kind: 'goals' as const, id: r.id, snippet: r.title, kindScore: Number(r.rank) })),
             };
           },

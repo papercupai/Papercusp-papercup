@@ -6,20 +6,126 @@
  * Codex auto-route has no serviceable accounts" and recorded them as avoidable
  * launch failures.
  */
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   applyCodexGatewayRefusal,
   codexGatewayLaunchRefusal,
+  defaultProbeBackendAvailable,
   readCodexGatewayPoolStats,
   type CodexGatewayPoolStats,
 } from './consult-dispatch';
 // The launcher is the authority this preflight mirrors; pin to it, never to a copy.
 import { codexAutoPoolVerdict } from '../../../../apps/operator/scripts/psu-launcher.mjs';
 import { normalizeCodexCliModel } from '../model-context-budget.mjs';
+import { accountFull, emptyPool, isSpawnEligible, registerAccount } from '../deployment/account-pool';
+
+const routing = vi.hoisted(() => ({ loadAccountPool: vi.fn(), getFlag: vi.fn() }));
+vi.mock('../deployment/account-pool-store', () => ({ loadAccountPool: routing.loadAccountPool }));
+vi.mock('@papercusp/flags/server', () => ({ getFlag: routing.getFlag }));
 
 const NOW = Date.parse('2026-10-26T12:00:00.000Z');
 const FUTURE = NOW + 15 * 60_000;
 const PAST = NOW - 60_000;
+
+describe('live consult account preflight', () => {
+  let gatewayFetch: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    vi.spyOn(Date, 'now').mockReturnValue(NOW);
+    routing.getFlag.mockResolvedValue(true);
+    gatewayFetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      codexHealthyAccounts: 1, codexTotalAccounts: 1, codexEarliestRecoveryAt: null,
+    })));
+    vi.stubGlobal('fetch', gatewayFetch);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+    vi.clearAllMocks();
+  });
+
+  function pausedPool(provider: 'codex' | 'claude' = 'codex') {
+    const pool = registerAccount(emptyPool(), {
+      id: 'reviewer', provider, credentialRef: 'file:/test/reviewer',
+    }, NOW);
+    Object.assign(pool.accounts[0]!.rate, {
+      pausedUntil: FUTURE, utilization: 0.2, utilization7d: 0.3,
+      utilizationAt: NOW, penaltyCount: 1, windowStartedAt: NOW,
+    });
+    return pool;
+  }
+
+  it('does not veto a serviceable Codex auto route from a predictive local pause', async () => {
+    const pool = pausedPool();
+    expect(accountFull(pool.accounts[0]!, NOW)).toBe(true);
+    expect(isSpawnEligible(pool.accounts[0]!, NOW)).toBe(true);
+    routing.loadAccountPool.mockResolvedValue(pool);
+
+    await expect(defaultProbeBackendAvailable('codex', 'ws-preflight', 'sol'))
+      .resolves.toMatchObject({ available: true, accountRoute: 'auto' });
+    expect(gatewayFetch).toHaveBeenCalledOnce();
+  });
+
+  it.each(['usage', 'credential', 'sustained'] as const)('retains a measured %s wall', async (wall) => {
+    const pool = pausedPool();
+    const account = pool.accounts[0]!;
+    if (wall === 'usage') account.rate.utilization7d = 1;
+    if (wall === 'credential') account.credentialFailure = { observedAt: NOW, ownerId: 'test' };
+    if (wall === 'sustained') account.rate.penaltyCount = 3;
+    expect(isSpawnEligible(account, NOW)).toBe(false);
+    routing.loadAccountPool.mockResolvedValue(pool);
+
+    await expect(defaultProbeBackendAvailable('codex', 'ws-preflight', 'sol'))
+      .resolves.toMatchObject({ available: false, failureReason: 'account-walled' });
+  });
+
+  it('still refuses a model the gateway cannot serve after a predictive local pause', async () => {
+    routing.loadAccountPool.mockResolvedValue(pausedPool());
+    gatewayFetch.mockResolvedValue(new Response(JSON.stringify({
+      codexHealthyAccounts: 1, codexTotalAccounts: 1, codexEarliestRecoveryAt: null,
+      codexServiceableByModel: { [normalizeCodexCliModel('sol')]: 0 },
+    })));
+    const verdict = await defaultProbeBackendAvailable('codex', 'ws-preflight', 'sol');
+    expect(verdict).toMatchObject({ available: false, failureReason: 'account-walled' });
+    expect(verdict.routeReason).toContain('refuses model');
+  });
+
+  it('preserves launcher pacing for a temporary Codex cooldown', async () => {
+    routing.loadAccountPool.mockResolvedValue(pausedPool());
+    gatewayFetch.mockResolvedValue(new Response(JSON.stringify({
+      codexHealthyAccounts: 0, codexTotalAccounts: 1, codexEarliestRecoveryAt: FUTURE,
+      codexUnserviceableCause: 'temporary-cooldown',
+    })));
+    await expect(defaultProbeBackendAvailable('codex', 'ws-preflight', 'sol'))
+      .resolves.toMatchObject({ available: true, accountRoute: 'auto' });
+  });
+
+  it('retains a genuine gateway account wall despite local budget eligibility', async () => {
+    routing.loadAccountPool.mockResolvedValue(pausedPool());
+    gatewayFetch.mockResolvedValue(new Response(JSON.stringify({
+      codexHealthyAccounts: 0, codexTotalAccounts: 1, codexEarliestRecoveryAt: FUTURE,
+      codexUnserviceableCause: 'accounts-unserviceable',
+    })));
+    await expect(defaultProbeBackendAvailable('codex', 'ws-preflight', 'sol'))
+      .resolves.toMatchObject({ available: false, failureReason: 'account-walled' });
+    expect(gatewayFetch).toHaveBeenCalledOnce();
+  });
+
+  it('retains launcher fail-open behavior for unknown gateway stats with budget eligible accounts', async () => {
+    routing.loadAccountPool.mockResolvedValue(pausedPool());
+    gatewayFetch.mockRejectedValue(new Error('unavailable'));
+    await expect(defaultProbeBackendAvailable('codex', 'ws-preflight', 'sol'))
+      .resolves.toMatchObject({ available: true, accountRoute: 'auto' });
+  });
+
+  it('keeps the strict pause guard for Claude launches', async () => {
+    routing.loadAccountPool.mockResolvedValue(pausedPool('claude'));
+    await expect(defaultProbeBackendAvailable('claude', 'ws-preflight', 'opus'))
+      .resolves.toMatchObject({ available: false, failureReason: 'account-walled' });
+    expect(gatewayFetch).not.toHaveBeenCalled();
+  });
+});
 
 const FIXTURES: Array<[string, CodexGatewayPoolStats | null | undefined]> = [
   ['no stats', undefined],

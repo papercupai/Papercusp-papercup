@@ -491,7 +491,7 @@ describe('mintBlindGapReviewer', () => {
     const killTask = vi.fn(async (taskId: string) => ({ ok: true as const, taskId, action: 'kill' }));
     const acquireSessionResume = vi.fn(async () => ({ ok: true as const, binding: { ...binding, status: 'resuming' as const, resumeLeaseId: 'lease-1' }, leaseId: 'lease-1' }));
     const releaseSessionResume = vi.fn(async () => true);
-    const readConfinement = vi.fn(async () => {
+    const readConfinement = vi.fn(async (): Promise<ReturnType<typeof blindReviewerConfinement> | null> => {
       const call = handler.mock.calls.at(-1) as unknown as [unknown, Record<symbol, ReturnType<typeof blindReviewerConfinement>>];
       return call?.[1][KEY] ?? null;
     });

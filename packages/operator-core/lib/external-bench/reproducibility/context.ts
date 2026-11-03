@@ -80,6 +80,15 @@ export function readContainedBenchmarkFile(root: string, ref: string, maxBytes: 
     throw new Error('Benchmark artifact requires a canonical private root and bounded size.');
   return readRegularFile(containedPath(root, ref), maxBytes);
 }
+
+/** Explicit recall re-reads the pinned snapshot, never a live memory pool.
+ * The host supplies the path and digest; caller arguments choose neither. */
+export function readFrozenBenchmarkMemory(checkout: string, expectedSha256: string) {
+  if (!/^[a-f0-9]{64}$/.test(expectedSha256)) throw new Error('Frozen memory requires its pinned digest.');
+  const bytes = readContainedBenchmarkFile(checkout, '.papercusp/benchmark-context/memory.json', 16 * 1024 * 1024);
+  if (digest(bytes) !== expectedSha256) throw new Error('Frozen memory bytes differ from the host snapshot.');
+  return snapshotSchema.parse(JSON.parse(bytes.toString('utf8'))).entries;
+}
 function readSnapshot(file: string, expected: string, forbidden: readonly string[]): Buffer {
   const bytes = readRegularFile(file);
   if (digest(bytes) !== expected) throw new Error('Benchmark context snapshot bytes differ from the frozen protocol.');

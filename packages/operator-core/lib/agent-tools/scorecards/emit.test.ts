@@ -2,12 +2,17 @@ import { describe, expect, it, vi } from 'vitest';
 import { lookupByMcpName, readJsonResult } from '@papercusp/agent-mcp';
 import { dispatchProjectedTool, type ProjectedTool, type UnifiedToolContext } from '@papercusp/tooldef';
 import scorecardEmitTool, {
+  SCORECARD_EMIT_TIMEOUT_SEC,
   attachScorecardCompletionReceipt,
   cleanupAcceptanceGraderTasks,
   resolveDeterministicCheckScope,
   resolveHarnessTargetHive,
   scorecardAbortCompletionReceipt,
 } from './emit';
+import {
+  SCORECARD_EMIT_CLIENT_TIMEOUT_MS,
+  SCORECARD_EMIT_TIMEOUT_SEC as SHARED_SCORECARD_EMIT_TIMEOUT_SEC,
+} from './emit-timeout-budget.mjs';
 import { COORD_ROLES } from '../coordination/roles';
 import { mockResolvedTyped } from '../../testing/typed-mock';
 
@@ -30,6 +35,12 @@ describe('dedicated acceptance judge lifecycle', () => {
   it('admits judge on scorecards:emit without widening the shared coordination role set', () => {
     expect(scorecardEmitTool.agentRoles).toContain('judge');
     expect(COORD_ROLES).not.toContain('judge');
+  });
+
+  it('keeps the server and ptool deadlines on the shared scorecards:emit budget', () => {
+    expect(scorecardEmitTool.timeoutSec).toBe(SCORECARD_EMIT_TIMEOUT_SEC);
+    expect(SCORECARD_EMIT_TIMEOUT_SEC).toBe(SHARED_SCORECARD_EMIT_TIMEOUT_SEC);
+    expect(SCORECARD_EMIT_CLIENT_TIMEOUT_MS).toBe(SCORECARD_EMIT_TIMEOUT_SEC * 1_000 + 15_000);
   });
 
   it('documents that the persisted acceptance card still carries complete ratings, adopted by reference', () => {

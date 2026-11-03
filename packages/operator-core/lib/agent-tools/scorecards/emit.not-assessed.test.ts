@@ -11,6 +11,14 @@
  *      per criterion and rubric-wide, and never as rubric staleness.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { OBSERVATION_UNKNOWN_REASONS } from '../../harness/improvements/observation-types';
+import { listScorecards, scorecardTrend } from '../../scorecards';
+import { scorecardRatingEntrySchema } from './evaluate';
+
+// The observation schema uses the tool registry, whose package also loads the
+// server's entire tool catalog. Registration is outside this unit's contract;
+// keep the real registry/schema exports without bootstrapping unrelated tools.
+vi.mock('../../../../agent-mcp/src/bootstrap', () => ({}));
 
 type Row = {
   issue_id: string;
@@ -91,24 +99,12 @@ vi.mock('@papercusp/db-org', async (orig) => ({
   getOrgPg: () => ({ sql: sqlMock }),
 }));
 
-vi.mock('../../issues-engineer', () => {
-  // The rubric read seam initializes these defaults at import time. Keep the
-  // fixture isolated from the issue store's import graph, and fail if a test
-  // unexpectedly uses one instead of the scorecard rows supplied above.
-  const unexpectedRead = (name: string) => () => {
-    throw new Error(`Unexpected issue-store read in scorecard fixture: ${name}`);
-  };
-  return {
-    listIssues: unexpectedRead('listIssues'),
-    listIssueScopes: unexpectedRead('listIssueScopes'),
-    projectAllIssuesForBoundedRead: unexpectedRead('projectAllIssuesForBoundedRead'),
-    countIssues: unexpectedRead('countIssues'),
-    countIssuesBySourceRole: unexpectedRead('countIssuesBySourceRole'),
-    issuesScopeWorkspace: () => 'test-workspace',
-    issuesOutLinksMany: async () => new Map(),
-    issuesSupersededByRevision: async () => new Set<string>(),
-  };
-});
+vi.mock('../../issues-engineer', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../issues-engineer')>()),
+  issuesScopeWorkspace: () => 'test-workspace',
+  issuesOutLinksMany: async () => new Map(),
+  issuesSupersededByRevision: async () => new Set<string>(),
+}));
 
 vi.mock('../../rubrics', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../rubrics')>()),
@@ -119,13 +115,11 @@ vi.mock('../../rubrics', async (importOriginal) => ({
 
 describe("unknownReason 'not-assessed' — one vocabulary, accepted on emit and kept on read", () => {
   it('is part of the shared unknown-reason vocabulary', async () => {
-    const { OBSERVATION_UNKNOWN_REASONS } = await import('../../harness/improvements/observation-types');
     expect(OBSERVATION_UNKNOWN_REASONS).toContain('not-assessed');
     expect(OBSERVATION_UNKNOWN_REASONS).toContain('instrument-unavailable');
   });
 
   it('the emit/evaluate rating schema accepts not-assessed and still refuses an invented reason', async () => {
-    const { scorecardRatingEntrySchema } = await import('./evaluate');
     expect(
       scorecardRatingEntrySchema.safeParse({ rating: 'unknown', evidence: 'not graded yet', unknownReason: 'not-assessed' }).success,
     ).toBe(true);
@@ -136,15 +130,12 @@ describe("unknownReason 'not-assessed' — one vocabulary, accepted on emit and 
   });
 
   it('every reason the read path knows is accepted by the emit schema (no second hand-copied list)', async () => {
-    const { scorecardRatingEntrySchema } = await import('./evaluate');
-    const { OBSERVATION_UNKNOWN_REASONS } = await import('../../harness/improvements/observation-types');
     for (const reason of OBSERVATION_UNKNOWN_REASONS) {
       expect(scorecardRatingEntrySchema.safeParse({ rating: 'unknown', evidence: 'e', unknownReason: reason }).success).toBe(true);
     }
   });
 
   it('listScorecards preserves the structured not-assessed reason', async () => {
-    const { listScorecards } = await import('../../scorecards');
     const rows = await listScorecards({ rubricRef: 'goal-test-rubric', limit: 10 });
     expect(rows).toHaveLength(3);
     expect(rows[0]!.ratings.alpha!.unknownReason).toBe('not-assessed');
@@ -154,7 +145,6 @@ describe("unknownReason 'not-assessed' — one vocabulary, accepted on emit and 
 
 describe('rubrics:trend separates unfinished grading from instrument failures', () => {
   it('splits unknowns per criterion and rubric-wide', async () => {
-    const { scorecardTrend } = await import('../../scorecards');
     const trend = await scorecardTrend({ rubricRef: 'goal-test-rubric' });
 
     expect(trend.unknownBreakdown).toEqual({
@@ -174,7 +164,6 @@ describe('rubrics:trend separates unfinished grading from instrument failures', 
   });
 
   it('unfinished grading is not rubric staleness; a real instrument failure still is', async () => {
-    const { scorecardTrend } = await import('../../scorecards');
     const trend = await scorecardTrend({ rubricRef: 'goal-test-rubric' });
     const staleKeys = trend.staleness.staleCriteria.map((c) => c.criterion);
     expect(staleKeys).toContain('beta');
@@ -183,7 +172,6 @@ describe('rubrics:trend separates unfinished grading from instrument failures', 
 
   it('a legacy unknown without a structured reason is reported as unspecified', async () => {
     rowsForQuery = [card('EI-legacy', '2026-10-01T00:00:00.000Z', { alpha: unknown(), beta: healthy, gamma: healthy })];
-    const { scorecardTrend } = await import('../../scorecards');
     const trend = await scorecardTrend({ rubricRef: 'goal-test-rubric' });
     expect(trend.unknownBreakdown).toEqual({
       total: 1,
@@ -201,7 +189,6 @@ describe('rubrics:trend separates unfinished grading from instrument failures', 
         gamma: healthy,
       }),
     );
-    const { scorecardTrend } = await import('../../scorecards');
     const trend = await scorecardTrend({ rubricRef: 'goal-test-rubric' });
     const alpha = trend.criteria.find((c) => c.criterion === 'alpha')!;
     expect(alpha.idleCount).toBe(3);

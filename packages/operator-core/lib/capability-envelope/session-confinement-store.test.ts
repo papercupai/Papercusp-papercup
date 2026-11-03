@@ -65,6 +65,23 @@ describe('session-confinement store — installation', () => {
 });
 
 describe('exact native launch ceilings', () => {
+  it('persists a private memory digest immutably and rejects malformed stored memory scope', async () => {
+    const memory = { snapshotSha256: 'a'.repeat(64) };
+    const confinement = { denyTools: [], denyOutside: ['memory:search'], denyMemoryOutside: memory,
+      denyWorkItemsOutside: { id: 'F-own', harness: 'bench', checkout: '/private/assignment' },
+      denyAmbientContext: true as const, reason: 'frozen', imposedBy: 'host' };
+    expect(await declareSessionConfinement({ ownerId: IMPLEMENTER_OWNER, confinement })).toMatchObject({ ok: true });
+    memory.snapshotSha256 = 'b'.repeat(64);
+    expect((await readSessionConfinement(IMPLEMENTER_OWNER))?.denyMemoryOutside).toEqual({ snapshotSha256: 'a'.repeat(64) });
+    await expect(declareSessionConfinement({ ownerId: IMPLEMENTER_OWNER, confinement })).rejects.toThrow(/cannot be replaced/);
+    expect(await declareSessionConfinement({ ownerId: 'su-other', confinement: {
+      ...confinement, denyWorkItemsOutside: undefined,
+    } })).toMatchObject({ ok: false });
+    pgState.payload = { sessions: { [IMPLEMENTER_OWNER]: stored({ confinement: {
+      ...confinement, denyMemoryOutside: { snapshotSha256: 'bad' },
+    } }) } };
+    await expect(readSessionConfinement(IMPLEMENTER_OWNER)).rejects.toThrow(/malformed/);
+  });
   it('accepts the same ceiling after JSONB reorders object keys but still refuses policy changes', async () => {
     const confinement = { denyTools: [], denyOutside: ['work_items:get'],
       denyWorkItemsOutside: { id: 'F-own', harness: 'bench', checkout: '/private/assignment' },

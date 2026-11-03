@@ -1502,7 +1502,7 @@ function providerForBackend(agent: ExpertBackend): 'claude' | 'codex' | null {
  * account route. Unknown preflight state is recorded as routing-unavailable,
  * before consuming an expert launch attempt.
  */
-async function defaultProbeBackendAvailable(
+export async function defaultProbeBackendAvailable(
   agent: ExpertBackend,
   workspaceId: string,
   model?: string | null,
@@ -1511,7 +1511,7 @@ async function defaultProbeBackendAvailable(
   if (!provider) return { available: true, detail: `${agent} is not a pooled subscription — no wall to probe` };
   let gatewayOn: boolean | null = null;
   try {
-    const [{ loadAccountPool }, { anyAccountAvailable, poolForProvider }, { getFlag }, { FLAGS }] = await Promise.all([
+    const [{ loadAccountPool }, { anyAccountAvailable, isSpawnEligible, poolForProvider }, { getFlag }, { FLAGS }] = await Promise.all([
       import('../deployment/account-pool-store'),
       import('../deployment/account-pool'),
       import('@papercusp/flags/server'),
@@ -1533,15 +1533,23 @@ async function defaultProbeBackendAvailable(
       });
     }
     const pool = poolForProvider(await loadAccountPool(workspaceId), provider);
+    const now = Date.now();
+    // Codex auto routing has no account pin: the gateway paces and fails over at
+    // request time. A predictive local pause must not veto that route before its
+    // authoritative gateway probe. Keep usage, credential and sustained-limit
+    // exclusions, and keep the strict pause guard for Claude CLI launches.
+    const hasHeadroom = provider === 'codex'
+      ? pool.accounts.some((account) => isSpawnEligible(account, now))
+      : anyAccountAvailable(pool, now);
     const verdict = resolveConsultBackendAvailability(provider, {
       gatewayOn: true,
       poolAccountCount: pool.accounts.length,
-      poolHasHeadroom: pool.accounts.length > 0 ? anyAccountAvailable(pool, Date.now()) : null,
+      poolHasHeadroom: pool.accounts.length > 0 ? hasHeadroom : null,
     });
     // The local pool view cannot see gateway-side exclusions; ask the gateway the
     // same question the launcher will (WI-6554700010029514).
     if (provider === 'codex' && verdict.available && verdict.accountRoute === 'auto') {
-      return applyCodexGatewayRefusal(verdict, provider, await readCodexGatewayPoolStats(), Date.now(), model);
+      return applyCodexGatewayRefusal(verdict, provider, await readCodexGatewayPoolStats(), now, model);
     }
     return verdict;
   } catch (e) {
