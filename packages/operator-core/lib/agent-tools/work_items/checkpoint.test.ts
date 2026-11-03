@@ -5681,6 +5681,28 @@ describe('work_items:checkpoint — prose path continuity lint (EI-2238651493968
     }, { allowDirectories: true });
   });
 
+  it('checks a hyphenated nested repository path before a parenthesized line annotation', async () => {
+    const nested = 'papercusp-desktop/src-tauri/src/main.rs';
+    const body = 'The native entry is (' + nested + ':line 42).';
+    resolveCurrentTokens.mockResolvedValue(new Map([
+      ['file:' + nested, 'sha256:present'],
+      ['file:src/main.rs', null],
+    ]));
+    getWorkItem.mockResolvedValue({ id: 'WI-PROSE-HYPHENATED-NESTED-PATH', harness: 'papercup' });
+    setWorkItemCheckpointWithPrior.mockResolvedValue({ stored: body, priorLength: 0 });
+    getWorkItemCheckpoint.mockResolvedValue(body);
+
+    const result = await one({ id: 'WI-PROSE-HYPHENATED-NESTED-PATH', checkpoint: body });
+
+    expect(result.ok).toBe(true);
+    expect(result.prosePathLint).toBeUndefined();
+    expect(resolveCurrentTokens).toHaveBeenCalledWith(
+      ['file:' + nested],
+      { workspaceId: 'default', harness: 'papercup' },
+      { allowDirectories: true },
+    );
+  });
+
   it('checks only narrative prose, not paths quoted by a structured recheck row', async () => {
     const recheckPath = 'packages/operator-core/lib/agent-tools/fleet/respawn-member.ts';
     const stored = withCarryNoteChecks('The implementation is ready.', [

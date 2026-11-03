@@ -88,7 +88,7 @@ import {
 } from '../../scorecards';
 import { revParseAsync } from '../../release/judged-sha-containment';
 import { scorecardEvaluateArgs, scorecardInstrumentSnapshotSchema, scorecardRatingEntrySchema,
-  pendingDeliveryReviewRefusal, evaluateScorecard } from './evaluate';
+  pendingDeliveryReviewRefusal, evaluateScorecard, scorecardComparisonReasons } from './evaluate';
 import { scorecardRepairArgs } from './repair';
 import {
   CLIPPED_SCORECARD_TEXT_CODE,
@@ -850,7 +850,7 @@ const scorecardEmitBaseShape = {
       .max(120)
       .optional()
       .describe(
-        "Corrected card id. Changed evidence auto-supersedes your latest current terminal card for the same subject/rubric; specify other corrections.",
+        "Corrected card id. Only explicit corrections supersede prior readings; ordinary measurements and baseline regrades preserve history.",
       ),
     baselineRef: z.string().min(1).max(120).optional().describe(
       'Audited pre-repair baseline, preserved for comparable re-grade with same target/pinned rubric; never replaced.',
@@ -1876,7 +1876,7 @@ export async function emitScorecard(
   if (args.purpose === 'diagnostic') {
     // A diagnostic is a separate purpose in the SAME observation ledger. It never
     // enters the grading/audit/cascade/author-verdict side effects below.
-    const forbidden = ['acceptance', 'acceptanceOf', 'vetting', 'terminal', 'supersedes',
+    const forbidden = ['acceptance', 'acceptanceOf', 'vetting', 'terminal',
       'baselineRef', 'fromLedger', 'fromEvaluator', 'pendingDeliveryBarKeys', 'rerunRecipe',
       'instrumentSnapshots', 'testedSha'].filter(key => (args as Record<string, unknown>)[key] !== undefined);
     if (forbidden.length) return { ok: false as const, code: 'diagnostic_operation_invalid',
@@ -1889,6 +1889,8 @@ export async function emitScorecard(
     const evaluated = await evaluateScorecard({ rubricRef: args.rubricRef, purpose: 'diagnostic',
       subject: args.subject, ratings: args.ratings }, { id: input.createdBy, workspaceId: input.workspaceId });
     if (!evaluated.ok || !('canonicalRatings' in evaluated) || !evaluated.canonicalRatings) return evaluated;
+    if (!('nextAction' in evaluated)) return { ok: false as const, code: 'diagnostic_evaluation_invalid',
+      error: 'Diagnostic evaluation did not return its required next action.' };
     const identity = { rubricRevision: rubric.revision, criteriaHash: rubric.criteriaHash,
       barSetHash: rubric.barSetHash ?? null };
     if (evaluated.rubricRevision !== identity.rubricRevision || evaluated.criteriaHash !== identity.criteriaHash ||
@@ -1898,10 +1900,20 @@ export async function emitScorecard(
     }
     const ratings = evaluated.canonicalRatings;
     const sourceHive = args.sourceHive ?? input.ctxHarness;
+    if (args.supersedes) {
+      const [prior] = await listScorecards({ issueIds: [args.supersedes], includeDiagnostics: true,
+        includeSuperseded: true, limit: 1 });
+      if (!prior || prior.purpose !== 'diagnostic' || prior.createdBy !== input.createdBy ||
+          scorecardComparisonReasons(prior, rubric, args.subject, sourceHive).length) {
+        return { ok: false as const, code: 'diagnostic_correction_invalid',
+          error: 'A diagnostic correction requires your prior diagnostic for the exact rubric, scope and window.' };
+      }
+    }
     const diagnostic = { purpose: 'diagnostic' as const, rubricRef: rubric.rubricId, ...identity,
       ...(rubric.barContract?.meaningRevision != null ? { rubricMeaningRevision: rubric.barContract.meaningRevision } : {}),
       subject: args.subject, ...(sourceHive ? { sourceHive } : {}),
-      ...(args.targetHive ? { targetHive: args.targetHive } : {}), ratings };
+      ...(args.targetHive ? { targetHive: args.targetHive } : {}),
+      ...(args.supersedes ? { supersedes: args.supersedes } : {}), ratings };
     const evidenceFingerprint = createHash('sha256').update(JSON.stringify(diagnostic)).digest('hex');
     const response = { purpose: 'diagnostic' as const, acceptanceEligible: false, ...identity,
       evidenceFingerprint, canonicalRatings: ratings, nextAction: evaluated.nextAction };
@@ -3471,16 +3483,17 @@ export async function emitScorecard(
         return { ok: false as const, code: 'baseline_correction_conflict',
           error: 'A re-grade preserves its baseline; a correction uses supersedes. Emit these as distinct scorecards.' };
       }
-      const [baseline] = await listScorecards({ issueIds: [args.baselineRef], limit: 1 });
+      const [baseline] = await listScorecards({ issueIds: [args.baselineRef], includeDiagnostics: true, limit: 1 });
       if (!baseline || !args.subject || baseline.subject?.kind !== args.subject.kind ||
           baseline.subject?.ref !== args.subject.ref || baseline.rubricRef !== args.rubricRef ||
           baseline.rubricRevision !== rubric.revision || baseline.criteriaHash !== rubric.criteriaHash ||
           baseline.provisional || baseline.retracted || baseline.synthesized ||
           !baseline.rubricResolved || baseline.missingKeys.length > 0 || (baseline.extraKeys?.length ?? 0) > 0 ||
-          baseline.gradingAudit?.state !== 'passed' || baseline.gradingAuditCurrentness?.state !== 'current' ||
+          scorecardComparisonReasons(baseline, rubric, args.subject, sourceHive).length > 0 ||
+          (baseline.purpose !== 'diagnostic' && (baseline.gradingAudit?.state !== 'passed' || baseline.gradingAuditCurrentness?.state !== 'current')) ||
           baseline.rubricCurrentness?.state !== 'current') {
         return { ok: false as const, code: 'baseline_not_comparable',
-          error: 'baselineRef must resolve to preserved current audited evidence for the same target and rubric revision; changed meaning needs a fresh baseline.' };
+          error: 'baselineRef must resolve to a current diagnostic or audited grading for the exact rubric, scope and window; changed meaning needs a fresh baseline.' };
       }
     }
     if (args.supersedes) {
@@ -3687,33 +3700,8 @@ export async function emitScorecard(
         subjectRubricIdentity,
       ).state !== 'current'
     );
-    let effectiveSupersedes = args.supersedes;
-    // A changed terminal card from the same author is a replacement, not a
-    // second current verdict. Persist the edge so read-time supersession and the
-    // pending-audit dispatcher can retire the old card/lease atomically. Keep
-    // provisional finalization, acceptance, baseline comparisons, forced samples,
-    // and grading-integrity audit corrections on their explicit contracts.
-    if (
-      !effectiveSupersedes &&
-      !args.force &&
-      !args.acknowledgeExisting &&
-      !args.acceptance &&
-      !args.baselineRef &&
-      args.rubricRef !== GRADING_INTEGRITY_RUBRIC_REF &&
-      args.subject &&
-      provisional === undefined &&
-      latest &&
-      latest.createdBy === input.createdBy &&
-      latest.provisional === undefined &&
-      latest.acceptance === undefined &&
-      latest.baselineRef === undefined &&
-      !vettingChanged &&
-      !rubricIdentityChanged &&
-      !subjectRubricIdentityChanged &&
-      latestFingerprint !== evidenceFingerprint
-    ) {
-      effectiveSupersedes = latest.issueId;
-    }
+    // Ordinary later measurements preserve history. Only an explicit correction replaces it.
+    const effectiveSupersedes = args.supersedes;
     const sameCorrectionAlreadyExists =
       effectiveSupersedes && latest?.supersedes === effectiveSupersedes;
     if (
@@ -3799,7 +3787,9 @@ export async function emitScorecard(
       ).filter(
         (card) =>
           card.gradingAudit?.state === 'pending' &&
-          card.auditTarget?.current !== false &&
+          card.rubricCurrentness?.state !== 'stale' &&
+          card.subjectRubricCurrentness?.state !== 'stale' &&
+          !card.retracted &&
           card.subject?.ref === args.subject?.ref &&
           (card.subject?.kind ?? null) === (args.subject?.kind ?? null) &&
           card.supersededBy == null &&

@@ -2550,6 +2550,7 @@ describe('current benchmark restart and live binding', () => {
       expect(evaluateSessionConfinement({ toolName: 'plans:get', args: {}, confinement }).allowed).toBe(false);
     }
     expect(confinement.denyCarryOutside).toEqual({ initialPrompt: args.brief,
+      ...(ledger ? { compactionLimit: 20_000 } : {}),
       initialPromptSha256: createHash('sha256').update(args.brief!).digest('hex'), mode: ledger ? 'off' : 'on' });
     // Controlled carry-off arms deny managed carry; legacy assignments retain
     // their existing hook path. Neither is a measurement of a real respawn.

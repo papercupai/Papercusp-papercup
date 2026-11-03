@@ -33,6 +33,19 @@ export interface PlanExecutionRefusal {
 }
 export interface PlanExecutionGuardInput {
   ownerId: string; workspaceId: string; toolName: string; args: unknown;
+  observeTiming?: PlanExecutionTimingObserver;
+}
+export interface PlanExecutionTiming { stage: string; durationMs: number }
+export type PlanExecutionTimingObserver = (timing: PlanExecutionTiming) => void;
+
+/** Diagnostics must never grant, refuse, or interrupt an authority check. */
+async function measurePlanStage<T>(stage: string, observe: PlanExecutionTimingObserver | undefined,
+  read: () => Promise<T>): Promise<T> {
+  if (!observe) return read();
+  const startedAt = performance.now();
+  try { return await read(); } finally {
+    try { observe({ stage, durationMs: performance.now() - startedAt }); } catch { /* diagnostics only */ }
+  }
 }
 export interface ExecutionPlanGoalResolution {
   goal: ResolvedGoal | null;
@@ -41,7 +54,7 @@ export interface ExecutionPlanGoalResolution {
 export interface PlanExecutionGuardDeps {
   readBindings: (ownerId: string, workspaceId: string) => Promise<ExecutionPlanBinding[]>;
   resolveGoal?: (ownerId: string, workspaceId: string) => Promise<ExecutionPlanGoalResolution>;
-  checkPlan: (binding: ExecutionPlanBinding, workspaceId: string) => Promise<string[]>;
+  checkPlan: (binding: ExecutionPlanBinding, workspaceId: string, observe?: PlanExecutionTimingObserver) => Promise<string[]>;
 }
 
 const fileTools = new Set(['Edit', 'Write', 'MultiEdit', 'edit', 'write', 'apply_patch', 'capability:edit',
@@ -229,40 +242,42 @@ async function readExecutionPlanGoal(ownerId: string, workspaceId: string): Prom
   });
 }
 
-export async function checkExecutionPlan(binding: ExecutionPlanBinding, workspaceId: string): Promise<string[]> {
+export async function checkExecutionPlan(binding: ExecutionPlanBinding, workspaceId: string,
+  observe?: PlanExecutionTimingObserver): Promise<string[]> {
   const { readPlanExecutionStart } = await import('./plan-execution-authority');
-  const proof = await readPlanExecutionStart(binding, workspaceId);
+  const proof = await measurePlanStage('start_proof', observe, () => readPlanExecutionStart(binding, workspaceId));
   if (proof.length) return proof;
-  return checkPlanExecutionReadiness(binding, workspaceId);
+  return checkPlanExecutionReadiness(binding, workspaceId, observe);
 }
 
 /** Current policy is required both when issuing authority and on every use. */
-export async function checkPlanExecutionReadiness(binding: ExecutionPlanBinding, workspaceId: string): Promise<string[]> {
+export async function checkPlanExecutionReadiness(binding: ExecutionPlanBinding, workspaceId: string,
+  observe?: PlanExecutionTimingObserver): Promise<string[]> {
   return runWithWorkspace(workspaceId, async () => {
     const { sql } = getOrgPg();
-    const rows = await sql<Array<{ harness_slug: string; content: string; content_hash: string; op_status: string | null }>>`
-      SELECT harness_slug, content, content_hash, op_status FROM harness_shared.harness_plans
+    const rows = await measurePlanStage('scope', observe, () => sql<Array<{ harness_slug: string; content: string; content_hash: string; op_status: string | null; created_at: Date | string | null }>>`
+      SELECT harness_slug, content, content_hash, op_status, created_at FROM harness_shared.harness_plans
        WHERE workspace_id=${workspaceId} AND plan_slug=${binding.planSlug}
-         AND (${binding.harnessSlug}::text IS NULL OR harness_slug=${binding.harnessSlug})`;
+         AND (${binding.harnessSlug}::text IS NULL OR harness_slug=${binding.harnessSlug})`);
     if (rows.length !== 1) return [rows.length ? 'plan_scope_ambiguous' : 'bound_plan_missing'];
     const row = rows[0]!;
     const opts = { harnessSlug: row.harness_slug, workspaceId };
-    const plan = await getPlanRow(binding.planSlug, opts);
+    const plan = await measurePlanStage('plan_row', observe, () => getPlanRow(binding.planSlug, opts));
     if (!plan || plan.contentHash !== row.content_hash) return ['plan_revision_changed'];
     const parsed = parsePlan(plan.content);
     if (!['ready', 'active', 'awaiting-acceptance'].includes(parsed.frontmatter.status ?? ''))
       return [`plan_status:${parsed.frontmatter.status ?? 'unknown'}`];
     const scope = { workspaceId, harnessSlug: row.harness_slug, planSlug: binding.planSlug };
     const { evaluateConversationActivationGate } = await import('./plan-activation-gate');
-    const activation = await evaluateConversationActivationGate(sql as never, scope);
+    const activation = await measurePlanStage('activation', observe, () => evaluateConversationActivationGate(sql as never, scope));
     if (!activation.satisfied) return [activation.code ?? 'conversation_audit_required'];
-    const audits = await sql<Array<{ audited_plan_content_hash: string | null; content_snapshot: string | null }>>`
+    const audits = await measurePlanStage('audit', observe, () => sql<Array<{ audited_plan_content_hash: string | null; content_snapshot: string | null }>>`
       SELECT a.audited_plan_content_hash, r.content_snapshot
         FROM harness_shared.plan_audits a
         LEFT JOIN harness_shared.plan_revisions r ON r.id=a.audited_plan_revision_id
           AND r.workspace_id=a.workspace_id AND r.harness_slug=a.harness_slug AND r.plan_slug=a.plan_slug
        WHERE a.workspace_id=${workspaceId} AND a.harness_slug=${row.harness_slug} AND a.plan_slug=${binding.planSlug}
-         AND a.audit_kind='activation' ORDER BY a.audit_seq DESC LIMIT 1`;
+         AND a.audit_kind='activation' ORDER BY a.audit_seq DESC LIMIT 1`);
     const audit = audits[0];
     // Preserve the canonical gate's explicit legacy/template exemptions, not an ad-hoc override.
     if (!activation.grandfathered) {
@@ -272,7 +287,7 @@ export async function checkPlanExecutionReadiness(binding: ExecutionPlanBinding,
         return ['activation_audit_stale'];
     }
     const [{ evaluatePlanStartReadiness }, { checkPlanAdmission }, { checkPlanStartable },
-      { evaluatePlanSpecQualityGate }, { evaluatePlanStartBarCritique }, { specQualityPlanItemIds },
+      { evaluatePlanSpecQualityGate }, { evaluatePlanStartBarCritique, isPlanStartBarCritiqueInCohort }, { specQualityPlanItemIds },
       { validatePlanCandidateDependencies }] = await Promise.all([
       import('./plan-input-validation'), import('./plan-admission-gate'),
       import('./plan-start-gate'), import('./plan-spec-quality-gate'), import('./plan-start-critique-gate'),
@@ -284,16 +299,21 @@ export async function checkPlanExecutionReadiness(binding: ExecutionPlanBinding,
     // This door enforces the current contract, not proof completion. Measuring
     // every bound artifact here repeats ship-only work on each native tool call.
     // Metadata still reads the live bounded sources; grading/ship reject reuse.
-    const gate = await checkPlanStartable(binding.planSlug, opts, null, 'start', { proofMode: 'metadata' });
+    const gate = await measurePlanStage('start_gate', observe,
+      () => checkPlanStartable(binding.planSlug, opts, null, 'start', { proofMode: 'metadata' }));
     if (!gate.ok) return [gate.refusal.code];
     const items = plan.items.length ? plan.items : parsed.items;
-    const quality = await evaluatePlanSpecQualityGate({ harnessSlug: row.harness_slug,
-      planSlug: binding.planSlug, planItemIds: specQualityPlanItemIds(items), planItems: items });
+    const quality = await measurePlanStage('spec_quality', observe, () => evaluatePlanSpecQualityGate({ harnessSlug: row.harness_slug,
+      planSlug: binding.planSlug, planItemIds: specQualityPlanItemIds(items), planItems: items }));
     if (!quality.satisfied) return [quality.code ?? 'spec_quality_not_current'];
-    if (quality.applicable) {
-      const critique = await evaluatePlanStartBarCritique({ workspaceId, harnessSlug: row.harness_slug,
+    // Legacy plans only receive diagnostic critiques. Native authority needs no
+    // reconstruction of those histories; full start/report readers retain it.
+    // Read the cohort on every invocation, and evaluate unknown dates normally.
+    const createdMs = row.created_at == null ? Number.NaN : new Date(row.created_at).getTime();
+    if (quality.applicable && isPlanStartBarCritiqueInCohort(createdMs)) {
+      const critique = await measurePlanStage('critique', observe, () => evaluatePlanStartBarCritique({ workspaceId, harnessSlug: row.harness_slug,
         planSlug: binding.planSlug, nonDroppedItemCount: specQualityPlanItemIds(items).length,
-        contractEnforced: quality.mode === 'enforced' });
+        contractEnforced: quality.mode === 'enforced' }));
       if (critique?.mode === 'enforced' && !critique.verdict.satisfied)
         return [critique.verdict.code ?? 'critique_missing'];
     }
@@ -302,7 +322,8 @@ export async function checkPlanExecutionReadiness(binding: ExecutionPlanBinding,
     // checkPlanStartable already evaluates the complete pre-start BAR under pinned
     // plan types on this invocation. Repeating it remeasures every evidence binding.
     // Keep that canonical check fresh on every use; do not cache its verdict.
-    const admission = await checkPlanAdmission({ slug: binding.planSlug, door: 'run-now', opts, row: plan });
+    const admission = await measurePlanStage('admission', observe,
+      () => checkPlanAdmission({ slug: binding.planSlug, door: 'run-now', opts, row: plan }));
     return admission.admitted ? [] : [admission.refusal.code];
   });
 }
@@ -316,11 +337,13 @@ export async function checkPlanExecutionGuard(input: PlanExecutionGuardInput,
 ): Promise<PlanExecutionRefusal | null> {
   if (!isPlanImplementationCall(input.toolName, input.args)) return null;
   try {
-    const allBindings = await deps.readBindings(input.ownerId, input.workspaceId);
+    const allBindings = await measurePlanStage('bindings', input.observeTiming,
+      () => deps.readBindings(input.ownerId, input.workspaceId));
     let resolution: ExecutionPlanGoalResolution | null = null;
     if (deps.resolveGoal) {
       try {
-        resolution = await deps.resolveGoal(input.ownerId, input.workspaceId);
+        resolution = await measurePlanStage('goal', input.observeTiming,
+          () => deps.resolveGoal!(input.ownerId, input.workspaceId));
       } catch {
         // An unreadable selector cannot narrow authority. Check the entire durable
         // census instead, preserving the existing fail-closed behavior.
@@ -330,7 +353,8 @@ export async function checkPlanExecutionGuard(input: PlanExecutionGuardInput,
       ? selectExecutionPlanBindings(allBindings, resolution.goal)
       : uniquePlanBindings(allBindings);
     for (const binding of bindings) {
-      const blockers = await deps.checkPlan(binding, input.workspaceId);
+      const blockers = await measurePlanStage('binding', input.observeTiming,
+        () => deps.checkPlan(binding, input.workspaceId, input.observeTiming));
       if (blockers.length) return { code: 'plan_execution_not_ready', planSlug: binding.planSlug, blockers,
         reason: `Plan '${binding.planSlug}' is not executable (${blockers.join(', ')}). Implementation writes are refused. `
           + 'Repair the plan with plans:edit/audit and finish the standard plans:start process first. '

@@ -953,7 +953,7 @@ export function qualifyCommittedReaderSource(o: CommittedReaderSourceOptions) {
  */
 export function observeCommittedReaderLoadedSources(o: CommittedReaderSourceOptions & {
   traceOut: string; pid: number; startedAtMs: number; finishedAtMs: number;
-  processIdentity?: string; buildObservationOnly?: boolean;
+  kernelProcessIdentity?: string; buildObservationOnly?: boolean;
   configuration?: ConfigurationSnapshot;
 }) {
   const closureBytes = readFileSync(o.receiptPath), sourceBytes = readFileSync(o.sourceReceiptPath);
@@ -968,6 +968,7 @@ export function observeCommittedReaderLoadedSources(o: CommittedReaderSourceOpti
     preparationSha256: digestBytes(closureBytes),
     sourceReceiptSha256: digestBytes(sourceBytes),
     traceOut: o.traceOut, pid: o.pid, processIdentity: null as string | null,
+    kernelProcessIdentity: null as string | null,
     startedAtMs: o.startedAtMs, finishedAtMs: o.finishedAtMs,
     population: null as ReturnType<typeof readNativeProcessTraceArtifacts>['population'] | null,
     entrySha256: null as string | null, exitObserved: false,
@@ -994,13 +995,17 @@ export function observeCommittedReaderLoadedSources(o: CommittedReaderSourceOpti
     const entry = entries[0];
     const identity = entry.row.processIdentity;
     assert.ok(identity && own.every(({ row }) => row.processIdentity === identity), 'mixed host trace identities');
-    if (o.processIdentity) assert.equal(identity, o.processIdentity, 'host trace identity changed');
+    const kernelIdentity = entry.row.kernelProcessIdentity;
+    assert.ok(typeof kernelIdentity === 'string' && kernelIdentity.length > 0, 'host kernel process identity missing');
+    assert.ok(own.every(({ row }) => row.kernelProcessIdentity === kernelIdentity), 'mixed host kernel process identities');
+    if (o.kernelProcessIdentity) assert.equal(kernelIdentity, o.kernelProcessIdentity, 'host kernel process identity changed');
     assert.equal(entry.row.cwd, realpathSync(o.root), 'host trace cwd differs');
     assert.equal(entry.row.executable, process.execPath, 'host trace executable differs');
     assert.equal(entry.row.argv?.[1], o.bundle, 'host trace bundle argv differs');
     assert.equal(entry.row.reporterOut, o.traceOut, 'host trace channel differs');
     assert.ok(own.every(({ row }) => row.atMs >= entry.row.atMs), 'host event predates entry');
     result.processIdentity = identity;
+    result.kernelProcessIdentity = kernelIdentity;
     result.entrySha256 = digestBytes(entry.bytes);
     result.exitObserved = own.some(({ row }) => row.event === 'node-exit' && row.exitListenersComplete === true);
     // Bind only the authenticated host entry. Parent launch values, a source

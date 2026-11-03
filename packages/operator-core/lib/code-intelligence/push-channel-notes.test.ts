@@ -172,6 +172,33 @@ describe('R-8: a code note whose code changed is withheld, not pushed as current
 });
 
 describe('notes leg wiring', () => {
+  it('starts the notes read while the snapshot is still in flight', async () => {
+    const { deps, committed } = channel({ fold: async () => [], staleness: readNoteAnchorStaleness });
+    const context: NotesContext = {
+      fresh: [{ key: 'code-note:overlapped-read', body: 'the note read overlaps snapshot work',
+        paths: ['lib/target.ts'], scope: 'harness', scopeRef: 'papercusp' }],
+      withheld: [],
+    };
+    let snapshotFinished = false;
+    let notesStartedBeforeSnapshot = false;
+    deps.snapshot = vi.fn(async () => {
+      await new Promise<void>(resolve => setTimeout(resolve, 120));
+      snapshotFinished = true;
+      return snapshot();
+    });
+    deps.notesContext = vi.fn(async () => {
+      notesStartedBeforeSnapshot = !snapshotFinished;
+      await new Promise<void>(resolve => setTimeout(resolve, 80));
+      return context;
+    });
+
+    const text = await codeIntelPushText(input(), deps);
+
+    expect(notesStartedBeforeSnapshot).toBe(true);
+    expect(text).toContain('Code note code-note:overlapped-read');
+    expect(committed.map(fact => fact.leg)).toEqual(['notes']);
+  });
+
   it('lets a 130ms notes read finish within the remaining gather budget', async () => {
     const { deps, committed } = channel({ fold: async () => [], staleness: readNoteAnchorStaleness });
     const context: NotesContext = {

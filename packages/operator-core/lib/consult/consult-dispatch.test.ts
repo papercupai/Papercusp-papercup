@@ -2004,6 +2004,42 @@ describe('rejudgeFirstTurn (the same first-turn judge, run after the window)', (
     expect(verdict).toMatchObject({ status: 'rejected', reason: 'account-walled' });
   });
 
+  it('treats an explicit nonretryable native failure receipt as a terminal first-turn failure', async () => {
+    const claudeTarget = {
+      agent: 'claude' as const,
+      transcriptPath: '/native/answer.jsonl',
+      launchLogPath: '/logs/answerer.log',
+    };
+    const receipt = '[psu] native-turn-failed agent=claude code=api_error_400 retryable=false retryAfterMs=unknown';
+    const exit = '[papercusp] initial terminal command exited with status 1';
+    const launchLogReason = launchLogFailureReason(`${receipt}\n${exit}\n`);
+    expect(launchLogReason).toBe(`${receipt} · ${exit}`);
+    const read = {
+      readLaunchLogReason: async (path: string) => path === claudeTarget.launchLogPath ? launchLogReason : null,
+      analyzeClaudeTranscript: (path: string) => path === claudeTarget.transcriptPath ? {
+        trailingMissingToolReferenceTurns: 0,
+        lastMissingToolReferenceName: null,
+        assistantTurnsSinceLastPrompt: 0,
+        trailingContextLimitTurns: 0,
+        lastContextLimitEvidence: null,
+      } : null,
+      analyzeCodexRollout: () => { throw new Error('the Codex reader must not be used for a Claude rank'); },
+    };
+    const verdict = await rejudgeFirstTurn(claudeTarget, read);
+    expect(verdict).toMatchObject({ status: 'rejected', reason: 'first-turn-provider-error' });
+    expect(verdict.status === 'rejected' && verdict.evidence).toContain(receipt);
+
+    const retryableReason = launchLogFailureReason(`${receipt.replace('retryable=false', 'retryable=true')}\n${exit}\n`);
+    expect(retryableReason).toBe(exit);
+    await expect(rejudgeFirstTurn(claudeTarget, {
+      ...read,
+      readLaunchLogReason: async () => retryableReason,
+    })).resolves.toEqual({ status: 'pending' });
+
+    const quotedLog = ['review brief', '```log', receipt, '```'].join('\n');
+    expect(launchLogFailureReason(quotedLog)).toBeNull();
+  });
+
   it('a turn still running is pending, a clean turn is replied, an unreadable file is unreadable', async () => {
     await expect(rejudgeFirstTurn(target, codex(started))).resolves.toEqual({ status: 'pending' });
     await expect(rejudgeFirstTurn(target, codex(started, {

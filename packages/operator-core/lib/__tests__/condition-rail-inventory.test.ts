@@ -12,6 +12,7 @@ import {
   CLASSES,
   dispositionFor,
   dispositionProblem,
+  hasCandidateAnchor,
   inventory,
   isScannable,
   scanSites,
@@ -19,6 +20,35 @@ import {
 } from '../../../../scripts/lib/condition-rail-inventory.mjs';
 
 const classesOf = (src: string, file: string) => scanSource(src, file).map((r) => r.class);
+
+describe('condition-rail inventory — candidate prefilter', () => {
+  it('skips broad alarm wording without a scanner syntax anchor', () => {
+    const source = `// alarm degraded, fallback watchdog\nconst note = 'alert waiver unhealthy';`;
+    expect(hasCandidateAnchor(source, 'packages/x/lib/state.ts')).toBe(false);
+    expect(scanSites(source, 'packages/x/lib/state.ts')).toEqual([]);
+  });
+
+  it('keeps each scanner anchor family and watchdog modules eligible', () => {
+    const cases: Array<[string, string, string]> = [
+      ['owner alarm call', 'notifyAttention(input);', 'packages/x/lib/check.ts'],
+      ['log call', "console.warn('ordinary message');", 'packages/x/lib/check.ts'],
+      ['health field', 'return { degraded: count > 5 };', 'packages/x/lib/health.ts'],
+      ['watchdog interval', "managedSetInterval('disk-watchdog', 60, run);", 'packages/x/lib/check.ts'],
+      ['signal waiver', "defineSignal({ id: 'x', waiver: { reason: 'accepted' } });", 'packages/x/lib/registry.ts'],
+      ['watchdog module', 'export const start = () => {};', 'packages/x/lib/disk-watchdog.ts'],
+    ];
+    for (const [label, source, file] of cases) {
+      expect(hasCandidateAnchor(source, file), label).toBe(true);
+    }
+  });
+
+  it('preserves fallback wording assembled from split literals', () => {
+    const source = "console.warn('fall' + 'back');";
+    const file = 'packages/x/lib/check.ts';
+    expect(hasCandidateAnchor(source, file)).toBe(true);
+    expect(scanSites(source, file).map((site) => site.class)).toEqual(['log-only-fallback']);
+  });
+});
 
 describe('condition-rail inventory — class 1: owner-only alarms', () => {
   it('reports a notifyAttention / escalateAlarm call with no rail call beside it', () => {

@@ -15,14 +15,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const listen = vi.fn();
 const end = vi.fn().mockResolvedValue(undefined);
 const postgresFactory = vi.fn((_url?: string, _opts?: unknown) => ({ listen, end }));
+const hubEnabled = vi.fn(() => false);
+const hubListen = vi.fn();
 
 vi.mock('postgres', () => ({
   default: (url?: string, opts?: unknown) => postgresFactory(url, opts),
 }));
 vi.mock('./embedded-pg-discovery', () => ({ getHarnessAdminUrl: () => 'postgres://test' }));
 vi.mock('./pg-listen-hub', () => ({
-  listenHubEnabled: () => false,
-  hubListen: vi.fn(),
+  listenHubEnabled: () => hubEnabled(),
+  hubListen: (...args: unknown[]) => hubListen(...args),
 }));
 
 import { createNotifyBus } from './pg-notify-bus';
@@ -35,6 +37,8 @@ describe('createNotifyBus — EI-9920 retry-on-failed-start', () => {
     listen.mockReset();
     end.mockReset().mockResolvedValue(undefined);
     postgresFactory.mockClear();
+    hubEnabled.mockReturnValue(false);
+    hubListen.mockReset();
     // These tests deliberately exercise the failed-start → retry path, which
     // logs `[label] failed to start (will retry): ...` — expected noise, not
     // a real failure.
@@ -190,6 +194,24 @@ describe('createNotifyBus — EI-9920 retry-on-failed-start', () => {
     await vi.advanceTimersByTimeAsync(60_000);
     expect(listen).toHaveBeenCalledTimes(1);
 
+    await bus._stopForTests();
+  });
+
+  it.each([false, true])('rescans initial and reconnected LISTEN, suppressing a stale ready callback (hub=%s)', async useHub => {
+    hubEnabled.mockReturnValue(useHub);
+    listen.mockResolvedValue(undefined);
+    hubListen.mockResolvedValue(vi.fn());
+    const onListen = vi.fn();
+    const bus = createNotifyBus('coord_inbox', 'recovery-test', onListen);
+    const unsubscribe = bus.subscribe(vi.fn());
+    await vi.advanceTimersByTimeAsync(0);
+    const ready = (useHub ? hubListen : listen).mock.calls[0][2] as () => void;
+    ready();
+    ready();
+    expect(onListen).toHaveBeenCalledTimes(2);
+    unsubscribe();
+    ready();
+    expect(onListen).toHaveBeenCalledTimes(2);
     await bus._stopForTests();
   });
 });

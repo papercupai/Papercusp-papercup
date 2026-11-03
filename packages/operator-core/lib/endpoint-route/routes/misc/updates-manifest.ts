@@ -37,6 +37,7 @@
  *     PAPERCUSP_RELEASE_HOST fallback.
  */
 import { readOperatorState } from '../../../operator-state-pg';
+import { parseTauriUpdateEnvelope, type TauriUpdateEnvelope } from '@papercusp/tauri-release-kit/signature';
 import { ManagedUpdatePolicyError, readManagedUpdateChannel } from '../../../managed-update-policy';
 import { defineTool } from '@papercusp/agent-mcp';
 import { observeFallback } from '../../../degradation/fallback-observations';
@@ -84,11 +85,16 @@ export interface GhRelease {
   draft: boolean;
   assets: GhAsset[];
 }
+interface UpdatePlatformEntry {
+  signature: string;
+  url: string;
+  updateAuthorization?: TauriUpdateEnvelope;
+}
 interface TauriManifest {
   version: string;
   notes: string;
   pub_date: string;
-  platforms: Record<string, { signature: string; url: string }>;
+  platforms: Record<string, UpdatePlatformEntry>;
 }
 /** Shape of the pipeline-generated `papercusp-latest-<tag>.json` asset. */
 interface LatestJson {
@@ -96,7 +102,7 @@ interface LatestJson {
   channel?: string;
   notes?: string;
   pub_date?: string;
-  platforms?: Record<string, { signature: string; url: string }>;
+  platforms?: Record<string, UpdatePlatformEntry>;
 }
 
 /**
@@ -348,7 +354,8 @@ type UpdateCannotCheckReason =
   // WI-2144851: the artifact exists but carries no verifiable minisign
   // signature. Same principle as manifest_unconfigured one line up — an update
   // we cannot VERIFY is no more offerable than one we cannot DOWNLOAD.
-  | 'no_signature';
+  | 'no_signature'
+  | 'invalid_update_authorization';
 
 function upToDateResponse(): Response {
   return new Response(null, { status: 204, headers: { 'X-Update-Check': 'up_to_date' } });
@@ -427,11 +434,21 @@ function staticManifestResponse(
   // The static host is public, so the artifact URL is served as-is — no
   // token-gated /api/updates/download proxy rewrite (that exists only for the
   // PRIVATE GitHub repo).
+  let updateAuthorization: TauriUpdateEnvelope | undefined;
+  try {
+    if (entry.updateAuthorization !== undefined) {
+      updateAuthorization = parseTauriUpdateEnvelope(entry.updateAuthorization);
+    }
+  } catch {
+    return cannotCheckResponse('invalid_update_authorization');
+  }
   return Response.json({
     version: latest.version,
     notes: latest.notes ?? '',
     pub_date: latest.pub_date ?? new Date().toISOString(),
-    platforms: { [platformKey]: { signature: entry.signature, url: entry.url } },
+    platforms: { [platformKey]: { signature: entry.signature, url: entry.url,
+      ...(updateAuthorization === undefined ? {} : { updateAuthorization }),
+    } },
   } satisfies TauriManifest);
 }
 
@@ -609,6 +626,14 @@ export default defineTool({
         const entry = latest?.platforms?.[platformKey];
         // latest.json is currently generated for the GUI product only.
         if (entry?.signature && entry.url && product === 'gui') {
+          let updateAuthorization: TauriUpdateEnvelope | undefined;
+          try {
+            if (entry.updateAuthorization !== undefined) {
+              updateAuthorization = parseTauriUpdateEnvelope(entry.updateAuthorization);
+            }
+          } catch {
+            return cannotCheckResponse('invalid_update_authorization');
+          }
           const file = entry.url.split('/').pop() ?? '';
           return Response.json({
             version: latest?.version ?? candidateVersion,
@@ -617,6 +642,7 @@ export default defineTool({
             platforms: {
               [platformKey]: {
                 signature: entry.signature,
+                ...(updateAuthorization === undefined ? {} : { updateAuthorization }),
                 url: `${proxyBase}?tag=${encodeURIComponent(candidate.tag_name)}&name=${encodeURIComponent(file)}`,
               },
             },

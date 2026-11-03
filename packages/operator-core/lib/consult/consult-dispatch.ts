@@ -614,6 +614,12 @@ export function firstTurnRejection(analysis: FirstTurnAnalysis): FirstTurnReject
 function firstTurnRejectionFromLaunchLog(reason: string | null): FirstTurnRejection | null {
   const evidence = reason?.trim();
   if (!evidence) return null;
+  const nativeFailure = evidence.match(
+    /^(\[psu\] native-turn-failed agent=(?:claude|codex) code=[A-Za-z0-9_.-]{1,120} retryable=false retryAfterMs=(?:unknown|\d+))(?: · \[papercusp\] initial terminal command exited with status \d+)?$/i,
+  );
+  if (nativeFailure) {
+    return { turns: 1, tool: null, providerEvidence: nativeFailure[1] };
+  }
   if (/(?:\b429\b|rate.?limit|(?:session|weekly|usage) limit|quota|credit)/i.test(evidence)) {
     return { turns: 1, tool: null, accountEvidence: evidence };
   }
@@ -1325,6 +1331,9 @@ function stripTerminalControl(text: string): string {
 /** psu prints its own refusals as whole `psu: …` lines, so the whole line is the reason. */
 const PSU_FAILURE_LINE =
   /^psu(?:-pty-host)?: .*(?:refus|requires|must|could not|cannot|can only|failed|no session|not found|not all present|unavailable|unrecoverable|DROPPED|still in progress)/i;
+/** The native host's nonretryable receipt is terminal evidence for this answer turn. */
+const NATIVE_TERMINAL_FAILURE_LINE =
+  /^\[psu\] native-turn-failed agent=(?:claude|codex) code=[A-Za-z0-9_.-]{1,120} retryable=false retryAfterMs=(?:unknown|\d+)$/i;
 /**
  * The CLI's own failures arrive inside TUI output drawn with cursor-movement
  * escapes, not newlines, so they sit mid-way through one long rendered "line"
@@ -1358,8 +1367,13 @@ export function launchLogFailureReason(logText: string): string | null {
     .filter(Boolean);
   let failure: string | null = null;
   let exit: string | null = null;
-  for (const line of lines) {
+  for (const [index, line] of lines.entries()) {
     if (PSU_FAILURE_LINE.test(line)) {
+      failure = line;
+      continue;
+    }
+    if (NATIVE_TERMINAL_FAILURE_LINE.test(line) &&
+        lines.slice(index + 1).every((trailing) => LAUNCH_EXIT_LINE.test(trailing))) {
       failure = line;
       continue;
     }

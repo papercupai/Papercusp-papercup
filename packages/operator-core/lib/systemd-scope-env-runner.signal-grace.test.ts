@@ -25,12 +25,21 @@
  */
 import { describe, expect, it } from 'vitest';
 import { spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createTextCollector } from './child-output.js';
 import { mkNonRepoTmpDir } from './agent-tools/locks/non-repo-tmpdir';
-import { SYSTEMD_RUNNER_OUTPUT_PATH_ENV, SYSTEMD_RUNNER_REDACTIONS_ENV } from './systemd-scope-env-runner.mjs';
+import {
+  SYSTEMD_RUNNER_BASH_JOB_ID_ENV,
+  SYSTEMD_RUNNER_JOB_END_PREFIX,
+  SYSTEMD_RUNNER_MARKER_SECRET_ENV,
+  SYSTEMD_RUNNER_OUTPUT_PATH_ENV,
+  SYSTEMD_RUNNER_REDACTIONS_ENV,
+  SYSTEMD_RUNNER_SCOPE_UNIT_ENV,
+  SYSTEMD_RUNNER_TASK_ID_ENV,
+} from './systemd-scope-env-runner.mjs';
 
 /**
  * The subject under test, overridable by path.
@@ -64,6 +73,43 @@ async function waitFor(predicate: () => boolean, ms: number): Promise<boolean> {
 }
 
 describe('systemd-scope-env-runner SIGTERM grace (WI-1064487)', () => {
+  it('writes a failed JOB END with exact service identity and strips runner controls from the payload', async () => {
+    const dir = mkNonRepoTmpDir('runner-job-end-identity-');
+    const logPath = join(dir, 'job.log');
+    const NEVER_EMIT_MARKER = 'never-emit-me';
+    const secret = NEVER_EMIT_MARKER;
+    const taskId = 'task-identity-1';
+    const bashJobId = 'bash-identity-1';
+    const scopeUnit = 'task-identity-1.service';
+    const invocationId = '0123456789abcdef0123456789abcdef';
+    const envPath = writeEnvFile(dir, {
+      [SYSTEMD_RUNNER_OUTPUT_PATH_ENV]: logPath,
+      [SYSTEMD_RUNNER_TASK_ID_ENV]: taskId,
+      [SYSTEMD_RUNNER_BASH_JOB_ID_ENV]: bashJobId,
+      [SYSTEMD_RUNNER_SCOPE_UNIT_ENV]: scopeUnit,
+      [SYSTEMD_RUNNER_MARKER_SECRET_ENV]: secret,
+      PATH: process.env.PATH ?? '',
+    });
+    const payload =
+      "process.stdout.write(JSON.stringify({controls:Object.keys(process.env).filter((key)=>key.startsWith('PAPERCUSP_SYSTEMD_RUNNER_')),unit:process.env.SYSTEMD_UNIT??null,invocation:process.env.INVOCATION_ID??null})); process.exitCode=7";
+    const runner = spawn(process.execPath, [RUNNER, '--env-fd-path', envPath, '--', process.execPath, '-e', payload], {
+      env: { ...process.env, SYSTEMD_UNIT: scopeUnit, INVOCATION_ID: invocationId },
+      stdio: 'ignore',
+    });
+    const code = await new Promise<number | null>((resolve, reject) => {
+      runner.once('error', reject);
+      runner.once('close', resolve);
+    });
+
+    expect(code).toBe(7);
+    const log = readFileSync(logPath, 'utf8');
+    const nonce = createHash('sha256').update(secret).digest('hex');
+    expect(log).toContain('{"controls":[],"unit":null,"invocation":null}');
+    expect(log).toContain(`${SYSTEMD_RUNNER_JOB_END_PREFIX}: status=failed exit=7`);
+    expect(log).toContain(`task=${taskId} bash=${bashJobId} scope=${scopeUnit} invocation=${invocationId} nonce=${nonce}`);
+    expect(log).not.toContain(secret);
+  });
+
   it('replaces the inherited-output runner with the exact payload when execve is supported', async () => {
     const dir = mkNonRepoTmpDir('runner-generation-owner-');
     const payloadRoot = join(dir, 'payload-generation');

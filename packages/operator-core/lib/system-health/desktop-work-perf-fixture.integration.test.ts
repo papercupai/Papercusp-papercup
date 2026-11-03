@@ -65,12 +65,18 @@ describe('private native work journey fixture', () => {
     expect(() => assertWorkPerfIsolation(env, { ...env, HARNESS_ADMIN_DATABASE_URL: 'other' })).toThrow();
   });
 
-  it('persists a real offer and authenticates a distinct claimant through the real session store', async () => {
+  it('persists a private Hive plan and offer, then authenticates a distinct claimant through the real session store', async () => {
     const fixture = await seedWorkPerfFixture(env);
     const { login, getSessionUser, SESSION_COOKIE } = await import('../auth');
     const { getHumanMarketItem, actOnHumanMarketItem } = await import('../work-items-human-market-store');
     const { humanAssignee, readHumanMarketJob } = await import('../work-items-human-market');
     const { hasActiveStrictHumanAsk } = await import('../hold-registry');
+    const { getPlanRow } = await import('../agent-tools/plans/source');
+    const plan = await getPlanRow(fixture.planSlug, { workspaceId: fixture.workspace, harnessSlug: fixture.harness });
+    expect(plan).toMatchObject({ planSlug: fixture.planSlug, harnessSlug: fixture.harness,
+      workspaceId: fixture.workspace, status: 'draft' });
+    expect(plan?.content).toContain('Open this persisted body through the product plan reader.');
+    expect(await getPlanRow(fixture.planSlug, { workspaceId: fixture.workspace, harnessSlug: 'papercusp' })).toBeNull();
     const session = await login(fixture.username, null, { workspace_id: fixture.workspace });
     const human = await getSessionUser(new Headers({ cookie: SESSION_COOKIE + '=' + session.token }));
     expect(human?.workspace_id).toBe(fixture.workspace);

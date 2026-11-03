@@ -69,6 +69,8 @@ export interface StaticHistoryArtifact {
   url: string;
   size: number;
   sha256: string;
+  /** Opaque reviewed envelope; native activation validates against current protected trust. */
+  updateAuthorization?: import('@papercusp/tauri-release-kit/signature').TauriUpdateEnvelope;
 }
 
 export interface StaticHistoryRelease {

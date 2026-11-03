@@ -462,6 +462,84 @@ it.each([0, 7])('reports real private PG cleanup for an ordinary no-IPC isolated
   }
 }, workerOptions.testTimeoutMs);
 
+it.runIf(process.platform === 'linux')('binds the default endpoint socket under the Unix path budget for a deep evidence root', async () => {
+  const evidenceDir = await mkdtemp(join(tmpdir(), 'isolated-ipc-path-'));
+  const deepBase = join(evidenceDir, 'isolated-ipc-deep-evidence-' + 'x'.repeat(64));
+  await mkdir(deepBase, { recursive: true });
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    TMPDIR: deepBase,
+    PAPERCUSP_TEST_RUNTIME_TMP_BASE: deepBase,
+  };
+  delete env.PC_ISOLATED_RUNTIME_PROOF;
+  delete env.PC_HEAVY_PREEMPT_READY_FILE;
+  delete env.PC_HEAVY_PSI_FINALIZATION_FILE;
+  delete env.PAPERCUSP_IPC_SOCKET;
+  const child = spawn(process.execPath, [join(root, 'scripts/with-test-pg.mjs'),
+    '--isolated-runtime', '--', process.execPath, '--input-type=module', '-e', `
+      import assert from 'node:assert/strict';
+      import { createServer } from 'node:net';
+      import { mkdir, mkdtemp, rm } from 'node:fs/promises';
+      import { dirname, join } from 'node:path';
+      import { papercuspPath } from '@papercusp/host-platform/home';
+
+      assert.ok(!process.env.PAPERCUSP_TEST_RUNTIME_TMP_BASE.includes('isolated-ipc-deep-evidence-'));
+      assert.ok(!process.env.HOME.includes('isolated-ipc-deep-evidence-'));
+      const endpointPath = papercuspPath('sockets', process.pid + '.sock');
+      const controlRoot = await mkdtemp(join('/tmp', 'pcv-control-'));
+      const controlPath = join(controlRoot, 'control.sock');
+      const bind = socketPath => new Promise((resolve, reject) => {
+        const server = createServer();
+        server.once('error', reject);
+        server.listen(socketPath, () => resolve(server));
+      });
+      let control;
+      let endpoint;
+      try {
+        await mkdir(dirname(endpointPath), { recursive: true, mode: 0o700 });
+        const controlBytes = Buffer.byteLength(controlPath);
+        const endpointBytes = Buffer.byteLength(endpointPath);
+        assert.ok(controlBytes <= 100, 'short-path control exceeds budget: ' + controlBytes);
+        control = await bind(controlPath);
+        assert.ok(endpointBytes <= 100, 'default endpoint socket exceeds budget: ' + endpointBytes);
+        endpoint = await bind(endpointPath);
+        console.log('PRIVATE_ENDPOINT_SOCKET_PATH_PROOF ' + JSON.stringify({
+          controlBytes,
+          endpointBytes,
+          runtimeRoot: dirname(process.env.HOME),
+          runtimeTmpBase: process.env.PAPERCUSP_TEST_RUNTIME_TMP_BASE,
+        }));
+      } finally {
+        if (endpoint) await new Promise(resolve => endpoint.close(resolve));
+        if (control) await new Promise(resolve => control.close(resolve));
+        await rm(controlRoot, { recursive: true, force: true });
+      }
+    `,
+  ], { cwd: root, detached: true, env, stdio: ['ignore', 'pipe', 'pipe'] });
+  try {
+    expect(child.connected).toBe(false);
+    const result = await captureIsolatedWorker(child, evidenceDir, { ...workerOptions, cleanupFromStdout: true });
+    expect(result, result.output.slice(-8000)).toMatchObject({
+      code: 0, signal: null, timedOut: false, exitWaitTimedOut: false, stdioDrainTimedOut: false,
+    });
+    const marker = 'PRIVATE_ENDPOINT_SOCKET_PATH_PROOF ';
+    const proofLine = result.output.split('\n').find(line => line.startsWith(marker));
+    expect(proofLine, result.output.slice(-4000)).toBeTruthy();
+    const proof = JSON.parse(proofLine!.slice(marker.length));
+    expect(proof.controlBytes).toBeLessThanOrEqual(100);
+    expect(proof.endpointBytes).toBeLessThanOrEqual(100);
+    expect(proof.runtimeTmpBase).not.toContain('isolated-ipc-deep-evidence-');
+    expect(existsSync(proof.runtimeRoot)).toBe(false);
+  } finally {
+    if (child.exitCode === null && child.signalCode === null) {
+      const exited = new Promise(resolve => child.once('exit', resolve));
+      process.kill(-child.pid!, 'SIGKILL');
+      await exited;
+    }
+    await rm(evidenceDir, { recursive: true, force: true });
+  }
+}, workerOptions.testTimeoutMs);
+
 it('rejects a mixed candidate migration inventory before allocating private Postgres', async () => {
   const evidenceDir = await mkdtemp(join(tmpdir(), 'isolated-migration-mismatch-'));
   try {

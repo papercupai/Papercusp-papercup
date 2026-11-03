@@ -57,6 +57,32 @@ describe('implementation authority before direct writes (EI-27540173897381380)',
     expect(result).toBeNull();
     expect(checkPlan.mock.calls.map(([binding]) => binding.planSlug)).toEqual(['security-plan']);
   });
+  it('records each checked binding while diagnostic failures cannot change allow or refusal', async () => {
+    for (const blockers of [[], ['plan_not_started']]) {
+      const timings: Array<{ stage: string; durationMs: number }> = [];
+      const result = await checkPlanExecutionGuard({ ...call(), observeTiming: timing => {
+        timings.push(timing); throw Error('broken timing sink');
+      } }, {
+        readBindings: async () => [binding],
+        resolveGoal: async () => ({ goal: null, diagnostics: [] }),
+        checkPlan: async (_binding, _workspace, observe) => {
+          expect(observe).toBeTypeOf('function');
+          return blockers;
+        },
+      });
+      expect(timings.map(t => t.stage)).toEqual(['bindings', 'goal', 'binding']);
+      expect(timings.every(t => Number.isFinite(t.durationMs) && t.durationMs >= 0)).toBe(true);
+      if (blockers.length) expect(result).toMatchObject({ blockers });
+      else expect(result).toBeNull();
+    }
+  });
+  it('retains failed-read timing and the original fail-closed verdict', async () => {
+    const timings: string[] = [];
+    expect(await checkPlanExecutionGuard({ ...call(), observeTiming: t => { timings.push(t.stage); } }, {
+      readBindings: async () => { throw Error('unavailable'); }, checkPlan: vi.fn(),
+    })).toMatchObject({ blockers: ['plan_authority_unavailable'] });
+    expect(timings).toEqual(['bindings']);
+  });
   it('still refuses an unstarted plan attached to the selected work-item', async () => {
     const goal = resolveAgentGoal({
       workItems: [{ id: 'EI-security' }],

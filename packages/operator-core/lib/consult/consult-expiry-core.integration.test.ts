@@ -22,7 +22,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createFreshTestDb, type MigratedTestDb } from '@papercusp/test-config/pg';
 import { FIRST_TURN_REJUDGE_WINDOW_MS, sweepExpiredConsults, type ExpirySweepDeps } from './consult-expiry-core';
-import { rejudgeFirstTurn } from './consult-dispatch';
+import { launchLogFailureReason, rejudgeFirstTurn } from './consult-dispatch';
 import { continueCascadeDispatchCore } from './cascade-core';
 import { consultExpiryFindSilentResponders, consultExpiryNotifyRequester } from './consult-expiry-adapters';
 import { PgCoordLog, ensureCoordEventLogTable } from '@papercusp/coordination/event-log';
@@ -142,19 +142,21 @@ async function seedConsult(opts: {
   state?: string;
   workspaceId?: string;
   requesterId?: string;
+  responderId?: string;
+  id?: string;
   routing?: unknown;
   cascadeCursor?: number;
   updatedAt?: string;
   conversationUpdatedAt?: string;
 }): Promise<string> {
   seq += 1;
-  const id = `conv-e-${seq}`;
+  const id = opts.id ?? `conv-e-${seq}`;
   await rootSql`
     INSERT INTO harness_shared.consult_state
       (workspace_id, conversation_id, requester_id, responder_id, state, question,
        latency_contract, expires_at, closed_at, routing, cascade_cursor)
     VALUES
-      (${opts.workspaceId ?? WS}, ${id}, ${opts.requesterId ?? 'req-1'}, 'resp-1',
+      (${opts.workspaceId ?? WS}, ${id}, ${opts.requesterId ?? 'req-1'}, ${opts.responderId ?? 'resp-1'},
        ${opts.state ?? 'awaiting_responder'}, 'q', ${opts.latency ?? 'proceed'},
        ${opts.expiresAt === undefined ? PAST : opts.expiresAt}, ${opts.closedAt ?? null},
        ${rootSql.json((opts.routing ?? {}) as never)}, ${opts.cascadeCursor ?? 0})`;
@@ -1731,30 +1733,38 @@ describe('a first-turn rejection that lands after the dispatch window (EI-271117
     writeFileSync(path, `${records.map((r) => JSON.stringify(r)).join('\n')}\n`);
     return path;
   }
-  /** One persisted walk exactly as dispatchRecordEntry writes a dispatched Codex convert. */
+  /** One persisted walk with its exact source, answerer and native agent. */
   async function recordDispatch(id: string, opts: {
     transcriptPath: string;
     kickoffAt: string;
+    sourceOwnerId?: string;
     answeringOwnerId?: string;
+    agent?: 'claude' | 'codex';
+    model?: string;
+    operation?: 'fork' | 'convert';
     launchLogPath?: string;
     afterInterimReply?: boolean;
   }) {
+    const sourceOwnerId = opts.sourceOwnerId ?? 'resp-1';
+    const agent = opts.agent ?? 'codex';
+    const model = opts.model ?? (agent === 'claude' ? 'fable' : 'sol');
+    const operation = opts.operation ?? 'convert';
     const record = {
       at: opts.kickoffAt,
-      sourceOwnerId: 'resp-1',
+      sourceOwnerId,
       dispatched: true,
-      answeringOwnerId: opts.answeringOwnerId ?? 'resp-1-codex',
-      operation: 'convert',
-      agent: 'codex',
-      model: 'sol',
+      answeringOwnerId: opts.answeringOwnerId ?? `${sourceOwnerId}-${agent}`,
+      operation,
+      agent,
+      model,
       verified: true,
-      detail: 'convert of resp-1 → codex/sol',
+      detail: `${operation} of ${sourceOwnerId} → ${agent}/${model}`,
       ...(opts.launchLogPath ? { launchLogPath: opts.launchLogPath } : {}),
       attempts: [{
-        rank: 3, agent: 'codex', model: 'sol', operation: 'convert', outcome: 'dispatched', detail: 'dispatched',
+        rank: agent === 'claude' ? 1 : 3, agent, model, operation, outcome: 'dispatched', detail: 'dispatched',
         ...(opts.launchLogPath ? { launchLogPath: opts.launchLogPath } : {}),
         [opts.afterInterimReply ? 'answeringTurn' : 'firstTurnUnjudged']: {
-          agent: 'codex', transcriptPath: opts.transcriptPath, kickoffAt: opts.kickoffAt,
+          agent, transcriptPath: opts.transcriptPath, kickoffAt: opts.kickoffAt,
         },
       }],
     };
@@ -1832,7 +1842,7 @@ describe('a first-turn rejection that lands after the dispatch window (EI-271117
     expect(reachCalls.filter((c) => c.conversationId === pending || c.conversationId === clean)).toEqual([]);
   });
 
-  it('uses the exact dispatched launch log for terminal 429 and context-limit failures when the native transcript has no reply', async () => {
+  it('advances an exact dispatched nonretryable API400 failure when no answer progress exists', async () => {
     const rejected = await nonDue();
     const rejectedTranscript = rolloutFile(`log-429-${rejected}`, started);
     const rejectedLog = join(dir, `launch-429-${rejected}.log`);
@@ -1856,6 +1866,32 @@ describe('a first-turn rejection that lands after the dispatch window (EI-271117
       launchLogPath: contextLog,
     });
 
+    const nativeConversation = 'conv-mvztc43m-0000-dc6d0b958b064f658fceed53c0e3e4ac';
+    const nativeSourceOwner = 'su-4cebe011-28bf-49aa-85bc-caea5a731d93';
+    const nativeAnsweringOwner = 'su-7b15864a-3f5d-4bf8-a4fe-f8b4602379d7';
+    const nativeFailure = await seedConsult({
+      id: nativeConversation,
+      workspaceId: WS,
+      responderId: nativeSourceOwner,
+      latency: 'hard-blocked',
+      expiresAt: FUTURE,
+      routing: menuSnapshot([nativeSourceOwner, 'resp-2'], [nativeAnsweringOwner, 'resp-2-claude']),
+    });
+    const nativeTranscript = rolloutFile(`native-api400-${nativeFailure}`, started);
+    const nativeLog = join(dir, `launch-native-api400-${nativeFailure}.log`);
+    const nativeReceipt = '[psu] native-turn-failed agent=claude code=api_error_400 retryable=false retryAfterMs=unknown';
+    writeFileSync(nativeLog, [nativeReceipt, '[papercusp] initial terminal command exited with status 1'].join('\n') + '\n');
+    await recordDispatch(nativeFailure, {
+      transcriptPath: nativeTranscript,
+      kickoffAt: kickoff,
+      sourceOwnerId: nativeSourceOwner,
+      answeringOwnerId: nativeAnsweringOwner,
+      agent: 'claude',
+      model: 'fable',
+      operation: 'fork',
+      launchLogPath: nativeLog,
+    });
+
     const quoted = await nonDue();
     const quotedTranscript = rolloutFile(`log-quoted-${quoted}`, started);
     const quotedLog = join(dir, `launch-quoted-${quoted}.log`);
@@ -1868,7 +1904,21 @@ describe('a first-turn rejection that lands after the dispatch window (EI-271117
     });
 
     const { deps, reachCalls, alerts } = makeDeps({ withReach: true });
-    deps.rejudgeFirstTurn = (u) => rejudgeFirstTurn(u);
+    deps.rejudgeFirstTurn = (u) => u.agent === 'claude'
+      ? rejudgeFirstTurn(u, {
+          readLaunchLogReason: async (path) => path === nativeLog
+            ? launchLogFailureReason(readFileSync(path, 'utf8'))
+            : null,
+          analyzeClaudeTranscript: (path) => path === nativeTranscript ? {
+            trailingMissingToolReferenceTurns: 0,
+            lastMissingToolReferenceName: null,
+            assistantTurnsSinceLastPrompt: 0,
+            trailingContextLimitTurns: 0,
+            lastContextLimitEvidence: null,
+          } : null,
+          analyzeCodexRollout: () => null,
+        })
+      : rejudgeFirstTurn(u);
     const stops: Array<Parameters<NonNullable<ExpirySweepDeps['stopAnsweringSession']>>[0]> = [];
     deps.stopAnsweringSession = async (t) => { stops.push(t); return 'stopped exact answering session'; };
 

@@ -55,6 +55,16 @@ describe('deriveRepoPathsFromText (EI-16028)', () => {
     expect(deriveRepoPathsFromText(`The failing test is ${nested}.`, { repoRoot })).toEqual([nested]);
   });
 
+  it('preserves hyphenated parents when a known marker appears inside the path token', () => {
+    const nested = 'papercusp-desktop/src-tauri/src/main.rs';
+    const annotated = 'The native entry is (' + nested + ':line 42).';
+    expect(deriveRepoPathsFromText(annotated)).toEqual([nested]);
+  });
+
+  it('does not derive a repo path through parent-directory traversal', () => {
+    expect(deriveRepoPathsFromText('The source is ../packages/operator-core/lib/foo.ts.')).toEqual([]);
+  });
+
   it('returns empty for text with no repo-path mentions', () => {
     expect(deriveRepoPathsFromText('the gateway is admission-starved, raise the ceiling')).toEqual([]);
   });

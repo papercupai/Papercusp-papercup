@@ -31,6 +31,7 @@ import {
   runVitestRootPreflight,
   vitestRootPreflightSkipReason,
 } from '../../../../scripts/lib/restricted-hold-preflight.mjs';
+import { hostPreflight, nativeChildSourcePreflight } from '../../../../scripts/lib/vitest-host-preflight.mjs';
 
 const line = (payload: unknown) => `${RESTRICTED_HOLD_PREFLIGHT_MARKER} ${JSON.stringify(payload)}\n`;
 const UNRESTRICTED_ENV = { PATH: '/usr/bin' };
@@ -41,6 +42,56 @@ const REPO_ROOT = resolve(dirname(RESTRICTED_HOLD_PREFLIGHT_CLI), '../../../../.
 const NPM_INSTALL_SAFE = resolve(REPO_ROOT, 'scripts/npm-install-safe.mjs');
 const BWRAP_AVAILABLE = process.platform === 'linux'
   && spawnSync('bwrap', ['--dev-bind', '/', '/', '--', 'true'], { encoding: 'utf8' }).status === 0;
+
+describe('native child committed source preflight', () => {
+  const suites = ['packages/operator-core/lib/__tests__/vitest-startup-trace.test.ts',
+    'packages/operator-core/test/committed-reader-source-preflight.test.ts'];
+  const inputs = ['scripts/lib/vitest-startup-trace.mjs', 'packages/operator-core/lib/process-identity.ts',
+    'libs/test-config/src/configuration-snapshot.ts'];
+  const root = '/native-source-fixture';
+  const bytes = Buffer.from('same native inputs');
+
+  it.each(suites)('admits matching bytes for %s with both absolute and relative selection', suite => {
+    for (const file of [suite, resolve(root, suite)]) {
+      const committed = vi.fn(() => bytes), working = vi.fn(() => Buffer.from(bytes));
+      expect(nativeChildSourcePreflight({ root, files: [file] }, { committed, working })).toBeNull();
+      expect(committed.mock.calls.map(call => (call as unknown as [string, string])[1]))
+        .toEqual([...inputs, suite]);
+    }
+  });
+
+  it.each([...inputs, ...suites])('refuses mismatched %s before native execution', changed => {
+    const refusal = nativeChildSourcePreflight({ root, files: suites }, {
+      committed: () => bytes,
+      working: path => path === resolve(root, changed) ? Buffer.from('uncommitted') : bytes,
+    });
+    expect(refusal).toMatchObject({ verdict: 'refuse', message: expect.stringContaining(changed) });
+    expect(refusal?.message).toContain('measured=none');
+  });
+
+  it.each(['committed', 'working'] as const)('refuses unreadable %s bytes', reader => {
+    const readers = { committed: () => bytes, working: () => bytes,
+      [reader]: () => { throw new Error('unavailable'); } };
+    expect(nativeChildSourcePreflight({ root, files: suites }, readers))
+      .toMatchObject({ verdict: 'refuse', message: expect.stringContaining('unreadable committed input') });
+  });
+
+  it('leaves unrelated suites alone without reading Git or disk', () => {
+    const committed = vi.fn(), working = vi.fn();
+    expect(nativeChildSourcePreflight({ root, files: ['elsewhere/vitest-startup-trace.test.ts'] },
+      { committed, working })).toBeNull();
+    expect(committed).not.toHaveBeenCalled(); expect(working).not.toHaveBeenCalled();
+  });
+
+  it('enforces source consistency even when restricted-hold admission was inherited', () => {
+    const refusal = hostPreflight({ root, files: suites,
+      env: { [RESTRICTED_HOLD_PREFLIGHT_ENV]: RESTRICTED_HOLD_PREFLIGHT_DONE } });
+    expect(refusal).toMatchObject({ verdict: 'refuse', message: expect.stringContaining('NATIVE_CHILD_SOURCE_REFUSED') });
+    expect(hostPreflight({ root, files: [],
+      env: { [RESTRICTED_HOLD_PREFLIGHT_ENV]: RESTRICTED_HOLD_PREFLIGHT_DONE } }))
+      .toEqual({ verdict: 'skipped', reason: 'testing-run' });
+  });
+});
 
 describe('interpretRestrictedHoldPreflight — fail closed', () => {
   it('admits only an explicit admit verdict with the admit exit code', () => {

@@ -39,7 +39,7 @@ export async function seedWorkPerfFixture(env: NodeJS.ProcessEnv = process.env) 
   phase('isolation-verified');
   const [{ signup }, { createWorkItem, setWorkItemState }, { mutateHarnessRegistry },
     { getHumanMarketItem }, { updateExternalBlockerHistory }, { hasActiveStrictHumanAsk },
-    { activeWorkspaceId }, { issuesScopeWorkspace }] = await Promise.all([
+    { activeWorkspaceId }, { issuesScopeWorkspace }, { withPlanLock }, { getPlanRow }] = await Promise.all([
     import('../../packages/operator-core/lib/auth'),
     import('../../packages/operator-core/lib/work-items'),
     import('../../packages/operator-core/lib/harness-registry'),
@@ -48,6 +48,8 @@ export async function seedWorkPerfFixture(env: NodeJS.ProcessEnv = process.env) 
     import('../../packages/operator-core/lib/hold-registry'),
     import('../../packages/operator-core/lib/workspace-registry'),
     import('../../packages/operator-core/lib/issues-engineer'),
+    import('../../packages/operator-core/lib/agent-tools/plans/with-plan-lock'),
+    import('../../packages/operator-core/lib/agent-tools/plans/source'),
   ]);
   phase('stores-loaded');
   const suffix = randomUUID().replaceAll('-', '').slice(0, 16);
@@ -69,9 +71,24 @@ export async function seedWorkPerfFixture(env: NodeJS.ProcessEnv = process.env) 
   phase('accounts-created');
   await mutateHarnessRegistry(reg => ({ ...reg, projects: [...reg.projects, {
     slug: harness, name: 'Private work journey fixture', path: path.join(env.PAPERCUSP_HOME!, harness),
-    hasState: true, hasSpec: true, harness_kind: 'project',
+    hasState: true, hasSpec: true, harness_kind: 'hive',
   }] }), workspace);
   phase('harness-registered');
+  // Reuse the canonical plan writer and index, so the existing plan-opening
+  // driver exercises a real persisted plan in this same private workspace.
+  const planSlug = 'perf-plan-' + suffix;
+  const today = new Date().toISOString().slice(0, 10);
+  const planBody = `---\nslug: ${planSlug}\ntitle: Private performance plan fixture\nstatus: draft\ncreated: ${today}\nupdated: ${today}\n---\n\n## Now\n\nPrivate native rendering fixture. No execution or external work is authorized.\n\n## Background\n\nOpen this persisted body through the product plan reader.\n`;
+  const planWrite = await withPlanLock(null, { slug: planSlug, harnessSlug: harness, workspaceId: workspace,
+    intent: 'Private desktop performance fixture' }, async current => {
+    if (current !== null) throw new Error('Private plan fixture already exists');
+    return { newBody: planBody, value: true };
+  });
+  if (planWrite.kind !== 'applied' || !planWrite.value ||
+      (await getPlanRow(planSlug, { harnessSlug: harness, workspaceId: workspace }))?.content !== planBody) {
+    throw new Error('Private performance plan did not persist through the canonical writer');
+  }
+  phase('plan-readback-verified');
   const item = await createWorkItem({ kind: 'task', title: 'Private performance claim fixture',
     summary: 'Fixture only. No submission, review or payment is performed.', harness, workspaceId: workspace,
     createdBy: 'fixture:desktop-work-perf', payload: { externalBlockers: blockers, humanWork: {
@@ -87,7 +104,7 @@ export async function seedWorkPerfFixture(env: NodeJS.ProcessEnv = process.env) 
     throw new Error('Private human-work fixture did not persist an unclaimed offer');
   }
   phase('offer-readback-verified');
-  return { workspace, harness, itemId: item.id, username: human.username };
+  return { workspace, harness, planSlug, itemId: item.id, username: human.username };
 }
 
 if (typeof require === 'function' && typeof module !== 'undefined' && require.main === module) {

@@ -19,7 +19,8 @@ const hookInputs = [...CC_HOOK_FILES.map(name => `${hookSources}/cc/${name}`),
   ...['inject', 'inject/adapters'].flatMap(dir => readdirSync(join(root, hookSources, dir))
     .filter(name => name.endsWith('.mjs')).map(name => `${hookSources}/${dir}/${name}`))];
 
-async function nativeScenario(scenario: 'current-su-native' | 'current-su-native-carry', context: TestContext) {
+async function nativeScenario(scenario: 'current-su-native' | 'current-su-native-carry'
+  | 'current-su-native-frozen-carry-on' | 'current-su-native-frozen-carry-off', context: TestContext) {
   let prepared: Awaited<ReturnType<typeof preparePrivateOperatorApiBundle>> | undefined;
   const runId = await recordIsolatedIntegrationProof({ root,
     filePath: 'packages/operator-core/lib/external-bench/current-su-native.integration.test.ts',
@@ -45,7 +46,8 @@ async function nativeScenario(scenario: 'current-su-native' | 'current-su-native
       'apps/operator/bin/hono-host.ts', 'apps/operator/bin/bundle-host.sh', 'apps/operator/bin/bundle-host-common.sh',
       'packages/operator-core/lib/desktop-install/papercusp-files.ts',
       'packages/operator-core/lib/role-codex-home.ts', ...hookInputs],
-    retainedArtifacts: currentSuNativeRetainedArtifacts(scenario === 'current-su-native-carry'),
+    retainedArtifacts: [...currentSuNativeRetainedArtifacts(scenario !== 'current-su-native'),
+      ...(scenario.includes('-frozen-carry-') ? ['phases/execute/native-frozen-carry-delivery.json'] : [])],
     prepare: async evidenceDir => {
       // Compilation and every guard must finish before the disposable native
       // runtime/database exists. The worker consumes only these pinned bytes.
@@ -91,11 +93,16 @@ async function nativeScenario(scenario: 'current-su-native' | 'current-su-native
         nativeSessionId: expect.stringMatching(/^[a-f0-9-]{36}$/), autoRegistered: true,
         hooksBridged: true, containerWorkdir: '/app', mcpConfined: true });
       expect(receipt.modelRequests).toBeGreaterThan(0);
-      if (scenario === 'current-su-native-carry') {
+      if (scenario !== 'current-su-native') {
         expect(receipt.managedCarry).toMatchObject({ requested: true, distinctNativeSession: true,
           sameOwner: true, sameTask: true, preservedHead: true, preservedDiff: true, confinementPreserved: true });
         expect(receipt.managedCarry.successorId).not.toBe(receipt.managedCarry.predecessorId);
       }
+      if (scenario.includes('-frozen-carry-')) expect(receipt.frozenCarry).toMatchObject({
+        mode: scenario.endsWith('-on') ? 'on' : 'off', inputSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+        policySeed: 'private-observer', gatewayAccounting: 'not-measured', controlledArmAdmission: 'not-exercised',
+        trigger: { kind: 'matched-threshold', limitTokens: 20_000, usageSource: 'codex-last-token-usage' },
+      });
       console.info('CURRENT_SU_NATIVE_VERIFIED ' + JSON.stringify(receipt));
     },
   });
@@ -107,3 +114,5 @@ it('launches autonomous current-su through the native container adapter without 
   context => nativeScenario('current-su-native', context), options.testTimeoutMs);
 it('resumes current-su through its maintained host after managed native container compaction',
   context => nativeScenario('current-su-native-carry', context), options.testTimeoutMs);
+it.each(['on', 'off'] as const)('delivers frozen carry %s through a fresh native session at the same measured threshold',
+  (mode, context) => nativeScenario(`current-su-native-frozen-carry-${mode}`, context), options.testTimeoutMs);

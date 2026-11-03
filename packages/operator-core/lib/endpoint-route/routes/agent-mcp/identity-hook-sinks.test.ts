@@ -10,6 +10,11 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 const planExecutionGuard = vi.hoisted(() => vi.fn());
+const priorityOrgPgMock = vi.hoisted(() => vi.fn(async (run: () => Promise<unknown>) => run()));
+vi.mock('@papercusp/db-org', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/db-org')>()),
+  withPriorityOrgPg: priorityOrgPgMock,
+}));
 vi.mock('../../../agent-tools/plans/plan-execution-guard', () => ({ checkPlanExecutionGuard: planExecutionGuard }));
 
 const {
@@ -70,9 +75,11 @@ const noRmRules = (): WornSyncRules => wornSyncRules({
     },
   ],
 } as never);
+const NEVER_EMIT_MARKER = 'never-emit-me';
 const call = (command: string) => ({ tool: 'Bash', input: { command }, client: 'claude' });
 
 beforeEach(() => {
+  priorityOrgPgMock.mockClear();
   planExecutionGuard.mockReset().mockResolvedValue(null);
   evaluateHookContextSinkMock.mockReset().mockResolvedValue({ text: '', result: null });
   readAppliedWornRulesMock.mockReset().mockResolvedValue(null);
@@ -147,12 +154,125 @@ describe('compactionSinkDue (D-024 §3)', () => {
 });
 
 describe('POST /agent-mcp/tool-guard', () => {
+  it('keeps plan and identity reads inside the reserved database scope', async () => {
+    let inPriorityScope = false;
+    priorityOrgPgMock.mockImplementationOnce(async (run) => {
+      inPriorityScope = true;
+      try { return await run(); } finally { inPriorityScope = false; }
+    });
+    planExecutionGuard.mockImplementation(async () => { expect(inPriorityScope).toBe(true); return null; });
+    readAppliedWornRulesMock.mockImplementation(async () => { expect(inPriorityScope).toBe(true); return null; });
+    expect(await post('/agent-mcp/tool-guard', { owner: 'builder', workspace: 'ws', tool: 'Edit' }))
+      .toEqual({ ok: true, text: '' });
+    expect(priorityOrgPgMock).toHaveBeenCalledTimes(1);
+    expect(inPriorityScope).toBe(false);
+  });
+
+  it('reports separate plan and identity durations without changing the verdict', async () => {
+    let now = 0;
+    const clock = vi.spyOn(performance, 'now').mockImplementation(() => now);
+    planExecutionGuard.mockImplementation(async () => { now += 25; return null; });
+    readAppliedWornRulesMock.mockImplementation(async () => { now += 75; return null; });
+    try {
+      const res = await route('/agent-mcp/tool-guard').handler(new Request('http://localhost/api/agent-mcp/tool-guard', {
+        method: 'POST', body: JSON.stringify({ owner: 'builder', workspace: 'ws', tool: 'Edit' }),
+      }));
+      expect(await res.json()).toEqual({ ok: true, text: '' });
+      expect(res.headers.get('Server-Timing')).toBe('guard;dur=100.0, setup;dur=0.0, plan;dur=25.0, identity;dur=75.0');
+    } finally { clock.mockRestore(); }
+  });
+
+  it('retains slow-request attribution after client abort without logging tool content', async () => {
+    let now = 0;
+    const clock = vi.spyOn(performance, 'now').mockImplementation(() => now);
+    const log = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const controller = new AbortController();
+    planExecutionGuard.mockImplementation(async () => { now += 1600; controller.abort(); return null; });
+    try {
+      await route('/agent-mcp/tool-guard').handler(new Request('http://localhost/api/agent-mcp/tool-guard', {
+        method: 'POST', signal: controller.signal,
+        body: JSON.stringify({ owner: 'builder', workspace: 'ws', tool: 'Edit', input: { secret: NEVER_EMIT_MARKER } }),
+      }));
+      expect(log).toHaveBeenCalledWith('[tool-guard-timing]', JSON.stringify({
+        totalMs: 1600, setupMs: 0, planMs: 1600, identityMs: 0, aborted: true,
+      }));
+      expect(JSON.stringify(log.mock.calls)).not.toContain(NEVER_EMIT_MARKER);
+    } finally { clock.mockRestore(); log.mockRestore(); }
+  });
+
+  it('aggregates bounded plan-stage timings on a refused request without leaking binding content', async () => {
+    const log = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    let now = 0;
+    const clock = vi.spyOn(performance, 'now').mockImplementation(() => now);
+    planExecutionGuard.mockImplementation(async ({ observeTiming }) => {
+      observeTiming({ stage: 'bindings', durationMs: 10 });
+      observeTiming({ stage: 'start_gate', durationMs: 900 });
+      observeTiming({ stage: 'start_gate', durationMs: 800 });
+      observeTiming({ stage: 'private-plan-content', durationMs: 1 });
+      observeTiming({ stage: 'invalid', durationMs: NaN });
+      now += 1710;
+      return { code: 'plan_execution_not_ready', reason: 'Bound plan is draft' };
+    });
+    try {
+      const res = await route('/agent-mcp/tool-guard').handler(new Request('http://localhost/api/agent-mcp/tool-guard', {
+        method: 'POST', body: JSON.stringify({ owner: 'builder', workspace: 'ws', tool: 'Edit' }),
+      }));
+      expect(await res.json()).toEqual({ ok: true, text: 'plan_execution_not_ready: Bound plan is draft' });
+      expect(res.headers.get('Server-Timing')).toContain('plan_bindings;dur=10.0, plan_start_gate;dur=1700.0');
+      expect(log).toHaveBeenCalledWith('[tool-guard-timing]', JSON.stringify({
+        totalMs: 1710, setupMs: 0, planMs: 1710, identityMs: null, aborted: false,
+        planStages: { bindings: 10, start_gate: 1700 },
+      }));
+      expect(readAppliedWornRulesMock).not.toHaveBeenCalled();
+      expect(JSON.stringify(log.mock.calls)).not.toContain('private-plan-content');
+    } finally { clock.mockRestore(); log.mockRestore(); }
+  });
+  it('correlates a slow refused request across its response and server timing log', async () => {
+    const guardRequestId = '550e8400-e29b-41d4-a716-446655440000';
+    let now = 0;
+    const clock = vi.spyOn(performance, 'now').mockImplementation(() => now);
+    const log = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    planExecutionGuard.mockImplementation(async () => {
+      now += 1600;
+      return { code: 'plan_execution_not_ready', reason: 'Bound plan is draft' };
+    });
+    try {
+      const res = await route('/agent-mcp/tool-guard').handler(new Request('http://localhost/api/agent-mcp/tool-guard', {
+        method: 'POST', body: JSON.stringify({ owner: 'builder', workspace: 'ws', tool: 'Edit',
+          guardRequestId, input: { secret: NEVER_EMIT_MARKER } }),
+      }));
+      expect(await res.json()).toEqual({ ok: true, text: 'plan_execution_not_ready: Bound plan is draft' });
+      expect(res.headers.get('X-Papercusp-Guard-Request-Id')).toBe(guardRequestId);
+      expect(log).toHaveBeenCalledWith('[tool-guard-timing]', JSON.stringify({
+        guardRequestId, totalMs: 1600, setupMs: 0, planMs: 1600, identityMs: null, aborted: false,
+      }));
+      expect(JSON.stringify(log.mock.calls)).not.toContain(NEVER_EMIT_MARKER);
+      expect(readAppliedWornRulesMock).not.toHaveBeenCalled();
+    } finally { clock.mockRestore(); log.mockRestore(); }
+  });
+
+  it('does not reflect an invalid caller identifier into headers or timing logs', async () => {
+    let now = 0;
+    const clock = vi.spyOn(performance, 'now').mockImplementation(() => now);
+    const log = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    planExecutionGuard.mockImplementation(async () => { now += 600; return null; });
+    try {
+      const res = await route('/agent-mcp/tool-guard').handler(new Request('http://localhost/api/agent-mcp/tool-guard', {
+        method: 'POST', body: JSON.stringify({ owner: 'builder', workspace: 'ws', tool: 'Edit',
+          guardRequestId: 'private-caller-prose' }),
+      }));
+      expect(res.headers.has('X-Papercusp-Guard-Request-Id')).toBe(false);
+      expect(JSON.stringify(log.mock.calls)).not.toContain('private-caller-prose');
+    } finally { clock.mockRestore(); log.mockRestore(); }
+  });
+
   it('refuses a native edit or shell write when durable plan readiness refuses, even without worn rules', async () => {
     planExecutionGuard.mockResolvedValue({ code: 'plan_execution_not_ready', reason: 'Bound plan is draft' });
     for (const tool of ['apply_patch', 'Write', 'exec_command']) {
       expect(await post('/agent-mcp/tool-guard', { owner: 'builder', workspace: 'ws', tool, input: { cmd: 'touch x' } }))
         .toEqual({ ok: true, text: 'plan_execution_not_ready: Bound plan is draft' });
-      expect(planExecutionGuard).toHaveBeenLastCalledWith({ ownerId: 'builder', workspaceId: 'ws', toolName: tool, args: { cmd: 'touch x' } });
+      expect(planExecutionGuard).toHaveBeenLastCalledWith({ ownerId: 'builder', workspaceId: 'ws', toolName: tool,
+        args: { cmd: 'touch x' }, observeTiming: expect.any(Function) });
     }
     expect(readAppliedWornRulesMock).not.toHaveBeenCalled();
   });

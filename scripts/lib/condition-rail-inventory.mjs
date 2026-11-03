@@ -113,13 +113,30 @@ export const DEFINE_SIGNAL_RE = /\bdefineSignal\s*\(/;
 export const WAIVER_RE = /\bwaiver\s*:\s*\{/g;
 const SIGNAL_ID_RE = /\bid\s*:\s*['"`]([^'"`]+)['"`]/g;
 
-/** Cheap raw pre-filter: a file with none of these tokens cannot hold a site. */
-const PREFILTER_RE =
-  /notifyAttention|escalateAlarm|fall(?:ing|s)?[ -]?back|fail(?:ing|s|ed)?[ -]?open|degrad|alarm|alert|unhealthy|breached|watchdog|waiver/i;
-
 /** Does this file's BASENAME make it a watchdog module (a class-4 site by name alone)? */
 export function isWatchdogModule(file) {
   return /watchdog/i.test(file.slice(file.lastIndexOf('/') + 1));
+}
+
+function regexMatches(re, text) {
+  re.lastIndex = 0;
+  const matched = re.test(text);
+  re.lastIndex = 0;
+  return matched;
+}
+
+/**
+ * Cheap raw pre-filter for scanSites. Each site class needs one of these syntax anchors; a
+ * watchdog module is a candidate by name alone. This deliberately allows comments and strings
+ * to match. In particular, any log call stays eligible because TypeScript can assemble fallback
+ * wording from split literals that the raw fallback regex cannot see.
+ */
+export function hasCandidateAnchor(raw, file) {
+  if (isWatchdogModule(file)) return true;
+  if (regexMatches(ALARM_CALL_RE, raw) || regexMatches(LOG_CALL_RE, raw)) return true;
+  if (HEALTH_PATH_RE.test(file) && regexMatches(HEALTH_FIELD_RE, raw)) return true;
+  if (regexMatches(INTERVAL_RE, raw) && /watchdog/i.test(raw)) return true;
+  return regexMatches(DEFINE_SIGNAL_RE, raw) && regexMatches(WAIVER_RE, raw);
 }
 
 function lineStarts(text) {
@@ -347,8 +364,7 @@ export function locateSite(structure, offset, { moduleLevel = false } = {}) {
  */
 export function scanSites(raw, file) {
   const watchdogModule = isWatchdogModule(file);
-  // A watchdog MODULE is a site by its name alone, so the content pre-filter cannot skip it.
-  if (!PREFILTER_RE.test(raw) && !watchdogModule) return [];
+  if (!hasCandidateAnchor(raw, file)) return [];
   const masked = stripCommentsAndStrings(raw, file);
   const starts = lineStarts(masked);
   const found = []; // { class, index, symbol, moduleLevel, railExempt }

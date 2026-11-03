@@ -22,6 +22,7 @@ import {
   detectContextDeathForOwner,
   detectToolReferenceDeathForOwner,
   estimateContextTokensForOwner,
+  currentContextUsageForOwner,
   estimateContextWindowForOwner,
   observedPromptFloorForOwner,
   observeHealthyClaudeTranscriptForOwner,
@@ -57,7 +58,7 @@ import { MESSAGE_GC_RETENTION_DAYS } from '../agent-tools/coordination/message-l
 import { hostname } from 'node:os';
 import { createHash } from 'node:crypto';
 import { sessionCarryPolicy } from '../capability-envelope/session-confinement-port';
-import type { FrozenCarryBoundary } from '../capability-envelope/session-confinement';
+import { frozenCarryTriggerReceipt, type FrozenCarryBoundary, type FrozenCarryTriggerReceipt } from '../capability-envelope/session-confinement';
 import type { RespawnLaunchSpec } from '../carry-respawn';
 import { broadcastSevereEvent } from '../severe-event-broadcast';
 import { resolveAlarm, type AlarmAttentionDeps } from '../alarm-attention';
@@ -1373,12 +1374,14 @@ async function escalateCarryRespawnLoop(
 // A watchdog has no participant-authored continuation note. Its frozen restart
 // therefore replays only the host-pinned assignment, with no ambient addendum.
 // Recheck the assembled result because policy may move during the async build.
-function matchesFrozenWatchdogCarry(spec: RespawnLaunchSpec, boundary: FrozenCarryBoundary): boolean {
+function matchesFrozenWatchdogCarry(spec: RespawnLaunchSpec, boundary: FrozenCarryBoundary,
+  trigger?: FrozenCarryTriggerReceipt): boolean {
   const digest = createHash('sha256').update(boundary.initialPrompt).digest('hex');
   const receipt = spec.frozenAssignmentCarry;
   return digest === boundary.initialPromptSha256 && spec.firstPrompt === boundary.initialPrompt &&
     spec.systemPromptAddendum === '' && receipt?.mode === boundary.mode &&
-    receipt.initialPromptSha256 === digest && receipt.firstPromptSha256 === digest && receipt.noteSha256 === null;
+    receipt.initialPromptSha256 === digest && receipt.firstPromptSha256 === digest && receipt.noteSha256 === null &&
+    JSON.stringify(receipt.trigger) === JSON.stringify(trigger);
 }
 
 async function maybeCarryRespawn(
@@ -1387,6 +1390,7 @@ async function maybeCarryRespawn(
   workspaceId: string,
   effectiveWindowTokens: number,
   reason: CarryRespawnReason = 'soft-threshold',
+  measured?: { limit: number; queued: (receipt: FrozenCarryTriggerReceipt) => void },
 ): Promise<boolean> {
   try {
     const [{ getFlag }, { FLAGS }] = await Promise.all([
@@ -1409,6 +1413,11 @@ async function maybeCarryRespawn(
     // be read as this owner's live transcript when deciding whether to respawn.
     const ref = await resolveSessionRefReconciled(ownerId);
     if (!ref || ref.agent === 'omp') return false;
+    const trigger = frozenCarry?.compactionLimit === undefined ? undefined : frozenCarryTriggerReceipt(frozenCarry, {
+      source: reason === 'soft-threshold' ? 'watchdog-soft' : reason,
+      usage: await currentContextUsageForOwner(ownerId), runtimeLimit: measured?.limit,
+    });
+    if (trigger && trigger.nativeSessionId !== ref.sessionId) return false;
     let transcriptPath: string | null = null;
     let transcriptSourceKind: 'claude' | 'codex' = 'claude';
     if (ref.agent === 'codex') {
@@ -1431,6 +1440,7 @@ async function maybeCarryRespawn(
     const { buildOwnerRespawnLaunchSpec } = await import('../carry-respawn');
     const spec = await buildOwnerRespawnLaunchSpec(ownerId, {
       effectiveWindowTokens,
+      ...(trigger ? { frozenTrigger: trigger } : {}),
       buildOpts: {
         workspaceId,
         ownerLabel,
@@ -1449,7 +1459,7 @@ async function maybeCarryRespawn(
       },
     });
     if (!spec) return false;
-    if (frozenCarry && !matchesFrozenWatchdogCarry(spec, frozenCarry)) return false;
+    if (frozenCarry && !matchesFrozenWatchdogCarry(spec, frozenCarry, trigger)) return false;
     if (spec.openOwnerQuestion.crossesOpenOwnerMessage && reason === 'soft-threshold') {
       const fingerprint = openOwnerMessageFingerprint(spec.openOwnerQuestion, spec.firstPrompt);
       if (openOwnerMessageRefusalDecision(ownerId, fingerprint) === 'refuse') {
@@ -1477,9 +1487,11 @@ async function maybeCarryRespawn(
       mode: 'carry-respawn',
       data: firstPrompt,
       systemPromptAddendum: spec.systemPromptAddendum,
+      ...(transcriptSourceKind === 'codex' ? { sourceTranscriptPath: transcriptPath } : {}),
       ownerId,
     });
     if (ok) {
+      if (trigger) measured?.queued(trigger);
       console.warn(
         `[compaction-watchdog] CARRY-RESPAWN queued for ${ownerLabel} (${ownerId}) ${
           reason === 'context-death'
@@ -1611,6 +1623,7 @@ async function maybeForceRespawn(
   /** Which arm produced forceAt — the note words each regime differently. */
   bound: ForceBound = 'fraction',
   conditionDeps: CompactionComplianceDeps = {},
+  queuedFrozenTrigger?: (receipt: FrozenCarryTriggerReceipt) => void,
 ): Promise<boolean> {
   // Keep the condition writer inside this original fallback producer: the
   // immutable inventory identity must remain on the rail itself.
@@ -1655,6 +1668,10 @@ async function maybeForceRespawn(
     // this before the hostless successor fallback can record force-unavailable.
     const ref = await resolveSessionRefReconciled(ownerId);
     if (ref?.agent === 'omp') return false;
+    const trigger = frozenCarry?.compactionLimit === undefined ? undefined : frozenCarryTriggerReceipt(frozenCarry, {
+      source: 'watchdog-force', usage: await currentContextUsageForOwner(ownerId), runtimeLimit: limit,
+    });
+    if (trigger && (trigger.nativeSessionId !== ref?.sessionId || trigger.observedTokens < forceAt)) return false;
     if (!host) {
       if (frozenCarry) {
         await failure('Frozen assignment has no live PTY host; an unbound successor cannot preserve its checkout, confinement and metered gateway.');
@@ -1735,6 +1752,7 @@ async function maybeForceRespawn(
     const spec = transcriptPath
       ? await buildOwnerRespawnLaunchSpec(ownerId, {
           effectiveWindowTokens,
+          ...(trigger ? { frozenTrigger: trigger } : {}),
           buildOpts: {
             workspaceId,
             ownerLabel,
@@ -1747,7 +1765,7 @@ async function maybeForceRespawn(
           },
         })
       : null;
-    if (!spec || frozenCarry && !matchesFrozenWatchdogCarry(spec, frozenCarry)) {
+    if (!spec || frozenCarry && !matchesFrozenWatchdogCarry(spec, frozenCarry, trigger)) {
       await failure(transcriptPath ? 'Carry builder failed at the measured force threshold.' : 'No transcript at the measured force threshold.');
       console.warn(
         `[compaction-watchdog] force-respawn for ${ownerLabel} (${ownerId}) could not assemble the ` +
@@ -1771,10 +1789,12 @@ async function maybeForceRespawn(
       mode: 'carry-respawn',
       data: firstPrompt,
       systemPromptAddendum: spec.systemPromptAddendum,
+      ...(transcriptSourceKind === 'codex' && transcriptPath ? { sourceTranscriptPath: transcriptPath } : {}),
       ownerId,
     });
     if (!ok) await failure('Force injection was not accepted.');
     if (ok) {
+      if (trigger) queuedFrozenTrigger?.(trigger);
       observeFallback('compaction-force-respawn', {
         eligible: 1, applied: 1, reason: 'applied', scope: ownerId,
       }, { workspaceId });
@@ -2457,6 +2477,9 @@ export interface CompactionComplianceResult {
   /** P-018: owners whose capable psu host accepted a deterministic carry-respawn
    *  lifecycle verb this pass. Subset of overLimit; gated by the Phase-7 cutover. */
   carryRespawned: string[];
+  /** Queued trigger evidence only; neither socket acceptance nor this receipt
+   * proves a successor started or received its input. */
+  frozenCarryTriggers: Array<{ owner: string; receipt: FrozenCarryTriggerReceipt }>;
   /** P-017: running sessions whose STALE-above-cap compaction_limit was lowered to
    *  the current shaped default this pass (a policy change reaching a live session
    *  without a relaunch). */
@@ -2539,6 +2562,7 @@ export async function checkCompactionCompliance(
     overLimit: [],
     forceCompacted: [],
     carryRespawned: [],
+    frozenCarryTriggers: [],
     relimited: [],
     default1mServedSmall: [],
     unsatisfiableLimits: [],
@@ -3307,6 +3331,8 @@ export async function checkCompactionCompliance(
             r.owner_label,
             r.workspace_id,
             carryWindow,
+            'soft-threshold',
+            { limit: r.compaction_limit, queued: receipt => out.frozenCarryTriggers.push({ owner: r.owner_id, receipt }) },
           )
         ) {
           carryRespawnRequestedAt.set(r.owner_id, Date.now());
@@ -3358,6 +3384,7 @@ export async function checkCompactionCompliance(
               forceAt,
               bound,
               deps,
+              receipt => out.frozenCarryTriggers.push({ owner: r.owner_id, receipt }),
             ))
           ) {
             forceCompactedAt.set(r.owner_id, Date.now());

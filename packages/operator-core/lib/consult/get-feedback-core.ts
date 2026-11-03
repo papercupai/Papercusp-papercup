@@ -593,6 +593,13 @@ export interface GetFeedbackResult {
     via: SelectionVia;
     fallback?: 'lexical';
   }>;
+  /** Retrieval references only: subject qualification could not be measured.
+   * These candidates are never added to the selected dispatch/cascade menu. */
+  unmeasured_candidates?: Array<{
+    ownerId: string;
+    qualification: 'unmeasured';
+    evidence: RoutingCandidate['evidence'];
+  }>;
   origin_task_ref: string | null;
   latency_contract: LatencyContract;
   expires_at: string | null;
@@ -1974,6 +1981,19 @@ export async function getFeedbackCore(
   const autoExcludedNoteText = autoExcludedNote.length
     ? ` ⚠ ${autoExcludedNote.join(', ')} already told you "not this one" on this EXACT question (closed_cant_help / declined) and ${autoExcludedNote.length === 1 ? 'was' : 'were'} excluded from this re-route — any conversation id you previously published for ${autoExcludedNote.length === 1 ? 'that consult' : 'those consults'} is now stale.`
     : '';
+  // Keep the router's transcript references when subject scoring fails. The
+  // qualified pool is empty on this path, so remaining_candidates cannot carry
+  // them without pretending that unmeasured candidates were selected.
+  const unmeasuredCandidates = reason === 'evidence_unavailable'
+    ? route.snapshot.candidates.filter(candidate =>
+      candidate.subjectEvidenceCoverage?.status === 'unmeasured' ||
+      candidate.subjectEvidence?.status === 'unmeasured')
+      .slice(0, 3).map(candidate => ({
+        ownerId: candidate.ownerId,
+        qualification: 'unmeasured' as const,
+        evidence: candidate.evidence.slice(0, 3),
+      }))
+    : undefined;
   const hint = finalChosen
     ? latency === 'hard-blocked'
       ? `Routed + ${wakeNote}. Park on events:await { event: '${parkKey}' } and end your turn — a subsequent reply wakes you. This is a recurring event, so a reply that arrives before registration is an earlier edge; read the conversation before deciding whether to wait for another reply. Expires ${expiresAt}.${viaNote}${fallbackNote}${dispatchNote}${autoExcludedNoteText}`
@@ -1983,7 +2003,10 @@ export async function getFeedbackCore(
     : reason === 'embed_unavailable'
       ? `The embedder is unavailable on this host — similarity could NOT be measured, so there is no ranking to fill a minimum from (cannot-measure ≠ measured-nothing). Proceed on your own judgment; retry later if the answer matters.`
       : reason === 'evidence_unavailable'
-        ? 'Problem-specific expertise could not be fully measured within the bounded evidence check. This does not prove no expert exists. Read the candidate transcript references and retry if the answer matters.'
+        ? 'Problem-specific expertise could not be fully measured within the bounded evidence check. This does not prove no expert exists. ' +
+          (unmeasuredCandidates?.length
+            ? 'Read unmeasured_candidates transcript references with sessions:read; these are retrieval evidence, not selected or dispatchable responders.'
+            : 'No unmeasured candidate transcript references are available in this routing snapshot.')
       : requiresSupportedSubjectEvidence
         ? 'No responder cleared the routing floor with supported transcript evidence for every requested source ref. Minimum-fill candidates also need that evidence, so unrelated transcripts were not dispatched. Proceed on your own judgment or inspect remaining_candidates directly.'
       : reason === 'no_available_responder' && preLaunchRefusals && preLaunchRefusals.total > 0 &&
@@ -2013,6 +2036,7 @@ export async function getFeedbackCore(
     state,
     responder: finalChosen,
     responder_via: finalChosenVia,
+    ...(unmeasuredCandidates ? { unmeasured_candidates: unmeasuredCandidates } : {}),
     remaining_candidates: (finalSelected.length > 0
       ? retrievalOnly ? finalSelected : finalSelected.slice(1)
       : route.qualified.map((c) => ({ candidate: c, via: 'floor' as SelectionVia }))

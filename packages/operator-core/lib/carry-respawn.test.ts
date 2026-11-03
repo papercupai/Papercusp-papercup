@@ -25,6 +25,7 @@ import {
   buildOwnerRespawnLaunchSpec,
   buildRespawnLaunchSpec,
   buildFrozenAssignmentRespawnSpec,
+  frozenCarryTriggerReceipt,
   deriveRespawnFirstPrompt,
   renderCarryNoteFreshnessWarning,
 } from './carry-respawn';
@@ -52,6 +53,28 @@ describe('frozen assignment carry assembly', () => {
       { ...boundary, extra: true }])
       expect(() => buildFrozenAssignmentRespawnSpec(changed as typeof boundary)).toThrow(/invalid/);
     expect(() => buildFrozenAssignmentRespawnSpec(boundary, 'x'.repeat(1001))).toThrow(/invalid/);
+  });
+  it.each(['on', 'off'] as const)('requires a fresh measured trigger for frozen %s carry and preserves recovery provenance', mode => {
+    const policy = { ...boundary, mode, compactionLimit: 20_000 };
+    const usage = { backend: 'codex', nativeSessionId: 'native-own', sessionStartedAtMs: NOW - 1000,
+      unavailableReason: null, reading: { tokens: 20_000, observedAtMs: Date.now(), source: 'codex-last-token-usage' as const } };
+    expect(() => buildFrozenAssignmentRespawnSpec(policy)).toThrow(/measured trigger/);
+    for (const changed of [{ ...usage, reading: null },
+      { ...usage, reading: { ...usage.reading, tokens: 19_999 } },
+      { ...usage, reading: { ...usage.reading, observedAtMs: Date.now() - 60_001 } },
+      { ...usage, nativeSessionId: '' }])
+      expect(() => frozenCarryTriggerReceipt(policy, { source: 'self-request', usage: changed })).toThrow(/trigger/);
+    expect(() => frozenCarryTriggerReceipt(policy, { source: 'watchdog-soft', usage, runtimeLimit: 25_000 })).toThrow(/trigger/);
+    const trigger = frozenCarryTriggerReceipt(policy, { source: 'watchdog-soft', usage, runtimeLimit: 20_000 });
+    const spec = buildFrozenAssignmentRespawnSpec(policy, 'own progress', trigger);
+    expect(spec.frozenAssignmentCarry?.trigger).toMatchObject({ kind: 'matched-threshold', source: 'watchdog-soft',
+      nativeSessionId: 'native-own', limitTokens: 20_000, observedTokens: 20_000 });
+    expect(spec.firstPrompt?.includes('own progress')).toBe(mode === 'on');
+    for (const source of ['watchdog-force', 'context-death', 'tool-reference-death'] as const) {
+      const recovery = frozenCarryTriggerReceipt(policy, { source, usage });
+      expect(recovery.kind).toBe('recovery');
+      expect(() => buildFrozenAssignmentRespawnSpec(policy, undefined, { ...recovery, kind: 'matched-threshold' })).toThrow(/invalid/);
+    }
   });
   it.each(['on', 'off'] as const)('branches before general readers for frozen carry %s', async mode => {
     carryPolicy.mockResolvedValue({ ...boundary, mode });

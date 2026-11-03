@@ -2252,7 +2252,41 @@ describe('getFeedbackCore — honest no_qualified_responder', () => {
     expect(r.reason).toBe('evidence_unavailable');
     expect(r.degraded).toBe('evidence-unavailable');
     expect(r.hint).toContain('does not prove no expert exists');
+    expect(r.unmeasured_candidates).toEqual([]);
+    expect(r.hint).toContain('No unmeasured candidate transcript references');
     expect((await stateRow(r.conversation_id)).routing).toMatchObject({ degraded: 'evidence-unavailable' });
+  });
+
+  it('returns bounded unmeasured transcript refs without selecting or dispatching them', async () => {
+    const subject = 'packages/operator-core/lib/agent-tools/plans/spec-quality.ts';
+    const candidates = Array.from({ length: 5 }, (_, index) => cand(`unmeasured-${index}`, {
+      evidence: Array.from({ length: 5 }, (_, turn) => ({
+        session_id: `session-${index}`, turn_idx: turn, ts: NOW.toISOString(), sim: 0.72,
+      })),
+      subjectEvidenceCoverage: { status: 'unmeasured', required: [subject],
+        evidence: [{ subject, status: 'unmeasured', score: null }], unresolved: [] },
+    }));
+    const mismatch = cand('measured-mismatch', { subjectEvidenceCoverage: {
+      status: 'mismatch', required: [subject],
+      evidence: [{ subject, status: 'mismatch', score: 0.1 }], unresolved: [],
+    } });
+    const { deps, opened, reached } = makeDeps(routeOf([], {
+      degraded: 'evidence-unavailable', all: [mismatch, ...candidates],
+    }));
+    const r = asOk(await getFeedbackCore({ ...baseReq, resolvedSubjectRefs: [subject] }, deps));
+    expect(r).toMatchObject({ verdict: 'relevance_unmeasured', reason: 'evidence_unavailable',
+      state: 'no_qualified_responder', responder: null, remaining_candidates: [] });
+    expect(r.unmeasured_candidates).toEqual(candidates.slice(0, 3).map(candidate => ({
+      ownerId: candidate.ownerId, qualification: 'unmeasured', evidence: candidate.evidence.slice(0, 3),
+    })));
+    expect(r.hint).toContain('sessions:read');
+    expect(r.hint).toContain('not selected or dispatchable');
+    expect(opened[0].direct_to).toEqual([]);
+    expect(reached).toHaveLength(0);
+    const row = await stateRow(r.conversation_id);
+    expect(row).toMatchObject({ state: 'no_qualified_responder', responder_id: null, wakes_used: 0 });
+    expect((row.routing as RoutingSnapshot).candidates).toEqual([mismatch, ...candidates]);
+    expect((row.routing as { selection: { selected: unknown[] } }).selection.selected).toEqual([]);
   });
 
   it('embed_unavailable lexical candidates route one bounded manual-review pick', async () => {
@@ -3745,6 +3779,7 @@ describe('getFeedbackCore — dispatch walk (D-002/D-004)', () => {
               body: input.body,
               created_ts: NOW.toISOString(),
             },
+            author_origin: 'agent',
             delivered: 0,
           }),
           emitReplyEvent: async () => {},

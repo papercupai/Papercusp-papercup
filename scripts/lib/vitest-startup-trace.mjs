@@ -8,6 +8,7 @@ import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { threadId } from 'node:worker_threads';
 import { captureConfigurationSnapshot } from '../../libs/test-config/src/configuration-snapshot.ts';
+import { readProcessIdentity } from '../../packages/operator-core/lib/process-identity.ts';
 
 export const nativeSourceRetentionLimits = Object.freeze({ sourceBytes: 16 * 1024 ** 2,
   processBytes: 64 * 1024 ** 2, pinnedSourceBytes: 128 * 1024 ** 2,
@@ -45,6 +46,9 @@ export function nativeProcessTraceEnv(env = process.env, options = {}) {
 // implementations remain gaps in the parent receipt. Never alter stdio/options.
 function installNativeProcessTrace(out) {
   const identity = randomUUID();
+  // A trace channel has its own UUID (including worker threads). The kernel
+  // identity independently pins the OS process; neither can stand in for the other.
+  const kernelProcessIdentity = readProcessIdentity(process.pid);
   let root;
   try {
     const path = `${out}.native-processes`;
@@ -72,12 +76,13 @@ function installNativeProcessTrace(out) {
     if (!terminal && remaining-- < 0) return;
     try {
       let row = { schemaVersion: 1, kind: 'native-node-process-event', event,
-        processIdentity: identity, pid: process.pid, ppid: process.ppid, atMs: Date.now(), ...fields, threadId };
+        processIdentity: identity, kernelProcessIdentity,
+        pid: process.pid, ppid: process.ppid, atMs: Date.now(), ...fields, threadId };
       if (!terminal && remaining === -1) row = { ...row, event: 'trace-limit' };
       let bytes = Buffer.from(JSON.stringify(row));
       if (bytes.length > 128 * 1024) {
         bytes = Buffer.from(JSON.stringify({ schemaVersion: 1, kind: row.kind,
-          event: 'trace-event-too-large', processIdentity: identity, pid: process.pid,
+          event: 'trace-event-too-large', processIdentity: identity, kernelProcessIdentity, pid: process.pid,
           ppid: process.ppid, atMs: row.atMs, omittedEvent: event, threadId }));
       }
       const sha256 = createHash('sha256').update(bytes).digest('hex');

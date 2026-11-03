@@ -3418,6 +3418,8 @@ export function liveCurrentSuBenchPorts(
           : ['coord:whoami', 'session:request-compaction']),
         denyAmbientContext: true as const,
         denyCarryOutside: Object.freeze({ initialPrompt: args.brief, initialPromptSha256: hash(args.brief),
+          ...(currentBenchCompactionLimit(requireBinding().arm) !== undefined
+            ? { compactionLimit: currentBenchCompactionLimit(requireBinding().arm) } : {}),
           mode: requireBinding().arm.control?.capabilities['carry-respawn'] === 'off' ? 'off' as const : 'on' as const }),
         ...(control?.capabilities['memory-recall'] === 'on'
           ? { denyMemoryOutside: Object.freeze({ snapshotSha256: input.context.memoryHash }) } : {}),

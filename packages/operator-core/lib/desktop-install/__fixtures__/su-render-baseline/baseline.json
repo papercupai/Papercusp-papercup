@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "plan": "identities-v1-2026-08-30",
   "item": "P-018",
-  "generatedAt": "2026-10-27T19:04:44.343Z",
+  "generatedAt": "2026-11-03T02:29:18.342Z",
   "inputs": {
     "base": {
       "path": "su.base.md",
@@ -37,8 +37,8 @@
   },
   "tiers": {
     "full": {
-      "totalBytes": 119549,
-      "sha256": "f254aa77a25b4b24b9c25de1eb5fd8c41de10c05faf402743c99d8c8ed283ae5",
+      "totalBytes": 119671,
+      "sha256": "321288c1815c804e15de7d09b449de14034874354dbc12e6d58cb89a44451c16",
       "sections": [
         {
           "heading": "(preamble)",
@@ -115,8 +115,8 @@
         {
           "heading": "## Papercusp tool results are capped — reduce BEFORE you call, not after",
           "origin": "generated",
-          "bytes": 3765,
-          "sha256": "e572c59f217e248aed2f464250f4e5c1ec12e883d7560803ae23de1e0164d416"
+          "bytes": 3887,
+          "sha256": "afa0e59be222d708d21099611bea6468c6368f0076c5fd99649b503e8a3cd948"
         },
         {
           "heading": "## Tools, docs, memory",
@@ -181,8 +181,8 @@
       ]
     },
     "fleet": {
-      "totalBytes": 119549,
-      "sha256": "f254aa77a25b4b24b9c25de1eb5fd8c41de10c05faf402743c99d8c8ed283ae5",
+      "totalBytes": 119671,
+      "sha256": "321288c1815c804e15de7d09b449de14034874354dbc12e6d58cb89a44451c16",
       "sections": [
         {
           "heading": "(preamble)",
@@ -259,8 +259,8 @@
         {
           "heading": "## Papercusp tool results are capped — reduce BEFORE you call, not after",
           "origin": "generated",
-          "bytes": 3765,
-          "sha256": "e572c59f217e248aed2f464250f4e5c1ec12e883d7560803ae23de1e0164d416"
+          "bytes": 3887,
+          "sha256": "afa0e59be222d708d21099611bea6468c6368f0076c5fd99649b503e8a3cd948"
         },
         {
           "heading": "## Tools, docs, memory",

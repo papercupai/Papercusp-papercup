@@ -168,7 +168,8 @@ async function main() {
   const sourceSha256 = createHash('sha256').update(readFileSync(join(root, sourcePath))).digest('hex');
   const isCommittedReader = e.STAGING_FIRST_HTTP_SCENARIO === 'committed-reader';
   const isBlueprintRoute = e.STAGING_FIRST_HTTP_SCENARIO === 'blueprint-account-route';
-  const isCurrentSuNative = ['current-su-native', 'current-su-native-carry'].includes(e.STAGING_FIRST_HTTP_SCENARIO ?? '');
+  const isCurrentSuNative = ['current-su-native', 'current-su-native-carry',
+    'current-su-native-frozen-carry-on', 'current-su-native-frozen-carry-off'].includes(e.STAGING_FIRST_HTTP_SCENARIO ?? '');
   const isCodexManagedTools = e.STAGING_FIRST_HTTP_SCENARIO === 'codex-managed-tools';
   const isOmpManagedTools = e.STAGING_FIRST_HTTP_SCENARIO === 'omp-managed-tools';
   const requiresPrepared = isCommittedReader || isBlueprintRoute || isCurrentSuNative || isCodexManagedTools || isOmpManagedTools
@@ -370,6 +371,8 @@ async function main() {
   if (isCurrentSuNative) {
     const receipt = await (await import('./current-su-native-http-scenario')).measureCurrentSuNativeScenario({
       workspace, base, evidenceDir, managedCarry: e.STAGING_FIRST_HTTP_SCENARIO === 'current-su-native-carry',
+      ...(e.STAGING_FIRST_HTTP_SCENARIO === 'current-su-native-frozen-carry-on' ? { frozenCarryMode: 'on' as const } : {}),
+      ...(e.STAGING_FIRST_HTTP_SCENARIO === 'current-su-native-frozen-carry-off' ? { frozenCarryMode: 'off' as const } : {}),
     });
     await stopHost();
     console.log('CURRENT_SU_NATIVE_RECEIPT ' + JSON.stringify({ ...receipt, hostStopped: true, bundleSha256, health }));

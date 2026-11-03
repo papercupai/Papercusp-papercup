@@ -28,7 +28,7 @@ export interface NotifyBus {
 const RETRY_INITIAL_MS = 500;
 const RETRY_MAX_MS = 10_000;
 
-export function createNotifyBus(channel: string, label: string = channel): NotifyBus {
+export function createNotifyBus(channel: string, label: string = channel, onListen?: () => void): NotifyBus {
   const handlers = new Set<(payload: string) => void>();
   let started = false;
   let listenerSql: postgres.Sql | null = null;
@@ -96,8 +96,16 @@ export function createNotifyBus(channel: string, label: string = channel): Notif
         if (handlers.size === 0) return;
         fanout(payload ?? "");
       };
+      // Consumers that drain durable rows must rescan after initial LISTEN and
+      // reconnect: notifications sent during a connection gap are not replayed.
+      const ready = () => {
+        if (gen !== generation || handlers.size === 0) return;
+        try { onListen?.(); } catch (err) {
+          console.error(`[${label}] listen-ready handler threw:`, err);
+        }
+      };
       if (listenHubEnabled()) {
-        const unsub = await hubListen(channel, onNotify);
+        const unsub = await hubListen(channel, onNotify, ready);
         if (gen !== generation) {
           unsub();
           return;
@@ -111,7 +119,7 @@ export function createNotifyBus(channel: string, label: string = channel): Notif
           idle_timeout: 0,
         });
         listenerSql = sql;
-        await sql.listen(channel, onNotify);
+        await sql.listen(channel, onNotify, ready);
         if (gen !== generation) return;
       }
       clearRetry();

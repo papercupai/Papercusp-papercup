@@ -1,12 +1,48 @@
 import { createServer } from 'node:http';
 import { expect, it, vi } from 'vitest';
-import { createCurrentSuNativeProtocol, guardedCurrentSuNativeHandler } from './current-su-native-http-protocol';
+import { createCurrentSuNativeProtocol, guardedCurrentSuNativeHandler, inspectFrozenNativeCarryInput,
+  FROZEN_NATIVE_CARRY_NOTE, FROZEN_NATIVE_CARRY_LIMIT } from './current-su-native-http-protocol';
 
 const tools = [{ type: 'function', name: 'exec_command' },
   { type: 'function', name: 'mcp__papercusp_su__session_request_compaction' }];
 const kickoff = { model: 'fixture', tools, input: [{ role: 'user', content: '<cwd>/app</cwd> task' }] };
 const output = (call_id: string, value: string) => ({ type: 'function_call_output', call_id, output: value });
 const proof = { predecessorSessionId: 'predecessor', editApplied: () => true };
+
+it.each(['on', 'off'] as const)('checks exact native frozen carry %s bytes and rejects contaminated input', mode => {
+  const initialPrompt = 'Frozen task bytes\nRetain the checkout.';
+  const firstPrompt = initialPrompt + (mode === 'on'
+    ? `\n\nContinuation note from this assignment's prior session:\n${FROZEN_NATIVE_CARRY_NOTE}` : '');
+  const text = `⟦turn-origin:self-compaction nonce:1234abcd⟧\n${firstPrompt}\n\n⟦codex-carry-lineage predecessor:predecessor⟧\nFresh continuation.`;
+  const body = { input: [{ role: 'user', content: [{ type: 'input_text', text }] }] };
+  const expected = { mode, initialPrompt, predecessorId: 'predecessor' };
+  expect(inspectFrozenNativeCarryInput(body, expected)).toMatchObject({ mode,
+    inputSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+    noteSha256: mode === 'on' ? expect.stringMatching(/^[a-f0-9]{64}$/) : null });
+  for (const corrupted of [text.replace('Frozen task bytes', 'Modified task bytes'),
+    text.replace('predecessor:predecessor', 'predecessor:foreign'), text.replace('self-compaction', 'owner'),
+    text.replace(firstPrompt, firstPrompt + '\nAmbient carry')]) {
+    expect(() => inspectFrozenNativeCarryInput({ input: [{ role: 'user', content: corrupted }] }, expected)).toThrow();
+  }
+  expect(() => inspectFrozenNativeCarryInput({ input: [...body.input,
+    { type: 'function_call_output', output: 'prior result' }] }, expected)).toThrow(/predecessor tool results/);
+  expect(() => inspectFrozenNativeCarryInput({ input: [body.input[0], body.input[0]] }, expected)).toThrow(/exactly one/);
+});
+
+it('drives the same frozen usage threshold and note through the native tool, retaining the queue receipt', async () => {
+  const protocol = createCurrentSuNativeProtocol({ frozen: true });
+  const beforeCompaction = vi.fn(async () => {});
+  const edit = await protocol.respond(kickoff, proof);
+  expect(edit).toContain(`"input_tokens":${FROZEN_NATIVE_CARRY_LIMIT + 2_000}`);
+  const compact = calls(await protocol.respond({ ...kickoff, input: [output('call_private_edit', 'ok')] },
+    { ...proof, beforeCompaction }))[0];
+  expect(JSON.parse(compact.arguments)).toEqual({ continueNote: FROZEN_NATIVE_CARRY_NOTE });
+  expect(beforeCompaction).toHaveBeenCalledExactlyOnceWith('predecessor');
+  const receipt = { requested: true, respawn: 'queued', frozenAssignmentCarry: { mode: 'off',
+    trigger: { kind: 'matched-threshold', limitTokens: FROZEN_NATIVE_CARRY_LIMIT } } };
+  await protocol.respond({ ...kickoff, input: [output('call_private_compact', JSON.stringify(receipt))] }, proof);
+  expect(protocol.queuedCarry).toEqual(receipt);
+});
 function calls(wire: string) {
   return wire.split('\n').filter(line => line.startsWith('data: {')).map(line => JSON.parse(line.slice(6)))
     .find(event => event.type === 'response.completed').response.output.filter((item: { type: string }) => /tool_call|function_call/.test(item.type));

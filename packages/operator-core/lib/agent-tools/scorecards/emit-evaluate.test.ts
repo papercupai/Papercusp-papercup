@@ -359,7 +359,7 @@ describe('diagnostic scorecard baseline', () => {
     expect(captureM).not.toHaveBeenCalled();
   });
 
-  it.each(['acceptance', 'vetting', 'supersedes', 'baselineRef', 'testedSha'])(
+  it.each(['acceptance', 'vetting', 'baselineRef', 'testedSha'])(
     'refuses diagnostic grading side effects: %s', async field => {
       const value = field === 'acceptance' ? { verdict: 'accept', reasoning: 'pretend settled' }
         : field === 'vetting' ? { workItemId: 'WI-123' } : 'EI-123';
@@ -375,9 +375,88 @@ describe('diagnostic scorecard baseline', () => {
       .resolves.toMatchObject({ ok: false, code: 'scorecard_rubric_identity_mismatch' });
     expect(captureM).not.toHaveBeenCalled();
   });
+
+  it('corrects an exact diagnostic without losing the prior immutable observation', async () => {
+    const prior = { issueId: 'EI-baseline', createdBy: 'su-implementer', purpose: 'diagnostic',
+      rubricRef: rubric.rubricId, rubricRevision: 7, criteriaHash: rubric.criteriaHash,
+      barSetHash: rubric.barSetHash, subject, ratings: RATINGS } as ScorecardRow;
+    listM.mockResolvedValue([prior]);
+    const result = await emitScorecard({ rubricRef: rubric.rubricId, purpose: 'diagnostic', subject,
+      ratings: RATINGS, supersedes: prior.issueId }, { createdBy: 'su-implementer' });
+    expect(result).toMatchObject({ ok: true, created: true });
+    expect(captureM.mock.calls[0][0]).toMatchObject({ payloadExtra: { observation: {
+      purpose: 'diagnostic', supersedes: prior.issueId,
+    } } });
+    expect(prior).not.toHaveProperty('supersedes');
+  });
+
+  it('refuses a diagnostic correction of another author or window', async () => {
+    listM.mockResolvedValue([{ issueId: 'EI-baseline', createdBy: 'su-other', purpose: 'diagnostic',
+      rubricRef: rubric.rubricId, rubricRevision: 7, criteriaHash: rubric.criteriaHash,
+      barSetHash: rubric.barSetHash, subject, ratings: RATINGS } as ScorecardRow]);
+    expect(await emitScorecard({ rubricRef: rubric.rubricId, purpose: 'diagnostic', subject,
+      ratings: RATINGS, supersedes: 'EI-baseline' }, { createdBy: 'su-implementer' }))
+      .toMatchObject({ ok: false, code: 'diagnostic_correction_invalid' });
+    expect(captureM).not.toHaveBeenCalled();
+  });
+
+  it.each(['comparison-rubric-mismatch', 'comparison-scope-mismatch', 'comparison-window-mismatch'])(
+    'does not compute a delta across %s', async scenario => {
+      readAndEvaluateAcceptanceBarLifecycleM.mockResolvedValue({ satisfied: true });
+      const candidate = { issueId: 'EI-old', rubricRef: rubric.rubricId, rubricRevision: 7,
+        criteriaHash: rubric.criteriaHash, barSetHash: rubric.barSetHash, subject, ratings: RATINGS,
+        ...(scenario === 'comparison-rubric-mismatch' ? { barSetHash: 'c'.repeat(64) } : {}),
+        ...(scenario === 'comparison-scope-mismatch' ? { sourceHive: 'other-hive' } : {}),
+        ...(scenario === 'comparison-window-mismatch' ? { subject: { ...subject, windowEnd: '2026-11-04T00:00:00Z' } } : {}),
+      } as ScorecardRow;
+      listM.mockResolvedValue([candidate]);
+      const result = await evaluateScorecard({ rubricRef: rubric.rubricId, subject, ratings: RATINGS });
+      expect(result).toMatchObject({ ok: true, latest: null, comparison: { status: 'incompatible',
+        reasons: [scenario.replace('comparison-', '').replace('rubric-mismatch', 'rubric-identity-mismatch')] },
+        delta: { previousIssueId: null } });
+      expect(listM).toHaveBeenCalledWith(expect.objectContaining({ finalizedOnly: true, limit: 1 }));
+    });
 });
 
 describe('emitScorecard', () => {
+  it('preserves a diagnostic baseline when ordinary grading becomes ready', async () => {
+    const subject = { kind: 'work-item' as const, ref: 'WI-exact', windowStart: '2026-11-01T00:00:00Z' };
+    const rubric = { ...RUBRIC, revision: 7, criteriaHash: 'a'.repeat(64) };
+    getRubricM.mockResolvedValue(rubric);
+    const baseline = { issueId: 'EI-baseline', purpose: 'diagnostic', rubricRef: rubric.rubricId,
+      rubricRevision: 7, criteriaHash: rubric.criteriaHash, barSetHash: null, subject,
+      ratings: RATINGS, missingKeys: [], extraKeys: [], rubricResolved: true,
+      rubricCurrentness: { state: 'current' } } as ScorecardRow;
+    listM.mockImplementation(async filter => filter?.issueIds ? [baseline] : []);
+    const result = await emitScorecard({ rubricRef: rubric.rubricId, subject,
+      baselineRef: baseline.issueId, ratings: RATINGS }, { createdBy: 'su-grader' });
+    expect(result).toMatchObject({ ok: true, created: true });
+    const observation = captureM.mock.calls[0][0].payloadExtra?.observation;
+    expect(observation).toMatchObject({ baselineRef: baseline.issueId, subject });
+    expect(observation).not.toHaveProperty('supersedes');
+    expect(observation).not.toHaveProperty('purpose', 'diagnostic');
+    expect(baseline).not.toHaveProperty('supersedes');
+  });
+
+  it.each(['rubric', 'scope', 'window'])('refuses a diagnostic regrade across a different %s', async dimension => {
+    const subject = { kind: 'work-item' as const, ref: 'WI-exact', windowEnd: '2026-11-01T00:00:00Z' };
+    const rubric = { ...RUBRIC, revision: 7, criteriaHash: 'a'.repeat(64) };
+    getRubricM.mockResolvedValue(rubric);
+    const baseline = { issueId: 'EI-baseline', purpose: 'diagnostic', rubricRef: rubric.rubricId,
+      rubricRevision: 7, criteriaHash: rubric.criteriaHash, subject,
+      ratings: RATINGS, missingKeys: [], extraKeys: [], rubricResolved: true,
+      rubricCurrentness: { state: 'current' },
+      ...(dimension === 'rubric' ? { barSetHash: 'b'.repeat(64) } : {}),
+      ...(dimension === 'scope' ? { sourceHive: 'other-hive' } : {}),
+      ...(dimension === 'window' ? { subject: { ...subject, windowEnd: '2026-11-02T00:00:00Z' } } : {}),
+    } as ScorecardRow;
+    listM.mockImplementation(async filter => filter?.issueIds ? [baseline] : []);
+    expect(await emitScorecard({ rubricRef: rubric.rubricId, subject,
+      baselineRef: baseline.issueId, ratings: RATINGS }, { createdBy: 'su-grader' }))
+      .toMatchObject({ ok: false, code: 'baseline_not_comparable' });
+    expect(captureM).not.toHaveBeenCalled();
+  });
+
   it('rubric not found → ok:false, never reaches captureImprovement', async () => {
     getRubricM.mockResolvedValue(null);
     const r = await emitScorecard({ rubricRef: 'nope', ratings: RATINGS }, { createdBy: 'su-1' });
@@ -1978,7 +2057,7 @@ describe('evaluateScorecard', () => {
   it('no ratings → returns the read-only grading skeleton (never validates/dedupes)', async () => {
     const r = await evaluateScorecard({ rubricRef: 'test-rubric' });
     expect(r).toMatchObject({ ok: true, skeleton: [{ key: 'crit-a' }, { key: 'crit-b' }], latest: null });
-    expect(listM).toHaveBeenCalledWith({ rubricRef: 'test-rubric', sourceHive: undefined, limit: 1 });
+    expect(listM).toHaveBeenCalledWith({ rubricRef: 'test-rubric', sourceHive: undefined, finalizedOnly: true, limit: 1 });
   });
 
   it('empty ratings → returns the grading skeleton with allowed values instead of crashing', async () => {
@@ -2262,13 +2341,16 @@ describe('evaluateScorecard', () => {
   });
 
   it('with ratings identical to the latest scorecard: changed:false and an empty changedCriteria delta', async () => {
-    const evalR = (await evaluateScorecard({ rubricRef: 'test-rubric', ratings: RATINGS })) as {
+    const subject = { kind: 'work-item' as const, ref: 'WI-exact' };
+    getRubricM.mockResolvedValue({ ...RUBRIC, revision: 7, criteriaHash: 'a'.repeat(64) });
+    const evalR = (await evaluateScorecard({ rubricRef: 'test-rubric', subject, ratings: RATINGS })) as {
       evidenceFingerprint: string;
     };
     listM.mockResolvedValue([
       {
         issueId: 'ISS-1',
         rubricRef: 'test-rubric',
+        rubricRevision: 7, criteriaHash: 'a'.repeat(64), subject,
         ratings: RATINGS,
         missingKeys: [],
         rubricResolved: true,
@@ -2278,16 +2360,19 @@ describe('evaluateScorecard', () => {
         linkedItems: [],
       } as unknown as ScorecardRow,
     ]);
-    const r2 = await evaluateScorecard({ rubricRef: 'test-rubric', ratings: RATINGS });
+    const r2 = await evaluateScorecard({ rubricRef: 'test-rubric', subject, ratings: RATINGS });
     expect(r2).toMatchObject({ ok: true, changed: false });
     expect((r2 as { delta: { changedCriteria: string[] } }).delta.changedCriteria).toEqual([]);
   });
 
   it('a SINGLE criterion change vs the latest is reflected precisely in changedCriteria', async () => {
+    const subject = { kind: 'work-item' as const, ref: 'WI-exact' };
+    getRubricM.mockResolvedValue({ ...RUBRIC, revision: 7, criteriaHash: 'a'.repeat(64) });
     listM.mockResolvedValue([
       {
         issueId: 'ISS-1',
         rubricRef: 'test-rubric',
+        rubricRevision: 7, criteriaHash: 'a'.repeat(64), subject,
         ratings: { 'crit-a': RATINGS['crit-a'], 'crit-b': { rating: 'fail', evidence: 'was broken' } },
         missingKeys: [],
         rubricResolved: true,
@@ -2297,7 +2382,7 @@ describe('evaluateScorecard', () => {
         linkedItems: [],
       } as unknown as ScorecardRow,
     ]);
-    const r = await evaluateScorecard({ rubricRef: 'test-rubric', ratings: RATINGS });
+    const r = await evaluateScorecard({ rubricRef: 'test-rubric', subject, ratings: RATINGS });
     expect((r as { delta: { changedCriteria: string[] } }).delta.changedCriteria).toEqual(['crit-b']);
   });
 
@@ -2735,10 +2820,13 @@ describe('scorecards result-shape contract is PUBLISHED, and matches what the co
   });
 
   it('`generationFreshness` reaches the caller as a nested OBJECT, and both readers name it', async () => {
+    const subject = { kind: 'work-item' as const, ref: 'WI-exact' };
+    getRubricM.mockResolvedValue({ ...RUBRIC, revision: 7, criteriaHash: 'a'.repeat(64) });
     listM.mockResolvedValue([
       {
         issueId: 'EI-1',
         rubricRef: 'test-rubric',
+        rubricRevision: 7, criteriaHash: 'a'.repeat(64), subject,
         ratings: RATINGS,
         gradedGeneration: { deployedSha: 'abc', hostStartedAt: '2026-09-02T00:00:00.000Z' },
         generationFreshness: { status: 'stale' },
@@ -2746,7 +2834,7 @@ describe('scorecards result-shape contract is PUBLISHED, and matches what the co
     ]);
 
     // The code half: an OBJECT on the row, which is what a flat/CSV projection breaks on.
-    const result = await evaluateScorecard({ rubricRef: 'test-rubric' });
+    const result = await evaluateScorecard({ rubricRef: 'test-rubric', subject });
     const latest = (result as { latest: { generationFreshness?: unknown } | null }).latest;
     expect(latest?.generationFreshness).toBeTypeOf('object');
     expect(latest?.generationFreshness).not.toBeNull();

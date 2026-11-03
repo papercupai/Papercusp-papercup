@@ -25,6 +25,7 @@ import {
   computeWorkOnEverythingRollup,
   resolveScorecardInstrumentSnapshots,
   type ScorecardInstrumentSnapshot,
+  type ScorecardRow,
 } from '../../scorecards';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { runWithWorkspaceIfConcrete } from '../../workspace-als';
@@ -132,6 +133,22 @@ export const scorecardEvaluateArgs = z
       ),
   })
   .strict();
+
+/** A matching slug alone never makes observations comparable. Missing pins stay unknown. */
+export function scorecardComparisonReasons(card: ScorecardRow, rubric: Rubric,
+  subject: ScorecardRow['subject'], sourceHive?: string): string[] {
+  const reasons: string[] = [];
+  if (card.rubricRef !== rubric.rubricId || !card.rubricRevision || !rubric.revision ||
+      card.rubricRevision !== rubric.revision || !card.criteriaHash || !rubric.criteriaHash ||
+      card.criteriaHash !== rubric.criteriaHash || (card.barSetHash ?? null) !== (rubric.barSetHash ?? null)) {
+    reasons.push('rubric-identity-mismatch');
+  }
+  if (!subject || !card.subject || card.subject.kind !== subject.kind || card.subject.ref !== subject.ref ||
+      (card.sourceHive ?? null) !== (sourceHive ?? null)) reasons.push('scope-mismatch');
+  if ((card.subject?.windowStart ?? null) !== (subject?.windowStart ?? null) ||
+      (card.subject?.windowEnd ?? null) !== (subject?.windowEnd ?? null)) reasons.push('window-mismatch');
+  return reasons;
+}
 
 /** Same narrow review contract for the read-only preflight and terminal write. */
 export function pendingDeliveryReviewRefusal(
@@ -366,10 +383,15 @@ export async function evaluateScorecard(
     required: true,
     ...(args.pendingDeliveryBarKeys?.includes(criterion.barKey ?? '') ? { pendingDelivery: true, requiredRating: 'unknown' } : {}),
   }));
-  const latest = (
+  const candidate = (
     await listScorecards({ rubricRef: args.rubricRef, sourceHive: args.sourceHive,
-      ...(args.subject ? { subjectRef: args.subject.ref, subjectKind: args.subject.kind } : {}), limit: 1 })
+      ...(args.subject ? { subjectRef: args.subject.ref, subjectKind: args.subject.kind } : {}),
+      finalizedOnly: true, limit: 1 })
   )[0];
+  const comparisonReasons = candidate ? scorecardComparisonReasons(candidate, rubric, args.subject, args.sourceHive) : [];
+  const latest = comparisonReasons.length ? undefined : candidate;
+  const comparison = { status: candidate ? (comparisonReasons.length ? 'incompatible' : 'comparable') : 'unavailable',
+    reasons: candidate ? comparisonReasons : ['no-finalized-scorecard'], candidateIssueId: candidate?.issueId ?? null };
 
   // An empty ratings object is the natural discovery request for callers that
   // need the rubric's criterion keys and allowed values before grading. Treat
@@ -393,6 +415,7 @@ export async function evaluateScorecard(
         ratingScale: rubric.ratingScale,
       },
       skeleton,
+      comparison,
       latest: latest ?? null,
     };
   }
@@ -559,6 +582,7 @@ export async function evaluateScorecard(
         : {}),
       ...(releaseGateBinding ? { releaseGateBinding } : {}),
       changed: latestFingerprint !== evidenceFingerprint,
+      comparison,
       delta: {
         previousIssueId: latest?.issueId ?? null,
         changedCriteria,

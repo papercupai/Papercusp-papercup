@@ -19,6 +19,8 @@ const DB_ROWS = [
     payload: {
       observation: {
         rubricRef: 'test-rubric',
+        rubricRevision: 1,
+        criteriaHash: 'criteria-v1',
         ratings: { alpha: { rating: 'healthy', evidence: 'e' } },
       },
     },
@@ -30,6 +32,8 @@ const DB_ROWS = [
     payload: {
       observation: {
         rubricRef: 'test-rubric',
+        rubricRevision: 1,
+        criteriaHash: 'criteria-v1',
         ratings: { alpha: { rating: 'broken', evidence: 'e' } },
         provisional: { violatableKeys: ['alpha'], stampedAt: '2026-08-02T00:00:00.000Z' },
       },
@@ -42,6 +46,8 @@ const DB_ROWS = [
     payload: {
       observation: {
         rubricRef: 'test-rubric',
+        rubricRevision: 1,
+        criteriaHash: 'criteria-v1',
         ratings: { alpha: { rating: 'healthy', evidence: 'e' } },
       },
     },
@@ -73,6 +79,8 @@ function observedRows(ends: Array<string | null>, rating = 'healthy', evidence =
     payload: {
       observation: {
         rubricRef: 'test-rubric',
+        rubricRevision: 1,
+        criteriaHash: 'criteria-v1',
         ratings: { alpha: { rating, evidence } },
         ...(end === null ? {} : {
           subject: { ref: `subject-${index}`, windowStart: '2026-07-01T00:00:00.000Z', windowEnd: end },
@@ -86,6 +94,8 @@ beforeEach(() => { rowsForQuery = DB_ROWS; });
 
 const RUBRIC_DEFINITION = {
   rubricId: 'test-rubric',
+  revision: 1,
+  criteriaHash: 'criteria-v1',
   workspaceId: 'test-workspace',
   kind: 'standard',
   characteristic: 'test-quality',
@@ -113,7 +123,14 @@ const RUBRIC_DEFINITION = {
 const sqlTag = (strings: TemplateStringsArray, ..._vals: unknown[]) => {
   const text = strings.join(' ? ');
   if (text.includes('FROM harness_shared.engineer_issues')) {
-    return Promise.resolve(rowsForQuery) as unknown as Promise<unknown[]>;
+    return Promise.resolve(rowsForQuery.map(row => ({ ...row, payload: { observation: {
+      ...row.payload.observation,
+      gradingAudit: {
+        state: 'passed', metaRubricRef: 'grading-integrity', stampedAt: row.created_at,
+        rubricRevision: 1, criteriaHash: 'criteria-v1', auditIssueId: 'EI-independent-audit',
+        auditor: 'agent-b', auditedAt: row.created_at,
+      },
+    } } }))) as unknown as Promise<unknown[]>;
   }
   return { __sqlFragment: text } as unknown as Promise<unknown[]>;
 };
@@ -140,7 +157,7 @@ vi.mock('./issues-engineer', () => ({
 vi.mock('./rubrics', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./rubrics')>()),
   getRubric: async () => RUBRIC_DEFINITION,
-  getRubricWithoutSeeding: async () => RUBRIC_DEFINITION,
+  getRubricWithoutSeeding: async (ref: string) => ({ ...RUBRIC_DEFINITION, rubricId: ref }),
   rubricInstrumentContract: () => null,
 }));
 

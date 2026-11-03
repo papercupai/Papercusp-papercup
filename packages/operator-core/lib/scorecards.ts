@@ -130,6 +130,7 @@ import {
   asStructuredObservation,
   normalizeScorecardRatings,
   scorecardAdmissionExclusion,
+  needsGradingAudit,
   type ScorecardAdmissionExclusion,
   type ObservationRatings,
   type ObservationSubject,
@@ -1514,6 +1515,8 @@ export function builtInCriterionKeysForRubric(rubricRef: string): string[] | nul
 export interface ScorecardRow {
   purpose?: 'diagnostic' | 'grading';
   barSetHash?: string | null;
+  /** Explicit history explains why a row cannot participate in settled comparisons. */
+  exclusionReasons?: string[];
   /** The engineer_issue id (EI-/WI-…) — the drill-back key. */
   issueId: string;
   /** ISO timestamp the scorecard was filed. */
@@ -3949,6 +3952,10 @@ export interface ScorecardListCursor {
 }
 
 export interface ListScorecardsFilter {
+  /** Exclude incomplete and unsettled observations BEFORE counting page slots. */
+  finalizedOnly?: boolean;
+  /** Trend comparison: require the current exact rubric identity before limiting. */
+  comparableOnly?: boolean;
   /** Explicit baseline/audit history; diagnostics never occupy default page slots. */
   includeDiagnostics?: boolean;
   /** Restrict to one rubric (e.g. 'pot-coordination-health'). */
@@ -4151,7 +4158,63 @@ function specQualitySupersederSql(tx: OrgSql) {
  * pollute the monitoring read (mirrors read-items.ts's organic provenance gate;
  * a NULL origin reads organic, the backfill default).
  */
-async function listScorecardsAtLimit(filter: ListScorecardsFilter, limit: number): Promise<ScorecardRow[]> {
+interface ScorecardSelection {
+  examinedCount: number;
+  excludedCounts: Record<string, number>;
+}
+
+function scorecardComparisonIdentity(row: {
+  rubricRef?: string; rubricRevision?: number; criteriaHash?: string; barSetHash?: string | null;
+  sourceHive?: string; subject?: ObservationSubject;
+}) {
+  return {
+    rubricRef: row.rubricRef ?? null,
+    rubricRevision: row.rubricRevision ?? null,
+    criteriaHash: row.criteriaHash ?? null,
+    barSetHash: row.barSetHash ?? null,
+    sourceHive: row.sourceHive ?? null,
+    subject: {
+      kind: row.subject?.kind ?? null, ref: row.subject?.ref ?? null,
+      windowStart: row.subject?.windowStart ?? null, windowEnd: row.subject?.windowEnd ?? null,
+    },
+  };
+}
+
+function storedGradingAudit(observation: StructuredObservation, row: ScorecardRowDb): ScorecardGradingAudit | undefined {
+  const revision = row.audit_rubric_revision == null ? NaN : Number(row.audit_rubric_revision);
+  return observation.gradingAudit ? {
+    ...observation.gradingAudit,
+    ...(observation.gradingAudit.rubricRevision == null && Number.isFinite(revision)
+      ? { rubricRevision: revision } : {}),
+    ...(observation.gradingAudit.criteriaHash == null && row.audit_criteria_hash
+      ? { criteriaHash: row.audit_criteria_hash } : {}),
+  } : undefined;
+}
+
+function scorecardHistoryExclusions(
+  observation: StructuredObservation,
+  keys: readonly string[] | null,
+  auditRequired: boolean,
+  gradingAudit: ScorecardGradingAudit | undefined,
+  auditRubric: Rubric | null,
+): string[] {
+  const common = scorecardAdmissionExclusion(observation);
+  const rated = Object.keys(observation.ratings ?? {});
+  return [
+    ...(common ? [common] : []),
+    ...(!keys ? ['rubric-unavailable'] : []),
+    ...(keys && (keys.length !== rated.length || keys.some(key => !rated.includes(key))) ? ['incomplete'] : []),
+    ...(!gradingAudit && auditRequired ? ['grading-audit-missing'] : []),
+    ...(gradingAudit && gradingAudit.state !== 'passed' && gradingAudit.state !== 'pending'
+      ? ['grading-audit-failed'] : []),
+    ...(gradingAudit?.state === 'passed' && classifyGradingAuditCurrentness(gradingAudit, auditRubric).state !== 'current'
+      ? [`grading-audit-${classifyGradingAuditCurrentness(gradingAudit, auditRubric).state}`] : []),
+  ];
+}
+
+async function listScorecardsAtLimit(
+  filter: ListScorecardsFilter, limit: number, selection?: ScorecardSelection,
+): Promise<ScorecardRow[]> {
   // EI-21592547181442895: the primary scorecard SELECT is a correctness read that
   // can overlap grading/audit writes. Keep it in a READ ONLY transaction with a
   // DB-side timeout, retry transient lock/statement contention, and only normalize
@@ -4173,6 +4236,9 @@ async function listScorecardsAtLimit(filter: ListScorecardsFilter, limit: number
   // WHERE semantics (NULL → not matched) and keeps the probe on the selective
   // supersedes index (measured 6,018 ms → 474 ms).
   let rows: ScorecardRowDb[] = [];
+  const finalizedRubrics = new Map<string, Rubric | null>();
+  let gradingAuditRubricRead = false;
+  let gradingAuditRubric: Rubric | null = null;
   let before = filter.before;
   let exhausted = false;
   while (rows.length < limit && !exhausted) {
@@ -4221,7 +4287,7 @@ async function listScorecardsAtLimit(filter: ListScorecardsFilter, limit: number
      WHERE scorecard.workspace_id = ${issuesScopeWorkspace()}
        AND COALESCE(scorecard.signal_origin, 'organic') = 'organic'
        AND scorecard.payload -> 'observation' ->> 'rubricRef' IS NOT NULL
-       AND ${filter.includeDiagnostics ? tx`TRUE` : tx`scorecard.payload -> 'observation' ->> 'purpose' IS DISTINCT FROM 'diagnostic'`}
+       AND ${filter.includeDiagnostics || filter.finalizedOnly ? tx`TRUE` : tx`scorecard.payload -> 'observation' ->> 'purpose' IS DISTINCT FROM 'diagnostic'`}
        AND ${filter.rubricRef ? tx`scorecard.payload -> 'observation' ->> 'rubricRef' = ${filter.rubricRef}` : tx`TRUE`}
        AND ${filter.sourceHive ? tx`scorecard.payload -> 'observation' ->> 'sourceHive' = ${filter.sourceHive}` : tx`TRUE`}
        AND ${filter.subjectRef ? tx`scorecard.payload -> 'observation' -> 'subject' ->> 'ref' = ${filter.subjectRef}` : tx`TRUE`}
@@ -4277,12 +4343,40 @@ async function listScorecardsAtLimit(filter: ListScorecardsFilter, limit: number
     // Advance by every raw row, including malformed ones. Only structurally valid
     // scorecards count toward the requested page. This keeps malformed history
     // auditable without letting it consume a visible page slot.
-    rows.push(
-      ...batch.filter((row) => {
-        const observation = asStructuredObservation((row.payload as { observation?: unknown } | null)?.observation);
-        return Boolean(observation?.rubricRef && observation.ratings);
-      }),
-    );
+    for (const row of batch) {
+      if (selection) selection.examinedCount += 1;
+      const observation = asStructuredObservation((row.payload as { observation?: unknown } | null)?.observation);
+      if (!observation?.rubricRef || !observation.ratings) continue;
+      if (filter.finalizedOnly) {
+        if (!finalizedRubrics.has(observation.rubricRef)) {
+          finalizedRubrics.set(observation.rubricRef,
+            await getRubricWithoutSeeding(observation.rubricRef).catch(() => null));
+        }
+        const rubric = finalizedRubrics.get(observation.rubricRef);
+        const keys = rubric?.criteria.map(criterion => criterion.key)
+          ?? builtInCriterionKeysForRubric(observation.rubricRef);
+        const audit = storedGradingAudit(observation, row);
+        if (audit && !gradingAuditRubricRead) {
+          gradingAuditRubricRead = true;
+          gradingAuditRubric = await getRubricWithoutSeeding(GRADING_INTEGRITY_RUBRIC_REF).catch(() => null);
+        }
+        const reasons = scorecardHistoryExclusions(observation, keys,
+          needsGradingAudit({ rubricKind: rubric?.kind, rubricRef: observation.rubricRef,
+            provisional: observation.provisional !== undefined }), audit, gradingAuditRubric);
+        if (!reasons.length && filter.comparableOnly) {
+          if (!rubric || observation.rubricRevision !== rubric.revision ||
+              !observation.criteriaHash || observation.criteriaHash !== rubric.criteriaHash ||
+              (observation.barSetHash ?? null) !== (rubric.barSetHash ?? null)) {
+            reasons.push('incompatible-rubric');
+          }
+        }
+        if (reasons.length) {
+          if (selection) selection.excludedCounts[reasons[0]] = (selection.excludedCounts[reasons[0]] ?? 0) + 1;
+          continue;
+        }
+      }
+      rows.push(row);
+    }
     const tail = batch[batch.length - 1]!;
     before = { createdAt: tsIso(tail.created_at), issueId: tail.issue_id };
     if (batch.length < batchLimit) exhausted = true;
@@ -4296,6 +4390,7 @@ async function listScorecardsAtLimit(filter: ListScorecardsFilter, limit: number
       keys: string[] | null;
       overrides?: Record<string, number>;
       ratingRubric: ScorecardRatingRubric | null;
+      kind: Rubric['kind'];
       liveIdentity: Pick<Rubric, 'revision' | 'criteriaHash'> | null;
     }
   >();
@@ -4325,8 +4420,6 @@ async function listScorecardsAtLimit(filter: ListScorecardsFilter, limit: number
   // on, and an unreadable boundary degrades to `unknown`, never to a false `fresh`.
   const liveHostStartedAtMs = filter.includeGeneration !== false && anyGenerationApplicable
     ? await traceNamedQueryStage('scorecards-generation', () => readLiveBoundary().catch(() => null)) : null;
-  let gradingAuditRubricRead = false;
-  let gradingAuditRubric: Rubric | null = null;
   const subjectRubrics = new Map<string, Rubric | null>();
 
   for (const row of rows) {
@@ -4340,27 +4433,12 @@ async function listScorecardsAtLimit(filter: ListScorecardsFilter, limit: number
         keys: rubric ? rubric.criteria.map((c) => c.key) : builtInCriterionKeysForRubric(observation.rubricRef),
         overrides: scoreOverridesForScale(rubric?.ratingScale),
         ratingRubric: rubric ? { ratingScale: rubric.ratingScale, criteria: rubric.criteria } : null,
+        kind: rubric?.kind,
         liveIdentity: rubric ? { revision: rubric.revision, criteriaHash: rubric.criteriaHash } : null,
       });
     }
     const meta = rubricMeta.get(observation.rubricRef)!;
-    const auditRevision =
-      typeof row.audit_rubric_revision === 'number' && Number.isFinite(row.audit_rubric_revision)
-        ? row.audit_rubric_revision
-        : typeof row.audit_rubric_revision === 'string' && row.audit_rubric_revision.trim()
-          ? Number(row.audit_rubric_revision)
-          : null;
-    const gradingAudit = observation.gradingAudit
-      ? {
-          ...observation.gradingAudit,
-          ...(observation.gradingAudit.rubricRevision == null && auditRevision != null && Number.isFinite(auditRevision)
-            ? { rubricRevision: auditRevision }
-            : {}),
-          ...(observation.gradingAudit.criteriaHash == null && row.audit_criteria_hash
-            ? { criteriaHash: row.audit_criteria_hash }
-            : {}),
-        }
-      : undefined;
+    const gradingAudit = storedGradingAudit(observation, row);
     if (gradingAudit && !gradingAuditRubricRead) {
       gradingAuditRubricRead = true;
       gradingAuditRubric = await traceNamedQueryStage('scorecards-rubric', () => getRubricWithoutSeeding(GRADING_INTEGRITY_RUBRIC_REF).catch(() => null));
@@ -4447,6 +4525,10 @@ async function listScorecardsAtLimit(filter: ListScorecardsFilter, limit: number
       missingKeys,
       extraKeys,
       rubricResolved,
+      exclusionReasons: scorecardHistoryExclusions(observation, meta.keys,
+        needsGradingAudit({ rubricKind: meta.kind,
+          rubricRef: observation.rubricRef, provisional: observation.provisional !== undefined }),
+        gradingAudit, gradingAuditRubric),
       ...(observation.evidenceFingerprint ? { evidenceFingerprint: observation.evidenceFingerprint } : {}),
       ...(observation.supersedes ? { supersedes: observation.supersedes } : {}),
       ...(observation.baselineRef ? { baselineRef: observation.baselineRef } : {}),
@@ -4480,6 +4562,8 @@ export async function listScorecards(filter: ListScorecardsFilter = {}): Promise
 export interface ScorecardPage {
   rows: ScorecardRow[];
   hasMore: boolean;
+  /** Counts describe this keyset scan, including its one eligible lookahead row. */
+  selection?: ScorecardSelection;
 }
 
 /**
@@ -4489,8 +4573,10 @@ export interface ScorecardPage {
  */
 export async function listScorecardPage(filter: ListScorecardsFilter = {}): Promise<ScorecardPage> {
   const limit = Math.min(Math.max(Math.trunc(filter.limit ?? 100), 1), 500);
-  const rows = await listScorecardsAtLimit(filter, limit + 1);
-  return { rows: rows.slice(0, limit), hasMore: rows.length > limit };
+  const selection: ScorecardSelection = { examinedCount: 0, excludedCounts: {} };
+  const rows = await listScorecardsAtLimit(filter, limit + 1, selection);
+  return { rows: rows.slice(0, limit), hasMore: rows.length > limit,
+    ...(filter.finalizedOnly ? { selection } : {}) };
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -4826,7 +4912,12 @@ export interface RubricTrend {
    * Explicit bounded-input evidence. `inputCount` is the raw newest-first
    * sample before trend-only exclusions; it is never a corpus total.
    */
-  sample: { limit: number; inputCount: number };
+  sample: {
+    limit: number; inputCount: number; examinedCount: number; hasMore: boolean;
+    excludedCounts: Record<string, number>;
+  };
+  comparisonCohort?: ReturnType<typeof scorecardComparisonIdentity>;
+  comparison?: { compatible: boolean; reason: string };
   /** The observed time span (oldest..newest scorecard) + the requested `since`. */
   window: { since?: string; from?: string; to?: string };
   /** Filing time remains separate from the subject observation window. */
@@ -5017,14 +5108,17 @@ export function parseCriterionInstrumentKey(
  */
 export async function scorecardTrend(filter: ScorecardTrendFilter): Promise<RubricTrend> {
   const sampleLimit = Math.min(Math.max(Math.trunc(filter.limit ?? 500), 1), 500);
-  const rows = await listScorecards({
+  const page = await listScorecardPage({
     rubricRef: filter.rubricRef,
     sourceHive: filter.sourceHive,
     since: filter.since,
     limit: sampleLimit,
+    finalizedOnly: true,
+    comparableOnly: true,
     // WI-6124: no includeLinks — the trend is a pure roll-up of ratings + createdAt and
     // never reads `linkedItems`, so it takes the default and skips the join.
   });
+  const rows = page.rows;
   // Scale-aware numeric projection for mean10 (one rubric per trend → one resolve).
   // Resolved BEFORE the exclusions below because the contract-generation boundary is
   // declared on the rubric.
@@ -5068,8 +5162,8 @@ export async function scorecardTrend(filter: ScorecardTrendFilter): Promise<Rubr
   // re-deriving it. The precedence that produces the one-bucket arithmetic lives in the
   // helper; the two counts below are unchanged in value.
   const finalCards: ScorecardRow[] = [];
-  let provisionalExcluded = 0;
-  let gradingAuditPendingExcluded = 0;
+  let provisionalExcluded = page.selection?.excludedCounts.provisional ?? 0;
+  let gradingAuditPendingExcluded = page.selection?.excludedCounts['grading-audit-pending'] ?? 0;
   for (const r of live) {
     const excluded = scorecardAdmissionExclusion(r);
     if (excluded === 'provisional') provisionalExcluded += 1;
@@ -5078,6 +5172,8 @@ export async function scorecardTrend(filter: ScorecardTrendFilter): Promise<Rubr
   }
   // listScorecards is newest-first; the series wants chronological (oldest→newest).
   const chrono = [...finalCards].reverse();
+  const comparisonCohorts = new Set(finalCards.map(card => JSON.stringify(scorecardComparisonIdentity(card))));
+  const comparisonCompatible = comparisonCohorts.size === 1;
   const filingTimes = chrono.map((card) => Date.parse(card.createdAt)).filter(Number.isFinite);
   const observationStarts = chrono
     .map((card) => (card.subject?.windowStart ? Date.parse(card.subject.windowStart) : NaN))
@@ -5149,7 +5245,7 @@ export async function scorecardTrend(filter: ScorecardTrendFilter): Promise<Rubr
         unknownReasons,
         first: { rating: series[0].rating, at: series[0].at },
         latest: { rating: series[series.length - 1].rating, at: series[series.length - 1].at },
-        direction: computeTrendDirection(series),
+        direction: comparisonCompatible ? computeTrendDirection(series) : 'unknown',
         mean10: nums.length ? Math.round((nums.reduce((a, b) => a + b, 0) / nums.length) * 10) / 10 : null,
         instrumentKey: instrumentKeyByCriterion.get(criterion) ?? null,
         ...(filter.includeSeries ? { series: compressSeries(series) } : {}),
@@ -5168,6 +5264,8 @@ export async function scorecardTrend(filter: ScorecardTrendFilter): Promise<Rubr
     ['pre-contract-reset', preContractResetExcluded],
     ['provisional', provisionalExcluded],
     ['grading-audit-pending', gradingAuditPendingExcluded],
+    ...Object.entries(page.selection?.excludedCounts ?? {}).filter(([key]) =>
+      key !== 'provisional' && key !== 'grading-audit-pending'),
   ];
   const excludedPopulations = excludedPopulationCounts.filter(([, count]) => count > 0);
   const excludedTotal = excludedPopulations.reduce((total, [, count]) => total + count, 0);
@@ -5187,7 +5285,18 @@ export async function scorecardTrend(filter: ScorecardTrendFilter): Promise<Rubr
     ...(filter.includeDefinition && trendRubric ? { definition: trendRubric } : {}),
     scorecardCount: finalCards.length,
     observationAge: computeTrendObservationAge(finalCards, filter.observationMaxAgeSec, filter.nowMs ?? Date.now()),
-    sample: { limit: sampleLimit, inputCount: rows.length },
+    sample: { limit: sampleLimit, inputCount: rows.length,
+      examinedCount: page.selection?.examinedCount ?? rows.length,
+      hasMore: page.hasMore,
+      excludedCounts: page.selection?.excludedCounts ?? {},
+    },
+    ...(comparisonCompatible ? { comparisonCohort: scorecardComparisonIdentity(finalCards[0]) } : {}),
+    comparison: {
+      compatible: comparisonCompatible,
+      reason: !finalCards.length ? 'No finalized current-rubric samples.' : !comparisonCompatible
+        ? 'Multiple subject/scope/window cohorts; aggregate distributions and observation age are readable, but cross-cohort direction is unknown.'
+        : 'Exact rubric, subject, scope and observation window match.',
+    },
     supersededExcluded,
     preContractResetExcluded,
     provisionalExcluded,

@@ -51,7 +51,9 @@ const {
   runFlushGateMock,
   resolveResumeTargetMock,
   sessionCarryPolicyMock,
+  currentUsageMock,
 } = vi.hoisted(() => ({
+  currentUsageMock: vi.fn(),
   sessionCarryPolicyMock: vi.fn(async (_input: { ownerId: string; workspaceId?: string }) => undefined as FrozenCarryBoundary | undefined),
   clearEstimateMock: vi.fn(async () => {}),
   // EI-21595542328480968: where a codex reading came from. Default null = "not codex /
@@ -131,6 +133,7 @@ const {
   })),
 }));
 vi.mock('../compaction-usage', () => ({
+  currentContextUsageForOwner: currentUsageMock,
   observeHealthyClaudeTranscriptForOwner: async () => null,
   estimateContextTokensForOwner: estimateMock,
   observedPromptFloorForOwner: observedPromptFloorMock,
@@ -374,6 +377,7 @@ function fakeSql(opts: {
 beforeEach(() => {
   vi.clearAllMocks();
   sessionCarryPolicyMock.mockReset().mockResolvedValue(undefined);
+  currentUsageMock.mockReset();
   observedSqlQueries.length = 0;
   estimateMock.mockResolvedValue(null);
   observedPromptFloorMock.mockReturnValue(null);
@@ -1370,6 +1374,37 @@ describe('deterministic carry-respawn cutover (P-018)', () => {
       compaction_limit: 158_000,
     },
   ];
+  it.each((['on', 'off'] as const).flatMap(mode => (['soft', 'force'] as const).map(rung => ({ mode, rung }))))(
+    'enforces a host-measured matched watchdog trigger for carry $mode at $rung and labels recovery', async ({ mode, rung }) => {
+    const initialPrompt = 'Host-pinned threshold task';
+    const boundary = { mode, initialPrompt, initialPromptSha256: createHash('sha256').update(initialPrompt).digest('hex'),
+      compactionLimit: 158_000 };
+    sessionCarryPolicyMock.mockResolvedValue(boundary);
+    buildOwnerRespawnMock.mockImplementation(async (_owner, opts) => ({
+      firstPrompt: initialPrompt, systemPromptAddendum: '', budgetChars: 0,
+      openOwnerQuestion: { crossesOpenOwnerMessage: false }, frozenAssignmentCarry: {
+        mode, initialPromptSha256: boundary.initialPromptSha256, firstPromptSha256: boundary.initialPromptSha256,
+        noteSha256: null, trigger: opts.frozenTrigger },
+    }));
+    const tokens = rung === 'soft' ? 170_000 : 220_000;
+    estimateMock.mockResolvedValue(tokens);
+    currentUsageMock.mockResolvedValue({ backend: 'claude', nativeSessionId: 'native-current',
+      sessionStartedAtMs: Date.now() - 1000, unavailableReason: null,
+      reading: { tokens: 157_999, observedAtMs: Date.now(), source: 'live-transcript-bytes/4' } });
+    getFlagMock.mockImplementation(async key => rung === 'soft' || key !== 'papercusp-gateway-maintenance-carry');
+    findLiveHostMock.mockReturnValue({ sock: '/tmp/hot.sock', caps: ['carry-respawn'] });
+    hostSupportsMock.mockReturnValue(true);
+    const early = await checkCompactionCompliance(fakeSql({ seeded }));
+    expect(early.frozenCarryTriggers).toEqual([]); expect(injectMock).not.toHaveBeenCalled();
+    currentUsageMock.mockResolvedValue({ backend: 'claude', nativeSessionId: 'native-current',
+      sessionStartedAtMs: Date.now() - 1000, unavailableReason: null,
+      reading: { tokens, observedAtMs: Date.now(), source: 'live-transcript-bytes/4' } });
+    const reached = await checkCompactionCompliance(fakeSql({ seeded }));
+    expect(reached.frozenCarryTriggers).toEqual([{ owner: 'hot', receipt: expect.objectContaining({
+      kind: rung === 'soft' ? 'matched-threshold' : 'recovery',
+      source: rung === 'soft' ? 'watchdog-soft' : 'watchdog-force', limitTokens: 158_000, observedTokens: tokens,
+      nativeSessionId: 'native-current' }) }]);
+  });
 
   it.each((['soft', 'force'] as const).flatMap(rung =>
     (['on', 'off'] as const).map(mode => ({ rung, mode }))))(

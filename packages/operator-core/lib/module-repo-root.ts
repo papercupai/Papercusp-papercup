@@ -25,7 +25,8 @@
  * contains it.
  *
  * Never throws: several callers compute this at module load, where a throw would take the whole
- * host bundle down. With no checkout above the module it returns the module's own directory, so
+ * host bundle down. A packaged runtime's filesystem permission boundary also
+ * ends discovery. With no accessible checkout it returns the module's own directory, so
  * a git command run there fails loudly instead of quietly running somewhere unrelated.
  */
 import { existsSync } from 'node:fs';
@@ -39,6 +40,10 @@ export function moduleRepoRoot(
   const start = dirname(fileURLToPath(moduleUrl));
   let dir = start;
   for (;;) {
+    // Installed bundles have no Git checkout and may only read their own tree.
+    // Check permission before probing an ancestor: Node's existsSync throws on
+    // denied paths, including when this helper runs during module import.
+    if (process.permission?.has('fs.read', join(dir, '.git')) === false) return start;
     if (hasGitEntry(dir)) return dir;
     const parent = dirname(dir);
     if (parent === dir) return start;

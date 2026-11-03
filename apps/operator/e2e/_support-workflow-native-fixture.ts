@@ -8,7 +8,7 @@ import { BlueprintSchema, compileAgentSpecification } from '@papercusp/orchestra
 import { assembleRolePrompt } from '@papercusp/orchestrator/role-prompt';
 import { projectBlueprintToPg, retainBlueprintSpecificationSnapshot } from '../../../packages/operator-core/lib/blueprint/project-to-pg';
 import { supportToEngineeringOperation } from '../../../packages/operator-core/lib/blueprint/support-workflow-operation';
-import { currentBenchOpenAiInputContract } from '../../../packages/operator-core/lib/external-bench/current-su';
+import { currentBenchCodexSubscriptionContract, currentBenchOpenAiInputContract } from '../../../packages/operator-core/lib/external-bench/current-su';
 import { defineHostedAllocation } from '../../../packages/operator-core/lib/auth/hosted/billing/allocation-store';
 import { createPersonalGrant, listPersonalGrants, personalScope, revokePersonalGrant } from '../../../packages/operator-core/lib/personal-vault/store';
 import { getIdentitySource } from '../../../packages/operator-core/lib/agent-identities/source';
@@ -16,23 +16,88 @@ import { getOrgPg } from '@papercusp/db-org';
 import { mutateHarnessRegistry } from '../../../packages/operator-core/lib/harness-registry';
 import { createExternalTriggerBinding, createExternalTriggerSource } from '../../../packages/operator-core/lib/external-triggers/admin';
 import { isCodingAgentRole } from '../../../packages/operator-core/lib/personal-vault/coding-roles';
+import { listCodexInstalledModels } from '../../../packages/operator-core/lib/model-context-budget.mjs';
 import { readWorkflowAdministration } from '../../../packages/operator-core/lib/blueprint/support-workflow-administration';
 import { ORGANIZATION_CORPUS_SCOPE, mapProviderIdentity, replacePermissionListMembers, searchOrganizationDocuments,
   upsertOrganizationDocuments, upsertPermissionList } from '../../../packages/operator-core/lib/data-sources/documents-corpus';
 
-/** Reference-only transfer, following launch-blueprint-account-route's private runtime pattern. */
-export async function prepareSupportWorkerAccountReferences(sourceWorkspace: string, path: string) {
+export type SupportWorkerNativePayer = { payer: 'api-key' } | {
+  payer: 'subscription'; inputTokenCeiling: number; outputTokenCeiling: number;
+  /** Explicit frozen test allocation, not a provider invoice or API spend grant. */
+  simulationBudgetMicros?: number;
+};
+
+const supportNativeMaximumCostMicros = 100_000;
+
+function supportWorkerSimulationBudget(selection: SupportWorkerNativePayer) {
+  const maximum = selection.payer === 'subscription'
+    ? selection.simulationBudgetMicros ?? supportNativeMaximumCostMicros : supportNativeMaximumCostMicros;
+  if (!Number.isSafeInteger(maximum) || maximum <= 0 || maximum > 1_000_000_000)
+    throw new Error('Support native simulation budget must be positive and at most 1000000000 micro-USD');
+  return maximum;
+}
+
+/** Fixture inputs only: subscription limits must be qualified before a real
+ * provider trial. A syntactically valid frozen contract is not limit evidence. */
+function supportWorkerNativePolicy(selection: SupportWorkerNativePayer = { payer: 'api-key' }) {
+  if (!selection || !['api-key', 'subscription'].includes(selection.payer)
+    || Object.keys(selection).some(key => !['payer', ...(selection.payer === 'subscription'
+      ? ['inputTokenCeiling', 'outputTokenCeiling', 'simulationBudgetMicros'] : [])].includes(key)))
+    throw new Error('Support native payer selection is invalid');
+  const inputTokenCeiling = selection.payer === 'subscription' ? selection.inputTokenCeiling : 1000;
+  const outputTokenCeiling = selection.payer === 'subscription' ? selection.outputTokenCeiling : 100;
+  if (![inputTokenCeiling, outputTokenCeiling].every(value => Number.isSafeInteger(value) && value > 0))
+    throw new Error('Support subscription requires explicit positive provider token ceilings');
+  // Retain the existing synthetic rates and default allowance. Subscription
+  // trials may explicitly freeze a larger test allocation in this private
+  // input bundle; nothing here grants access to a separately billed API key.
+  const maximumCostMicros = supportWorkerSimulationBudget(selection);
+  const reservationMicros = inputTokenCeiling * 30 + outputTokenCeiling * 100;
+  if (!Number.isSafeInteger(reservationMicros) || reservationMicros > maximumCostMicros)
+    throw new Error(`Support native full-limit reservation ${reservationMicros} exceeds the ${maximumCostMicros === supportNativeMaximumCostMicros ? 'unchanged' : 'explicitly frozen'} ${maximumCostMicros} micro-USD simulation budget`);
+  return { model: 'gpt-6.1-sol', effort: 'medium', account: 'auto', payer: selection.payer,
+    inputTokenCeiling, outputTokenCeiling,
+    inputTokenCeilingSourceSha256: selection.payer === 'subscription'
+      ? currentBenchCodexSubscriptionContract('gpt-6.1-sol', inputTokenCeiling, outputTokenCeiling)
+      : currentBenchOpenAiInputContract('gpt-6.1-sol', inputTokenCeiling),
+    inputUsdPerMillion: 30, cachedInputUsdPerMillion: 30, cacheWriteUsdPerMillion: 30, outputUsdPerMillion: 100 };
+}
+
+async function assertSupportSubscriptionBounds(accounts: Array<{ credentialRef: string }>,
+  native: ReturnType<typeof supportWorkerNativePolicy>) {
+  if (native.payer !== 'subscription') return;
+  const { parseCodexCliRef } = await import('../../../packages/operator-core/lib/inference-gateway/codex-cli-bridge');
+  for (const account of accounts) {
+    const codexHome = parseCodexCliRef(account.credentialRef);
+    const model = codexHome ? listCodexInstalledModels({ codexHome }).find(row => row.id === native.model) : null;
+    const window = model?.maxContextWindow ?? model?.contextWindow;
+    if (!window || !Number.isSafeInteger(window) || window <= 0)
+      throw new Error('Support subscription requires installed provider model-window metadata for every account');
+    // Input plus output fits the provider context window. Reserving the whole
+    // window for EACH is conservative when no separate output maximum is
+    // published. Never substitute the API-key fixture's tiny output cap.
+    if (native.inputTokenCeiling < window || native.outputTokenCeiling < window)
+      throw new Error('Support subscription ceilings must each cover the installed provider model window');
+  }
+}
+
+/** Reference-only transfer, following launch-blueprint-account-route's private runtime pattern.
+ * The existing private bundle carries the explicit payer; no credential bytes
+ * or ambient account discovery are added to the disposable database. */
+export async function prepareSupportWorkerAccountReferences(sourceWorkspace: string, path: string,
+  nativePayer: SupportWorkerNativePayer = { payer: 'api-key' }) {
   if (!sourceWorkspace.trim() || /^verify-tauri-isolated-/.test(sourceWorkspace)
     || !isAbsolute(path) || path.startsWith(fileURLToPath(new URL('../../../', import.meta.url))))
     throw new Error('Support worker references require an explicit source workspace and external destination');
+  const native = supportWorkerNativePolicy(nativePayer);
   const { loadAccountPool } = await import('../../../packages/operator-core/lib/deployment/account-pool-store');
   const { accountsForProvider, isSpawnEligible } = await import('../../../packages/operator-core/lib/deployment/account-pool');
   const accounts = accountsForProvider(await loadAccountPool(sourceWorkspace), 'codex')
-    // This fixture freezes an API-key payer and requires a provider-enforced
-    // output cap. Subscription transports cannot enforce that contract.
-    .filter(row => isSpawnEligible(row, Date.now()) && !row.credentialRef.startsWith('codex-cli:'))
+    .filter(row => isSpawnEligible(row, Date.now())
+      && row.credentialRef.startsWith('codex-cli:') === (nativePayer.payer === 'subscription'))
     .map(row => ({ ...row, boundTo: [], softPin: [], credentialRef: row.credentialRef.replace(/~/g, homedir()) }));
-  if (!accounts.length) throw new Error('Support worker references require an eligible configured Codex API-key account');
+  if (!accounts.length) throw new Error(`Support worker references require an eligible configured Codex ${nativePayer.payer === 'subscription' ? 'subscription' : 'API-key'} account`);
+  await assertSupportSubscriptionBounds(accounts, native);
   const { parseCodexCliRef } = await import('../../../packages/operator-core/lib/inference-gateway/codex-cli-bridge');
   const { makeBearerCredentialResolver, parseCredentialRef } = await import('../../../packages/operator-core/lib/inference-gateway/credential-store');
   for (const row of accounts) {
@@ -46,7 +111,7 @@ export async function prepareSupportWorkerAccountReferences(sourceWorkspace: str
       } else await access(reference.path);
     }
   }
-  await writeFile(path, JSON.stringify({ accounts }), { mode: 0o600, flag: 'wx' });
+  await writeFile(path, JSON.stringify({ accounts, nativePayer }), { mode: 0o600, flag: 'wx' });
 }
 
 async function assertSupportFixtureDatabase(sql: Sql, workspaceId: string) {
@@ -77,6 +142,8 @@ export async function seedSupportWorkflowNativeFixture(sql: Sql, input: {
 }) {
   const { workspaceId } = input;
   await assertSupportFixtureDatabase(sql, workspaceId);
+  let native = supportWorkerNativePolicy();
+  let maximumCostMicros = supportNativeMaximumCostMicros;
   if (input.workerAccountReferenceFile) {
     // References are injected explicitly from outside the checkout. Never
     // discover the shared pool from inside this disposable database.
@@ -88,12 +155,16 @@ export async function seedSupportWorkflowNativeFixture(sql: Sql, input: {
     if (!metadata.isFile() || (metadata.mode & 0o077) !== 0 || metadata.size > 1_048_576)
       throw new Error('Support native account references require a private bounded file');
     const source = JSON.parse(await readFile(path, 'utf8'));
+    const nativePayer: SupportWorkerNativePayer = source.nativePayer ?? { payer: 'api-key' };
+    native = supportWorkerNativePolicy(nativePayer);
+    maximumCostMicros = supportWorkerSimulationBudget(nativePayer);
     const { accountProvider, isSpawnEligible } = await import('../../../packages/operator-core/lib/deployment/account-pool');
     if (!Array.isArray(source.accounts) || !source.accounts.length || source.accounts.some((row: any) =>
       !row || typeof row.id !== 'string' || typeof row.credentialRef !== 'string'
       || accountProvider(row) !== 'codex' || !isSpawnEligible(row, Date.now())
-      || row.credentialRef.startsWith('codex-cli:')))
-      throw new Error('Support native account references require eligible Codex API-key accounts');
+      || row.credentialRef.startsWith('codex-cli:') !== (nativePayer.payer === 'subscription')))
+      throw new Error(`Support native account references require eligible Codex ${nativePayer.payer === 'subscription' ? 'subscription' : 'API-key'} accounts`);
+    await assertSupportSubscriptionBounds(source.accounts, native);
     const { updateAccountPool } = await import('../../../packages/operator-core/lib/deployment/account-pool-store');
     await updateAccountPool(() => ({ accounts: source.accounts.map((row: any) =>
       ({ ...row, boundTo: [], softPin: [] })) }), workspaceId);
@@ -176,14 +247,11 @@ export async function seedSupportWorkflowNativeFixture(sql: Sql, input: {
       identity: { kind: 'identity', ref: workerIdentity.identity.id,
         revision: workerIdentityRevision, contentHash: workerIdentity.contentHash },
       accountableOwner: actors.admin.id, reviewerPrincipals: [actors.reviewer.id],
-      allowedSources: ['slack'], allowedActions: ['prepare-handoff'], maximumCostMicros: 100_000,
+      allowedSources: ['slack'], allowedActions: ['prepare-handoff'], maximumCostMicros,
       model: { mode: 'exact', models: ['gpt-6.1-sol'], effort: 'medium', onUnavailable: 'fail' }, funding,
-      native: { model: 'gpt-6.1-sol', effort: 'medium', account: 'auto', payer: 'api-key',
-        inputTokenCeiling: 1000, outputTokenCeiling: 100,
-        inputTokenCeilingSourceSha256: currentBenchOpenAiInputContract('gpt-6.1-sol', 1000),
-        // Synthetic frozen rates and allocation. This helper never sends to a
-        // provider and never manufactures an execution or completion receipt.
-        inputUsdPerMillion: 30, cachedInputUsdPerMillion: 30, cacheWriteUsdPerMillion: 30, outputUsdPerMillion: 100 } });
+      // Synthetic frozen rates and allocation. This helper never sends to a
+      // provider and never manufactures an execution or completion receipt.
+      native });
     const blueprint = BlueprintSchema.parse({ id: harnessSlug, grants: {}, workItem: { kind: 'task' },
       roles: [{ id: role }], spine: { edges: { DONE: { to: 'done' } } },
       dependencies: { tools: ['blueprint:read-private-input'] }, operations: [operation] });
@@ -202,7 +270,7 @@ export async function seedSupportWorkflowNativeFixture(sql: Sql, input: {
       [funding.allocationId, department, 'project'],
     ] as const) {
       const result = await defineHostedAllocation(client, { ...funding, allocationId, parentAllocationId, level,
-        costClass: 'model', capMicros: 1_000_000, maxUnreconciledMicros: 100_000,
+        costClass: 'model', capMicros: Math.max(1_000_000, maximumCostMicros), maxUnreconciledMicros: maximumCostMicros,
         evidenceRef: 'synthetic:native-support-fixture', recordedBy: actors.admin.id });
       if (result.outcome !== 'created') throw new Error(`Fixture allocation was refused: ${result.outcome}`);
     }

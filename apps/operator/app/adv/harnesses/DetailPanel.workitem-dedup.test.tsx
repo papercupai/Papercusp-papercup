@@ -10,6 +10,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render, screen } from '@testing-library/react';
 import { NuqsTestingAdapter } from 'nuqs/adapters/testing';
 import { resolveSelectionKind } from './DetailPanel';
+import { beginInteraction, endInteraction, getLatestMeasure, PERF_INTERACTIONS } from '../../_components/perf/perf-marks';
 
 type SyncCall = { queryName: string; enabled?: boolean; args?: Record<string, unknown>; requestClass?: string };
 const { syncCalls, detailState, issueState } = vi.hoisted(() => ({
@@ -52,6 +53,7 @@ vi.mock('@papercusp/papercusp-shared', () => ({ openFeatureChat: vi.fn() }));
 // FeatureEditor pulls a rich editor at import — not needed for the empty/not-found
 // branch this test renders; stub it so module load stays jsdom-light.
 vi.mock('../../harness/FeatureEditor', () => ({ default: () => null }));
+vi.mock('./HumanWorkSection', () => ({ HumanWorkSection: () => null }));
 
 import DetailPanel from './DetailPanel';
 
@@ -64,25 +66,76 @@ afterEach(() => {
   detailState.failureCount = 0;
   detailState.failureReason = null;
   issueState.issues = [];
+  performance.clearMarks?.();
+  performance.clearMeasures?.();
 });
 
-function renderSelected() {
-  return render(
+function selectedPane() {
+  return (
     <NuqsTestingAdapter searchParams="?sel=WI-1">
       <DetailPanel panelId={'p1' as never} panelType={'detail' as never}
         params={{ harnessSlug: 'h1' } as never} api={{ setTitle: vi.fn() } as never} />
-    </NuqsTestingAdapter>,
+    </NuqsTestingAdapter>
   );
 }
 
+function renderSelected() {
+  return render(selectedPane());
+}
+
 describe('DetailPanel work-item detail subscription', () => {
+  const item = { id: 'WI-1', kind: 'change', family: 'issue', title: 'Selected work',
+    state: 'open', assignee: null, updatedAt: '', origin: 'local' };
+
+  it('ends click timing after the selected detail resolves and commits, once', () => {
+    detailState.loading = true;
+    beginInteraction(PERF_INTERACTIONS.workItemOpen, 'h1:WI-1');
+    const pane = renderSelected();
+    expect(getLatestMeasure(PERF_INTERACTIONS.workItemOpen)).toBeNull();
+    detailState.loading = false;
+    detailState.data = [item];
+    pane.rerender(selectedPane());
+    expect(screen.getByText('Selected work')).toBeTruthy();
+    expect(getLatestMeasure(PERF_INTERACTIONS.workItemOpen)).not.toBeNull();
+    pane.rerender(selectedPane());
+    expect(performance.getEntriesByName('work-item-open', 'measure')).toHaveLength(1);
+  });
+
+  it('measures a cached matching detail without waiting for another fetch', () => {
+    detailState.data = [item];
+    beginInteraction(PERF_INTERACTIONS.workItemOpen, 'h1:WI-1');
+    renderSelected();
+    expect(getLatestMeasure(PERF_INTERACTIONS.workItemOpen)).not.toBeNull();
+  });
+
+  it('does not consume another selection start on a late or failed detail read', () => {
+    detailState.data = [{ ...item, id: 'WI-2' }];
+    detailState.error = new Error('late failure');
+    beginInteraction(PERF_INTERACTIONS.workItemOpen, 'h1:WI-2');
+    renderSelected();
+    expect(getLatestMeasure(PERF_INTERACTIONS.workItemOpen)).toBeNull();
+    expect(endInteraction(PERF_INTERACTIONS.workItemOpen, 'h1:WI-2')).not.toBeNull();
+  });
+
+  it('clears an abandoned loading selection without emitting a successful duration', () => {
+    detailState.loading = true;
+    beginInteraction(PERF_INTERACTIONS.workItemOpen, 'h1:WI-1');
+    const pane = renderSelected();
+    pane.unmount();
+    expect(endInteraction(PERF_INTERACTIONS.workItemOpen, 'h1:WI-1')).toBeNull();
+    expect(getLatestMeasure(PERF_INTERACTIONS.workItemOpen)).toBeNull();
+  });
+
   it('reveals a resolver failure during retries before the terminal query error exists', () => {
     detailState.loading = true;
     detailState.failureCount = 1;
     detailState.failureReason = new Error('resolver timeout');
+    beginInteraction(PERF_INTERACTIONS.workItemOpen, 'h1:WI-1');
     renderSelected();
     expect(screen.getByText('Unable to load WI-1: resolver timeout')).toBeTruthy();
     expect(screen.queryByText('Loading WI-1…')).toBeNull();
+    expect(endInteraction(PERF_INTERACTIONS.workItemOpen, 'h1:WI-1')).toBeNull();
+    expect(getLatestMeasure(PERF_INTERACTIONS.workItemOpen)).toBeNull();
   });
 
   it('shows a failed detail read even while unrelated legacy issues and a retry are loading', () => {

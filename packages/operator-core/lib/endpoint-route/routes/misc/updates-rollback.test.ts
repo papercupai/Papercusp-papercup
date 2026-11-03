@@ -1,8 +1,19 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { encodeTauriUpdateAuthorization } from '@papercusp/tauri-release-kit/signature';
+vi.mock('../../../operator-state-pg', () => ({ readOperatorState: vi.fn(async () => ({ update_channel: 'alpha' })) }));
+vi.mock('../../../managed-update-policy', async importOriginal => ({
+  ...(await importOriginal<object>()), readManagedUpdateChannel: vi.fn(() => null),
+}));
+vi.mock('./updates-github', async importOriginal => ({
+  ...(await importOriginal<object>()), releaseHostBase: vi.fn(() => 'https://release.test'),
+  resolveGithubToken: vi.fn(async () => null),
+}));
+import route from './updates-rollback';
 import {
   pickStaticRollbackArtifact,
   selectRollbackRelease,
   selectStaticRollbackRelease,
+  fetchStaticUpdateAuthorization,
 } from './updates-rollback';
 import type { GhRelease } from './updates-manifest';
 import type { StaticHistoryRelease } from './updates-history';
@@ -127,6 +138,68 @@ const STATIC_RELEASES: StaticHistoryRelease[] = [
     { product: 'gui', platform: 'linux-x86_64', name: 'Papercusp_GUI_0.0.8_amd64.AppImage' },
   ]),
 ];
+
+describe('rollback authorization transport', () => {
+  afterEach(() => vi.restoreAllMocks());
+  const envelope = () => ({
+    payload: encodeTauriUpdateAuthorization({ schema: 'tauri-update-authorization-v1',
+      artifactSha256: 'a'.repeat(64), policySha256: 'b'.repeat(64), configurationSha256: 'c'.repeat(64),
+      sourceRevision: 'd'.repeat(40), version: '0.0.8', product: 'gui', platform: 'linux-x86_64',
+      authorId: 'author', approverId: 'reviewer', approverEpoch: 1, signerId: 'signer', signerEpoch: 1,
+      rootEpoch: 1, rollbackCounter: 5, issuedAt: 1000, expiresAt: 2000 }),
+    signature: Buffer.from('untrusted comment: transport\nAA\ntrusted comment: transport\nAA\n').toString('base64'),
+    approvalSignature: Buffer.from('untrusted comment: approval\nAA\ntrusted comment: approval\nAA\n').toString('base64'),
+  });
+  async function request(updateAuthorization: unknown) {
+    const release = staticRel('desktop-v0.0.8-alpha', '0.0.8', 'alpha', [
+      { product: 'gui', platform: 'linux-x86_64', name: 'Papercusp_GUI_0.0.8_amd64.AppImage' },
+    ]);
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async input => String(input).endsWith('/history.json')
+      ? Response.json({ releases: [{ ...release, artifacts: [{ ...release.artifacts[0], updateAuthorization }] }] })
+      : new Response('artifact-signature'));
+    return (route as unknown as { handler: (r: Request, c: unknown) => Promise<Response> }).handler(
+      new Request('http://127.0.0.1/api/updates/rollback?tag=desktop-v0.0.8-alpha&channel=alpha'), {});
+  }
+  it('retains reviewed bytes in both flat and Tauri rollback manifests', async () => {
+    const updateAuthorization = envelope();
+    const response = await request(updateAuthorization);
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.updateAuthorization).toEqual(updateAuthorization);
+    expect(body.manifest.platforms['linux-x86_64'].updateAuthorization).toEqual(updateAuthorization);
+  });
+  it('reads the exact artifact companion instead of the newest release metadata', async () => {
+    const updateAuthorization = envelope();
+    const request = vi.spyOn(globalThis, 'fetch').mockResolvedValue(Response.json({ 'linux-x86_64': updateAuthorization }));
+    expect(await fetchStaticUpdateAuthorization('https://release.test/desktop-v0.0.8/gui.AppImage', 'linux-x86_64'))
+      .toEqual(updateAuthorization);
+    expect(String(request.mock.calls[0][0])).toBe('https://release.test/desktop-v0.0.8/gui.AppImage.update-authorization.json');
+  });
+  it.each([null, {}, { 'windows-x86_64': {} }, { 'linux-x86_64': null }])(
+    'refuses an invalid or wrong-platform companion: %j', async body => {
+      vi.spyOn(globalThis, 'fetch').mockResolvedValue(Response.json(body));
+      await expect(fetchStaticUpdateAuthorization('https://release.test/gui.AppImage', 'linux-x86_64')).rejects.toThrow();
+    });
+  it('distinguishes legacy absence from a failed metadata read', async () => {
+    const request = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(null, { status: 404 }));
+    expect(await fetchStaticUpdateAuthorization('https://release.test/gui.AppImage', 'linux-x86_64')).toBeUndefined();
+    request.mockResolvedValue(new Response(null, { status: 503 }));
+    await expect(fetchStaticUpdateAuthorization('https://release.test/gui.AppImage', 'linux-x86_64')).rejects.toThrow();
+  });
+  it('refuses oversized metadata and cancels its body', async () => {
+    const cancel = vi.fn();
+    const body = new ReadableStream({ start(controller) { controller.enqueue(new Uint8Array(1024 * 1024 + 1)); }, cancel });
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(body));
+    await expect(fetchStaticUpdateAuthorization('https://release.test/gui.AppImage', 'linux-x86_64')).rejects.toThrow('bound');
+    expect(cancel).toHaveBeenCalledOnce();
+  });
+  it.each([null, {}, { payload: '{}', signature: 'unsigned', approvalSignature: 'unsigned' }])(
+    'refuses malformed rollback authorization instead of removing it: %j', async bad => {
+      const response = await request(bad);
+      expect(response.status).toBe(409);
+      expect(await response.json()).toMatchObject({ ok: false, reason: 'invalid_update_authorization' });
+    });
+});
 
 describe('selectStaticRollbackRelease — static-host rollback selection (pure)', () => {
   it('matches by full tag, normalized tag-version, and the feed version the app reports', () => {

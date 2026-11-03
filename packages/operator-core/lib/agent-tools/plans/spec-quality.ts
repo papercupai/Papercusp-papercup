@@ -407,6 +407,23 @@ function withoutPublicContractIdentifiers(behavior: string): string {
     /(\b(?:response|results?|payload)\s+(?:includes?|contains?|returns?)\s+)([A-Za-z_$][A-Za-z0-9_$]*)/gi,
     (_match, prefix: string, field: string) => prefix + ' '.repeat(field.length),
   );
+  // Names in persisted/public records are observable even when an observation
+  // describes a missing or lost field instead of a successful response. Stop
+  // before explanatory clauses so a private helper later in the sentence is
+  // still inspected by the implementation-coupling checks.
+  text = text.replace(
+    /\b(?:(?:persisted|stored|serialized|public|diagnostic|assessment)\s+){0,2}(?:data|receipt|record|row|payload|response|results?)\s+(?:includes?|contains?|returns?|lists?|records?|stores?|persists?|loses?|omits?|drops?|lacks?)\s+([^.;\n]*?)(?=\s*,?\s+(?:or\s+(?:has|have|is|are|was|were|does|do|did)|because|which|that)\b|[.;\n]|$)/gi,
+    (_match, fields: string) => fields.replace(
+      /\b[a-z_$][A-Za-z0-9_$]*[A-Z][A-Za-z0-9_$]*\b/g,
+      (field) => ' '.repeat(field.length),
+    ),
+  );
+  // Timestamp properties describe an externally visible row shape when the
+  // contract observes a stamped record, not the implementation that wrote it.
+  text = text.replace(
+    /\b([a-z_$][A-Za-z0-9_$]*[A-Z][A-Za-z0-9_$]*)-(?:stamped|timestamped)\s+(?:row|record|entry|receipt|assessment)\b/gi,
+    (_match, field: string) => ' '.repeat(field.length),
+  );
   // Catalog/schema parameter lists and classifications expose data to callers.
   // Bound each match to its sentence so it cannot hide a later helper call.
   text = text.replace(/[^.;\n]+/g, (sentence) => {

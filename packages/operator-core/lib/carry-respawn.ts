@@ -43,7 +43,8 @@ import { deriveLaunchPromptText, type LaunchPlanRef } from './agent-tools/plans/
 import { getLoopCarryNoteWithMeta, shortCarryHash, type LoopCarryNoteWithMeta } from './carry-note';
 import { createHash } from 'node:crypto';
 import { sessionCarryPolicy } from './capability-envelope/session-confinement-port';
-import { validFrozenCarryBoundary, type FrozenCarryBoundary } from './capability-envelope/session-confinement';
+import { validFrozenCarryBoundary, frozenCarryTriggerReceipt, type FrozenCarryBoundary, type FrozenCarryTriggerReceipt } from './capability-envelope/session-confinement';
+export { frozenCarryTriggerReceipt, type FrozenCarryTriggerReceipt } from './capability-envelope/session-confinement';
 
 /** The two artifacts a successor respawn delivers, plus the boundary gate. */
 export interface RespawnLaunchSpec {
@@ -93,24 +94,34 @@ export interface RespawnLaunchSpec {
   carryNoteFreshness?: CarryNoteFreshness;
   /** Exact input hashes, not proof that a host delivered or resumed them. */
   frozenAssignmentCarry?: { mode: 'on' | 'off'; initialPromptSha256: string; noteSha256: string | null;
-    firstPromptSha256: string };
+    firstPromptSha256: string; trigger?: FrozenCarryTriggerReceipt };
 }
 
 /** Both conditions restart from the identical frozen task and retained checkout.
  * Only an enabled condition receives the explicit note; no general carry reader
  * is involved. Delivery and matched-trigger acceptance remain separate. */
 export function buildFrozenAssignmentRespawnSpec(boundary: FrozenCarryBoundary,
-  continueNote?: string): RespawnLaunchSpec {
+  continueNote?: string, trigger?: FrozenCarryTriggerReceipt): RespawnLaunchSpec {
   const hash = (text: string) => createHash('sha256').update(text).digest('hex');
   if (!validFrozenCarryBoundary(boundary) || hash(boundary.initialPrompt) !== boundary.initialPromptSha256 ||
       continueNote !== undefined && (typeof continueNote !== 'string' || continueNote.length > 1000))
     throw new Error('Frozen assignment carry input is invalid.');
+  if (boundary.compactionLimit !== undefined) {
+    if (!trigger) throw new Error('Frozen assignment carry requires a measured trigger.');
+    const checked = frozenCarryTriggerReceipt(boundary, { source: trigger.source,
+      usage: { backend: null, nativeSessionId: trigger.nativeSessionId, sessionStartedAtMs: null,
+        unavailableReason: null, reading: { tokens: trigger.observedTokens,
+          observedAtMs: trigger.observedAtMs, source: trigger.usageSource } } });
+    if (checked.kind !== trigger.kind || checked.limitTokens !== trigger.limitTokens)
+      throw new Error('Frozen carry trigger receipt is invalid.');
+  } else if (trigger) throw new Error('Frozen carry trigger has no preregistered threshold.');
   const note = boundary.mode === 'on' ? continueNote?.trim() || null : null;
   const firstPrompt = boundary.initialPrompt + (note ? `\n\nContinuation note from this assignment's prior session:\n${note}` : '');
   return { firstPrompt, systemPromptAddendum: '', budgetChars: 0,
     openOwnerQuestion: { crossesOpenOwnerMessage: false },
     frozenAssignmentCarry: { mode: boundary.mode, initialPromptSha256: boundary.initialPromptSha256,
-      noteSha256: note === null ? null : hash(note), firstPromptSha256: hash(firstPrompt) } };
+      noteSha256: note === null ? null : hash(note), firstPromptSha256: hash(firstPrompt),
+      ...(trigger ? { trigger: { ...trigger } } : {}) } };
 }
 
 export interface CarryNoteSnapshotIdentity {
@@ -229,6 +240,8 @@ export interface BuildOwnerRespawnLaunchSpecOpts
   role?: string | null;
   /** Explicit note from the current confined assignment; never a live-reader hint. */
   continueNote?: string;
+  /** Measured by the caller's host adapter, never participant tool arguments. */
+  frozenTrigger?: FrozenCarryTriggerReceipt;
   /** Session/transcript/workspace inputs owned by the live watcher. A threshold
    * boundary is deliberate by default; callers can explicitly mark a forced cut. */
   buildOpts?: BuildCarryDocOpts;
@@ -291,7 +304,7 @@ export async function buildOwnerRespawnLaunchSpec(
   if (!ownerId?.trim()) return null;
   try {
     const carry = await sessionCarryPolicy({ ownerId: ownerId.trim(), workspaceId: opts.buildOpts?.workspaceId });
-    if (carry) return buildFrozenAssignmentRespawnSpec(carry, opts.continueNote);
+    if (carry) return buildFrozenAssignmentRespawnSpec(carry, opts.continueNote, opts.frozenTrigger);
     const build = opts.buildFn ?? buildCarryDoc;
     const buildOpts: BuildCarryDocOpts = {
       boundaryDeliberate: true,

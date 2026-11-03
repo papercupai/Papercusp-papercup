@@ -349,6 +349,7 @@ describe('scorecards:list correctness payload', () => {
     expect(listScorecardPageM).toHaveBeenCalledWith({
       rubricRef: 'acceptance-test-rubric',
       includeLinks: true,
+      finalizedOnly: true,
     });
   });
 

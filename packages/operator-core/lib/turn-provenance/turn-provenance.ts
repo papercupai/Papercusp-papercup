@@ -482,6 +482,26 @@ export function readLedgerRows(
 }
 
 /**
+ * Async counterpart for operator paths that may inspect provenance during a
+ * live request. It shares the canonical row parser and expiry rules without
+ * putting a synchronous filesystem read on the service event loop.
+ */
+export async function readLedgerRowsAsync(
+  sid: string,
+  opts: { dir?: string; nowMs?: number; ttlMs?: number; includeExpired?: boolean } = {},
+): Promise<LedgerRow[]> {
+  const dir = opts.dir ?? turnProvenanceDir();
+  const nowMs = opts.nowMs ?? Date.now();
+  const ttlMs = opts.ttlMs ?? ledgerTtlMs();
+  try {
+    const rows = parseRows(await readFile(ledgerPathForSid(sid, dir), 'utf8'));
+    return opts.includeExpired ? rows : rows.filter((r) => nowMs - r.ts <= (r.ttlMs ?? ttlMs));
+  } catch {
+    return [];
+  }
+}
+
+/**
  * RECLAMATION GRACE — how far PAST its own TTL a row is retained before GC may
  * delete it, including append-time compaction. Not a tuning knob: it is what
  * keeps deletion verdict-neutral.

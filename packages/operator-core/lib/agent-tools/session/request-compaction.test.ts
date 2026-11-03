@@ -222,12 +222,18 @@ vi.mock('../../carry-respawn', async () => {
 // The effective-window resolve is a live PG/session read — pin it to the
 // fallback path by default so tests stay hermetic (the fallback constant is 200k).
 const contextWindowForOwner = vi.hoisted(() => vi.fn(async () => null as number | null));
+const currentUsageForOwner = vi.hoisted(() => vi.fn());
+const triggerPresence = vi.hoisted(() => vi.fn());
+vi.mock('../coordination/presence', async importOriginal => ({
+  ...await importOriginal<typeof import('../coordination/presence')>(), getPresence: triggerPresence,
+}));
 vi.mock('../../compaction-usage', async () => {
   const actual = await vi.importActual<typeof import('../../compaction-usage')>('../../compaction-usage');
   return {
     ...actual,
     resolveModelSpecForOwner: async () => null,
     estimateContextWindowForOwner: contextWindowForOwner,
+    currentContextUsageForOwner: currentUsageForOwner,
   };
 });
 
@@ -328,6 +334,8 @@ const ENVELOPE_LINE = /^⟦turn-origin:self-compaction nonce:[a-f0-9]{16}⟧\n/;
 beforeEach(async () => {
   vi.clearAllMocks();
   sessionCarryPolicy.mockReset().mockResolvedValue(undefined);
+  currentUsageForOwner.mockReset();
+  triggerPresence.mockReset().mockResolvedValue({ compactionLimit: 20_000, compactionLimitExplicit: true });
   resolveWakeModeMock.mockReset().mockResolvedValue('auto');
   await __resetRefusalMarkers(); // P-016 durable marker — isolate each test
   void __resetRespawnExpectedMarkers(); // EI-18676518990229124 — same module-level isolation
@@ -797,6 +805,7 @@ describe('session:request-compaction — P-018/P-022 carry-respawn actuation', (
   });
 
   it('keeps moving-tip behavior when no frozen marker exists', async () => {
+    findLiveHost.mockReturnValue(carryHost);
     await call({ focus: 'Then pin whatever staging resolves to at that instant, still never a quoted sha.' });
     expect(injectIntoHost).toHaveBeenCalledTimes(1);
   });
@@ -907,6 +916,38 @@ describe('session:request-compaction — P-018/P-022 carry-respawn actuation', (
     expect(buildCarryBrief).not.toHaveBeenCalled();
     expect(buildOwnerRespawnLaunchSpec).not.toHaveBeenCalled();
     expect(injectIntoHost).not.toHaveBeenCalled();
+  });
+  it.each(['early', 'stale', 'missing', 'reached', 'different-native', 'changed-limit', 'derived-limit'] as const)(
+    'uses actual host usage for a frozen self-compaction trigger: %s', async state => {
+    const { createHash } = await import('node:crypto');
+    const { buildFrozenAssignmentRespawnSpec } = await import('../../carry-respawn');
+    const boundary = { mode: 'on' as const, initialPrompt: 'Frozen threshold task', compactionLimit: 20_000,
+      initialPromptSha256: createHash('sha256').update('Frozen threshold task').digest('hex') };
+    sessionCarryPolicy.mockResolvedValue(boundary);
+    if (state === 'changed-limit') triggerPresence.mockResolvedValue({ compactionLimit: 25_000, compactionLimitExplicit: true });
+    if (state === 'derived-limit') triggerPresence.mockResolvedValue({ compactionLimit: 20_000, compactionLimitExplicit: false });
+    currentUsageForOwner.mockResolvedValue({ backend: 'codex', nativeSessionId: 'own-native',
+      sessionStartedAtMs: Date.now() - 1000, unavailableReason: null, reading: state === 'missing' ? null : {
+        tokens: state === 'early' ? 19_999 : 20_000, observedAtMs: Date.now() - (state === 'stale' ? 120_000 : 0),
+        source: 'codex-last-token-usage' } });
+    resolveSelfSession.mockResolvedValue({ sourceKind: 'codex', sessionId: state === 'different-native' ? 'successor-native' : 'own-native',
+      filePath: '/fixture/own-native-rollout.jsonl' });
+    buildOwnerRespawnLaunchSpec.mockImplementation(async (_owner, opts) =>
+      buildFrozenAssignmentRespawnSpec(boundary, opts.continueNote, opts.frozenTrigger));
+    findLiveHost.mockReturnValue(carryHost);
+    const result = body(await call({ continueNote: 'Own bounded note' }));
+    if (state === 'reached') {
+      expect(result).toMatchObject({ respawn: 'queued', frozenAssignmentCarry: { trigger: {
+        kind: 'matched-threshold', source: 'self-request', limitTokens: 20_000, observedTokens: 20_000,
+        nativeSessionId: 'own-native' } } });
+      expect(injected().data).toContain('Own bounded note');
+    } else {
+      expect(result).toMatchObject({ ok: false, requested: false,
+        error: state === 'different-native' ? 'carry_build_failed' : 'frozen_compaction_trigger_unverified' });
+      expect(injectIntoHost).not.toHaveBeenCalled();
+      expect(savePendingCarryRespawn).not.toHaveBeenCalled();
+    }
+    expect(buildCarryBrief).not.toHaveBeenCalled();
   });
 
   it('refuses a changed frozen carry policy without persisting or injecting an ambient successor', async () => {

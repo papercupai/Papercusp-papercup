@@ -5,6 +5,13 @@ import { installManagedTickAlarm } from '../lib/dbos/managed-tick-alarm';
 import { reconcileManagedTickAlarms } from '../lib/dbos/managed-tick-alarm-recovery';
 
 async function main(): Promise<void> {
+  if (process.argv[2] === 'idle-watch') {
+    const recovery = (await import('../lib/dbos/managed-tick-alarm-recovery')).startManagedTickAlarmRecovery();
+    process.on('message', () => {});
+    await recovery.ready;
+    process.send?.({ kind: 'started', pid: process.pid });
+    return;
+  }
   if (process.argv[2] === 'restart') {
     // Exercise the real fireOnArm startup watcher, not a direct helper call.
     installManagedTickAlarm();
@@ -22,7 +29,7 @@ async function main(): Promise<void> {
     installManagedTickAlarm({ recentlyEscalated: async () => false,
       notify: async input => { process.send?.({ kind: 'raised', data: input.data, pid: process.pid }); },
     });
-    managedSetInterval('fresh-process-held', 60_000, () => new Promise<void>(() => {}), {
+    managedSetInterval('fresh-process-held', Number(process.argv[3] ?? 60_000), () => new Promise<void>(() => {}), {
       category: 'global-sweep', allowInTest: true,
       activity: { kind: 'required-control', reason: 'P005 fresh-process control.' },
     });

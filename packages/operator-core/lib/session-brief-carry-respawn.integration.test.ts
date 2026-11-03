@@ -85,6 +85,19 @@ describe('pending carry-respawn on real Postgres', () => {
     )).rejects.toThrow(/pending_carry_respawn/);
 
     await applyMigrationForTest(db.sql, pendingCarryMigration);
+    // Both frozen modes restart from a positional assignment with NO ambient
+    // system addendum. Exercise the real writer, parser, consume and restore.
+    for (const mode of ['on', 'off']) {
+      const frozenOwner = `${OWNER}-frozen-${mode}`;
+      const frozen = await savePendingCarryRespawn({ ownerId: frozenOwner, workspaceId: WORKSPACE },
+        { firstPrompt: `Frozen task ${mode}`, systemPromptAddendum: '' },
+        { sql: db.sql, nowMs, nonce: `frozen-${mode}` });
+      expect(frozen).toMatchObject({ nonce: `frozen-${mode}`, systemPromptAddendum: '' });
+      expect(await consumePendingCarryRespawn(frozenOwner, { sql: db.sql, nowMs: nowMs + 1 })).toEqual(frozen);
+      expect(await restorePendingCarryRespawn(frozenOwner, WORKSPACE, frozen!, { sql: db.sql, nowMs: nowMs + 2 })).toBe(true);
+      expect(await consumePendingCarryRespawn(frozenOwner, { sql: db.sql, nowMs: nowMs + 3 })).toEqual(frozen);
+      expect(await consumePendingCarryRespawn(frozenOwner, { sql: db.sql, nowMs: nowMs + 4 })).toBeNull();
+    }
     const concurrentOwner = `${OWNER}-concurrent`;
     const concurrentNonce = 'carry-concurrent-1';
     const concurrentSlot = await savePendingCarryRespawn(
@@ -162,6 +175,7 @@ describe('pending carry-respawn on real Postgres', () => {
         FROM harness_shared.session_briefs
        WHERE owner_id = ${OWNER}
     `;
-    expect(cleared[0]?.pending_carry_respawn).toBeNull();
+    expect(cleared[0]?.pending_carry_respawn).toEqual({ fencedNonces: {} });
+    expect(await consumePendingCarryRespawn(OWNER, { sql: db.sql, nowMs: nowMs + 6 })).toBeNull();
   }, 30_000);
 });

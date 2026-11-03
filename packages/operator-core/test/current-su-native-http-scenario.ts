@@ -21,12 +21,14 @@ import type { FrontierSweEnvHandle } from '../lib/external-bench/frontier-swe-se
 import { currentProtocolFixture } from '../lib/external-bench/reproducibility/_protocol-test-fixture';
 import { preregister } from '../lib/external-bench/reproducibility/prereg';
 import { getModes } from '../lib/modes/store';
-import { readSessionConfinement } from '../lib/capability-envelope/session-confinement-store';
+import { readSessionConfinement, declareSessionConfinement } from '../lib/capability-envelope/session-confinement-store';
+import { setCompactionLimit } from '../lib/agent-tools/coordination/presence';
 import { emptyPool, registerAccount } from '../lib/deployment/account-pool';
 import { loadAccountPool, updateAccountPool } from '../lib/deployment/account-pool-store';
 import { installClaudeHooks, installInjectionHooks } from '../lib/desktop-install/papercusp-files';
 import { isValidSuperuserBearer, readSuperuserToken, superuserTokenPath } from '../lib/superuser-token';
-import { createCurrentSuNativeProtocol, guardedCurrentSuNativeHandler } from './current-su-native-http-protocol';
+import { createCurrentSuNativeProtocol, guardedCurrentSuNativeHandler, inspectFrozenNativeCarryInput,
+  FROZEN_NATIVE_CARRY_LIMIT } from './current-su-native-http-protocol';
 
 const CURRENT_SU_NATIVE_EGRESS_RUN_ID_MANIFEST = 'current-su-native-egress-run-id';
 
@@ -138,8 +140,10 @@ export async function measureCurrentSuHomeRepairScenario(input: { workspace: str
   }
 }
 
-export async function measureCurrentSuNativeScenario(input: { workspace: string; base: string; evidenceDir: string; managedCarry?: boolean }) {
-  const { workspace, base, evidenceDir, managedCarry = false } = input;
+export async function measureCurrentSuNativeScenario(input: { workspace: string; base: string; evidenceDir: string;
+  managedCarry?: boolean; frozenCarryMode?: 'on' | 'off' }) {
+  const { workspace, base, evidenceDir, frozenCarryMode } = input;
+  const managedCarry = input.managedCarry === true || frozenCarryMode !== undefined;
   assert.match(workspace, /^test-runtime-/);
   assert.equal(process.env.PAPERCUSP_WORKSPACE_ID, workspace);
   assert.equal(process.env.PAPERCUSP_BACKGROUND_WORKERS, '0');
@@ -204,7 +208,9 @@ export async function measureCurrentSuNativeScenario(input: { workspace: string;
   let predecessor: { ownerId: string; taskId: string; sessionId: string } | undefined;
   let successorId: string | undefined;
   let stoppedAfterCarry = false;
-  const protocol = createCurrentSuNativeProtocol();
+  const protocol = createCurrentSuNativeProtocol({ frozen: frozenCarryMode !== undefined });
+  let frozenInitialPrompt: string | undefined;
+  let frozenDelivery: ReturnType<typeof inspectFrozenNativeCarryInput> | undefined;
   const nativeDriveTimeoutMs = 180_000;
   // This service has no provider credential or forwarding path. The carry
   // variant supplies fixed protocol output solely to exercise the native host.
@@ -227,6 +233,20 @@ export async function measureCurrentSuNativeScenario(input: { workspace: string;
         try {
           wire = await protocol.respond(body, { predecessorSessionId: row.session_id,
             editApplied: () => readFileSync(join(taskCheckout, 'answer.txt'), 'utf8') === 'after\n',
+            // A trusted observer seeds only this disposable session's policy.
+            // This exercises real native delivery/handler thresholds, NOT
+            // controlled-arm admission or complete gateway accounting.
+            ...(frozenCarryMode ? { beforeCompaction: async (nativeId: string) => {
+              assert.equal(nativeId, protocol.predecessorSessionId);
+              const previous = await readSessionConfinement(row.coord_owner_id, workspace);
+              assert.ok(previous?.denyCarryOutside, 'Native frozen carry requires its launch-owned initial prompt');
+              frozenInitialPrompt = previous.denyCarryOutside.initialPrompt;
+              const result = await declareSessionConfinement({ ownerId: row.coord_owner_id, workspaceId: workspace,
+                confinement: { ...previous, denyCarryOutside: { ...previous.denyCarryOutside,
+                  mode: frozenCarryMode, compactionLimit: FROZEN_NATIVE_CARRY_LIMIT } } });
+              assert.equal(result.ok, true, JSON.stringify(result));
+              await setCompactionLimit(row.coord_owner_id, FROZEN_NATIVE_CARRY_LIMIT, { explicit: true });
+            } } : {}),
             binding: {
               deadlineMs: new Date(row.started_at).getTime() + nativeDriveTimeoutMs,
               read: async () => {
@@ -255,6 +275,12 @@ export async function measureCurrentSuNativeScenario(input: { workspace: string;
             ownerId: row.coord_owner_id, sessionId: row.session_id }, {}, codexHomeForSessionKey(row.id));
           writeFileSync(join(evidenceDir, 'native-model-requests.json'), JSON.stringify(protocol.census, null, 2));
           progress('model-protocol-request', { census: protocol.census.at(-1) });
+        }
+        if (frozenCarryMode && protocol.carryInputSeen) {
+          assert.ok(frozenInitialPrompt && protocol.predecessorSessionId);
+          frozenDelivery = inspectFrozenNativeCarryInput(body, { mode: frozenCarryMode,
+            initialPrompt: frozenInitialPrompt, predecessorId: protocol.predecessorSessionId });
+          writeFileSync(join(evidenceDir, 'native-frozen-carry-delivery.json'), JSON.stringify(frozenDelivery, null, 2));
         }
         res.writeHead(200, { 'content-type': 'text/event-stream' });
         res.end(wire);
@@ -436,10 +462,33 @@ export async function measureCurrentSuNativeScenario(input: { workspace: string;
         distinctNativeSession: true, sameOwner: true, sameTask: true, preservedHead: true,
         preservedDiff: true, confinementPreserved: true };
     }
+    let frozenCarryReceipt;
+    if (frozenCarryMode) {
+      assert.ok(frozenDelivery && frozenInitialPrompt && predecessor);
+      const queued = protocol.queuedCarry?.frozenAssignmentCarry as Record<string, unknown> | undefined;
+      assert.ok(queued, 'Native handler did not return a frozen carry receipt');
+      assert.equal(queued.mode, frozenDelivery.mode);
+      for (const key of ['firstPromptSha256', 'initialPromptSha256', 'noteSha256'] as const)
+        assert.equal(queued[key], frozenDelivery[key], 'Queue and actual native delivery hashes differ: ' + key);
+      const trigger = queued.trigger as Record<string, unknown> | undefined;
+      assert.ok(trigger, 'Native frozen carry did not record its fired trigger');
+      assert.equal(trigger.kind, 'matched-threshold');
+      assert.equal(trigger.source, 'self-request');
+      assert.equal(trigger.limitTokens, FROZEN_NATIVE_CARRY_LIMIT);
+      assert.equal(trigger.nativeSessionId, predecessor.sessionId);
+      assert.equal(trigger.usageSource, 'codex-last-token-usage');
+      assert.ok(Number(trigger.observedTokens) >= FROZEN_NATIVE_CARRY_LIMIT);
+      assert.deepEqual(confinement.denyCarryOutside, { initialPrompt: frozenInitialPrompt,
+        initialPromptSha256: frozenDelivery.initialPromptSha256, mode: frozenCarryMode,
+        compactionLimit: FROZEN_NATIVE_CARRY_LIMIT });
+      frozenCarryReceipt = { ...frozenDelivery, trigger, policySeed: 'private-observer',
+        gatewayAccounting: 'not-measured', controlledArmAdmission: 'not-exercised' };
+    }
     return { workspace, assignmentId, nativeSessionId: row.session_id, nativeTaskId: row.task_id,
       modelRequests: bodies.length, providerForwarding: false, autoRegistered: true, hooksBridged: true,
       containerWorkdir: '/app', mcpConfined: true, status: output.status,
-      ...(managedCarryReceipt ? { managedCarry: managedCarryReceipt } : {}) };
+      ...(managedCarryReceipt ? { managedCarry: managedCarryReceipt } : {}),
+      ...(frozenCarryReceipt ? { frozenCarry: frozenCarryReceipt } : {}) };
   } finally {
     try { progress('native-cleanup-start', { bridge: bridge?.stats(), egress: adapter?.egress.stats() }); }
     finally {

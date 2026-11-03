@@ -14,7 +14,8 @@ vi.mock('./plan-activation-gate', () => ({ evaluateConversationActivationGate: a
 // The real revision comparison must reach the next policy gate. Its explicit
 // refusal keeps this narrow fixture from claiming complete start admission or
 // provisioning the unrelated registry, scorecard and budget subsystems.
-const policy = vi.hoisted(() => ({ realStartGate: false, readLifecycle: vi.fn() }));
+const policy = vi.hoisted(() => ({ realStartGate: false, qualityApplicable: false,
+  readLifecycle: vi.fn(), critique: vi.fn() }));
 vi.mock('./plan-start-gate', async original => {
   const actual = await original<typeof import('./plan-start-gate')>();
   return { ...actual, checkPlanStartable: (...args: Parameters<typeof actual.checkPlanStartable>) =>
@@ -31,7 +32,11 @@ vi.mock('../../plan-types/pins', async original => ({
 }));
 vi.mock('./plan-spec-quality-gate', async original => ({
   ...(await original<typeof import('./plan-spec-quality-gate')>()),
-  evaluatePlanSpecQualityGate: async () => ({ satisfied: true, applicable: false }),
+  evaluatePlanSpecQualityGate: async () => ({ satisfied: true, applicable: policy.qualityApplicable, mode: 'enforced' }),
+}));
+vi.mock('./plan-start-critique-gate', async original => ({
+  ...(await original<typeof import('./plan-start-critique-gate')>()),
+  evaluatePlanStartBarCritique: (...args: unknown[]) => policy.critique(...args),
 }));
 import { checkExecutionPlan, checkPlanExecutionGuard, readExecutionPlanBindings } from './plan-execution-guard';
 import { toolGuardText } from '../../endpoint-route/routes/agent-mcp/identity-hook-sinks';
@@ -77,7 +82,8 @@ beforeAll(async () => {
       ADD COLUMN op_started_at timestamptz, ADD COLUMN op_updated_at timestamptz,
       ADD COLUMN current_wave integer, ADD COLUMN op_priority integer,
       ADD COLUMN archived boolean DEFAULT false, ADD COLUMN is_legacy boolean DEFAULT false,
-      ADD COLUMN updated_at timestamptz, ADD COLUMN items jsonb DEFAULT '[]',
+      ADD COLUMN updated_at timestamptz, ADD COLUMN created_at timestamptz DEFAULT now(),
+      ADD COLUMN items jsonb DEFAULT '[]',
       ADD COLUMN now_state text, ADD COLUMN now_next text, ADD COLUMN now_note jsonb,
       ADD COLUMN promote_policy text, ADD COLUMN schedule jsonb, ADD COLUMN schedule_active boolean,
       ADD COLUMN scheduled_at timestamptz, ADD COLUMN expires_at timestamptz, ADD COLUMN tzid text,
@@ -96,6 +102,8 @@ beforeAll(async () => {
 }, 120_000);
 afterAll(async () => { connection.sql = null; await db?.cleanup(); });
 beforeEach(async () => {
+  policy.qualityApplicable = false;
+  policy.critique.mockReset();
   await db.sql.unsafe('TRUNCATE harness_shared.session_briefs, harness_shared.adv_sessions, harness_shared.plan_item_claims, harness_shared.work_items, harness_shared.harness_plans, harness_shared.plan_audits, harness_shared.plan_revisions');
   await db.sql`INSERT INTO harness_shared.harness_plans (workspace_id,harness_slug,plan_slug,content,content_hash,op_status) VALUES (${WS}, 'project', 'draft-feature',
     ${'---\ntitle: Draft\nstatus: draft\n---\n# Draft\n'}, 'draft-hash', NULL)`;
@@ -238,7 +246,11 @@ describe('real write-boundary bypass regression', () => {
       .mockResolvedValue({ satisfied: false, codes: ['current-policy-regressed'], blockingBars: [] });
     try {
       const { checkPlanExecutionReadiness } = await import('./plan-execution-guard');
-      expect(await checkPlanExecutionReadiness(binding, WS)).toEqual([]);
+      const stages: string[] = [];
+      expect(await checkPlanExecutionReadiness(binding, WS, timing => {
+        stages.push(timing.stage); throw Error('diagnostic sink unavailable');
+      })).toEqual([]);
+      expect(stages).toEqual(['scope', 'plan_row', 'activation', 'audit', 'start_gate', 'spec_quality', 'admission']);
       expect(policy.readLifecycle).toHaveBeenCalledTimes(1);
       expect(policy.readLifecycle).toHaveBeenLastCalledWith('draft-feature', 'pre-start', {
         harnessSlug: 'project', requireCompleteContractBeforeProof: true, proofMode: 'metadata',
@@ -247,6 +259,33 @@ describe('real write-boundary bypass regression', () => {
       expect(policy.readLifecycle).toHaveBeenCalledTimes(2);
     } finally {
       policy.realStartGate = false;
+      policy.readLifecycle.mockReset();
+    }
+  });
+  it('skips legacy diagnostic critique histories and freshly enforces the cutoff on the next invocation', async () => {
+    const content = '---\ntitle: Feature\nstatus: active\n---\n# Feature\n';
+    await db.sql`UPDATE harness_shared.harness_plans SET content=${content}, content_hash='current',
+      status='active', op_status='started', created_at='2026-10-08T23:42:05Z'`;
+    await db.sql`INSERT INTO harness_shared.plan_audits VALUES (${WS},'project','draft-feature','activation',1,'current',NULL)`;
+    policy.realStartGate = true;
+    policy.qualityApplicable = true;
+    policy.readLifecycle.mockResolvedValue({ satisfied: true, codes: [], blockingBars: [] });
+    policy.critique.mockResolvedValue({ mode: 'enforced', verdict: { satisfied: false, code: 'critique_missing' } });
+    try {
+      const { checkPlanExecutionReadiness } = await import('./plan-execution-guard');
+      expect(await checkPlanExecutionReadiness(binding, WS)).toEqual([]);
+      expect(policy.critique).not.toHaveBeenCalled();
+
+      await db.sql`UPDATE harness_shared.harness_plans SET created_at='2026-10-11T03:00:00Z'`;
+      expect(await checkPlanExecutionReadiness(binding, WS)).toEqual(['critique_missing']);
+      expect(policy.critique).toHaveBeenCalledTimes(1);
+
+      await db.sql`UPDATE harness_shared.harness_plans SET created_at=NULL`;
+      expect(await checkPlanExecutionReadiness(binding, WS)).toEqual(['critique_missing']);
+      expect(policy.critique).toHaveBeenCalledTimes(2);
+    } finally {
+      policy.realStartGate = false;
+      policy.qualityApplicable = false;
       policy.readLifecycle.mockReset();
     }
   });

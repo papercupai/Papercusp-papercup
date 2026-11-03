@@ -69,7 +69,12 @@ const DB_ROWS = [
 const sqlTag = (strings: TemplateStringsArray, ..._vals: unknown[]) => {
   const text = strings.join(' ? ');
   if (text.includes('FROM harness_shared.engineer_issues')) {
-    return Promise.resolve(DB_ROWS) as unknown as Promise<unknown[]>;
+    return Promise.resolve(DB_ROWS.map(row => ({ ...row, payload: { observation: {
+      ...row.payload.observation, rubricRevision: 1, criteriaHash: 'criteria-v1',
+      gradingAudit: { state: 'passed', metaRubricRef: 'grading-integrity', stampedAt: row.created_at,
+        rubricRevision: 1, criteriaHash: 'criteria-v1', auditor: 'independent-agent',
+        auditedAt: row.created_at, auditIssueId: 'EI-independent-audit' },
+    } } }))) as unknown as Promise<unknown[]>;
   }
   return { __sqlFragment: text } as unknown as Promise<unknown[]>;
 };
@@ -110,10 +115,10 @@ vi.mock('./issues-engineer', () => ({
 
 vi.mock('./rubrics', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./rubrics')>()),
-  // Unresolved rubric → the built-in key fallback; irrelevant to the link decision and
-  // keeps this a pure unit test (no rubric store).
-  getRubric: async () => null,
-  getRubricWithoutSeeding: async () => null,
+  getRubric: async () => ({ rubricId: 'test-rubric', kind: 'standard', revision: 1,
+    criteriaHash: 'criteria-v1', criteria: [{ key: 'alpha' }] }),
+  getRubricWithoutSeeding: async (ref: string) => ({ rubricId: ref, kind: 'standard', revision: 1,
+    criteriaHash: 'criteria-v1', criteria: [{ key: 'alpha' }] }),
   rubricInstrumentContract: () => null,
 }));
 

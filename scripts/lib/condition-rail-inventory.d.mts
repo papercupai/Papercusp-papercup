@@ -6,6 +6,13 @@ export function isScannable(file: any): boolean;
 /** Does this file's BASENAME make it a watchdog module (a class-4 site by name alone)? */
 export function isWatchdogModule(file: any): boolean;
 /**
+ * Cheap raw pre-filter for scanSites. Each site class needs one of these syntax anchors; a
+ * watchdog module is a candidate by name alone. This deliberately allows comments and strings
+ * to match. In particular, any log call stays eligible because TypeScript can assemble fallback
+ * wording from split literals that the raw fallback regex cannot see.
+ */
+export function hasCandidateAnchor(raw: any, file: any): any;
+/**
  * Parse one source text into the structure the rail predicate needs: every function-like node's
  * span and name chain, and the start offset of every rail call. Pure.
  */

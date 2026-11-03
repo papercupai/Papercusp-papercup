@@ -17,12 +17,12 @@ afterAll(async () => {
   await db?.cleanup();
 }, 120_000);
 
-function launch(action: 'raise' | 'reconcile' | 'restart') {
+function launch(action: 'raise' | 'reconcile' | 'restart' | 'idle-watch', intervalMs = 60_000, workspace = WS) {
   const env = { ...process.env, HARNESS_DATABASE_URL: db.adminDsn,
-    HARNESS_ADMIN_DATABASE_URL: db.adminDsn, PAPERCUSP_PGBOUNCER: '0', PAPERCUSP_WORKSPACE_ID: WS };
+    HARNESS_ADMIN_DATABASE_URL: db.adminDsn, PAPERCUSP_PGBOUNCER: '0', PAPERCUSP_WORKSPACE_ID: workspace };
   delete env.VITEST_WORKER_ID;
   delete env.VITEST_POOL_ID;
-  const child = fork(fileURLToPath(new URL('../../test/managed-tick-alarm-process.fixture.ts', import.meta.url)), [action], {
+  const child = fork(fileURLToPath(new URL('../../test/managed-tick-alarm-process.fixture.ts', import.meta.url)), [action, String(intervalMs)], {
     execArgv: ['--import', 'tsx'], env, stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
   });
   children.add(child);
@@ -38,9 +38,9 @@ function launch(action: 'raise' | 'reconcile' | 'restart') {
   return { child, message };
 }
 
-async function envelopes() {
+async function envelopes(workspace = WS) {
   const rows = await db.adminSql<{ body: Record<string, unknown> }[]>`
-    SELECT body FROM harness_shared.coord_event_log WHERE workspace_id = ${WS}
+    SELECT body FROM harness_shared.coord_event_log WHERE workspace_id = ${workspace}
       AND surface = 'messages' AND body->>'condition_key' LIKE 'alarm:managed-tick:%' ORDER BY id`;
   return rows.map(row => row.body);
 }
@@ -54,6 +54,25 @@ async function reconcile() {
 }
 
 describe('original managed tick recovery across fresh processes and the real condition store', () => {
+  it('discovers a short-cadence external alarm after the surviving watcher has already become idle', async () => {
+    const workspace = 'p005-late-external-process';
+    const watcher = launch('idle-watch', 60_000, workspace);
+    expect((await watcher.message).kind).toBe('started');
+    const producer = launch('raise', 5000, workspace);
+    const raised = await producer.message;
+    expect(raised.kind).toBe('raised');
+    const key = (raised.data as Record<string, unknown>).conditionKey as string;
+    expect(computeConditionStates(await envelopes(workspace)).find(row => row.condition_key === key)?.open).toBe(true);
+    const exited = once(producer.child, 'exit');
+    producer.child.kill('SIGKILL');
+    await exited;
+    const endedAt = Date.now();
+    await expect.poll(async () => (await envelopes(workspace)).filter(row => row.resolves_condition === key).length,
+      { timeout: 5000, interval: 25 }).toBe(1);
+    expect(Date.now() - endedAt).toBeLessThanOrEqual(5000);
+    expect(computeConditionStates(await envelopes(workspace)).find(row => row.condition_key === key)?.open).toBe(false);
+  }, 300_000);
+
   it('keeps a live predecessor open, then atomically settles the ended original episode across restart and concurrent recovery', async () => {
     const producer = launch('raise');
     const raised = await producer.message;

@@ -15,6 +15,7 @@ import {
 import type { LatestRubricCheckResult } from './check-results-ledger';
 import type { RecordedRubricCheck } from '@papercusp/test-config/execution-details';
 import { retainMeasurementProvenance } from './measurement-provenance';
+import { rubricCriterionCheckSchema } from './agent-tools/plans/rubric-template';
 
 const RUBRIC = 'acceptance-ledger-fill-fixture';
 const SCALE = ['meets', 'near', 'misses'];
@@ -40,6 +41,38 @@ const criteria = [
 ];
 const manual = { rating: 'meets', evidence: 'read by hand' };
 
+describe('current measurement freshness', () => {
+  const criterion = { key: 'rows', check: { kind: 'probe', probe: probe(1), maxAgeMs: 60_000 } };
+  const measured = row('rows:0', 1, 'pass');
+  const grade = (nowMs: number, result = measured) => fillRatingsFromLedger({ criteria: [criterion],
+    callerRatings: {}, rubricRatingScale: [...SCALE, 'unknown'], latest: new Map([['rows:0', result]]), nowMs });
+
+  it('round-trips positive freshness limits through both executable check schemas', () => {
+    expect(rubricCriterionCheckSchema.parse(criterion.check)).toMatchObject({ maxAgeMs: 60_000 });
+    expect(rubricCriterionCheckSchema.parse({ kind: 'instrument', instrumentKey: 'host:df-root-used-pct', maxAgeMs: 1000 }))
+      .toMatchObject({ maxAgeMs: 1000 });
+    expect(rubricCriterionCheckSchema.safeParse({ ...criterion.check, maxAgeMs: 0 }).success).toBe(false);
+  });
+
+  it('accepts the exact age boundary and expires the same stored pass afterward', () => {
+    const boundary = Date.parse(measured.finishedAt) + 60_000;
+    const fresh = grade(boundary), expired = grade(boundary + 1);
+    expect(fresh.ok && fresh.ratings.rows?.rating).toBe('meets');
+    expect(expired.ok && expired.ratings.rows).toMatchObject({ rating: 'unknown', ledgerResult: { value: 1 } });
+    expect(expired.ok && expired.ratings.rows?.evidence).toContain('maxAgeMs=60000');
+  });
+
+  it.each(['invalid', '2026-10-13T03:00:00Z'])('refuses timestamp %s without erasing historical evidence', finishedAt => {
+    const out = grade(Date.parse(measured.finishedAt), { ...measured, finishedAt });
+    expect(out.ok && out.ratings.rows).toMatchObject({ rating: 'unknown', ledgerResult: { testRunId: 7, value: 1 } });
+  });
+
+  it('rates a recent failed attempt unknown rather than treating the retained old value as current', () => {
+    const out = grade(Date.parse(measured.finishedAt), { ...measured, status: 'error', check: { ...measured.check, value: null } });
+    expect(out.ok && out.ratings.rows?.rating).toBe('unknown');
+  });
+});
+
 it('preserves legacy scalar grades with explicit legacy-missing provenance', () => {
   const criterion = { key: 'disk', check: { kind: 'instrument', instrumentKey: 'host:df-root-used-pct', expect: { op: 'lt', value: 80 } } };
   const legacy = row('disk:instrument', 42, 'pass', { unit: '%' });
@@ -55,6 +88,45 @@ it('preserves legacy scalar grades with explicit legacy-missing provenance', () 
   expect(old.ratings.disk?.ledgerResult).toMatchObject({ value: 42, unit: '%', provenanceStatus: 'legacy-missing' });
   expect(old.ratings.disk?.evidence).toContain('provenance legacy-missing');
   expect(current.ratings.disk?.ledgerResult?.provenance).toEqual(provenance);
+});
+
+describe('ledger evidence retains the measurement procedure', () => {
+  const criterion = { key: 'rows', check: { kind: 'probe', probe: probe(1) } };
+  const grade = (provenance?: RecordedRubricCheck['provenance']) => fillRatingsFromLedger({
+    criteria: [criterion], rubricRatingScale: SCALE, callerRatings: {},
+    latest: new Map([['rows:0', row('rows:0', 1, 'pass', { provenance })]]),
+  });
+
+  it.each([
+    { kind: 'sql', sql: 'SELECT 1 AS n', schemaRevision: 'sql-r1', expect: { path: '$.rowCount', op: 'eq', value: 1 } },
+    { kind: 'command', argv: ['node', 'measure.mjs', '--window', '60'], cwd: '/repo' },
+  ])('exposes the retained descriptor for $kind without changing its measurement or original window', (procedure) => {
+    const provenance = retainMeasurementProvenance({ procedure, result: { rowCount: 1 },
+      startedAt: '2026-10-13T01:59:59.000Z', finishedAt: '2026-10-13T02:00:00.000Z' });
+    const out = grade(provenance);
+    expect(out.ok).toBe(true);
+    if (!out.ok) return;
+    expect(out.ratings.rows).toMatchObject({ rating: 'meets', ledgerResult: { value: 1, provenance } });
+    expect(out.ratings.rows!.evidence).toContain(`retained procedure ${provenance.procedure.snapshot}`);
+    expect(out.ratings.rows!.evidence).toContain('original window 2026-10-13T01:59:59.000Z..2026-10-13T02:00:00.000Z');
+  });
+
+  it('keeps redaction and truncation gaps explicit and never reconstructs a legacy procedure', () => {
+    const NEVER_EMIT_MARKER = 'never-emit-me';
+    const provenance = retainMeasurementProvenance({
+      procedure: { kind: 'tool', args: { apiKey: NEVER_EMIT_MARKER, sql: 'x'.repeat(10_000) } },
+      result: {}, startedAt: '2026-10-13T01:59:59.000Z', finishedAt: '2026-10-13T02:00:00.000Z',
+    });
+    const partial = grade(provenance);
+    expect(partial.ok).toBe(true);
+    if (!partial.ok) return;
+    expect(partial.ratings.rows!.evidence).toContain('provenance partial');
+    expect(partial.ratings.rows!.evidence).toContain('provenance gaps procedure-truncated, redacted');
+    expect(partial.ratings.rows!.evidence).not.toContain('fixture-private-value');
+    const legacy = grade();
+    expect(legacy.ok && legacy.ratings.rows!.evidence).toContain('provenance legacy-missing');
+    expect(legacy.ok && legacy.ratings.rows!.evidence).not.toContain('retained procedure');
+  });
 });
 
 describe('ledgerCheckBindings — which criteria the ledger owns', () => {
@@ -199,6 +271,20 @@ describe('fillRatingsFromLedger', () => {
       dispositions: { judgement: { disregard: 'not a ledger-rated criterion' }, ghost: { remediation: 'WI-3' } },
     });
     expect(unowned).toMatchObject({ ok: false, error: 'ledger_disposition_unowned', criterionKeys: ['judgement', 'ghost'] });
+  });
+
+  it('appends grader calibration context while preserving ledger evidence and rating authority', () => {
+    const context = 'Comparable-run control test_runs:19 measured 42 % against the same <80 % bar.';
+    const out = fillRatingsFromLedger({
+      criteria, rubricRatingScale: SCALE, callerRatings: manualRatings, latest,
+      dispositions: { disk: { evidence: context, remediation: 'WI-2' } },
+    });
+    expect(out.ok).toBe(true);
+    if (!out.ok) return;
+    expect(out.ratings.disk).toMatchObject({ rating: 'misses', ratedFrom: 'ledger',
+      evidenceRef: 'test_runs:11', ledgerResult: { testRunId: 11, value: 91, unit: '%' } });
+    expect(out.ratings.disk!.evidence).toMatch(/^fromLedger: disk:instrument=91 %/);
+    expect(out.ratings.disk!.evidence).toContain(`Grader context: ${context}`);
   });
 
   it('treats an errored latest row as unknown instrument-unavailable, and a row in another unit as unrecorded', () => {

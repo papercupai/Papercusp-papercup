@@ -154,7 +154,7 @@ function parsePendingCarryRespawn(value: unknown, nowMs: number): PendingCarryRe
     typeof row.expiresAtMs !== 'number' || !Number.isSafeInteger(row.expiresAtMs) ||
     row.expiresAtMs <= row.createdAtMs || row.expiresAtMs <= nowMs ||
     typeof row.firstPrompt !== 'string' || !row.firstPrompt.trim() ||
-    typeof row.systemPromptAddendum !== 'string' || !row.systemPromptAddendum.trim()
+    typeof row.systemPromptAddendum !== 'string'
   ) return null;
   return {
     nonce: row.nonce,
@@ -176,7 +176,8 @@ export async function savePendingCarryRespawn(
   options: PendingCarryRespawnSqlOptions & { nonce?: string } = {},
 ): Promise<PendingCarryRespawn | null> {
   const ownerId = identity?.ownerId?.trim();
-  if (!ownerId || !input.firstPrompt.trim() || !input.systemPromptAddendum.trim()) return null;
+  // Frozen assignment carry deliberately has no ambient system addendum.
+  if (!ownerId || !input.firstPrompt.trim() || typeof input.systemPromptAddendum !== 'string') return null;
   const nowMs = options.nowMs ?? Date.now();
   const slot: PendingCarryRespawn = {
     nonce: options.nonce ?? randomUUID(),

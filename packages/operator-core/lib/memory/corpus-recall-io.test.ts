@@ -503,6 +503,20 @@ describe('recallCorpusContext — the contract handed to the search engine', () 
       expect(result.outcome).toBe('ok');
       expect(result.block).toContain('keep snapshot');
       expect(stalledSignal?.aborted).toBe(true);
+      expect(result.legs?.degraded).toBe(true);
+      expect(result.partialSourceCalls).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          correlationId: expect.any(String),
+          stage: 'and',
+          source: 'plan',
+          ranker: 'lexical',
+          outcome: 'timed-out',
+          queryDiagnostics: expect.objectContaining({
+            timing: 'query-build-to-terminal-not-acquisition',
+            coverage: 'completed-query-results-only',
+          }),
+        }),
+      ]));
       expect(result.stages?.[0]?.lexical.sourceCalls).toEqual(expect.arrayContaining([
         expect.objectContaining({ source: 'plan',status: 'timed-out',rows: null }),
         expect.objectContaining({ source: 'doc',status: 'ran',rows: 1 }),

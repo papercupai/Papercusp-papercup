@@ -119,16 +119,53 @@ export interface FrozenCarryBoundary {
   readonly initialPrompt: string;
   readonly initialPromptSha256: string;
   readonly mode: 'on' | 'off';
+  /** Preregistered context-token trigger, identical across paired arms. */
+  readonly compactionLimit?: number;
 }
 
 export function validFrozenCarryBoundary(value: unknown): value is FrozenCarryBoundary {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   const row = value as Record<string, unknown>;
-  return Object.keys(row).length === 3 && Object.keys(row).every(key =>
-    ['initialPrompt', 'initialPromptSha256', 'mode'].includes(key)) &&
+  return Object.keys(row).every(key =>
+    ['initialPrompt', 'initialPromptSha256', 'mode', 'compactionLimit'].includes(key)) &&
+    (row.compactionLimit === undefined || Number.isSafeInteger(row.compactionLimit) && (row.compactionLimit as number) >= 20_000) &&
     typeof row.initialPrompt === 'string' && row.initialPrompt.trim().length > 0 && row.initialPrompt.length <= 200_000 &&
     typeof row.initialPromptSha256 === 'string' && /^[a-f0-9]{64}$/.test(row.initialPromptSha256) &&
     (row.mode === 'on' || row.mode === 'off');
+}
+
+export interface FrozenCarryTriggerReceipt {
+  kind: 'matched-threshold' | 'recovery';
+  source: 'self-request' | 'watchdog-soft' | 'watchdog-force' | 'context-death' | 'tool-reference-death';
+  limitTokens: number;
+  nativeSessionId: string;
+  observedTokens: number;
+  observedAtMs: number;
+  usageSource: 'codex-last-token-usage' | 'live-transcript-bytes/4';
+}
+
+/** Pure host evidence shared by the carry builder, handler and watchdog.
+ * Recovery never certifies a matched schedule, even above its frozen limit. */
+export function frozenCarryTriggerReceipt(boundary: FrozenCarryBoundary, input: {
+  source: FrozenCarryTriggerReceipt['source'];
+  usage: import('../compaction-usage').CurrentContextUsage;
+  runtimeLimit?: number;
+}, nowMs = Date.now()): FrozenCarryTriggerReceipt {
+  const reading = input.usage.reading;
+  const matched = input.source === 'self-request' || input.source === 'watchdog-soft';
+  if (!validFrozenCarryBoundary(boundary) || boundary.compactionLimit === undefined ||
+      !['self-request', 'watchdog-soft', 'watchdog-force', 'context-death', 'tool-reference-death'].includes(input.source) ||
+      !['codex-last-token-usage', 'live-transcript-bytes/4'].includes(reading?.source ?? '') ||
+      input.runtimeLimit !== undefined && input.runtimeLimit !== boundary.compactionLimit ||
+      !input.usage.nativeSessionId?.trim() || !reading ||
+      !Number.isSafeInteger(reading.tokens) || reading.tokens < 0 ||
+      !Number.isSafeInteger(reading.observedAtMs) || reading.observedAtMs > nowMs + 30_000 ||
+      nowMs - reading.observedAtMs > 60_000 ||
+      matched && reading.tokens < boundary.compactionLimit)
+    throw new Error('Frozen compaction trigger is unmeasured, changed or below its preregistered threshold.');
+  return { kind: matched ? 'matched-threshold' : 'recovery', source: input.source,
+    limitTokens: boundary.compactionLimit, nativeSessionId: input.usage.nativeSessionId,
+    observedTokens: reading.tokens, observedAtMs: reading.observedAtMs, usageSource: reading.source };
 }
 
 const ALLOWED: SessionConfinementDecision = { allowed: true, applied: true };

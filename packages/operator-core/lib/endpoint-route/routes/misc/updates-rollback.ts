@@ -48,6 +48,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { observeFallback } from '../../../degradation/fallback-observations';
 import { readOperatorState } from '../../../operator-state-pg';
 import { ManagedUpdatePolicyError } from '../../../managed-update-policy';
+import { parseTauriUpdateEnvelope, type TauriUpdateEnvelope } from '@papercusp/tauri-release-kit/signature';
 import { fetchAssetText, resolveGithubToken, releaseHostBase } from './updates-github';
 import {
   classifyChannel,
@@ -71,6 +72,35 @@ import {
 } from './updates-history';
 
 type Product = 'gui' | 'server';
+
+/** Fetch the exact artifact's detached approval, never a moving latest.json. */
+export async function fetchStaticUpdateAuthorization(artifactUrl: string, platform: string): Promise<TauriUpdateEnvelope | undefined> {
+  const response = await fetch(`${artifactUrl}.update-authorization.json`, { signal: AbortSignal.timeout(10_000) });
+  if (response.status === 404) return undefined; // legacy artifact; native enforcement still requires approval
+  if (!response.ok || !response.body) throw new Error('update authorization unavailable');
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder('utf-8', { fatal: true });
+  let body = '', bytes = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      bytes += value.byteLength;
+      if (bytes > 1024 * 1024) throw new Error('update authorization exceeds bound');
+      body += decoder.decode(value, { stream: true });
+    }
+    body += decoder.decode();
+  } finally {
+    await reader.cancel().catch(() => {});
+  }
+  const entries = JSON.parse(body) as Record<string, unknown>;
+  if (!entries || typeof entries !== 'object' || Array.isArray(entries) || !Object.hasOwn(entries, platform)) {
+    throw new Error('update authorization missing for selected platform');
+  }
+  const envelope = parseTauriUpdateEnvelope(entries[platform]);
+  if (JSON.parse(envelope.payload).platform !== platform) throw new Error('update authorization platform mismatch');
+  return envelope;
+}
 
 /** Why a requested tag is not a serviceable rollback target for this caller. */
 export type RollbackRefusal = 'unknown_tag' | 'channel_hidden';
@@ -208,8 +238,18 @@ export default defineTool({
       pub_date: string;
       signature: string;
       url: string;
-    }) =>
-      Response.json({
+      updateAuthorization?: unknown;
+    }) => {
+      let updateAuthorization: TauriUpdateEnvelope | undefined;
+      try {
+        if (r.updateAuthorization !== undefined) {
+          updateAuthorization = parseTauriUpdateEnvelope(r.updateAuthorization);
+        }
+      } catch {
+        return Response.json({ ok: false, reason: 'invalid_update_authorization' }, { status: 409 });
+      }
+      const authorization = updateAuthorization === undefined ? {} : { updateAuthorization };
+      return Response.json({
         ok: true,
         tag: r.tag,
         version: r.version,
@@ -220,6 +260,7 @@ export default defineTool({
         platform: platformKey,
         url: r.url,
         signature: r.signature,
+        ...authorization,
         notes: r.notes,
         pub_date: r.pub_date,
         // Tauri-updater manifest shape — a client may reuse its install_update parser.
@@ -227,9 +268,10 @@ export default defineTool({
           version: r.version,
           notes: r.notes,
           pub_date: r.pub_date,
-          platforms: { [platformKey]: { signature: r.signature, url: r.url } },
+          platforms: { [platformKey]: { signature: r.signature, url: r.url, ...authorization } },
         },
       });
+    };
 
     // ── 1. The static release host — AUTHORITATIVE (WI-5008). ────────────────
     // The history list is static-first (WI-4446); resolving the revert from the
@@ -273,6 +315,14 @@ export default defineTool({
                   { status: 409 },
                 );
               }
+              let updateAuthorization = art.updateAuthorization;
+              try {
+                if (updateAuthorization === undefined) {
+                  updateAuthorization = await fetchStaticUpdateAuthorization(artUrl, platformKey);
+                }
+              } catch {
+                return Response.json({ ok: false, reason: 'invalid_update_authorization' }, { status: 409 });
+              }
               return respondWith({
                 tag: sel.release.tag,
                 version: sel.release.version || normalizeTagVersion(sel.release.tag),
@@ -281,6 +331,7 @@ export default defineTool({
                 pub_date: sel.release.pub_date,
                 signature,
                 url: artUrl,
+                updateAuthorization,
               });
             }
             // Tag known on the host but nothing updater-installable for this
@@ -327,7 +378,7 @@ export default defineTool({
 
     const proxyBase = `${reqUrl.origin}/api/updates/download`;
 
-    const respond = (signature: string, url: string) =>
+    const respond = (signature: string, url: string, updateAuthorization?: unknown) =>
       respondWith({
         tag: release.tag_name,
         version,
@@ -336,6 +387,7 @@ export default defineTool({
         pub_date: release.published_at,
         signature,
         url,
+        updateAuthorization,
       });
 
     // Primary path: a GitHub asset for this platform/product, signed with its .sig.
@@ -360,7 +412,7 @@ export default defineTool({
     if (latestAsset && releaseHostBase() && product === 'gui') {
       try {
         const latest = JSON.parse((await fetchAssetText(latestAsset.id, token)) ?? 'null') as {
-          platforms?: Record<string, { signature?: string; url?: string }>;
+          platforms?: Record<string, { signature?: string; url?: string; updateAuthorization?: unknown }>;
         } | null;
         const readable = latest != null && typeof latest === 'object' && !Array.isArray(latest);
         observeFallback('release-state-read', { eligible: 1, applied: readable ? 1 : 0,
@@ -371,6 +423,7 @@ export default defineTool({
           return respond(
             entry.signature,
             `${proxyBase}?tag=${encodeURIComponent(release.tag_name)}&name=${encodeURIComponent(file)}`,
+            entry.updateAuthorization,
           );
         }
       } catch (e: unknown) {

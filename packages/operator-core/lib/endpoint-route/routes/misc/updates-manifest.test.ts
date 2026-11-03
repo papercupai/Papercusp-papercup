@@ -34,6 +34,7 @@ import route, {
 import { resolveGithubToken, fetchAssetText, releaseHostBase } from './updates-github';
 import { readOperatorState } from '../../../operator-state-pg';
 import { readManagedUpdateChannel } from '../../../managed-update-policy';
+import { encodeTauriUpdateAuthorization } from '@papercusp/tauri-release-kit/signature';
 
 beforeEach(() => { vi.mocked(readManagedUpdateChannel).mockReset().mockReturnValue(null); });
 
@@ -591,6 +592,39 @@ describe('GET /api/updates/manifest — static release host is authoritative (LO
     mockFetch.mockResolvedValue(new Response(JSON.stringify(latestJson()), { status: 200 }));
   });
   afterEach(() => vi.mocked(releaseHostBase).mockReturnValue(null));
+
+  it('preserves exact per-platform approval bytes through the real static response', async () => {
+    const updateAuthorization = {
+      payload: encodeTauriUpdateAuthorization({ schema: 'tauri-update-authorization-v1',
+        artifactSha256: 'a'.repeat(64), policySha256: 'b'.repeat(64), configurationSha256: 'c'.repeat(64),
+        sourceRevision: 'd'.repeat(40), version: '0.0.9', product: 'gui', platform: 'linux-x86_64',
+        authorId: 'author', approverId: 'reviewer', approverEpoch: 1, signerId: 'signer', signerEpoch: 1,
+        rootEpoch: 1, rollbackCounter: 5, issuedAt: 1000, expiresAt: 2000 }),
+      // Structural transport fixture; authenticity is covered by the release-kit suite.
+      signature: Buffer.from('untrusted comment: transport\nAA\ntrusted comment: transport\nAA\n').toString('base64'),
+      approvalSignature: Buffer.from('untrusted comment: approval\nAA\ntrusted comment: approval\nAA\n').toString('base64'),
+    };
+    const latest = latestJson();
+    mockFetch.mockResolvedValue(new Response(JSON.stringify({ ...latest, platforms: {
+      'linux-x86_64': { ...latest.platforms['linux-x86_64'], updateAuthorization },
+    } })));
+    const response = await manifestResponse('?target=linux&arch=x86_64&channel=alpha');
+    expect(response.status).toBe(200);
+    expect((await response.json()).platforms['linux-x86_64'].updateAuthorization).toEqual(updateAuthorization);
+  });
+
+  it.each([null, {}, { payload: '{}', signature: 'unsigned', approvalSignature: 'unsigned' }])(
+    'refuses malformed authorization without falling back to unsigned metadata: %j', async updateAuthorization => {
+      const latest = latestJson();
+      mockFetch.mockResolvedValue(new Response(JSON.stringify({ ...latest, platforms: {
+        'linux-x86_64': { ...latest.platforms['linux-x86_64'], updateAuthorization },
+      } })));
+      const response = await manifestResponse('?target=linux&arch=x86_64&channel=alpha');
+      expect(response.status).toBe(204);
+      expect(response.headers.get('X-Update-Reason')).toBe('invalid_update_authorization');
+      expect(resolveGithubToken).not.toHaveBeenCalled();
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+    });
 
   it('serves the manifest from <host>/latest.json and NEVER touches GitHub', async () => {
     const res = await manifestResponse(

@@ -724,9 +724,13 @@ dependency_generation_manifest_fingerprint() {
 dependency_generation_source_fingerprint() {
   local manifest="$1"
   local closure="${2:-$DEPENDENCY_GENERATION_CLOSURE_FINGERPRINT}"
+  local verifier="${3:-}"
   {
     printf 'closure\t%s\n' "$closure"
     cat "$manifest"
+    if [ -n "$verifier" ] && [ -f "$verifier" ]; then
+      printf 'verifier\t%s\n' "$(dependency_generation_sha256 < "$verifier")"
+    fi
   } | dependency_generation_sha256
 }
 
@@ -837,7 +841,7 @@ dependency_generation_reuse_manifest_is_valid() {
   dependency_generation_manifest_records_are_reusable "$manifest" "$generation/tree" || return 1
   source="$(dependency_generation_read_field "$marker" source)"
   closure="$(dependency_generation_read_field "$marker" closure)"
-  actual_source="$(dependency_generation_source_fingerprint "$manifest" "$closure" 2>/dev/null || true)"
+  actual_source="$(dependency_generation_source_fingerprint "$manifest" "$closure" "$generation/.verifier-closure.json" 2>/dev/null || true)"
   [ -n "$source" ] && [ "$actual_source" = "$source" ]
 }
 
@@ -988,6 +992,9 @@ dependency_generation_publication_token() {
     printf 'tree\t%s\n' "$tree_token"
     printf 'marker\t%s\t%s\n' "$marker_inode" "$marker_digest"
     printf 'manifest\t%s\t%s\n' "$manifest_token" "$manifest_digest"
+    if [ -f "$generation/.verifier-closure.json" ]; then
+      printf 'verifier\t%s\n' "$(dependency_generation_sha256 < "$generation/.verifier-closure.json")"
+    fi
   } | dependency_generation_sha256)" || return 1
   printf 'v%s:%s\n' "$schema" "$digest"
 }
@@ -3327,6 +3334,7 @@ dependency_generation_ensure_once() {
   local predecessor_identity='none'
   local predecessor_fingerprint record_fingerprint extra reuse_manifest_eligible='false'
   local existing_generation_valid='false' cache_validation_outcome='miss' inflight_rc
+  local verifier_helper="${DEPENDENCY_GENERATION_VERIFIER_HELPER:-$(dirname "${BASH_SOURCE[0]}")/dependency-generation-verifier.mjs}"
   total_started_ms="$(dependency_generation_now_ms)"
   DEPENDENCY_GENERATION_TREES_INCREMENTAL=0
   dependency_generation_record_reserve_fs "$integration_root"
@@ -3361,7 +3369,11 @@ dependency_generation_ensure_once() {
     return 1
   }
   dependency_generation_emit_phase source-manifest-before "$phase_started_ms" ok
-  source_before="$(dependency_generation_source_fingerprint "$before_manifest")" || {
+  "${DEPENDENCY_GENERATION_NODE:-node}" "$verifier_helper" capture "$integration_root" > "$build/.verifier-closure.json" || {
+    dependency_generation_remove_build "$build"
+    return 75
+  }
+  source_before="$(dependency_generation_source_fingerprint "$before_manifest" "$DEPENDENCY_GENERATION_CLOSURE_FINGERPRINT" "$build/.verifier-closure.json")" || {
     dependency_generation_remove_build "$build"
     return 1
   }
@@ -3429,7 +3441,11 @@ dependency_generation_ensure_once() {
       return 1
     }
     dependency_generation_emit_phase source-manifest-after-cache "$phase_started_ms" ok
-    source_after="$(dependency_generation_source_fingerprint "$after_manifest")" || {
+    "${DEPENDENCY_GENERATION_NODE:-node}" "$verifier_helper" capture "$integration_root" > "$build/.verifier-after.json" || {
+      dependency_generation_remove_build "$build"
+      return 75
+    }
+    source_after="$(dependency_generation_source_fingerprint "$after_manifest" "$DEPENDENCY_GENERATION_CLOSURE_FINGERPRINT" "$build/.verifier-after.json")" || {
       dependency_generation_remove_build "$build"
       return 1
     }
@@ -3588,13 +3604,22 @@ dependency_generation_ensure_once() {
   dependency_generation_emit_phase tree-copy "$phase_started_ms" ok \
     "trees_reused=$tree_reused trees_copied=$tree_copied trees_removed=$tree_removed predecessor=$predecessor_identity"
 
+  "${DEPENDENCY_GENERATION_NODE:-node}" "$verifier_helper" stage "$build" "$integration_root" || {
+    dependency_generation_remove_build "$build"
+    return 75
+  }
+
   if [ -n "${DEPENDENCY_GENERATION_AFTER_COPY_HOOK:-}" ]; then
     bash -c "$DEPENDENCY_GENERATION_AFTER_COPY_HOOK"
   fi
   dependency_generation_log 'capturing live dependency manifest (after copy)'
   phase_started_ms="$(dependency_generation_now_ms)"
   dependency_generation_set_manifest "$integration_root" > "$after_manifest" 2>/dev/null || true
-  source_after="$(dependency_generation_source_fingerprint "$after_manifest" 2>/dev/null || true)"
+  "${DEPENDENCY_GENERATION_NODE:-node}" "$verifier_helper" capture "$integration_root" > "$build/.verifier-after.json" || {
+    dependency_generation_remove_build "$build"
+    return 75
+  }
+  source_after="$(dependency_generation_source_fingerprint "$after_manifest" "$DEPENDENCY_GENERATION_CLOSURE_FINGERPRINT" "$build/.verifier-after.json" 2>/dev/null || true)"
   if [ -n "$source_after" ]; then
     dependency_generation_emit_phase source-manifest-after-copy "$phase_started_ms" ok
   else
@@ -3695,7 +3720,7 @@ dependency_generation_ensure_once() {
       return 1
     }
     printf 'publication_token=%s\n' "$publication_token" >> "$marker"
-    chmod a-w "$marker" "$tree_manifest"
+    chmod a-w "$marker" "$tree_manifest" "$build/.verifier-closure.json"
     [ "$(dependency_generation_publication_token "$build")" = "$publication_token" ] || {
       dependency_generation_log 'FATAL: dependency publication token was not self-stable'
       dependency_generation_remove_build "$build"

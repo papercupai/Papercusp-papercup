@@ -19,7 +19,7 @@
  * guard-tested below to pass exactly two arguments.
  */
 import { describe, it, expect, beforeAll, afterEach } from 'vitest';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
   readFileSync,
@@ -53,6 +53,8 @@ function repoRoot(): string {
 }
 
 const ROOT = repoRoot();
+const RUN_LIB_TIMEOUT_MS = 45_000;
+const scratch: string[] = [];
 
 /** Subject paths, overridable so a mutation probe can aim this suite at a COPY. */
 const HELPER_PATH =
@@ -80,18 +82,45 @@ function codeOnly(src: string): string {
  * the pure lane shares one fork across thousands of files — an unbounded hang here wedges
  * all of them until the batch watchdog fires.
  */
-function runLib(args: string[], env?: NodeJS.ProcessEnv, cwd?: string): { code: number; out: string; err: string } {
-  const r = spawnSync('bash', [HELPER_PATH, ...args], {
+function runProcess(
+  command: string,
+  args: string[],
+  env?: NodeJS.ProcessEnv,
+  cwd?: string,
+  timeoutMs = RUN_LIB_TIMEOUT_MS,
+): { code: number; out: string; err: string } {
+  const r = spawnSync(command, args, {
     encoding: 'utf8',
     cwd,
     env: env ? { ...process.env, ...env } : process.env,
-    timeout: 60_000,
+    timeout: timeoutMs,
     killSignal: 'SIGKILL',
   });
-  return { code: r.status ?? -1, out: String(r.stdout ?? ''), err: String(r.stderr ?? '') };
+  const spawnError = r.error as NodeJS.ErrnoException | undefined;
+  const spawnDiagnostic = spawnError
+    ? `spawnSync error (${spawnError.code ?? spawnError.name}): ${spawnError.message}`
+    : '';
+  return {
+    code: r.status ?? -1,
+    out: String(r.stdout ?? ''),
+    err: [String(r.stderr ?? ''), spawnDiagnostic].filter(Boolean).join('\n'),
+  };
 }
 
-const scratch: string[] = [];
+function runLib(
+  args: string[],
+  env?: NodeJS.ProcessEnv,
+  cwd?: string,
+): { code: number; out: string; err: string } {
+  const lockDir = mkdtempSync(join(tmpdir(), 'pinned-deps-runlib-'));
+  scratch.push(lockDir);
+  const childEnv: NodeJS.ProcessEnv = { ...(env ?? {}) };
+  if (!childEnv.DEPENDENCY_GENERATION_COPY_LOCK_FILE) {
+    childEnv.DEPENDENCY_GENERATION_COPY_LOCK_FILE = join(lockDir, 'copy.lock');
+  }
+  return runProcess('bash', [HELPER_PATH, ...args], childEnv, cwd);
+}
+
 afterEach(() => {
   for (const dir of scratch.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
@@ -105,6 +134,75 @@ function write(path: string, body: string): void {
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, body);
 }
+
+describe('pinned-deps test subprocess harness', () => {
+  it('preserves spawnSync timeout diagnostics', () => {
+    const result = runProcess(
+      process.execPath,
+      ['-e', 'setTimeout(() => {}, 10_000)'],
+      undefined,
+      undefined,
+      250,
+    );
+    expect(result.code).toBe(-1);
+    expect(result.err).toContain('spawnSync error');
+    expect(result.err).toContain('ETIMEDOUT');
+  });
+
+  it.runIf(process.platform === 'linux')(
+    'isolates fixture snapshots from the host-wide copy lock',
+    async () => {
+      const t = fixture();
+      const donor = join(t, 'donor');
+      const snap = join(t, 'snap');
+      const hostLock = join(t, 'host-copy.lock');
+      const ready = join(t, 'host-lock-held');
+      write(join(donor, 'node_modules/p/index.js'), 'fixture package');
+      const holder = spawn('flock', [hostLock, 'bash', '-c', 'touch "$READY"; exec sleep 30'], {
+        detached: true,
+        stdio: 'ignore',
+        env: { ...process.env, READY: ready },
+      });
+      let holderDone = false;
+      const holderExited = new Promise<void>(resolve => {
+        const finish = () => { holderDone = true; resolve(); };
+        holder.once('exit', finish);
+        holder.once('error', finish);
+      });
+      const envKeys = [
+        'DEPENDENCY_GENERATION_COPY_LOCK_FILE',
+        'DEPENDENCY_GENERATION_COPY_LOCK_TIMEOUT_SEC',
+        'DEPENDENCY_GENERATION_COPY_LOCK_MAX_SEC',
+      ] as const;
+      const previousEnv = envKeys.map(key => process.env[key]);
+      try {
+        process.env.DEPENDENCY_GENERATION_COPY_LOCK_FILE = hostLock;
+        process.env.DEPENDENCY_GENERATION_COPY_LOCK_TIMEOUT_SEC = '0';
+        process.env.DEPENDENCY_GENERATION_COPY_LOCK_MAX_SEC = '0';
+        const deadline = Date.now() + 2_000;
+        while (!existsSync(ready) && Date.now() < deadline && !holderDone) {
+          await new Promise(resolve => setTimeout(resolve, 10));
+        }
+        expect(existsSync(ready)).toBe(true);
+
+        const result = runLib(['snapshot', donor, snap, 'copy']);
+        expect(result.code, result.err).toBe(0);
+        expect(readFileSync(join(snap, 'node_modules/p/index.js'), 'utf8')).toBe('fixture package');
+      } finally {
+        envKeys.forEach((key, index) => {
+          const value = previousEnv[index];
+          if (value === undefined) delete process.env[key];
+          else process.env[key] = value;
+        });
+        if (holder.pid !== undefined && !holderDone) {
+          try { process.kill(-holder.pid, 'SIGKILL'); }
+          catch { holder.kill('SIGKILL'); }
+        }
+        await holderExited;
+      }
+    },
+  );
+});
 
 /**
  * A synthetic /proc/self/mountinfo line. Field order is the kernel's:

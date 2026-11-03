@@ -382,6 +382,11 @@ export async function loadBarCritiqueEvidence(
  */
 export const BAR_CRITIQUE_GATE_EFFECTIVE_AT = '2026-10-11T03:00:00.000Z';
 
+/** Unknown creation time must still reach the full enforcement check. */
+export function isPlanStartBarCritiqueInCohort(createdMs: number): boolean {
+  return !Number.isFinite(createdMs) || createdMs >= Date.parse(BAR_CRITIQUE_GATE_EFFECTIVE_AT);
+}
+
 export interface PlanStartBarCritiqueOutcome {
   mode: 'enforced' | 'report-only';
   /** Why the mode is report-only; absent when enforced. */
@@ -449,7 +454,7 @@ export async function evaluatePlanStartBarCritique(
     threshold,
   });
   const createdMs = plan ? Date.parse(new Date(plan.created_at).toISOString()) : Number.NaN;
-  const inCohort = !Number.isFinite(createdMs) || createdMs >= Date.parse(BAR_CRITIQUE_GATE_EFFECTIVE_AT);
+  const inCohort = isPlanStartBarCritiqueInCohort(createdMs);
   const reportOnlyReason = !input.contractEnforced ? 'spec-quality-report-only' : !inCohort ? 'pre-cohort' : undefined;
   return {
     mode: reportOnlyReason ? 'report-only' : 'enforced',

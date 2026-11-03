@@ -628,14 +628,14 @@ async function runIsolatedIdentity(flags: Record<string, string>) {
           sourceReceiptPath: resolve(preparationDir, 'verifier-source.json'),
           sourceReceiptSha256: selectedSource.receipt.sha256, selectedCommit: selectedSource.sourceCommit,
           preparationOnly: true, buildObservationOnly: true, traceOut, pid: host.pid!,
-          processIdentity: processIdentity ?? undefined, startedAtMs: hostStartedAtMs, finishedAtMs, configuration });
+          kernelProcessIdentity: processIdentity ?? undefined, startedAtMs: hostStartedAtMs, finishedAtMs, configuration });
       }
       const trace = readNativeProcessTraceArtifacts(traceOut, hostStartedAtMs, finishedAtMs);
       lifecycle.nativeSourceTrace = { scope: 'authenticated-native-event-artifacts-only', acceptance: 'unknown',
         out: traceOut, sourceRoot: trace.sourceRoot, startedAtMs: hostStartedAtMs, finishedAtMs,
         population: trace.population,
         events: trace.rows.map(({ row, bytes }) => ({ event: row.event, pid: row.pid,
-          processIdentity: row.processIdentity, atMs: row.atMs,
+          processIdentity: row.processIdentity, kernelProcessIdentity: row.kernelProcessIdentity, atMs: row.atMs,
           ref: createHash('sha256').update(bytes).digest('hex') + '.json' })),
         pending: ['loader-source-pin-binding', 'module-evaluation', 'runtime-config', 'private-pg',
           'sidecars', 'complete-runtime-closure'] };

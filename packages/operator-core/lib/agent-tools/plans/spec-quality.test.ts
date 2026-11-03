@@ -746,6 +746,25 @@ describe('evaluatePlanSpecQuality', () => {
     expect(result.ratings['implementation-independence'].rating).toBe('pass');
   });
 
+  it('recognizes documented rubric receipt fields in falsifier observations', () => {
+    const behavior = 'A diagnostic baseline remains a non-accepting immutable assessment across the grading workflow.';
+    const evaluateObservation = (observation: string) => evaluatePlanSpecQuality({
+      planSlug: 'quality-plan', harnessSlug: 'papercusp', planItemIds: ['P-001'],
+      classRef: 'plan-class-feature-ship',
+      clauses: [clause({ behavior, falsifier: { observation } })],
+    });
+
+    expect(evaluateObservation(
+      'Persisted diagnostic data loses rubric id/revision/criteriaHash/barSetHash, or has no evaluatedAt-stamped row.',
+    ).ratings['implementation-independence'].rating).toBe('pass');
+    expect(evaluateObservation(
+      'The receipt loses criteriaHash because function buildPrivateScorecardIndex recomputes it.',
+    ).ratings['implementation-independence'].rating).toBe('fail');
+    expect(evaluateObservation(
+      'The private function criteriaHash rewrites the diagnostic receipt.',
+    ).ratings['implementation-independence'].rating).toBe('fail');
+  });
+
   it.each([
     'Review results include awaitKey; runSyncBatchDeltaCheck evaluates the batch.',
     'The await catalog lists bindingId params; bindingId evaluates the batch.',

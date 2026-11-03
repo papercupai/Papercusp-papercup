@@ -50,7 +50,7 @@ vi.mock('../../events/await/compose-store', () => ({
   loadTreeLeaves: vi.fn(async () => []),
 }));
 
-import status, { turnProofFields } from './status';
+import status, { resolveAnnouncementOwnership, turnProofFields } from './status';
 import { TIMEOUT_WAKE_GUIDANCE } from '../../events/await/timeout-fallback';
 import {
   deliveryBacklogSummary,
@@ -868,6 +868,21 @@ describe('events:status projection', () => {
     expect(out.event_inspection.resync).toMatchObject({ required: false, reason: 'in_sync' });
   });
 
+  it('batches presence hydration for announcement ownership candidate pools', async () => {
+    vi.mocked(resolveSessionStates).mockClear();
+    const announcements: AwaitRow[] = [
+      { ...AWAIT_ROW, id: 71, subscriberId: 'su-owner-a' },
+      { ...AWAIT_ROW, id: 72, subscriberId: 'su-owner-b' },
+    ];
+
+    await resolveAnnouncementOwnership(announcements, 'ws-x');
+
+    expect(resolveSessionStates).toHaveBeenCalledWith(
+      [{ ownerId: 'su-owner-a' }, { ownerId: 'su-owner-b' }],
+      { hydrateBatch: true, psuHostPositiveAuthority: true },
+    );
+  });
+
   it('projects durable owner binding, ended declarer, and a live role successor', async () => {
     vi.mocked(inspectEventKey).mockResolvedValueOnce({
       announcements: [{
@@ -896,7 +911,7 @@ describe('events:status projection', () => {
     expect(resolveLiveRoleHolders).toHaveBeenCalledWith('release-fixer', { workspaceId: 'ws-x' });
     expect(resolveSessionStates).toHaveBeenCalledWith(
       [{ ownerId: 'su-ended' }, { ownerId: 'su-successor' }],
-      { hydratePerId: true, psuHostPositiveAuthority: true },
+      { hydrateBatch: true, psuHostPositiveAuthority: true },
     );
     expect(out.event_inspection.declarations[0]).toMatchObject({
       bound_to: { kind: 'role', ref: 'release-fixer' },

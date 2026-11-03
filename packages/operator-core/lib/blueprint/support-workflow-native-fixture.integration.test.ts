@@ -23,6 +23,7 @@ import { resolveProjectDir } from '../spawn-config';
 import { assembleRolePrompt } from '@papercusp/orchestrator/role-prompt';
 import { readWorkflowAdministration } from './support-workflow-administration';
 import { loadExternalTriggerAdminSnapshot } from '../external-triggers/admin';
+import { currentBenchCodexSubscriptionContract } from '../external-bench/current-su';
 
 const connection = vi.hoisted(() => ({ sql: undefined as unknown as Sql }));
 const workerAccount = vi.hoisted(() => ({ resolve: vi.fn() }));
@@ -101,6 +102,120 @@ describe('maintained native support seed and production cookie switching', () =>
     workerAccount.resolve.mockResolvedValueOnce({ provider: 'codex', gatewayAuto: true });
     const admitted = await seedSupportWorkflowNativeFixture(db.adminSql, { workspaceId, requireWorkerAccount: true });
     expect(admitted.workspaceId).toBe(workspaceId);
+  });
+
+  it('imports only the explicitly selected subscription payer and freezes its distinct native contract', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'support-subscription-reference-'));
+    const path = join(directory, 'references.json');
+    const secret = 'never-emit-me';
+    const nativePayer = { payer: 'subscription' as const, inputTokenCeiling: 500, outputTokenCeiling: 500 };
+    const { registerAccount } = await import('../deployment/account-pool');
+    const subscription = registerAccount({ accounts: [] }, { id: 'native-subscription', provider: 'codex',
+      credentialRef: `codex-cli:${directory}` }, Date.now()).accounts[0]!;
+    const apiKey = { ...subscription, id: 'excluded-api-key', credentialRef: 'env:UNREAD_API_KEY' };
+    accountPool.load.mockResolvedValueOnce({ accounts: [apiKey, subscription] });
+    try {
+      await writeFile(join(directory, 'auth.json'), JSON.stringify({ access_token: secret }));
+      await writeFile(join(directory, 'models_cache.json'), JSON.stringify({ models: [
+        { slug: 'gpt-6.1-sol', context_window: 500, max_context_window: 500 },
+      ] }));
+      await prepareSupportWorkerAccountReferences('source-test-workspace', path, nativePayer);
+      const content = await readFile(path, 'utf8');
+      expect(content).not.toContain(secret);
+      expect((await stat(path)).mode & 0o077).toBe(0);
+      expect(JSON.parse(content)).toMatchObject({ nativePayer, accounts: [{ id: subscription.id }] });
+      expect(JSON.parse(content).accounts).toHaveLength(1);
+      workerAccount.resolve.mockResolvedValueOnce({ provider: 'codex', gatewayAuto: true });
+      const seeded = await seedSupportWorkflowNativeFixture(db.adminSql, { workspaceId,
+        workerAccountReferenceFile: path, requireWorkerAccount: true });
+      expect(accountPool.update.mock.calls.at(-1)![0]({ accounts: [] }).accounts)
+        .toMatchObject([{ id: subscription.id, credentialRef: subscription.credentialRef, boundTo: [], softPin: [] }]);
+      expect(seeded.blueprint.operations![0]!.policy.supportCase).toMatchObject({ maximumCostMicros: 100_000,
+        native: { ...nativePayer, account: 'auto', model: 'gpt-6.1-sol', effort: 'medium',
+          inputTokenCeilingSourceSha256: currentBenchCodexSubscriptionContract('gpt-6.1-sol', 500, 500) } });
+      // Re-read metadata on import: a previously prepared bundle cannot retain
+      // smaller limits after its selected account advertises a larger window.
+      await writeFile(join(directory, 'models_cache.json'), JSON.stringify({ models: [
+        { slug: 'gpt-6.1-sol', context_window: 1000, max_context_window: 1000 },
+      ] }));
+      const updatesBefore = accountPool.update.mock.calls.length;
+      await expect(seedSupportWorkflowNativeFixture(db.adminSql, { workspaceId,
+        workerAccountReferenceFile: path, requireWorkerAccount: true })).rejects.toThrow(/each cover.*model window/);
+      expect(accountPool.update).toHaveBeenCalledTimes(updatesBefore);
+      // A newly frozen simulation allocation is explicit and keeps the same
+      // operation/ancestor budget writers. It is never inferred from routing.
+      const largerPayer = { payer: 'subscription' as const, inputTokenCeiling: 1000,
+        outputTokenCeiling: 1000, simulationBudgetMicros: 2_000_000 };
+      accountPool.load.mockResolvedValueOnce({ accounts: [apiKey, subscription] });
+      const largerPath = join(directory, 'larger-reference.json');
+      await prepareSupportWorkerAccountReferences('source-test-workspace', largerPath, largerPayer);
+      const larger = await seedSupportWorkflowNativeFixture(db.adminSql, { workspaceId,
+        workerAccountReferenceFile: largerPath });
+      expect(larger.blueprint.operations![0]!.policy.supportCase).toMatchObject({ maximumCostMicros: 2_000_000,
+        native: { payer: 'subscription', inputTokenCeiling: 1000, outputTokenCeiling: 1000 } });
+      const allocations = (await readHostedAllocationReport(db.adminSql, larger.funding)).byCostClass.model.allocations;
+      expect(allocations).toHaveLength(3);
+      for (const allocation of allocations)
+        expect(allocation).toMatchObject({ capMicros: 2_000_000, maxUnreconciledMicros: 2_000_000 });
+    } finally { await rm(directory, { recursive: true, force: true }); }
+  });
+
+  it('refuses missing limits, payer mismatches and over-budget full-window reservations before importing or creating users', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'support-subscription-refusal-'));
+    const path = join(directory, 'references.json');
+    const users = () => db.adminSql<{ n: number }[]>`SELECT count(*)::int AS n FROM harness_shared.users`;
+    const before = await users(), updatesBefore = accountPool.update.mock.calls.length;
+    const { registerAccount } = await import('../deployment/account-pool');
+    const account = registerAccount({ accounts: [] }, { id: 'wrong-payer', provider: 'codex',
+      credentialRef: 'env:UNREAD_API_KEY' }, Date.now()).accounts[0]!;
+    try {
+      for (const [nativePayer, error] of [
+        [{ payer: 'subscription' }, /explicit positive provider token ceilings/],
+        [{ payer: 'subscription', inputTokenCeiling: 0, outputTokenCeiling: 100 }, /explicit positive/],
+        [{ payer: 'subscription', inputTokenCeiling: 872_000, outputTokenCeiling: 128_000 }, /full-limit reservation.*exceeds.*unchanged/],
+        [{ payer: 'subscription', inputTokenCeiling: 1000, outputTokenCeiling: 100 }, /Codex subscription accounts/],
+        [{ payer: 'unknown' }, /payer selection is invalid/],
+        [{ payer: 'subscription', inputTokenCeiling: 500, outputTokenCeiling: 500, simulationBudgetMicros: 0 }, /simulation budget must be positive/],
+        [{ payer: 'subscription', inputTokenCeiling: 500, outputTokenCeiling: 500, simulationBudgetMicros: 1_000_000_001 }, /simulation budget must be positive/],
+        [{ payer: 'api-key', simulationBudgetMicros: 2_000_000 }, /payer selection is invalid/],
+      ] as const) {
+        await writeFile(path, JSON.stringify({ accounts: [account], nativePayer }), { mode: 0o600 });
+        await expect(seedSupportWorkflowNativeFixture(db.adminSql, { workspaceId,
+          workerAccountReferenceFile: path, requireWorkerAccount: true })).rejects.toThrow(error);
+      }
+      await expect(prepareSupportWorkerAccountReferences('source-test-workspace', join(directory, 'not-created.json'),
+        { payer: 'subscription', inputTokenCeiling: 872_000, outputTokenCeiling: 128_000 }))
+        .rejects.toThrow(/full-limit reservation.*exceeds.*unchanged/);
+      expect(accountPool.update).toHaveBeenCalledTimes(updatesBefore);
+      expect(await users()).toEqual(before);
+    } finally { await rm(directory, { recursive: true, force: true }); }
+  });
+
+  it('requires model metadata and refuses an undersized input or output ceiling for a subscription', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'support-subscription-limits-'));
+    const path = join(directory, 'references.json');
+    const { registerAccount } = await import('../deployment/account-pool');
+    const account = registerAccount({ accounts: [] }, { id: 'subscription-limits', provider: 'codex',
+      credentialRef: `codex-cli:${directory}` }, Date.now()).accounts[0]!;
+    const updatesBefore = accountPool.update.mock.calls.length;
+    try {
+      await writeFile(path, JSON.stringify({ accounts: [account], nativePayer: {
+        payer: 'subscription', inputTokenCeiling: 500, outputTokenCeiling: 500,
+      } }), { mode: 0o600 });
+      await expect(seedSupportWorkflowNativeFixture(db.adminSql, { workspaceId,
+        workerAccountReferenceFile: path })).rejects.toThrow(/requires installed provider model-window metadata/);
+      await writeFile(join(directory, 'models_cache.json'), JSON.stringify({ models: [
+        { slug: 'gpt-6.1-sol', context_window: 500, max_context_window: 500 },
+      ] }));
+      for (const [inputTokenCeiling, outputTokenCeiling] of [[499, 500], [500, 499]]) {
+        await writeFile(path, JSON.stringify({ accounts: [account], nativePayer: {
+          payer: 'subscription', inputTokenCeiling, outputTokenCeiling,
+        } }), { mode: 0o600 });
+        await expect(seedSupportWorkflowNativeFixture(db.adminSql, { workspaceId,
+          workerAccountReferenceFile: path })).rejects.toThrow(/each cover.*model window/);
+      }
+      expect(accountPool.update).toHaveBeenCalledTimes(updatesBefore);
+    } finally { await rm(directory, { recursive: true, force: true }); }
   });
 
   it('refuses a shared workspace and a forged isolated label before any mutation', async () => {

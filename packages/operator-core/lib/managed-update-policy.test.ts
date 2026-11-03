@@ -36,6 +36,30 @@ beforeEach(() => {
 afterEach(() => Object.defineProperty(process, 'platform', { value: realPlatform }));
 
 describe('Linux administrator update policy', () => {
+  const trust = () => ({ rootEpoch: 3, minRollbackCounter: 7, minIssuedAt: 1000, maxMetadataAgeMs: 1500,
+    signers: [{ id: 'release', epoch: 2, principalId: 'release-principal', publicKey: 'pinned-release-key', revoked: false }],
+    approvers: [{ id: 'reviewer', epoch: 2, principalId: 'reviewer-principal', publicKey: 'pinned-review-key', revoked: false }],
+  });
+
+  it('preserves the managed channel when protected native update trust is provisioned', () => {
+    content = Buffer.from(JSON.stringify({ version: 1, update_channel: 'stable', updateAuthorization: trust() }));
+    expect(readManagedUpdateChannel()).toBe('stable');
+    expect(fs.closeSync).toHaveBeenCalledWith(41);
+  });
+
+  it.each([
+    null, {}, { ...trust(), rootEpoch: -1 }, { ...trust(), minRollbackCounter: Number.MAX_SAFE_INTEGER + 1 },
+    { ...trust(), maxMetadataAgeMs: 0 }, { ...trust(), signers: [] },
+    { ...trust(), approvers: [{ ...trust().approvers[0], revoked: 'false' }] },
+    { ...trust(), approvers: [{ ...trust().approvers[0], epoch: 1.5 }] },
+    { ...trust(), signers: [{ ...trust().signers[0], principalId: 'unbounded principal' }] },
+    { ...trust(), ignored: true },
+  ])('rejects malformed protected update trust %#', updateAuthorization => {
+    content = Buffer.from(JSON.stringify({ version: 1, update_channel: 'stable', updateAuthorization }));
+    expect(readManagedUpdateChannel).toThrow(expect.objectContaining({ code: 'managed_policy_invalid' }));
+    expect(fs.closeSync).toHaveBeenCalledWith(41);
+  });
+
   it.each(['alpha', 'beta', 'stable'])('accepts the trusted %s lane using a bounded no-follow descriptor', channel => {
     content = Buffer.from(JSON.stringify({ version: 1, update_channel: channel }));
     expect(readManagedUpdateChannel()).toBe(channel);

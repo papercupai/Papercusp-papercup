@@ -151,10 +151,26 @@ async function createIsolatedRuntimeRoot() {
   // the Unix socket address limit even for an ordinary fixture socket.
   let base = await realpath(process.env.PAPERCUSP_TEST_RUNTIME_TMP_BASE?.trim() || tmpdir());
   const masked = path => process.platform === 'linux' && /^\/(dev|proc)(\/|$)/.test(path);
-  if (masked(base)) {
+  const shortBase = async () => {
     await mkdir('/tmp/pcv', { recursive: true });
-    base = await realpath('/tmp/pcv');
-    if (masked(base)) throw new Error('isolated native runtime temporary root resolves into the sandbox device namespace');
+    const resolved = await realpath('/tmp/pcv');
+    if (masked(resolved)) throw new Error('isolated native runtime temporary root resolves into the sandbox device namespace');
+    return resolved;
+  };
+  if (masked(base)) {
+    base = await shortBase();
+  }
+  // The default operator endpoint socket lives below HOME/.papercusp/sockets.
+  // A deep retained-evidence base can make that pathname exceed sun_path even
+  // though each runtime root is unique. Budget a worst-case PID and keep 7
+  // bytes of headroom below Linux's 107-byte pathname limit.
+  const worstEndpointSocketPath = path => join(path, 'papercusp-test-runtime-XXXXXX',
+    'home', '.papercusp', 'sockets', '2147483647.sock');
+  if (process.platform !== 'win32' && Buffer.byteLength(worstEndpointSocketPath(base)) > 100) {
+    base = await shortBase();
+  }
+  if (process.platform !== 'win32' && Buffer.byteLength(worstEndpointSocketPath(base)) > 100) {
+    throw new Error('isolated native runtime endpoint socket path exceeds the 100-byte budget');
   }
   runtimeTmpBase = base;
   return mkdtemp(join(base, 'papercusp-test-runtime-'));

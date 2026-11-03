@@ -4,7 +4,7 @@
  * inside the esbuild host bundle, where import.meta.url is the BUNDLE's URL.
  */
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, relative, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -56,6 +56,24 @@ describe('moduleRepoRoot', () => {
       mkdirSync(join(repo, 'a', 'b'), { recursive: true });
       writeFileSync(join(repo, '.git'), 'gitdir: /elsewhere\n');
       expect(moduleRepoRoot(url(join(repo, 'a', 'b', 'mod.ts')))).toBe(repo);
+    });
+
+    it('stops at the actual filesystem permission boundary in a packaged runtime', () => {
+      tmp = mkdtempSync(join(tmpdir(), 'module-repo-root-'));
+      const bundle = join(tmp, 'sidecar');
+      mkdirSync(bundle);
+      // A real enclosing checkout must not influence the installed bundle.
+      mkdirSync(join(tmp, '.git'));
+      const helper = join(bundle, 'module-repo-root.ts');
+      copyFileSync(new URL('./module-repo-root.ts', import.meta.url), helper);
+      const script = `
+        const { moduleRepoRoot } = await import(${JSON.stringify(url(helper))});
+        console.log(moduleRepoRoot(${JSON.stringify(url(join(bundle, 'serve.mjs')))}));
+      `;
+      const result = execFileSync(process.execPath, [
+        '--permission', `--allow-fs-read=${bundle}`, '--input-type=module', '-e', script,
+      ], { encoding: 'utf8', env: { ...process.env, NODE_OPTIONS: '', NODE_PATH: '' } });
+      expect(result.trim()).toBe(bundle);
     });
 
     it('resolves THIS test file to the checkout git itself reports', () => {
@@ -149,7 +167,9 @@ describe('census: no new fixed import.meta.url climbs to the repo root', () => {
     // maxBuffer, which surfaced as `spawnSync git ENOBUFS`. Size the buffer for a growing tree.
     const files = presentOnDisk(execFileSync('git', ['ls-files', '-z', '--', ...SOURCE_PATHSPECS], { cwd: REPO_ROOT, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 })
       .split('\0')
-      .filter((f) => /\.(ts|mts|tsx)$/.test(f) && !/\.(test|spec)(?:-helper)?\.tsx?$/.test(f) && !f.includes('/__tests__/')), REPO_ROOT);
+      // Fixture modules deliberately construct source-shaped inputs and belong
+      // to the same test-only population as spec/test helpers.
+      .filter((f) => /\.(ts|mts|tsx)$/.test(f) && !/\.(test|spec|fixture)(?:-helper)?\.(ts|mts|tsx)$/.test(f) && !f.includes('/__tests__/')), REPO_ROOT);
     expect(files.length).toBeGreaterThan(1000); // the census really read the tree
 
     const found: Record<string, number> = {};

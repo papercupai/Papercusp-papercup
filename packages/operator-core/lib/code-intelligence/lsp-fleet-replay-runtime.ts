@@ -1,6 +1,7 @@
 /** Daemon execution and qualification for the existing saturation CLI, P-012. */
 import { createHash } from 'node:crypto';
-import { execFileSync, spawn, spawnSync } from 'node:child_process';
+import { execFileSync, spawn, spawnSync, type ChildProcess } from 'node:child_process';
+import { parse as parseShellArguments } from 'shell-quote';
 import { appendFileSync, closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readlinkSync, readSync, readdirSync, realpathSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -188,13 +189,38 @@ export function replaySemanticCompletionContext(config: DaemonReplayConfig): Sem
     anchorFile: project.anchorFile, files: [...project.files] })),
     plugin: { ...plugin, files: { ...plugin.files } } };
 }
+/** Preserve an existing heap policy across a plain-Node launch, including sudo
+ * parents which already carry the policy in argv instead of NODE_OPTIONS. */
+export function replayRuntimeHeapArgs(execArgv: readonly string[] = process.execArgv,
+  nodeOptions: string = process.env.NODE_OPTIONS ?? ''): string[] {
+  // Project a resource setting, never ambient executable loaders. The existing
+  // tsc heap parser intentionally reads arbitrary command text; here each flag
+  // must be a whole argument so a preload path cannot masquerade as a budget.
+  const environment = parseShellArguments(nodeOptions, name => `$${name}`);
+  let heapMb: number | undefined;
+  for (const args of [environment, execArgv]) for (let index = 0; index < args.length; index++) {
+    const arg = args[index];
+    if (typeof arg !== 'string') continue;
+    if (['--eval', '-e', '--print', '-p'].includes(arg)) break;
+    if (['--require', '-r', '--import', '--loader', '--experimental-loader'].includes(arg)) { index++; continue; }
+    const flag = /^--max[-_]old[-_]space[-_]size(?:=(.*))?$/.exec(arg);
+    if (!flag) continue;
+    const value = flag[1] ?? args[++index];
+    if (typeof value !== 'string' || !/^\d+$/.test(value) ||
+        !Number.isSafeInteger(Number(value)) || Number(value) < 1)
+      throw new Error('invalid-replay-runtime-heap-budget');
+    heapMb = Number(value);
+  }
+  // Node argv overrides NODE_OPTIONS; within each source the last pin wins.
+  return heapMb === undefined ? [] : [`--max-old-space-size=${heapMb}`];
+}
 /** Reuse Node's load/compile boundaries with the maintained plain-Node bundle
  * route. The recorder runs from literal argv bytes, never a later self-disk read. */
 export function replayRuntimeLaunch(entry: string, directory: string, runId: string, args: readonly string[] = []) {
   const recorder = readFileSync(fileURLToPath(new URL('./lsp-replay-runtime-witness.cjs', import.meta.url)), 'utf8');
   const code = `${recorder}\n;startReplayRuntime(${JSON.stringify({ entry: resolve(entry), directory: resolve(directory), runId, args,
     scopeProbeArgv: replayScopeProbeArgv })});`;
-  return { args: ['--eval', code], evalSha256: replayHash(code), entry: resolve(entry) };
+  return { args: [...replayRuntimeHeapArgs(), '--eval', code], evalSha256: replayHash(code), entry: resolve(entry) };
 }
 export interface ReplayOracleProducerOptions {
   readonly freezerEntry: string;
@@ -243,40 +269,59 @@ export async function freezeQualifiedReplayConfig(inputPath: string, outputPath:
     throw new Error('replay-oracle-output-inside-source');
   if (existsSync(outputPath)) throw new Error('replay-oracle-output-exists');
   mkdirSync(directory); // Exclusive attempt directory, never merge earlier receipts.
-  const candidatePath = join(directory, 'candidate.json');
-  const launch = replayRuntimeLaunch(options.freezerEntry, directory, input.runId,
-    ['--freeze-replay-child', resolve(inputPath), candidatePath]);
-  // Hash unused optional providers without requiring their host libraries.
-  // Only executable runtime roots contribute native dependencies. Loaded maps
-  // must still match the complete prelaunch byte census before qualification.
-  const sourceFiles = freezeReplayRuntimeFiles([input.rootPath], { nativeDependencies: () => [] });
-  const files = { ...sourceFiles, ...freezeReplayRuntimeFiles([process.execPath, resolve(inputPath),
-    options.freezerEntry, ...options.compilerEntries, ...options.runtimePaths], deps) };
-  const witness: ReplayRuntimeWitness = { directory, runId: input.runId,
-    bootstraps: { [launch.entry]: launch.evalSha256 }, files };
-  const declaration = { witness, freezerEntry: launch.entry, compilerEntries: options.compilerEntries };
-  writeFileSync(join(directory, 'declaration.json'), JSON.stringify(declaration, null, 2), { flag: 'wx' });
-  const drift = replayFileMismatches(files);
-  if (drift.length) throw new Error(`replay-oracle-prelaunch-drift:${drift.join(';')}`);
-  const child = spawn(process.execPath, launch.args, { env: { ...process.env, NODE_OPTIONS: '' },
-    stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
-  const stderr = createTextCollector(child.stderr, { maxChars: 8_192 });
-  child.stdout!.on('data', chunk => appendFileSync(join(directory, 'stdout.log'), chunk));
-  const closed = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(accept =>
-    child.once('close', (code, signal) => accept({ code, signal })));
+  let phase = 'declaring-runtime';
+  const progress = (next: string) => {
+    phase = next;
+    appendFileSync(join(directory, 'phases.jsonl'), `${JSON.stringify({ phase, atMs: Date.now() })}\n`);
+  };
+  let child: ChildProcess | undefined;
+  let closed: Promise<{ code: number | null; signal: NodeJS.Signals | null }> | undefined;
+  let stderr: ReturnType<typeof createTextCollector> | undefined;
+  let terminalWritten = false;
+  let failureMessage: string | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
-  let failed: ((error: Error) => void) | undefined;
-  const failure = new Promise<never>((_accept, reject) => { failed = reject;
-    timer = setTimeout(() => reject(new Error('replay-oracle-producer-timeout')), options.timeoutMs); });
-  child.once('error', error => failed?.(error));
+  const writeTerminal = (terminal?: { code: number | null; signal: NodeJS.Signals | null }) => {
+    writeFileSync(join(directory, 'terminal.json'), JSON.stringify({ ...terminal, phase,
+      pid: child?.pid ?? null, stderr: stderr?.text() ?? '', error: failureMessage ?? null }), { flag: 'wx' });
+    terminalWritten = true;
+  };
   try {
+    progress('declaring-runtime');
+    const candidatePath = join(directory, 'candidate.json');
+    const launch = replayRuntimeLaunch(options.freezerEntry, directory, input.runId,
+      ['--freeze-replay-child', resolve(inputPath), candidatePath]);
+    // Hash unused optional providers without requiring their host libraries.
+    // Only executable runtime roots contribute native dependencies. Loaded maps
+    // must still match the complete prelaunch byte census before qualification.
+    const sourceFiles = freezeReplayRuntimeFiles([input.rootPath], { nativeDependencies: () => [] });
+    const files = { ...sourceFiles, ...freezeReplayRuntimeFiles([process.execPath, resolve(inputPath),
+      options.freezerEntry, ...options.compilerEntries, ...options.runtimePaths], deps) };
+    const witness: ReplayRuntimeWitness = { directory, runId: input.runId,
+      bootstraps: { [launch.entry]: launch.evalSha256 }, files };
+    const declaration = { witness, freezerEntry: launch.entry, compilerEntries: options.compilerEntries };
+    writeFileSync(join(directory, 'declaration.json'), JSON.stringify(declaration, null, 2), { flag: 'wx' });
+    progress('prelaunch-drift-check');
+    const drift = replayFileMismatches(files);
+    if (drift.length) throw new Error(`replay-oracle-prelaunch-drift:${drift.join(';')}`);
+    const childProcess = child = spawn(process.execPath, launch.args, { env: { ...process.env, NODE_OPTIONS: '' },
+      stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
+    const stderrCollector = stderr = createTextCollector(childProcess.stderr, { maxChars: 8_192 });
+    childProcess.stdout!.on('data', chunk => appendFileSync(join(directory, 'stdout.log'), chunk));
+    childProcess.stderr!.on('data', chunk => appendFileSync(join(directory, 'stderr.log'), chunk));
+    const childClosed = closed = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(accept =>
+      childProcess.once('close', (code, signal) => accept({ code, signal })));
+    progress('waiting-for-candidate');
+    let failed: ((error: Error) => void) | undefined;
+    const failure = new Promise<never>((_accept, reject) => { failed = reject;
+      timer = setTimeout(() => reject(new Error('replay-oracle-producer-timeout')), options.timeoutMs); });
+    childProcess.once('error', error => failed?.(error));
     const candidate = new Promise<{ sha256: string; config: DaemonReplayConfig }>((accept, reject) => {
-      child.once('exit', (code, signal) => reject(new Error(`replay-oracle-child-exited:${code}:${signal}:${stderr.peek()}`)));
-      child.once('message', message => {
+      childProcess.once('exit', (code, signal) => reject(new Error(`replay-oracle-child-exited:${code}:${signal}:${stderrCollector.peek()}`)));
+      childProcess.once('message', message => {
         try {
           const row = message as { kind?: string; runId?: string; candidatePath?: string; sha256?: string };
           if (row?.kind !== 'replay-oracle-frozen' || row.runId !== input.runId || row.candidatePath !== candidatePath ||
-              !child.pid || !child.connected || child.exitCode !== null || child.signalCode !== null)
+              !childProcess.pid || !childProcess.connected || childProcess.exitCode !== null || childProcess.signalCode !== null)
             throw new Error('replay-oracle-invalid-child-handoff');
           const bytes = readFileSync(candidatePath);
           if (replayHash(bytes) !== row.sha256) throw new Error('replay-oracle-candidate-hash-mismatch');
@@ -294,22 +339,30 @@ export async function freezeQualifiedReplayConfig(inputPath: string, outputPath:
       });
     });
     const frozen = await Promise.race([candidate, failure]);
-    const qualified = qualifyReplayOracleRuntime(frozen.config, declaration, child.pid!, deps.processReader);
-    if (!child.connected || child.exitCode !== null || child.signalCode !== null)
+    progress('qualifying-candidate');
+    const qualified = qualifyReplayOracleRuntime(frozen.config, declaration, childProcess.pid!, deps.processReader);
+    if (!childProcess.connected || childProcess.exitCode !== null || childProcess.signalCode !== null)
       throw new Error('replay-oracle-child-ended-before-release');
-    child.send({ kind: 'replay-oracle-release', runId: input.runId, sha256: frozen.sha256 });
-    const terminal = await Promise.race([closed, failure]);
-    const stderrText = stderr.text();
-    writeFileSync(join(directory, 'terminal.json'), JSON.stringify({ ...terminal, stderr: stderrText }), { flag: 'wx' });
+    progress('waiting-for-child-exit');
+    childProcess.send({ kind: 'replay-oracle-release', runId: input.runId, sha256: frozen.sha256 });
+    const terminal = await Promise.race([childClosed, failure]);
+    const stderrText = stderrCollector.text();
     if (terminal.code !== 0 || terminal.signal !== null) throw new Error(`replay-oracle-child-terminal:${terminal.code}:${terminal.signal}:${stderrText}`);
+    progress('verifying-qualified-output');
     assertReplayOracleRuntimeQualified(qualified);
+    writeTerminal(terminal);
     // wx also protects against an output created by a peer during qualification.
     writeFileSync(outputPath, JSON.stringify(qualified, null, 2), { flag: 'wx' });
+    progress('published');
     return qualified;
+  } catch (error) {
+    failureMessage = String(error);
+    throw error;
   } finally {
     clearTimeout(timer);
-    if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
-    await closed;
+    if (child && child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+    const terminal = await closed;
+    if (!terminalWritten) writeTerminal(terminal);
   }
 }
 export const replayHash = (value: string | Buffer) => createHash('sha256').update(value).digest('hex');

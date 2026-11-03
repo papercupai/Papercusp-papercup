@@ -36,7 +36,8 @@ vi.mock('../../workspace-registry', async (importOriginal) => ({
   activeWorkspaceId: () => 'evidence-span-ws',
 }));
 vi.mock('../../role-launch-spec', () => ({ buildLaunchSpec: async () => ({ promptText: 'fixture launch prompt' }) }));
-vi.mock('../../model-context-budget.mjs', () => ({
+vi.mock('../../model-context-budget.mjs', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../model-context-budget.mjs')>()),
   readLaunchContextText: () => '',
   appendCodexLaunchContextPrompt: (prompt: string) => prompt,
   buildContextBudget: () => ({ level: 'ok', window: 200_000, availableInputTokens: 100_000 }),

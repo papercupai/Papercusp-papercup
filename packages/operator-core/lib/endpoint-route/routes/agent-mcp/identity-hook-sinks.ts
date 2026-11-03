@@ -26,7 +26,7 @@
 import { defineTool } from '@papercusp/agent-mcp';
 import { withPriorityOrgPg } from '@papercusp/db-org';
 import { tagTurnForInjection } from '../../../turn-provenance/turn-provenance';
-import { checkPlanExecutionGuard } from '../../../agent-tools/plans/plan-execution-guard';
+import { checkPlanExecutionGuard, type PlanExecutionTimingObserver } from '../../../agent-tools/plans/plan-execution-guard';
 import {
   evaluateHookContextSink,
   evaluateToolGuard,
@@ -105,12 +105,13 @@ export async function toolGuardText(
   input: { ownerId: string; workspaceId: string; call: PendingToolCall },
   readWornRules: (ownerId: string, workspaceId: string) => Promise<WornSyncRules | null> = readAppliedWornRules,
   recordTiming?: (phase: 'plan' | 'identity', durationMs: number) => void,
+  observePlanTiming?: PlanExecutionTimingObserver,
 ): Promise<string> {
   const planStartedAt = performance.now();
   let refused;
   try {
     refused = await checkPlanExecutionGuard({ ownerId: input.ownerId, workspaceId: input.workspaceId,
-      toolName: input.call.tool, args: input.call.input });
+      toolName: input.call.tool, args: input.call.input, observeTiming: observePlanTiming });
   } finally {
     recordTiming?.('plan', performance.now() - planStartedAt);
   }
@@ -158,6 +159,13 @@ const toolGuard = defineTool({
       /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(body.guardRequestId)
       ? body.guardRequestId : null;
     const phases: Partial<Record<'plan' | 'identity', number>> = {};
+    const planStages: Record<string, number> = {};
+    const observePlanTiming: PlanExecutionTimingObserver = ({ stage, durationMs }) => {
+      // A bounded vocabulary, with no owner, plan, input or verdict content.
+      if (!/^[a-z_]{1,32}$/.test(stage) || !Number.isFinite(durationMs) || durationMs < 0) return;
+      if (!(stage in planStages) && Object.keys(planStages).length >= 16) return;
+      planStages[stage] = (planStages[stage] ?? 0) + durationMs;
+    };
     const workspaceId = await resolveWorkspace(body);
     const setupMs = performance.now() - startedAt;
     let text;
@@ -171,7 +179,7 @@ const toolGuard = defineTool({
           client: typeof body.client === 'string' ? body.client : '',
           ...(body.inputTruncated === true ? { inputTruncated: true } : {}),
         },
-      }, readAppliedWornRules, (phase, durationMs) => { phases[phase] = durationMs; }));
+      }, readAppliedWornRules, (phase, durationMs) => { phases[phase] = durationMs; }, observePlanTiming));
     } finally {
       const totalMs = performance.now() - startedAt;
       // Keep attribution after the client has aborted too. No tool inputs, plan
@@ -182,9 +190,11 @@ const toolGuard = defineTool({
         planMs: phases.plan === undefined ? null : Math.round(phases.plan),
         identityMs: phases.identity === undefined ? null : Math.round(phases.identity),
         aborted: req.signal.aborted,
+        ...(Object.keys(planStages).length ? { planStages } : {}),
       }));
     }
-    const timings = { guard: performance.now() - startedAt, setup: setupMs, ...phases };
+    const timings = { guard: performance.now() - startedAt, setup: setupMs, ...phases,
+      ...Object.fromEntries(Object.entries(planStages).map(([stage, duration]) => ['plan_' + stage, duration])) };
     return Response.json({ ok: true, text }, { headers: {
       ...(guardRequestId ? { 'X-Papercusp-Guard-Request-Id': guardRequestId } : {}),
       'Server-Timing': Object.entries(timings).map(([phase, duration]) => `${phase};dur=${duration.toFixed(1)}`).join(', '),

@@ -13,8 +13,9 @@ describe('workspace-scoped harness guidance (EI-9247)', () => {
     ];
 
     for (const description of descriptions) {
-      expect(description).toContain("'papercusp'");
-      expect(description).toContain('unscoped (--all-workspaces)');
+      expect(description).toContain('papercusp');
+      expect(description).toContain('unscoped');
+      expect(description).toContain('--all-workspaces');
     }
   });
 });

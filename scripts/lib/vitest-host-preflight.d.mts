@@ -11,6 +11,24 @@ export function vitestConfigLoaderPolicy(args: string[], env?: NodeJS.ProcessEnv
     configLoaderArgs: string[];
     vitestArgs: string[];
 };
+/** Native fixtures inherit the committed-source loader, while Vitest reads local
+ * test modules. Refuse mixed tracer inputs before any native child is launched.
+ * Reuse the cost-fixture's Git-blob comparison without importing the loader:
+ * importing that module installs process-wide hooks.
+ * @param {{ root: string, files: string[] }} input
+ * @param {{ committed?: (root: string, path: string) => Buffer,
+ *   working?: (path: string) => Buffer }} [readers]
+ */
+export function nativeChildSourcePreflight({ root, files }: {
+    root: string;
+    files: string[];
+}, readers?: {
+    committed?: (root: string, path: string) => Buffer;
+    working?: (path: string) => Buffer;
+}): {
+    verdict: string;
+    message: string;
+} | null;
 /**
  * Contract (owned by libs/test-config/src/host-preflight-global-setup.ts):
  *   → { verdict: 'admit', setEnv? } | { verdict: 'skipped', reason } | { verdict: 'refuse', message }
@@ -22,14 +40,14 @@ export function hostPreflight({ root, files, env }: {
     files: string[];
     env: NodeJS.ProcessEnv;
 }): {
+    verdict: string;
+    message: string;
+} | {
     verdict: "admit";
     setEnv: Record<"PAPERCUSP_RESTRICTED_HOLD_PREFLIGHT", "admitted-by-vitest-root">;
 } | {
     verdict: "skipped";
     reason: import("./restricted-hold-preflight.mjs").VitestRootPreflightSkipReason;
-} | {
-    verdict: string;
-    message: string;
 };
 /**
  * A vitest globalSetup for the standalone packages that cannot import @papercusp/test-config

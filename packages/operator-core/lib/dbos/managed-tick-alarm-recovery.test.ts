@@ -3,6 +3,7 @@ import { getManaged, resetScheduledRegistry } from '@papercusp/scheduled-registr
 import { reconcileManagedTickAlarms, startManagedTickAlarmRecovery } from './managed-tick-alarm-recovery';
 
 vi.mock('@dbos-inc/dbos-sdk', () => { throw new Error('DBOS unavailable'); });
+vi.mock('../pg-notify-bus', () => ({ createNotifyBus: () => ({ subscribe: () => () => {} }) }));
 beforeAll(async () => { await import('../agent-tools/coordination/tools/conditions'); });
 afterEach(() => { resetScheduledRegistry(); vi.useRealTimers(); });
 
@@ -88,5 +89,53 @@ describe('managed tick original-incarnation recovery', () => {
     read.mockResolvedValue([]);
     await vi.advanceTimersByTimeAsync(1000);
     expect(getManaged('managed-tick-watch')?.intervalMs).toBe(60_000);
+  });
+
+  it('discovers a later external short-cadence alarm without waiting for the idle poll', async () => {
+    vi.useFakeTimers();
+    let changed!: () => void;
+    let alive = true;
+    const resolve = vi.fn(async () => true);
+    const read = vi.fn(async (): Promise<Record<string, unknown>[]> => []);
+    const control = startManagedTickAlarmRecovery({ read, resolve,
+      probe: () => alive ? 'alive' : 'dead',
+      subscribe: callback => { changed = callback; return () => {}; },
+    });
+    await control.ready;
+    expect(getManaged('managed-tick-watch')?.intervalMs).toBe(60_000);
+    read.mockResolvedValue([alarm()]);
+    changed();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(getManaged('managed-tick-watch')?.intervalMs).toBe(1000);
+    expect(resolve).not.toHaveBeenCalled();
+    alive = false;
+    await vi.advanceTimersByTimeAsync(999);
+    expect(resolve).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(resolve).toHaveBeenCalledExactlyOnceWith('alarm:managed-tick:original:1');
+    control.stop();
+  });
+
+  it('re-reads a change arriving during an older empty snapshot and stops its subscription', async () => {
+    let changed!: () => void;
+    let finish!: (value: Record<string, unknown>[]) => void;
+    const unsubscribe = vi.fn();
+    const read = vi.fn().mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }))
+      .mockResolvedValue([alarm()]);
+    const control = startManagedTickAlarmRecovery({ read, probe: () => 'alive',
+      subscribe: callback => { changed = callback; return unsubscribe; },
+    });
+    // Let the dynamic condition-fold import reach the injected snapshot reader.
+    await vi.waitFor(() => expect(read).toHaveBeenCalledOnce());
+    changed();
+    finish([]);
+    await control.ready;
+    expect(read).toHaveBeenCalledTimes(2);
+    expect(getManaged('managed-tick-watch')?.intervalMs).toBe(1000);
+    control.stop();
+    expect(unsubscribe).toHaveBeenCalledOnce();
+    changed();
+    await Promise.resolve();
+    expect(read).toHaveBeenCalledTimes(2);
   });
 });

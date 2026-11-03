@@ -313,7 +313,11 @@ export async function resolveAnnouncementOwnership(
     try {
       verdicts = await resolveSessionStates(
         [...candidateIds].map((ownerId) => ({ ownerId })),
-        { hydratePerId: true, psuHostPositiveAuthority: true },
+        // This is a candidate pool, not a small-N bare-id lookup. The oracle's
+        // batch hydration preserves per-owner semantics without issuing one
+        // presence query per announced owner; turn-start wraps this advisory
+        // resolution in a 1s fail-soft budget.
+        { hydrateBatch: true, psuHostPositiveAuthority: true },
       );
     } catch {
       verdicts = new Map();

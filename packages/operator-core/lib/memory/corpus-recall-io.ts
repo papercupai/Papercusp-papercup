@@ -1160,7 +1160,10 @@ async function recallCorpusContextInner(
       // leg accounting is the one that describes this result.
       legs: out.fused.legs,
       retrievalDepth,
-      ...recallDiagnosticsResult(diagnostics, false),
+      // A completed corpus search can still be degraded because one or more
+      // source calls failed. Preserve their bounded receipts in that case so
+      // callers can distinguish query execution from acquisition timeouts.
+      ...recallDiagnosticsResult(diagnostics, out.fused.legs?.degraded === true),
     };
   } catch (err) {
     if (input.signal?.aborted) throw err;

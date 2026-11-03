@@ -512,6 +512,9 @@ describe('focused runner startup tracing', () => {
       expect(threads).toHaveLength(1);
       expect(threads[0].pid).toBe(processes[0].pid);
       expect(threads[0].processIdentity).not.toBe(processes[0].processIdentity);
+      expect(processes[0].kernelProcessIdentity).toEqual(expect.any(String));
+      expect(threads[0].kernelProcessIdentity).toBe(processes[0].kernelProcessIdentity);
+      expect(processes[0].kernelProcessIdentity).not.toBe(processes[0].processIdentity);
       const loaded = rows.find(row => row.event === 'module-load-return' && row.url === pathToFileURL(worker).href);
       expect(loaded).toMatchObject({ threadId: threads[0].threadId, processIdentity: threads[0].processIdentity,
         source: { status: 'hashed', sha256: createHash('sha256').update(source).digest('hex') } });

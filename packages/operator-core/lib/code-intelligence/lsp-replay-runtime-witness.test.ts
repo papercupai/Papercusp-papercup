@@ -1,10 +1,10 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { assertReplayOracleRuntimeQualified, freezeQualifiedReplayConfig, qualifyReplayOracleRuntime, replayHash, replayLoadedRuntime, replayOracleFingerprint,
-  replayRuntimeLaunch, replaySourceFingerprint, type DaemonReplayConfig, type ReplayRuntimeWitness } from './lsp-fleet-replay-runtime';
+  replayRuntimeHeapArgs, replayRuntimeLaunch, replaySourceFingerprint, type DaemonReplayConfig, type ReplayRuntimeWitness } from './lsp-fleet-replay-runtime';
 import { readProcessIdentity } from '../process-identity';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createRequire } from 'node:module';
@@ -15,7 +15,7 @@ import { buildTaskScopeArgvWithTransport, SYSTEMD_ENV_RUNNER_PATH, SYSTEMD_TRANS
 const scopeProbeArgv = ['--user', '--scope', '--quiet', ...SYSTEMD_TRANSIENT_UNIT_COLLECTION_ARGS, '--', 'true'];
 
 const roots: string[] = [];
-afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
+afterEach(() => { vi.unstubAllEnvs(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 function fixture(extension = 'mjs', source = 'console.log("executed");') {
   const root = mkdtempSync(join(tmpdir(), 'lsp-load-witness-')); roots.push(root);
   const entry = join(root, `entry.${extension}`);
@@ -65,8 +65,27 @@ function liveWitness(f: ReturnType<typeof fixture>, files: string[]) {
   return { witness, reader };
 }
 describe('independent parent oracle producer', () => {
-  it('runs the maintained CLI and actual TypeScript compiler with the kernel native-mapping evaluator', () => {
+  it('preserves only validated heap arguments, with Node argv precedence and no preload arguments', () => {
+    expect(replayRuntimeHeapArgs(['--max_old_space_size', '384', '--import=/foreign.mjs'],
+      '--require=/foreign.cjs --max-old-space-size=256')).toEqual(['--max-old-space-size=384']);
+    expect(replayRuntimeHeapArgs([], '--import="/foreign --max-old-space-size=2048"')).toEqual([]);
+    expect(replayRuntimeHeapArgs([], '--require "--max-old-space-size=2048"')).toEqual([]);
+    expect(replayRuntimeHeapArgs([], '--max-old-space-size=256 --max-old-space-size=320'))
+      .toEqual(['--max-old-space-size=320']);
+    expect(replayRuntimeHeapArgs(['--eval', '--max-old-space-size=1024'], '')).toEqual([]);
+    for (const value of ['0', '-1', '256.5', '9007199254740992', '256x'])
+      expect(() => replayRuntimeHeapArgs([], `--max-old-space-size=${value}`)).toThrow('invalid-replay-runtime-heap-budget');
+  });
+  describe('maintained compiler integration', () => {
+    let prepared: { root: string; cli: string; inputPath: string; outputPath: string; optionsPath: string;
+      witnessDirectory: string; compilerEntries: string[] };
+    let integrationRoot: string | undefined;
+    afterAll(() => { if (integrationRoot) rmSync(integrationRoot, { recursive: true, force: true }); });
+    beforeAll(() => {
+    const startedAt = performance.now();
     const f = fixture('cjs');
+    integrationRoot = f.root;
+    roots.splice(roots.indexOf(f.root), 1); // Shared setup belongs to this suite's afterAll.
     const sourceRoot = join(f.root, 'source'); mkdirSync(sourceRoot);
     writeFileSync(join(sourceRoot, 'source.ts'), 'export function hot() {}\nhot();\n');
     writeFileSync(join(sourceRoot, 'tsconfig.json'), JSON.stringify({ files: ['source.ts'], compilerOptions: { noLib: true } }));
@@ -89,9 +108,11 @@ describe('independent parent oracle producer', () => {
         '@papercusp/test-config/vitest-failure-classification': fileURLToPath(new URL('../../../../libs/test-config/src/vitest-failure-classification.mjs', import.meta.url)),
         '@papercusp/test-config': fileURLToPath(new URL('../../../../libs/test-config/src', import.meta.url)),
         '@papercusp/operator-core': fileURLToPath(new URL('../..', import.meta.url)),
+        'shell-quote': require.resolve('shell-quote'),
       },
       banner: { js: 'process.umask(0);' },
       define: { 'import.meta.url': JSON.stringify(pathToFileURL(cli).href) }, logLevel: 'silent' });
+    console.info(JSON.stringify({ kind: 'oracle-fixture-phase', phase: 'bundle-complete', elapsedMs: performance.now() - startedAt }));
     writeFileSync(join(f.root, 'lsp-replay-runtime-witness.cjs'),
       readFileSync(fileURLToPath(new URL('./lsp-replay-runtime-witness.cjs', import.meta.url))));
     const inputPath = join(f.root, 'input.json');
@@ -105,6 +126,11 @@ describe('independent parent oracle producer', () => {
     writeFileSync(optionsPath, JSON.stringify({ freezerEntry: cli, compilerEntries,
       runtimePaths: [compilerRoot, delegateRoot], witnessDirectory, timeoutMs: 15_000 }));
     const outputPath = join(f.root, 'qualified.json');
+    prepared = { root: f.root, cli, inputPath, outputPath, optionsPath, witnessDirectory, compilerEntries };
+    }, 30_000);
+    it('checks the complete bundled startup graph before launching a compiler', () => {
+    const startedAt = performance.now();
+    const { cli, inputPath, outputPath } = prepared;
     // Check the whole bundled startup graph without launching a compiler. A
     // missing dependency must retain its diagnostic, not surface as no receipts.
     let preflight = '';
@@ -112,11 +138,17 @@ describe('independent parent oracle producer', () => {
       { env: { ...process.env, NODE_OPTIONS: '' }, encoding: 'utf8', timeout: 5000 }); }
     catch (error) { preflight = String((error as { stderr?: Buffer | string }).stderr ?? error); }
     expect(preflight).toContain('replay-oracle-parent-channel-required');
+    console.info(JSON.stringify({ kind: 'oracle-fixture-phase', phase: 'startup-preflight-complete', elapsedMs: performance.now() - startedAt }));
+    });
+    it('runs the actual compiler with the kernel native-mapping evaluator and parent heap argv', () => {
+    const { cli, inputPath, outputPath, optionsPath, witnessDirectory, compilerEntries } = prepared;
     // Elevation is an explicit integration-run choice. Ordinary CI still checks
     // fail-closed behavior when the kernel denies mapped-inode reads.
     const privileged = process.env.PAPERCUSP_REPLAY_NATIVE_PROOF === 'required';
     const launcher = privileged ? 'sudo' : process.execPath;
-    const args = [cli, '--freeze-qualified-replay', inputPath, outputPath, optionsPath];
+    // This survives sudo's environment sanitization, then must survive the
+    // producer's separate child launch without enabling any ambient preload.
+    const args = ['--max-old-space-size=512', cli, '--freeze-qualified-replay', inputPath, outputPath, optionsPath];
     if (privileged) args.unshift('-n', process.execPath);
     let failure = '';
     try { execFileSync(launcher, args, { env: { ...process.env, NODE_OPTIONS: '' }, encoding: 'utf8', timeout: 25_000 }); }
@@ -128,6 +160,8 @@ describe('independent parent oracle producer', () => {
       kind: 'commonjs-compile', path: entry, sha256: replayHash(readFileSync(entry)) }));
     const boot = rows.find(row => row.kind === 'bootstrap');
     expect(boot).toBeDefined();
+    expect(boot.execArgv.slice(0, -2)).toEqual(['--max-old-space-size=512']);
+    expect(boot.nodeOptions).toBe('');
     expect(readProcessIdentity(boot.pid)).toBeNull();
     if (failure) {
       expect(privileged, failure).toBe(false);
@@ -143,6 +177,7 @@ describe('independent parent oracle producer', () => {
       expect(JSON.parse(readFileSync(join(witnessDirectory, 'terminal.json'), 'utf8'))).toMatchObject({ code: 0, signal: null });
     }
   }, 30_000);
+  });
   function producer(suffix = '') {
     const f = fixture('cjs', `const fs=require('node:fs');require('./compiler.cjs');
       const input=JSON.parse(fs.readFileSync(process.argv[3],'utf8'));
@@ -192,6 +227,20 @@ describe('independent parent oracle producer', () => {
     expect(readProcessIdentity(qualified.oracleProvenance.runtime!.process.pid)).toBeNull();
     await expect(freezeQualifiedReplayConfig(f.inputPath, f.outputPath, f.options, f.deps)).rejects.toThrow('replay-oracle-output-exists');
   });
+  it('carries the configured heap into the actual child while dropping ambient preloads', async () => {
+    const f = producer(`fs.writeFileSync(require('node:path').join(require('node:path').dirname(candidatePath),'heap.json'),
+      JSON.stringify({limit:require('node:v8').getHeapStatistics().heap_size_limit,
+        nodeOptions:process.env.NODE_OPTIONS,execArgv:process.execArgv}));`);
+    vi.stubEnv('NODE_OPTIONS', '--max-old-space-size=256 --import=/must-not-load.mjs --require=/must-not-load.cjs');
+    const qualified = await freezeQualifiedReplayConfig(f.inputPath, f.outputPath, f.options, f.deps);
+    expect(() => assertReplayOracleRuntimeQualified(qualified)).not.toThrow();
+    const heap = JSON.parse(readFileSync(join(f.options.witnessDirectory, 'heap.json'), 'utf8'));
+    const expected = Number(execFileSync(process.execPath, ['--max-old-space-size=256', '-p',
+      'require("node:v8").getHeapStatistics().heap_size_limit'], { env: { ...process.env, NODE_OPTIONS: '' }, encoding: 'utf8' }));
+    expect(heap.limit).toBe(expected);
+    expect(heap.nodeOptions).toBe('');
+    expect(heap.execArgv.slice(0, -2)).toEqual(['--max-old-space-size=256']);
+  });
   it('hashes unused native providers but traverses dependencies of explicit runtime roots', async () => {
     const f = producer();
     const unused = join(dirname(f.source), 'unused-gpu-provider.so');
@@ -207,6 +256,23 @@ describe('independent parent oracle producer', () => {
     await expect(freezeQualifiedReplayConfig(f.inputPath, join(f.root, 'explicit.json'), {
       ...f.options, runtimePaths: [...f.options.runtimePaths, unused], witnessDirectory: join(f.root, 'explicit-receipts'),
     }, { ...f.deps, nativeDependencies })).rejects.toThrow('unavailable-provider-library');
+    expect(JSON.parse(readFileSync(join(f.root, 'explicit-receipts', 'terminal.json'), 'utf8')))
+      .toMatchObject({ pid: null, phase: 'declaring-runtime', error: expect.stringContaining('unavailable-provider-library') });
+  });
+  it('retains complete stderr and signal termination when the child fails before a candidate', async () => {
+    const f = producer();
+    writeFileSync(f.entry, `process.stderr.write('original compiler failure\\n'+'x'.repeat(10000),
+      ()=>process.kill(process.pid,'SIGTERM'));`);
+    await expect(freezeQualifiedReplayConfig(f.inputPath, f.outputPath, f.options, f.deps))
+      .rejects.toThrow('replay-oracle-child-exited:null:SIGTERM');
+    const terminal = JSON.parse(readFileSync(join(f.options.witnessDirectory, 'terminal.json'), 'utf8'));
+    expect(terminal).toMatchObject({ signal: 'SIGTERM', phase: 'waiting-for-candidate' });
+    expect(terminal.stderr).not.toContain('original compiler failure');
+    expect(readFileSync(join(f.options.witnessDirectory, 'stderr.log'), 'utf8'))
+      .toBe('original compiler failure\n'+'x'.repeat(10000));
+    expect(readProcessIdentity(terminal.pid)).toBeNull();
+    expect(existsSync(f.outputPath)).toBe(false);
+    expect(existsSync(join(f.options.witnessDirectory, 'candidate.json'))).toBe(false);
   });
   it.each([
     ['compiler drift after load', "fs.writeFileSync(require.resolve('./compiler.cjs'),'changed');", 'changed-file'],
@@ -230,6 +296,10 @@ describe('independent parent oracle producer', () => {
     const boot = receipts(f.options.witnessDirectory).find(row => row.kind === 'bootstrap');
     expect(boot).toBeDefined();
     expect(readProcessIdentity(boot.pid)).toBeNull();
+    const terminal = JSON.parse(readFileSync(join(f.options.witnessDirectory, 'terminal.json'), 'utf8'));
+    expect(terminal.error).toContain(error);
+    expect(terminal.pid).toBe(boot.pid);
+    expect(readFileSync(join(f.options.witnessDirectory, 'phases.jsonl'), 'utf8')).toContain('waiting-for-candidate');
   });
   it('refuses a missing compiler load without expanding the predeclared witness', async () => {
     const f = producer();
@@ -245,6 +315,8 @@ describe('independent parent oracle producer', () => {
     expect(existsSync(f.outputPath)).toBe(false);
     const boot = receipts(f.options.witnessDirectory).find(row => row.kind === 'bootstrap');
     expect(readProcessIdentity(boot.pid)).toBeNull();
+    expect(JSON.parse(readFileSync(join(f.options.witnessDirectory, 'terminal.json'), 'utf8')))
+      .toMatchObject({ phase: 'waiting-for-candidate', signal: 'SIGKILL', error: expect.stringContaining('replay-oracle-producer-timeout') });
     await expect(freezeQualifiedReplayConfig(f.inputPath, f.outputPath, f.options, f.deps)).rejects.toThrow('EEXIST');
     await expect(freezeQualifiedReplayConfig(f.inputPath, f.source, { ...f.options, witnessDirectory: join(f.root, 'new') }, f.deps))
       .rejects.toThrow('replay-oracle-output-inside-source');

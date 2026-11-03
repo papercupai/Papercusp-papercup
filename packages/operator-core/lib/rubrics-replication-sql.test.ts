@@ -269,7 +269,7 @@ describe('substituteBindPlaceholders', () => {
 });
 
 describe('summarizeReplicationSqlCheck', () => {
-  const base = { checked: 0, findings: [], undeterminable: [], placeholderOnly: 0, ok: true };
+  const base = { checked: 0, findings: [], undeterminable: [], placeholderOnly: 0, complete: true, ok: true };
 
   it('says so plainly when there was nothing to check', () => {
     expect(summarizeReplicationSqlCheck(base)).toBe('no embedded drill SQL to check');
@@ -291,5 +291,11 @@ describe('summarizeReplicationSqlCheck', () => {
     });
     expect(summary).toContain('1 undeterminable');
     expect(summary).toContain('see undeterminable[]');
+  });
+
+  it('reports incomplete validation instead of implying unchecked statements were clean', () => {
+    const summary = summarizeReplicationSqlCheck({ ...base, checked: 2, complete: false, ok: false });
+    expect(summary).toContain('check incomplete');
+    expect(summary).toContain('remaining statements were skipped');
   });
 });

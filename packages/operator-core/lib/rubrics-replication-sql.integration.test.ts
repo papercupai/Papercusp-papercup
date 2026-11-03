@@ -49,6 +49,7 @@ describe('validateRubricReplicationSql (real PG)', () => {
       findings: [],
       undeterminable: [],
       placeholderOnly: 0,
+      complete: true,
       ok: true,
       summary: '1 statement(s) checked · 0 real finding(s)',
     });
@@ -122,6 +123,7 @@ describe('validateRubricReplicationSql (real PG)', () => {
       findings: [],
       undeterminable: [],
       placeholderOnly: 0,
+      complete: true,
       ok: true,
       summary: 'no embedded drill SQL to check',
     });

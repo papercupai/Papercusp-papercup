@@ -967,6 +967,15 @@ export interface ScorecardGradingAuditCurrentness {
  */
 export type ScorecardAdmissionExclusion = 'diagnostic' | 'provisional' | 'grading-audit-pending';
 
+/** One audit level: terminal standard cards need it; acceptance and audit cards have their own gates. */
+export function needsGradingAudit(input: {
+  rubricKind: string | undefined;
+  rubricRef: string;
+  provisional: boolean;
+}): boolean {
+  return input.rubricKind === 'standard' && !input.provisional && input.rubricRef !== 'grading-integrity';
+}
+
 export function scorecardAdmissionExclusion(row: {
   purpose?: 'diagnostic' | 'grading';
   provisional?: ScorecardProvisional;

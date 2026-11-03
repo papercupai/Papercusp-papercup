@@ -2522,20 +2522,32 @@ describe('hostThroughPty real round-trip', () => {
       const original = spawn(
         execPath,
         ['-e', originalCode, 'psu-pty-host-decoy'],
-        { stdio: ['ignore', 'pipe', 'pipe'] },
+        { stdio: ['ignore', 'pipe', 'pipe'], env: hermeticEnv() },
       );
       try {
+        let stdoutText = '';
+        let stderrText = '';
         await new Promise<void>((resolve, reject) => {
           const timer = setTimeout(
-            () => reject(new Error('original host did not become ready')),
+            () => reject(new Error(
+              'original host did not become ready (pid=' + original.pid + ')' +
+              '; stdout=' + stdoutText.slice(-300) + '; stderr=' + stderrText.slice(-1000),
+            )),
             5_000,
           );
           original.stdout!.setEncoding('utf8');
+          original.stderr!.setEncoding('utf8');
+          original.stderr!.on('data', (data) => { stderrText += String(data); });
           original.stdout!.on('data', (data) => {
-            if (String(data).includes('READY')) {
+            stdoutText += String(data);
+            if (stdoutText.includes('READY')) {
               clearTimeout(timer);
               resolve();
             }
+          });
+          original.once('error', (error) => {
+            clearTimeout(timer);
+            reject(error);
           });
           original.once('exit', (code) => {
             clearTimeout(timer);
@@ -3445,14 +3457,18 @@ describe('RECYCLE / backend-aware RESET — kill + respawn the child in the same
         await vi.waitFor(() => {
           expect(JSON.parse(readFileSync(meta, 'utf8')).carryDropCount).toBe(1);
         }, { timeout: 5_000 });
-      } finally {
-        signalSource.emit('SIGTERM');
+        // End this fixture through an observed child exit. SIGTERM cleanup while
+        // the child is still alive correctly reports an unverified exit as code 1.
+        await rawInject(sock, 'QUIT\n');
         await done;
-        if (existsSync(eventLog)) unlinkSync(eventLog);
+      } finally {
+        if (existsSync(sock)) signalSource.emit('SIGTERM');
+        await done;
       }
       expect(exitCode).toBe(0);
       expect(existsSync(sock)).toBe(false);
       expect(existsSync(meta)).toBe(false);
+      if (existsSync(eventLog)) unlinkSync(eventLog);
     },
     32_000,
   );
@@ -6364,7 +6380,16 @@ describe('orphan / vanished-terminal teardown (WI-3141)', () => {
           spawnEvidence.push(evidence);
           spawned.onData((data: string) => { evidence.data = `${evidence.data}${data}`.slice(-4096); });
           spawned.onExit((event: unknown) => { evidence.exit = event; });
-          return spawned;
+          // Keep the native exit event as independent evidence, but withhold it
+          // from the host so this fixture deterministically covers its
+          // conservative unverified-exit branch under a real child teardown.
+          return new Proxy(spawned, {
+            get(target, property) {
+              if (property === 'onExit') return () => undefined;
+              const value = Reflect.get(target, property, target);
+              return typeof value === 'function' ? value.bind(target) : value;
+            },
+          });
         },
         parentPidFn: () => fakeParent,
         onExit: (c: number) => { exitCode = c; },
@@ -6378,8 +6403,31 @@ describe('orphan / vanished-terminal teardown (WI-3141)', () => {
         // next poll must observe ppid===1 and tear the orphaned host down.
         fakeParent = 1;
         const code = await done;
-        expect(code).toBe(0);
-        expect(exitCode).toBe(0);
+        expect(code).toBe(1);
+        expect(exitCode).toBe(1);
+        await vi.waitFor(() => expect(spawnEvidence[0]?.exit).not.toBeNull(), { timeout: 3_000 });
+        const events = readFileSync(eventLogPathForOwner(ownerId), 'utf8')
+          .trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
+        expect(events).toContainEqual(expect.objectContaining({
+          kind: 'orphan-teardown',
+          why: 'parent-exited',
+        }));
+        expect(events).toContainEqual(expect.objectContaining({
+          kind: 'pty-child-exit-unverified',
+          childPid: spawnEvidence[0]?.pid,
+        }));
+        const childState = () => {
+          const pid = spawnEvidence[0]?.pid;
+          if (!pid || pid <= 1) return 'unknown';
+          try {
+            process.kill(pid, 0);
+            return linuxProcStateFromStat(readFileSync('/proc/' + pid + '/stat', 'utf8')) ?? 'unknown';
+          } catch (error) {
+            const code = (error as NodeJS.ErrnoException).code;
+            return code === 'ESRCH' || code === 'ENOENT' ? 'absent' : 'unknown';
+          }
+        };
+        await vi.waitFor(() => expect(childState()).toBe('absent'), { timeout: 3_000 });
         expect(existsSync(sock)).toBe(false);
         expect(existsSync(meta)).toBe(false);
       } catch (error) {

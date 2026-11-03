@@ -6,6 +6,7 @@ import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { captureConfigurationSnapshot } from '@papercusp/test-config/configuration-snapshot';
+import { linuxProcessIdentityFromStat } from '../lib/process-identity';
 import { verifierSourceFiles } from '../lib/verifier-source';
 import { preparePrivateOperatorApiBundle, produceCommittedReaderPrivateApiBundle, qualifyCommittedReaderSource,
   resolvePreparedCommittedReaderSource, resolvePreparedPrivateApiBundle, preparePrivateWorkerSources,
@@ -125,17 +126,57 @@ function loadedFixture(source?: string, admit = true, buildObservationOnly = fal
       receiptPath: join(f.dir, 'prepare/operator-api-preflight.json') } : {}) };
   const rows = readdirSync(traceRoot).filter(name => name.endsWith('.json'))
     .map(name => ({ name, row: JSON.parse(readFileSync(join(traceRoot, name), 'utf8')) }));
+  const kernelProcessIdentity: string | undefined = rows.find(({ row }) => row.event === 'node-entry')?.row.kernelProcessIdentity;
   const replace = (event: string, mutate: (row: any) => void) => {
     const entry = rows.find(({ row }) => row.event === event)!;
     rmSync(join(traceRoot, entry.name)); mutate(entry.row);
     const bytes = JSON.stringify(entry.row);
     writeFileSync(join(traceRoot, digest(bytes) + '.json'), bytes);
   };
-  return { ...f, traceRoot, options, rows, replace, environment,
+  const replaceAll = (mutate: (row: any) => void) => {
+    for (const entry of rows) {
+      rmSync(join(traceRoot, entry.name)); mutate(entry.row);
+      const bytes = JSON.stringify(entry.row);
+      entry.name = digest(bytes) + '.json';
+      writeFileSync(join(traceRoot, entry.name), bytes);
+    }
+  };
+  return { ...f, traceRoot, options, rows, replace, replaceAll, environment, nativeOutput: child.stdout,
+    kernelProcessIdentity,
     observe: () => observeCommittedReaderLoadedSources(options) };
 }
 
 describe('committed reader loader-return source binding', () => {
+  it.skipIf(process.platform !== 'linux')('binds a kernel process identity independently of the trace UUID', () => {
+    const f = loadedFixture(`import { readFileSync } from 'node:fs';
+      console.log(JSON.stringify({ boot: readFileSync('/proc/sys/kernel/random/boot_id', 'utf8'),
+        stat: readFileSync('/proc/self/stat', 'utf8') }));`);
+    const raw = JSON.parse(f.nativeOutput);
+    const expected = linuxProcessIdentityFromStat(raw.boot, raw.stat);
+    expect(expected).toMatch(/^linux:/);
+    const observed = observeCommittedReaderLoadedSources({ ...f.options, kernelProcessIdentity: expected! });
+    expect(observed).toMatchObject({ status: 'bound', gaps: [], kernelProcessIdentity: expected });
+    expect(observed.processIdentity).toBe(f.rows.find(({ row }) => row.event === 'node-entry')!.row.processIdentity);
+    expect(observed.processIdentity).not.toBe(expected);
+    expect(observeCommittedReaderLoadedSources({ ...f.options,
+      kernelProcessIdentity: observed.processIdentity! }).status).toBe('unknown');
+  });
+
+  it.each(['missing', 'wrong-pin', 'reused', 'mixed'] as const)(
+    'keeps %s kernel process identity evidence unknown', control => {
+      const f = loadedFixture();
+      const expected = f.kernelProcessIdentity;
+      expect(expected).toEqual(expect.any(String));
+      if (control === 'missing') f.replace('node-entry', row => { delete row.kernelProcessIdentity; });
+      if (control === 'reused') f.replaceAll(row => { row.kernelProcessIdentity = expected + '-reused'; });
+      if (control === 'mixed') f.replace('module-load-return', row => { row.kernelProcessIdentity = expected + '-reused'; });
+      const observed = observeCommittedReaderLoadedSources({ ...f.options,
+        kernelProcessIdentity: control === 'wrong-pin' ? expected + '-wrong' : expected });
+      expect(observed.status).toBe('unknown');
+      expect(observed.gaps).toEqual(expect.arrayContaining([expect.stringContaining('kernel')]));
+      expect(observed.pending).toContain('complete-runtime-closure');
+    });
+
   it('binds original host entry inputs without retaining raw secret values or qualifying resolved config', () => {
     const f = loadedFixture("process.env.PAPERCUSP_TEST_CONFIGURATION_SECRET = 'changed-after-entry';");
     const observed = f.observe();
@@ -215,7 +256,7 @@ describe('committed reader loader-return source binding', () => {
     expect(observed.processIdentity).toBe(f.rows.find(({ row }) => row.event === 'node-entry')!.row.processIdentity);
     expect(observed.pending).toEqual(['module-evaluation', 'runtime-config', 'private-pg', 'sidecars',
       'descendant-imports', 'complete-runtime-closure']);
-    expect(observeCommittedReaderLoadedSources({ ...f.options, processIdentity: 'another-process' }).status).toBe('unknown');
+    expect(observeCommittedReaderLoadedSources({ ...f.options, kernelProcessIdentity: 'another-process' }).status).toBe('unknown');
   });
 
   it.each(['bytes', 'artifact', 'limit', 'load-limit', 'pending', 'entry', 'identity', 'cwd', 'unpinned', 'event-hash'] as const)(

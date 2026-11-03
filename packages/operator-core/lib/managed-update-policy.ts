@@ -8,9 +8,13 @@
  * operator database must not be able to bypass an administrator's update ring.
  * Absence is unmanaged; a present but invalid/unreadable policy fails closed.
  * This is a Linux source contract, not Intune/Jamf/package qualification.
+ * Optional updateAuthorization contains the CURRENT administrator-controlled
+ * signing/review roots and floors consumed by the native updater. Keeping it in
+ * this policy preserves the same protected path and ownership contract.
  */
 import { constants, openSync, closeSync, fstatSync, lstatSync, readSync } from 'node:fs';
 import type { Stats } from 'node:fs';
+import type { TauriUpdateTrust } from '@papercusp/tauri-release-kit/signature';
 import type { UpdateChannel } from './endpoint-route/routes/desktop/setup-wizard-state';
 
 export const MANAGED_UPDATE_POLICY_PATH = '/etc/papercusp/managed-policy.json';
@@ -39,6 +43,27 @@ function invalid(): never {
 
 function trusted(stat: Stats): boolean {
   return stat.uid === 0 && (stat.mode & 0o022) === 0;
+}
+
+function exactRecord(value: unknown, fields: readonly string[]): value is Record<string, unknown> {
+  return !!value && typeof value === 'object' && !Array.isArray(value) &&
+    Object.keys(value).length === fields.length && fields.every(field => Object.hasOwn(value, field));
+}
+
+function validUpdateTrust(value: unknown): value is TauriUpdateTrust {
+  const integers = ['rootEpoch', 'minRollbackCounter', 'minIssuedAt', 'maxMetadataAgeMs'];
+  if (!exactRecord(value, [...integers, 'signers', 'approvers']) ||
+      integers.some(field => !Number.isSafeInteger(value[field]) || (value[field] as number) < 0) ||
+      value.maxMetadataAgeMs === 0) return false;
+  const label = (v: unknown): v is string => typeof v === 'string' && v.length > 0 && v.length <= 200 && !/[\s\x00-\x1f\x7f]/.test(v);
+  return ['signers', 'approvers'].every(role => {
+    const keys = value[role];
+    return Array.isArray(keys) && keys.length > 0 && keys.length <= 64 && keys.every(key =>
+      exactRecord(key, ['id', 'epoch', 'principalId', 'publicKey', 'revoked']) &&
+      label(key.id) && label(key.principalId) && Number.isSafeInteger(key.epoch) && (key.epoch as number) >= 0 &&
+      typeof key.publicKey === 'string' && key.publicKey.length > 0 && key.publicKey.length <= 4096 &&
+      typeof key.revoked === 'boolean');
+  });
 }
 
 /** Re-read on each decision, so administrator changes need no process restart. */
@@ -79,8 +104,9 @@ export function readManagedUpdateChannel(): UpdateChannel | null {
     const policy: unknown = JSON.parse(buffer.toString('utf8', 0, bytes));
     if (!policy || typeof policy !== 'object' || Array.isArray(policy)) invalid();
     const record = policy as Record<string, unknown>;
-    if (record.version !== 1 || Object.keys(record).some(key => key !== 'version' && key !== 'update_channel')) invalid();
+    if (record.version !== 1 || Object.keys(record).some(key => !['version', 'update_channel', 'updateAuthorization'].includes(key))) invalid();
     if (record.update_channel !== 'alpha' && record.update_channel !== 'beta' && record.update_channel !== 'stable') invalid();
+    if (Object.hasOwn(record, 'updateAuthorization') && !validUpdateTrust(record.updateAuthorization)) invalid();
     return record.update_channel;
   } catch (error) {
     if (error instanceof ManagedUpdatePolicyError) throw error;

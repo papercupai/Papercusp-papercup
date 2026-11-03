@@ -28,13 +28,14 @@ import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { resolveWakeMode } from '../coordination/wake-mode';
+import { getPresence } from '../coordination/presence';
 import { injectIntoHostWithConfirmation, selfCompactionAvailabilityAsync } from '../../events/await/psu-pty-discovery';
 import { hostCarryFenceBindable } from '../../events/await/carry-fence-bindable';
 import { tagTurnForInjection } from '../../turn-provenance/turn-provenance';
 import { carryProvenanceFields } from '../../carry-surface-provenance-stamp';
-import { buildFrozenAssignmentRespawnSpec, buildOwnerRespawnLaunchSpec } from '../../carry-respawn';
+import { buildFrozenAssignmentRespawnSpec, buildOwnerRespawnLaunchSpec, frozenCarryTriggerReceipt, type FrozenCarryTriggerReceipt } from '../../carry-respawn';
 import { sessionCarryPolicy } from '../../capability-envelope/session-confinement-port';
-import { estimateContextWindowForOwner, resolveModelSpecForOwner } from '../../compaction-usage';
+import { currentContextUsageForOwner, estimateContextWindowForOwner, resolveModelSpecForOwner } from '../../compaction-usage';
 import { modelWindowForSpec } from '../../agent-config-constants';
 import {
   staleCheckpointWarnings,
@@ -360,6 +361,18 @@ export default defineTool({
         note: 'The assignment carry policy could not be verified; this session remains intact.',
       }) }] };
     }
+    let frozenTrigger: FrozenCarryTriggerReceipt | undefined;
+    if (frozenCarry?.compactionLimit !== undefined) try {
+      const presence = await getPresence(identity.ownerId);
+      frozenTrigger = frozenCarryTriggerReceipt(frozenCarry, { source: 'self-request',
+        runtimeLimit: presence?.compactionLimitExplicit === true ? presence.compactionLimit ?? NaN : NaN,
+        usage: await currentContextUsageForOwner(identity.ownerId) });
+    } catch {
+      return { isError: true, content: [{ type: 'text' as const, text: JSON.stringify({
+        ok: false, requested: false, respawn: false, error: 'frozen_compaction_trigger_unverified',
+        note: 'No restart was queued: the current native context must reach the frozen threshold with fresh host evidence.',
+      }) }] };
+    }
     // Check caller-authored hints before ANY fallback can seed them into a cold
     // loop carry-note. A later check covers generated/default carry text too.
     const explicitCarryRefusal = frozenCompactionCarryRefusal(
@@ -626,6 +639,7 @@ export default defineTool({
     const spec = await buildOwnerRespawnLaunchSpec(identity.ownerId, {
       effectiveWindowTokens,
       continueNote: args.continueNote,
+      ...(frozenTrigger ? { frozenTrigger } : {}),
       role: callerContext.role,
       buildOpts: {
         workspaceId: identity.workspaceId ?? undefined,
@@ -644,8 +658,9 @@ export default defineTool({
     // rather than accepting a general carry or a mismatched frozen successor.
     let matchesFrozenPolicy = !frozenCarry;
     if (frozenCarry) try {
-      const expected = buildFrozenAssignmentRespawnSpec(frozenCarry, args.continueNote);
+      const expected = buildFrozenAssignmentRespawnSpec(frozenCarry, args.continueNote, frozenTrigger);
       matchesFrozenPolicy = spec?.firstPrompt === expected.firstPrompt && spec.systemPromptAddendum === '' &&
+        (!frozenTrigger || self?.sessionId === frozenTrigger.nativeSessionId) &&
         JSON.stringify(spec.frozenAssignmentCarry) === JSON.stringify(expected.frozenAssignmentCarry);
     } catch { /* corrupt pinned bytes refuse below, never escape as an internal error */ }
     if (!spec || !matchesFrozenPolicy) {

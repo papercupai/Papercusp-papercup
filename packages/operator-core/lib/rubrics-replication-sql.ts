@@ -65,6 +65,8 @@ import {
   explainReadQuery,
   extractPgErrorInfo,
   stripSqlLiteralsAndComments,
+  PG_READ_QUERY_CALL_OVERHEAD_MS,
+  PG_READ_QUERY_DEFAULT_TIMEOUT_MS,
   type PgErrorInfo,
 } from './pg-read-query';
 import type { RubricCriterionCheck } from './agent-tools/plans/rubric-template';
@@ -338,15 +340,20 @@ export interface ReplicationSqlValidationResult {
    * of 16 false findings measured on goal-mode-e2e.
    */
   placeholderOnly: number;
-  /** true when there are no REAL findings (`undeterminable` does not clear or set this). */
+  /** False when a time/statement bound or unexpected error prevented checking every statement. */
+  complete: boolean;
+  /** True only when the full check completed without REAL findings (`undeterminable` does not set this). */
   ok: boolean;
   /** One-line rendering of the split, so a reviewer never has to re-derive it by hand. */
   summary: string;
 }
 
-/** Bound worst-case latency on a rubric with an unusually large number of embedded
- *  statements — EXPLAIN is cheap (single-digit ms) but this stays a hard ceiling. */
+/** Bound query count and total wall time for this advisory pass. The default EXPLAIN call
+ *  deadline is 8s (5s statement timeout + 3s call overhead); starting only when that full
+ *  budget fits keeps this pass within 10s and leaves room for the mutation receipt. */
 const MAX_STATEMENTS_CHECKED = 60;
+const MAX_VALIDATION_DURATION_MS = 10_000;
+const MAX_EXPLAIN_CALL_DURATION_MS = PG_READ_QUERY_DEFAULT_TIMEOUT_MS + PG_READ_QUERY_CALL_OVERHEAD_MS;
 
 /** EXPLAIN one statement, normalising a thrown driver error into the same shape as a
  *  returned one so callers only ever branch on `ok`. */
@@ -364,7 +371,8 @@ function explainOrError(sql: string): Promise<{ ok: true } | { ok: false; error:
 export function summarizeReplicationSqlCheck(
   r: Omit<ReplicationSqlValidationResult, 'summary'>,
 ): string {
-  if (r.checked === 0) return 'no embedded drill SQL to check';
+  if (r.checked === 0 && r.complete) return 'no embedded drill SQL to check';
+  if (r.checked === 0) return 'check incomplete before any embedded drill SQL was checked';
   const parts = [
     `${r.checked} statement(s) checked`,
     `${r.findings.length} real finding(s)`,
@@ -379,6 +387,7 @@ export function summarizeReplicationSqlCheck(
       `${r.undeterminable.length} undeterminable (the substituted placeholder may itself be the cause — see undeterminable[])`,
     );
   }
+  if (!r.complete) parts.push('check incomplete; the remaining statements were skipped to keep validation bounded');
   return parts.join(' · ');
 }
 
@@ -395,13 +404,19 @@ export async function validateRubricReplicationSql(
   const undeterminable: ReplicationSqlFinding[] = [];
   let checked = 0;
   let placeholderOnly = 0;
+  let complete = true;
+  const deadline = Date.now() + MAX_VALIDATION_DURATION_MS;
+  const canStartExplain = () => Date.now() + MAX_EXPLAIN_CALL_DURATION_MS <= deadline;
   try {
     outer: for (const c of criteria) {
       const cohortFindings = lintSqlCohortMethod(c);
       findings.push(...cohortFindings);
       checked += cohortFindings.length;
       for (const sql of extractReplicationSqlStatements(c.replication)) {
-        if (checked >= MAX_STATEMENTS_CHECKED) break outer;
+        if (checked >= MAX_STATEMENTS_CHECKED || !canStartExplain()) {
+          complete = false;
+          break outer;
+        }
         checked++;
         const first = await explainOrError(sql);
         if (first.ok) continue;
@@ -415,6 +430,12 @@ export async function validateRubricReplicationSql(
           continue;
         }
 
+        // The retry is another independent PG call; include its entire default deadline
+        // in the same request-wide budget before starting it.
+        if (!canStartExplain()) {
+          complete = false;
+          break outer;
+        }
         const retry = await explainOrError(substituted);
         if (retry.ok) {
           placeholderOnly++;
@@ -436,7 +457,15 @@ export async function validateRubricReplicationSql(
     }
   } catch {
     // fail-open — see module doc: never let this advisory check break a rubric write.
+    complete = false;
   }
-  const result = { checked, findings, undeterminable, placeholderOnly, ok: findings.length === 0 };
+  const result = {
+    checked,
+    findings,
+    undeterminable,
+    placeholderOnly,
+    complete,
+    ok: complete && findings.length === 0,
+  };
   return { ...result, summary: summarizeReplicationSqlCheck(result) };
 }

@@ -113,6 +113,17 @@ jar, clicks the Overview Work items tile, selects the exact offered row, and
 claims it. The fixture performs no submission, grading or payment. Create a new
 isolated fixture for each cohort; a previously claimed offer is refused.
 
+The same manifest also includes `planSlug`, written and read back through the
+canonical plan store. Export it as `PAPERCUSP_PERF_PLAN_SLUG` to select that plan
+with the maintained plan-opening spec. The broader-interactions spec uses
+`PAPERCUSP_PERF_HARNESS` and `PAPERCUSP_PERF_WORK_ITEM` for dock and conversation
+selection, and mounts the explicit private workspace before measuring. An
+explicit item must appear in the grid; it never falls back to another row.
+Together with `smoke.spec.ts`, these existing specs cover the other five UI
+criteria. Preserve each spec's run id and private persisted receipt separately:
+the plan spec also records page-load vitals, so combining specs under one run
+can produce duplicate LCP observations, which the grading SQL rejects.
+
 | | Where it runs | Speed | Catches |
 |---|---|---|---|
 | `/tests` page (Gremlins + react-scan + web-vitals) | Inside the running app | Live, every iteration | 95% of UI perf bugs |

@@ -11,6 +11,9 @@
 // testing:run and the raw router already apply it; this is the door for `npx vitest` and the
 // per-workspace vitest runs `npm run test:affected` starts.
 import { fileURLToPath } from 'node:url';
+import { execFileSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
+import { dirname, isAbsolute, relative, resolve } from 'node:path';
 import {
   formatVitestRestrictedHoldRefusal,
   runVitestRootPreflight,
@@ -43,6 +46,49 @@ export function vitestConfigLoaderPolicy(args, env = process.env, execArgv = pro
   return { configLoaderArgs: selected === null ? [] : ['--configLoader', selected], vitestArgs: remaining };
 }
 
+/** Native fixtures inherit the committed-source loader, while Vitest reads local
+ * test modules. Refuse mixed tracer inputs before any native child is launched.
+ * Reuse the cost-fixture's Git-blob comparison without importing the loader:
+ * importing that module installs process-wide hooks.
+ * @param {{ root: string, files: string[] }} input
+ * @param {{ committed?: (root: string, path: string) => Buffer,
+ *   working?: (path: string) => Buffer }} [readers]
+ */
+export function nativeChildSourcePreflight({ root, files }, readers = {}) {
+  const suites = [
+    'packages/operator-core/lib/__tests__/vitest-startup-trace.test.ts',
+    'packages/operator-core/test/committed-reader-source-preflight.test.ts',
+  ];
+  const selected = files.map(file => relative(root, isAbsolute(file) ? file : resolve(root, file)).replaceAll('\\', '/'))
+    .filter(file => suites.includes(file));
+  if (!selected.length) return null;
+  const committed = readers.committed ?? ((cwd, path) => {
+    const absolute = resolve(cwd, path);
+    const env = { ...process.env };
+    for (const key of ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_COMMON_DIR']) delete env[key];
+    const options = { env, timeout: 10_000, maxBuffer: 4 * 1024 * 1024,
+      stdio: /** @type {['ignore', 'pipe', 'pipe']} */ (['ignore', 'pipe', 'pipe']) };
+    // Shared test-config is a real submodule: its blob lives in its own HEAD.
+    const top = execFileSync('git', ['-C', dirname(absolute), 'rev-parse', '--show-toplevel'], options).toString().trim();
+    return execFileSync('git', ['-C', top, 'show', `HEAD:${relative(top, absolute).replaceAll('\\', '/')}`], options);
+  });
+  const working = readers.working ?? readFileSync;
+  for (const path of [
+    'scripts/lib/vitest-startup-trace.mjs',
+    'packages/operator-core/lib/process-identity.ts',
+    'libs/test-config/src/configuration-snapshot.ts',
+    ...new Set(selected),
+  ]) {
+    try {
+      if (committed(root, path).equals(working(resolve(root, path)))) continue;
+    } catch {
+      return { verdict: 'refuse', message: `NATIVE_CHILD_SOURCE_REFUSED measured=none unreadable committed input: ${path}` };
+    }
+    return { verdict: 'refuse', message: `NATIVE_CHILD_SOURCE_REFUSED measured=none ${path} must match HEAD before native child verification; wait for git-sync` };
+  }
+  return null;
+}
+
 /**
  * Contract (owned by libs/test-config/src/host-preflight-global-setup.ts):
  *   → { verdict: 'admit', setEnv? } | { verdict: 'skipped', reason } | { verdict: 'refuse', message }
@@ -50,6 +96,8 @@ export function vitestConfigLoaderPolicy(args, env = process.env, execArgv = pro
  * @param {{ root: string, files: string[], env: NodeJS.ProcessEnv }} input
  */
 export function hostPreflight({ root, files, env }) {
+  const sourceRefusal = nativeChildSourcePreflight({ root, files });
+  if (sourceRefusal) return sourceRefusal;
   const result = runVitestRootPreflight({ repoRoot: root, files, env });
   if (result.verdict === 'refuse') return { verdict: 'refuse', message: formatVitestRestrictedHoldRefusal(result) };
   return result;

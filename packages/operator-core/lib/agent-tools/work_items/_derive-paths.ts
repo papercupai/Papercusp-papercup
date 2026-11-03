@@ -25,7 +25,7 @@ import { isAbsolute, relative, resolve, sep } from 'node:path';
  */
 
 /** Repo-relative path prefixes worth extracting (mirrors `codeSmellsLikeCode`'s net). */
-const REPO_PATH_PATTERN = /\b(?:packages|libs|apps|src|scripts|sql)\/[\w./-]+/g;
+const REPO_PATH_PATTERN = /(?<![\w./-])(?:[\w.-]+\/)*(?:packages|libs|apps|src|scripts|sql)\/[\w./-]+/g;
 
 /** Absolute URLs are references to another location; their path segments are not local repo paths. */
 const ABSOLUTE_HTTP_URL_PATTERN = /\bhttps?:\/\/[^\s<>"']+/gi;
@@ -179,9 +179,13 @@ export function deriveRepoPathsFromText(text: string, opts: DeriveRepoPathsOptio
   // keeps independently mentioned paths on either side intact.
   const proseWithoutUrls = text.replace(ABSOLUTE_HTTP_URL_PATTERN, ' ');
   for (const m of proseWithoutUrls.matchAll(REPO_PATH_PATTERN)) {
-    const p = m[0].replace(TRAILING_PUNCT_RE, '').replace(/\/+$/, '');
-    // Require at least one path separator beyond the prefix dir itself.
-    if (!p.includes('/') || p.split('/').some((seg) => seg.length === 0)) continue;
+    const p = m[0]
+      .replace(TRAILING_PUNCT_RE, '')
+      .replace(/\/+$/, '')
+      .replace(/^(?:\.\/)+/, '');
+    // Require a path separator and reject malformed or escaping relative paths.
+    const segments = p.split('/');
+    if (!p.includes('/') || segments.some((seg) => seg.length === 0 || seg === '.' || seg === '..')) continue;
     if (opts.repoRoot && !isExistingContainedPath(opts.repoRoot, p)) continue;
     if (seen.has(p)) continue;
     seen.add(p);

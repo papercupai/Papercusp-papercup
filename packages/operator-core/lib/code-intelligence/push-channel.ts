@@ -1561,6 +1561,23 @@ export async function codeIntelPushText(input: PushInput, deps: PushChannelDeps 
     // degrades exactly as it would on its own timeout.
     const byGatherDeadline = <T>(work: Promise<T>, fallback: T) =>
       withBoundedTimeout(work, { timeoutMs: gatherLeft(), fallback, warn: false }).then(settled => settled.value);
+    const legs = [...deps.legs()].sort(([a], [b]) => pushLegRank(a) - pushLegRank(b));
+    // Flag reads are independent of the snapshot. Resolve them concurrently so a
+    // notes read can start as soon as its flag is known, while snapshot/toolset
+    // work is still in flight instead of spending its deadline waiting behind it.
+    const enabledRead = Promise.all(legs.map(async ([id]) => [id, await deps.enabled(PUSH_LEG_FLAGS[id])] as const))
+      .then(values => new Map(values));
+    const touchedPaths = firstTouchPaths(input);
+    // P-005: fold code notes and re-hash their file anchors as soon as the notes
+    // flag resolves. This overlaps the snapshot and toolset reads; all still share
+    // the original gather deadline and the reserved commit window.
+    const notesContext = deps.notesContext && touchedPaths.length
+      ? enabledRead.then(on => on.get('notes')
+        ? withBoundedTimeout(() => deps.notesContext!(input, touchedPaths), {
+          timeoutMs: gatherLeft(), fallback: undefined, label: 'code-intel-notes-context',
+        }).catch(() => ({ value: undefined }))
+        : null).catch(() => null)
+      : null;
     // P-006: started beside the snapshot read so it costs the wall no extra wait.
     const toolsetRead = deps.toolset
       ? deps.toolset(input).catch((): RecipientToolset => ({ status: 'unknown', reason: 'read-failed' }))
@@ -1574,22 +1591,13 @@ export async function codeIntelPushText(input: PushInput, deps: PushChannelDeps 
         fallback: { status: 'unknown', reason: 'read-failed' } as RecipientToolset, warn: false })).value;
     }
     const toolset = input.recipientToolset ?? UNKNOWN_TOOLSET;
-    const legs = [...deps.legs()].sort(([a], [b]) => pushLegRank(a) - pushLegRank(b));
-    // Read every leg's flag at once: one wait instead of one per leg, and the commit
-    // needs to know which legs were ON to record the ones the wall stopped.
-    const on = new Map(await Promise.all(legs.map(async ([id]) => [id, await deps.enabled(PUSH_LEG_FLAGS[id])] as const)));
+    // The commit needs to know which legs were ON to record the ones the wall stopped.
+    const on = await enabledRead;
     // The resume read does not depend on any other leg, so it overlaps with them
     // instead of adding its own wait to the 250ms wall (P-003).
     const resumeContext = deps.resumeContext && on.get('resume')
       ? boundedResumeContext(input, (i, diagnostics) => readResumeWithLinks(i, deps, diagnostics))
         .then(value => ({ value }), () => ({ value: undefined }))
-      : null;
-    // P-005: same overlap for the code-note read (a fact fold plus a re-hash of the
-    // notes' file anchors), started only when this batch first-touched a file.
-    const touchedPaths = firstTouchPaths(input);
-    const notesContext = deps.notesContext && touchedPaths.length && on.get('notes')
-      ? withBoundedTimeout(() => deps.notesContext!(input, touchedPaths), { timeoutMs: gatherLeft(), fallback: undefined, label: 'code-intel-notes-context' })
-        .catch(() => ({ value: undefined }))
       : null;
     const facts: PushFact[] = [];
     const dropped: PushFact[] = [];
@@ -1655,7 +1663,8 @@ export async function codeIntelPushText(input: PushInput, deps: PushChannelDeps 
         if (id === 'notes') {
           if (!notesContext) continue;
           // A timed-out read delivers nothing rather than an unverified note.
-          input.notesContext = (await byGatherDeadline(notesContext, { value: undefined })).value ?? { fresh: [], withheld: [] };
+          const notesResult = await byGatherDeadline(notesContext, null);
+          input.notesContext = notesResult?.value ?? { fresh: [], withheld: [] };
         }
         if (id === 'resume') {
           if (!resumeContext) continue;

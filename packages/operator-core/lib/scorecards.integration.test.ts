@@ -142,6 +142,7 @@ async function fileScorecard(
     rollup?: StructuredObservation['rollup'];
     createdAt: string;
     createdBy?: string;
+    observationExtra?: Partial<StructuredObservation>;
   },
 ): Promise<string> {
   const issue = await createIssue({
@@ -160,6 +161,7 @@ async function fileScorecard(
         ...(opts.instrumentSnapshots ? { instrumentSnapshots: opts.instrumentSnapshots } : {}),
         ...(opts.subject ? { subject: opts.subject } : {}),
         ...(opts.rollup ? { rollup: opts.rollup } : {}),
+        ...opts.observationExtra,
       },
     },
   });
@@ -535,6 +537,33 @@ describe('listScorecards (P-013) — real PG', () => {
     expect(second.rows).toHaveLength(1);
     expect(second.rows[0]?.createdAt).toBe('2026-06-20T10:00:00.000Z');
     expect(second.hasMore).toBe(false);
+  });
+
+  it('fills the settled limit past diagnostics, legacy partial, provisional and unaudited history, retaining finalized failure', async () => {
+    const ratings = Object.fromEntries(CRITERIA.map(criterion => [criterion.key,
+      { rating: 'broken', evidence: 'A confirmed finalized failure remains visible.' }]));
+    const hive = 'mixed-finalized-history';
+    const finalized = await fileScorecard(db, { id: 'settled-failure', rubricRef: RUBRIC, sourceHive: hive,
+      ratings, createdAt: '2026-10-01T00:00:00.000Z' });
+    const extras: Partial<StructuredObservation>[] = [
+      { purpose: 'diagnostic' },
+      { ratings: { 'end-to-end-flow': ratings['end-to-end-flow'] } },
+      { provisional: { stampedAt: '2026-10-04T00:00:00.000Z', violatableKeys: ['end-to-end-flow'] } },
+      { gradingAudit: { state: 'pending', metaRubricRef: 'grading-integrity', stampedAt: '2026-10-05T00:00:00.000Z' } },
+    ];
+    for (const [index, observationExtra] of extras.entries()) {
+      await fileScorecard(db, { id: `unsettled-${index}`, rubricRef: RUBRIC, sourceHive: hive,
+        ratings, observationExtra, createdAt: `2026-10-0${index + 2}T00:00:00.000Z` });
+    }
+    const page = await listScorecardPage({ rubricRef: RUBRIC, sourceHive: hive, finalizedOnly: true, limit: 1 });
+    expect(page.rows.map(row => row.issueId)).toEqual([finalized]);
+    expect(page.rows[0].ratings).toEqual(ratings);
+    expect(page.hasMore).toBe(false);
+    const explicit = await listScorecards({ rubricRef: RUBRIC, sourceHive: hive, includeDiagnostics: true });
+    expect(explicit).toHaveLength(5);
+    expect(explicit.flatMap(row => row.exclusionReasons ?? [])).toEqual(expect.arrayContaining([
+      'diagnostic', 'incomplete', 'provisional', 'grading-audit-pending',
+    ]));
   });
 
   // ── scorecardTrend (P-010) — end-to-end aggregation over the same seeded data.

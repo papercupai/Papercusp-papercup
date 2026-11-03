@@ -45,7 +45,7 @@
  */
 import { browser } from "@wdio/globals";
 import { recordInteractionMs } from "../perf-report";
-import { isNonShellOperatorRoute, waitForAppMount } from "../app-mount";
+import { isNonShellOperatorRoute, waitForAppMount, waitForPackagedAppUrl } from "../app-mount";
 import { waitForMainThreadQuiet } from "../../../../libs/generic/gui-readiness/src/main-thread-quiet";
 
 /**
@@ -56,6 +56,11 @@ import { waitForMainThreadQuiet } from "../../../../libs/generic/gui-readiness/s
  * would carry one test's parameters into the next.
  */
 const OPERATOR_SHELL_ROUTE = "/adv";
+const FIXTURE_HARNESS = process.env.PAPERCUSP_PERF_HARNESS ?? 'papercusp';
+const FIXTURE_ITEM = process.env.PAPERCUSP_PERF_WORK_ITEM;
+if (!/^[\w-]+$/.test(FIXTURE_HARNESS) || (FIXTURE_ITEM && !/^[\w-]+$/.test(FIXTURE_ITEM))) {
+  throw new Error('Invalid explicit performance fixture');
+}
 
 const COMMAND_PALETTE_OPEN_BUDGET_MS = 400;
 const HARNESS_DOCK_OPEN_BUDGET_MS = 1500;
@@ -233,6 +238,17 @@ async function spaNavigate(path: string): Promise<void> {
 }
 
 describe("Packaged Papercusp desktop — broader real interactions (P-006)", () => {
+  before(async () => {
+    const workspace = process.env.PAPERCUSP_PERF_WORKSPACE_ID;
+    if (!workspace) return;
+    // Workspace hooks snapshot at mount; scope the measured document before
+    // starting any of these interactions, as the plan/work drivers do.
+    const url = new URL(await waitForPackagedAppUrl(browser));
+    url.pathname = OPERATOR_SHELL_ROUTE;
+    url.search = new URLSearchParams({ ws: workspace, slug: FIXTURE_HARNESS }).toString();
+    url.hash = '';
+    await browser.url(url.toString());
+  });
   /**
    * Put every test back on the operator shell before it runs.
    *
@@ -366,16 +382,16 @@ describe("Packaged Papercusp desktop — broader real interactions (P-006)", () 
     // Start on the Observe stage so the real Observations tab is visible. The
     // first LearningTab mount is intentionally excluded from this interaction;
     // the click below is the measured view change (P-006).
-    const learningUrl = await browser.execute(() => {
+    const learningUrl = await browser.execute((harness: string) => {
       const u = new URL(location.href);
       u.pathname = "/adv";
       u.searchParams.set("tab", "learning");
       u.searchParams.set("lview", "signals");
-      u.searchParams.set("slug", "papercusp");
+      u.searchParams.set("slug", harness);
       u.searchParams.set("scope", "self");
       u.searchParams.set("welcome", "0");
       return u.pathname + u.search + u.hash;
-    });
+    }, FIXTURE_HARNESS);
     await spaNavigate(learningUrl);
     await waitForAppMount(browser);
     await waitForServerConnectionReady();
@@ -638,7 +654,7 @@ describe("Packaged Papercusp desktop — broader real interactions (P-006)", () 
         /* ignore */
       }
     }, NAME);
-    await spaNavigate("/workbench?harness=papercusp");
+    await spaNavigate('/workbench?harness=' + encodeURIComponent(FIXTURE_HARNESS));
 
     await browser.waitUntil(async () => (await latestMeasure(NAME)) !== null, {
       timeout: 20_000,
@@ -789,14 +805,14 @@ describe("Packaged Papercusp desktop — broader real interactions (P-006)", () 
       );
     }
 
-    const harnessesUrl = await browser.execute(() => {
+    const harnessesUrl = await browser.execute((harness: string) => {
       const u = new URL(location.href);
       u.searchParams.set("tab", "harnesses");
-      u.searchParams.set("slug", "papercusp");
+      u.searchParams.set("slug", harness);
       u.searchParams.set("scope", "self");
       u.searchParams.set("welcome", "0");
       return u.pathname + u.search + u.hash;
-    });
+    }, FIXTURE_HARNESS);
     await spaNavigate(harnessesUrl);
     const dockReady = await browser.waitUntil(
       async () =>
@@ -809,7 +825,7 @@ describe("Packaged Papercusp desktop — broader real interactions (P-006)", () 
         ),
       {
         timeout: 20_000,
-        timeoutMsg: "papercusp Work dock did not mount within 20s",
+        timeoutMsg: FIXTURE_HARNESS + " Work dock did not mount within 20s",
       },
     ).then(() => true, () => false);
 
@@ -827,7 +843,7 @@ describe("Packaged Papercusp desktop — broader real interactions (P-006)", () 
         bodyText: (document.body.textContent ?? "").trim().slice(0, 320),
       }));
       throw new Error(
-        "papercusp Work dock did not mount after the registry-ready deep link; " +
+        FIXTURE_HARNESS + " Work dock did not mount after the registry-ready deep link; " +
           `workspace snapshot=${JSON.stringify(snapshot)}`,
       );
     }
@@ -848,17 +864,19 @@ describe("Packaged Papercusp desktop — broader real interactions (P-006)", () 
     const rowsReady = await browser.waitUntil(
       async () =>
         await browser.execute(
-          () => {
+          (itemId: string | null) => {
             // The count badge is intentionally absent while the companion
             // summary query is fetching. The semantic filter control is part
             // of the panel shell and remains mounted while rows hydrate.
             const workItemsPanel = document
               .querySelector('input[aria-label="Filter work items"]')
               ?.closest('.pc-advpanel');
+            if (itemId) return Array.from(workItemsPanel?.querySelectorAll('[role="row"] code') ?? [])
+              .some(el => el.textContent === itemId);
             return (
               (workItemsPanel?.querySelectorAll('[role="row"]').length ?? 0) > 1
             );
-          },
+          }, FIXTURE_ITEM ?? null,
         ),
       {
         timeout: 20_000,
@@ -900,15 +918,14 @@ describe("Packaged Papercusp desktop — broader real interactions (P-006)", () 
       );
     }
 
-    // Click the first data row — RichGrid's onRowClick → WorkItemsPanel's
-    // setSelectedId → the `?sel` nuqs param the Detail pane follows.
-    await browser.execute(() => {
-      const rows = document
-        .querySelector('input[aria-label="Filter work items"]')
-        ?.closest('.pc-advpanel')
-        ?.querySelectorAll<HTMLElement>('[role="row"]');
-      rows?.[1]?.click();
-    });
+    // Select the explicit private item when provided; ordinary runs use the
+    // first data row. Native clicks exercise the real RichGrid selection path.
+    if (FIXTURE_ITEM) {
+      await browser.$('[role="row"]:has(code[title="' + FIXTURE_ITEM + '"])').click();
+    } else {
+      const rows = await browser.$$('.pc-advpanel:has(input[aria-label="Filter work items"]) [role="row"]');
+      await rows[1].click();
+    }
 
     // If a customised layout placed Detail in the same tab group as Work
     // items, it is intentionally inactive during the click above and its
@@ -971,10 +988,8 @@ describe("Packaged Papercusp desktop — broader real interactions (P-006)", () 
       } catch {
         /* ignore */
       }
-      document
-        .querySelector<HTMLElement>('[data-testid="wi-detail-chat"]')
-        ?.click();
     }, NAME);
+    await browser.$('[data-testid="wi-detail-chat"]').click();
 
     await browser.waitUntil(
       async () =>

@@ -161,6 +161,9 @@ export default defineTool({
     includeDiagnostics: z.boolean().optional().describe(
       'Explicit baseline history: include diagnostic records with their purpose. Diagnostics are excluded before the default page limit and never satisfy a gate.',
     ),
+    includeUnfinalized: z.boolean().optional().describe(
+      'Explicit history: include incomplete, provisional and unaudited cards with exclusionReasons. Default history counts only complete settled cards before its limit.',
+    ),
     includeSuperseded: z
       .boolean()
       .optional()
@@ -209,6 +212,7 @@ export default defineTool({
           limit: args.limit,
           includeSynthesized: args.includeSynthesized,
           includeDiagnostics: args.includeDiagnostics,
+          finalizedOnly: !(args.includeUnfinalized || args.includeDiagnostics || args.provisional),
           includeSuperseded: args.includeSuperseded,
           includeRetracted: args.includeRetracted,
           provisionalOnly: args.provisional,
