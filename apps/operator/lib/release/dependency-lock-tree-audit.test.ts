@@ -12,7 +12,10 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSyn
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { build } from 'esbuild';
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
+// @ts-ignore — maintained JavaScript production bundle guard.
+import { findBundledCliEntryGuards } from '../../../../scripts/check-bundled-cli-entry-guards.mjs';
 
 const HELPER = join(__dirname, '../../bin/release/dependency-lock-tree-audit.mjs');
 
@@ -268,24 +271,51 @@ describe('CLI', () => {
   it('can be imported by an eval caller whose first argument is a URL-bearing option', () => {
     const probe = `await import(${JSON.stringify(pathToFileURL(HELPER).href)}); console.log('AUDIT_IMPORTED');`;
     const result = spawnSync(process.execPath, ['--input-type=module', '--eval', probe,
-      '--', '--native-docker-host=unix:///run/docker-bench.sock'], { encoding: 'utf8' });
+      '--', '--native-docker-host=unix:///run/docker-bench.sock'], {
+      encoding: 'utf8', env: { ...process.env, NODE_OPTIONS: '', NODE_PATH: '' },
+    });
     expect(result.status, result.stderr).toBe(0);
     expect(result.stdout.trim()).toBe('AUDIT_IMPORTED');
   });
 
-  it('runs directly from a script path containing spaces and URL metacharacters', () => {
-    const script = join(makeRoot(), 'audit #100%.mjs');
+  it('runs without node_modules from a source path containing spaces and URL metacharacters', () => {
+    const root = makeRoot();
+    const script = join(root, 'apps/operator/bin/release/audit #100%.mjs');
+    const helper = join(root, 'packages/operator-core/lib/util/cli-entry.ts');
+    mkdirSync(dirname(script), { recursive: true });
+    mkdirSync(dirname(helper), { recursive: true });
     writeFileSync(script, readFileSync(HELPER));
-    const result = spawnSync(process.execPath, [script, '--tree-root', makeRoot()], { encoding: 'utf8' });
+    writeFileSync(helper, readFileSync(join(dirname(HELPER), '../../../../packages/operator-core/lib/util/cli-entry.ts')));
+    const result = spawnSync(process.execPath, [script, '--tree-root', makeRoot()], {
+      cwd: root, encoding: 'utf8', env: { ...process.env, NODE_OPTIONS: '', NODE_PATH: '' },
+    });
     expect(result.status, result.stderr).toBe(2);
     expect(result.stderr).toContain('dependency-lock-tree-audit: --lock-root is required');
+  });
+
+  it.each([false, true])('keeps CLI execution conditional in a bundle (sidecar=%s)', async (bundled) => {
+    const root = makeRoot();
+    const entry = join(root, 'audit.mjs');
+    const result = await build({
+      entryPoints: [HELPER], outfile: entry, bundle: true, platform: 'node', format: 'esm',
+      define: { __PAPERCUSP_BUNDLED_SIDECAR__: String(bundled) }, metafile: true,
+    });
+    const metafilePath = join(root, 'audit.meta.json');
+    writeJson(metafilePath, result.metafile);
+    expect(findBundledCliEntryGuards({ metafilePath, baseDir: process.cwd() })).toEqual([]);
+    const execution = spawnSync(process.execPath, [entry], { encoding: 'utf8', timeout: 10_000 });
+    expect(execution.error).toBeUndefined();
+    expect(execution.status, execution.stderr).toBe(bundled ? 0 : 2);
+    expect(execution.stdout).toBe('');
+    if (bundled) expect(execution.stderr).toBe('');
+    else expect(execution.stderr).toContain('dependency-lock-tree-audit: --tree-root is required');
   });
 
   function run(root: string): { status: number | null; stdout: string } {
     const manifest = join(root, 'manifest');
     writeFileSync(manifest, 'package-lock.json\tdeadbeef\n');
     const res = spawnSync(process.execPath, [HELPER, '--tree-root', root, '--lock-root', root, '--manifest', manifest], {
-      encoding: 'utf8',
+      encoding: 'utf8', env: { ...process.env, NODE_OPTIONS: '', NODE_PATH: '' },
     });
     return { status: res.status, stdout: res.stdout };
   }
@@ -305,7 +335,9 @@ describe('CLI', () => {
   });
 
   it('exits 2 on misuse instead of reporting a vacuous pass', () => {
-    const res = spawnSync(process.execPath, [HELPER, '--tree-root', makeRoot()], { encoding: 'utf8' });
+    const res = spawnSync(process.execPath, [HELPER, '--tree-root', makeRoot()], {
+      encoding: 'utf8', env: { ...process.env, NODE_OPTIONS: '', NODE_PATH: '' },
+    });
     expect(res.status).toBe(2);
   });
 });

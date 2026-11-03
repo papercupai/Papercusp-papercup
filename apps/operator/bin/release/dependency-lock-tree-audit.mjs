@@ -23,7 +23,8 @@
 // `<member dir>` package key) is skipped as workspace-member: the enclosing install owns
 // that node_modules, and the member's own lockfile is never installed standalone.
 //
-// Standalone (node:* only) so the release shell scripts can run it with the operator down.
+// No installed dependencies: Node built-ins plus the source-only CLI entry helper,
+// so release shell scripts can run it with the operator down and before npm install.
 //
 // Usage:
 //   dependency-lock-tree-audit.mjs --tree-root <dir> --lock-root <dir> --manifest <file>
@@ -38,7 +39,7 @@
 import { lstatSync, readFileSync, readdirSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { join, posix, resolve } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { isCliEntry } from '../../../../packages/operator-core/lib/util/cli-entry.ts';
 
 export const MAX_DEFECTS = 50;
 
@@ -286,9 +287,4 @@ function main(argv) {
   return summary.defects.length === 0 ? 0 : 3;
 }
 
-function isDirectCliInvocation(entryPath = process.argv[1]) {
-  if (!entryPath) return false;
-  return import.meta.url === pathToFileURL(resolve(entryPath)).href;
-}
-
-if (isDirectCliInvocation()) process.exitCode = main(process.argv.slice(2));
+if (isCliEntry(import.meta.url)) process.exitCode = main(process.argv.slice(2));
