@@ -19,6 +19,7 @@ import { inWorkspaceTxn } from './in-workspace-txn';
 import { tryReleaseResource } from './su-lock-store';
 import { acquireWithContentionRetry } from './contention-retry';
 import { broadcastResourceBackUp } from './resource-broadcast';
+import { emitResourceReleasedEvent } from '../../harness/git-sync/git-sync-events';
 import { bulkContent, mergeIds, runBulk } from '../_bulk';
 import { resourceLockDomain, candidateResourceLockDomains } from './coordination-domain';
 import { ensureResourceDomainKindsFresh } from './resource-domain-kinds';
@@ -78,14 +79,17 @@ export default defineTool({
       };
     }
 
-    async function announceBackUp(r: Awaited<ReturnType<typeof tryReleaseResource>>) {
-      // P-010 + A4: releasing an exclusive frees the resource — tell the agents
-      // who were WAITING on it (not the whole fleet) that it's back up.
-      if (r.exclusiveResources.length > 0) {
-        const coordId = resolveAgentIdentity(ctx);
-        for (const res of r.exclusiveResources) {
-          await broadcastResourceBackUp({ source: coordId, resource: res, waiters: r.waiters[res] ?? [] });
-        }
+    async function announceResourceRelease(r: Awaited<ReturnType<typeof tryReleaseResource>>) {
+      const releasedExclusiveResources = r.releasedExclusiveResources ?? [];
+      const availableResources = r.exclusiveResources ?? [];
+      if (releasedExclusiveResources.length === 0 && availableResources.length === 0) return;
+      const coordId = resolveAgentIdentity(ctx);
+      // Exact-key waiters need the deleted-row receipt even when the cascade
+      // immediately grants a successor. This signal does not promise availability.
+      for (const res of releasedExclusiveResources) emitResourceReleasedEvent(res, coordId.workspaceId);
+      // Back-up messages remain limited to resources that are available now.
+      for (const res of availableResources) {
+        await broadcastResourceBackUp({ source: coordId, resource: res, waiters: r.waiters[res] ?? [] });
       }
     }
 
@@ -103,7 +107,7 @@ export default defineTool({
             tryReleaseResource(tx, { coordinationDomain: domain, owner: ownerId, resource: item.resource }),
           ),
         );
-        await announceBackUp(r);
+        await announceResourceRelease(r);
         return r;
       }
       // lock_id only — the resource name (and therefore its domain) is unknown
@@ -124,11 +128,19 @@ export default defineTool({
           ),
         );
         if (r.released > 0 || (r.expired?.length ?? 0) > 0) {
-          await announceBackUp(r);
+          await announceResourceRelease(r);
           return r;
         }
       }
-      return { released: 0, releasedModes: [], exclusiveResources: [], expired: [], heldResourceSuggestions: [], waiters: {} };
+      return {
+        released: 0,
+        releasedModes: [],
+        releasedExclusiveResources: [],
+        exclusiveResources: [],
+        expired: [],
+        heldResourceSuggestions: [],
+        waiters: {},
+      };
     }
 
     const env = await runBulk(

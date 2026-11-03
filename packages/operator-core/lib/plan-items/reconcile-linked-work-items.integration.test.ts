@@ -176,7 +176,7 @@ const { IMPLEMENTS_REL } = await import('./convert');
 const { getFeatureBlockers, syncFeatureBlockEdges } = await import('../dbos/feature-blockers-edges');
 const { mirrorWorkItemBlockingEdge } = await import('../dbos/work-item-deps-store');
 const { fireBuiltinReactionAction, PLAN_ITEM_LANE_RESYNC_ACTION } = await import('../events/builtin-actions');
-const { updateExternalBlockerHistory } = await import('../external-blockers');
+const { activeExternalBlockers, updateExternalBlockerHistory } = await import('../external-blockers');
 const { isClaimHoldParked } = await import('../work-items');
 
 const WS = DEFAULT_COORD_WORKSPACE;
@@ -289,6 +289,17 @@ async function insertDependencyRows(ids: readonly string[], harness = 'sheets') 
       INSERT INTO harness_shared.work_items
         (workspace_id, harness_slug, feature_id, item_kind, status, payload, created_ts, updated_ts)
       VALUES (${WS}, ${harness}, ${id}, 'feature', 'open', '{}'::jsonb, 0, 0)`;
+  }
+}
+
+async function withExpectedLaneWarning<T>(run: () => Promise<T>, fragment: string): Promise<T> {
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+  try {
+    const result = await run();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining(fragment));
+    return result;
+  } finally {
+    warn.mockRestore();
   }
 }
 
@@ -1604,6 +1615,90 @@ describe('resyncPlanItemLaneNow — inline lane resync off plans:set-item-blocke
       false,
       expect.objectContaining({ by: 'system:plan-item-lane-sync' }),
     );
+  });
+
+  it('retries a 57014 lane write from fresh state while preserving the conversion-owned migration park', async () => {
+    const plan = 'p-timeout-migration';
+    const itemId = 'P-002';
+    await edge({ plan, item: itemId, srcKind: 'feature', srcRef: 'sheets#F-migration' });
+    const ref = planLaneBlockerRef(plan, itemId);
+    const { blockers } = updateExternalBlockerHistory({},
+      { kind: 'gate', capability: 'live-dependency', ref, summary: 'dependency blocked' },
+      'system:plan-item-lane-sync');
+    const row = stub({ id: 'F-migration', family: 'feature', state: 'blocked', payload: {
+      externalBlockers: blockers, planLaneParkedFrom: 'open', _claimHold: true,
+      claim_hold_by: 'migration:plan-line-work-item-nodes',
+      claim_hold_reason: 'D-011: conversion-owned park until P-008',
+    } });
+    h3.getPlanRow.mockResolvedValue({ items: [
+      { id: 'P-001', status: 'done', blockedBy: [] },
+      { id: itemId, status: 'todo', blockedBy: ['P-001'] },
+    ] });
+    setWorkItemStateWithAliasInfo.mockRejectedValueOnce(Object.assign(
+      new Error('operator write exceeded its time budget'), { pgCode: '57014' }));
+
+    const result = await withExpectedLaneWarning(
+      () => resyncPlanItemLaneNow(plan, itemId, 'sheets'), '"retryable":true');
+    expect(result?.ungated).toEqual(['F-migration']);
+    expect(result?.failures).toBeUndefined();
+    expect(row.state).toBe('open');
+    expect(activeExternalBlockers(row.payload)).toEqual([]);
+    expect(row.payload).toMatchObject({ _claimHold: true, claim_hold_by: 'migration:plan-line-work-item-nodes' });
+    expect(h4.setWorkItemClaimHold).not.toHaveBeenCalled();
+    expect(setWorkItemStateWithAliasInfo).toHaveBeenCalledTimes(2);
+    expect(setWorkItemStateWithAliasInfo).toHaveBeenLastCalledWith('F-migration', 'open',
+      expect.objectContaining({ announceClaimable: false }));
+  });
+
+  it('reclassifies a new dependency before retrying a timed-out lane write', async () => {
+    const plan = 'p-timeout-new-blocker';
+    await edge({ plan, item: 'P-002', srcRef: 'WI-new-blocker' });
+    const ref = planLaneBlockerRef(plan, 'P-002');
+    const { blockers } = updateExternalBlockerHistory({},
+      { kind: 'gate', capability: 'live-dependency', ref, summary: 'dependency blocked' },
+      'system:plan-item-lane-sync');
+    const row = stub({ id: 'WI-new-blocker', state: 'blocked', payload: { externalBlockers: blockers } });
+    h3.getPlanRow.mockResolvedValue({ items: [{ id: 'P-002', status: 'todo', blockedBy: [] }] });
+    setWorkItemStateWithAliasInfo.mockImplementationOnce(async () => {
+      h3.getPlanRow.mockResolvedValue({ items: [
+        { id: 'P-002', status: 'todo', blockedBy: ['P-003'] },
+        { id: 'P-003', status: 'todo', blockedBy: [] },
+      ] });
+      throw Object.assign(new Error('statement timeout'), { code: '57014' });
+    });
+
+    const result = await withExpectedLaneWarning(
+      () => resyncPlanItemLaneNow(plan, 'P-002', null), '"retryable":true');
+    expect(result?.failures).toBeUndefined();
+    expect(row.state).toBe('blocked');
+    expect(activeExternalBlockers(row.payload)).toHaveLength(1);
+    expect(setWorkItemStateWithAliasInfo).toHaveBeenCalledOnce();
+  });
+
+  it.each(['items', 'dependencies'] as const)('reports an unreconciled lane to the reaction engine in %s mode', async (mode) => {
+    const plan = `p-reaction-failure-${mode}`;
+    await edge({ plan, item: 'P-002', srcRef: 'WI-reaction-failure' });
+    const ref = planLaneBlockerRef(plan, 'P-002');
+    const { blockers } = updateExternalBlockerHistory({},
+      { kind: 'gate', capability: 'live-dependency', ref, summary: 'dependency blocked' },
+      'system:plan-item-lane-sync');
+    const row = stub({ id: 'WI-reaction-failure', state: 'blocked', payload: { externalBlockers: blockers } });
+    h3.getPlanRow.mockResolvedValue({ items: [
+      { id: 'P-001', status: 'done', blockedBy: [] },
+      { id: 'P-002', status: 'todo', blockedBy: ['P-001'] },
+    ] });
+    setWorkItemStateWithAliasInfo.mockRejectedValueOnce(new Error('lifecycle guard rejected restore'));
+
+    const result = await withExpectedLaneWarning(() => fireBuiltinReactionAction(PLAN_ITEM_LANE_RESYNC_ACTION, {
+      [mode]: [{ planSlug: plan, itemId: mode === 'items' ? 'P-002' : 'P-001', harnessSlug: null }],
+    }, WS), 'lifecycle guard rejected restore');
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain('WI-reaction-failure');
+    expect(result.error).toContain('lifecycle guard rejected restore');
+    expect(row.state).toBe('blocked');
+    expect(activeExternalBlockers(row.payload)).toHaveLength(1);
+    expect(setWorkItemStateWithAliasInfo).toHaveBeenCalledOnce();
   });
 
   it('ADDING a blocked-by edge parks the linked work-item RIGHT NOW (the symmetric mirror case)', async () => {

@@ -1015,6 +1015,39 @@ process.exit(spawnSync('flock', [process.env.DEPENDENCY_GENERATION_COPY_LOCK_FIL
       expect(runLib(['assert', fixture()]).code).toBe(0);
     });
 
+    it('REFUSES writable dependency files hard-linked to a donor inside the pinned tree', () => {
+      const t = fixture();
+      const donorFile = join(t, 'donor', 'node_modules', 'p', 'i.js');
+      const pinnedFile = join(t, 'pinned', 'node_modules', 'p', 'i.js');
+      write(donorFile, 'x');
+      chmodSync(donorFile, 0o664);
+      mkdirSync(dirname(pinnedFile), { recursive: true });
+      linkSync(donorFile, pinnedFile);
+
+      const result = runLib(['assert', join(t, 'pinned'), '', join(t, 'missing-mountinfo')]);
+      expect(result.code).toBe(1);
+      expect(result.err).toContain('writable dependency file has a hard-linked inode');
+      expect(result.err).toContain(pinnedFile);
+    });
+
+    it('REFUSES writable hardlinks through a confined declared snapshot root', () => {
+      const t = fixture();
+      const donorFile = join(t, 'donor', 'node_modules', 'p', 'i.js');
+      const snapshotFile = join(t, 'snapshot', 'node_modules', 'p', 'i.js');
+      const pinned = join(t, 'pinned');
+      write(donorFile, 'x');
+      chmodSync(donorFile, 0o664);
+      mkdirSync(dirname(snapshotFile), { recursive: true });
+      linkSync(donorFile, snapshotFile);
+      mkdirSync(pinned, { recursive: true });
+      symlinkSync(join(t, 'snapshot', 'node_modules'), join(pinned, 'node_modules'));
+
+      const result = runLib(['assert', pinned, join(t, 'snapshot'), join(t, 'missing-mountinfo')]);
+      expect(result.code).toBe(1);
+      expect(result.err).toContain('writable dependency file has a hard-linked inode');
+      expect(result.err).toContain(snapshotFile);
+    });
+
     it('REFUSES an overlay whose lower layer is a foreign tree — the r14 shape', () => {
       const t = fixture();
       mkdirSync(join(t, 'pinned', 'node_modules'), { recursive: true });

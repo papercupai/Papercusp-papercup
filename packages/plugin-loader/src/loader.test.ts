@@ -530,6 +530,38 @@ describe('loadPlugins', () => {
 // cupboard-distributable-integrations-2026-10-10 D-015: a `distribution: "cupboard"` package is
 // never loaded from the bundled (project) root, and that copy never shadows the installed one.
 describe('distribution: "cupboard"', () => {
+  it('retains excluded and failed declarations without exposing config or importing an excluded entry', async () => {
+    const projectDir = join(ROOT, 'manifest-discovery'), plugins = join(projectDir, 'plugins');
+    const excluded = join(plugins, 'excluded'), failed = join(plugins, 'failed');
+    const marker = join(projectDir, 'entry-executed');
+    const tools = [{ name: 'unloaded-tool', description: 'fixture', inputSchema: { type: 'object' }, capabilities: [] }];
+    for (const dir of [excluded, failed]) {
+      await fs.mkdir(dir, { recursive: true });
+      await fs.writeFile(join(dir, 'papercusp.json'), JSON.stringify({
+        name: dir === excluded ? 'excluded' : 'failed', version: '1.0.0', tools,
+        ...(dir === excluded ? { distribution: 'cupboard' } : {}),
+        config: { token: 'fixture-config-must-not-appear' },
+        defaultConfig: { token: 'fixture-default-must-not-appear' },
+      }));
+    }
+    await fs.writeFile(join(excluded, 'index.mjs'),
+      `import { writeFileSync } from 'node:fs'; writeFileSync(${JSON.stringify(marker)}, 'executed'); throw Error('excluded entry');`);
+    const result = await loadPlugins({ projectDir, globalPluginsDir: join(projectDir, 'absent-global') });
+    const byPath = new Map(result.discovery.candidates.map(candidate => [candidate.path, candidate]));
+    assert.equal(byPath.get(excluded)?.status, 'excluded');
+    assert.match(byPath.get(excluded)?.reason ?? '', /Cupboard install/);
+    assert.equal(byPath.get(failed)?.status, 'error');
+    assert.match(byPath.get(failed)?.error ?? '', /entry point/);
+    for (const path of [excluded, failed]) {
+      const manifest = byPath.get(path)?.manifest;
+      assert.deepEqual(manifest?.tools, tools);
+      assert.deepEqual(manifest?.runtime, { kind: 'js' });
+      assert.equal(manifest?.config, undefined); assert.equal(manifest?.defaultConfig, undefined);
+    }
+    assert.equal(await fs.access(marker).then(() => true, () => false), false);
+    assert.equal(result.loaded.length, 0);
+  });
+
   async function cupboardPlugin(dir: string, name: string, version: string) {
     await fs.mkdir(dir, { recursive: true });
     await fs.writeFile(

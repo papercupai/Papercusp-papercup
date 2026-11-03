@@ -32,6 +32,7 @@ vi.mock('../locks/su-lock-store', () => ({
   tryReleaseResource: vi.fn(async () => ({
     released: 1,
     releasedModes: ['exclusive'],
+    releasedExclusiveResources: [],
     exclusiveResources: [],
     waiters: {},
   })),
@@ -438,6 +439,7 @@ beforeEach(() => {
   releaseM.mockResolvedValue({
     released: 1,
     releasedModes: ['exclusive'],
+    releasedExclusiveResources: [],
     exclusiveResources: [],
     waiters: {},
   } as never);

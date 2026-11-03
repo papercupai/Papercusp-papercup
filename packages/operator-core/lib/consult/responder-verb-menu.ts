@@ -30,7 +30,7 @@
  * bodies from the real builders and fails if any stops naming the read door.
  */
 
-import { ACCEPTANCE_BAR_AMENDMENT_REVIEW_POLICY, METHOD_REVIEW_POLICY, RUBRIC_VETTING_POLICY } from './selection-policies';
+import { ACCEPTANCE_BAR_AMENDMENT_REVIEW_POLICY, BAR_CRITIQUE_POLICY, METHOD_REVIEW_POLICY, RUBRIC_VETTING_POLICY } from './selection-policies';
 
 /** Default evidence qualifier — overridden where a branch admits first-principles reasoning. */
 const DEFAULT_EVIDENCE_NOTE = 'answer requires evidence';
@@ -51,11 +51,15 @@ export function consultCurrentReviewContext(policy: string | undefined): string 
     ? 'CURRENT AMENDMENT — review the supplied patch, rationale and approval JSON against the current subject and cited validation evidence. '
     : policy === RUBRIC_VETTING_POLICY
       ? 'CURRENT RUBRIC — review the exact supplied rubric revision and criteria hash against the named meta-rubric and cited source and validation evidence. '
-      : policy === METHOD_REVIEW_POLICY
-        ? 'CURRENT METHOD — review the complete supplied method, exact input and candidate identities, changed predicates, controls and current validation evidence. ' +
-          'Assess conformance and authority or ceiling changes explicitly; return a scoped verdict with evidence and identify what remains UNKNOWN. ' +
-          'Verify reviewer independence before counting approval. This review does not authorize execution, change spending limits or satisfy other acceptance gates. '
-      : null;
+      : policy === BAR_CRITIQUE_POLICY
+        ? 'CURRENT BARS — read the current plan, acceptance bars and spec clauses at the exact declared revisions and hashes. ' +
+          'Assess observable outcomes, falsifiers and runnable evidence bindings; cite the current contract and identify what remains UNKNOWN. ' +
+          'Verify reviewer independence before counting a critique. This review does not authorize execution or satisfy implementation acceptance. '
+        : policy === METHOD_REVIEW_POLICY
+          ? 'CURRENT METHOD — review the complete supplied method, exact input and candidate identities, changed predicates, controls and current validation evidence. ' +
+            'Assess conformance and authority or ceiling changes explicitly; return a scoped verdict with evidence and identify what remains UNKNOWN. ' +
+            'Verify reviewer independence before counting approval. This review does not authorize execution, change spending limits or satisfy other acceptance gates. '
+          : null;
   if (!subject) return null;
   return subject +
     'The routed historical transcript is background evidence; do not decline solely because it does not contain this current review subject. ' +

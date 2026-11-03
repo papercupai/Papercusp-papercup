@@ -2148,8 +2148,8 @@ export async function bindSpecEvidence(input: BindSpecEvidenceInput): Promise<Bi
     }
 
     if (input.testRunId != null && runtimeRecipe?.kind === 'repo-files'
-      && runtimeRecipe.completedRuntime?.kind === 'isolated-integration') {
-      const gaps = await isolatedIntegrationSourceReceiptGaps(runtimeRecipe);
+      && runtimeRecipe.completedRuntime) {
+      const gaps = await completedRuntimeSourceReceiptGaps(runtimeRecipe);
       if (gaps.length > 0) {
         const rendered = gaps
           .map(({ runId, missingSourcePaths }) => `${runId}: ${missingSourcePaths.join(', ')}`)
@@ -2158,8 +2158,8 @@ export async function bindSpecEvidence(input: BindSpecEvidenceInput): Promise<Bi
           status: 'completed_runtime_source_not_in_receipt',
           gaps,
           message:
-            'Cannot bind isolated-integration evidence because its retained source receipt does not cover ' +
-            `every declared source path (${rendered}). Re-run the integration with a complete source receipt ` +
+            'Cannot bind completed-runtime evidence because its retained receipts do not qualify ' +
+            `every declared source path (${rendered}). Re-run with complete tested source inputs ` +
             'or correct the measurement.sourcePaths before binding.',
         };
       }
@@ -4297,17 +4297,39 @@ function completedRuntimeArtifactRefs(selector: NonNullable<RepoFilesEvidenceMea
 }
 
 /**
- * Bind-time coverage fence for isolated integration source receipts. A missing artifact
+ * Bind-time coverage fence for completed-runtime source receipts. A missing artifact
  * remains a legacy unknown (the read-side certifier will fail closed); once a receipt is
  * available, however, every explicit source path must be represented in that receipt before
  * a binding can claim the completed runtime. This catches hand-built recipes that otherwise
  * pin a null environment fingerprint and only surface the gap during a later read.
  */
-async function isolatedIntegrationSourceReceiptGaps(
+async function completedRuntimeSourceReceiptGaps(
   recipe: RepoFilesEvidenceMeasurement,
 ): Promise<Array<{ runId: string; missingSourcePaths: string[] }>> {
   const selector = recipe.completedRuntime;
-  if (selector?.kind !== 'isolated-integration') return [];
+  if (!selector) return [];
+  if (selector.kind === 'verification-harness') {
+    let receipt: any, manifest: any;
+    const verifierJourney = ['operator-e2e-isolated', 'verify-tauri-headless'].includes(selector.journeyHarness);
+    try {
+      receipt = (await readCompletedRuntimeArtifact('verify-tauri-headless', selector.verifierRunId,
+        'phases/prepare/verifier-source-receipt.json')).data;
+      if (!verifierJourney) manifest = (await readCompletedRuntimeArtifact(selector.journeyHarness,
+        selector.journeyRunId, 'phases/native/manifest.json')).data;
+    } catch {
+      // Missing/expired proof remains unknown at read time, as for isolated integration.
+      return [];
+    }
+    const paths = (files: unknown) => new Set(Array.isArray(files) ? files.flatMap((file) =>
+      file && typeof file.path === 'string' ? [file.path] : []) : []);
+    const retained = paths(receipt?.files);
+    const qualified = paths(verifierJourney ? receipt?.testedInputs : manifest?.sourceFingerprints);
+    // Mirror the certifier: verifier journeys qualify scripts too; other journeys
+    // retain scripts but qualify production sources through their native manifest.
+    const missingSourcePaths = recipe.sourcePaths.filter((path) => !retained.has(path)
+      || (verifierJourney || !path.startsWith('scripts/')) && !qualified.has(path));
+    return missingSourcePaths.length > 0 ? [{ runId: selector.journeyRunId, missingSourcePaths }] : [];
+  }
   const gaps: Array<{ runId: string; missingSourcePaths: string[] }> = [];
   await Promise.all(selector.runIds.map(async (runId) => {
     let receipt: unknown;

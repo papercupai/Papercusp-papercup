@@ -165,7 +165,7 @@ export function rankCodeWorkingSet(signals: WorkingSetSignals, opts: { root?: st
 }
 
 type ReservedSqlLike = {
-  begin<T>(fn: (tx: any) => Promise<T>): Promise<T>;
+  (strings: TemplateStringsArray, ...values: unknown[]): Promise<unknown[]>;
   release(): void;
 };
 type SqlLike = {
@@ -352,13 +352,27 @@ export async function readForeignWorkingSets(owner: string, workspace: string, h
     const acquireStarted = Date.now();
     const conn = await sql.reserve().finally(() => onTiming?.('poolAcquire', Date.now() - acquireStarted));
     const transactionStarted = Date.now();
+    let transactionOpen = false;
     try {
-      const result = await conn.begin(async tx => {
-        onTiming?.('beginCallbackEntry', Date.now() - transactionStarted);
-        return read(tx);
-      });
+      // postgres-js reserved connections expose a SQL tag and release(), not
+      // the pool's begin() helper. Keep the local timeout on this same session.
+      await conn`BEGIN`;
+      transactionOpen = true;
+      onTiming?.('beginCallbackEntry', Date.now() - transactionStarted);
+      const result = await read(conn);
+      await conn`COMMIT`;
+      transactionOpen = false;
       onTiming?.('transactionTotal', Date.now() - transactionStarted);
       return result;
+    } catch (error) {
+      if (transactionOpen) {
+        try {
+          await conn`ROLLBACK`;
+        } catch (rollbackError) {
+          throw new AggregateError([error, rollbackError], 'Foreign working-set read and rollback failed');
+        }
+      }
+      throw error;
     } finally {
       conn.release();
     }

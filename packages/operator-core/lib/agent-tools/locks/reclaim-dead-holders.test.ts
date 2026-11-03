@@ -48,6 +48,7 @@ type ReleaseResult = Awaited<ReturnType<typeof tryReleaseResource>>;
 const releaseResult = (released: number): ReleaseResult => ({
   released,
   releasedModes: released > 0 ? ['exclusive'] : [],
+  releasedExclusiveResources: released > 0 ? ['git-sync:portal'] : [],
   exclusiveResources: released > 0 ? ['git-sync:portal'] : [],
   expired: [],
   waiters: {},

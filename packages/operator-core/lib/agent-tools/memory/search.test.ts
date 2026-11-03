@@ -14,6 +14,7 @@ import { setSessionConfinementResolver } from '../../capability-envelope/session
 import type { SessionToolConfinement } from '../../capability-envelope/session-confinement';
 import { getMemoryBackend } from '../../memory/backend';
 import { getSessionUserOrDefault } from '../../auth';
+import { mockResolvedTyped } from '../../testing/typed-mock';
 
 vi.mock('@papercusp/agent-mcp', async importOriginal => ({
   ...(await importOriginal<typeof import('@papercusp/agent-mcp')>()), defineTool: (def: unknown) => def,
@@ -84,7 +85,9 @@ describe('memory:search uses the native assignment frozen snapshot', () => {
   });
   it('continues to the ordinary backend for an unconfined caller', async () => {
     setSessionConfinementResolver(() => null);
-    vi.mocked(getSessionUserOrDefault).mockResolvedValue({ id: 'user-control' } as never);
+    mockResolvedTyped(vi.mocked(getSessionUserOrDefault), {
+      id: 'user-control', username: 'control', display_name: 'Control User', has_password: false,
+    });
     vi.mocked(getMemoryBackend).mockImplementation(() => { throw new Error('ordinary backend reached'); });
     await expect(payload()).rejects.toThrow('ordinary backend reached');
     expect(getMemoryBackend).toHaveBeenCalledOnce(); expect(getSessionUserOrDefault).toHaveBeenCalledOnce();

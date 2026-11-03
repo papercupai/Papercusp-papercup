@@ -61,6 +61,17 @@ describe('scopeUnitOf', () => {
   it('is null for a process that is merely inside our slice', () => {
     expect(scopeUnitOf(proc({ pid: 1, cgroupPath: `${OUR_SLICE}/papercusp-bash-job.slice` }))).toBeNull();
   });
+
+  it('does not treat a VTE window scope as a claimed pc task scope', () => {
+    expect(
+      scopeUnitOf(
+        proc({
+          pid: 1,
+          cgroupPath: `${OUR_SLICE}/papercusp-agent.slice/papercusp-agent-session.slice/vte-spawn-0e0e-4a4a.scope`,
+        }),
+      ),
+    ).toBeNull();
+  });
 });
 
 describe('reconcile — alive matching', () => {
@@ -609,6 +620,7 @@ describe('reconcile — console windows are accounted by the window, not the led
 
     expect(r.consoleWindow).toHaveLength(0);
     expect(r.unaccounted).toHaveLength(1);
+    expect(r.unaccounted[0]).toMatchObject({ scopeUnit: null });
     expect(summarizeReconcile(r)).toMatchObject({ unaccounted: 1, unaccountedPids: 1, consoleWindow: 0 });
   });
 
@@ -644,6 +656,10 @@ describe('reconcile — console windows are accounted by the window, not the led
     );
 
     expect(r.unaccounted).toHaveLength(1);
+    expect(r.unaccounted[0]).toMatchObject({
+      cgroupPath: OWNED_VTE,
+      scopeUnit: 'vte-spawn-0e0e-4a4a.scope',
+    });
     expect(r.consoleWindow).toHaveLength(0);
     expect(r.abandonedWindow).toHaveLength(0);
   });

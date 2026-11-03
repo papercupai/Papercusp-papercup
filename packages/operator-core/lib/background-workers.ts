@@ -197,12 +197,12 @@ export function isSubstrateOwnerProcess(opts?: {
  * short-lived process that claims a delivery and exits kills it mid-flight, and
  * a resume it spawned dies with its cgroup.
  *
- * None of the env predicates above can answer this. `backgroundWorkersEnabled()`
- * is false in exactly the processes that DO run these loops today: the :3070
- * request workers and :3170 carry PAPERCUSP_BACKGROUND_WORKERS=0, and the
- * registry reaches them lazily on their first MCP request. Gating on it would
- * silence the sweepers fleet-wide. And no env var is set in a host but absent in
- * a script that sources the same `.env.local`.
+ * This declaration separates hosts from scripts; it does not grant background
+ * ownership to every host. Request workers and :3170 carry
+ * PAPERCUSP_BACKGROUND_WORKERS=0, and the registry reaches them lazily on their
+ * first MCP request. The await engine additionally checks requestOnlyHost at
+ * its timer, sweep and pump entry points: API replicas persist emissions while
+ * the dedicated background host claims and executes their wake deliveries.
  *
  * So the host DECLARES itself: `runBootstrap()` (apps/operator/bin/host-bootstrap.ts)
  * calls `declareOperatorHostProcess()` first. Every operator host runs it: the
@@ -213,9 +213,9 @@ export function isSubstrateOwnerProcess(opts?: {
  * before boot. In a process that never declares (a script, a build generator,
  * a vitest worker), they never start.
  *
- * Explicit LAZY starts (an `events:await` registration calling
- * `startAwaitSweeper()`) are unaffected: a process that registers an await has
- * asked for the sweeper.
+ * Explicit LAZY starts still respect each worker's ownership boundary. An
+ * `events:await` registration on a request-only API is persisted for the
+ * background host's sweeper; it cannot enable local wake execution.
  */
 const OPERATOR_HOST_STATE = pinModuleState('@papercusp/operator-core.operator-host-process', () => ({
   declared: false,

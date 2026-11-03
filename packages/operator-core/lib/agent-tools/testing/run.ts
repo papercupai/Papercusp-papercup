@@ -2472,6 +2472,10 @@ export async function launchManagedTestProcess(
         argv: [opts.command, ...opts.args],
         cwd: opts.cwd,
         harnessSlug: opts.env.PAPERCUSP_TEST_RUN_HARNESS ?? null,
+        workItemId: opts.env.PAPERCUSP_TEST_RUN_WORK_ITEM?.trim() || null,
+        // Detached testing-run-store owns this marker. Linking its nested router
+        // lets the task ledger resolve the existing root and cancel the subtree.
+        parentTaskId: opts.env.PAPERCUSP_CAPABILITY_BASH_BACKGROUND_TASK_ID?.trim() || null,
         launchedBy: `testing:run:${opts.runGroup}`,
         // The in-process timer owns the ordinary verdict. This slightly wider
         // kernel deadline is the restart-safe backstop and still bounds the task
@@ -3996,6 +4000,8 @@ async function runTestFilesCoreInternal(opts: RunTestFilesCoreOptions, deps: Tes
       // which makes Vite erase builtin identities in jsdom before tests can collect.
       NODE_ENV: 'test',
       PAPERCUSP_TEST_RUN_GROUP: runId,
+      // Bind this request explicitly, including clearing stale operator context.
+      PAPERCUSP_TEST_RUN_WORK_ITEM: opts.workItemId ?? '',
       PAPERCUSP_TEST_ATTRIBUTION: '1',
       PAPERCUSP_TEST_FAILURE_DETAILS_PATH: failureDetailsPath,
       PAPERCUSP_TEST_ARTIFACT_DIR: packet.paths.directory,

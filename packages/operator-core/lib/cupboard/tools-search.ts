@@ -81,6 +81,45 @@ function tokenFieldTier(qt: string, f: WeightedField): number {
   return 0;
 }
 
+interface PreparedQuery {
+  raw: string;
+  tokens: string[];
+  uniqueTokens: Set<string>;
+}
+
+function prepareQuery(query: string): PreparedQuery {
+  const tokens = contentTokens(query);
+  return { raw: query.trim().toLowerCase(), tokens, uniqueTokens: new Set(tokens) };
+}
+
+/** Long transcript queries used to scan every field token for every query
+ * token. Match exact tokens and their prefixes once per field instead. Keep
+ * substring matching and the original token addition order unchanged. */
+function bestTokenScores(fields: WeightedField[], query: PreparedQuery): Map<string, number> {
+  const best = new Map<string, number>();
+  for (const field of fields) {
+    const tiers = new Map<string, number>();
+    if (query.uniqueTokens.size <= 8) {
+      for (const token of query.uniqueTokens) tiers.set(token, tokenFieldTier(token, field));
+    } else {
+      for (const token of field.tokens) {
+        if (query.uniqueTokens.has(token)) tiers.set(token, 1);
+        for (let end = 2; end < token.length; end++) {
+          const prefix = token.slice(0, end);
+          if (query.uniqueTokens.has(prefix) && !tiers.has(prefix)) tiers.set(prefix, 0.6);
+        }
+      }
+      for (const token of query.uniqueTokens) {
+        if (!tiers.has(token) && token.length >= 2 && field.text.includes(token)) tiers.set(token, 0.3);
+      }
+    }
+    for (const [token, tier] of tiers) {
+      best.set(token, Math.max(best.get(token) ?? 0, field.weight * tier));
+    }
+  }
+  return best;
+}
+
 /**
  * Query-side stopwords — articles / prepositions / conjunctions / pronouns /
  * copula that carry no capability signal. Dropped so a natural-language query
@@ -113,21 +152,24 @@ export function contentTokens(query: string): string[] {
  * phrase boost so an exact / substring name match leads.
  */
 export function scoreTool(entry: ToolDiscoveryEntry, query: string): number {
-  const qTokens = contentTokens(query);
+  return scorePreparedTool(entry, prepareQuery(query));
+}
+
+function scorePreparedTool(entry: ToolDiscoveryEntry, query: PreparedQuery): number {
+  const qTokens = query.tokens;
   if (qTokens.length === 0) return 0;
-  const fields = fieldsOf(entry);
+  const scores = bestTokenScores(fieldsOf(entry), query);
   let total = 0;
   let matched = 0;
   for (const qt of qTokens) {
-    let best = 0;
-    for (const f of fields) best = Math.max(best, f.weight * tokenFieldTier(qt, f));
+    const best = scores.get(qt) ?? 0;
     if (best > 0) {
       total += best;
       matched += 1;
     }
   }
   if (matched === 0) return 0; // no content token hit → not a match
-  const raw = query.trim().toLowerCase();
+  const raw = query.raw;
   if (raw.length >= 2) {
     const name = entry.tool.toLowerCase();
     if (name === raw) total += 50;
@@ -155,9 +197,10 @@ export function searchTools(
 ): ToolDiscoveryEntry[] {
   const q = query.trim();
   if (!q) return [...entries].sort((a, b) => a.tool.localeCompare(b.tool));
+  const prepared = prepareQuery(q);
   const scored: Array<{ entry: ToolDiscoveryEntry; score: number }> = [];
   for (const entry of entries) {
-    const score = scoreTool(entry, q);
+    const score = scorePreparedTool(entry, prepared);
     if (score > 0) scored.push({ entry, score });
   }
   scored.sort((a, b) => b.score - a.score || a.entry.tool.localeCompare(b.entry.tool));

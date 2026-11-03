@@ -51,6 +51,23 @@ beforeEach(() => {
 });
 
 describe('broadcastSevereEvent', () => {
+  it('reuses the atomic message identity only for the same original alarm resolution', async () => {
+    for (const alarmMessageId of ['original-1', 'original-1', 'original-2'])
+      await broadcastSevereEventResolved({ conditionKey: 'alarm:test', summary: 'ended', alarmMessageId });
+    const ids = M.sendMessage.mock.calls.map(([, options]) => (options as Record<string, unknown>).msgId);
+    expect(ids[0]).toEqual(ids[1]);
+    expect(ids[0]).not.toEqual(ids[2]);
+    expect(ids[0]).toMatch(/^condition-resolution-[a-f0-9]{64}$/);
+  });
+  it('persists original episode evidence beside the authoritative emitter stamp', async () => {
+    const data = { id: 7, timerKey: 'held#7', heldMs: 310_000, producerRun: 'original', emitter: 'untrusted' };
+    await broadcastSevereEvent({ summary: 'held', conditionKey: 'alarm:managed-tick:original:7', oneShot: true, data });
+    const [, opts] = M.sendMessage.mock.calls[0] as [unknown, Record<string, unknown>];
+    expect(opts.extra).toMatchObject({
+      condition_key: 'alarm:managed-tick:original:7', one_shot: true, data,
+      emitter: { pid: process.pid },
+    });
+  });
   it('routes to the stable severe-events topic with the default category', async () => {
     const ok = await broadcastSevereEvent({ summary: 's', body: 'b' });
     expect(ok).toBe(true);

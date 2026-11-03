@@ -2,7 +2,8 @@ import { request } from 'node:http';
 import { afterEach, describe, expect, it } from 'vitest';
 import { serve } from '@hono/node-server';
 import { captureOperatorHttpSecurityPopulation, handler } from './host-handler';
-import { readRuntimeSecurityCensus } from '@papercusp/operator-core/lib/observability/runtime';
+import { captureRuntimeSecurityCensus, readRuntimeSecurityCensus } from '@papercusp/operator-core/lib/observability/runtime';
+import { _injectPluginHostForTests, _resetPluginHostForTests } from '@papercusp/operator-core/lib/plugin-host-runtime';
 
 const servers: Array<ReturnType<typeof serve>> = [];
 const ENV_KEYS = [
@@ -89,6 +90,30 @@ function getHealth(port: number): Promise<{ statusCode: number; body: string }> 
 }
 
 describe('host handler HTTP composition', () => {
+  it('includes unloaded plugin declarations in the declared census without promoting them to serving handlers', async () => {
+    _injectPluginHostForTests([], { roots: [], unavailable: [], candidates: [{
+      path: '/excluded', source: 'project', status: 'excluded', reason: 'not installed',
+      manifest: { name: 'excluded', tools: [{ name: 'unavailable-tool' }], apiRoutes: false },
+    }] });
+    try {
+      const captured = await captureOperatorHttpSecurityPopulation();
+      const declarations = captured.declaredSurfaces.filter(row => row.kind === 'configured-plugin-declaration');
+      expect(declarations).toHaveLength(2);
+      expect(declarations[0]!.attrs).toMatchObject({ discoveryStatus: 'excluded',
+        declarationKind: 'tools', declaration: { name: 'unavailable-tool' }, reachability: 'unknown' });
+      expect(declarations[1]!.attrs).toMatchObject({ declarationKind: 'apiRoutes', declaration: false });
+      expect(captured.surfaces.some(row => row.kind === 'configured-plugin-declaration')).toBe(false);
+      const snapshot = await captureRuntimeSecurityCensus();
+      expect(snapshot.rows.filter(row => row.kind === 'configured-plugin-declaration')).toEqual(
+        expect.arrayContaining(declarations.map(row => expect.objectContaining({
+          basis: 'declared-route', surfaceId: row.surfaceId,
+        }))),
+      );
+      expect(snapshot).toMatchObject({ populationComplete: false, closureAccepted: false, executionAdmitted: false });
+      expect(snapshot.unresolved).toContain('plugin-runtime-declaration-reconciliation-unverified');
+    } finally { _resetPluginHostForTests(); }
+  });
+
   it('connects the composed host to runtime discovery with full-set identity before paging', async () => {
     const captured = await captureOperatorHttpSecurityPopulation();
     const a = await readRuntimeSecurityCensus(1), b = await readRuntimeSecurityCensus(2);

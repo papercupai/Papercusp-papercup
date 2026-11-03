@@ -72,6 +72,30 @@ describe('validateRubricReplicationSql (real PG)', () => {
     expect(result.findings[0].afterPlaceholderSubstitution).toBeUndefined();
   });
 
+  it.each(['MATERIALIZED', 'NOT MATERIALIZED'])(
+    'EXPLAINs a complete AS %s interval query instead of a nested SELECT', async (modifier) => {
+      const result = await validateRubricReplicationSql([{
+        key: 'interval',
+        replication: `WITH a AS ${modifier} (SELECT 1 AS n), ` +
+          'b AS (SELECT n + 1 AS n FROM a) SELECT n FROM b;',
+      }]);
+      expect(result.checked).toBe(1);
+      expect(result.findings).toEqual([]);
+      expect(result.undeterminable).toEqual([]);
+      expect(result.ok).toBe(true);
+    },
+  );
+
+  it('still reports a genuine name-resolution failure inside a materialized CTE', async () => {
+    const sql = 'WITH a AS MATERIALIZED (SELECT missing_column FROM harness_shared.scout_ticks) SELECT * FROM a';
+    const result = await validateRubricReplicationSql([{ key: 'invalid-interval', replication: sql + ';' }]);
+    expect(result.checked).toBe(1);
+    expect(result.ok).toBe(false);
+    expect(result.findings).toHaveLength(1);
+    expect(result.findings[0].sql).toBe(sql);
+    expect(result.findings[0].error.code).toBe('42703');
+  });
+
   it('surfaces a renamed-table repro (routed_ideas → harness_shared.scout_routed_ideas)', async () => {
     const result = await validateRubricReplicationSql([
       { key: 'queen-workitem-selection', replication: 'SELECT * FROM routed_ideas LIMIT 5;' },

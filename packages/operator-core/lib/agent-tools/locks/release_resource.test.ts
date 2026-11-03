@@ -12,7 +12,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('./identity', () => ({ readIdentity: vi.fn(() => ({ ownerId: 'me', coordinationDomain: 'dom' })) }));
-vi.mock('../coordination/identity', () => ({ resolveAgentIdentity: vi.fn(() => ({ ownerId: 'me' })) }));
+vi.mock('../coordination/identity', () => ({ resolveAgentIdentity: vi.fn(() => ({ ownerId: 'me', workspaceId: 'ws-1' })) }));
 vi.mock('./in-workspace-txn', () => ({
   inWorkspaceTxn: vi.fn(async (_d: string, _o: string, fn: (tx: unknown) => unknown) => fn({})),
 }));
@@ -25,14 +25,17 @@ vi.mock('./su-lock-store', () => ({
 }));
 vi.mock('./contention-retry', () => ({ acquireWithContentionRetry: vi.fn() }));
 vi.mock('./resource-broadcast', () => ({ broadcastResourceBackUp: vi.fn() }));
+vi.mock('../../harness/git-sync/git-sync-events', () => ({ emitResourceReleasedEvent: vi.fn() }));
 
 import { readOwnedResourceLockDomain, tryReleaseResource } from './su-lock-store';
 import { mockImplementationTyped } from '../../testing/typed-mock';
 import { acquireWithContentionRetry } from './contention-retry';
 import { broadcastResourceBackUp } from './resource-broadcast';
+import { emitResourceReleasedEvent } from '../../harness/git-sync/git-sync-events';
 const releaseM = vi.mocked(tryReleaseResource);
 const retryM = vi.mocked(acquireWithContentionRetry);
 const backUpM = vi.mocked(broadcastResourceBackUp);
+const releaseEventM = vi.mocked(emitResourceReleasedEvent);
 const tool = (await import('./release_resource')).default;
 
 type Out = { data?: any; content?: Array<{ text: string }> };
@@ -61,7 +64,13 @@ describe('locks:release_resource handler', () => {
     // array of freed ids; a mock returning the wrong shape makes the `> 0`
     // domain-search check always false, so every domain gets tried and the
     // handler falls through to the "nothing released" default.
-    releaseM.mockResolvedValue({ released: 1, releasedModes: ['shared'], exclusiveResources: [], waiters: {} } as never);
+    releaseM.mockResolvedValue({
+      released: 1,
+      releasedModes: ['shared'],
+      releasedExclusiveResources: [],
+      exclusiveResources: [],
+      waiters: {},
+    } as never);
     const b = body(await call({ lock_id: '11111111-1111-1111-1111-111111111111' }));
     expect(b).toMatchObject({
       ok: true,
@@ -71,6 +80,28 @@ describe('locks:release_resource handler', () => {
       ],
     });
     expect(backUpM).not.toHaveBeenCalled();
+    expect(releaseEventM).not.toHaveBeenCalled();
+  });
+
+  it('emits the exact deleted-exclusive event when a successor keeps the resource unavailable', async () => {
+    mockImplementationTyped(releaseM, async () => ({
+      released: 1,
+      releasedModes: ['exclusive'],
+      releasedExclusiveResources: ['git-sync:portal'],
+      exclusiveResources: [],
+      expired: [],
+      waiters: {},
+    }));
+
+    const b = body(await call({ resource: 'git-sync:portal' }));
+
+    expect(b.results[0]).toMatchObject({
+      ok: true,
+      resource: 'git-sync:portal',
+      exclusive_resources: [],
+    });
+    expect(releaseEventM).toHaveBeenCalledExactlyOnceWith('git-sync:portal', 'ws-1');
+    expect(backUpM).not.toHaveBeenCalled();
   });
 
   it('WI-10004326: releases a lease acquired through ANOTHER operator install in its own recorded domain, first', async () => {
@@ -78,8 +109,8 @@ describe('locks:release_resource handler', () => {
     vi.mocked(readOwnedResourceLockDomain).mockResolvedValueOnce(otherInstall);
     mockImplementationTyped(releaseM, async (_tx, opts) =>
       (opts.coordinationDomain === otherInstall
-        ? { released: 1, releasedModes: ['exclusive'], exclusiveResources: ['p013-benchmark-rig'], waiters: {} }
-        : { released: 0, releasedModes: [], exclusiveResources: [], waiters: {} }) as never,
+        ? { released: 1, releasedModes: ['exclusive'], releasedExclusiveResources: ['p013-benchmark-rig'], exclusiveResources: ['p013-benchmark-rig'], waiters: {} }
+        : { released: 0, releasedModes: [], releasedExclusiveResources: [], exclusiveResources: [], waiters: {} }) as never,
     );
     const b = body(await call({ lock_id: '22222222-2222-2222-2222-222222222222' }));
     expect(b.results[0]).toMatchObject({ ok: true, released: 1 });
@@ -97,6 +128,7 @@ describe('locks:release_resource handler', () => {
     releaseM.mockResolvedValue({
       released: 0,
       releasedModes: [],
+      releasedExclusiveResources: [],
       exclusiveResources: [],
       expired: [{ lockId, resource: 'dev-server', mode: 'exclusive', expiredAt }],
       waiters: {},
@@ -161,7 +193,7 @@ describe('locks:release_resource handler', () => {
 
   it('wraps a single resource release through the keyed bulk envelope and broadcasts when exclusive', async () => {
     releaseM.mockResolvedValue({
-      released: ['L2'], releasedModes: ['exclusive'], exclusiveResources: ['dev-server'], waiters: { 'dev-server': ['w1'] },
+      released: ['L2'], releasedModes: ['exclusive'], releasedExclusiveResources: ['dev-server'], exclusiveResources: ['dev-server'], waiters: { 'dev-server': ['w1'] },
     } as never);
     const b = body(await call({ resource: 'dev-server' }));
     expect(b).toMatchObject({
@@ -192,6 +224,7 @@ describe('locks:release_resource handler', () => {
     releaseM.mockResolvedValue({
       released: 1,
       releasedModes: ['exclusive'],
+      releasedExclusiveResources: ['git-sync:portal'],
       exclusiveResources: ['git-sync:portal'],
       waiters: { 'git-sync:portal': ['waiter-1'] },
     } as never);
@@ -216,6 +249,7 @@ describe('locks:release_resource handler', () => {
     mockImplementationTyped(releaseM, async () => ({
       released: 1,
       releasedModes: ['shared'],
+      releasedExclusiveResources: [],
       exclusiveResources: [],
       expired: [],
       waiters: {},
@@ -245,6 +279,7 @@ describe('locks:release_resource handler', () => {
       return {
         released: 1,
         releasedModes: ['exclusive'],
+        releasedExclusiveResources: [resource],
         exclusiveResources: [resource],
         expired: [],
         waiters: { [resource]: [`waiter:${resource}`] },

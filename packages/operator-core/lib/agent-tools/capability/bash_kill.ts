@@ -182,7 +182,7 @@ export default defineTool({
       };
     }
     void ctx;
-    const r = killJob(job);
+    const r = killJob(job, 'capability:bash_kill requested termination');
     return {
       content: [
         {

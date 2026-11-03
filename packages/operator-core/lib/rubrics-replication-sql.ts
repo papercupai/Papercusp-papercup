@@ -75,9 +75,10 @@ import type { RubricCriterionCheck } from './agent-tools/plans/rubric-template';
  * write it uppercase, but this stays lenient). `WITH` is NOT: "with" is an ordinary
  * English preposition ("Count calls WITH tool_name LIKE …" in a drill's own grading
  * prose, a real false-positive hit during development) — so it's only treated as a CTE
- * start when actually shaped like one (`WITH [RECURSIVE] <name> AS (`).
+ * start when shaped like one (`WITH [RECURSIVE] <name> AS [NOT MATERIALIZED] (`).
+ * PostgreSQL also accepts AS MATERIALIZED; preserve the entire CTE in both cases.
  */
-const SQL_START_RE = /\bSELECT\b|\bWITH\s+(?:RECURSIVE\s+)?[A-Za-z_][A-Za-z0-9_]*\s+AS\s*\(/gi;
+const SQL_START_RE = /\bSELECT\b|\bWITH\s+(?:RECURSIVE\s+)?[A-Za-z_][A-Za-z0-9_]*\s+AS\s*(?:(?:NOT\s+)?MATERIALIZED\s*)?\(/gi;
 
 /**
  * PURE: scan from `start` for the end of one SQL statement, tracking single-quoted

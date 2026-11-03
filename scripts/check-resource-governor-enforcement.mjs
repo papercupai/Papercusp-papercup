@@ -2600,12 +2600,13 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
     code: "resource-start-outside-admission",
     disposition: "bypass",
     reason:
-      "P-016 reviewed bypass disposition for operator-artifact.ts: its only child site is the synchronous local Git reader used to bind bundle inputs to exact commit blobs. The read has a 60-second timeout and 8 MiB output cap, is repeated sequentially, and leaves no worker or resident queue.",
+      "P-016 reviewed bypass disposition for operator-artifact.ts: its only child site is the bounded asynchronous local Git reader used to bind bundle inputs to exact commit blobs. Each read has a 60-second timeout and 8 MiB output cap; reads are awaited sequentially and leave no worker or resident queue.",
     matchesSource: (source) => resourceStartCallCount(source) === 1 &&
-      source.includes("const gitRead: GitRead = (root, args) => execFileSync('git', ['-C', root, ...args], {") &&
+      source.includes("const gitRead: GitRead = (root, args) => new Promise((resolve, reject) => {") &&
+      source.includes("execFile('git', ['-C', root, ...args], {") &&
       source.includes("timeout: 60_000, maxBuffer: 8 * 1024 * 1024") &&
       source.includes("git(root, ['ls-tree', '-rz', '--full-tree', sha])") &&
-      source.includes("operatorArtifactSource(root, git) !== input.sourceSha") &&
+      source.includes("await operatorArtifactSource(root, git) !== input.sourceSha") &&
       !/\bdetached\s*:\s*true/.test(stripCommentsAndStrings(source)),
   },
   {

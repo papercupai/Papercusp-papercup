@@ -32,7 +32,8 @@ import { injectIntoHostWithConfirmation, selfCompactionAvailabilityAsync } from 
 import { hostCarryFenceBindable } from '../../events/await/carry-fence-bindable';
 import { tagTurnForInjection } from '../../turn-provenance/turn-provenance';
 import { carryProvenanceFields } from '../../carry-surface-provenance-stamp';
-import { buildOwnerRespawnLaunchSpec } from '../../carry-respawn';
+import { buildFrozenAssignmentRespawnSpec, buildOwnerRespawnLaunchSpec } from '../../carry-respawn';
+import { sessionCarryPolicy } from '../../capability-envelope/session-confinement-port';
 import { estimateContextWindowForOwner, resolveModelSpecForOwner } from '../../compaction-usage';
 import { modelWindowForSpec } from '../../agent-config-constants';
 import {
@@ -40,7 +41,7 @@ import {
   STALE_CHECKPOINT_WARN_MS,
   type CheckpointFlushWarning,
 } from '../../enforcement-gate';
-import { runFlushGate } from '../../enforcement-gate-io';
+import { runFlushGate, type FlushGateOutcome } from '../../enforcement-gate-io';
 import { markRespawnExpected } from '../../carry-respawn-marker';
 import { detectRespawnStorm, escalateRespawnStorm, RESPAWN_STORM_ERROR } from '../../carry-respawn-storm';
 import { releaseOwnerHookFileLocks } from '../locks/release-hook-locks';
@@ -347,6 +348,18 @@ export default defineTool({
         isError: true,
       };
     }
+    // Resolve assignment confinement BEFORE the no-host fallback, ambient brief,
+    // flush snapshot or transcript readers. A late strip cannot undo those reads.
+    let frozenCarry: Awaited<ReturnType<typeof sessionCarryPolicy>>;
+    try {
+      frozenCarry = await sessionCarryPolicy({ ownerId: identity.ownerId,
+        workspaceId: identity.workspaceId ?? undefined });
+    } catch {
+      return { isError: true, content: [{ type: 'text' as const, text: JSON.stringify({
+        ok: false, requested: false, respawn: false, error: 'carry_policy_unavailable',
+        note: 'The assignment carry policy could not be verified; this session remains intact.',
+      }) }] };
+    }
     // Check caller-authored hints before ANY fallback can seed them into a cold
     // loop carry-note. A later check covers generated/default carry text too.
     const explicitCarryRefusal = frozenCompactionCarryRefusal(
@@ -364,7 +377,7 @@ export default defineTool({
       // not proof that this process can receive a fresh turn. The no-host cold
       // wake path can park without resume, so never call that configuration a
       // successful compaction request.
-      const loop = await getLoopStatus(identity.ownerId).catch(() => null);
+      const loop = frozenCarry ? null : await getLoopStatus(identity.ownerId).catch(() => null);
       if (loop?.active && loop.carry === 'cold' && loop.harnessSlug) {
         const carry = await getLoopCarryNoteWithMeta({
           harness: loop.harnessSlug,
@@ -475,7 +488,7 @@ export default defineTool({
     // ONE best-effort brief build feeds both the default-focus derivation AND the
     // EI-8987 stale-checkpoint warning below (was two separate buildCarryBrief
     // calls before this pass).
-    const brief = await loadCarryBrief(identity.ownerId, identity.workspaceId);
+    const brief = frozenCarry ? null : await loadCarryBrief(identity.ownerId, identity.workspaceId);
     // WI-10002530: break managed carry-respawn STORMS. A successor that asks for
     // another cut before taking a single real turn — repeatedly — is alive but
     // doing no work, and every queued cut used to return 'queued' silently for
@@ -527,7 +540,7 @@ export default defineTool({
     // P-013: the host saves every held item's mechanical state before building
     // the successor. The agent contributes judgment only, with no flush bounce.
     const gateNowMs = Date.now();
-    const gate = await runFlushGate({
+    const gate: FlushGateOutcome = frozenCarry ? { verdict: 'clear', tripwires: [] } : await runFlushGate({
       boundary: 'compaction',
       mode: 'host-snapshot',
       ownerId: identity.ownerId,
@@ -573,7 +586,9 @@ export default defineTool({
     try {
       const { resolveSelfSession } = await import('../../search/self-session');
       self = await resolveSelfSession(identity.ownerId);
-      if (self) {
+      // The host needs this exact path to prove the source turn completed.
+      // Resolving identity is permitted; indexing prior contents is not.
+      if (self && !frozenCarry) {
         const { ingestFileNow } = await import('../../search/session-ingest');
         await ingestFileNow(self.filePath);
       }
@@ -582,7 +597,7 @@ export default defineTool({
     // start-marker lineage. An open owner message below remains owner-authored
     // and is never upgraded to a loop continuation.
     let currentLoopFire: LoopFireIdentity | null = null;
-    if (self?.sessionId) {
+    if (self?.sessionId && !frozenCarry) {
       try {
         currentLoopFire = await readLoopFireIdentityForCurrentTurn({
           owner: identity.ownerId,
@@ -625,7 +640,15 @@ export default defineTool({
         finalTurnInFlight: true,
       },
     });
-    if (!spec) {
+    // The builder re-reads authoritative policy. Refuse a removed/changed policy
+    // rather than accepting a general carry or a mismatched frozen successor.
+    let matchesFrozenPolicy = !frozenCarry;
+    if (frozenCarry) try {
+      const expected = buildFrozenAssignmentRespawnSpec(frozenCarry, args.continueNote);
+      matchesFrozenPolicy = spec?.firstPrompt === expected.firstPrompt && spec.systemPromptAddendum === '' &&
+        JSON.stringify(spec.frozenAssignmentCarry) === JSON.stringify(expected.frozenAssignmentCarry);
+    } catch { /* corrupt pinned bytes refuse below, never escape as an internal error */ }
+    if (!spec || !matchesFrozenPolicy) {
       return {
         content: [
           {
@@ -860,7 +883,7 @@ export default defineTool({
     // Fail-soft exactly like markRespawnExpected above: bumpSessionEpoch swallows its
     // own errors and returns null, and a missed bump degrades to the (broken) prior
     // behavior rather than failing the compaction the caller asked for.
-    if (ok) {
+    if (ok && !frozenCarry) {
       try {
         const { sql } = getOrgPg();
         await bumpSessionEpoch(sql, identity.ownerId);
@@ -906,7 +929,7 @@ export default defineTool({
       unattributed: [],
       degraded: false,
     };
-    try {
+    if (!frozenCarry) try {
       nativeBgTasks = await readLiveNativeBgTasks({ sid: identity.ownerId });
     } catch {
       /* never block the cut on bg bookkeeping */
@@ -941,7 +964,7 @@ export default defineTool({
     // free-text carry hints this call writes (focus always; continueNote only
     // when the caller passed one explicitly — the synthesized
     // defaultContinueNote is machine-authored, nothing to lint).
-    const provenanceFields = await carryProvenanceFields(
+    const provenanceFields = frozenCarry ? {} : await carryProvenanceFields(
       [focus, args.continueNote].filter((s): s is string => Boolean(s && s.trim())).join('\n'),
       identity.ownerId,
     );

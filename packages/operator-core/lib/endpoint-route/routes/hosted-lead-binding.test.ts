@@ -4,6 +4,8 @@ import type { RouteContext } from '@papercusp/tooldef';
 import { createHostedPrincipal } from '../../auth/hosted-principal';
 import { createHostedLeadBindingRoutes } from './hosted-lead-binding';
 import { DEFAULT_CLOUD_TELEMETRY_CONSENT, type CloudTelemetryConsent } from '../../telemetry-kinds';
+import type { HostedLeadBindingService } from '../../auth/hosted-lead-binding-service';
+import { mockResolvedOnceTyped, mockResolvedTyped } from '../../testing/typed-mock';
 
 vi.mock('../../posthog-config', () => ({ getPosthogConfigWithSource: () => ({ config: {
   host: 'https://posthog.invalid', projectKey: 'capture-key', personalApiKey: 'admin-key',
@@ -19,7 +21,9 @@ const receipt = { ...scope, environment: 'production' as const, ref: 'receipt-a'
   organizationId: 'org-a', redeemedAt: new Date(1000).toISOString() };
 function fixture(consents: CloudTelemetryConsent[] = [{ ...DEFAULT_CLOUD_TELEMETRY_CONSENT,
   analytics: { enabled: true, since: '2026-10-15T00:00:00Z' } }]) {
-  const service = { redeem: vi.fn(async () => receipt), read: vi.fn(async () => receipt), revoke: vi.fn(async () => true) };
+  const service: Pick<HostedLeadBindingService, 'redeem' | 'read' | 'revoke'> = {
+    redeem: vi.fn(async () => receipt), read: vi.fn(async () => receipt), revoke: vi.fn(async () => true),
+  };
   const tenantCalls: unknown[] = [];
   let consentIndex = 0;
   const sql = (async (strings: TemplateStringsArray) => strings.join(' ').includes('current_setting')
@@ -69,7 +73,7 @@ describe('hosted lead binding browser routes', () => {
   });
   it('conceals a refused receipt and internal failure without leaking exception details', async () => {
     const f = fixture();
-    f.service.read.mockResolvedValueOnce(null as never);
+    mockResolvedOnceTyped(vi.mocked(f.service.read), null);
     expect((await f.routes[1]!.handler(f.request(1), context)).status).toBe(404);
     f.service.redeem.mockRejectedValueOnce(new Error('secret-token SQL user-b'));
     const response = await f.routes[0]!.handler(f.request(0), context);
@@ -104,7 +108,7 @@ describe('hosted lead binding browser routes', () => {
   });
   it('does not query without a binding or with disabled consent', async () => {
     const fetcher = usageTransport(); const missing = fixture();
-    missing.service.read.mockResolvedValue(null as never);
+    mockResolvedTyped(vi.mocked(missing.service.read), null);
     expect((await missing.routes[1]!.handler(missing.request(1, { ...scope, ...window }), context)).status).toBe(404);
     const disabled = fixture([DEFAULT_CLOUD_TELEMETRY_CONSENT]);
     const response = await disabled.routes[1]!.handler(disabled.request(1, { ...scope, ...window }), context);
@@ -112,7 +116,7 @@ describe('hosted lead binding browser routes', () => {
     expect(fetcher).not.toHaveBeenCalled();
   });
   it('withholds the result if the binding is revoked during the network query', async () => {
-    const f = fixture(); usageTransport(() => f.service.read.mockResolvedValue(null as never));
+    const f = fixture(); usageTransport(() => mockResolvedTyped(vi.mocked(f.service.read), null));
     const response = await f.routes[1]!.handler(f.request(1, { ...scope, ...window }), context);
     expect(response.status).toBe(404);
     expect(await response.text()).not.toMatch(/observations|user-a|org-a/);

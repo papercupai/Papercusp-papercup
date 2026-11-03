@@ -157,6 +157,7 @@ function spaFingerprint(root: string): string {
 
 export interface VerifierBuildFixture {
   sourceCommit: string;
+  nativeSourceCommit: string;
   sourceReceiptSha256: string;
   binarySha256: string;
   spaSha256: string;
@@ -175,12 +176,21 @@ export async function assertVerifierBuildFixture(
   if (!/^[0-9a-f]{40}$/.test(sourceCommit)) throw new Error('Native source ref must be a full commit SHA');
   if (/(^|\/)debug\//.test(appPath)) throw new Error('Verifier-linked performance acceptance requires a release binary');
   const receipt = readFileSync(env.VERIFY_TAURI_SOURCE_RECEIPT!);
-  if (JSON.parse(receipt.toString()).sourceCommit !== sourceCommit) {
+  const source = JSON.parse(receipt.toString()) as { schemaVersion?: string; sourceCommit?: string;
+    submodules?: Array<{ path?: string; sha?: string }> };
+  if (source.schemaVersion !== 'verifier-source-v1' || source.sourceCommit !== sourceCommit) {
     throw new Error('Native source receipt does not match the selected commit');
   }
+  // The native build records the desktop submodule's Git identity; the API
+  // records the parent repository's identity. Bind each to its own source.
+  const desktop = source.submodules?.filter(row => row.path === 'papercusp-desktop');
+  const nativeSourceCommit = desktop?.length === 1 ? desktop[0].sha : undefined;
+  if (!nativeSourceCommit || !/^[0-9a-f]{40}$/.test(nativeSourceCommit)) {
+    throw new Error('Native source receipt lacks one exact desktop submodule pin');
+  }
   const binarySource = readBuildIdentity(appPath);
-  if (!binarySource || !sourceCommit.startsWith(binarySource)) {
-    throw new Error('Packaged native binary build identity does not match the selected commit');
+  if (!binarySource || !nativeSourceCommit.startsWith(binarySource)) {
+    throw new Error('Packaged native binary build identity does not match the desktop submodule pin');
   }
   const spaSha256 = spaFingerprint(packagedSpa);
   if (spaSha256 !== spaFingerprint(env.VERIFY_TAURI_SPA_DIST!)) {
@@ -195,7 +205,7 @@ export async function assertVerifierBuildFixture(
       !/^[0-9a-f]{7,40}$/.test(health.sha) || !sourceCommit.startsWith(health.sha)) {
     throw new Error('Native API build identity does not match the selected commit');
   }
-  return { sourceCommit, sourceReceiptSha256: createHash('sha256').update(receipt).digest('hex'),
+  return { sourceCommit, nativeSourceCommit, sourceReceiptSha256: createHash('sha256').update(receipt).digest('hex'),
     binarySha256: createHash('sha256').update(readFileSync(appPath)).digest('hex'),
     spaSha256, apiSha: health.sha };
 }

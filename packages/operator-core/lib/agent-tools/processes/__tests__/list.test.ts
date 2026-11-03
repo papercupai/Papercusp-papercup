@@ -262,79 +262,81 @@ describe('processes:list structured output', () => {
     expect(vi.mocked(listTasks)).toHaveBeenCalledWith(expect.objectContaining({ invocationId }));
   });
 
-  it('preserves scan truncation flags while returning only the exact live systemd group', async () => {
-    const { listTasks } = await import('../../../task-manager/store');
-    const { reconcileTick } = await import('../../../task-manager/reconcile-tick');
-    const scopeUnit = 'papercup-green-checkpoint-manual-1fxzuva.service';
-    vi.mocked(listTasks).mockResolvedValueOnce([]);
-    vi.mocked(reconcileTick).mockResolvedValueOnce({
-      summary: { alive: 0, stranded: 0, endedUnobserved: 0, unaccounted: 1, foreign: 1, verifierScope: 0 },
-      result: {
-        alive: [],
-        stranded: [],
-        endedUnobserved: [],
-        unaccounted: [
-          { cgroupPath: `/user.slice/${scopeUnit}`, scopeUnit, pids: [101, 102], sampleCmdline: 'checkpoint target' },
-        ],
-        abandonedWindow: [],
-        consoleWindow: [],
-        verifierScope: [],
-        foreign: [
-          { cgroupPath: '/user.slice/other.service', scopeUnit: 'other.service', pids: [201], sampleCmdline: 'other' },
-        ],
-        overdue: [],
-        tooYoung: [],
-      },
-      scan: { processes: 3, ownedTruncated: false, foreignTruncated: true },
-      degraded: false,
-      touched: 0,
-      strandedCount: 0,
-      endedUnobservedCount: 0,
-      unaccountedPersisted: 0,
-      residueCleared: 0,
-    } as never);
+  it.each(['papercup-green-checkpoint-manual-1fxzuva.service', 'vte-spawn-0e0e-4a4a.scope'])(
+    'preserves scan truncation flags while returning only the exact live systemd group %s',
+    async (scopeUnit) => {
+      const { listTasks } = await import('../../../task-manager/store');
+      const { reconcileTick } = await import('../../../task-manager/reconcile-tick');
+      vi.mocked(listTasks).mockResolvedValueOnce([]);
+      vi.mocked(reconcileTick).mockResolvedValueOnce({
+        summary: { alive: 0, stranded: 0, endedUnobserved: 0, unaccounted: 1, foreign: 1, verifierScope: 0 },
+        result: {
+          alive: [],
+          stranded: [],
+          endedUnobserved: [],
+          unaccounted: [
+            { cgroupPath: `/user.slice/${scopeUnit}`, scopeUnit, pids: [101, 102], sampleCmdline: 'checkpoint target' },
+          ],
+          abandonedWindow: [],
+          consoleWindow: [],
+          verifierScope: [],
+          foreign: [
+            { cgroupPath: '/user.slice/other.service', scopeUnit: 'other.service', pids: [201], sampleCmdline: 'other' },
+          ],
+          overdue: [],
+          tooYoung: [],
+        },
+        scan: { processes: 3, ownedTruncated: false, foreignTruncated: true },
+        degraded: false,
+        touched: 0,
+        strandedCount: 0,
+        endedUnobservedCount: 0,
+        unaccountedPersisted: 0,
+        residueCleared: 0,
+      } as never);
 
-    const dispatched = await dispatchProjectedTool(
-      projected,
-      'processes:list',
-      { scopeUnit, live: true, includeEnded: true, limit: 2000 },
-      {
-        log: vi.fn(),
-        signal: new AbortController().signal,
-        progress: vi.fn(),
-        emit: vi.fn(),
-        workspaceId: 'default',
-        runId: 'processes-list-exact-live-unit-test',
-        role: 'operator',
-        gateBypass: { role: true, capability: true, quota: true },
-        transport: 'mcp',
-        requestedFormat: 'json',
-        requestedStructured: true,
-        tx: makeTx(),
-      },
-      {},
-    );
+      const dispatched = await dispatchProjectedTool(
+        projected,
+        'processes:list',
+        { scopeUnit, live: true, includeEnded: true, limit: 2000 },
+        {
+          log: vi.fn(),
+          signal: new AbortController().signal,
+          progress: vi.fn(),
+          emit: vi.fn(),
+          workspaceId: 'default',
+          runId: 'processes-list-exact-live-unit-test',
+          role: 'operator',
+          gateBypass: { role: true, capability: true, quota: true },
+          transport: 'mcp',
+          requestedFormat: 'json',
+          requestedStructured: true,
+          tx: makeTx(),
+        },
+        {},
+      );
 
-    expect(dispatched.ok, JSON.stringify(dispatched)).toBe(true);
-    const structured = dispatched.result?.structuredContent as {
-      live: {
-        exactScopeUnitMatches: Array<Record<string, unknown>>;
-        ownedTruncated: boolean;
-        foreignTruncated: boolean;
+      expect(dispatched.ok, JSON.stringify(dispatched)).toBe(true);
+      const structured = dispatched.result?.structuredContent as {
+        live: {
+          exactScopeUnitMatches: Array<Record<string, unknown>>;
+          ownedTruncated: boolean;
+          foreignTruncated: boolean;
+        };
       };
-    };
-    expect(structured.live.ownedTruncated).toBe(false);
-    expect(structured.live.foreignTruncated).toBe(true);
-    expect(structured.live.exactScopeUnitMatches).toEqual([
-      {
-        kind: 'unaccounted',
-        cgroupPath: `/user.slice/${scopeUnit}`,
-        scopeUnit,
-        pids: [101, 102],
-        sample: 'checkpoint target',
-      },
-    ]);
-  });
+      expect(structured.live.ownedTruncated).toBe(false);
+      expect(structured.live.foreignTruncated).toBe(true);
+      expect(structured.live.exactScopeUnitMatches).toEqual([
+        {
+          kind: 'unaccounted',
+          cgroupPath: `/user.slice/${scopeUnit}`,
+          scopeUnit,
+          pids: [101, 102],
+          sample: 'checkpoint target',
+        },
+      ]);
+    },
+  );
 
   it('reports task-ledger pagination independently of a complete kernel scan', async () => {
     const { listTasksPage } = await import('../../../task-manager/store');

@@ -18,7 +18,7 @@ vi.mock('./work-item-admission-authority', async (original) => ({
   authorizeAdmissionReplay: vi.fn(async () => {}),
 }));
 
-import { authorizeAdmissionRecovery } from './work-item-admission-recovery';
+import { authorizeAdmissionRecovery, withAdmissionPromoterLock } from './work-item-admission-recovery';
 
 const scope = { workspaceId: 'ws-authority', harnessSlug: 'papercusp', workItemId: 'WI-original' };
 const request = { caller: 'requester', target: 'reviewer' };
@@ -97,5 +97,33 @@ describe('production recovery authorization (real policy composition, mocked sto
   it('does not turn an interrupted confinement read into an authorization grant', async () => {
     io.state.mockRejectedValue(new Error('confinement store unavailable'));
     await expect(authorizeAdmissionRecovery(scope, request)).rejects.toThrow('confinement store unavailable');
+  });
+});
+
+describe('admission promoter lock attribution', () => {
+  it('identifies a lock-client reserve timeout and preserves the driver error code', async () => {
+    const timeout = Object.assign(new Error('write CONNECT_TIMEOUT localhost:5432'), {
+      code: 'CONNECT_TIMEOUT',
+    });
+    const reserve = vi.fn().mockRejectedValue(timeout);
+    const action = vi.fn(async () => 'screened');
+    const lockSql = { reserve } as never;
+
+    const failure = await withAdmissionPromoterLock({
+      workspaceId: scope.workspaceId,
+      harnessSlug: scope.harnessSlug,
+    }, lockSql, action).then(() => null, (error: unknown) => error as Error & {
+      code?: string;
+      cause?: unknown;
+    });
+
+    expect(failure).toBeInstanceOf(Error);
+    expect(failure?.message).toContain('work-item-admission-promoter lock-client phase=reserve');
+    expect(failure?.message).toContain(timeout.message);
+    expect(failure?.name).toBe(timeout.name);
+    expect(failure?.code).toBe(timeout.code);
+    expect(failure?.cause).toBe(timeout);
+    expect(reserve).toHaveBeenCalledOnce();
+    expect(action).not.toHaveBeenCalled();
   });
 });

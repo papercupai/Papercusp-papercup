@@ -13,10 +13,10 @@
  * was fixed, which is the tell that a copied contract was the wrong shape.
  * Both tools now import this constant, so the contract cannot drift again.
  *
- * The 40-character bound is a real STORED identity limit: rendered/parser
- * anchors and `sanitizeCarryRowId` use the same bound. The INPUT backstop is
- * deliberately looser so a recovery payload can be repaired at the handler
- * boundary and told that its identity changed, rather than rejected whole.
+ * The 40-character bound is both the INPUT and STORED identity limit:
+ * rendered/parser anchors and `sanitizeCarryRowId` use the same bound. Letting
+ * longer IDs through and truncating them before merge aliases distinct IDs that
+ * share a prefix, so reject them before the handler can normalize their keys.
  */
 import { z } from 'zod';
 
@@ -48,14 +48,12 @@ export function carryRowTextSchema(
 
 export const CARRY_ROW_ID_SCHEMA = z
   .string()
-  .max(CARRY_ROW_ID_INPUT_HARD_MAX)
-  .meta({ 'x-soft-maxLength': CARRY_ROW_ID_MAX })
+  .max(CARRY_ROW_ID_MAX)
   .optional()
   .describe(
     "Stable id for this row (e.g. 'gate-green'), independent of wording. Lets you RE-WORD the claim without " +
       'losing its evidence/age, and is what rowsMode:\'merge\' upserts on. ' +
-      `Soft cap: ${CARRY_ROW_ID_MAX} chars; longer inputs are accepted and truncated with a reported repair. ` +
-      `Hard input backstop: ${CARRY_ROW_ID_INPUT_HARD_MAX} chars; larger inputs are rejected. ` +
+      `Maximum: ${CARRY_ROW_ID_MAX} characters; longer ids are rejected so distinct ids cannot alias after storage normalization. ` +
       'Omitted ⇒ identity is the claim text.',
   );
 

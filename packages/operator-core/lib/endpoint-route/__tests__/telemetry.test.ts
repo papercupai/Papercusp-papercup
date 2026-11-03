@@ -240,6 +240,56 @@ describe('recordRouteInvocation — Codex home repair correlation confidentialit
   });
 });
 
+describe('recordRouteInvocation — native guard route correlation', () => {
+  const requestId = '550e8400-e29b-41d4-a716-446655440000';
+  const path = '/agent-mcp/tool-guard';
+
+  it('preserves pre-handler phases and the opaque id after a guard timeout', async () => {
+    const exec = execWith({ method: 'POST', path, status: 'timeout',
+      headers: { 'x-papercusp-guard-request-id': requestId,
+        authorization: 'Bearer private-guard-token', 'x-private-header': 'private-guard-header' },
+    });
+    exec.routeDiagnostics = { measure: async (_phase, work) => work(),
+      snapshot: () => ({ auth: 6200, input: 0, invoke: 643, 'private phase': 1, invalid: NaN }) };
+    recordRouteInvocation(exec);
+    exec.req.headers.set('x-papercusp-guard-request-id', 'private-late-guard-header');
+    await vi.waitFor(() => expect(findInsertCall().params[11]).toEqual(JSON.stringify({
+      guardRequestId: requestId, routePhaseTimingsMs: { auth: 6200, input: 0, invoke: 643 },
+    })));
+    const persisted = JSON.stringify(findInsertCall().params);
+    for (const secret of ['private-guard-token', 'private-guard-header', 'private-late-guard-header']) {
+      expect(persisted).not.toContain(secret);
+    }
+  });
+
+  it.each([
+    undefined,
+    'private-invalid-guard-id',
+    requestId + ', ' + requestId,
+    requestId + '-private-suffix',
+    '00000000-0000-0000-0000-000000000000',
+    '550e8400-e29b-41d4-7716-446655440000',
+  ])('omits unvalidated guard correlation (%s)', async (header) => {
+    const exec = execWith({ method: 'POST', path,
+      headers: header === undefined ? {} : { 'x-papercusp-guard-request-id': header },
+    });
+    exec.routeDiagnostics = { measure: async (_phase, work) => work(), snapshot: () => ({ auth: 2 }) };
+    recordRouteInvocation(exec);
+    await vi.waitFor(() => expect(findInsertCall().params[11]).toBeNull());
+    if (header !== undefined) expect(JSON.stringify(findInsertCall().params)).not.toContain(header);
+  });
+
+  it.each([['GET', path], ['POST', '/agent-mcp/stop-context']])(
+    'ignores guard correlation outside POST tool-guard (%s %s)', async (method, routePath) => {
+      recordRouteInvocation(execWith({ method: method as 'GET' | 'POST', path: routePath,
+        headers: { 'x-papercusp-guard-request-id': requestId },
+      }));
+      await vi.waitFor(() => expect(findInsertCall().params[11]).toBeNull());
+      expect(JSON.stringify(findInsertCall().params)).not.toContain(requestId);
+    },
+  );
+});
+
 describe('mounted hosted route telemetry confidentiality census', () => {
   it('records the actual pathname but omits query, request body and response content', async () => {
     const pathMarker = 'census-path-marker';

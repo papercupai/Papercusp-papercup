@@ -1,0 +1,25 @@
+{
+  "schemaVersion": "durable-park-reconcile-v1",
+  "runId": "work-item-durable-park-audit:reconcile:tool:WI-6554700010045019:fe77be820b43300a2de768ae5ded0e16",
+  "inputSha256": "fe77be820b43300a2de768ae5ded0e16ac1b89006fc067afeda65eae97b72f3c",
+  "workspaceId": "papercusp-workspace",
+  "harnessSlug": "papercusp",
+  "generatedAt": "2026-11-03T01:18:11.651Z",
+  "actor": "su-fcf0a0fd-ef70-4f80-a094-d3571e2728b3",
+  "requested": 1,
+  "cleared": 1,
+  "unchanged": 0,
+  "rows": [
+    {
+      "id": "WI-6554700010045019",
+      "outcome": "cleared",
+      "expectedParkFingerprint": "26da213b7997e3d2f05a230afbc838e3c89fb278152ac5ca23c6d449ebf3dae3",
+      "observedParkFingerprint": "26da213b7997e3d2f05a230afbc838e3c89fb278152ac5ca23c6d449ebf3dae3",
+      "reasonCode": "operator-directed",
+      "evidence": "Avi's standing AUTO+self directive and this managed continuation authorize exact five-item rubric workflow through shipped status. P008 bounded adoption repair held WI-6554700010030915; follow verified security precedent checkpoint9e271a92c575 and D011/D016. Current3170 start passed exact contract checks but admission excludes only conversion-owned parks. Preserve canonical IDs, DAG, BARs and nonmigration holds; global reader migration remains OPEN.",
+      "preservedLease": false,
+      "takenBy": null
+    }
+  ],
+  "artifactPath": "reports/durable-parks/work-item-durable-park-audit-reconcile-tool-WI-6554700010045019-fe77be820b43300a2de768ae5ded0e16-reconcile.json"
+}

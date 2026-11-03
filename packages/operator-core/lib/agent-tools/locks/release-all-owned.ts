@@ -18,6 +18,7 @@ import {
 } from './su-lock-store';
 import { notifyPlanLockChange } from './notify-lock-change';
 import { broadcastResourceBackUp } from './resource-broadcast';
+import { emitResourceReleasedEvent } from '../../harness/git-sync/git-sync-events';
 import { routeFileLockOp } from '../../authority/file-lock-routing';
 import {
   FILE_LOCK_OP_KINDS,
@@ -148,7 +149,10 @@ export async function releaseAllOwnedLocks(params: {
       releaseAllResourcesForOwner(tx, domain, ownerId),
     );
     resourcesReleased += result.released;
-    if (source && result.exclusiveResources.length > 0) {
+    if (source) {
+      for (const resource of result.releasedExclusiveResources) {
+        emitResourceReleasedEvent(resource, source.workspaceId);
+      }
       for (const resource of result.exclusiveResources) {
         await broadcastResourceBackUp({
           source,

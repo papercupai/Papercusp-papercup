@@ -155,7 +155,7 @@ describe('acquireResourceExclusiveWithWait mid-drain failure', () => {
     acquireM.mockReset();
     mockResolvedTyped(acquireM, queued);
     releaseM.mockReset();
-    mockResolvedTyped(releaseM, { released: 1, releasedModes: ['exclusive'], exclusiveResources: ['git-sync'], expired: [], waiters: {} });
+    mockResolvedTyped(releaseM, { released: 1, releasedModes: ['exclusive'], releasedExclusiveResources: ['git-sync'], exclusiveResources: ['git-sync'], expired: [], waiters: {} });
   });
 
   it('skips one nudge on a transient poke timeout instead of abandoning the drain', async () => {
@@ -246,7 +246,7 @@ describe('acquireResourceExclusiveQueued', () => {
   beforeEach(() => {
     acquireM.mockReset();
     releaseAllM.mockReset();
-    mockResolvedTyped(releaseAllM, { released: 0, exclusiveResources: [], waiters: {} });
+    mockResolvedTyped(releaseAllM, { released: 0, releasedExclusiveResources: [], exclusiveResources: [], waiters: {} });
   });
 
   it('keeps one owner queued across polls until the cascade grants it, then leaves the lease held', async () => {

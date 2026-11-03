@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { harnessRoot } from '@papercusp/harness/paths';
 import { DEFAULT_WORKSPACE_ID } from '../../workspace-registry';
+import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { parsePushSnapshot, type PushSnapshot } from '../../code-intelligence/push-snapshot';
 import { buildSymbolSnapshot, relativeSymbolModule } from '../../../../../scripts/lib/code-intel-symbol-snapshot.mjs';
 import * as anchorStore from '../../plan-items/anchor-store';
@@ -13,6 +14,7 @@ import addTool from './add-item';
 import editTool from './edit';
 import getTool from './get';
 import { deriveIndexFromContent } from './derive-index';
+import { hashPlanContent } from './content-hash';
 import { writePlanLineNodes, readPlanLineNodes } from './plan-line-graph';
 import { writePlanIndexRows } from './plan-index-rows';
 
@@ -60,8 +62,19 @@ function data(result: unknown): any {
 }
 const add = (extra: Record<string, unknown> = {}) => addTool.handler({ slug: SLUG, harness: HARNESS,
   phase: 'Phase 1 — Work', text: 'Added item', importance: 'normal', ...extra } as never, ctx());
+async function clearFixtureWorkItems() {
+  const items = await fx.admin<{ feature_id: string }[]>`SELECT feature_id FROM harness_shared.work_items
+    WHERE workspace_id=${WS} AND harness_slug=${HARNESS}`;
+  const endpoints = items.map(({ feature_id }) => `${HARNESS}#${feature_id}`);
+  if (endpoints.length) {
+    await fx.admin`DELETE FROM harness_shared.work_item_deps WHERE workspace_id=${DEFAULT_COORD_WORKSPACE}
+      AND ((blocked_kind='feature' AND blocked_ref=ANY(${endpoints}::text[]))
+        OR (blocker_kind='feature' AND blocker_ref=ANY(${endpoints}::text[])))`;
+  }
+  await fx.admin`DELETE FROM harness_shared.work_items WHERE workspace_id=${WS} AND harness_slug=${HARNESS}`;
+}
 beforeAll(async () => {
-  fx = await setupPlanPgFixture();
+  fx = await setupPlanPgFixture({ isolated: true });
   // The draft is deliberately not armed until these isolated real-PG tests pass.
   const migration = join(harnessRoot(), '../../libs/db/sql/1559-plan-item-code-anchors.sql');
   const ddl = await readFile(migration, 'utf8').catch(error => {
@@ -89,7 +102,7 @@ beforeAll(async () => {
 beforeEach(async () => {
   vi.restoreAllMocks();
   await fx.admin`DELETE FROM harness_shared.plan_item_anchors WHERE workspace_id=${WS} AND harness_slug=${HARNESS}`;
-  await fx.admin`DELETE FROM harness_shared.work_items WHERE workspace_id=${WS} AND harness_slug=${HARNESS}`;
+  await clearFixtureWorkItems();
   await cleanupPlans(fx.admin, WS, HARNESS);
   await seedPlan(fx.admin, WS, HARNESS, SLUG, body());
   const scope = { workspaceId: WS, harnessSlug: HARNESS, slug: SLUG };
@@ -103,7 +116,7 @@ beforeEach(async () => {
 afterAll(async () => {
   if (fx) {
     await fx.admin`DELETE FROM harness_shared.plan_item_anchors WHERE workspace_id=${WS} AND harness_slug=${HARNESS}`;
-    await fx.admin`DELETE FROM harness_shared.work_items WHERE workspace_id=${WS} AND harness_slug=${HARNESS}`;
+    await clearFixtureWorkItems();
     await cleanupPlans(fx.admin, WS, HARNESS);
     await fx.dispose();
   }
@@ -111,6 +124,43 @@ afterAll(async () => {
 });
 
 describe('plan item anchors through the real plan tools', () => {
+  it('preserves legacy item IDs and dependencies through an anchor-only edit without graph rows', async () => {
+    const legacy = body().replace('\n## Decisions\n', '\n- **P-002** `blocked` Dependent item blocked-by: P-001\n\n## Decisions\n');
+    const index = deriveIndexFromContent(legacy);
+    await clearFixtureWorkItems();
+    await fx.admin`UPDATE harness_shared.harness_plans
+      SET content=${legacy}, content_hash=${hashPlanContent(legacy)}, items=${JSON.stringify(index.items)}::jsonb
+      WHERE workspace_id=${WS} AND harness_slug=${HARNESS} AND plan_slug=${SLUG}`;
+    const scope = { workspaceId: WS, harnessSlug: HARNESS, slug: SLUG };
+    expect(await readPlanLineNodes(fx.admin, scope)).toEqual([]);
+
+    const read = async () => data(await getTool.handler({
+      slug: SLUG, harness: HARNESS, mode: 'full', includeRaw: true, includeEnrichments: false,
+    } as never, ctx())).results[0];
+    const before = await read();
+    expect(before.items.map((item: { id: string }) => item.id)).toEqual(['P-001', 'P-002']);
+    expect(before.items[1].blockedBy).toEqual(['P-001']);
+
+    const edited = data(await editTool.handler({ slug: SLUG, harness: HARNESS, itemId: 'P-002',
+      anchors: [{ path: 'code.ts', change: { action: 'modify', summary: 'Update dependent source', reason: 'Preserve the approved task' } }],
+    } as never, ctx()));
+    expect(edited.ok, JSON.stringify(edited)).toBe(true);
+    const after = await read();
+    expect(after.items.map((item: { id: string }) => item.id)).toEqual(['P-001', 'P-002']);
+    expect(after.items[1].blockedBy).toEqual(['P-001']);
+    expect(after.items[1].anchors[0].path).toBe('code.ts');
+    expect(after.raw).toContain('Existing item');
+    expect(after.raw).toContain('Dependent item');
+
+    const followup = data(await editTool.handler({ slug: SLUG, harness: HARNESS,
+      old_string: 'Dependent item', new_string: 'Revised dependent item',
+    } as never, ctx()));
+    expect(followup.ok, JSON.stringify(followup)).toBe(true);
+    const revised = await read();
+    expect(revised.items[1].text).toBe('Revised dependent item');
+    expect(revised.items[1].blockedBy).toEqual(['P-001']);
+  });
+
   it('add and item-edit store equivalent resolved links that survive plan-index rewrites and read back', async () => {
     const result = data(await add({ anchors: [{ symbol: 'linked' }] }));
     expect(result.ok, JSON.stringify(result)).toBe(true);

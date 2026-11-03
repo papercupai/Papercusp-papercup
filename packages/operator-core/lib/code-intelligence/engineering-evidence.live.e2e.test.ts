@@ -1,8 +1,10 @@
 /** Live producer for P-007. The maintained Vitest reporter owns case/run rows;
  * this suite supplies only the receipt returned by the actual serving boundary.
  * Run explicitly with PAPERCUSP_ENGINEERING_PRODUCER_LIVE=1, a frozen inputs
- * file, an output path and PAPERCUSP_TEST_RUN_RECEIPT_FILE. Missing live proof
- * fails the enabled run; ordinary collection skips this opt-in live suite. */
+ * file, an output path and PAPERCUSP_TEST_RUN_RECEIPT_FILE. Select
+ * ee.live-boundary to produce the receipt, then ee.real- with the assembled
+ * PAPERCUSP_ENGINEERING_JOURNEY_INPUTS manifest. Missing live proof fails the
+ * enabled run; ordinary collection skips this opt-in live suite. */
 import { randomBytes } from 'node:crypto';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -11,6 +13,8 @@ import { expect, it } from 'vitest';
 import { parseExecutionBoundaryReceipt } from '@papercusp/test-config/execution-details';
 import type { EngineeringQueryReport } from './engineering-evidence';
 import { verifyProducerBuildIdentity } from './engineering-evidence-producer';
+import { readEngineeringJourneyConfig } from '../../../../apps/operator/e2e/_engineering-evidence-journey-config';
+import { readEngineeringRuntimeHealth, readEngineeringTool } from '../../../../scripts/verify-engineering-evidence-tauri.mjs';
 
 const live = process.env.PAPERCUSP_ENGINEERING_PRODUCER_LIVE === '1';
 
@@ -92,3 +96,84 @@ it.skipIf(!live)('ee.live-boundary: records an actual sampled serving graph boun
   writeFileSync(outputPath!, JSON.stringify({ input, observedAt: new Date().toISOString(), before,
     after: before, receipt, report }, null, 2));
 }, 180_000);
+
+// These cases consume the actual producer receipt through the frozen journey
+// manifest. Their framework identities are separate from the producing case;
+// the existing owned Tauri executor still verifies the mounted product UI.
+async function recordedJourney() {
+  const config = readEngineeringJourneyConfig();
+  expect(process.env.PAPERCUSP_TEST_RUN_RECEIPT_FILE, 'retain each framework insertion receipt').toBeTruthy();
+  expect(config.workspace).toBe(process.env.PAPERCUSP_TEST_RUN_WORKSPACE ?? process.env.PAPERCUSP_WORKSPACE);
+  expect(config.input.harness).toBe(process.env.PAPERCUSP_TEST_RUN_HARNESS);
+  expect(config.client).toBe(config.input.clientId);
+  verifyProducerBuildIdentity(config.input.buildSha);
+  const health = () => readEngineeringRuntimeHealth({ origin: config.origin, buildSha: config.input.buildSha });
+  const before = await health();
+  const runtime = config.plane === 'final-release' ? 'release-operator' : 'staging-operator';
+  for (const pin of config.input.sourcePins) {
+    const measured = await readEngineeringTool(config, 'dev:pipeline_position', {
+      path: pin.path, expectedSourceSha256: pin.sha256, sourceRuntimeOnly: true,
+    }) as { acceptedSource?: { matches?: boolean; runtimeContainment?: Record<string, boolean> } };
+    expect(measured.acceptedSource?.matches, pin.path).toBe(true);
+    expect(measured.acceptedSource?.runtimeContainment?.[runtime], pin.path).toBe(true);
+  }
+  const query = (selectors: Record<string, unknown>) => readEngineeringTool(config, 'graph:query', {
+    op: 'evidence', harnesses: [config.input.harness], ...selectors,
+  }) as Promise<unknown> as Promise<EngineeringQueryReport>;
+  const retain = async (scenario: string, report: EngineeringQueryReport) => {
+    const after = await health();
+    expect(after).toBe(before);
+    verifyProducerBuildIdentity(config.input.buildSha);
+    const output = process.env.PAPERCUSP_ENGINEERING_JOURNEY_OUTPUT;
+    expect(output, 'retain the live scenario response in the parent-owned evidence directory').toBeTruthy();
+    mkdirSync(output!, { recursive: true });
+    writeFileSync(join(output!, scenario + '.json'), JSON.stringify({ scenario, plane: config.plane,
+      buildSha: config.input.buildSha, observedAt: new Date().toISOString(), before, after, report }, null, 2));
+  };
+  return { input: config.input, workspace: config.workspace, query, retain };
+}
+
+it.skipIf(!live)('ee.real-tool: resolves the exact symbol, intent and observed case through the selected serving route', async () => {
+  const { input, workspace, query, retain } = await recordedJourney();
+  const report = await query({ file_path: input.symbol.path, name: input.symbol.name });
+  expect(report.status).toBe('measured');
+  const graph = report.evidence!;
+  expect(graph.scope.workspaceId).toBe(workspace);
+  expect(graph.nodes.some(node => node.kind === 'item' && node.data.plan === input.plan && node.data.item === input.item)).toBe(true);
+  expect(graph.nodes.some(node => node.kind === 'spec' && node.data.id === input.spec.id && node.data.revision === input.spec.revision)).toBe(true);
+  const decision = graph.nodes.find(node => node.kind === 'decision' && node.data.decision === input.decisionId);
+  expect(decision).toBeDefined();
+  expect(graph.edges.some(edge => edge.from === decision!.id && edge.basis === 'decision-item-ref')).toBe(true);
+  expect(graph.nodes.some(node => node.kind === 'test-case' && node.data.runId === input.runId
+    && node.data.key === input.caseKey && node.data.occurrence === input.occurrence)).toBe(true);
+  expect(graph.execution.scope).toBe('instrumented-boundaries-only');
+  expect(graph.execution.observations).toContainEqual(expect.objectContaining({ runId: input.runId,
+    invocationId: input.observation.invocationId, caseKey: input.caseKey, occurrence: input.occurrence,
+    receipt: expect.objectContaining({ boundary: 'graph:query:evidence', traceId: input.observation.traceId,
+      spanId: input.observation.spanId, sourceFingerprint: input.observation.sourceFingerprint,
+      artifactFingerprint: input.observation.artifactFingerprint, environmentFingerprint: input.observation.environmentFingerprint }) }));
+  await retain('ee.real-tool', report);
+}, 180_000);
+
+it.skipIf(!live).each(['foreign-workspace', 'stale', 'unobserved'] as const)(
+  'ee.real-negative: %s preserves its explicit evidence limit on the selected serving artifact', async scenario => {
+    const { input, workspace, query, retain } = await recordedJourney();
+    const selectors = scenario === 'foreign-workspace'
+      ? { plan: input.plan, item: input.item, workspace: workspace + '-unauthorized-control' }
+      : input[scenario];
+    const report = await query(selectors);
+    if (scenario === 'foreign-workspace') {
+      expect(report.status).toBe('unknown');
+      expect(report.evidence).toBeNull();
+    } else {
+      expect(report.status).toBe('measured');
+      expect(report.evidence!.scope.workspaceId).toBe(workspace);
+      if (scenario === 'stale') {
+        expect(report.evidence!.nodes.some(node => node.state === 'stale' || node.state === 'historical')).toBe(true);
+      } else {
+        expect(report.evidence!.execution.status).toBe('unobserved');
+        expect(report.evidence!.execution.observations ?? []).toEqual([]);
+      }
+    }
+    await retain('ee.real-negative-' + scenario, report);
+  }, 180_000);

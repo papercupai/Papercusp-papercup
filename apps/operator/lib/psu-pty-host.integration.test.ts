@@ -1948,14 +1948,21 @@ describe('session-port managed seed + native persistence helpers', () => {
     const ownerId = `su-codex-provoked-frame-itest-${process.pid}-${Math.floor(performance.now())}`;
     const sock = socketPathFor(ownerId);
     const { captured, io } = fakeIo();
+    const codexHome = join(PSU_PTY_DIR, 'codex-home');
+    const nativeFile = join(codexHome, 'sessions', 'project', 'turn-' + ownerId + '.jsonl');
     const childCode =
+      "const fs=require('fs'),path=require('path');" +
       "process.stdout.write('psu: launcher banner\\n');" +
-      "process.stdin.setEncoding('utf8');let ready=false;let b='';" +
+      "process.stdin.setEncoding('utf8');let ready=false;let b='',submittedText='',nativeWritten=false;" +
       "process.stdin.on('data',d=>{" +
       "if(!ready&&String(d).includes('PROVOKE')){ready=true;" +
       "process.stdout.write('\\x1b[23;3HReady \\u00b7 GPT-6.1-Sol xhigh \\u00b7 Context 100% left');}" +
       "b+=d;let i;while((i=b.search(/[\\r\\n]/))>=0){const line=b.slice(0,i);b=b.slice(i+1);" +
-      "if(!line)continue;if(line.includes('QUIT'))process.exit(0);process.stdout.write('ECHO:'+line+'\\n');}});" +
+      "if(!line)continue;if(line.includes('QUIT'))process.exit(0);submittedText+=line+'\\n';" +
+      "if(!nativeWritten&&line.includes('PROVOKE-TURN')){nativeWritten=true;fs.mkdirSync(path.dirname(process.env.NATIVE_FILE),{recursive:true});" +
+      "const timestamp=new Date().toISOString();const row={type:'response_item',timestamp,payload:{type:'message',role:'user',content:[{type:'input_text',text:submittedText.trimEnd()}]}};" +
+      "fs.writeFileSync(process.env.NATIVE_FILE,JSON.stringify(row)+'\\n');}" +
+      "process.stdout.write('ECHO:'+line+'\\n');}});" +
       "setTimeout(()=>{process.stdout.write('\\x1b[6n');" +
       "setTimeout(()=>process.stdout.write('\\x1b[1;1H\\u2502 >_ OpenAI Codex (v0.159.3) \\u2502\\n\\u203a Ask Codex to do anything\\n" +
       "\\x1b[23;3HStarting \\u00b7 GPT-6.1-Sol xhigh \\u00b7 Context 100% left'),50);},100);" +
@@ -1968,6 +1975,8 @@ describe('session-port managed seed + native persistence helpers', () => {
         ...hermeticEnv(),
         PAPERCUSP_SID: ownerId,
         PAPERCUSP_AGENT: 'codex',
+        CODEX_HOME: codexHome,
+        NATIVE_FILE: nativeFile,
         PAPERCUSP_PSU_PTY_STARTUP_MARKER_FALLBACK_MS: '260',
         PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '100',
         PAPERCUSP_PSU_PTY_SUBMIT_CR_MS: '25',
@@ -5072,8 +5081,6 @@ describe('ADOPTION — a stale host hands the session to a fresh launcher instea
       const meta = metaPathFor(ownerId);
       const handoff = handoffPathFor(ownerId);
       const { captured, io } = fakeIo();
-      const carryFile = join(mkdtempSync(join(tmpdir(), 'wi38292-carry-')), 'carry.md');
-      writeFileSync(carryFile, 'the carry document\n');
 
       const reexecs: Array<{ code: number; mode: string }> = [];
       const ended: number[] = [];
@@ -5104,11 +5111,7 @@ describe('ADOPTION — a stale host hands the session to a fresh launcher instea
         // reproduction, injected rather than performed, because performing it
         // would mean rewriting the checkout mid-test.
         hostCodeStalenessFn: () => ({ stale: true, loaded: 'a'.repeat(64), onDisk: 'b'.repeat(64) }),
-        mintCarryRespawnArgs: (a: string[]) => ({
-          args: a.slice(0, -1).concat('--append-system-prompt-file', carryFile),
-          nativeId: 'aaaabbbb-1111-2222-3333-444455556666',
-          launchContextPath: carryFile,
-        }),
+        mintRecycleArgs: (a: string[]) => ({ args: a, nativeId: null }),
         onReexec: ({ code, mode }: { code: number; mode: string }) => { reexecs.push({ code, mode }); },
         onExit: (c: number) => { ended.push(c); },
       });
@@ -5118,39 +5121,25 @@ describe('ADOPTION — a stale host hands the session to a fresh launcher instea
       const firstBoots = [...captured().matchAll(/BOOT:/g)].length;
       expect(firstBoots).toBe(1);
 
-      await envelopeInject(sock, {
-        mode: 'carry-respawn',
-        data: 'CARRIED',
-        systemPromptAddendum: 'deterministic carry',
-      });
+      // Exercise adoption with no pending wake. The shouldAdoptHostCode unit
+      // test separately verifies that pending turn/carry deliveries veto it.
+      await controlInject(sock, 'recycle', '');
 
       const code = await done;
 
-      // Left by the re-exec door, with the shim's advertised code…
-      expect(reexecs).toEqual([{ code: 87, mode: 'carry-respawn' }]);
+      expect(reexecs).toEqual([{ code: 87, mode: 'recycle' }]);
       expect(code).toBe(87);
-      // …and NOT by the ordinary exit door: this session is continuing in a new
-      // process, so reporting it ended would bury it in adv_sessions and leave the
-      // successor climbing out of a grave.
       expect(ended).toEqual([]);
-      // No second child was spawned inside this stale host — that is the whole
-      // point. A respawn here would have run the OLD code again.
       expect([...captured().matchAll(/BOOT:/g)].length).toBe(1);
 
-      // The successor's orders reached disk, carrying the argv this host had
-      // already minted — the carry rides the file, not the dead process's memory.
       expect(existsSync(handoff)).toBe(true);
       const orders = JSON.parse(readFileSync(handoff, 'utf8'));
       expect(orders).toMatchObject({
         ownerId,
-        mode: 'carry-respawn',
+        mode: 'recycle',
         fromPid: process.pid,
-        launchContextPath: carryFile,
-        nativeId: 'aaaabbbb-1111-2222-3333-444455556666',
         advSessionId: 42,
         codexHome: '/tmp/codex-home-for-handoff',
-        // These are Codex orders; Claude's compactor switches belong only to
-        // Claude successors (psu-native-compaction-switches.test.ts).
         childEnv: {
           PAPERCUSP_SID: ownerId,
           PAPERCUSP_AGENT: 'codex',
@@ -5161,16 +5150,20 @@ describe('ADOPTION — a stale host hands the session to a fresh launcher instea
       });
       expect(orders.childEnv).not.toHaveProperty('DISABLE_AUTO_COMPACT');
       expect(orders.childEnv).not.toHaveProperty('DISABLE_COMPACT');
-      expect(orders.args).toContain('--append-system-prompt-file');
-      expect(orders.args).toContain(carryFile);
+      expect(orders.args).toEqual(['-e', childCode, 'ORIGINAL']);
 
-      // Released BEFORE the successor can assert them (host:2739 — a second host
-      // on a live discovery key strands the first).
       expect(existsSync(sock)).toBe(false);
       expect(existsSync(meta)).toBe(false);
 
-      const events = readFileSync(eventLogPathForOwner(ownerId), 'utf8');
-      expect(events).toContain('"kind":"host-code-adopting"');
+      const events = readFileSync(eventLogPathForOwner(ownerId), 'utf8')
+        .split('\n').filter(Boolean).map((line) => JSON.parse(line));
+      expect(events.find((event) => event.kind === 'host-code-stale')).toMatchObject({
+        adoptable: true,
+        pendingWakeDelivery: false,
+        willAdopt: true,
+        notAdoptingReason: null,
+      });
+      expect(events.some((event) => event.kind === 'host-code-adopting')).toBe(true);
 
       unlinkSync(handoff);
     },

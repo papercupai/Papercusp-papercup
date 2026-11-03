@@ -1092,7 +1092,7 @@ async function releaseAll(
     // The bulk store release bypasses locks:release and its broadcast helper.
     // Emit only after the transaction has removed each exclusive row so a
     // held_exclusive caller can await the truthful exact-resource boundary.
-    for (const resource of released.exclusiveResources) onExclusiveResourceReleased(resource);
+    for (const resource of released.releasedExclusiveResources) onExclusiveResourceReleased(resource);
     return true;
   } catch (error) {
     // The bulk release is transactional: either every owner-scoped row is gone
@@ -1345,6 +1345,9 @@ async function acquireLocks(
             { resources: [resource] },
           ).catch(() => null);
           if (released && released.released > 0) {
+            for (const releasedResource of released.releasedExclusiveResources ?? []) {
+              emitResourceReleasedEvent(releasedResource, cd === '*' ? null : cd);
+            }
             reclaimed = true;
             console.error(
               `[git-sync] ORPHANED SELF-LEASE RECLAIMED — ${slug} ${resource} holder ${holder.owner} ` +
@@ -1376,14 +1379,17 @@ async function acquireLocks(
       // cascade grant atomically before returning; releasing by THIS owner
       // cannot touch the peer row.
       try {
-        await acquireWithContentionRetry(() =>
+        const released = await acquireWithContentionRetry(() =>
           inWorkspaceTxn(cd, owner, async (tx) => {
             await clearQueuedGitSyncOwners(tx, cd, resource);
             await clearResourceExclusiveQueue(tx, cd, resource, owner);
             await clearResourceWaiter(tx, cd, resource, owner);
-            await tryReleaseResource(tx, { coordinationDomain: cd, owner, resource, scope: 'resource' });
+            return tryReleaseResource(tx, { coordinationDomain: cd, owner, resource, scope: 'resource' });
           }, { resources: [resource] }),
         );
+        for (const releasedResource of released.releasedExclusiveResources ?? []) {
+          emitResourceReleasedEvent(releasedResource, cd === '*' ? null : cd);
+        }
       } catch (error) {
         console.error(
           `[git-sync] ${slug}: failed to cancel terminal exclusive request for ${resource}; ` +

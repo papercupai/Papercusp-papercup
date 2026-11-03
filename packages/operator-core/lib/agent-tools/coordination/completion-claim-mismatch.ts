@@ -160,6 +160,14 @@ function isFutureIntentReference(text: string, index: number): boolean {
   return PROSPECTIVE_INTENT.test(beforeReference) && !hasPositiveCompletionClaim(beforeReference);
 }
 
+function isToolTargetReference(text: string, index: number): boolean {
+  // An explicit `tool:verb target <ref>` names the input to an operation.
+  // Do not attach an unrelated completion verb earlier in the same sentence
+  // to that operational target (for example, a verified source plus a pending
+  // `scorecards:repair target EI-…` request).
+  return /\b[a-z][a-z0-9_-]*:[a-z][a-z0-9_-]*\s+target\s*$/i.test(text.slice(0, index));
+}
+
 function comparisonRef(ref: string): string {
   const trimmed = ref.trim().toLowerCase();
   // Rubrics are stored as rubric-template plans. `rubrics:get` therefore
@@ -185,9 +193,17 @@ export function completionClaimRefs(input: CompletionClaimInput): string[] {
   const declaredRefs: string[] = [];
   const seen = new Set<string>();
   for (const text of statements) {
-    const skipFutureIntent = (match: RegExpExecArray): boolean => isFutureIntentReference(text, match.index);
-    collectMatches(text, WORK_ITEM_REF, (match) => `work-item:${match[1]!.toUpperCase()}`, declaredRefs, seen, skipFutureIntent);
-    collectMatches(text, PLAN_TOKEN, (match) => `plan:${match[1]!.toLowerCase()}`, declaredRefs, seen, skipFutureIntent);
+    const skipNonClaimReference = (match: RegExpExecArray): boolean =>
+      isFutureIntentReference(text, match.index) || isToolTargetReference(text, match.index);
+    collectMatches(
+      text,
+      WORK_ITEM_REF,
+      (match) => `work-item:${match[1]!.toUpperCase()}`,
+      declaredRefs,
+      seen,
+      skipNonClaimReference,
+    );
+    collectMatches(text, PLAN_TOKEN, (match) => `plan:${match[1]!.toLowerCase()}`, declaredRefs, seen, skipNonClaimReference);
     collectMatches(
       text,
       PLAN_LABEL,
@@ -197,7 +213,7 @@ export function completionClaimRefs(input: CompletionClaimInput): string[] {
       },
       declaredRefs,
       seen,
-      skipFutureIntent,
+      skipNonClaimReference,
     );
     collectMatches(
       text,
@@ -208,7 +224,7 @@ export function completionClaimRefs(input: CompletionClaimInput): string[] {
       },
       declaredRefs,
       seen,
-      skipFutureIntent,
+      skipNonClaimReference,
     );
     collectMatches(
       text,
@@ -219,7 +235,7 @@ export function completionClaimRefs(input: CompletionClaimInput): string[] {
       },
       declaredRefs,
       seen,
-      skipFutureIntent,
+      skipNonClaimReference,
     );
     collectMatches(
       text,
@@ -230,7 +246,7 @@ export function completionClaimRefs(input: CompletionClaimInput): string[] {
       },
       declaredRefs,
       seen,
-      skipFutureIntent,
+      skipNonClaimReference,
     );
   }
   collectExplicitPremises(input, declaredRefs, seen);

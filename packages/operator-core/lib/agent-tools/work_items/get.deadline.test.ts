@@ -28,7 +28,8 @@ const planItemClaimCollision = vi.fn();
 const planItemTextDriftForWorkItem = vi.fn();
 const readCorroborationSummary = vi.fn();
 
-vi.mock('../../work-items', () => ({
+vi.mock('../../work-items', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../work-items')>()),
   getWorkItem: (...args: unknown[]) => getWorkItem(...args),
   getWorkItemsByIds: (...args: unknown[]) => getWorkItemsByIds(...args),
   getWorkItemDetail: (...args: unknown[]) => getWorkItemDetail(...args),

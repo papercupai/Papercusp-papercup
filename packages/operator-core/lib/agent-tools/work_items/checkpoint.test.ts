@@ -3083,7 +3083,6 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
 
       it('agrees with loop:checkpoint on the id bound at BOTH edges, so the contracts cannot drift again', async () => {
         const { CARRY_ROW_ID_MAX, CARRY_CAP_HARD_MULTIPLE } = await import('../../carry-note');
-        const hardMax = CARRY_ROW_ID_MAX * CARRY_CAP_HARD_MULTIPLE;
         const loopCheckpoint = (await import('../loop/checkpoint')).default as {
           args: { parse: (x: unknown) => unknown };
         };
@@ -3103,11 +3102,11 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
             return 'rejected';
           }
         };
-        // Both edges: at the bound and one char over. Asserting only the accept side
-        // would pass against a schema with no bound at all.
+        // Both edges on both tools: a 40-char control is valid and one extra
+        // character is rejected before storage can collapse distinct identities.
         for (const [len, expected] of [
-          [hardMax, 'accepted'],
-          [hardMax + 1, 'rejected'],
+          [CARRY_ROW_ID_MAX, 'accepted'],
+          [CARRY_ROW_ID_MAX + 1, 'rejected'],
         ] as const) {
           const id = 'a'.repeat(len);
           expect(wiVerdict(id)).toBe(expected);
@@ -3115,7 +3114,7 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
         }
       });
 
-      it('publishes the same soft row caps as loop:checkpoint while retaining the hard backstop', async () => {
+      it('publishes one strict row-ID cap across both checkpoint tools and retains text-field backstops', async () => {
         type JsonNode = { [key: string]: unknown };
         const { CARRY_ROW_ID_MAX } = await import('../../carry-note');
         const schemaOf = (candidate: unknown) => {
@@ -3138,14 +3137,11 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
         const workItemRows = schemaOf(checkpoint);
         const loopRows = schemaOf(loopCheckpoint);
 
-        const idCaps = {
-          maxLength: CARRY_ROW_ID_MAX * CARRY_CAP_HARD_MULTIPLE,
-          'x-soft-maxLength': CARRY_ROW_ID_MAX,
-        };
+        const idCaps = { maxLength: CARRY_ROW_ID_MAX };
         expect(workItemRows.id).toMatchObject(idCaps);
         expect(loopRows.id).toMatchObject(idCaps);
-        expect(workItemRows.id.description).toContain(`Soft cap: ${CARRY_ROW_ID_MAX} chars`);
-        expect(loopRows.id.description).toContain(`Hard input backstop: ${idCaps.maxLength} chars`);
+        expect(workItemRows.id.description).toContain(`Maximum: ${CARRY_ROW_ID_MAX} characters`);
+        expect(loopRows.id.description).toContain('longer ids are rejected');
 
         for (const field of ['claim', 'recheck', 'verified'] as const) {
           const softCap = CARRY_ROW_SOFT_CAPS[field];

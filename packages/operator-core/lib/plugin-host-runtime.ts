@@ -30,6 +30,7 @@ import {
   ServerActionRegistry,
   collectReactionRules,
   type LoadedPlugin,
+  type PluginDiscoveryInventory,
   type CapabilityCheckContext,
   type ActionDecl,
   type ActionResult,
@@ -41,6 +42,7 @@ import type {
   PluginSpawn,
   PluginSpawnResult,
 } from '@papercusp/plugin-sdk';
+import type { ObservedSurface } from '@papercusp/testing-shell/census';
 
 import { papercuspRoot } from './papercusp-root';
 import {
@@ -135,6 +137,7 @@ installConsoleInterceptor();
 
 interface HostState {
   loaded: LoadedPlugin[];
+  discovery?: PluginDiscoveryInventory;
   loadErrors: Array<{ error: string; path: string }>;
   /** (pluginName, installSlug) → already initialized */
   initialized: Set<string>;
@@ -356,6 +359,7 @@ export async function registerPluginReactionRules(
 
 async function discover(onProvidersRegistered: () => void = () => {}): Promise<HostState> {
   let loaded: LoadedPlugin[] = [];
+  let discovery: PluginDiscoveryInventory | undefined;
   let loadErrors: Array<{ error: string; path: string }> = [];
   const harnessSlugs = discoverHarnessSlugs();
 
@@ -390,6 +394,7 @@ async function discover(onProvidersRegistered: () => void = () => {}): Promise<H
       projectDir: bundled?.dir,
     });
     loaded = r.loaded;
+    discovery = r.discovery;
     loadErrors = r.errors;
     const skew = bundled ? bundledPluginsSkewError(bundled, __dirname) : null;
     if (skew) loadErrors.unshift(skew);
@@ -476,7 +481,7 @@ async function discover(onProvidersRegistered: () => void = () => {}): Promise<H
     }
   }
 
-  return { loaded, loadErrors, initialized: new Set(), registries: new Map(), grants: new Map(), wasmHandles: new Map() };
+  return { loaded, discovery, loadErrors, initialized: new Set(), registries: new Map(), grants: new Map(), wasmHandles: new Map() };
 }
 
 export interface ProviderRegistrationFailure {
@@ -1499,7 +1504,78 @@ export function inspectPluginHostSecurityPopulation() {
       } };
   });
   if (state?.loadErrors.length) unresolved.push('plugin-runtime-load-errors-present');
-  return { surfaces, unresolved, phase };
+  // Reuse the actual loader walk. Inspection never enumerates disk or invokes
+  // plugin code; failed/excluded/shadowed candidates remain visible for review.
+  const roots = (state?.discovery?.roots ?? []).map((root, index) => ({
+    kind: 'configured-plugin-root',
+    surfaceId: JSON.stringify(['plugin-root', root.source, root.pluginsDir, index]),
+    sourceFile: null, fidelity: 'observed' as const, attrs: {
+      loaderId: 'plugin-runtime', loaderRoot: __cache.rootAtCache, phase,
+      path: root.pluginsDir, source: root.source, runtimeKind: null,
+      loadedArtifactCoverage: 'unknown', initializationEffectCoverage: 'unknown',
+    },
+  }));
+  const candidates = (state?.discovery?.candidates ?? []).map((candidate, index) => ({
+    kind: 'configured-plugin-candidate',
+    surfaceId: JSON.stringify(['plugin-candidate', candidate.source, candidate.path, index]),
+    sourceFile: null, fidelity: 'observed' as const, attrs: {
+      loaderId: 'plugin-runtime', loaderRoot: __cache.rootAtCache, phase,
+      path: candidate.path, source: candidate.source, runtimeKind: null,
+      loadedArtifactCoverage: 'unknown', initializationEffectCoverage: 'unknown',
+      discoveryStatus: candidate.status, pluginName: candidate.pluginName ?? null,
+      // Loader-owned, allowlisted JSON metadata from the original parse. A
+      // detached copy keeps inspection consumers from mutating the cache.
+      manifest: candidate.manifest ? structuredClone(candidate.manifest) : null,
+      manifestCoverage: candidate.manifest ? 'parsed-declarations-only' : 'unknown',
+      reason: candidate.reason ?? null, error: candidate.error ?? null,
+    },
+  }));
+  // Enumerate declarations independently of successful loading/registration.
+  // Candidate + family + ordinal preserves shadowed copies and duplicate names.
+  // These rows describe parsed data, never a callable handler or mounted route.
+  const declaredSurfaces: ObservedSurface[] = [];
+  for (const candidate of candidates) {
+    const manifest = candidate.attrs.manifest;
+    if (!manifest) {
+      unresolved.push(`plugin-runtime-candidate-manifest-unavailable:${candidate.surfaceId}`);
+      continue;
+    }
+    const add = (family: string, declaration: unknown, index: number) => {
+      declaredSurfaces.push({
+        kind: 'configured-plugin-declaration',
+        surfaceId: JSON.stringify(['plugin-declaration', candidate.surfaceId, family, index]),
+        sourceFile: null, fidelity: 'declared', attrs: {
+          candidateId: candidate.surfaceId, loaderId: 'plugin-runtime', phase,
+          path: candidate.attrs.path, source: candidate.attrs.source,
+          discoveryStatus: candidate.attrs.discoveryStatus,
+          reason: candidate.attrs.reason, error: candidate.attrs.error,
+          pluginName: manifest.name ?? candidate.attrs.pluginName,
+          version: manifest.version ?? null, distribution: manifest.distribution ?? null,
+          runtime: structuredClone(manifest.runtime ?? null),
+          capabilities: structuredClone(manifest.capabilities ?? null),
+          declarationKind: family, declarationIndex: index,
+          declaration: structuredClone(declaration),
+          reachability: 'unknown', actualEffectCoverage: 'unknown',
+          loadedArtifactCoverage: 'unknown', applicability: 'unknown',
+        },
+      });
+    };
+    for (const family of ['tools', 'actions', 'routines', 'reactions'] as const) {
+      const declarations = manifest[family];
+      if (Array.isArray(declarations)) declarations.forEach((declaration, index) => add(family, declaration, index));
+    }
+    // apiRoutes is intentionally opaque in the manifest schema. Retain its
+    // declaration (even false/null), but never invent individual mounted routes.
+    if (Object.hasOwn(manifest, 'apiRoutes')) {
+      add('apiRoutes', manifest.apiRoutes, 0);
+      unresolved.push(`plugin-runtime-api-routes-unexpanded:${candidate.surfaceId}`);
+    }
+  }
+  if (declaredSurfaces.length) unresolved.push('plugin-runtime-declaration-reconciliation-unverified');
+  for (const entry of state?.discovery?.unavailable ?? []) {
+    unresolved.push(`plugin-runtime-input-unavailable:${JSON.stringify([entry.path, entry.code])}`);
+  }
+  return { surfaces: [...surfaces, ...roots, ...candidates], declaredSurfaces, unresolved, phase };
 }
 
 export async function pluginHostStatus(): Promise<PluginHostStatus & {
@@ -1712,9 +1788,10 @@ export function _resetPluginHostForTests(): void {
  * `_resetPluginHostForTests()` clears the override and restores normal
  * filesystem discovery on the next call.
  */
-export function _injectPluginHostForTests(loaded: LoadedPlugin[]): void {
+export function _injectPluginHostForTests(loaded: LoadedPlugin[], discovery?: PluginDiscoveryInventory): void {
   const state: HostState = {
     loaded,
+    discovery,
     loadErrors: [],
     initialized: new Set(),
     registries: new Map(),

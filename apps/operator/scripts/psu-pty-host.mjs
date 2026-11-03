@@ -11625,7 +11625,7 @@ export function resolveAgentPtyTarget({ command, args, env, cwd }, deps = {}) {
  * @param {string} [o.normalizedLogPath] optional headless grep-safe log path; normally
  *   supplied through {@link HEADLESS_NORMALIZED_LOG_ENV} in `o.env`
  * @param {(args:string[], options:{agent?:string, personaFile?:string|null})=>any} [o.mintRecycleArgs] mint argv for an ordinary recycle
- * @param {(args:string[], options:{systemPromptAddendum:string, ownerId:string, agent?:string, personaFile?:string|null, codexHome?:string})=>any} [o.mintCarryRespawnArgs] mint argv for a carry respawn
+ * @param {(args:string[], options:{systemPromptAddendum:string, firstPrompt?:string, ownerId:string, agent?:string, personaFile?:string|null, codexHome?:string})=>any} [o.mintCarryRespawnArgs] mint argv for a carry respawn
  * @param {(args:string[], options:{agent?:string})=>({args:string[], nativeId:string}|null)} [o.mintParkResumeArgs]
  * @param {(args:string[], options:{nativeId:string|null})=>({args:string[], nativeId:string}|null)} [o.mintQuotaResumeArgs]
  * @param {(args:string[])=>string[]} [o.prepareChildArgs]
@@ -17966,6 +17966,7 @@ export function hostThroughPty(o) {
         quotaRecovery = null,
         carryProofRetryCount = 0,
         carryRequest = null,
+        managedCarry = false,
         // WI-10004943: spawn a fresh child on the launch argv and return without
         // a first prompt; the launch closure re-delivers its own kickoff.
         freshChildOnly = false,
@@ -18040,7 +18041,11 @@ export function hostThroughPty(o) {
       // carry-respawn (no drillId) completely invisible in the per-owner event log
       // — the P-018 successor-kill loop left ZERO durable trace outside journalctl.
       // Non-drill respawns now always leave generic respawned/failed/carry rows.
-      const respawnMode = systemPromptAddendum
+      // Frozen assignments intentionally have an empty system addendum. The
+      // authenticated operation still selects the managed carry lifecycle;
+      // content presence is not an operation discriminator.
+      const isManagedCarry = Boolean(systemPromptAddendum) || managedCarry || carryRequest?.mode === 'carry-respawn';
+      const respawnMode = isManagedCarry
         ? 'carry-respawn'
         : freshChildOnly
           ? 'launch-fresh-child'
@@ -18077,11 +18082,11 @@ export function hostThroughPty(o) {
           targetNativeRef: hasTargetRef ? targetNativeRef : null,
         };
       };
-      const carrySourceTranscript = systemPromptAddendum
+      const carrySourceTranscript = isManagedCarry
         ? sourceTranscriptPath || newestNativeTranscriptPath(env.PAPERCUSP_AGENT, env)
         : null;
       const preserveNewerOwnerInput = () => {
-        if (!systemPromptAddendum || drillId) return null;
+        if (!isManagedCarry || drillId) return null;
         const freshness = carryNativeOwnerInputFreshness({
           agent: env.PAPERCUSP_AGENT, env, transcriptPath: carrySourceTranscript, systemPromptAddendum,
         });
@@ -18285,7 +18290,7 @@ export function hostThroughPty(o) {
           return settleQuotaRecovery(false, 'owner-input-or-native-work');
         }
         if (
-          systemPromptAddendum &&
+          isManagedCarry &&
           String(env.PAPERCUSP_AGENT ?? '').trim().toLowerCase() === 'codex'
         ) {
           let homeEnsureFailure = null;
@@ -18319,9 +18324,10 @@ export function hostThroughPty(o) {
           ? mintQuotaResumeArgs(liveChildArgs, {
               nativeId: currentNativeSessionId(child.pid, resolveRespawnNativeId),
             })
-          : systemPromptAddendum
+          : isManagedCarry
           ? mintCarryRespawnArgs(args, {
               systemPromptAddendum,
+              ...(!systemPromptAddendum ? { firstPrompt: String(carryText ?? '') } : {}),
               ownerId,
               agent: env.PAPERCUSP_AGENT,
               personaFile,
@@ -18678,7 +18684,7 @@ export function hostThroughPty(o) {
         } catch {
           /* the terminal bridge is advisory — never let it break the respawn */
         }
-        freshChildOwnerInputGeneration = systemPromptAddendum
+        freshChildOwnerInputGeneration = isManagedCarry
           ? ownerInputGeneration
           : null;
         // The successor inherits `env`; heal dead managed targets here while
@@ -19132,6 +19138,7 @@ export function hostThroughPty(o) {
         });
         return recycleChild(carryText, {
           systemPromptAddendum,
+          managedCarry: isManagedCarry,
           sourceTranscriptPath: carrySourceTranscript,
           drillId,
           sessionClass,

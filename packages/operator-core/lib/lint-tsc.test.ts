@@ -3131,7 +3131,11 @@ describe('the gate REPORT actually prints the diagnostics (wiring, EI-1945421106
     "lib/a.ts(597,60): error TS1320: Type of 'await' operand must either be a valid promise or must not contain a callable 'then' member.";
 
   /** Run the real gate over canned compiler output; returns its combined output. */
-  function runGate(baseline: Record<string, number>, extraFile?: { path: string; diagnostic: string }): string {
+  function runGate(
+    baseline: Record<string, number>,
+    extraFile?: { path: string; diagnostic: string },
+    extraArgs: string[] = [],
+  ): string {
     const root = mkdtempSync(join(tmpdir(), 'tsc-gate-wiring-'));
     try {
       mkdirSync(join(root, 'lib'), { recursive: true });
@@ -3153,7 +3157,7 @@ describe('the gate REPORT actually prints the diagnostics (wiring, EI-1945421106
           `  tscCommand: ${JSON.stringify(`cat ${join(root, 'tsc-output.txt')}`)},\n` +
           `  baselineFile: ${JSON.stringify(join(root, 'baseline.json'))},\n` +
           `  label: 'test',\n` +
-          `  argv: ['--files=lib/a.ts'],\n` +
+          `  argv: ${JSON.stringify(['--files=lib/a.ts', ...extraArgs])},\n` +
           `});\n`,
       );
       try {
@@ -3298,6 +3302,30 @@ describe('the gate REPORT actually prints the diagnostics (wiring, EI-1945421106
     expect(out).toContain(TS1XXX_HARD_FAIL_TSC_LINES);
     expect(out).toContain('hard-failing TS1xxx diagnostics');
     expect(out).not.toContain('parse errors');
+  });
+
+  it('marks a scoped clean result partial when a foreign TS1109 makes semantic verification incomplete', () => {
+    const diagnostic = 'lib/peer-broken.ts(1,3): error TS1109: Expression expected.';
+    const out = runGate(
+      { 'lib/a.ts': 2, 'lib/peer-broken.ts': 1 },
+      { path: 'lib/peer-broken.ts', diagnostic },
+    );
+    expect(out).toContain('LINT_TSC_RESULT label=test scope=files exit=0 status=partial semanticIncomplete=1');
+    expect(out).toContain('No scoped regression was found, but a foreign parser diagnostic makes semantic verification incomplete');
+    expect(out).not.toContain('status=clean');
+  });
+
+  it('refuses --update instead of ratcheting from an incomplete scoped compile', () => {
+    const diagnostic = 'lib/peer-broken.ts(1,3): error TS1109: Expression expected.';
+    const out = runGate(
+      { 'lib/a.ts': 3, 'lib/peer-broken.ts': 1 },
+      { path: 'lib/peer-broken.ts', diagnostic },
+      ['--update'],
+    );
+    expect(out).toContain('--update refused: a foreign parser diagnostic makes semantic verification incomplete');
+    expect(out).toContain('the baseline was not changed');
+    expect(out).toContain('LINT_TSC_RESULT label=test scope=update:files exit=70 status=error(70) semanticIncomplete=1');
+    expect(out).not.toContain('Ratcheted YOUR improved file');
   });
 
   // EI-19343733961745670 — the cap and its escape hatch, proved on ONE fixture run twice. The

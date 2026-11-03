@@ -1137,7 +1137,7 @@ export function mintCodexQuotaResumeArgs(liveArgs?: string[], { nativeId }?: {
  *          home?: string, agent?: string | null, personaFile?: string | null,
  *          codexHome?: string | null, model?: string | null }} [opts]
  */
-export function mintCarryRespawnArgs(args?: string[], { systemPromptAddendum, ownerId, mintId, home, agent, personaFile, codexHome, model, }?: {
+export function mintCarryRespawnArgs(args?: string[], { systemPromptAddendum, firstPrompt, ownerId, mintId, home, agent, personaFile, codexHome, model, }?: {
     systemPromptAddendum?: string;
     ownerId?: string | null;
     mintId?: () => string;

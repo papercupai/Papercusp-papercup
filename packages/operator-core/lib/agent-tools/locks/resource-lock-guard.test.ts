@@ -21,6 +21,7 @@ vi.mock('./resource-broadcast', () => ({
   broadcastResourceDrainStart: vi.fn(),
   broadcastResourceBackUp: vi.fn(async () => {}),
 }));
+vi.mock('../../harness/git-sync/git-sync-events', () => ({ emitResourceReleasedEvent: vi.fn() }));
 vi.mock('./identity', () => ({ readIdentity: vi.fn() }));
 vi.mock('../coordination/identity', () => ({ resolveAgentIdentity: vi.fn() }));
 
@@ -28,6 +29,9 @@ import { inWorkspaceTxn } from './in-workspace-txn';
 import { acquireSharedResourceAtomic, releaseSharedResourceAtomic, tryReleaseResource } from './su-lock-store';
 import { acquireResourceExclusiveWithWait } from './resource-acquire-wait';
 import { guardResource } from './resource-lock-guard';
+import { broadcastResourceBackUp } from './resource-broadcast';
+import { emitResourceReleasedEvent } from '../../harness/git-sync/git-sync-events';
+import { mockResolvedOnceTyped } from '../../testing/typed-mock';
 
 const foreignCoordinationDomain = join(tmpdir(), 'papercusp-release');
 const txnM = vi.mocked(inWorkspaceTxn);
@@ -35,6 +39,8 @@ const sharedAcquireM = vi.mocked(acquireSharedResourceAtomic);
 const sharedReleaseM = vi.mocked(releaseSharedResourceAtomic);
 const releaseM = vi.mocked(tryReleaseResource);
 const exclusiveAcquireM = vi.mocked(acquireResourceExclusiveWithWait);
+const backUpM = vi.mocked(broadcastResourceBackUp);
+const releaseEventM = vi.mocked(emitResourceReleasedEvent);
 
 const exclusionDetail = {
   resource: 'dev-server',
@@ -173,14 +179,17 @@ describe('guardResource host-global exclusion handling', () => {
   });
 
   it('releases an exclusive reservation when drain wait times out', async () => {
-    exclusiveAcquireM.mockResolvedValueOnce({
+    mockResolvedOnceTyped(exclusiveAcquireM, {
       ok: false,
       reason: 'drain_timeout',
       lock_id: 'declined-reservation',
       holders: [],
       waited_sec: 45,
-    } as never);
-    releaseM.mockResolvedValueOnce({ waiters: { 'staging-server': [] } } as never);
+    });
+    mockResolvedOnceTyped(releaseM, {
+      released: 0, releasedModes: [], releasedExclusiveResources: [], exclusiveResources: [], expired: [],
+      waiters: { 'staging-server': [] },
+    });
     const run = vi.fn(async () => 'must not run');
 
     const result = await guardResource(
@@ -203,5 +212,40 @@ describe('guardResource host-global exclusion handling', () => {
       owner: 'su-caller',
       lockId: 'declined-reservation',
     });
+  });
+
+  it('emits the deleted-exclusive event when a successor keeps the resource unavailable', async () => {
+    mockResolvedOnceTyped(exclusiveAcquireM, {
+      ok: true,
+      status: 'held',
+      lock_id: 'exclusive-lock',
+      waited_sec: 0,
+      shared_holders_at_start: [],
+      fence_seq: 1,
+    });
+    releaseM.mockResolvedValueOnce({
+      released: 1,
+      releasedModes: ['exclusive'],
+      releasedExclusiveResources: ['git-sync'],
+      exclusiveResources: [],
+      expired: [],
+      waiters: {},
+    });
+
+    const result = await guardResource(
+      {
+        coordinationDomain: 'workspace-1',
+        ownerId: 'su-caller',
+        ownerLabel: 'caller',
+        coordIdentity: { ownerId: 'su-caller', workspaceId: 'workspace-1' } as never,
+        resource: 'git-sync',
+        mode: 'exclusive',
+      },
+      async () => 'completed',
+    );
+
+    expect(result).toEqual({ acquired: true, result: 'completed', lock_id: 'exclusive-lock' });
+    expect(releaseEventM).toHaveBeenCalledExactlyOnceWith('git-sync', 'workspace-1');
+    expect(backUpM).not.toHaveBeenCalled();
   });
 });

@@ -500,7 +500,17 @@ export async function locateCommittedBlobs(
   includeSizes = false,
 ): Promise<Map<string, CommittedBlobLocation | null>> {
   const git = deps.git ?? defaultGitRunner;
-  const exists = deps.exists ?? ((repo: string) => hasRepo(root, repo));
+  const probeRepo = deps.exists ?? ((repo: string) => hasRepo(root, repo));
+  // Sibling files share ancestors. Reuse boundary observations within this read,
+  // but recheck on the next read so changes to submodule metadata remain visible.
+  const repoProbes = new Map<string, boolean>();
+  const exists = async (repo: string): Promise<boolean> => {
+    const cached = repoProbes.get(repo);
+    if (cached !== undefined) return cached;
+    const present = await probeRepo(repo);
+    repoProbes.set(repo, present);
+    return present;
+  };
   const candidateOf = new Map<string, string>();
   for (const normalized of new Set(paths.map(normalizedRepoPath))) {
     candidateOf.set(normalized, await owningRepo(root, normalized, exists));

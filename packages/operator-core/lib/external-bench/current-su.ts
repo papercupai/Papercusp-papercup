@@ -35,6 +35,7 @@ import { openAiCacheGeneration } from '../inference-gateway/cache-policy';
 import { CONTAINER_CODEX_BIN_PATH, materializeDockerExecWrapper, validateDockerExecTarget, type DockerExecTarget } from './container-exec-target';
 import type { PsuPtyHost } from '../events/await/psu-pty-discovery';
 import { BENCHMARK_SCRATCH_PLAN_TOOLS, type ScratchPlanBoundary } from '../capability-envelope/session-confinement';
+import { clampCompactionLimit } from '../agent-config-constants';
 
 interface NativeCostParticipant {
   taskId: string; ownerId: string; terminal: boolean;
@@ -2019,6 +2020,7 @@ export function currentBenchLaunchRequest(opts: CurrentSuBenchOptions, handle: B
   if (!opts.model.trim() || !opts.account.trim()) throw new Error('Current benchmark model/account must be explicit.');
   const arm = currentBenchmarkProtocolSchema.parse(opts.preregistration.config).arms.find(arm => arm.id === opts.armId);
   if (!arm) throw new Error('Current benchmark launch arm is not in the frozen protocol.');
+  const compactionLimit = currentBenchCompactionLimit(arm);
   return {
     harness: handle.slug, cwd: handle.worktreePath, feature: handle.featureId, workItem: handle.featureId,
     brief: `${currentBenchTaskInstruction(handle, currentBenchLedgerEnabled(arm), currentBenchPlanningBoundary(opts, handle))}\n\n${problem}${arm.control?.capabilities['memory-recall'] === 'on'
@@ -2029,8 +2031,18 @@ export function currentBenchLaunchRequest(opts: CurrentSuBenchOptions, handle: B
     extraArgs: ['--auto'],
     label: `${attemptLabel(opts.runId, handle)}solver`,
     idempotencyKey: `current-bench:${hash(`${opts.runId}:${handle.slug}`)}`,
-    members: [{ role: 'su', agent: opts.agent, model: opts.model, effort: opts.effort, account: opts.account }],
+    members: [{ role: 'su', agent: opts.agent, model: opts.model, effort: opts.effort, account: opts.account,
+      ...(compactionLimit !== undefined ? { compactionLimit } : {}) }],
   };
+}
+/** Use the maintained seed clamp conservatively. Never silently substitute a
+ * threshold for the value the paired study actually froze. Live observation
+ * of the seeded value and fired boundaries remains a separate acceptance gate. */
+function currentBenchCompactionLimit(arm: CurrentBenchmarkProtocol['arms'][number]): number | undefined {
+  const requested = arm.control?.compactionLimit;
+  if (requested !== undefined && clampCompactionLimit(requested, arm.model) !== requested)
+    throw new Error('Frozen benchmark compaction threshold would be changed by the native host clamp.');
+  return requested;
 }
 function payload(reply: unknown): Record<string, unknown> {
   if (!reply || typeof reply !== 'object') throw new Error('Native launch returned no receipt.');
@@ -3254,7 +3266,8 @@ export function liveCurrentSuBenchPorts(
     const host = requireBinding();
     const member = args.members?.[0];
     if (args.members?.length !== 1 || !member || member.agent !== host.arm.agent ||
-        member.model !== host.arm.model || member.effort !== host.arm.effort || member.account !== host.arm.account) {
+        member.model !== host.arm.model || member.effort !== host.arm.effort || member.account !== host.arm.account ||
+        member.compactionLimit !== currentBenchCompactionLimit(host.arm)) {
       throw new Error('Current benchmark native launch controls differ from its host-owned gateway.');
     }
   };
@@ -3277,6 +3290,7 @@ export function liveCurrentSuBenchPorts(
     },
     verifyGenerationBudget: (budget, taskId) => {
       const host = requireBinding();
+      currentBenchCompactionLimit(host.arm);
       if (taskId !== host.taskId) throw new Error('Current benchmark session differs from its host assignment.');
       if (observations.sessionBudget || host.arm.control?.topology === 'repeated-session') {
         const { session } = requireSessionBudget(observations, opts);

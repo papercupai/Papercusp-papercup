@@ -57,6 +57,10 @@ export interface PluginLoaderPorts<TPlugin, TManifest> {
    *   - `null`                          → no identity-bearing manifest here.
    */
   readManifest(dir: string): Promise<TManifest | ManifestError | null>;
+  /** Pure-data discovery metadata, captured after validation and before any
+   * admission/runtime/entry code. Return a detached snapshot of selected
+   * declarations; the generic loader does not interpret manifest fields. */
+  describeManifest?(manifest: TManifest): Record<string, unknown>;
   /**
    * Optional root-aware admission, checked after the manifest validates and
    * BEFORE any entry is located or imported. Return a reason string to skip
@@ -107,6 +111,16 @@ export interface DiscoverRoot {
   scopeRecurse?: boolean;
 }
 
+/** Outcomes of the actual discovery walk, including inputs that did not load.
+ * This metadata alone does not establish manifest or effect completeness. */
+export interface PluginDiscoveryInventory {
+  roots: DiscoverRoot[];
+  candidates: Array<{ path: string; source: string;
+    status: 'loaded' | 'shadowed' | 'error' | 'not-a-plugin' | 'excluded'; pluginName?: string;
+    manifest?: Record<string, unknown>; reason?: string; error?: string }>;
+  unavailable: Array<{ path: string; code: string }>;
+}
+
 /**
  * Bundler-opaque dynamic import via Node's `createRequire`. Webpack /
  * Turbopack refuse to compile a bare `import(varURL)` because they
@@ -135,7 +149,7 @@ export async function defaultImportEntry<TPlugin>(
  * (dev-mode pattern: symlinking a plugin repo into a plugins dir) and
  * skipping dotfiles. Returns [] when `parent` doesn't exist.
  */
-export async function listSubdirs(parent: string): Promise<string[]> {
+export async function listSubdirs(parent: string, onUnavailable?: (path: string, code: string) => void): Promise<string[]> {
   try {
     const entries = await fs.readdir(parent, { withFileTypes: true });
     const out: string[] = [];
@@ -146,16 +160,23 @@ export async function listSubdirs(parent: string): Promise<string[]> {
         try {
           const st = await fs.stat(join(parent, e.name));
           isDir = st.isDirectory();
-        } catch {
+        } catch (error) {
+          onUnavailable?.(join(parent, e.name), filesystemErrorCode(error));
           /* dangling symlink — skip */
         }
       }
       if (isDir) out.push(join(parent, e.name));
     }
     return out;
-  } catch {
+  } catch (error) {
+    onUnavailable?.(parent, filesystemErrorCode(error));
     return [];
   }
+}
+
+function filesystemErrorCode(error: unknown): string {
+  const code = (error as NodeJS.ErrnoException | null)?.code;
+  return typeof code === 'string' ? code : 'unknown';
 }
 
 export interface PluginLoader<TPlugin, TManifest> {
@@ -168,6 +189,7 @@ export interface PluginLoader<TPlugin, TManifest> {
   loadAll(roots: DiscoverRoot[]): Promise<{
     loaded: Array<LoadedPlugin<TPlugin, TManifest>>;
     errors: Array<{ error: string; path: string }>;
+    discovery: PluginDiscoveryInventory;
   }>;
 }
 
@@ -180,6 +202,7 @@ export function createPluginLoader<TPlugin, TManifest>(
   async function loadFromDir(
     dir: string,
     source: string,
+    observeManifest?: (manifest: TManifest) => void,
   ): Promise<LoadFromDirResult<TPlugin, TManifest>> {
     const path = resolve(dir);
     const manifest = await ports.readManifest(path);
@@ -195,6 +218,7 @@ export function createPluginLoader<TPlugin, TManifest>(
       return { error: (manifest as ManifestError).__error, path };
     }
 
+    observeManifest?.(manifest as TManifest);
     const excluded = ports.admitManifest?.(manifest as TManifest, source) ?? null;
     if (excluded) return { skipped: 'excluded', path, reason: excluded };
 
@@ -224,18 +248,21 @@ export function createPluginLoader<TPlugin, TManifest>(
   async function loadAll(roots: DiscoverRoot[]): Promise<{
     loaded: Array<LoadedPlugin<TPlugin, TManifest>>;
     errors: Array<{ error: string; path: string }>;
+    discovery: PluginDiscoveryInventory;
   }> {
     const loaded: Array<LoadedPlugin<TPlugin, TManifest>> = [];
     const errors: Array<{ error: string; path: string }> = [];
+    const discovery: PluginDiscoveryInventory = { roots: roots.map(root => ({ ...root })), candidates: [], unavailable: [] };
+    const unavailable = (path: string, code: string) => { discovery.unavailable.push({ path, code }); };
 
     // Collect candidate directories in root order, then subdir order.
     const candidates: Array<{ dir: string; source: string }> = [];
     for (const root of roots) {
-      for (const d of await listSubdirs(root.pluginsDir)) {
+      for (const d of await listSubdirs(root.pluginsDir, unavailable)) {
         if (root.scopeRecurse && basename(d).startsWith('@')) {
           // npm-style scope dir holds one or more plugins; each child is a
           // candidate, not the scope dir itself.
-          for (const child of await listSubdirs(d)) {
+          for (const child of await listSubdirs(d, unavailable)) {
             candidates.push({ dir: child, source: root.source });
           }
           continue;
@@ -247,19 +274,28 @@ export function createPluginLoader<TPlugin, TManifest>(
     // Load each; dedupe by plugin name (first-seen wins).
     const seen = new Set<string>();
     for (const c of candidates) {
-      const result = await loadFromDir(c.dir, c.source);
-      if ('skipped' in result) continue;
+      let manifest: Record<string, unknown> | undefined;
+      const result = await loadFromDir(c.dir, c.source, parsed => { manifest = ports.describeManifest?.(parsed); });
+      const candidate = { path: resolve(c.dir), source: c.source, ...(manifest === undefined ? {} : { manifest }) };
+      if ('skipped' in result) {
+        discovery.candidates.push({ ...candidate, status: result.skipped,
+          ...('reason' in result ? { reason: result.reason } : {}) });
+        continue;
+      }
       if ('error' in result) {
+        discovery.candidates.push({ ...candidate, status: 'error', error: result.error });
         errors.push(result);
         continue;
       }
       const name = ports.pluginName(result.plugin);
+      discovery.candidates.push({ ...candidate,
+        status: seen.has(name) ? 'shadowed' : 'loaded', pluginName: name });
       if (seen.has(name)) continue;
       seen.add(name);
       loaded.push(result);
     }
 
-    return { loaded, errors };
+    return { loaded, errors, discovery };
   }
 
   return { loadFromDir, loadAll };

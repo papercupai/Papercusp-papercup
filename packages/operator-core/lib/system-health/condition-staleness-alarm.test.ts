@@ -467,6 +467,11 @@ describe('selectAbsentConditions (pure — EI-15182 guard #3, family-agnostic)',
 });
 
 describe('selectDeadOneShotConditions (WI-6554700010016120)', () => {
+  it('leaves managed tick episodes to their atomic bounded watcher recovery', () => {
+    const condition_key = 'alarm:managed-tick:original:1';
+    expect(selectDeadOneShotConditions([mkState({ condition_key, one_shot: true })],
+      new Map([[condition_key, 'dead']]))).toEqual([]);
+  });
   const emitter = {
     pid: 4242,
     startedAt: '2026-07-17T19:00:00.000Z',

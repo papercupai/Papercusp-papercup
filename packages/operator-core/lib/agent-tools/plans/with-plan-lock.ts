@@ -54,7 +54,7 @@ import {
   type PlanCandidateDependencyDiagnostic,
 } from './plan-candidate-dependencies';
 import { writePlanIndexRows } from './plan-index-rows';
-import { readPlanLineNodes, writePlanLineNodes } from './plan-line-graph';
+import { readPlanLineItems, readPlanLineNodes, writePlanLineNodes } from './plan-line-graph';
 import { renderPlanLines } from './plan-line-render';
 import {
   noteFromContentWrite,
@@ -557,6 +557,7 @@ export async function withPlanLock<T>(
     const rows = await tx<
       {
         content: string;
+        items: unknown;
         version: string | number;
         content_hash: string;
         status: string | null;
@@ -570,7 +571,7 @@ export async function withPlanLock<T>(
         verification_profile: string | null;
       }[]
     >`
-      SELECT content, version, content_hash, status, template, template_data, input_schema, output_schema, op_status, verification_profile,
+      SELECT content, items, version, content_hash, status, template, template_data, input_schema, output_schema, op_status, verification_profile,
              acceptance_bar_rubric_slug, now_note
         FROM harness_shared.harness_plans
        WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug}
@@ -578,7 +579,13 @@ export async function withPlanLock<T>(
     `;
     const cur = rows[0] ?? null;
     const lineNodes = await readPlanLineNodes(tx, { workspaceId, harnessSlug, slug });
-    if (cur) cur.content = renderPlanLines(cur.content, lineNodes);
+    if (cur) {
+      // Match the reader's validated legacy fallback. Rendering an empty graph
+      // would otherwise erase old-writer items before the mutator sees them.
+      // Keep lineNodes graph-only for the subsequent graph mutation diff.
+      const items = lineNodes.length ? lineNodes : await readPlanLineItems(tx, { workspaceId, harnessSlug, slug }, cur);
+      cur.content = renderPlanLines(cur.content, items);
+    }
     const curVersion = cur ? Number(cur.version) : 0;
     // WI-10004529: opt-in read of the revision-spine head, under the SAME lock as `cur`.
     let latestRevision: { seq: number; body: string } | null = null;

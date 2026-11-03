@@ -61,6 +61,7 @@ import {
 } from '../external-blockers';
 import { RECONCILER_SYSTEM_ACTOR } from '../completion-audit';
 import type { AgenticPlanExecutionTarget } from '../agentic-plan-execution-target';
+import { acquireWithContentionRetry, isWorkspaceContended } from '../agent-tools/locks/contention-retry';
 
 /** The two TERMINAL plan-item statuses this reconciler heals (mirrors
  *  `isTerminalStatus` in agent-tools/plans/set-status.ts) and the settled
@@ -893,11 +894,15 @@ type LaneGateAction =
   | 'skipped-in-flight'
   | 'skipped-terminal'
   | 'noop'
-  | { failure: string };
+  | { failure: string; retryable?: true };
 
 function laneSyncFailureMessage(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
   return message.slice(0, 1000) || 'unknown_error';
+}
+
+function laneSyncRetryability(error: unknown): { retryable?: true } {
+  return isWorkspaceContended(error) ? { retryable: true } : {};
 }
 
 /** Direct-execution contract stamped by canonical plan-run promotion, if this
@@ -1111,14 +1116,15 @@ async function applyLaneGateToWorkItem(
   } catch (error) {
     // Keep the sweep fail-soft, but let its caller distinguish a failed write from
     // an intentional no-op decision. The caller records and warns on this result.
-    return { failure: laneSyncFailureMessage(error) };
+    return { failure: laneSyncFailureMessage(error), ...laneSyncRetryability(error) };
   }
 }
 
 export interface PlanLaneSyncFailure {
-  stage: 'linked-work-item-read' | 'apply-gate';
+  stage: 'plan-read' | 'linked-work-item-read' | 'apply-gate';
   workItemId?: string;
   message: string;
+  retryable?: true;
 }
 
 export interface PlanLaneSyncResult {
@@ -1205,11 +1211,12 @@ export async function syncLinkedWorkItemsToPlanLane(
         });
       } catch (error) {
         // An unexpected throw still remains isolated to this linked row.
-        recordFailure({ stage: 'apply-gate', workItemId: wi.id, message: laneSyncFailureMessage(error) });
+        recordFailure({ stage: 'apply-gate', workItemId: wi.id, message: laneSyncFailureMessage(error), ...laneSyncRetryability(error) });
         continue;
       }
       if (typeof action !== 'string') {
-        recordFailure({ stage: 'apply-gate', workItemId: wi.id, message: action.failure });
+        recordFailure({ stage: 'apply-gate', workItemId: wi.id, message: action.failure,
+          ...(action.retryable ? { retryable: true } : {}) });
         continue;
       }
       if (action === 'gated') out.gated.push(wi.id);
@@ -1219,7 +1226,7 @@ export async function syncLinkedWorkItemsToPlanLane(
     }
   } catch (error) {
     // A lookup-level DB hiccup remains best-effort, but is no longer invisible.
-    recordFailure({ stage: 'linked-work-item-read', message: laneSyncFailureMessage(error) });
+    recordFailure({ stage: 'linked-work-item-read', message: laneSyncFailureMessage(error), ...laneSyncRetryability(error) });
   }
   return out;
 }
@@ -1241,6 +1248,12 @@ function classifyPlanLane(row: Awaited<ReturnType<typeof getPlanRow>>, itemId: s
   return 'actionable';
 }
 
+class PlanLaneSyncAttemptError extends Error {
+  constructor(readonly result: PlanLaneSyncResult) {
+    super(result.failures?.map((failure) => `${failure.workItemId ?? failure.stage}: ${failure.message}`).join('; '));
+  }
+}
+
 /**
  * EI-18732669095544832: resync ONE plan item's lane status onto its linked
  * work-items RIGHT NOW — the inline counterpart to the periodic orphan sweep's
@@ -1259,9 +1272,9 @@ function classifyPlanLane(row: Awaited<ReturnType<typeof getPlanRow>>, itemId: s
  * Re-reads the plan row FRESH (never trusts a caller-supplied snapshot) and
  * classifies the item's CURRENT effective lane the same blocked-by-graph-aware
  * way the periodic sweep does — so this is correct even when several edges
- * changed since the triggering call. Fail-closed + never throws: a plan/item
- * that can't be resolved, or a lane-classify hiccup, is a silent no-op — the
- * periodic sweep remains the backstop for anything this misses.
+ * changed since the triggering call. A missing plan/item remains a fail-closed
+ * no-op. Read/write failures are reported after bounded retries, never confused
+ * with absence; the periodic sweep remains the backstop.
  */
 export async function resyncPlanItemLaneNow(
   planSlug: string,
@@ -1270,25 +1283,29 @@ export async function resyncPlanItemLaneNow(
   createdBy?: string | null,
 ): Promise<PlanLaneSyncResult | null> {
   try {
-    const row = await getPlanRow(planSlug, { harnessSlug: harnessSlug ?? undefined }).catch(() => null);
-    if (!row) return null;
-    const laneStatus = classifyPlanLane(row, itemId);
-    if (!laneStatus) return null;
-    const result = await syncLinkedWorkItemsToPlanLane(
-      { planSlug, itemId, harnessSlug: harnessSlug ?? null },
-      laneStatus,
-      row,
-    );
-    // D-049/D-050: the SAME reaction that resyncs the lane also reconciles the promoted
-    // dependency graph — before this, plans:set-item-blocked-by updated the plan + lane
-    // but left stale work_item_deps/coord_links edges behind (live: the scheduler kept
-    // WI-40473 blocked on removed P-018/WI-40472 while plans:items reported it
-    // actionable). Best-effort: a dependency-reconcile hiccup must never break the lane
-    // sync that already succeeded.
-    await reconcilePlanAuthoredDependenciesNow(planSlug, itemId, harnessSlug, createdBy).catch(() => null);
-    return result;
-  } catch {
-    return null;
+    // A failed lifecycle write must not look like a successful no-op. Retry only
+    // the existing bounded PG contention class, re-reading BOTH the plan and linked
+    // work-item on every attempt. A new blocker or independent park wins the retry.
+    return await acquireWithContentionRetry(async () => {
+      const row = await getPlanRow(planSlug, { harnessSlug: harnessSlug ?? undefined });
+      if (!row) return null;
+      const laneStatus = classifyPlanLane(row, itemId);
+      if (!laneStatus) return null;
+      const result = await syncLinkedWorkItemsToPlanLane(
+        { planSlug, itemId, harnessSlug: harnessSlug ?? null }, laneStatus, row,
+      );
+      if (result.failures?.length) throw new PlanLaneSyncAttemptError(result);
+      // D-049/D-050: reconcile only plan-authored edges, preserving unrelated blockers.
+      await reconcilePlanAuthoredDependenciesNow(planSlug, itemId, harnessSlug, createdBy).catch(() => null);
+      return result;
+    }, { isRetryable: (error) => error instanceof PlanLaneSyncAttemptError
+      ? Boolean(error.result.failures?.length && error.result.failures.every((failure) => failure.retryable))
+      : isWorkspaceContended(error) });
+  } catch (error) {
+    if (error instanceof PlanLaneSyncAttemptError) return error.result;
+    return { gated: [], ungated: [], skippedInFlight: [], skippedAlreadyTerminal: [],
+      skippedDuplicates: [], circularPrerequisites: [],
+      failures: [{ stage: 'plan-read', message: laneSyncFailureMessage(error), ...laneSyncRetryability(error) }] };
   }
 }
 
@@ -1438,8 +1455,9 @@ export async function reconcilePlanAuthoredDependenciesNow(
  *
  * This is the dependency-target mode behind the existing
  * `plan-item.resyncLane` builtin action. It reuses the canonical per-item writer
- * instead of introducing a second lane mutation path. Fail-closed + never
- * throws; the periodic orphan sweep remains the backstop.
+ * instead of introducing a second lane mutation path. Failed lanes are reported
+ * after the other dependents have been processed, so the reaction engine can
+ * record the failure rather than acknowledging an unreconciled projection.
  */
 export async function resyncDependentPlanItemLanesNow(
   planSlug: string,
@@ -1447,19 +1465,24 @@ export async function resyncDependentPlanItemLanesNow(
   harnessSlug?: string | null,
   createdBy?: string | null,
 ): Promise<string[]> {
-  try {
-    const row = await getPlanRow(planSlug, { harnessSlug: harnessSlug ?? undefined }).catch(() => null);
-    if (!row) return [];
-    const dependentItemIds = planItemsForRow(row)
-      .filter((item) => item.blockedBy.includes(dependencyItemId))
-      .map((item) => item.id);
-    for (const itemId of dependentItemIds) {
-      await resyncPlanItemLaneNow(planSlug, itemId, harnessSlug, createdBy).catch(() => null);
+  const row = await getPlanRow(planSlug, { harnessSlug: harnessSlug ?? undefined });
+  if (!row) return [];
+  const dependentItemIds = planItemsForRow(row)
+    .filter((item) => item.blockedBy.includes(dependencyItemId))
+    .map((item) => item.id);
+  const failures: string[] = [];
+  for (const itemId of dependentItemIds) {
+    try {
+      const result = await resyncPlanItemLaneNow(planSlug, itemId, harnessSlug, createdBy);
+      for (const failure of result?.failures ?? []) {
+        failures.push(`${planSlug}#${itemId}/${failure.workItemId ?? failure.stage}: ${failure.message}`);
+      }
+    } catch (error) {
+      failures.push(`${planSlug}#${itemId}: ${laneSyncFailureMessage(error)}`);
     }
-    return dependentItemIds;
-  } catch {
-    return [];
   }
+  if (failures.length) throw new Error(failures.join('; '));
+  return dependentItemIds;
 }
 
 interface OrphanCandidate {

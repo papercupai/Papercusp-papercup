@@ -551,7 +551,25 @@ export async function withAdmissionPromoterLock<T>(
   const client = lockSql ?? createAdmissionRecoveryLockSql();
   const key = JSON.stringify(['admission-promoter-slot', scope.workspaceId, scope.harnessSlug]);
   try {
-    const reserved = await client.reserve();
+    const reserved = await client.reserve().catch((error: unknown) => {
+      const detail = error instanceof Error ? error.message : String(error);
+      const annotated = new Error(
+        `work-item-admission-promoter lock-client phase=reserve: ${detail}`,
+      );
+      if (error instanceof Error) {
+        annotated.name = error.name;
+        Object.setPrototypeOf(annotated, Object.getPrototypeOf(error));
+        if (error.stack) annotated.stack = error.stack.replace(error.message, annotated.message);
+      }
+      if (error !== null && typeof error === 'object') {
+        const code = Reflect.get(error, 'code');
+        if (code !== undefined) Object.defineProperty(annotated, 'code', {
+          value: code, configurable: true, enumerable: true, writable: true,
+        });
+      }
+      Object.defineProperty(annotated, 'cause', { value: error, configurable: true });
+      throw annotated;
+    });
     let locked = false;
     try {
       const [row] = await reserved<{ locked: boolean }[]>`

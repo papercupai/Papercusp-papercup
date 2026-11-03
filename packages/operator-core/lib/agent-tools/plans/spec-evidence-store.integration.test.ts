@@ -510,7 +510,9 @@ describe('test execution carries mappings into the real evidence ledger', () => 
       ledger: (args: Parameters<typeof readHarnessTestRunEvidence>[0]) => readHarnessTestRunEvidence({
         ...args, sql: h.sql as unknown as NonNullable<Parameters<typeof readHarnessTestRunEvidence>[0]['sql']>,
       }),
-      unattributed: countUnattributedTestRunRows };
+      unattributed: (args: Parameters<typeof countUnattributedTestRunRows>[0]) => countUnattributedTestRunRows({
+        ...args, sql: h.sql as unknown as NonNullable<Parameters<typeof countUnattributedTestRunRows>[0]['sql']>,
+      }) };
     const prepared = await prepareTestEvidence({ workItemId: 'WI-101', planSlug: 'reconnect-plan',
       bindings: [{ specId: 'SPEC-003-01', specRevision: 1, testPath, sourcePaths: ['src/reconnect.ts'],
         testLayer: 'integration' }] }, origin, [testPath], scope, deps);
@@ -561,7 +563,9 @@ describe('test execution carries mappings into the real evidence ledger', () => 
       ledger: (args: Parameters<typeof readHarnessTestRunEvidence>[0]) => readHarnessTestRunEvidence({
         ...args, sql: h.sql as unknown as NonNullable<Parameters<typeof readHarnessTestRunEvidence>[0]['sql']>,
       }),
-      unattributed: countUnattributedTestRunRows };
+      unattributed: (args: Parameters<typeof countUnattributedTestRunRows>[0]) => countUnattributedTestRunRows({
+        ...args, sql: h.sql as unknown as NonNullable<Parameters<typeof countUnattributedTestRunRows>[0]['sql']>,
+      }) };
     const prepared = await prepareTestEvidence(request, runId, [testPath], scope, deps);
     const pending = await evidenceStore.listSpecEvidence({ harnessSlug: HARNESS, planSlugs: ['reconnect-plan'], workItemIds: ['WI-101'] });
     expect(pending).toHaveLength(1);
@@ -986,6 +990,62 @@ describe('exact spec evidence bindings', () => {
       await rm(evidenceRootBase, { recursive: true, force: true });
     }
   });
+
+  it.each([
+    ['operator-e2e-isolated', false], ['operator-e2e-isolated', true],
+    ['verify-tauri-headless', false], ['verify-tauri-headless', true],
+    ['native-journey', false], ['native-journey', true],
+  ] as const)('requires qualified native source inputs at bind time (journey=%s qualified=%s)',
+    async (journeyHarness, qualified) => {
+      await specs.setSpecClause(clause({ mutationRequired: false }));
+      const { testRunId } = await seedExternalEvidence('test/reconnect.test.ts');
+      const verifierRunId = '20261102T000000Z-901';
+      const journeyRunId = journeyHarness === 'verify-tauri-headless'
+        ? verifierRunId : '20261102T000000Z-902';
+      const source = { path: 'src/reconnect.ts', sha256: 'a'.repeat(64) };
+      const evidenceRootBase = await mkdtemp(path.join(tmpdir(), 'native-source-receipt-'));
+      const previousEvidenceRoot = process.env.VH_EVIDENCE_ROOT_BASE;
+      process.env.VH_EVIDENCE_ROOT_BASE = evidenceRootBase;
+      try {
+        const verifierDir = path.join(evidenceRootBase, 'verify-tauri-headless', verifierRunId);
+        await mkdir(path.join(verifierDir, 'phases/prepare'), { recursive: true });
+        await writeFile(path.join(verifierDir, 'result.json'), JSON.stringify({ verdict: 'pass' }));
+        await writeFile(path.join(verifierDir, 'phases/prepare/verifier-source-receipt.json'), JSON.stringify({
+          schemaVersion: 'verifier-source-v1', files: [source],
+          // Retaining bytes alone must not certify that they were acceptance inputs.
+          testedInputs: qualified ? [source] : [],
+        }));
+        if (journeyHarness !== 'verify-tauri-headless') {
+          const journeyDir = path.join(evidenceRootBase, journeyHarness, journeyRunId);
+          await mkdir(path.join(journeyDir, 'phases/native'), { recursive: true });
+          await writeFile(path.join(journeyDir, 'result.json'), JSON.stringify({ verdict: 'pass' }));
+          await writeFile(path.join(journeyDir, 'phases/native/manifest.json'), JSON.stringify({
+            sourceFingerprints: qualified ? [source] : [],
+          }));
+        }
+        const result = await evidenceStore.bindSpecEvidence({
+          workItemId: 'WI-101', specId: 'SPEC-003-01', harnessSlug: HARNESS,
+          planSlug: 'reconnect-plan', actorId: 'su-test', evidenceKind: 'test',
+          evidenceRef: 'test/reconnect.test.ts#native-source-inputs', testRunId, sourceFingerprint: 'source',
+          details: { evidencePlane: 'live', currentMeasurement: {
+            schemaVersion: 1, kind: 'repo-files', sourcePaths: [source.path],
+            runtimeUnits: ['owned-native'], completedRuntime: {
+              kind: 'verification-harness', verifierRunId, journeyHarness, journeyRunId,
+            },
+          } },
+        });
+        expect(result).toMatchObject(qualified ? { status: 'created' } : {
+          status: 'completed_runtime_source_not_in_receipt',
+          gaps: [{ runId: journeyRunId, missingSourcePaths: [source.path] }],
+        });
+        const rows = await db.sql`SELECT id FROM harness_shared.spec_evidence_bindings`;
+        expect(rows).toHaveLength(qualified ? 1 : 0);
+      } finally {
+        if (previousEvidenceRoot === undefined) delete process.env.VH_EVIDENCE_ROOT_BASE;
+        else process.env.VH_EVIDENCE_ROOT_BASE = previousEvidenceRoot;
+        await rm(evidenceRootBase, { recursive: true, force: true });
+      }
+    });
 
   // EI-25847620673275477: a judge following the brief re-observes an isolated-integration
   // proof with the cited measurement and no testRunId. Before the fix the store pinned the
@@ -2218,7 +2278,9 @@ describe('narrowed reruns carry sibling scenarios only from a CURRENT ledger row
       ledger: (args: Parameters<typeof readHarnessTestRunEvidence>[0]) => readHarnessTestRunEvidence({
         ...args, sql: h.sql as unknown as NonNullable<Parameters<typeof readHarnessTestRunEvidence>[0]['sql']>,
       }),
-      unattributed: countUnattributedTestRunRows,
+      unattributed: (args: Parameters<typeof countUnattributedTestRunRows>[0]) => countUnattributedTestRunRows({
+        ...args, sql: h.sql as unknown as NonNullable<Parameters<typeof countUnattributedTestRunRows>[0]['sql']>,
+      }),
     };
     /** One run of the matrix file. `pattern` undefined = the unfiltered whole-file run. */
     const run = async (opts: { runId: string; pattern?: string; scenarioIds?: string[] }) => {

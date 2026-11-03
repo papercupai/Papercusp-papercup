@@ -44,11 +44,13 @@ describe('withBoundedTimeout (WI-3818)', () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const neverSettles = new Promise<string>(() => {});
     const correlationId = 'b497d96b-f582-49b0-9397-94610fd9b04e';
+    const processTag = 'consult-symbol-resolution:port-3170:build-abcdef012345';
     const resultPromise = withBoundedTimeout(neverSettles, {
       fallback: 'fallback-value',
       timeoutMs: 5000,
       label: 'orient:coord:inbox',
       correlationId,
+      processTag,
     });
     await vi.advanceTimersByTimeAsync(5000);
     const result = await resultPromise;
@@ -59,7 +61,7 @@ describe('withBoundedTimeout (WI-3818)', () => {
     expect(recorder.observeFallback).toHaveBeenCalledWith(
       'bounded-operation',
       { eligible: 1, applied: 0, reason: 'timeout', scope: 'orient:coord:inbox' },
-      expect.objectContaining({ correlationId }),
+      expect.objectContaining({ correlationId, processTag }),
     );
     expect(warnSpy).toHaveBeenCalledTimes(1);
     warnSpy.mockRestore();

@@ -111,7 +111,9 @@ import {
   satisfies,
   type LoadedPlugin as CoreLoadedPlugin,
   type DiscoverRoot,
+  type PluginDiscoveryInventory,
 } from '@papercusp/plugin-loader-core';
+export type { PluginDiscoveryInventory } from '@papercusp/plugin-loader-core';
 
 // Lazy + cached read of PAPERCUSP_RUNTIME_VERSION. Top-level destructure of
 // the CJS-loaded plugin-sdk namespace yields undefined under Node 25 + tsx
@@ -659,6 +661,16 @@ function toLoadedPlugin(r: CoreLoadedPlugin<Plugin, ManifestShape>): LoadedPlugi
  */
 const corePluginLoader = createPluginLoader<Plugin, ManifestShape>({
   readManifest,
+  // Parsed declarations only: exclude config/defaultConfig and other values
+  // that may carry credentials. Snapshot before entry/runtime code can mutate
+  // the parser's object, including for excluded or failed candidates.
+  describeManifest: manifest => JSON.parse(JSON.stringify({
+    name: manifest.name, version: manifest.version, kind: manifest.kind,
+    distribution: manifest.distribution, runtime: manifest.runtime ?? { kind: 'js' },
+    capabilities: manifest.capabilities ?? [], tools: manifest.tools ?? [],
+    actions: manifest.actions ?? [], apiRoutes: manifest.apiRoutes,
+    routines: manifest.routines ?? [], reactions: manifest.reactions ?? [],
+  })) as Record<string, unknown>,
   admitManifest: cupboardDistributionExclusion,
   locateEntry,
   importEntry: importPluginEntry,
@@ -743,6 +755,7 @@ function makeManifestOnlyPluginShim(manifest: ManifestShape): import('@papercusp
 export async function loadPlugins(opts: LoaderOptions = {}): Promise<{
   loaded: LoadedPlugin[];
   errors: Array<{ error: string; path: string }>;
+  discovery: PluginDiscoveryInventory;
 }> {
   // Build the Papercusp search roots (precedence: project > harness >
   // global). The generic kernel walks + dedupes them by plugin name
@@ -763,8 +776,8 @@ export async function loadPlugins(opts: LoaderOptions = {}): Promise<{
   // `@papercupai/`); recurse those into per-plugin candidates.
   roots.push({ pluginsDir: globalDir, source: 'global', scopeRecurse: true });
 
-  const { loaded, errors } = await corePluginLoader.loadAll(roots);
-  return { loaded: loaded.map(toLoadedPlugin), errors };
+  const { loaded, errors, discovery } = await corePluginLoader.loadAll(roots);
+  return { loaded: loaded.map(toLoadedPlugin), errors, discovery };
 }
 
 /**

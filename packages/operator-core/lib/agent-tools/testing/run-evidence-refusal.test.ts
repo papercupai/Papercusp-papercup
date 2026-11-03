@@ -56,6 +56,7 @@ async function cleanupDetachedReports() {
 }
 afterEach(async () => {
   vi.restoreAllMocks();
+  vi.unstubAllEnvs();
   await cleanupDetachedReports();
   Object.values(phases).forEach((mock) => mock.mockReset());
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
@@ -184,6 +185,21 @@ const timedOutRouter = () => vi.fn(async (_args: string[], _root: string,
   _env: NodeJS.ProcessEnv, _timeoutMs: number) => ({
   code: null, signal: null, timedOut: true, aborted: false, output: '',
 }));
+
+it.each(['WI-context', undefined])('binds task ownership from the current core request: %s', async workItemId => {
+  vi.stubEnv('PAPERCUSP_TEST_RUN_WORK_ITEM', 'WI-stale-operator');
+  vi.stubEnv('PAPERCUSP_CAPABILITY_BASH_BACKGROUND_TASK_ID', 'parenttask1234');
+  const root = await makeTestRoot(true);
+  const runRouterFn = timedOutRouter();
+  await runTestFilesCore({ root, files: ['feature.test.ts'], workItemId,
+    allowDetachedRecovery: false }, { runRouterFn, artifactBaseDir: root });
+  expect(runRouterFn).toHaveBeenCalledOnce();
+  expect(runRouterFn.mock.calls[0]![2]).toMatchObject({
+    PAPERCUSP_TEST_RUN_WORK_ITEM: workItemId ?? '',
+    PAPERCUSP_CAPABILITY_BASH_BACKGROUND_TASK_ID: 'parenttask1234',
+  });
+});
+
 const callerDeadline = { startedAtMs: 1_000, taskDeadlineAtMs: 46_000,
   cleanupReserveMs: 10_000, childCutoffAtMs: 36_000 };
 

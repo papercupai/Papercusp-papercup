@@ -583,6 +583,8 @@ export interface BashJob {
   deadlineAt?: number;
   /** Evidence-backed phase when the execution deadline terminated the job. */
   deadlineReason?: BashDeadlineReason;
+  /** First kill intent retained for the durable task close. */
+  killReason?: string;
   /** Observed operator-side phases. A pipe byte is not proof that the payload
    *  started: confined jobs record their own unit/payload phases in logPath. */
   phaseTiming?: {
@@ -610,13 +612,14 @@ const JOBS = new Map<string, BashJob>();
  * a linear scan is required. JOBS is bounded (MAX_RETAINED_JOBS finished jobs
  * plus whatever is currently running), so this is cheap.
  */
-onTaskKillRequested((taskId, _signal) => {
+onTaskKillRequested((taskId, signal) => {
   for (const job of JOBS.values()) {
     if (job.taskId === taskId && job.status === 'running') {
       // Same permanent kill-intent semantics as killJob(): this must stick
       // even if the process later exits cleanly on its own before the signal
       // takes effect (SIGTERM grace period, a trap, ...).
       job.status = 'killed';
+      job.killReason = `external task kill request (${signal})`;
     }
   }
 });
@@ -3208,7 +3211,12 @@ export function startBackground(opts: RunOptions, timeoutMs: number): BashJob {
         // pipeline has a child code of 0 but is normalized to failed/127 above;
         // recording the raw code made processes:list report a false green.
         exitCode: job.exitCode,
-        exitReason: job.status === 'timed_out' ? `exceeded ${effectiveTimeoutMs}ms timeout` : null,
+        exitReason:
+          job.status === 'timed_out'
+            ? `exceeded ${effectiveTimeoutMs}ms timeout`
+            : job.status === 'killed'
+              ? job.killReason ?? 'kill requested'
+              : null,
       },
       { scopeCgroupPath },
     );
@@ -3262,7 +3270,7 @@ export function waitForJobResponse(
       if (aborting) return;
       aborting = true;
       job.responseStream = undefined;
-      killJob(job);
+      killJob(job, 'caller aborted the response request');
       if (job.endedAt !== null) {
         finish('terminal');
         return;
@@ -3319,8 +3327,9 @@ export function snapshotJobResult(job: BashJob, peek = false): ForegroundResult 
 }
 
 /** Kill a job's process (SIGTERM, then SIGKILL after a grace period). */
-export function killJob(job: BashJob): { ok: boolean; alreadyDone: boolean } {
+export function killJob(job: BashJob, reason = 'capability:bash requested kill'): { ok: boolean; alreadyDone: boolean } {
   if (job.status !== 'running') return { ok: true, alreadyDone: true };
+  job.killReason = reason;
   try {
     killJobProcessTree(job, 'SIGTERM');
   } catch {

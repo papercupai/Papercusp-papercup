@@ -4240,6 +4240,26 @@ describe('basedOn — the sender’s read trace, derived (never authored)', () =
     });
   });
 
+  it('does not stamp a pending repair target because a separate source check was verified', async () => {
+    mockResolvedTyped(basedOnM, [
+      { ref: 'work-item:EI-27667223632942599', via: 'work_items:get', readAt: '2026-11-02T21:42:34.015Z' },
+      { ref: 'work-item:WI-6554700010045036', via: 'work_items:get', readAt: '2026-11-02T21:40:42.602Z' },
+      { ref: 'plan:green-main-cycle-time-2026-10-08', via: 'plans:get', readAt: '2026-11-02T21:39:20.179Z' },
+      { ref: 'work-item:WI-6554700010019918', via: 'work_items:get', readAt: '2026-11-02T21:36:28.289Z' },
+    ]);
+    await body({
+      to: ['bee-1'],
+      summary: 'Exact audit repair refused while your staging-server exclusive reservation drains',
+      body: [{ text: 'Under owned WI45036 / parent WI19918 I freshly verified D103 core containment in staging faf4c4b4fa and called only scorecards:repair target EI-27699140584578252. Tool returned resource_exclusive_pending before dispatch; your staging-server reservation is exclusive/draining. What exact completion event should my registered leader continuation await before retrying this one repair? Keep your existing resource operation; I will not bypass it.' }],
+      why: { goalRef: 'WI-6554700010045036' },
+      expects: 'answer',
+    });
+
+    const opts = sendM.mock.calls[0]![1] as { extra?: Record<string, unknown> };
+    expect(opts.extra).not.toHaveProperty('completionClaimMismatch');
+    expect(basedOnM).toHaveBeenCalledWith(expect.objectContaining({ includeRefs: [] }));
+  });
+
   it('uses the exact structured goal read for an abbreviated completion reference', async () => {
     const goalRef = 'EI-26250875597402287';
     mockResolvedTyped(basedOnM, [

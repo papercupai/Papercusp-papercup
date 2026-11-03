@@ -172,7 +172,7 @@ export async function captureOperatorHttpSecurityPopulation(): Promise<import('@
     workspaceId: '', harnessSlug: '', config: {} });
   return {
     surfaces: [...outer.surfaces, ...inner.surfaces, ...plugins.surfaces, ...handlers, ...loader.surfaces],
-    declaredSurfaces: honoRoutesProvider.enumerate(),
+    declaredSurfaces: [...honoRoutesProvider.enumerate(), ...loader.declaredSurfaces],
     unresolved: [...outer.unresolved, ...inner.unresolved, ...plugins.unresolved, ...loader.unresolved],
     closureAccepted: false as const,
   };

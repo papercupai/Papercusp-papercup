@@ -25,6 +25,7 @@ export {
   type LoadFromDirResult,
   type ManifestError,
   type DiscoverRoot,
+  type PluginDiscoveryInventory,
 } from './loader';
 
 export {

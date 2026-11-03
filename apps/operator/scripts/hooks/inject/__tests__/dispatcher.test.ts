@@ -518,6 +518,46 @@ describe('identity hook ports through the real CLI (P-011)', () => {
     }
   });
 
+  it('pre-tool: unavailable authority accepts only validated quoted scope refs for typed ptool reads', async () => {
+    const { runInjection } = await import('../core.mjs');
+    const fetchImpl = (async () => { throw Error('authority unavailable'); }) as typeof fetch;
+    const ptool = (name: string, scopeArgs: string, args: unknown) =>
+      [`ptool ${name} --json -${scopeArgs} <<'JSON'`, JSON.stringify(args), 'JSON'].join('\n');
+    const safe = [
+      ptool('work_items:get', ' --workspace="$PAPERCUSP_WORKSPACE"', { id: 'WI-123' }),
+      ptool('events:status', ' --workspace="${PAPERCUSP_WORKSPACE}" --harness="${PAPERCUSP_HARNESS_SLUG}"',
+        { event: 'harness:papercusp:source-ready:test' }),
+    ];
+    const unsafe = [
+      ptool('work_items:get', ' --workspace="$HOME"', { id: 'WI-123' }),
+      ptool('work_items:get', ' --harness="$PAPERCUSP_WORKSPACE"', { id: 'WI-123' }),
+      ptool('work_items:get', ' --workspace=$PAPERCUSP_WORKSPACE', { id: 'WI-123' }),
+      ptool('work_items:get', ' --workspace="$PAPERCUSP_WORKSPACE" --workspace=papercusp-workspace', { id: 'WI-123' }),
+      ptool('events:emit', ' --workspace="$PAPERCUSP_WORKSPACE"', { event: 'test' }),
+    ];
+    for (const [adapter, nativeEvent] of [[claude, 'PreToolUse'], [codex, 'pre-tool-use']] as const) {
+      const env = {
+        PAPERCUSP_SID: 'sid-reviewer',
+        PAPERCUSP_WORKSPACE: 'papercusp-workspace',
+        PAPERCUSP_HARNESS_SLUG: 'papercusp',
+      };
+      for (const cmd of safe) expect(await runInjection({ adapter, nativeEvent,
+        event: { tool_name: 'exec_command', tool_input: { cmd } }, env, fetchImpl }), cmd).toBeNull();
+      for (const cmd of unsafe) {
+        const output = await runInjection({ adapter, nativeEvent,
+          event: { tool_name: 'exec_command', tool_input: { cmd } }, env, fetchImpl });
+        expect(JSON.parse(output!).hookSpecificOutput, cmd).toMatchObject({
+          permissionDecision: 'deny',
+          permissionDecisionReason: expect.stringContaining('no server verdict was received'),
+        });
+      }
+      const invalidScope = await runInjection({ adapter, nativeEvent,
+        event: { tool_name: 'exec_command', tool_input: { cmd: safe[0] } },
+        env: { ...env, PAPERCUSP_WORKSPACE: 'workspace; touch source.ts' }, fetchImpl });
+      expect(JSON.parse(invalidScope!).hookSpecificOutput.permissionDecision).toBe('deny');
+    }
+  });
+
   it('pre-tool: a wall during authority fetch permits grouped read-only inspection but still denies writes', async () => {
     const { runInjection } = await import('../core.mjs');
     const stalledFetch = ((_url: unknown, init: RequestInit) => new Promise((_resolve, reject) => {

@@ -25,6 +25,8 @@ export interface AlarmAttentionRequest {
   conditionKey: string;
   /** Native detector evidence persisted with the existing notification receipt. */
   data?: AttentionNotifyInput['data'];
+  /** This episode emits once and must never clear from signal absence. */
+  oneShot?: boolean;
 }
 
 export interface AlarmAttentionDeps {
@@ -79,7 +81,9 @@ async function defaultResolve(input: SevereEventResolution): Promise<boolean> {
     if (!open) return false;
   }
   const { broadcastSevereEventResolved } = await import('./severe-event-broadcast');
-  return broadcastSevereEventResolved(input);
+  return broadcastSevereEventResolved({ ...input,
+    ...(typeof latest?.['msg_id'] === 'string' ? { alarmMessageId: latest['msg_id'] } : {}),
+  });
 }
 
 /** Resolve only after measured recovery or explicit supersession; unreadable scans never clear. */
@@ -122,7 +126,11 @@ async function defaultNotify(request: AlarmAttentionRequest, deps: AlarmAttentio
   // Failures in either delivery leg cannot suppress an attempt on the other leg.
   if (request.conditionKey) {
     try {
-      const event = { conditionKey: request.conditionKey, summary: request.title, body: request.body };
+      const event: SevereEventBroadcast = {
+        conditionKey: request.conditionKey, summary: request.title, body: request.body,
+        ...(request.oneShot ? { oneShot: true } : {}),
+        ...(request.data ? { data: request.data } : {}),
+      };
       if (deps.broadcast) await deps.broadcast(event);
       else {
         const { broadcastSevereEvent } = await import('./severe-event-broadcast');

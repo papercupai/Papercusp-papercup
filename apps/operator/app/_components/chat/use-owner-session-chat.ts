@@ -88,6 +88,11 @@ export interface SessionRosterHint {
   thinkingResolvable?: boolean;
 }
 
+export interface OwnerSessionChatOptions {
+  /** True while the caller's roster query is still loading. */
+  rosterPending?: boolean;
+}
+
 async function listOwnerSessions(ownerId: string): Promise<SessionListRow[]> {
   const r = await fetch('/api/admin/coordination/sessions/list', {
     method: 'POST',
@@ -408,6 +413,7 @@ export function useOwnerSessionChat(
   ownerId: string | null,
   focus: SessionStreamFocus = {},
   rosterHint: SessionRosterHint = {},
+  options: OwnerSessionChatOptions = {},
 ): OwnerSessionChat {
   const [resolved, setResolved] = useState<SessionListRow | null>(null);
   const [resolveError, setResolveError] = useState<string | null>(null);
@@ -415,6 +421,7 @@ export function useOwnerSessionChat(
   const [sendError, setSendError] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
   const [sentOk, setSentOk] = useState<SendDelivery | null>(null);
+  const rosterPending = options.rosterPending === true;
 
   useEffect(() => {
     setResolved(null);
@@ -422,6 +429,15 @@ export function useOwnerSessionChat(
     setSendError(null);
     setSentOk(null);
     if (!ownerId) return;
+    // The roster is the primary source for a live owner's native session
+    // handle. Do not start the slower sessions:list compatibility request
+    // while that read is still in flight: it can return empty before the
+    // roster row arrives and leave this popup waiting on the wrong source.
+    // A usable hint always wins, even during a background roster refresh.
+    if (rosterPending && !sessionTargetFromRoster(rosterHint)) {
+      setResolving(true);
+      return;
+    }
     let cancelled = false;
     setResolving(true);
     resolveOwnerSession(ownerId, rosterHint)
@@ -444,6 +460,7 @@ export function useOwnerSessionChat(
     rosterHint.sessionId,
     rosterHint.ompThreadId,
     rosterHint.nativeSession,
+    rosterPending,
   ]);
 
   const { focusSessionId, focusTerm, focusAnchorTs } = focus;

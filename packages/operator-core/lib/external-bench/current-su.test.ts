@@ -2065,6 +2065,17 @@ describe('current native benchmark execution', () => {
     vi.mocked(f.ports.readIdentity).mockResolvedValue({ ...identity, promptTemplateHash: 'f'.repeat(64) });
     expect((await f.run()).telemetry.stopReason).toBe('error');
   });
+  it.each([20_000, 25_000])('forwards the frozen compaction threshold %s through the maintained member launch', async compactionLimit => {
+    const opts = structuredClone(options);
+    const protocol = opts.preregistration.config as unknown as ReturnType<typeof currentProtocolFixture>;
+    protocol.arms[0].control = { topology: 'solo', solverGroup: 'solver', solverToolsHash: 'f'.repeat(64),
+      capabilities: allCapabilities('off'), compactionLimit };
+    protocol.arms[1].control = { topology: 'stock-native-reference', solverGroup: 'stock',
+      solverToolsHash: 'f'.repeat(64), capabilities: allCapabilities('off') };
+    expect(currentBenchLaunchRequest(opts, handle, 'issue').members?.[0].compactionLimit).toBe(compactionLimit);
+    protocol.arms[0].control.compactionLimit = Number.MAX_SAFE_INTEGER;
+    expect(() => currentBenchLaunchRequest(opts, handle, 'issue')).toThrow(/native host clamp/);
+  });
   it.each(['sourceRevision', 'runtimeRevision', 'clientVersion', 'promptHash', 'toolsHash', 'effort'] as const)(
     'rejects observed %s drift from the frozen arm and retains cleanup/cost evidence', async field => {
       const f = fixture();
@@ -2380,6 +2391,7 @@ describe('current benchmark restart and live binding', () => {
     const protocol = currentProtocolFixture(), preregHash = 'a'.repeat(64);
     if (ledger) {
       protocol.arms[0].control = { topology: 'solo', solverGroup: 'ledger-control',
+        compactionLimit: 20_000,
         solverToolsHash: 'f'.repeat(64), capabilities: { ...allCapabilities('off'), 'work-item-ledger': ledger, planning, 'memory-recall': memory } };
       protocol.arms[1].control = { topology: 'stock-native-reference', solverGroup: 'stock-control',
         solverToolsHash: 'f'.repeat(64), capabilities: allCapabilities('off') };
@@ -2425,6 +2437,10 @@ describe('current benchmark restart and live binding', () => {
     // A host launch (no containerExec) never pins the backend binary.
     expect(forwarded[Symbol.for('benchmark-test-backend-bin')]).toBeUndefined();
     const launched = native.launch.mock.calls.at(-1)![0];
+    expect(launched.members?.[0].compactionLimit).toBe(ledger ? 20_000 : undefined);
+    const alteredThreshold = structuredClone(args);
+    alteredThreshold.members![0].compactionLimit = 25_000;
+    await expect(ports.launch(alteredThreshold)).rejects.toThrow(/host-owned gateway/);
     // The worker's binding remains for observer admission/cancellation, even
     // when its experimental ledger prompt and tools are withheld.
     expect(launched).toMatchObject({ workItem: restoredHandle.featureId, feature: restoredHandle.featureId });

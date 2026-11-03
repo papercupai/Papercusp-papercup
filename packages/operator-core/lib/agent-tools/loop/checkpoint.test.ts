@@ -3885,31 +3885,28 @@ describe("WI-7264: repair-don't-refuse — an oversized or wrong-shaped sub-fiel
   });
 
   describe('soft caps are enforced by TRUNCATION, and every trim is reported', () => {
-    it('accepts a bounded overlong row id but still rejects an absurdly long one at the input boundary', () => {
+    it('accepts the maximum stored row id and rejects longer ids at the input boundary', () => {
       expect(() =>
         parse({ did: 'progress', checks: [{ claim: 'c', id: 'x'.repeat(CARRY_ROW_ID_MAX) }] }),
       ).not.toThrow();
       expect(() =>
         parse({ did: 'progress', checks: [{ claim: 'c', id: 'x'.repeat(CARRY_ROW_ID_MAX + 1) }] }),
-      ).not.toThrow();
-      expect(() =>
-        parse({
-          did: 'progress',
-          checks: [{ claim: 'c', id: 'x'.repeat(CARRY_ROW_ID_MAX * CARRY_CAP_HARD_MULTIPLE + 1) }],
-        }),
       ).toThrow();
     });
 
-    it('reports a long-id identity repair and stores the bounded merge identity', async () => {
-      const longId = 'x'.repeat(CARRY_ROW_ID_MAX + 1);
-      const b = body(await call({ did: 'progress', checks: [{ claim: 'c', id: longId }] }));
-      expect(b.ok).toBe(true);
-      expect(b.repairs).toHaveLength(1);
-      expect(b.repairs[0]).toMatchObject({ field: 'checks[0].id', kind: 'truncated' });
-      expect(b.repairs[0].detail).toContain(`${longId.length} chars`);
-      expect(b.repairs[0].detail).toContain(`${CARRY_ROW_ID_MAX} chars`);
-      const [, written] = setLoopCarryNote.mock.calls[0] as [unknown, string];
-      expect(written).toContain(`[#${'x'.repeat(CARRY_ROW_ID_MAX)}]`);
+    it('rejects distinct overlong ids that would alias after storage truncation', () => {
+      const sharedPrefix = 'x'.repeat(CARRY_ROW_ID_MAX);
+      const ids = [`${sharedPrefix}a`, `${sharedPrefix}b`];
+      expect(ids[0]).not.toBe(ids[1]);
+      expect(ids.map((id) => id.slice(0, CARRY_ROW_ID_MAX))).toEqual([sharedPrefix, sharedPrefix]);
+
+      expect(() =>
+        parse({
+          did: 'progress',
+          rowsMode: 'merge',
+          checks: ids.map((id, i) => ({ claim: `row ${i + 1}`, id })),
+        }),
+      ).toThrow();
     });
 
     it('accepts recovery rows past the stored cap and reports the supplied overflow', async () => {

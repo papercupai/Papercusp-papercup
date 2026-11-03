@@ -1,6 +1,6 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
-import type { ChildProcess } from 'node:child_process';
+import { spawn as spawnChild, type ChildProcess } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -29,9 +29,75 @@ vi.mock('../../resource-governor/execution', async original => ({
 
 const directories: string[] = [];
 afterEach(async () => {
-  await Promise.all(directories.splice(0).map(path => rm(path, { recursive: true, force: true })));
+  const owned = directories.splice(0);
+  await Promise.all(owned.map(path => rm(path, { recursive: true, force: true })));
+  for (const path of owned) expect(existsSync(path)).toBe(false);
   mocks.spawn.mockReset();
   mocks.killScope.mockClear();
+});
+
+it.each(['close', 'spawn-error'] as const)('retains real child %s and original output before the ledger handoff', async event => {
+  const root = await mkdtemp(join(tmpdir(), 'papercusp-testing-real-handoff-'));
+  directories.push(root);
+  const source = "process.stdout.write('real-child-output\\n'); process.stderr.write('real-child-error\\n'); process.exitCode = 7;";
+  let releaseLedger!: () => void;
+  const ledger = new Promise<void>(resolve => { releaseLedger = resolve; });
+  let child: ChildProcess | undefined;
+  let childClosed = false;
+  let handedOff = false;
+  mocks.spawn.mockImplementation(async (command, args, spec, options) => {
+    expect(command).toBe(join(REPO_ROOT, 'scripts/testing-run-probe-overlay.sh'));
+    expect(spec.argv).toEqual([command, ...args]);
+    expect(args).toContain(source);
+    options?.stage?.('spawn-fork');
+    child = spawnChild(event === 'spawn-error' ? join(root, 'missing-overlay.sh') : command,
+      [...args], options?.spawnOptions);
+    // managedSpawn's own ledger observer also handles errors independently of
+    // the caller. Preserve that behavior while controlling only its async wait.
+    child.on('error', () => {});
+    child.once('close', () => { childClosed = true; });
+    options?.onSpawn?.(child, 'realhandofftask');
+    await ledger;
+    handedOff = true;
+    return { child, taskId: 'realhandofftask', scopeUnit: null, confined: false };
+  });
+  const controller = new AbortController();
+  let outcome: Awaited<ReturnType<typeof runTestProcess>> | undefined;
+  const result = runTestProcess(process.execPath, ['-e', source], [], root, root, {
+    PAPERCUSP_TEST_ARTIFACT_DIR: root, PAPERCUSP_TEST_RUN_GROUP: 'real-handoff',
+    PAPERCUSP_MUTATION_PROBE_ADMISSION_ROOT: join(root, 'probe-admission'),
+  }, 60_000, controller.signal).then(value => { outcome = value; });
+  try {
+    await vi.waitFor(() => expect(childClosed).toBe(true), { timeout: 5_000 });
+    await vi.waitFor(() => expect(outcome).toBeDefined());
+    expect(handedOff).toBe(false);
+    expect(outcome).toMatchObject({ timedOut: false, aborted: false });
+    expect(outcome?.terminationUnconfirmed).toBeUndefined();
+    const [stdoutPath, stderrPath] = outcome!.outputLogPaths!;
+    if (event === 'close') {
+      expect(outcome?.code).toBe(7);
+      expect(await readFile(stdoutPath!)).toEqual(Buffer.from('real-child-output\n'));
+      expect(await readFile(stderrPath!)).toEqual(Buffer.from('real-child-error\n'));
+      expect(outcome?.output).toContain('real-child-output');
+      expect(outcome?.output).toContain('real-child-error');
+    } else {
+      expect(outcome?.spawnError).toMatch(/ENOENT/);
+      expect(await readFile(stdoutPath!)).toHaveLength(0);
+      expect(await readFile(stderrPath!)).toHaveLength(0);
+    }
+    const phases = (await readFile(join(root, 'phases.jsonl'), 'utf8')).trim().split('\n').map(line => JSON.parse(line));
+    expect(phases).toContainEqual(expect.objectContaining({ stage: 'process-child-close', taskId: 'realhandofftask' }));
+    if (event === 'spawn-error') expect(phases).toContainEqual(expect.objectContaining({ stage: 'process-child-error' }));
+    expect(phases.some(phase => phase.stage === 'process-launch-handoff')).toBe(false);
+  } finally {
+    controller.abort();
+    releaseLedger();
+    if (child?.pid && child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+    await result;
+    await new Promise(resolve => setImmediate(resolve));
+  }
+  expect(handedOff).toBe(true);
+  expect(childClosed).toBe(true);
 });
 
 it('keeps the detached core in its serving checkout while preserving an external test root', async () => {
@@ -48,6 +114,29 @@ it('keeps the detached core in its serving checkout while preserving an external
   expect(existsSync(join(request.cwd!, 'scripts/testing-run-probe-overlay.sh'))).toBe(true);
   expect(request.args?.at(-1)).toContain(JSON.stringify(root));
   expect(request.requestedFiles).toEqual([file]);
+});
+
+it.each([true, false])('preserves foreground task ownership with parent context present=%s', async nested => {
+  const outputDir = await mkdtemp(join(tmpdir(), 'papercusp-testing-task-context-'));
+  directories.push(outputDir);
+  const child = Object.assign(new EventEmitter(), { pid: 4242, kill: vi.fn(() => true) }) as unknown as ChildProcess;
+  const spawn = vi.fn<NonNullable<ManagedTestProcessDeps['managedSpawnFn']>>(async () => ({
+    child, taskId: 'foregroundtask', scopeUnit: null, confined: false,
+  }));
+  await launchManagedTestProcess({
+    command: process.execPath, args: [], cwd: process.cwd(),
+    env: {
+      PAPERCUSP_TEST_RUN_HARNESS: 'papercusp',
+      PAPERCUSP_TEST_RUN_WORK_ITEM: 'WI-context',
+      ...(nested ? { PAPERCUSP_CAPABILITY_BASH_BACKGROUND_TASK_ID: 'parenttask1234' } : {}),
+    },
+    timeoutMs: 60_000, runGroup: 'task-context', workspaceId: 'papercusp-workspace',
+    outputPath: join(outputDir, 'router.log'),
+  }, { managedSpawnFn: spawn });
+  expect(spawn.mock.calls[0]?.[2]).toMatchObject({
+    workItemId: 'WI-context', harnessSlug: 'papercusp',
+    parentTaskId: nested ? 'parenttask1234' : null,
+  });
 });
 
 it.each(['close', 'error', 'blocked'] as const)('settles a %s child before handoff without confusing cancellation and exit', async event => {

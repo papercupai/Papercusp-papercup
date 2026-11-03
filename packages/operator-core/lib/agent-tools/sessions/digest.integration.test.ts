@@ -119,6 +119,18 @@ async function callDigest(args: Record<string, unknown> = {}): Promise<{ count: 
       ) => Promise<{ data: { count: number; total: number; digests: Digest[] } }>;
     }
   ).handler({ limit: 30, ...args }, { workspaceId: WORKSPACE, tx: sql });
+  if (typeof args.session === 'string' && result.data.digests.length === 0) {
+    // Keep the row and cutoff evidence when a selective read unexpectedly
+    // disappears; an undefined-row assertion alone cannot distinguish them.
+    const rows = await sql`
+      SELECT workspace_id, source_kind, turn_idx, ts::text, ingested_at::text,
+             clock_timestamp()::text AS observed_at
+        FROM harness_shared.session_turns
+       WHERE session_id = ${args.session}
+       ORDER BY turn_idx LIMIT 4
+    `;
+    console.error('SESSION_DIGEST_EMPTY_DIAGNOSTIC', JSON.stringify({ args, result: result.data, rows }));
+  }
   return result.data;
 }
 

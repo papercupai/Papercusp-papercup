@@ -11,6 +11,7 @@ import type { Plugin } from 'esbuild';
 import { parse as parseToml } from '@iarna/toml';
 import { classifyHttpError } from '@papercusp/papercusp-shared/agent';
 import { managedSetInterval } from '@papercusp/scheduled-registry';
+import { readConfigurationSnapshot, type ConfigurationSnapshot } from '@papercusp/test-config/configuration-snapshot';
 import { CODEX_REFUSAL_BODY_MAX_BYTES, codexModelRefusalDetail, isCodexModelRefusal } from '../lib/inference-gateway/codex-model-refusals';
 import { presentedSecretsFromHeaders, scrubErrorText } from '../lib/inference-gateway/error-body-scrub';
 import { ensureWorkspaceEntry, isKnownWorkspace } from '../lib/workspace-registry';
@@ -894,6 +895,54 @@ type CommittedReaderSourceOptions = {
   preparationOnly?: false; schema: Record<string, string>; environment: NodeJS.ProcessEnv;
 });
 
+/** Original compiler inputs can be retained before runtime observations exist.
+ * These receipts deliberately cannot enter the qualified consumer path. */
+type ObservedPrivateApiBuildInputs = {
+  phase: 'build-observation'; sourceCommit: string; dependencyFiles: VerifierSourceFile[];
+};
+type ObservedPrivateApiBuild = ObservedPrivateApiBuildInputs & {
+  path: string; sha256: string; metafileSha256: string;
+  inputReceipt: { path: string; sha256: string };
+  artifacts: { path: string; sha256: string }[]; artifactCensus: VerifierSourceFile[];
+  qualification: { status: 'pending' };
+};
+
+function qualifyObservedPrivateApiBuild(o: CommittedReaderSourceOptions) {
+  assert.equal(o.preparationOnly, true, 'Build observations never qualify runtime inputs');
+  assert.ok(!inside(o.root, o.receiptPath), 'Build receipt must be independent of the source archive');
+  const bytes = readFileSync(o.receiptPath), sourceBytes = readFileSync(o.sourceReceiptPath);
+  if (o.receiptSha256) assert.equal(digestBytes(bytes), o.receiptSha256, 'Pinned build observation changed');
+  if (o.sourceReceiptSha256) assert.equal(digestBytes(sourceBytes), o.sourceReceiptSha256, 'Pinned selected source receipt changed');
+  const receipt: ObservedPrivateApiBuild = JSON.parse(String(bytes));
+  assert.equal(receipt.phase, 'build-observation', 'Original build observation required');
+  assert.deepEqual(receipt.qualification, { status: 'pending' }, 'Build observation cannot qualify preparation');
+  assert.equal(receipt.path, o.bundle, 'Observed bundle path differs');
+  assert.equal(receipt.sourceCommit, o.selectedCommit, 'Observed selected source differs');
+  assert.equal(receipt.inputReceipt.path, join(dirname(o.bundle), 'operator-api-inputs.json'));
+  const inputs = readFileSync(receipt.inputReceipt.path);
+  assert.equal(digestBytes(inputs), receipt.inputReceipt.sha256, 'Original build inputs changed');
+  assert.deepEqual(JSON.parse(String(inputs)), { phase: 'build-observation',
+    sourceCommit: o.selectedCommit, dependencyFiles: receipt.dependencyFiles });
+  const source = readVerifierSourceReceiptSync(o.root, o.sourceReceiptPath);
+  assert.equal(source.sourceCommit, o.selectedCommit, 'Archive differs from observed selected source');
+  assert.deepEqual(verifierSourceFiles(join(o.root, 'node_modules')), receipt.dependencyFiles,
+    'Observed materialized dependency census changed');
+  assert.deepEqual(preparedArtifactCensus(dirname(o.bundle)), receipt.artifactCensus, 'Observed artifact census changed');
+  assert.ok(receipt.artifactCensus.length && receipt.artifactCensus.every(file => file.kind === 'file'),
+    'Observed artifact census requires regular files');
+  assert.deepEqual(receipt.artifacts, receipt.artifactCensus.map(file => ({
+    path: join(dirname(o.bundle), file.path), sha256: file.sha256 })));
+  for (const [path, expected] of [[o.bundle, receipt.sha256], [`${o.bundle}.meta.json`, receipt.metafileSha256]]) {
+    assert.match(expected, /^[a-f0-9]{64}$/);
+    assert.ok(receipt.artifacts.some(file => file.path === path && file.sha256 === expected), 'Observed artifact pin missing');
+    assert.equal(digestBytes(readFileSync(path)), expected, 'Observed artifact changed');
+  }
+  assert.deepEqual(readFileSync(o.receiptPath), bytes, 'Build receipt changed during observation');
+  assert.deepEqual(readFileSync(o.sourceReceiptPath), sourceBytes, 'Source receipt changed during observation');
+  assert.deepEqual(readFileSync(receipt.inputReceipt.path), inputs, 'Build inputs changed during observation');
+  return { sourceCommit: source.sourceCommit };
+}
+
 export function qualifyCommittedReaderSource(o: CommittedReaderSourceOptions) {
   return qualifyCommittedReaderArtifacts(o);
 }
@@ -904,10 +953,11 @@ export function qualifyCommittedReaderSource(o: CommittedReaderSourceOptions) {
  */
 export function observeCommittedReaderLoadedSources(o: CommittedReaderSourceOptions & {
   traceOut: string; pid: number; startedAtMs: number; finishedAtMs: number;
-  processIdentity?: string;
+  processIdentity?: string; buildObservationOnly?: boolean;
+  configuration?: ConfigurationSnapshot;
 }) {
   const closureBytes = readFileSync(o.receiptPath), sourceBytes = readFileSync(o.sourceReceiptPath);
-  const preparation = qualifyCommittedReaderSource({ ...o,
+  const preparation = (o.buildObservationOnly ? qualifyObservedPrivateApiBuild : qualifyCommittedReaderSource)({ ...o,
     receiptSha256: o.receiptSha256 ?? digestBytes(closureBytes),
     sourceReceiptSha256: o.sourceReceiptSha256 ?? digestBytes(sourceBytes) });
   const sources: Array<{ url: string; loadId: number; sha256: string; byteLength: number; ref: string }> = [];
@@ -921,8 +971,15 @@ export function observeCommittedReaderLoadedSources(o: CommittedReaderSourceOpti
     startedAtMs: o.startedAtMs, finishedAtMs: o.finishedAtMs,
     population: null as ReturnType<typeof readNativeProcessTraceArtifacts>['population'] | null,
     entrySha256: null as string | null, exitObserved: false,
+    configurationInputs: {
+      scope: 'native-node-entry-configuration-inputs', status: 'unknown' as 'matched' | 'unknown',
+      snapshot: null as ConfigurationSnapshot | null,
+      expectedFingerprint: o.configuration?.fingerprint ?? null,
+      gaps: ['host entry not validated'],
+    },
     limits: { loads: 128, ...nativeSourceRetentionLimits },
-    sources, gaps, pending: ['module-evaluation', 'runtime-config', 'private-pg', 'sidecars',
+    sources, gaps, pending: [...(o.buildObservationOnly ? ['preparation-qualification', 'build-imports', 'observed-imports'] : []),
+      'module-evaluation', 'runtime-config', 'private-pg', 'sidecars',
       'descendant-imports', 'complete-runtime-closure'],
   };
   try {
@@ -946,6 +1003,18 @@ export function observeCommittedReaderLoadedSources(o: CommittedReaderSourceOpti
     result.processIdentity = identity;
     result.entrySha256 = digestBytes(entry.bytes);
     result.exitObserved = own.some(({ row }) => row.event === 'node-exit' && row.exitListenersComplete === true);
+    // Bind only the authenticated host entry. Parent launch values, a source
+    // archive or a later process.env read cannot fill a missing observation.
+    result.configurationInputs.gaps.length = 0;
+    try {
+      const actual = readConfigurationSnapshot(entry.row.configuration);
+      assert.ok(actual, 'host entry configuration snapshot missing or invalid');
+      result.configurationInputs.snapshot = actual;
+      const expected = readConfigurationSnapshot(o.configuration);
+      assert.ok(expected, 'independent prelaunch configuration snapshot missing or invalid');
+      assert.deepEqual(actual, expected, 'host entry configuration inputs differ');
+      result.configurationInputs.status = 'matched';
+    } catch (error) { result.configurationInputs.gaps.push((error as Error).message.split('\n')[0]); }
     const source = JSON.parse(sourceBytes.toString('utf8'));
     const closure: CommittedReaderClosure = JSON.parse(closureBytes.toString('utf8'));
     const pins = new Map<string, string>();
@@ -1410,22 +1479,65 @@ type CommittedPrivateApiBundle = {
   committedReader: { receiptPath: string; sourceReceiptPath: string; selectedCommit: string };
 };
 type ProgressPrivateApiBundle = { builder: PrivateBundleBuilder & { maxMs: number } };
+type ObservedSourcePrivateApiBundle = {
+  observedSource: { sourceReceiptPath: string; selectedCommit: string; sourceReceiptSha256: string };
+};
 export function preparePrivateOperatorApiBundle(root: string, evidenceDir: string,
-  options: ProgressPrivateApiBundle): Promise<PreparedPrivateApiBundleReceipt>;
+  options: ProgressPrivateApiBundle & Partial<ObservedSourcePrivateApiBundle>): Promise<PreparedPrivateApiBundleReceipt>;
 export function preparePrivateOperatorApiBundle(root: string, evidenceDir: string,
-  options?: CommittedPrivateApiBundle): PreparedPrivateApiBundleReceipt;
+  options?: CommittedPrivateApiBundle | ObservedSourcePrivateApiBundle): PreparedPrivateApiBundleReceipt;
 export function preparePrivateOperatorApiBundle(root: string, evidenceDir: string, options?: {
   committedReader: CommittedPrivateApiBundle['committedReader'];
-} | ProgressPrivateApiBundle) {
+} | ObservedSourcePrivateApiBundle | (ProgressPrivateApiBundle & Partial<ObservedSourcePrivateApiBundle>)) {
   assertPrivatePreparationEvidence();
   const retain = (receipt: PrivateApiBundleReceipt): PreparedPrivateApiBundleReceipt => {
     const receiptBytes = JSON.stringify(receipt);
     writeFileSync(join(evidenceDir, 'operator-api-preflight.json'), receiptBytes);
     return { ...receipt, receiptSha256: digestBytes(receiptBytes) };
   };
+  if (options && 'observedSource' in options && options.observedSource) {
+    const selected = options.observedSource;
+    assert.ok(!inside(root, evidenceDir), 'Observed build outputs must be independent of the source archive');
+    assert.deepEqual(verifierSourceFiles(evidenceDir), [], 'Observed build requires a fresh preparation directory');
+    const sourceBytes = readFileSync(selected.sourceReceiptPath);
+    assert.match(selected.sourceReceiptSha256, /^[a-f0-9]{64}$/);
+    assert.equal(digestBytes(sourceBytes), selected.sourceReceiptSha256, 'Pinned selected source receipt changed');
+    const source = readVerifierSourceReceiptSync(root, selected.sourceReceiptPath);
+    assert.equal(source.sourceCommit, selected.selectedCommit, 'Observed selected source differs');
+    const inputs: ObservedPrivateApiBuildInputs = { phase: 'build-observation', sourceCommit: selected.selectedCommit,
+      dependencyFiles: verifierSourceFiles(join(root, 'node_modules')) };
+    const inputBytes = Buffer.from(JSON.stringify(inputs));
+    const sourceReceiptPath = join(evidenceDir, 'verifier-source.json');
+    const inputReceiptPath = join(evidenceDir, 'operator-api-inputs.json');
+    writeFileSync(sourceReceiptPath, sourceBytes, { flag: 'wx', mode: 0o600 });
+    writeFileSync(inputReceiptPath, inputBytes, { flag: 'wx', mode: 0o600 });
+    const complete = (bundle: PrivateBundleReceipt) => {
+      assert.deepEqual(readFileSync(selected.sourceReceiptPath), sourceBytes, 'Original source receipt changed during build');
+      assert.deepEqual(readFileSync(sourceReceiptPath), sourceBytes, 'Retained source receipt changed during build');
+      assert.deepEqual(readFileSync(inputReceiptPath), inputBytes, 'Original build inputs changed during build');
+      readVerifierSourceReceiptSync(root, selected.sourceReceiptPath);
+      assert.deepEqual(verifierSourceFiles(join(root, 'node_modules')), inputs.dependencyFiles,
+        'Materialized dependencies changed during build');
+      const artifactCensus = preparedArtifactCensus(evidenceDir);
+      assert.ok(artifactCensus.every(file => file.kind === 'file'), 'Observed build symlinks are not qualified');
+      const receipt = retain({ ...inputs, ...bundle, qualification: { status: 'pending' },
+        metafileSha256: digestBytes(readFileSync(`${bundle.path}.meta.json`)), artifactCensus,
+        artifacts: artifactCensus.map(file => ({ path: join(evidenceDir, file.path), sha256: file.sha256 })),
+        inputReceipt: { path: inputReceiptPath, sha256: digestBytes(inputBytes) },
+        selectedSource: { receiptPath: sourceReceiptPath, sha256: digestBytes(sourceBytes), sourceCommit: selected.selectedCommit },
+      } as PrivateApiBundleReceipt);
+      qualifyObservedPrivateApiBuild({ root, bundle: bundle.path, receiptPath: join(evidenceDir, 'operator-api-preflight.json'),
+        sourceReceiptPath, selectedCommit: selected.selectedCommit, receiptSha256: receipt.receiptSha256,
+        sourceReceiptSha256: selected.sourceReceiptSha256, preparationOnly: true });
+      return receipt;
+    };
+    return 'builder' in options
+      ? buildPrivateOperatorApiBundle(root, evidenceDir, options.builder).then(complete)
+      : complete(buildPrivateOperatorApiBundle(root, evidenceDir));
+  }
   if (options && 'builder' in options)
     return buildPrivateOperatorApiBundle(root, evidenceDir, options.builder).then(retain);
-  const selected = options?.committedReader;
+  const selected = options && 'committedReader' in options ? options.committedReader : undefined;
   let receipt: PrivateApiBundleReceipt;
   if (!selected) receipt = buildPrivateOperatorApiBundle(root, evidenceDir);
   else {

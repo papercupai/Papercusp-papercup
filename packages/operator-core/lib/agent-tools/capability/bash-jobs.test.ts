@@ -58,6 +58,7 @@ import {
   runForeground,
   snapshotJobResult,
   startBackground,
+  waitForJobResponse,
   BashTaskConfinementRequiredError,
 } from './bash-jobs';
 import { augmentedSpawnPath } from '../../plugin-spawn-impl';
@@ -1074,6 +1075,84 @@ describe('background jobs', () => {
     const r = killJob(job);
     expect(r.alreadyDone).toBe(false);
     expect(job.status).toBe('killed');
+  });
+
+  describe('kill reason persistence', () => {
+    const mockEnrolledTask = (taskId: string) => {
+      const begin = vi.spyOn(enrollSync, 'beginSyncEnrolment').mockReturnValue({
+        taskId,
+        confined: false,
+        unconfinedReason: 'caller-veto',
+        unitKind: 'service',
+        scopeUnit: null,
+        enrolled: true,
+        registrationReady: null,
+        wrap: (binary, argv) => ({ binary, argv }),
+        releaseEnvironmentTransport: () => {},
+      });
+      const complete = vi.spyOn(enrollSync, 'completeSyncEnrolment').mockImplementation((enrolment) => {
+        enrolment.registrationReady = Promise.resolve();
+      });
+      const finish = vi.spyOn(enrollSync, 'finishSyncEnrolment').mockImplementation(() => {});
+      return {
+        finish,
+        restore: () => {
+          begin.mockRestore();
+          complete.mockRestore();
+          finish.mockRestore();
+        },
+      };
+    };
+
+    it('persists the external kill signal when the client closes successfully', async () => {
+      const ledger = mockEnrolledTask('external-kill-reason-task');
+      let job: ReturnType<typeof startBackground> | undefined;
+      try {
+        const current = startBackground({ command: 'sleep 30', cwd: STATE, stateDir: STATE }, 60_000);
+        job = current;
+        const childClosed = new Promise<void>((resolve) => current.child.once('close', () => resolve()));
+        notifyTaskKillRequested(current.taskId!, 'SIGTERM');
+        current.child.kill('SIGTERM');
+        await childClosed;
+
+        expect(ledger.finish).toHaveBeenCalledWith(
+          expect.objectContaining({ taskId: 'external-kill-reason-task' }),
+          expect.objectContaining({ state: 'killed', exitReason: 'external task kill request (SIGTERM)' }),
+          expect.any(Object),
+        );
+      } finally {
+        if (job?.endedAt === null) {
+          if (job.status === 'running') killJob(job, 'test cleanup');
+          else job.child.kill('SIGTERM');
+          await waitForStatus(job.id);
+        }
+        ledger.restore();
+      }
+    });
+
+    it('persists caller abort intent through the durable close', async () => {
+      const ledger = mockEnrolledTask('caller-abort-reason-task');
+      let job: ReturnType<typeof startBackground> | undefined;
+      try {
+        job = startBackground({ command: 'sleep 30', cwd: STATE, stateDir: STATE }, 60_000);
+        const controller = new AbortController();
+        const response = waitForJobResponse(job, controller.signal, 30_000);
+        controller.abort();
+        await expect(response).resolves.toBe('terminal');
+
+        expect(ledger.finish).toHaveBeenCalledWith(
+          expect.objectContaining({ taskId: 'caller-abort-reason-task' }),
+          expect.objectContaining({ state: 'killed', exitReason: 'caller aborted the response request' }),
+          expect.any(Object),
+        );
+      } finally {
+        if (job?.status === 'running') {
+          killJob(job, 'test cleanup');
+          await waitForStatus(job.id);
+        }
+        ledger.restore();
+      }
+    });
   });
 
   // EI-21905196224862433: reproduced live — a background job killed via

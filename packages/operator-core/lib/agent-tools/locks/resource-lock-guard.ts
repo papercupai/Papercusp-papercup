@@ -32,6 +32,7 @@ import {
 } from './su-lock-store';
 import { acquireResourceExclusiveWithWait, type StaleHolderReclaimedInfo } from './resource-acquire-wait';
 import { broadcastResourceDrainStart, broadcastResourceBackUp } from './resource-broadcast';
+import { emitResourceReleasedEvent } from '../../harness/git-sync/git-sync-events';
 import { parseHostGlobalResourceExclusionError } from './cross-domain-conflict';
 
 import { DEFAULT_LOCK_TTL_SEC as DEFAULT_TTL_SEC } from './lock-config';
@@ -168,9 +169,16 @@ export async function guardResource<T>(
       const released = await inWorkspaceTxn(cd, ownerId, tx =>
         tryReleaseResource(tx, { coordinationDomain: cd, owner: ownerId, lockId: reservationId }),
       );
-      await broadcastResourceBackUp({
-        source: coordIdentity, resource, waiters: released.waiters[resource] ?? [],
-      }).catch(() => {});
+      for (const releasedResource of released.releasedExclusiveResources ?? []) {
+        emitResourceReleasedEvent(releasedResource, coordIdentity.workspaceId);
+      }
+      for (const availableResource of released.exclusiveResources ?? []) {
+        await broadcastResourceBackUp({
+          source: coordIdentity,
+          resource: availableResource,
+          waiters: released.waiters[availableResource] ?? [],
+        }).catch(() => {});
+      }
     };
     let r: Awaited<ReturnType<typeof acquireResourceExclusiveWithWait>>;
     try {
@@ -238,12 +246,17 @@ export async function guardResource<T>(
           tryReleaseResource(tx, { coordinationDomain: cd, owner: ownerId, lockId }),
         ).catch(() => null);
       if (mode === 'exclusive') {
-        // A4: notify just the waiters on this resource, not ['*'].
-        await broadcastResourceBackUp({
-          source: coordIdentity,
-          resource,
-          waiters: released?.waiters[resource] ?? [],
-        }).catch(() => {});
+        for (const releasedResource of released?.releasedExclusiveResources ?? []) {
+          emitResourceReleasedEvent(releasedResource, coordIdentity.workspaceId);
+        }
+        // A4: notify just waiters on resources available after the cascade.
+        for (const availableResource of released?.exclusiveResources ?? []) {
+          await broadcastResourceBackUp({
+            source: coordIdentity,
+            resource: availableResource,
+            waiters: released?.waiters[availableResource] ?? [],
+          }).catch(() => {});
+        }
       }
     }
   }

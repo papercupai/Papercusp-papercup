@@ -390,6 +390,13 @@ describe('operator main thread — synchronous child-process calls (WI-10005242 
     expect(countSyncSpawnReferences(readFileSync(path.join(WORKSPACE_ROOT, file), 'utf8'), file)).toBe(0);
   });
 
+  it('work-item completion uses asynchronous path-history reads', () => {
+    const file = 'lib/agent-tools/work_items/complete.ts';
+    const source = readFileSync(path.join(WORKSPACE_ROOT, file), 'utf8');
+    expect(source, file).not.toMatch(/\blastCommitTimes\b/);
+    expect(source, file).toMatch(/await\s+preExistingChangedPathsInCompletionAsync\(/);
+  });
+
   it('Hono test-run entrypoints use async worktree snapshots', () => {
     const consumers = [
       { file: 'lib/agent-tools/testing/run.ts', sync: 'captureWorktreeSnapshot', async: 'captureWorktreeSnapshotAsync', expectedAsyncCalls: 2 },

@@ -19,17 +19,25 @@ describe('EI-25556999491855818: production restart barrier release event wiring'
   beforeEach(() => {
     vi.clearAllMocks();
     runtime.acquire.mockReset().mockResolvedValue({ ok: true, status: 'held', lock_id: 'barrier' });
-    runtime.release.mockReset().mockResolvedValue({ released: 1, exclusiveResources: ['git-sync'] });
+    runtime.release.mockReset().mockResolvedValue({
+      released: 1,
+      releasedExclusiveResources: ['git-sync'],
+      exclusiveResources: [],
+    });
   });
 
-  it('carries the committed store receipt through default dependencies into the canonical exact event', async () => {
-    let commit!: (receipt: { released: number; exclusiveResources: string[] }) => void;
+  it('emits from the deleted-row receipt even when a successor keeps the resource unavailable', async () => {
+    let commit!: (receipt: {
+      released: number;
+      releasedExclusiveResources: string[];
+      exclusiveResources: string[];
+    }) => void;
     runtime.release.mockImplementationOnce(() => new Promise((resolve) => { commit = resolve; }));
     const barrier = await acquireGitSyncRestartBarrier('Agent');
     if (!barrier.acquired) throw new Error('expected barrier');
     const pending = barrier.release();
     expect(runtime.emit).not.toHaveBeenCalled();
-    commit({ released: 1, exclusiveResources: ['git-sync'] });
+    commit({ released: 1, releasedExclusiveResources: ['git-sync'], exclusiveResources: [] });
     await pending;
     await vi.waitFor(() => expect(runtime.emit).toHaveBeenCalledTimes(1));
     expect(runtime.emit).toHaveBeenCalledWith(expect.objectContaining({
@@ -43,14 +51,14 @@ describe('EI-25556999491855818: production restart barrier release event wiring'
       owner: barrier.owner,
       lockId: 'barrier',
     });
-    runtime.release.mockResolvedValueOnce({ released: 0, exclusiveResources: [] });
+    runtime.release.mockResolvedValueOnce({ released: 0, releasedExclusiveResources: [], exclusiveResources: [] });
     await barrier.release();
     expect(runtime.emit).toHaveBeenCalledTimes(1);
   });
 
   it.each([
-    { released: 0, exclusiveResources: [] },
-    { released: 1, exclusiveResources: ['another-resource'] },
+    { released: 0, releasedExclusiveResources: [], exclusiveResources: [] },
+    { released: 1, releasedExclusiveResources: ['another-resource'], exclusiveResources: [] },
   ])('does not publish without the production store confirming the captured resource (%j)', async (receipt) => {
     runtime.release.mockResolvedValueOnce(receipt);
     const barrier = await acquireGitSyncRestartBarrier('Agent');

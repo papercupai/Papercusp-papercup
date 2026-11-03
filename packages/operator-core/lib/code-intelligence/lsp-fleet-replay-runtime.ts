@@ -199,7 +199,7 @@ export function replayRuntimeLaunch(entry: string, directory: string, runId: str
 export interface ReplayOracleProducerOptions {
   readonly freezerEntry: string;
   readonly compilerEntries: readonly string[];
-  /** Complete package/source closure; Node's native dependencies are added before launch. */
+  /** Additional executable/package closures; the source tree is byte-frozen separately. */
   readonly runtimePaths: readonly string[];
   readonly witnessDirectory: string;
   readonly timeoutMs: number;
@@ -246,8 +246,12 @@ export async function freezeQualifiedReplayConfig(inputPath: string, outputPath:
   const candidatePath = join(directory, 'candidate.json');
   const launch = replayRuntimeLaunch(options.freezerEntry, directory, input.runId,
     ['--freeze-replay-child', resolve(inputPath), candidatePath]);
-  const files = freezeReplayRuntimeFiles([process.execPath, resolve(inputPath), input.rootPath,
-    options.freezerEntry, ...options.compilerEntries, ...options.runtimePaths], deps);
+  // Hash unused optional providers without requiring their host libraries.
+  // Only executable runtime roots contribute native dependencies. Loaded maps
+  // must still match the complete prelaunch byte census before qualification.
+  const sourceFiles = freezeReplayRuntimeFiles([input.rootPath], { nativeDependencies: () => [] });
+  const files = { ...sourceFiles, ...freezeReplayRuntimeFiles([process.execPath, resolve(inputPath),
+    options.freezerEntry, ...options.compilerEntries, ...options.runtimePaths], deps) };
   const witness: ReplayRuntimeWitness = { directory, runId: input.runId,
     bootstraps: { [launch.entry]: launch.evalSha256 }, files };
   const declaration = { witness, freezerEntry: launch.entry, compilerEntries: options.compilerEntries };
@@ -277,7 +281,7 @@ export async function freezeQualifiedReplayConfig(inputPath: string, outputPath:
           const bytes = readFileSync(candidatePath);
           if (replayHash(bytes) !== row.sha256) throw new Error('replay-oracle-candidate-hash-mismatch');
           const config = JSON.parse(bytes.toString('utf8')) as DaemonReplayConfig;
-          if (['runId', 'rootPath', 'socketPath', 'workspaceId', 'levels', 'requestTimeoutMs', 'sourceSnapshot', 'semanticCompletionPlugin'].some(key =>
+          if (['runId', 'rootPath', 'socketPath', 'workspaceId', 'levels', 'requestTimeoutMs', 'sourceSnapshot', 'semanticCompletionPlugin', 'runtimeWitness'].some(key =>
             JSON.stringify(config[key as keyof DaemonReplayConfig]) !== JSON.stringify(input[key as keyof ReplayOracleInput])) ||
             JSON.stringify(config.corpus.definition.cursor) !== JSON.stringify(input.definition) ||
             JSON.stringify(config.corpus['hot-references'].cursor) !== JSON.stringify(input.references) ||
@@ -453,6 +457,8 @@ export interface ReplayOracleInput {
   readonly semanticCompletionPlugin?: SemanticCompletionPluginDeclaration;
   /** Independent source/dependency copy; this does not establish loaded-runtime identity. */
   readonly sourceSnapshot?: { readonly manifestPath: string; readonly sha256: string };
+  /** Declare the service runtime before freezing; later mutation invalidates oracle proof. */
+  readonly runtimeWitness?: ReplayRuntimeWitness;
 }
 
 function insideReplayRoot(root: string, path: string): boolean {
@@ -1080,7 +1086,8 @@ function compilerReplayConfig(input: ReplayOracleInput, options: {
     oracleProvenance: { method: 'static TypeScript symbol-binding census over the frozen compiler source population; no daemon answers',
       evidenceRef: input.evidenceRef, compilerVersion: ts.version },
     corpus: { definition: corpus(input.definition, definitions), 'hot-references': corpus(input.references, unique(references)) },
-    ...(input.sourceSnapshot ? { sourceSnapshot: input.sourceSnapshot } : {}) };
+    ...(input.sourceSnapshot ? { sourceSnapshot: input.sourceSnapshot } : {}),
+    ...(input.runtimeWitness ? { runtimeWitness: input.runtimeWitness } : {}) };
   return { config, sourceCount: sourceFiles.length };
 }
 export function replayFileMismatches(files: DaemonReplayConfig['files'], options: {

@@ -123,8 +123,14 @@ const releaseAllResourcesForOwnerMock = vi.fn(
     _tx: unknown,
     _coordinationDomain: string,
     _owner: string,
-  ): Promise<{ released: number; exclusiveResources: string[]; waiters: Record<string, string[]> }> => ({
+  ): Promise<{
+    released: number;
+    releasedExclusiveResources: string[];
+    exclusiveResources: string[];
+    waiters: Record<string, string[]>;
+  }> => ({
     released: 3,
+    releasedExclusiveResources: [],
     exclusiveResources: [],
     waiters: {},
   }),
@@ -561,6 +567,13 @@ const enqueueDocSweepMock = vi.fn((_input: Record<string, unknown>): void => {})
 vi.mock('../docs/sweep-after-sync', () => ({
   captureHeadSha: (...a: unknown[]) => captureHeadShaMock(a[0] as string),
   enqueueDocFreshnessSweepAfterSync: (...a: unknown[]) => enqueueDocSweepMock(a[0] as Record<string, unknown>),
+}));
+// A queued docs sweep can outlive the action seam and dynamically consult this
+// policy. Keep the orchestration suite hermetic: policy storage belongs to the
+// docs-sweep tests, not this suite's git-sync assertions.
+vi.mock('../../device-operator-actions', async (importOriginal) => ({
+  ...(await importOriginal<object>()),
+  workspaceBackgroundActivityAllowed: async () => false,
 }));
 
 // --- fake PG: the org `sql` is used as a tagged template (reads) + `.unsafe` (writes).
@@ -1113,7 +1126,12 @@ beforeEach(() => {
   tryHeartbeatResourceMock.mockReset().mockResolvedValue({ extended: true, expires_ts: new Date() });
   tryReleaseResourceMock.mockReset();
   releaseAllResourcesForOwnerMock.mockReset();
-  releaseAllResourcesForOwnerMock.mockResolvedValue({ released: 3, exclusiveResources: [], waiters: {} });
+  releaseAllResourcesForOwnerMock.mockResolvedValue({
+    released: 3,
+    releasedExclusiveResources: [],
+    exclusiveResources: [],
+    waiters: {},
+  });
   heldResourcesByOwner.clear();
   releaseTrace.length = 0;
   workspaceTxnCalls.length = 0;
@@ -2278,7 +2296,7 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
     });
     releaseAllResourcesForOwnerMock.mockImplementation(async () => {
       sequence.push('released-own-lock-set');
-      return { released: 2, exclusiveResources: [], waiters: {} };
+      return { released: 2, releasedExclusiveResources: [], exclusiveResources: [], waiters: {} };
     });
     emitGitSyncLockRetryEventMock.mockImplementation(() => {
       sequence.push(peerRowLive ? 'retry-event-while-peer-live' : 'retry-event-after-peer-release');
@@ -2959,7 +2977,7 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
     expect(runGitSyncMock).not.toHaveBeenCalled();
   });
 
-  it('retries transient contention and defers the resource wake until activity settles', async () => {
+  it('retries transient contention and emits the exact release after activity settles even with a successor', async () => {
     runGitSyncMock.mockResolvedValue(syncedOutcome);
     const contention = Object.assign(
       new Error('workspace "ws-42" contended while releasing (pg 57014: lock/statement timeout)'),
@@ -2975,7 +2993,10 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
       const held = heldResourcesByOwner.get(owner) ?? [];
       return {
         released: held.length,
-        exclusiveResources: held.includes('git-sync:papercup') ? ['git-sync:papercup'] : [],
+        releasedExclusiveResources: held.includes('git-sync:papercup') ? ['git-sync:papercup'] : [],
+        // The replacement holder owns it immediately, so it is unavailable for
+        // back-up notifications even though the old exclusive was deleted.
+        exclusiveResources: [],
         waiters: {},
       };
     });
@@ -3033,7 +3054,12 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
       releaseStarted();
       await pendingRelease;
       releaseCommitted = true;
-      return { released: 3, exclusiveResources: ['git-sync:papercup'], waiters: {} };
+      return {
+        released: 3,
+        releasedExclusiveResources: ['git-sync:papercup'],
+        exclusiveResources: [],
+        waiters: {},
+      };
     });
     emitResourceReleasedEventMock.mockImplementation(() => {
       expect(releaseCommitted).toBe(true);
@@ -3297,7 +3323,7 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
     });
     releaseAllResourcesForOwnerMock.mockImplementation(async (_tx, _cd, owner) => {
       if (owner === activeOwner) activeOwner = null;
-      return { released: 3, exclusiveResources: [], waiters: {} };
+      return { released: 3, releasedExclusiveResources: [], exclusiveResources: [], waiters: {} };
     });
     runGitSyncMock.mockImplementationOnce(async () => {
       firstRunStarted();

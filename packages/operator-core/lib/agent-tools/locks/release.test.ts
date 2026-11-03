@@ -109,7 +109,7 @@ beforeEach(() => {
   }) as never);
   releaseGranularM.mockResolvedValue({ released: 0 });
   releaseAllGranularM.mockResolvedValue({ released: 0 });
-  releaseResourcesM.mockResolvedValue({ released: 0, exclusiveResources: [], waiters: {} } as never);
+  releaseResourcesM.mockResolvedValue({ released: 0, releasedExclusiveResources: [], exclusiveResources: [], waiters: {} } as never);
   readResourceStatusM.mockResolvedValue({ status: 'missing' });
   mockResolvedTyped(readQueueM, { active_locks: [], waiting: [] });
 });

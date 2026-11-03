@@ -1066,21 +1066,27 @@ describe('P2-5 deadline path — background persist + real-outcome receipt (WI-6
       expect(timing.refreshWaitMs).toBeGreaterThanOrEqual(0);
       expect(timing.writeMs).toBeGreaterThan(0);
       expect(timing.totalMs).toBeGreaterThanOrEqual(timing.writeMs);
-      const settled = traceEvents(info.mock.calls).find((event) =>
+      const settledDispatch = traceEvents(info.mock.calls).find((event) =>
         event.traceId === traceId && event.stage === 'inner_dispatch_settled');
-      expect(settled).toMatchObject({
-        outcome: 'success', afterDeadline: true,
-        phaseTimingsMs: {
-          scratchWrites: {
-            count: 1,
-            perSpill: [expect.objectContaining(timing)],
-            quotaWaitMs: timing.quotaWaitMs,
-            refreshWaitMs: timing.refreshWaitMs,
-            quotaRecoveryMs: timing.quotaRecoveryMs,
-            writeMs: timing.writeMs,
-            totalMs: timing.totalMs,
-          },
-        },
+      expect(settledDispatch).toMatchObject({
+        outcome: 'success',
+        afterDeadline: true,
+      });
+      await vi.waitFor(() => expect(traceEvents(info.mock.calls).some((event) =>
+        event.traceId === traceId && event.stage === 'scratch_write_settled')).toBe(true));
+      const settledScratchWrite = traceEvents(info.mock.calls).find((event) =>
+        event.traceId === traceId && event.stage === 'scratch_write_settled');
+      expect(settledScratchWrite).toMatchObject({
+        traceId,
+        stage: 'scratch_write_settled',
+        afterDeadline: true,
+        scratchWriteTimings: expect.objectContaining({
+          quotaWaitMs: timing.quotaWaitMs,
+          refreshWaitMs: timing.refreshWaitMs,
+          quotaRecoveryMs: timing.quotaRecoveryMs,
+          writeMs: timing.writeMs,
+          totalMs: timing.totalMs,
+        }),
       });
       expect(h.spillPaths).toHaveLength(1);
       const spill = parseScratchReference(readFileSync(h.spillPaths[0]));

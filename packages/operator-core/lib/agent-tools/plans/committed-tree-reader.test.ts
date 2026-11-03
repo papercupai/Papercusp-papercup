@@ -7,7 +7,7 @@
  */
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdtempSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import fastGlob from 'fast-glob';
@@ -233,6 +233,33 @@ describe('fingerprintRepoFileSetAtCommit', () => {
     expect(measured.files.find((file) => file.path === 'libs/sub/sql/001.sql')?.gitBlob).toBe(
       git(sub, 'rev-parse', 'HEAD:sql/001.sql'),
     );
+  });
+
+  it('probes each repository boundary once per read across sibling files', async () => {
+    const siblings = Array.from({ length: 40 }, (_, i) => `src/sibling-${i}.ts`);
+    for (const path of siblings) writeFileSync(join(root, path), 'export const sibling = 1;\n');
+    git(root, 'add', 'src');
+    git(root, 'commit', '-q', '-m', 'sibling fixtures');
+    const exists = vi.fn(async (repo: string) => existsSync(join(root, repo, '.git')));
+
+    const measured = await readCommittedFiles(root, git(root, 'rev-parse', 'HEAD'), [...siblings, ...paths], { exists });
+
+    expect([...measured.values()].every((file) => file !== null)).toBe(true);
+    const probed = exists.mock.calls.map(([repo]) => repo);
+    expect(probed.filter((repo) => repo === 'src')).toHaveLength(1);
+    expect(probed).toHaveLength(new Set(probed).size);
+  });
+
+  it('rechecks repository boundaries on the next read after submodule metadata changes', async () => {
+    const commit = git(root, 'rev-parse', 'HEAD');
+    const hiddenGit = join(sub, '.git-hidden');
+    renameSync(join(sub, '.git'), hiddenGit);
+    try {
+      expect((await readCommittedFiles(root, commit, paths)).get(paths[1]!)).toBeNull();
+    } finally {
+      renameSync(hiddenGit, join(sub, '.git'));
+    }
+    expect((await readCommittedFiles(root, commit, paths)).get(paths[1]!)?.sha256).toBe(sha256(paths[1]!));
   });
 
   it('ignores uncommitted edits to measured files in both repositories', async () => {

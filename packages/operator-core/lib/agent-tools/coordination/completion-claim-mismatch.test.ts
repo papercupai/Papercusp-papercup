@@ -134,6 +134,29 @@ describe('completionClaimMismatch', () => {
     ).toBeUndefined();
   });
 
+  it('does not attach a verified source claim to a pending tool-operation target', () => {
+    const report = 'Under owned WI45036 / parent WI19918 I freshly verified D103 core containment in staging faf4c4b4fa and called only scorecards:repair target EI-27699140584578252. Tool returned resource_exclusive_pending before dispatch; your staging-server reservation is exclusive/draining. What exact completion event should my registered leader continuation await before retrying this one repair? Keep your existing resource operation; I will not bypass it.';
+
+    expect(completionClaimMismatch({
+      summary: 'Exact audit repair refused while your staging-server exclusive reservation drains',
+      body: report,
+      goalRef: 'WI-6554700010045036',
+      basedOn: read(
+        'work-item:EI-27667223632942599',
+        'work-item:WI-6554700010045036',
+        'plan:green-main-cycle-time-2026-10-08',
+        'work-item:WI-6554700010019918',
+      ),
+    })).toBeUndefined();
+
+    expect(completionClaimMismatch({
+      summary: 'Verified EI-27699140584578252 after the repair.',
+      basedOn: [],
+    })).toMatchObject({
+      missingFromBasedOn: ['work-item:EI-27699140584578252'],
+    });
+  });
+
   it('exports the stable envelope field name used by the send seam', () => {
     expect(COMPLETION_CLAIM_MISMATCH_FIELD).toBe('completionClaimMismatch');
   });

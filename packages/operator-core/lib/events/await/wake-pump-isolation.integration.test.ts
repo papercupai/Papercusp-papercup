@@ -73,6 +73,7 @@ describe('wake pump — C6 idempotency + cross-agent isolation (real PG)', () =>
   afterEach(async () => {
     engine.setAutoPumpEnabledForTests(true);
     if (tb) await tb.destroy();
+    vi.unstubAllEnvs();
   });
 
   const uid = () => `su-${Math.random().toString(36).slice(2, 10)}`;
@@ -145,6 +146,35 @@ describe('wake pump — C6 idempotency + cross-agent isolation (real PG)', () =>
     expect(hostA.received).toHaveLength(1);
     expect(hostA.received[0]).toMatchObject({ v: 1, mode: 'turn' });
     expect(hostB.received).toHaveLength(0);
+  });
+
+  it('WI-6554700010045160: request-only emission stays queued until the background owner delivers that exact wake', async () => {
+    tb = MultiSessionTestbed.create();
+    const owner = uid();
+    const host = await tb.spawnSocketHost(owner);
+    await armInboxWake({ ownerId: owner, workspaceId: h.ws });
+    const findPsuHost = tb.findPsuHostDep();
+    const pump = () => engine.pumpWakeDeliveries(h.ws, {
+      findPsuHost: async (ownerId: string) => findPsuHost(ownerId),
+    });
+
+    vi.stubEnv('PAPERCUSP_BACKGROUND_WORKERS', '0');
+    const emitted = await engine.emitAwaitedEvent({ key: inboxWakeKey(owner), workspaceId: h.ws });
+    expect(emitted.woken).toBe(1);
+    const queued = await store.listRecentDeliveries(owner);
+    expect(queued).toHaveLength(1);
+    expect((await pump()).claimed).toBe(0);
+    expect(await store.listRecentDeliveries(owner)).toEqual(queued);
+    expect(host.received).toHaveLength(0);
+
+    vi.stubEnv('PAPERCUSP_BACKGROUND_WORKERS', '1');
+    expect((await pump()).delivered).toBe(1);
+    expect(await store.listRecentDeliveries(owner)).toEqual([
+      expect.objectContaining({ id: queued[0].id, status: 'delivered', channel: 'psu-socket-inject' }),
+    ]);
+    expect(host.received).toHaveLength(1);
+    await pump();
+    expect(host.received).toHaveLength(1);
   });
 
   it('a system consult reply wakes the requester without consuming source or answerer watches (D-006)', async () => {

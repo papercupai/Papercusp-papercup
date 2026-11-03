@@ -843,9 +843,17 @@ describe('git-sync restart atomic barrier (WI-222053 / WI-222686)', () => {
     });
   });
 
-  it('EI-25556999491855818: signals a held barrier release only after its transaction confirms deletion', async () => {
-    let confirmRelease!: (receipt: { released: number; exclusiveResources: string[] }) => void;
-    const release = vi.fn(() => new Promise<{ released: number; exclusiveResources: string[] }>((resolve) => {
+  it('signals a held barrier deletion after commit even when a successor keeps it unavailable', async () => {
+    let confirmRelease!: (receipt: {
+      released: number;
+      releasedExclusiveResources: string[];
+      exclusiveResources: string[];
+    }) => void;
+    const release = vi.fn(() => new Promise<{
+      released: number;
+      releasedExclusiveResources: string[];
+      exclusiveResources: string[];
+    }>((resolve) => {
       confirmRelease = resolve;
     }));
     const emitReleased = vi.fn();
@@ -855,19 +863,19 @@ describe('git-sync restart atomic barrier (WI-222053 / WI-222686)', () => {
 
     const pending = result.release();
     expect(emitReleased).not.toHaveBeenCalled();
-    confirmRelease({ released: 1, exclusiveResources: ['git-sync'] });
+    confirmRelease({ released: 1, releasedExclusiveResources: ['git-sync'], exclusiveResources: [] });
     await pending;
 
     expect(emitReleased).toHaveBeenCalledExactlyOnceWith('git-sync', 'workspace-domain');
-    release.mockResolvedValueOnce({ released: 0, exclusiveResources: [] });
+    release.mockResolvedValueOnce({ released: 0, releasedExclusiveResources: [], exclusiveResources: [] });
     await result.release();
     expect(emitReleased).toHaveBeenCalledTimes(1);
   });
 
   it.each([
     undefined,
-    { released: 0, exclusiveResources: [] },
-    { released: 1, exclusiveResources: ['another-resource'] },
+    { released: 0, releasedExclusiveResources: [], exclusiveResources: [] },
+    { released: 1, releasedExclusiveResources: ['another-resource'], exclusiveResources: [] },
   ])('does not signal a release without a matching deletion receipt (%j)', async (receipt) => {
     const emitReleased = vi.fn();
     const result = await acquireGitSyncRestartBarrier('Agent', deps({
@@ -897,7 +905,7 @@ describe('git-sync restart atomic barrier (WI-222053 / WI-222686)', () => {
     });
     const release = vi.fn()
       .mockRejectedValueOnce(contention)
-      .mockResolvedValueOnce({ released: 1, exclusiveResources: ['git-sync'] });
+      .mockResolvedValueOnce({ released: 1, releasedExclusiveResources: ['git-sync'], exclusiveResources: [] });
     const emitReleased = vi.fn();
     const result = await acquireGitSyncRestartBarrier('Agent', deps({
       acquire: async () => ({ ok: false, reason: 'drain_timeout', holders: [], lock_id: 'queued-exclusive' }),

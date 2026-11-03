@@ -210,6 +210,11 @@ vi.mock('../../work-items', async () => {
 // P-018: the deterministic successor spec. Mocked so tests drive firstPrompt /
 // openOwnerQuestion / null-assembly branches without a real transcript.
 const buildOwnerRespawnLaunchSpec = vi.fn();
+const sessionCarryPolicy = vi.hoisted(() => vi.fn());
+vi.mock('../../capability-envelope/session-confinement-port', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../capability-envelope/session-confinement-port')>()),
+  sessionCarryPolicy,
+}));
 vi.mock('../../carry-respawn', async () => {
   const actual = await vi.importActual<typeof import('../../carry-respawn')>('../../carry-respawn');
   return { ...actual, buildOwnerRespawnLaunchSpec: (...a: unknown[]) => buildOwnerRespawnLaunchSpec(...a) };
@@ -322,6 +327,7 @@ const ENVELOPE_LINE = /^⟦turn-origin:self-compaction nonce:[a-f0-9]{16}⟧\n/;
 
 beforeEach(async () => {
   vi.clearAllMocks();
+  sessionCarryPolicy.mockReset().mockResolvedValue(undefined);
   resolveWakeModeMock.mockReset().mockResolvedValue('auto');
   await __resetRefusalMarkers(); // P-016 durable marker — isolate each test
   void __resetRespawnExpectedMarkers(); // EI-18676518990229124 — same module-level isolation
@@ -862,6 +868,78 @@ describe('session:request-compaction — P-018/P-022 carry-respawn actuation', (
     expect(injected().systemPromptAddendum).toBe('');
     expect(savePendingCarryRespawn).toHaveBeenCalledWith(expect.anything(),
       { firstPrompt: 'Frozen initial assignment', systemPromptAddendum: '' });
+  });
+
+  it.each(['on', 'off'] as const)('confines frozen %s compaction before ambient carry, flush and transcript reads', async (mode) => {
+    const { createHash } = await import('node:crypto');
+    const { buildFrozenAssignmentRespawnSpec } = await import('../../carry-respawn');
+    const boundary = { initialPrompt: 'Frozen task only',
+      initialPromptSha256: createHash('sha256').update('Frozen task only').digest('hex'), mode };
+    sessionCarryPolicy.mockResolvedValue(boundary);
+    resolveSelfSession.mockResolvedValue({ sourceKind: 'codex', sessionId: 'own-native',
+      filePath: '/fixture/own-native-rollout.jsonl' });
+    buildOwnerRespawnLaunchSpec.mockResolvedValue(buildFrozenAssignmentRespawnSpec(boundary, 'Own bounded note'));
+    // A general brief would introduce a foreign held item and trigger a save.
+    buildCarryBrief.mockResolvedValue({ ...emptyBrief,
+      heldItems: [{ id: 'WI-FOREIGN', title: 'Ambient secret', checkpoint: null }] });
+    findLiveHost.mockReturnValue(carryHost);
+    const result = body(await call({ continueNote: 'Own bounded note' }));
+    expect(result).toMatchObject({ ok: true, respawn: 'queued', firstPromptSource: 'frozen-assignment',
+      staleCheckpoints: [], frozenAssignmentCarry: { mode } });
+    expect(injected().data).toBe(mode === 'on'
+      ? "Frozen task only\n\nContinuation note from this assignment's prior session:\nOwn bounded note" : 'Frozen task only');
+    expect(injected().systemPromptAddendum).toBe('');
+    expect(injected().sourceTranscriptPath).toBe('/fixture/own-native-rollout.jsonl');
+    expect(buildCarryBrief).not.toHaveBeenCalled();
+    expect(autoCheckpointStaleHeldItems).not.toHaveBeenCalled();
+    expect(getWorkItem).not.toHaveBeenCalled();
+    expect(resolveSelfSession).toHaveBeenCalledWith('su-caller');
+    expect(readLoopFireIdentityForCurrentTurn).not.toHaveBeenCalled();
+    expect(getLoopStatus).not.toHaveBeenCalled();
+    expect(getLoopCarryNoteWithMeta).not.toHaveBeenCalled();
+    expect(bumpSessionEpoch).not.toHaveBeenCalled();
+  });
+
+  it('refuses an unavailable carry policy before any ambient or host fallback read', async () => {
+    sessionCarryPolicy.mockRejectedValue(new Error('policy store unavailable'));
+    expect(body(await call({}))).toMatchObject({ ok: false, error: 'carry_policy_unavailable', respawn: false });
+    expect(findLiveHost).not.toHaveBeenCalled();
+    expect(buildCarryBrief).not.toHaveBeenCalled();
+    expect(buildOwnerRespawnLaunchSpec).not.toHaveBeenCalled();
+    expect(injectIntoHost).not.toHaveBeenCalled();
+  });
+
+  it('refuses a changed frozen carry policy without persisting or injecting an ambient successor', async () => {
+    const { createHash } = await import('node:crypto');
+    sessionCarryPolicy.mockResolvedValue({ mode: 'off', initialPrompt: 'Frozen task only',
+      initialPromptSha256: createHash('sha256').update('Frozen task only').digest('hex') });
+    findLiveHost.mockReturnValue(carryHost);
+    buildOwnerRespawnLaunchSpec.mockResolvedValue({ ...closedSpec, firstPrompt: 'Ambient replacement' });
+    expect(body(await call({}))).toMatchObject({ ok: false, error: 'carry_build_failed' });
+    expect(savePendingCarryRespawn).not.toHaveBeenCalled();
+    expect(injectIntoHost).not.toHaveBeenCalled();
+    expect(buildCarryBrief).not.toHaveBeenCalled();
+  });
+
+  it('does not read loop carry for a frozen assignment without a live host', async () => {
+    const { createHash } = await import('node:crypto');
+    sessionCarryPolicy.mockResolvedValue({ mode: 'off', initialPrompt: 'Frozen task only',
+      initialPromptSha256: createHash('sha256').update('Frozen task only').digest('hex') });
+    findLiveHost.mockReturnValue(null);
+    expect(body(await call({}))).toMatchObject({ ok: false, error: 'no_live_pty_host', respawn: false });
+    expect(getLoopStatus).not.toHaveBeenCalled();
+    expect(getLoopCarryNoteWithMeta).not.toHaveBeenCalled();
+  });
+
+  it('refuses corrupt frozen carry bytes without throwing or reading ambient context', async () => {
+    sessionCarryPolicy.mockResolvedValue({ mode: 'off', initialPrompt: 'Altered task bytes',
+      initialPromptSha256: 'a'.repeat(64) });
+    findLiveHost.mockReturnValue(carryHost);
+    buildOwnerRespawnLaunchSpec.mockResolvedValue(null);
+    expect(body(await call({}))).toMatchObject({ ok: false, requested: false, error: 'carry_build_failed' });
+    expect(buildCarryBrief).not.toHaveBeenCalled();
+    expect(savePendingCarryRespawn).not.toHaveBeenCalled();
+    expect(injectIntoHost).not.toHaveBeenCalled();
   });
 
   it('the spec build is a DELIBERATE boundary with the resolved (fallback) window', async () => {

@@ -15,6 +15,7 @@
  *
  * Best-effort + fail-soft: a broadcast failure must NEVER break the watchdog sweep that calls it.
  */
+import { createHash } from 'node:crypto';
 import { sendMessage } from './agent-tools/coordination/messages';
 import { wakeRecipients } from './agent-tools/coordination/inbox-wake';
 import type { AgentIdentity } from './agent-tools/coordination/identity';
@@ -83,6 +84,8 @@ export interface SevereEventBroadcast {
    * guard cannot infer it from the envelope stream.
    */
   oneShot?: boolean;
+  /** Original detector evidence, retained on the condition even when attention is cooling down. */
+  data?: Record<string, unknown>;
   /** EI-10060: the resolved responsible party, if any. See {@link SevereEventRoute}. */
   route?: SevereEventRoute;
   /**
@@ -292,6 +295,7 @@ export async function broadcastSevereEvent(ev: SevereEventBroadcast): Promise<bo
       category: ev.category ?? 'severe-event',
       extra: {
         emitter,
+        ...(ev.data ? { data: ev.data } : {}),
         ...(ev.conditionKey
           ? {
               condition_key: ev.conditionKey,
@@ -313,6 +317,8 @@ export async function broadcastSevereEvent(ev: SevereEventBroadcast): Promise<bo
 }
 
 export interface SevereEventResolution {
+  /** The original alarm envelope identity, for atomic concurrent recovery of that episode. */
+  alarmMessageId?: string;
   /** The SAME conditionKey the original broadcastSevereEvent carried. */
   conditionKey: string;
   /** One-line all-clear (e.g. "git-sync RECOVERED on papercusp — commits landing again."). */
@@ -330,6 +336,8 @@ export interface SevereEventResolution {
 export async function broadcastSevereEventResolved(res: SevereEventResolution): Promise<boolean> {
   try {
     await sendMessage(SEVERE_EVENT_IDENTITY, {
+      ...(res.alarmMessageId ? { msgId: `condition-resolution-${createHash('sha256')
+        .update(JSON.stringify([res.conditionKey, res.alarmMessageId])).digest('hex')}` } : {}),
       to: ['@topic:severe-events'],
       summary: res.summary,
       body: res.body,

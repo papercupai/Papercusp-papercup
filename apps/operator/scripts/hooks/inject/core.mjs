@@ -315,7 +315,11 @@ export async function postInjection(port, body, opts = {}) {
         attemptedOperatorOrigin = new URL(base).origin;
         res = await fetchImpl(base + spec.endpoint, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          // The route stack sees headers before the handler reads the body.
+          // Reuse this lookup's opaque id to attribute pre-handler delays too.
+          headers: { 'Content-Type': 'application/json',
+            ...(guardRequestId ? { 'X-Papercusp-Guard-Request-Id': guardRequestId } : {}),
+          },
           body: payloadBody,
           signal: controller.signal,
         });
@@ -798,8 +802,9 @@ function isCanonicalPlanAnchorRepairCommand(command) {
  * enforces role, participant and identity ceilings. Only the unavailable plan
  * lookup is independent of them; an actual guard refusal always wins.
  * @param {string} command
+ * @param {NodeJS.ProcessEnv} env
  */
-function isCanonicalReviewPtoolCommand(command) {
+function isCanonicalReviewPtoolCommand(command, env) {
   if (command.length > 32_768 || command.includes(String.fromCharCode(0))) return false;
   const normalized = command.replace(/\r\n/g, '\n');
   if (normalized.includes('\r')) return false;
@@ -808,8 +813,29 @@ function isCanonicalReviewPtoolCommand(command) {
   if (lines.length < 3) return false;
   const header = lines.shift();
   const closingDelimiter = lines.pop();
-  const match = /^ptool[ \t]+([a-z][a-z0-9_-]*:[a-z][a-z0-9_-]*)[ \t]+--json[ \t]+-((?:[ \t]+--(?:workspace|harness)=(?:"[A-Za-z0-9._-]+"|'[A-Za-z0-9._-]+'|[A-Za-z0-9._-]+))*)[ \t]+<<'([A-Za-z_][A-Za-z0-9_]*)'[ \t]*$/.exec(header);
+  const match = /^ptool[ \t]+([a-z][a-z0-9_-]*:[a-z][a-z0-9_-]*)[ \t]+--json[ \t]+-((?:[ \t]+--(?:workspace|harness)=(?:"[^"\r\n]*"|'[^'\r\n]*'|[A-Za-z0-9._-]+))*)[ \t]+<<'([A-Za-z_][A-Za-z0-9_]*)'[ \t]*$/.exec(header);
   if (!match || closingDelimiter !== match[3] || lines.includes(match[3])) return false;
+  const seenScopes = new Set();
+  for (const argument of match[2].trim().split(/[ \t]+/).filter(Boolean)) {
+    const scope = /^--(workspace|harness)=(.+)$/.exec(argument);
+    if (!scope || seenScopes.has(scope[1])) return false;
+    seenScopes.add(scope[1]);
+
+    const rawValue = scope[2];
+    const quote = rawValue.startsWith('"') && rawValue.endsWith('"') ? '"' :
+      rawValue.startsWith("'") && rawValue.endsWith("'") ? "'" : null;
+    const value = quote ? rawValue.slice(1, -1) : rawValue;
+    const reference = /^\$(?:([A-Z_][A-Z0-9_]*)|\{([A-Z_][A-Z0-9_]*)\})$/.exec(value);
+    if (reference) {
+      const name = reference[1] ?? reference[2];
+      const expectedName = scope[1] === 'workspace' ? 'PAPERCUSP_WORKSPACE' : 'PAPERCUSP_HARNESS_SLUG';
+      const resolved = env[name];
+      if (quote !== '"' || name !== expectedName ||
+          typeof resolved !== 'string' || !/^[A-Za-z0-9._-]+$/.test(resolved)) return false;
+    } else if (!/^[A-Za-z0-9._-]+$/.test(value)) {
+      return false;
+    }
+  }
   try {
     const payload = JSON.parse(lines.join('\n'));
     if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return false;
@@ -820,7 +846,7 @@ function isCanonicalReviewPtoolCommand(command) {
           typeof payload.args !== 'object' || Array.isArray(payload.args)) return false;
       tool = payload.name;
     }
-    return ['tools:find', 'plans:get', 'plans:items', 'work_items:get', 'reports:get',
+    return ['tools:find', 'plans:get', 'plans:items', 'work_items:get', 'events:status', 'reports:get',
       'conversations:get', 'coord:inbox', 'coord:read', 'docs:get', 'docs:search',
       'consult:reply', 'consult:decline'].includes(tool);
   } catch {
@@ -842,7 +868,7 @@ function isSafeWithoutExecutionAuthority(partial, env) {
   const segments = readOnlyCommandSegments(command);
   return (segments !== null && segments.every(tokens =>
     isReadOnlyRipgrepInvocation(tokens, env) || isReadOnlyFileReadInvocation(tokens))) ||
-    isCanonicalPlanAnchorRepairCommand(command) || isCanonicalReviewPtoolCommand(command);
+    isCanonicalPlanAnchorRepairCommand(command) || isCanonicalReviewPtoolCommand(command, env);
 }
 
 /**

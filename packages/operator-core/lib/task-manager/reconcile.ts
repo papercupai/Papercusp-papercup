@@ -234,6 +234,25 @@ export function scopeUnitOf(proc: ScannedProcess): string | null {
 }
 
 /**
+ * The exact systemd unit that can address residue during verification.
+ *
+ * `scopeUnitOf` remains the identity of a claimed pc task. A VTE window scope
+ * is useful as an exact residue selector, but never becomes a claimed task
+ * scope or an exemption from reporting.
+ */
+function residueScopeUnitOf(proc: ScannedProcess): string | null {
+  const taskScope = scopeUnitOf(proc);
+  if (taskScope) return taskScope;
+
+  const parts = proc.cgroupPath.split('/').filter(Boolean);
+  for (let i = parts.length - 1; i >= 0; i -= 1) {
+    const segment = parts[i]!;
+    if (isTerminalWindowScope(segment)) return segment;
+  }
+  return null;
+}
+
+/**
  * Is this process new enough to still be inside the enrolment window?
  *
  * Answers "could its ledger row simply not have committed yet", NOT "is it
@@ -258,7 +277,7 @@ function groupResidue(procs: ScannedProcess[]): ResidueGroup[] {
   return [...byPath.entries()]
     .map(([cgroupPath, list]) => ({
       cgroupPath,
-      scopeUnit: scopeUnitOf(list[0]!),
+      scopeUnit: residueScopeUnitOf(list[0]!),
       pids: list.map((p) => p.pid).sort((a, b) => a - b),
       sampleCmdline: list[0]!.cmdline,
     }))

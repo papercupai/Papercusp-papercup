@@ -22,6 +22,7 @@ import { linuxPgrpFromProcStat, linuxStartTicksFromProcStat, readProcessIdentity
 import { readVerifierSourceReceiptSync } from '../packages/operator-core/lib/verifier-source';
 import { buildMcpCallParams, buildMcpSessionQuery, resolveMcpCallOrigin, resolveMcpRole, superuserTokenPaths } from './mcp-call.mjs';
 import { readNativeProcessTraceArtifacts } from './lib/budgeted-task-scheduler.mjs';
+import { captureConfigurationSnapshot } from '../libs/test-config/src/configuration-snapshot';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 let execMemo: typeof execFile.__promisify__ | null = null;
@@ -554,19 +555,30 @@ async function runIsolatedIdentity(flags: Record<string, string>) {
   }
   const evidenceDir = resolve(flags['evidence-dir']);
   // Refuse mixed/mutated source before allocating credentials or compiling.
-  identitySelectedSource(ROOT, process.env);
+  const selectedSource = identitySelectedSource(ROOT, process.env);
   await mkdir(evidenceDir, { recursive: true });
   process.env.PAPERCUSP_SID = flags['client-id'];
-  const { buildPrivateOperatorApiBundle, privateBundleRuntimeEnv, waitForPrivateOperator, stopPrivateOperatorHost } =
+  const { preparePrivateOperatorApiBundle, observeCommittedReaderLoadedSources,
+    privateBundleRuntimeEnv, waitForPrivateOperator, stopPrivateOperatorHost } =
     await import('../packages/operator-core/test/private-http-workspace-preflight');
   const { superuserTokenPath } = await import('../packages/operator-core/lib/superuser-token');
   await writeFile(superuserTokenPath(), randomBytes(32).toString('base64url'), { mode: 0o600, flag: 'wx' });
   console.error('IDENTITY_PRIVATE_PHASE build');
-  const bundle = await buildPrivateOperatorApiBundle(ROOT, evidenceDir, { timeoutMs: 240_000, maxMs: 420_000 });
+  const preparationDir = resolve(evidenceDir, 'prepare');
+  await mkdir(preparationDir);
+  const bundle = await preparePrivateOperatorApiBundle(ROOT, preparationDir, {
+    builder: { timeoutMs: 240_000, maxMs: 420_000 },
+    ...(selectedSource ? { observedSource: { sourceReceiptPath: selectedSource.receipt.path,
+      sourceReceiptSha256: selectedSource.receipt.sha256, selectedCommit: selectedSource.sourceCommit } } : {}),
+  });
   const traceOut = resolve(evidenceDir, 'identity-host-source.json');
   const hostEnv = privateBundleRuntimeEnv(process.env, { traceOut, pinnedSources: [{
     path: bundle.path, sha256: bundle.sha256, byteLength: (await stat(bundle.path)).size,
   }] });
+  const configuration = captureConfigurationSnapshot(hostEnv);
+  const configurationBytes = JSON.stringify(configuration);
+  const configurationPath = resolve(evidenceDir, 'host-configuration-inputs.json');
+  await writeFile(configurationPath, configurationBytes, { flag: 'wx', mode: 0o600 });
   // Allocate the retained log before the process: an existing/unwritable path
   // must never strand a host outside the try/finally cleanup boundary.
   const log = await open(resolve(evidenceDir, 'host.log'), 'wx', 0o600);
@@ -576,7 +588,9 @@ async function runIsolatedIdentity(flags: Record<string, string>) {
   host.on('error', error => { hostError = error; });
   const processIdentity = host.pid ? readProcessIdentity(host.pid) : null;
   const lifecycle: Record<string, unknown> = { workspace: contract.workspace, origin: contract.origin, pid: host.pid,
-    processIdentity, bundle, acceptance: 'unknown', failures: [] };
+    processIdentity, bundle, configurationInputs: { path: configurationPath,
+      sha256: createHash('sha256').update(configurationBytes).digest('hex'),
+      scope: 'prelaunch-configuration-inputs' }, acceptance: 'unknown', failures: [] };
   try {
     if (!processIdentity) throw new Error('isolated process identity unavailable');
     await waitForPrivateOperator({ host, base: contract.origin, evidenceDir, hostIdentity: processIdentity, environment: hostEnv });
@@ -606,6 +620,16 @@ async function runIsolatedIdentity(flags: Record<string, string>) {
     // complete runtime qualification and must never supply an acceptance pass.
     const finishedAtMs = Date.now();
     try {
+      if (selectedSource) {
+        if (await readFile(configurationPath, 'utf8') !== configurationBytes)
+          throw new Error('original host configuration inputs changed');
+        lifecycle.loadedSources = observeCommittedReaderLoadedSources({ root: ROOT, bundle: bundle.path,
+          receiptPath: resolve(preparationDir, 'operator-api-preflight.json'), receiptSha256: bundle.receiptSha256,
+          sourceReceiptPath: resolve(preparationDir, 'verifier-source.json'),
+          sourceReceiptSha256: selectedSource.receipt.sha256, selectedCommit: selectedSource.sourceCommit,
+          preparationOnly: true, buildObservationOnly: true, traceOut, pid: host.pid!,
+          processIdentity: processIdentity ?? undefined, startedAtMs: hostStartedAtMs, finishedAtMs, configuration });
+      }
       const trace = readNativeProcessTraceArtifacts(traceOut, hostStartedAtMs, finishedAtMs);
       lifecycle.nativeSourceTrace = { scope: 'authenticated-native-event-artifacts-only', acceptance: 'unknown',
         out: traceOut, sourceRoot: trace.sourceRoot, startedAtMs: hostStartedAtMs, finishedAtMs,

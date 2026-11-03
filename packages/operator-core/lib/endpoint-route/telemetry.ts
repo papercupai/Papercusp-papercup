@@ -101,13 +101,23 @@ export function recordRouteInvocation(exec: RouteExecution): void {
   const validRepairAttempt = repairAttempt !== null
     && repairAttempt.length === 36
     && /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(repairAttempt);
+  // Correlate the route's auth/input/invoke phases with the hook's timeout and
+  // the handler's plan/identity timings. The body is deliberately never read
+  // here; only the same bounded UUIDv4 header may enter durable telemetry.
+  const guardRequest = exec.def.method === 'POST' && exec.def.path === '/agent-mcp/tool-guard'
+    ? exec.req.headers.get('x-papercusp-guard-request-id')
+    : null;
+  const validGuardRequest = guardRequest !== null
+    && guardRequest.length === 36
+    && /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(guardRequest);
   let metadataJson: string | null = null;
   const sessionPortInspection = exec.def.method === 'POST'
     && ['/adv/sessions/port/inspect', '/adv/sessions/port/prepare'].includes(exec.def.path);
-  if (validRepairAttempt || sessionPortInspection) {
+  if (validRepairAttempt || validGuardRequest || sessionPortInspection) {
     const metadata: Record<string, unknown> = validRepairAttempt
       ? { codexHomeRepairAttemptId: repairAttempt.toLowerCase() }
       : {};
+    if (validGuardRequest) metadata.guardRequestId = guardRequest.toLowerCase();
     // Only these explicitly selected routes carry diagnostic phases. Keep
     // the persisted values numeric, finite, and bounded even if a route
     // supplies a custom diagnostics implementation in a test or host.

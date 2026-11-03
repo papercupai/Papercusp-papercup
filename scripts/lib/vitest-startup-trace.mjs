@@ -7,6 +7,7 @@ import { closeSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, real
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { threadId } from 'node:worker_threads';
+import { captureConfigurationSnapshot } from '../../libs/test-config/src/configuration-snapshot.ts';
 
 export const nativeSourceRetentionLimits = Object.freeze({ sourceBytes: 16 * 1024 ** 2,
   processBytes: 64 * 1024 ** 2, pinnedSourceBytes: 128 * 1024 ** 2,
@@ -139,7 +140,10 @@ function installNativeProcessTrace(out) {
     emit('node-entry', { executable: process.execPath, argv: process.argv.slice(),
       execArgv: process.execArgv.slice(), cwd: process.cwd(), lifecycle: lifecycle(process.env),
       nodeOptions: loaderIdentity(process.env.NODE_OPTIONS), reporterOut: process.env.PC_EXECUTED_SOURCE_MAP_OUT ?? null,
-      runGroupId: process.env.PAPERCUSP_TEST_RUN_GROUP ?? null });
+      runGroupId: process.env.PAPERCUSP_TEST_RUN_GROUP ?? null,
+      // Reuse the ledger's hashed configuration-input contract. This is the
+      // original process at entry, not resolved config or later mutations.
+      configuration: captureConfigurationSnapshot(process.env) });
   } catch { /* Even an unavailable cwd must not prevent the native entry. */ }
   // A preload's exit listener would run before the program's later listeners
   // and silently lose their writes. Delegate the original emission first and

@@ -621,6 +621,14 @@ export function formatRegressedFileDiagnostics(row: {
  */
 export function lastCommitTimes(root: string, files: Iterable<string>): Map<string, number | null>;
 /**
+ * Asynchronous counterpart for request handlers that share the operator host's event loop.
+ * Keep child-process concurrency bounded while avoiding a synchronous wait for every path.
+ * @param {string} root
+ * @param {Iterable<string>} files
+ * @returns {Promise<Map<string, number | null>>}
+ */
+export function lastCommitTimesAsync(root: string, files: Iterable<string>): Promise<Map<string, number | null>>;
+/**
  * Split committed new files into ones committed so recently they may be a LANDING RACE, and ones
  * settled long enough that the red is really standing (WI-6767).
  *

@@ -1663,6 +1663,7 @@ export default function SessionChatModal({
       // thing that can still fill this pane once the on-disk transcript is gone.
       thinkingResolvable: dossierEntry?.thinkingResolvable,
     },
+    { rosterPending: actionRoster.loading },
   );
 
   // WI-6440: the DURABLE half of the same signal. `pendingLaunch` below is

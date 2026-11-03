@@ -1,12 +1,14 @@
 import { randomUUID } from 'node:crypto';
 import { configureScheduledRegistry, type ManagedTickEpisode } from '@papercusp/scheduled-registry';
 import type { AlarmAttentionDeps } from '../alarm-attention';
+import { startManagedTickAlarmRecovery } from './managed-tick-alarm-recovery';
 
 // A new process owns new episodes, including when its PID is reused after restart.
 const processEpoch = randomUUID();
 
 /** Wire the existing attention/condition rail; neither delivery leg goes through DBOS. */
 export function installManagedTickAlarm(deps: AlarmAttentionDeps = {}): void {
+  const recovery = startManagedTickAlarmRecovery();
   const conditionKey = (episode: ManagedTickEpisode): string =>
     `alarm:managed-tick:${processEpoch}:${episode.id}`;
   configureScheduledRegistry({
@@ -43,8 +45,13 @@ export function installManagedTickAlarm(deps: AlarmAttentionDeps = {}): void {
           `(threshold ${episode.thresholdMs}ms, episode ${episode.id}).`,
         conditionKey: conditionKey(episode),
         cooldownMs: DEFAULT_ALARM_ESCALATION_COOLDOWN_MS,
-        data: { ...episode },
+        oneShot: true,
+        data: {
+          ...episode,
+          producerRun: processEpoch,
+        },
       }, deps);
+      recovery.observeInterval(episode.watcherIntervalMs);
     },
     onHungTickSettled: async (episode) => {
       const { resolveAlarm } = await import('../alarm-attention');

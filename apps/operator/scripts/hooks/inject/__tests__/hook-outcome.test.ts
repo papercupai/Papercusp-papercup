@@ -160,12 +160,14 @@ describe('unavailable mutation authority reports its transport branch', () => {
 
   it('uses a fresh opaque id per lookup and preserves it across fallback origins', async () => {
     const ids: string[] = [];
+    const headerIds: Array<string | null> = [];
     for (let call = 0; call < 2; call++) {
       let attempts = 0;
       await runInjection({ adapter, nativeEvent: 'PreToolUse', event: {},
         env: { PAPERCUSP_SID: 'su-test', PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:3170' },
         fetchImpl: (async (_url: unknown, init: RequestInit) => {
           ids.push(JSON.parse(String(init.body)).guardRequestId);
+          headerIds.push(new Headers(init.headers).get('X-Papercusp-Guard-Request-Id'));
           if (++attempts === 1) throw new Error('unreachable');
           return { ok: false, status: 503 };
         }) as unknown as typeof fetch,
@@ -176,6 +178,7 @@ describe('unavailable mutation authority reports its transport branch', () => {
     expect(ids[0]).toBe(ids[1]);
     expect(ids[2]).toBe(ids[3]);
     expect(ids[0]).not.toBe(ids[2]);
+    expect(headerIds).toEqual(ids);
   });
 
   it('reports the attempted origin without leaking URL credentials or request details', async () => {

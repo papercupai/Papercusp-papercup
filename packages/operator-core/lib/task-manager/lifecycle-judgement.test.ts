@@ -481,7 +481,7 @@ describe('evaluateLifecycleCandidates', () => {
     expect(summary).toContain('never coerce a missing group list to []');
     expect(summary).toContain('compare payload.processLifecycleCandidate.observedPids against the complete live.unaccountedGroups[].pids set');
     expect(summary).toContain('Select the same-kind control path by addressability, not by live.unaccountedGroups.length');
-    expect(summary).toContain('pc-*.scope entry with a non-empty scopeUnit');
+    expect(summary).toContain('pc-*.scope or recognized vte-spawn-*.scope entry with a non-empty scopeUnit');
     expect(summary).not.toContain('When live.unaccountedGroups is non-empty, require a known-present same-kind control');
     expect(summary).toContain('processes:list { scopeUnit, live:true, includeEnded:true }');
     expect(summary).toContain('the ageSec-bearing row is terminal and the default tasks[] filter would hide it');
@@ -506,6 +506,13 @@ describe('evaluateLifecycleCandidates', () => {
     const noScope = { ...candidate, scopeUnit: null };
     expect(lifecycleCandidateSummary(noScope)).toContain('unfiltered processes:list { live:true }');
     expect(lifecycleCandidateSummary(noScope)).toContain('complete live.unaccountedGroups');
+
+    const vteCandidate = evaluate({
+      rows: [row({ taskId: 'vte-unaccounted', state: 'unaccounted', scopeUnit: 'vte-spawn-0e0e-4a4a.scope' })],
+      residue: ['vte-unaccounted'],
+    }).candidates[0]!;
+    expect(vteCandidate.scopeUnit).toBe('vte-spawn-0e0e-4a4a.scope');
+    expect(lifecycleCandidateSummary(vteCandidate)).toContain('vte-spawn-*.scope');
   });
 
   it('does not let a taskId-filtered live read clear terminal residue', () => {
@@ -596,7 +603,7 @@ describe('evaluateLifecycleCandidates', () => {
     expect(brief).toContain('live.exactScopeUnitMatches');
     expect(brief).toContain('taskId-filtered processes:list result cannot prove absence');
     expect(brief).toContain('Select the same-kind control path by addressability, not by live.unaccountedGroups.length');
-    expect(brief).toContain('pc-*.scope entry with a non-empty scopeUnit');
+    expect(brief).toContain('pc-*.scope or recognized vte-spawn-*.scope entry with a non-empty scopeUnit');
     expect(brief).not.toContain('When live.unaccountedGroups is non-empty, require a known-present same-kind control');
     expect(brief).toContain('processes:list { scopeUnit, live:true, includeEnded:true }');
     expect(brief).toContain('the ageSec-bearing row is terminal and the default tasks[] filter would hide it');

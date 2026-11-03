@@ -4603,6 +4603,7 @@ export function mintCarryRespawnArgs(
   args = [],
   {
     systemPromptAddendum,
+    firstPrompt = null,
     ownerId = null,
     mintId = () => randomUUID(),
     home = homedir(),
@@ -4612,10 +4613,12 @@ export function mintCarryRespawnArgs(
     model = null,
   } = {},
 ) {
-  const text = String(systemPromptAddendum ?? "").trim();
+  // Assignment confinement deliberately withholds the general system carry.
+  // Its explicit first prompt is already host-pinned task + optional own note.
+  const text = String(systemPromptAddendum ?? "").trim() || String(firstPrompt ?? "").trim();
   if (!text)
     throw new Error(
-      "carry-respawn requires a non-empty system-prompt addendum",
+      "carry-respawn requires a non-empty system-prompt addendum or explicit first prompt",
     );
   const normalizedAgent = String(agent ?? "")
     .trim()

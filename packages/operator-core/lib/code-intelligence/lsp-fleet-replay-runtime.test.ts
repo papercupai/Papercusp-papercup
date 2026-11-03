@@ -215,6 +215,15 @@ describe('independently declared semantic graph', () => {
       runtimeFiles: [runtimeFile], evidenceRef: 'independent-graph-fixture' };
     return { root, runtimeFile, input };
   }
+  it('retains the predeclared service runtime alongside the independent compiler graph', () => {
+    const f = fixture({ noLib: true });
+    const runtimeWitness = { directory: join(f.root, 'service-receipts'), runId: f.input.runId,
+      bootstraps: {}, files: { [f.runtimeFile]: replayHash(readFileSync(f.runtimeFile)) } };
+    const frozen = freezeCompilerReplayConfig({ ...f.input, runtimeWitness });
+    expect(frozen.runtimeWitness).toEqual(runtimeWitness);
+    expect(frozen.files[f.runtimeFile]).toBe(runtimeWitness.files[f.runtimeFile]);
+    expect(assertReplaySemanticGraph(frozen).projects[0].files).not.toContain(f.runtimeFile);
+  });
   it('retains configured roots, imported declarations, libraries and inherited config without runtime files', () => {
     const f = fixture();
     writeFileSync(join(f.root, 'source.ts'), "import './ambient';\nexport function hot() {}\nhot();\n");

@@ -1557,6 +1557,48 @@ export function lastCommitTimes(root, files) {
 }
 
 /**
+ * Asynchronous counterpart for request handlers that share the operator host's event loop.
+ * Keep child-process concurrency bounded while avoiding a synchronous wait for every path.
+ * @param {string} root
+ * @param {Iterable<string>} files
+ * @returns {Promise<Map<string, number | null>>}
+ */
+export async function lastCommitTimesAsync(root, files) {
+  const fileList = Array.from(files);
+  /** @type {(number | null)[]} */
+  const values = Array(fileList.length).fill(null);
+  let nextIndex = 0;
+  const readNext = async () => {
+    while (nextIndex < fileList.length) {
+      const index = nextIndex++;
+      const file = fileList[index];
+      try {
+        /** @type {Promise<string>} */
+        const pending = new Promise((resolve, reject) => {
+          const child = execFile(
+            'git',
+            ['log', '-1', '--format=%ct', '--', file],
+            { cwd: root, encoding: 'utf-8', maxBuffer: 1024 * 1024, timeout: 10_000 },
+            (err, stdout) => {
+              if (err) reject(err);
+              else resolve(String(stdout));
+            },
+          );
+          child?.stdin?.end();
+        });
+        const out = await pending;
+        const parsed = Number.parseInt(out.trim(), 10);
+        values[index] = Number.isFinite(parsed) ? parsed : null;
+      } catch {
+        values[index] = null;
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(4, fileList.length) }, () => readNext()));
+  return new Map(fileList.map((file, index) => [file, values[index]]));
+}
+
+/**
  * Split committed new files into ones committed so recently they may be a LANDING RACE, and ones
  * settled long enough that the red is really standing (WI-6767).
  *
@@ -3364,6 +3406,9 @@ export async function runTscBaselineGate({
   let filesRoutedAway = 0;
   /** WI-10007624: the routed files themselves, so the service banner can say where they were judged. */
   let routedAwayFiles = [];
+  // A foreign parser error may suppress semantic diagnostics for this caller's scoped files.
+  // Keep a zero-exit result visibly partial instead of letting the terminal marker say `clean`.
+  let semanticVerificationIncomplete = false;
 
   // EI-19323399466378077 — captured HERE, before anything else runs, so it is the run's actual
   // start (not the compile's) and survives into the exit-hook closure below regardless of which
@@ -3372,21 +3417,26 @@ export async function runTscBaselineGate({
   const headShaAtStart = gitHeadShaForLintTsc(root);
 
   process.on('exit', (code) => {
-    console.log(
-      formatLintTscResultMarker({
-        label,
-        scope: lintTscScopeFromArgv(argv),
-        code,
-        nothingTypechecked,
-        preflightFailed,
-        concurrentEditInconclusive,
-        filesUnchecked,
-        filesRoutedAway,
-        routed: autoRouted,
-        runStartIso,
-        headSha: headShaAtStart,
-      }),
-    );
+    const marker = formatLintTscResultMarker({
+      label,
+      scope: lintTscScopeFromArgv(argv),
+      code,
+      nothingTypechecked,
+      preflightFailed,
+      concurrentEditInconclusive,
+      filesUnchecked,
+      filesRoutedAway,
+      routed: autoRouted,
+      runStartIso,
+      headSha: headShaAtStart,
+    });
+    if (!semanticVerificationIncomplete) {
+      console.log(marker);
+      return;
+    }
+    const refinedMarker =
+      code === 0 ? marker.replace(/status=(?:clean|routed)(?=\s|$)/, 'status=partial') : marker;
+    console.log(refinedMarker.replace(/(?=\s+at=|$)/, ' semanticIncomplete=1'));
   });
 
   const updateFlag = argv.includes('--update');
@@ -4116,6 +4166,17 @@ export async function runTscBaselineGate({
     dirtyFiles,
     attributionDeclared: explicitFiles !== null,
   });
+  const syntaxFiles = new Set(syntaxBrokenFiles(errors));
+  semanticVerificationIncomplete =
+    result.unattributedBrokenFiles?.some((file) => syntaxFiles.has(file)) === true;
+  if (semanticVerificationIncomplete && updateFlag) {
+    console.error(
+      '❌ --update refused: a foreign parser diagnostic makes semantic verification incomplete; ' +
+        'the baseline was not changed.',
+    );
+    process.exit(TOOLCHAIN_FAILURE_EXIT_CODE);
+    return;
+  }
   const concurrentEditFiles =
     ['fail-regressed', 'fail-attributed', 'fail-new-file'].includes(result.verdict)
       ? filesModifiedDuringRun({
@@ -4537,7 +4598,13 @@ export async function runTscBaselineGate({
       break;
     default:
       if (updateFlag) console.log('✓ --update: every file is at its baseline — nothing to lower.');
-      console.log(`✓ Every ${label} file is at or under its type-error baseline.`);
+      if (semanticVerificationIncomplete) {
+        console.log(
+          '⚠ No scoped regression was found, but a foreign parser diagnostic makes semantic verification incomplete.',
+        );
+      } else {
+        console.log(`✓ Every ${label} file is at or under its type-error baseline.`);
+      }
       process.exit(0);
   }
 }

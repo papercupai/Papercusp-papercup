@@ -1588,7 +1588,7 @@ export async function codeIntelPushText(input: PushInput, deps: PushChannelDeps 
     // notes' file anchors), started only when this batch first-touched a file.
     const touchedPaths = firstTouchPaths(input);
     const notesContext = deps.notesContext && touchedPaths.length && on.get('notes')
-      ? withBoundedTimeout(() => deps.notesContext!(input, touchedPaths), { timeoutMs: 120, fallback: undefined, label: 'code-intel-notes-context' })
+      ? withBoundedTimeout(() => deps.notesContext!(input, touchedPaths), { timeoutMs: gatherLeft(), fallback: undefined, label: 'code-intel-notes-context' })
         .catch(() => ({ value: undefined }))
       : null;
     const facts: PushFact[] = [];

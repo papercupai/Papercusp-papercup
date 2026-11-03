@@ -329,7 +329,7 @@ export const RECOVERY_MECHANISMS: readonly RecoveryMechanism[] = [
     executor: 'operator-in-process-timer',
     buildSource: 'continuous',
     recovers: ['dbos-executor', 'dbos-queue'],
-    note: 'Reports a held async managed tick on an independent in-process timer; raises and resolves through the attention rail without DBOS. Requires a turning event loop and PostgreSQL for delivery; a stopped loop is covered by the event-loop sentinel.',
+    note: 'Reports a held async managed tick on an independent in-process timer; raises and resolves through the attention rail without DBOS. The host adapter also reuses managed-tick-watch for startup/independent original-incarnation recovery, retaining timer/held-time/run evidence in the condition log and atomic per-alarm resolution identity. Requires a turning event loop and PostgreSQL for delivery; a stopped loop is covered by the event-loop sentinel.',
   },
   // ── The event-loop family — where every real finding lives ────────────────────────
   {

@@ -252,22 +252,20 @@ describe('R-6: a new holder receives fresh facts for the previous holder\'s file
 
   it('separates reserved-pool acquisition, transaction startup, and SQL timings', async () => {
     const timings: Array<[string, number]> = [];
+    const statements: string[] = [];
     const delay = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
     const transaction = async (strings: TemplateStringsArray) => {
       const query = strings.join('');
+      statements.push(query);
+      if (query === 'BEGIN') await delay(6);
       if (query.includes('codeWorkingSet')) {
         await delay(8);
         return [{ feature_id: 'WI-2', stamp: { owner: 'su-other', paths: ['lib/target.ts'], symbols: ['targetFn'] } }];
       }
       return [];
     };
-    const connection: any = Object.assign(transaction, {
-      begin: async (fn: (tx: unknown) => unknown) => {
-        await delay(6);
-        return fn(transaction);
-      },
-      release: vi.fn(),
-    });
+    // postgres-js reserve() returns a SQL tag with release(), without begin().
+    const connection = Object.assign(transaction, { release: vi.fn() });
     const reserve = vi.fn(async () => {
       await delay(10);
       return connection;
@@ -279,6 +277,9 @@ describe('R-6: a new holder receives fresh facts for the previous holder\'s file
     expect(sets.map(set => set.itemId)).toEqual(['WI-2']);
     expect(reserve).toHaveBeenCalledOnce();
     expect(sql.begin).not.toHaveBeenCalled();
+    expect(connection).not.toHaveProperty('begin');
+    expect(statements[0]).toBe('BEGIN');
+    expect(statements.at(-1)).toBe('COMMIT');
     expect(connection.release).toHaveBeenCalledOnce();
     const measured = Object.fromEntries(timings);
     expect(Object.keys(measured)).toEqual([
@@ -287,6 +288,42 @@ describe('R-6: a new holder receives fresh facts for the previous holder\'s file
     expect(measured.poolAcquire).toBeGreaterThanOrEqual(5);
     expect(measured.beginCallbackEntry).toBeGreaterThanOrEqual(3);
     expect(measured.select).toBeGreaterThanOrEqual(4);
+  });
+
+  it.each(['BEGIN', 'set_config', 'codeWorkingSet', 'COMMIT'])(
+    'releases the reserved connection when %s fails and rolls back only a started transaction', async phase => {
+      const failure = new Error(`${phase} failed`);
+      const statements: string[] = [];
+      const connection = Object.assign(async (strings: TemplateStringsArray) => {
+        const query = strings.join('');
+        statements.push(query);
+        if (query.includes(phase)) throw failure;
+        return [];
+      }, { release: vi.fn() });
+      const sql = { reserve: async () => connection, begin: vi.fn() };
+
+      await expect(readForeignWorkingSets(OWNER, 'ws-A', 'papercusp', sql as never)).rejects.toBe(failure);
+      expect(connection.release).toHaveBeenCalledOnce();
+      expect(sql.begin).not.toHaveBeenCalled();
+      expect(statements.filter(query => query === 'ROLLBACK')).toHaveLength(phase === 'BEGIN' ? 0 : 1);
+    },
+  );
+
+  it('retains both failures and releases the connection when rollback also fails', async () => {
+    const readFailure = new Error('read failed');
+    const rollbackFailure = new Error('rollback failed');
+    const connection = Object.assign(async (strings: TemplateStringsArray) => {
+      const query = strings.join('');
+      if (query.includes('codeWorkingSet')) throw readFailure;
+      if (query === 'ROLLBACK') throw rollbackFailure;
+      return [];
+    }, { release: vi.fn() });
+    const sql = { reserve: async () => connection, begin: vi.fn() };
+
+    await expect(readForeignWorkingSets(OWNER, 'ws-A', 'papercusp', sql as never)).rejects.toMatchObject({
+      errors: [readFailure, rollbackFailure],
+    });
+    expect(connection.release).toHaveBeenCalledOnce();
   });
 
   it('G-3 (blind review 35): inherits only stamps on items of THIS harness, and the resume read passes its harness', async () => {

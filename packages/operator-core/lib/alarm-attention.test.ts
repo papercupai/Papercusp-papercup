@@ -25,6 +25,19 @@ const request = {
 };
 
 describe('escalateAlarm', () => {
+  it('retains one-shot episode evidence on the condition while attention is cooling down', async () => {
+    const broadcast = vi.fn(async () => true);
+    const notify = vi.fn(async () => {});
+    const data = { episode: 3, timerKey: 'held#3', heldMs: 310_000, producerRun: 'original' };
+    expect(await escalateAlarm({ ...request, oneShot: true, data }, {
+      broadcast, notify, recentlyEscalated: async () => true,
+    })).toBe(false);
+    expect(broadcast).toHaveBeenCalledWith({
+      conditionKey: request.conditionKey, summary: request.title, body: request.body,
+      oneShot: true, data,
+    });
+    expect(notify).not.toHaveBeenCalled();
+  });
   it('preserves detector evidence without allowing it to replace the condition identity', async () => {
     const notify = vi.fn(async () => {});
     await escalateAlarm({ ...request, data: { host: 'fixture-host', consumers: { '/': ['postgres'] }, conditionKey: 'wrong' } }, {

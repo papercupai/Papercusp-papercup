@@ -2,13 +2,13 @@
  * Only the database connection and telemetry deps are substituted; no saved
  * recipe adapter, lookup handler, parser or conformance result is mocked.
  */
-import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { OrgTestDb } from '../../test/_org-test-db';
 import type { UnifiedToolContext } from '@papercusp/agent-mcp';
-import { dispatchProjectedTool as realDispatch } from '@papercusp/tooldef';
+import { lookupByMcpName } from '@papercusp/agent-mcp';
 import type { ProjectedTool } from '@papercusp/tooldef';
 
-const state = vi.hoisted(() => ({ db: null as OrgTestDb | null, calls: [] as UnifiedToolContext[] }));
+const state = vi.hoisted(() => ({ db: null as OrgTestDb | null }));
 vi.mock('@papercusp/db-org', async (original) => ({
   ...(await original<object>()), getOrgPg: () => ({ sql: state.db!.adminSql }),
   withWorkspace: (workspaceId: string, fn: (tx: unknown) => unknown) => state.db!.appSql.begin(async (tx) => {
@@ -17,13 +17,6 @@ vi.mock('@papercusp/db-org', async (original) => ({
   }),
 }));
 vi.mock('../projected-tool-deps', () => ({ PROJECTED_DEPS: {} }));
-vi.mock('@papercusp/agent-mcp', async (original) => ({
-  ...(await original<object>()),
-  dispatchProjectedTool: (...args: Parameters<typeof realDispatch>) => {
-    state.calls.push(args[3]);
-    return realDispatch(...args);
-  },
-}));
 
 import { createOrgTestDb } from '../../test/_org-test-db';
 import { getRecipe, upsertRecipe } from '../code-recipes-store';
@@ -62,16 +55,21 @@ async function fixture(id: string, script = 'return { ready: true };') {
 
 describe('identity recipe admission with production saved-recipe lookup (real PG)', () => {
   beforeAll(async () => { state.db = await createOrgTestDb(); }, 120_000);
+  afterEach(() => { vi.restoreAllMocks(); });
   afterAll(async () => { await state.db?.cleanup(); }, 30_000);
 
   it('reads the exact persisted revision with real wearer authority and does not execute it', async () => {
     const input = await fixture('portable-recipe-read');
-    state.calls.length = 0;
+    const metadataTool = lookupByMcpName('recipes:get');
+    if (!metadataTool) throw new Error('production recipes:get tool is not registered');
+    // Observe the real handler after dispatch gates; leave its implementation
+    // and the dispatcher intact instead of intercepting a facade re-export.
+    const metadataRead = vi.spyOn(metadataTool, 'fn');
     const result = await inspectIdentityRecipeProvider(input, { tools: [target] });
     expect(result, JSON.stringify(result)).toMatchObject({ ok: true,
       recipe: input.recipe, inspectionPin: { recipeRevision: input.recipe.revision } });
-    expect(state.calls).toHaveLength(1);
-    const observed = state.calls[0]!;
+    expect(metadataRead).toHaveBeenCalledTimes(1);
+    const observed = metadataRead.mock.calls[0]![1] as UnifiedToolContext;
     expect(observed.principal?.slug).toBe('recipe-wearer');
     expect([...observed.principal!.capabilities].sort()).toEqual(['agent_tools:read', 'status:read']);
     expect(observed.gateBypass).toBeUndefined();

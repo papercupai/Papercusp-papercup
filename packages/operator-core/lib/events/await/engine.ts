@@ -21,6 +21,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { decideWake } from '@papercusp/debounce-coalesce';
 import { managedSetInterval } from '@papercusp/scheduled-registry';
+import { requestOnlyHost } from '../../background-workers';
 import { withPgRetry } from '../../pg-transient-retry';
 import { sendMessage } from '../../agent-tools/coordination/messages';
 import { fetchPresenceFleet } from '../../agent-tools/coordination/presence-fleet';
@@ -168,7 +169,8 @@ const backoffMs = (attempts: number): number => Math.min(5_000 * 2 ** attempts, 
 
 /**
  * Internal fire-and-forget auto-pump kick (the `setImmediate(pumpWakeDeliveries)`
- * emit/deliver paths queue) — ON by default, so production behaviour is unchanged.
+ * emit/deliver paths queue) — ON by default. The pump still enforces the existing
+ * request-only host boundary: request handlers enqueue; the background owner drains.
  *
  * An INTEGRATION test that drives the pump itself with an injected testbed
  * host-discovery dep (`pumpWakeDeliveries(ws, { findPsuHost: tb.findPsuHostDep() })`)
@@ -180,7 +182,7 @@ const backoffMs = (attempts: number): number => Math.min(5_000 * 2 ** attempts, 
  * event-key subscriber lookup) lets the kicked pump win — which is precisely how
  * `wake-on-message.integration.test.ts` started flaking. The test drives the pump
  * explicitly, so the internal kick is redundant there; disable it to make the test
- * the sole, controlled-deps pump. Never gate production on this flag.
+ * the sole, controlled-deps pump. Production ownership uses requestOnlyHost, not this flag.
  */
 let autoPumpEnabled = true;
 /** @internal test-only: suppress/restore the internal auto-pump kick. Returns the
@@ -1065,6 +1067,10 @@ export async function pumpWakeDeliveries(workspaceId?: string, deps: PumpWakeDep
     coalesced: 0,
     suppressed: 0,
   };
+  // WI-6554700010045160: every emit can kick this path, including on request-only
+  // API replicas serving a different revision from the background owner. Fence
+  // before claiming: an old consumer must not settle another runtime's retries.
+  if (requestOnlyHost()) return stats;
   const ws = workspaceId ?? activeWorkspaceId();
   if (pumpsInFlight.has(ws)) {
     pumpRerunRequested.set(ws, deps);
@@ -1811,6 +1817,7 @@ type Globals = typeof globalThis & { __papercuspAwaitSweeperStarted?: boolean };
  * `activeWorkspaceId()` reads (reconcilers, wake delivery) resolve it.
  */
 export function startAwaitSweeper(): void {
+  if (requestOnlyHost()) return;
   const g = globalThis as Globals;
   if (g.__papercuspAwaitSweeperStarted) return;
   g.__papercuspAwaitSweeperStarted = true;
@@ -1826,6 +1833,7 @@ export function startAwaitSweeper(): void {
 
 /** One tick of the sweeper: sweep the coordination workspace and each background workspace. */
 export async function sweepAllWorkspaces(): Promise<void> {
+  if (requestOnlyHost()) return;
   const workspaces = new Set([DEFAULT_COORD_WORKSPACE, ...backgroundWorkspaceIds()]);
   for (const ws of workspaces) {
     // Bounded retry on a transient CONNECT_TIMEOUT (WI-2776). The sweeper is documented
@@ -1844,6 +1852,7 @@ export async function sweepAllWorkspaces(): Promise<void> {
 }
 
 export async function sweepOnce(workspaceId?: string): Promise<void> {
+  if (requestOnlyHost()) return;
   const ws = workspaceId ?? activeWorkspaceId();
 
   // Source reconcilers first — they may fire awaits this very sweep delivers.

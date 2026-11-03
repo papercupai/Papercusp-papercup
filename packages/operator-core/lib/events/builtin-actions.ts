@@ -218,8 +218,8 @@ function toDrainTransitionPlans(
  * is a dependency whose terminality changed, so the action re-reads the plan,
  * enumerates its direct dependents, and resyncs their current effective lanes.
  * See plan-items/reconcile-linked-work-items.ts's `resyncPlanItemLaneNow`.
- * Always `{ok:true}` (fail-safe per item) unless the args are entirely
- * malformed.
+ * Returns `{ok:false,error}` for any lane that still failed after bounded
+ * reconciliation, allowing the existing reaction failure ledger to record it.
  */
 export async function fireBuiltinReactionAction(
   fire: string,
@@ -265,19 +265,28 @@ export async function fireBuiltinReactionAction(
       const dependencies = toLaneResyncItems(args.dependencies);
       if (items.length === 0 && dependencies.length === 0) return { ok: true };
       const { resyncPlanItemLaneNow, resyncDependentPlanItemLanesNow } = await import("../plan-items/reconcile-linked-work-items");
-      // Per-item best-effort — resyncPlanItemLaneNow itself never throws, but keep
-      // the loop resilient to a stray rejection either way.
+      const failures: string[] = [];
+      // Isolate each lane's failure without acknowledging it as a successful action.
       for (const it of items) {
-        await resyncPlanItemLaneNow(it.planSlug, it.itemId, it.harnessSlug).catch(() => null);
+        try {
+          const result = await resyncPlanItemLaneNow(it.planSlug, it.itemId, it.harnessSlug);
+          for (const failure of result?.failures ?? []) {
+            failures.push(`${it.planSlug}#${it.itemId}/${failure.workItemId ?? failure.stage}: ${failure.message}`);
+          }
+        } catch (error) {
+          failures.push(error instanceof Error ? error.message : String(error));
+        }
       }
       for (const dependency of dependencies) {
-        await resyncDependentPlanItemLanesNow(
-          dependency.planSlug,
-          dependency.itemId,
-          dependency.harnessSlug,
-        ).catch(() => []);
+        try {
+          await resyncDependentPlanItemLanesNow(
+            dependency.planSlug, dependency.itemId, dependency.harnessSlug,
+          );
+        } catch (error) {
+          failures.push(error instanceof Error ? error.message : String(error));
+        }
       }
-      return { ok: true };
+      return failures.length ? { ok: false, error: failures.join('; ') } : { ok: true };
     }
     case PLAN_DRAIN_TRANSITION_ACTION: {
       const plans = toDrainTransitionPlans(args.plans);

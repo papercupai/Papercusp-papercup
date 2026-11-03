@@ -127,6 +127,39 @@ describe('scoreTool', () => {
 });
 
 describe('searchTools', () => {
+  it('preserves recorded scores, phrase boosts, field weights and ties across short and transcript queries', () => {
+    // Recorded from the original scorer before token indexing (EI-27694455222051367).
+    const entries = [
+      entry({ tool: 'a:lease', description: 'Writer resource migration.', capability: 'tasks:read',
+        argSchema: 'revision:string',
+        unit: { name: 'migration-kit', kind: 'pack', source: 'cupboard', description: 'Resource audit.' } }),
+      entry({ tool: 'b:lease', description: 'Writer resource migration.' }),
+      entry({ tool: 'z:writer', description: 'Lease audit' }),
+    ];
+    const cases: Array<[string, number[], string[]]> = [
+      ['lease lease writer source', [22.6, 22.6, 14], ['a:lease', 'b:lease', 'z:writer']],
+      ['lea', [18, 18, 5.2], ['a:lease', 'b:lease', 'z:writer']],
+      ['source', [4.6, 4.6, 0], ['a:lease', 'b:lease']],
+      ['mi', [5.8, 5.2, 0], ['a:lease', 'b:lease']],
+      ['revision', [1, 0, 0], ['a:lease']],
+      ['read', [4, 0, 0], ['a:lease']],
+      ['a', [10, 0, 0], ['a:lease']],
+      ['to the of', [0, 0, 0], []],
+    ];
+    for (const [query, scores, names] of cases) {
+      expect(entries.map(e => scoreTool(e, query))).toEqual(scores);
+      expect(searchTools(entries, query).map(e => e.tool)).toEqual(names);
+    }
+    const unmatched = Array.from({ length: 9 }, (_, i) => `qzz${i}`).join(' ');
+    // Do not multiply duplicate-token counts: changing addition order can
+    // change exact scores and tie ordering even when the formula is the same.
+    const transcript = 'lease lease writer source '.repeat(120) + unmatched;
+    expect(entries.map(e => scoreTool(e, transcript))).toEqual([2711.999999999994, 2711.999999999994, 1680]);
+    expect(searchTools(entries, transcript, { limit: 2 }).map(e => e.tool)).toEqual(['a:lease', 'b:lease']);
+    expect(entries.map(e => scoreTool(e, `lea ${unmatched}`))).toEqual([6, 6, 1.2]);
+    expect(entries.map(e => scoreTool(e, `source ${unmatched}`))).toEqual([0.6, 0.6, 0]);
+  });
+
   const catalog = [
     entry({ tool: 'coord:send', description: 'send a message to a peer' }),
     entry({ tool: 'coord:inbox', description: 'read your coordination inbox' }),

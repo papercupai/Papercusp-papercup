@@ -56,6 +56,9 @@ import { coordScopeReady, coordScopeWorkspace } from '../agent-tools/coordinatio
 import { MESSAGE_GC_RETENTION_DAYS } from '../agent-tools/coordination/message-log-gc';
 import { hostname } from 'node:os';
 import { createHash } from 'node:crypto';
+import { sessionCarryPolicy } from '../capability-envelope/session-confinement-port';
+import type { FrozenCarryBoundary } from '../capability-envelope/session-confinement';
+import type { RespawnLaunchSpec } from '../carry-respawn';
 import { broadcastSevereEvent } from '../severe-event-broadcast';
 import { resolveAlarm, type AlarmAttentionDeps } from '../alarm-attention';
 import { observeFallback } from '../degradation/fallback-observations';
@@ -1367,6 +1370,17 @@ async function escalateCarryRespawnLoop(
  * Every miss is fail-soft: the soft-threshold path leaves native auto-compact and
  * the older force-compact rung as backstops, while the death path escalates below.
  */
+// A watchdog has no participant-authored continuation note. Its frozen restart
+// therefore replays only the host-pinned assignment, with no ambient addendum.
+// Recheck the assembled result because policy may move during the async build.
+function matchesFrozenWatchdogCarry(spec: RespawnLaunchSpec, boundary: FrozenCarryBoundary): boolean {
+  const digest = createHash('sha256').update(boundary.initialPrompt).digest('hex');
+  const receipt = spec.frozenAssignmentCarry;
+  return digest === boundary.initialPromptSha256 && spec.firstPrompt === boundary.initialPrompt &&
+    spec.systemPromptAddendum === '' && receipt?.mode === boundary.mode &&
+    receipt.initialPromptSha256 === digest && receipt.firstPromptSha256 === digest && receipt.noteSha256 === null;
+}
+
 async function maybeCarryRespawn(
   ownerId: string,
   ownerLabel: string,
@@ -1384,6 +1398,7 @@ async function maybeCarryRespawn(
     return false;
   }
   try {
+    const frozenCarry = await sessionCarryPolicy({ ownerId, workspaceId });
     const { findLiveHostAsync, hostSupports, injectIntoHost } = await import(
       '../events/await/psu-pty-discovery'
     );
@@ -1411,7 +1426,7 @@ async function maybeCarryRespawn(
     }
     if (!transcriptPath) return false;
 
-    await mechanicalPreflushForWatchdog(ownerId, ownerLabel, workspaceId);
+    if (!frozenCarry) await mechanicalPreflushForWatchdog(ownerId, ownerLabel, workspaceId);
 
     const { buildOwnerRespawnLaunchSpec } = await import('../carry-respawn');
     const spec = await buildOwnerRespawnLaunchSpec(ownerId, {
@@ -1434,6 +1449,7 @@ async function maybeCarryRespawn(
       },
     });
     if (!spec) return false;
+    if (frozenCarry && !matchesFrozenWatchdogCarry(spec, frozenCarry)) return false;
     if (spec.openOwnerQuestion.crossesOpenOwnerMessage && reason === 'soft-threshold') {
       const fingerprint = openOwnerMessageFingerprint(spec.openOwnerQuestion, spec.firstPrompt);
       if (openOwnerMessageRefusalDecision(ownerId, fingerprint) === 'refuse') {
@@ -1628,6 +1644,9 @@ async function maybeForceRespawn(
     return false; // flag infra unavailable ⇒ do NOT force (fail-safe)
   }
   try {
+    // This must precede both ambient preflush and the hostless successor route.
+    // A frozen assignment cannot move to another host/checkout or gateway.
+    const frozenCarry = await sessionCarryPolicy({ ownerId, workspaceId });
     const { findLiveHostAsync, hostSupports, injectIntoHost } = await import(
       '../events/await/psu-pty-discovery'
     );
@@ -1637,6 +1656,10 @@ async function maybeForceRespawn(
     const ref = await resolveSessionRefReconciled(ownerId);
     if (ref?.agent === 'omp') return false;
     if (!host) {
+      if (frozenCarry) {
+        await failure('Frozen assignment has no live PTY host; an unbound successor cannot preserve its checkout, confinement and metered gateway.');
+        return false;
+      }
       const target = conditionDeps.resolveForceSuccessorTarget
         ? await conditionDeps.resolveForceSuccessorTarget(ownerId)
         : await (await import('../agent-launch-core')).resolveResumeTarget({ agentId: ownerId });
@@ -1707,7 +1730,7 @@ async function maybeForceRespawn(
         (ref?.sessionId ? await findSessionTranscript(ref.sessionId, { owner: ownerId }) : null) ??
         newestTranscriptUnderOwner(ownerId);
     }
-    await mechanicalPreflushForWatchdog(ownerId, ownerLabel, workspaceId);
+    if (!frozenCarry) await mechanicalPreflushForWatchdog(ownerId, ownerLabel, workspaceId);
     const { buildOwnerRespawnLaunchSpec } = await import('../carry-respawn');
     const spec = transcriptPath
       ? await buildOwnerRespawnLaunchSpec(ownerId, {
@@ -1724,7 +1747,7 @@ async function maybeForceRespawn(
           },
         })
       : null;
-    if (!spec) {
+    if (!spec || frozenCarry && !matchesFrozenWatchdogCarry(spec, frozenCarry)) {
       await failure(transcriptPath ? 'Carry builder failed at the measured force threshold.' : 'No transcript at the measured force threshold.');
       console.warn(
         `[compaction-watchdog] force-respawn for ${ownerLabel} (${ownerId}) could not assemble the ` +

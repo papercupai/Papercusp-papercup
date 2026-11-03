@@ -158,6 +158,14 @@ describe('loadFromDir', () => {
 });
 
 describe('loadAll', () => {
+  it('retains filesystem failures instead of presenting an empty configured population', async () => {
+    const missing = join(ROOT, 'missing-root'), notDirectory = join(ROOT, 'not-directory');
+    await fs.writeFile(notDirectory, 'fixture');
+    const r = await loader.loadAll([{ pluginsDir: missing, source: 'project' }, { pluginsDir: notDirectory, source: 'global' }]);
+    expect(r.loaded).toEqual([]);
+    expect(r.discovery.unavailable).toEqual([{ path: missing, code: 'ENOENT' }, { path: notDirectory, code: 'ENOTDIR' }]);
+  });
+
   it('walks a root and loads all candidates', async () => {
     const proj = join(ROOT, 'walk-proj', 'plugins');
     await makePlugin({ name: 'walk-a', atDir: join(proj, 'walk-a') });
@@ -166,6 +174,9 @@ describe('loadAll', () => {
     expect(r.errors.length).toBe(0);
     expect(r.loaded.map((l) => l.plugin.name).sort()).toEqual(['walk-a', 'walk-b']);
     expect(r.loaded.every((l) => l.source === 'project')).toBe(true);
+    expect(r.discovery.roots).toEqual([{ pluginsDir: proj, source: 'project' }]);
+    expect(r.discovery.candidates.map(c => [c.pluginName, c.status]).sort())
+      .toEqual([['walk-a', 'loaded'], ['walk-b', 'loaded']]);
   });
 
   it('recurses into @scope/ dirs when scopeRecurse is set', async () => {
@@ -197,6 +208,8 @@ describe('loadAll', () => {
     expect(r.loaded.length).toBe(1);
     expect(r.loaded[0].plugin.version).toBe('1.0.0'); // project wins
     expect(r.loaded[0].source).toBe('project');
+    expect(r.discovery.candidates.map(c => [c.source, c.status]))
+      .toEqual([['project', 'loaded'], ['global', 'shadowed']]);
   });
 
   it('collects load errors without aborting the walk', async () => {
@@ -206,6 +219,34 @@ describe('loadAll', () => {
     const r = await loader.loadAll([{ pluginsDir: dir, source: 'project' }]);
     expect(r.loaded.map((l) => l.plugin.name)).toContain('ok-one');
     expect(r.errors.some((e) => /__bad set/.test(e.error))).toBe(true);
+    expect(r.discovery.candidates).toContainEqual(expect.objectContaining({
+      path: join(dir, 'bad-one'), source: 'project', status: 'error', error: 'manifest invalid: __bad set',
+    }));
+  });
+
+  it('snapshots valid declarations before runtime code and retains them when loading fails', async () => {
+    const root = join(ROOT, 'manifest-snapshot');
+    await makePlugin({ name: 'declared', atDir: join(root, 'declared') });
+    const manifest = { name: 'declared', version: '1.0.0', tools: [{ name: 'original' }] };
+    const order: string[] = [];
+    const snapshotLoader = createPluginLoader<FakePlugin, typeof manifest>({
+      async readManifest() { order.push('parse'); return manifest; },
+      describeManifest(parsed) { order.push('snapshot'); return structuredClone(parsed); },
+      async locateEntry() { order.push('locate'); return '/fake/entry.cjs'; },
+      async importEntry() {
+        order.push('import'); manifest.tools[0]!.name = 'mutated';
+        return { error: 'entry failed after mutation' };
+      },
+      pluginName: plugin => plugin.name,
+    });
+    const result = await snapshotLoader.loadAll([{ pluginsDir: root, source: 'project' }]);
+    expect(order).toEqual(['parse', 'snapshot', 'locate', 'import']);
+    expect(result.loaded).toEqual([]);
+    expect(result.discovery.candidates).toEqual([{
+      path: join(root, 'declared'), source: 'project', status: 'error',
+      error: 'import threw at /fake/entry.cjs: entry failed after mutation',
+      manifest: { name: 'declared', version: '1.0.0', tools: [{ name: 'original' }] },
+    }]);
   });
 });
 
@@ -230,6 +271,7 @@ describe('admitManifest', () => {
     },
     admitManifest: (manifest, source) =>
       manifest.globalOnly && source === 'project' ? 'globalOnly: installed copies only' : null,
+    describeManifest: manifest => ({ ...structuredClone(manifest) }),
     pluginName: (p) => p.name,
   });
 
@@ -267,5 +309,7 @@ describe('admitManifest', () => {
     expect(byName.shared.plugin.version).toBe('1.2.3');
     expect(byName.plain.source).toBe('project');
     expect(r.errors).toEqual([]);
+    expect(r.discovery.candidates).toContainEqual({ path: join(projDir, 'shared'), source: 'project', status: 'excluded',
+      reason: 'globalOnly: installed copies only', manifest: { name: 'shared', version: '9.9.9', globalOnly: true } });
   });
 });

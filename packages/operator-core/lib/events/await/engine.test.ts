@@ -475,6 +475,61 @@ afterEach(() => {
   delete process.env.PAPERCUSP_AWAIT_MAX_RESUMES_PER_TICK;
 });
 
+describe('WI-6554700010045160 — request-only hosts leave wake execution to the background owner', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    resetScheduledRegistry();
+    delete (globalThis as { __papercuspAwaitSweeperStarted?: boolean }).__papercuspAwaitSweeperStarted;
+  });
+
+  it.each(['explicit', 'staging'] as const)('%s request-only host cannot claim durable wake retries', async (role) => {
+    vi.stubEnv('PAPERCUSP_BACKGROUND_WORKERS', role === 'explicit' ? '0' : undefined);
+    vi.stubEnv('PAPERCUSP_HONO_PORT', role === 'staging' ? '3170' : '3070');
+    h.store.claimDueDeliveries.mockResolvedValueOnce([workRow({ attempts: 8 })]);
+
+    const result = await pumpWakeDeliveries('ws-test');
+
+    expect(result.claimed).toBe(0);
+    expect(h.store.claimDueDeliveries).not.toHaveBeenCalled();
+    expect(h.executeWake).not.toHaveBeenCalled();
+    expect(h.degradeToInboxOrDrop).not.toHaveBeenCalled();
+  });
+
+  it('persists request-side wake emissions without consuming their deliveries', async () => {
+    vi.stubEnv('PAPERCUSP_BACKGROUND_WORKERS', '0');
+    const previousAutoPump = setAutoPumpEnabledForTests(true);
+    h.store.fireAwaitsForKey.mockResolvedValueOnce([awaitRow()]);
+    h.store.insertDeliveries.mockResolvedValueOnce(1);
+    try {
+      await emitAwaitedEvent({ key: 'vault:request-side', source: 'request-only-api' });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+
+      expect(h.store.insertDeliveries).toHaveBeenCalledWith(expect.objectContaining({
+        awaits: [expect.objectContaining({ subscriberId: 'su-w' })],
+      }));
+      expect(h.store.claimDueDeliveries).not.toHaveBeenCalled();
+      expect(h.executeWake).not.toHaveBeenCalled();
+    } finally {
+      setAutoPumpEnabledForTests(previousAutoPump);
+    }
+  });
+
+  it('does not arm or run a request-only sweeper, while the background owner still drains', async () => {
+    vi.stubEnv('PAPERCUSP_BACKGROUND_WORKERS', '0');
+    startAwaitSweeper();
+    await sweepOnce('ws-test');
+    expect(getManaged('await-event-sweeper')).toBeFalsy();
+    expect(h.store.fireTimedOutAwaits).not.toHaveBeenCalled();
+    expect(h.store.claimDueDeliveries).not.toHaveBeenCalled();
+
+    vi.stubEnv('PAPERCUSP_BACKGROUND_WORKERS', '1');
+    h.store.claimDueDeliveries.mockResolvedValueOnce([workRow()]);
+    await pumpWakeDeliveries('ws-test');
+    expect(h.store.claimDueDeliveries).toHaveBeenCalledTimes(1);
+    expect(h.executeWake).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('emitAwaitedEvent', () => {
   it('forwards the emitter source into durable await matching', async () => {
     h.store.fireAwaitsForKey.mockResolvedValueOnce([]);

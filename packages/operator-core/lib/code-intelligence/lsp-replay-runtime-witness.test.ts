@@ -192,11 +192,31 @@ describe('independent parent oracle producer', () => {
     expect(readProcessIdentity(qualified.oracleProvenance.runtime!.process.pid)).toBeNull();
     await expect(freezeQualifiedReplayConfig(f.inputPath, f.outputPath, f.options, f.deps)).rejects.toThrow('replay-oracle-output-exists');
   });
+  it('hashes unused native providers but traverses dependencies of explicit runtime roots', async () => {
+    const f = producer();
+    const unused = join(dirname(f.source), 'unused-gpu-provider.so');
+    writeFileSync(unused, 'provider whose optional host library is unavailable');
+    const nativeDependencies = (file: string) => {
+      if (file === unused) throw new Error('unavailable-provider-library');
+      return [];
+    };
+    const qualified = await freezeQualifiedReplayConfig(f.inputPath, f.outputPath, f.options,
+      { ...f.deps, nativeDependencies });
+    expect(qualified.oracleProvenance.runtime!.declaration.witness.files[unused]).toBe(replayHash(readFileSync(unused)));
+    expect(() => assertReplayOracleRuntimeQualified(qualified)).not.toThrow();
+    await expect(freezeQualifiedReplayConfig(f.inputPath, join(f.root, 'explicit.json'), {
+      ...f.options, runtimePaths: [...f.options.runtimePaths, unused], witnessDirectory: join(f.root, 'explicit-receipts'),
+    }, { ...f.deps, nativeDependencies })).rejects.toThrow('unavailable-provider-library');
+  });
   it.each([
     ['compiler drift after load', "fs.writeFileSync(require.resolve('./compiler.cjs'),'changed');", 'changed-file'],
     ['source drift', 'fs.writeFileSync(Object.keys(config.files)[0],"changed");', 'changed-file'],
     ['handoff hash mismatch', 'fs.appendFileSync(candidatePath," ");', 'replay-oracle-candidate-hash-mismatch'],
     ['foreign run handoff', 'input.runId="foreign";', 'replay-oracle-invalid-child-handoff'],
+    ['service witness mismatch', `config.runtimeWitness={directory:"/foreign",runId:input.runId,bootstraps:{},files:{}};
+      const altered=JSON.stringify(config);fs.writeFileSync(candidatePath,altered);
+      const send=process.send.bind(process);process.send=row=>send({...row,
+        sha256:require('node:crypto').createHash('sha256').update(altered).digest('hex')});`, 'replay-oracle-candidate-input-mismatch'],
     ['authored config mismatch', `config.workspaceId="foreign";
       const altered=JSON.stringify(config);fs.writeFileSync(candidatePath,altered);
       const send=process.send.bind(process);process.send=row=>send({...row,

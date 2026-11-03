@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { captureConfigurationSnapshot } from '@papercusp/test-config/configuration-snapshot';
 import { verifierSourceFiles } from '../lib/verifier-source';
 import { preparePrivateOperatorApiBundle, produceCommittedReaderPrivateApiBundle, qualifyCommittedReaderSource,
   resolvePreparedCommittedReaderSource, resolvePreparedPrivateApiBundle, preparePrivateWorkerSources,
@@ -84,8 +85,20 @@ function producerFixture(extraScript = '') {
   return { ...f, inputs, saveInputs, selected, produce, consume };
 }
 
-function loadedFixture(source?: string, admit = true) {
-  const f = fixture(), traceOut = join(f.dir, 'host-source.json');
+function observedBuildFixture(extraScript = '') {
+  const f = producerFixture('test -f "$(dirname "$2")/operator-api-inputs.json"\n' + extraScript);
+  const observedSource = { sourceReceiptPath: f.selected.sourceReceiptPath,
+    sourceReceiptSha256: digest(readFileSync(f.selected.sourceReceiptPath)), selectedCommit: f.selected.selectedCommit };
+  const produceObserved = () => preparePrivateOperatorApiBundle(f.root, join(f.dir, 'prepare'), { observedSource });
+  return { ...f, observedSource, produceObserved };
+}
+
+function loadedFixture(source?: string, admit = true, buildObservationOnly = false) {
+  let f: ReturnType<typeof fixture>;
+  if (buildObservationOnly) {
+    const observed = observedBuildFixture(); observed.produceObserved(); f = observed;
+  } else f = fixture();
+  const traceOut = join(f.dir, 'host-source.json');
   if (source !== undefined) {
     writeFileSync(f.bundle, source);
     f.closure.sha256 = digest(source);
@@ -94,17 +107,22 @@ function loadedFixture(source?: string, admit = true) {
   }
   const traceRoot = traceOut + '.native-processes';
   const startedAtMs = Date.now();
+  const environment = privateBundleRuntimeEnv({ ...process.env, NODE_OPTIONS: '', NODE_PATH: '',
+    PAPERCUSP_TEST_CONFIGURATION_SECRET: 'private-entry-value' }, {
+    traceOut, pinnedSources: admit ? [{ path: f.bundle, sha256: f.closure.sha256,
+      byteLength: readFileSync(f.bundle).length }] : [],
+  });
   const child = spawnSync(process.execPath, ['--import', pathToFileURL(resolve(import.meta.dirname,
     '../../../scripts/lib/vitest-startup-trace.mjs')).href, f.bundle], {
-    cwd: f.root, env: privateBundleRuntimeEnv({ ...process.env, NODE_OPTIONS: '', NODE_PATH: '' }, {
-      traceOut, pinnedSources: admit ? [{ path: f.bundle, sha256: f.closure.sha256,
-        byteLength: readFileSync(f.bundle).length }] : [],
-    }),
+    cwd: f.root, env: environment,
     encoding: 'utf8', timeout: 15_000,
   });
   expect(child.error).toBeUndefined();
   expect(child.status, child.stderr).toBe(0);
-  const options = { ...f.options, traceOut, pid: child.pid, startedAtMs, finishedAtMs: Date.now() };
+  const options = { ...f.options, traceOut, pid: child.pid, startedAtMs, finishedAtMs: Date.now(),
+    configuration: captureConfigurationSnapshot(environment),
+    ...(buildObservationOnly ? { preparationOnly: true as const, buildObservationOnly,
+      receiptPath: join(f.dir, 'prepare/operator-api-preflight.json') } : {}) };
   const rows = readdirSync(traceRoot).filter(name => name.endsWith('.json'))
     .map(name => ({ name, row: JSON.parse(readFileSync(join(traceRoot, name), 'utf8')) }));
   const replace = (event: string, mutate: (row: any) => void) => {
@@ -113,10 +131,58 @@ function loadedFixture(source?: string, admit = true) {
     const bytes = JSON.stringify(entry.row);
     writeFileSync(join(traceRoot, digest(bytes) + '.json'), bytes);
   };
-  return { ...f, traceRoot, options, rows, replace, observe: () => observeCommittedReaderLoadedSources(options) };
+  return { ...f, traceRoot, options, rows, replace, environment,
+    observe: () => observeCommittedReaderLoadedSources(options) };
 }
 
 describe('committed reader loader-return source binding', () => {
+  it('binds original host entry inputs without retaining raw secret values or qualifying resolved config', () => {
+    const f = loadedFixture("process.env.PAPERCUSP_TEST_CONFIGURATION_SECRET = 'changed-after-entry';");
+    const observed = f.observe();
+    expect(observed).toMatchObject({ status: 'bound', configurationInputs: {
+      scope: 'native-node-entry-configuration-inputs', status: 'matched', gaps: [],
+      snapshot: { envSha256: { PAPERCUSP_TEST_CONFIGURATION_SECRET: digest('private-entry-value') } },
+    } });
+    expect(observed.pending).toContain('runtime-config');
+    expect(JSON.stringify(f.rows)).not.toContain('private-entry-value');
+  });
+
+  it('keeps a differing prelaunch configuration unknown without confusing it with source binding', () => {
+    const f = loadedFixture();
+    f.options.configuration = captureConfigurationSnapshot({ ...f.environment,
+      PAPERCUSP_TEST_CONFIGURATION_SECRET: 'different-launch-input' });
+    expect(f.observe()).toMatchObject({ status: 'bound', configurationInputs: {
+      status: 'unknown', gaps: [expect.stringContaining('configuration inputs differ')],
+    } });
+  });
+
+  it.each(['missing', 'altered'] as const)('keeps %s entry configuration unknown instead of using parent inputs', mode => {
+    const f = loadedFixture();
+    f.replace('node-entry', row => {
+      if (mode === 'missing') delete row.configuration;
+      else row.configuration.envSha256.PAPERCUSP_TEST_CONFIGURATION_SECRET = digest('altered');
+    });
+    expect(f.observe()).toMatchObject({ status: 'bound', configurationInputs: {
+      status: 'unknown', snapshot: null, gaps: ['host entry configuration snapshot missing or invalid'],
+    } });
+  });
+
+  it('cannot infer independent launch pins from a valid host entry snapshot', () => {
+    const f = loadedFixture();
+    expect(observeCommittedReaderLoadedSources({ ...f.options, configuration: undefined }))
+      .toMatchObject({ status: 'bound', configurationInputs: { status: 'unknown',
+        gaps: ['independent prelaunch configuration snapshot missing or invalid'] } });
+  });
+
+  it('binds original build observations while preserving missing preparation and runtime qualification', () => {
+    const f = loadedFixture(undefined, true, true);
+    expect(f.observe()).toMatchObject({ status: 'bound', gaps: [],
+      sources: [{ sha256: f.closure.sha256 }], pending: expect.arrayContaining([
+        'preparation-qualification', 'observed-imports', 'module-evaluation', 'runtime-config',
+        'private-pg', 'sidecars', 'complete-runtime-closure']) });
+    expect(() => qualifyCommittedReaderSource({ ...f.options, preparationOnly: true })).toThrow();
+  });
+
   it('binds an independently pinned product-sized bundle above both generic byte ceilings', () => {
     // The measured private operator bundle was 81,830,447 bytes. Keep this
     // regression large enough to exercise both the old 16MiB and 64MiB limits.
@@ -251,6 +317,52 @@ describe('private worker source selection before allocation', () => {
     rmSync(join(f.root, '.verifier-source.json'));
     expect(preparePrivateWorkerSources(f.root, ['helper.ts'], {}, reader).loader).toBe('working-source');
     expect(reader).not.toHaveBeenCalled();
+  });
+});
+
+describe('original build observations without runtime qualification', () => {
+  it('retains independent inputs before compilation and refuses them at the qualified consumer', () => {
+    const f = observedBuildFixture();
+    const built = f.produceObserved();
+    const inputs = JSON.parse(readFileSync(join(f.dir, 'prepare/operator-api-inputs.json'), 'utf8'));
+    expect(inputs).toEqual({ phase: 'build-observation', sourceCommit: f.selected.selectedCommit,
+      dependencyFiles: f.closure.dependencyFiles });
+    expect(built).toMatchObject({ path: f.bundle, qualification: { status: 'pending' },
+      receiptSha256: digest(readFileSync(join(f.dir, 'prepare/operator-api-preflight.json'))) });
+    expect(() => f.consume()).toThrow();
+    expect(() => resolvePreparedCommittedReaderSource(['--prepared-api-sha=' + built.sha256,
+      '--prepared-receipt-sha=' + built.receiptSha256], join(f.dir, 'execute'))).toThrow();
+    expect(readFileSync(`${f.bundle}.builds`, 'utf8')).toBe('build\n');
+    expect(() => f.produceObserved()).toThrow(/fresh preparation directory/);
+  });
+
+  it.each(['source', 'dependencies', 'inputs'] as const)(
+    'retains original inputs and refuses %s drift during compilation', dimension => {
+      const script = dimension === 'source' ? 'printf changed > helper.ts\n'
+        : dimension === 'dependencies' ? 'printf changed > node_modules/example/index.js\n'
+        : 'printf changed > "$(dirname "$2")/operator-api-inputs.json"\n';
+      const f = observedBuildFixture(script);
+      expect(() => f.produceObserved()).toThrow();
+      expect(existsSync(join(f.dir, 'prepare/verifier-source.json'))).toBe(true);
+      expect(existsSync(join(f.dir, 'prepare/operator-api-preflight.json'))).toBe(false);
+      expect(readFileSync(`${f.bundle}.builds`, 'utf8')).toBe('build\n');
+    });
+
+  it('refuses a changed selected receipt before invoking the compiler', () => {
+    const f = observedBuildFixture();
+    writeFileSync(f.selected.sourceReceiptPath, readFileSync(f.selected.sourceReceiptPath, 'utf8') + '\n');
+    expect(() => f.produceObserved()).toThrow(/Pinned selected source receipt changed/);
+    expect(existsSync(`${f.bundle}.builds`)).toBe(false);
+  });
+
+  it('uses the same retained inputs with the maintained asynchronous builder', async () => {
+    const f = observedBuildFixture();
+    const built = await preparePrivateOperatorApiBundle(f.root, join(f.dir, 'prepare'), {
+      observedSource: f.observedSource, builder: { timeoutMs: 2000, maxMs: 5000 },
+    });
+    expect(built.qualification).toEqual({ status: 'pending' });
+    expect(readFileSync(`${f.bundle}.builds`, 'utf8')).toBe('build\n');
+    expect(() => f.consume()).toThrow();
   });
 });
 

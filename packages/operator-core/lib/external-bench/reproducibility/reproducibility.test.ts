@@ -63,6 +63,25 @@ describe('AUTO-BAR-R-4-P-004: controlled arms freeze one solver across every top
     expect(computePreregHash(toggled)).not.toBe(frozen);
     expect(computePreregHash(moved)).not.toBe(frozen);
   });
+
+  it('freezes matched compaction thresholds into the existing protocol hash and comparison guard', () => {
+    const protocol = controlledProtocolFixture(), historicalHash = computePreregHash(protocol);
+    for (const arm of protocol.arms) arm.control!.compactionLimit = 20_000;
+    expect(issuesOf(protocol)).toEqual([]);
+    expect(computePreregHash(protocol)).not.toBe(historicalHash);
+    const frozenHash = computePreregHash(protocol);
+    controlOf(protocol, 'coordinated-no-locks').compactionLimit = 21_000;
+    expect(computePreregHash(protocol)).not.toBe(frozenHash);
+    expect(issuesOf(protocol)).toContainEqual(expect.stringMatching(/freeze identical solver settings/));
+    expect(() => requireSameSolverComparison(protocol, ['coordinated', 'coordinated-no-locks']))
+      .toThrow(/drifts from the frozen solver settings/);
+  });
+
+  it.each([0, 19_999, 20_000.5, Number.MAX_SAFE_INTEGER + 1])('rejects an invalid frozen compaction threshold %s', value => {
+    const protocol = controlledProtocolFixture();
+    for (const arm of protocol.arms) arm.control!.compactionLimit = value;
+    expect(currentBenchmarkProtocolSchema.safeParse(protocol).success).toBe(false);
+  });
 });
 
 describe('BM-P-004-equal-solver: one mismatched solver field breaks the same-solver comparison', () => {
@@ -77,6 +96,7 @@ describe('BM-P-004-equal-solver: one mismatched solver field breaks the same-sol
     ['clientVersion', arm => { arm.runtime.clientVersion = 'other-client'; }],
     ['promptHashMode', arm => { arm.runtime.promptHashMode = 'codex-native-template-v1'; }],
     ['solverToolsHash', arm => { arm.control!.solverToolsHash = 'e'.repeat(64); }],
+    ['compactionLimit', arm => { arm.control!.compactionLimit = 20_000; }],
   ];
   const cases = SAME_SOLVER_TOPOLOGIES.flatMap(topology => mutations.map(([field, mutate]) => [topology, field, mutate] as const));
 

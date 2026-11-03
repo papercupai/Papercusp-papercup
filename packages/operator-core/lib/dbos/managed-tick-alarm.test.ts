@@ -5,6 +5,9 @@ import { workspaceBackgroundActivityAllowed } from '../device-operator-actions';
 import { recordStartupActivityHistory } from '../startup-activity';
 
 vi.mock('@dbos-inc/dbos-sdk', () => { throw new Error('DBOS unavailable'); });
+vi.mock('./managed-tick-alarm-recovery', () => ({
+  startManagedTickAlarmRecovery: () => ({ observeInterval: vi.fn() }),
+}));
 vi.mock('../device-operator-actions', () => ({ workspaceBackgroundActivityAllowed: vi.fn() }));
 vi.mock('../startup-activity', () => ({ recordStartupActivityHistory: vi.fn(async () => {}) }));
 vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: 'scoped-test-sql' }) }));
@@ -127,6 +130,11 @@ describe('production managed tick alarm adapter', () => {
     expect(notify).toHaveBeenCalledWith(expect.objectContaining({
       importance: 'urgent', title: expect.stringContaining('production-held'),
       body: expect.stringContaining('310000ms'),
+    }));
+    expect(broadcast).toHaveBeenCalledWith(expect.objectContaining({
+      oneShot: true,
+      data: expect.objectContaining({ timerName: 'production-held', heldMs: 310_000,
+        watcherIntervalMs: 10_000, producerRun: expect.any(String) }),
     }));
     await vi.advanceTimersByTimeAsync(60_000);
     expect(broadcast).toHaveBeenCalledOnce();

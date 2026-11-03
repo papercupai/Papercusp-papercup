@@ -27,6 +27,7 @@ import type {
 import { z } from 'zod';
 import { pairedRepositoryPowerPlan } from '@papercusp/bench-metrics';
 import { canonicalJson } from './canonical-json';
+import { MIN_COMPACTION_LIMIT_TOKENS } from '../../agent-config-constants';
 // Value import; capability-ablations.ts imports this module for types only, so there is no runtime cycle.
 import { requireRunnableAblation } from '../capability-ablations';
 
@@ -79,6 +80,9 @@ const armControl = z.object({
   /** Digest of the solver's own tool surface, excluding coordination tools a topology adds. */
   solverToolsHash: digest,
   capabilities: capabilityToggles,
+  /** Reuse the maintained native launch threshold. A solver group freezes one
+   * value across on/off arms; omission preserves historical protocols. */
+  compactionLimit: z.number().int().safe().min(MIN_COMPACTION_LIMIT_TOKENS).optional(),
   /** A single-capability ablation: identical to `of` except `treatment` is switched off. */
   ablation: z.object({ of: pin, treatment: z.enum(BENCHMARK_CAPABILITIES) }).strict().optional(),
   ensemble: z.object({
@@ -124,6 +128,7 @@ function frozenSolverSettings(arm: ProtocolArm) {
     clientVersion: arm.runtime.clientVersion, promptHashMode: arm.runtime.promptHashMode ?? 'exact-request-v1',
     ...(arm.runtime.proximus ? { proximus: arm.runtime.proximus } : {}),
     solverToolsHash: arm.control?.solverToolsHash,
+    ...(arm.control?.compactionLimit !== undefined ? { compactionLimit: arm.control.compactionLimit } : {}),
   });
 }
 

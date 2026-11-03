@@ -389,6 +389,41 @@ it.each([503, 403])('preserves the classified Codex home failure and retries onl
   }
 }, 20_000);
 
+it.each(['fixed carry body', ''])('routes explicit carry with addendum %j through managed mint preparation', async systemPromptAddendum => {
+  const root = mkdtempSync(join(tmpdir(), 'pty-frozen-carry-route-'));
+  const ownerId = uniqueOwner('FROZEN-CARRY-ROUTE');
+  const sock = socketPathFor(ownerId), log = eventLogPathForOwner(ownerId);
+  const { io, captured } = fakeIo();
+  const mint = vi.fn(() => { throw new Error('fixture managed preparation reached'); });
+  const done = hostThroughPty({ command: execPath,
+    args: ['-e', "process.stdin.setRawMode(true);process.stdout.write('READY\\n');process.stdin.on('data',d=>{if(d.includes(4))process.exit(0)});setTimeout(()=>process.exit(0),10000)"],
+    cwd: root, ownerId, io, bridgeTty: false, onExit: () => {},
+    // No native backend is simulated here: this isolates the operation route
+    // before spawning a successor. Native delivery remains a separate gate.
+    env: hermeticEnv({ PAPERCUSP_SID: ownerId, PAPERCUSP_AGENT: 'fixture',
+      PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '30', PAPERCUSP_PSU_PTY_BUSY_CAP_MS: '500' }),
+    mintCarryRespawnArgs: mint,
+  });
+  try {
+    expect(await waitForHost(ownerId)).not.toBeNull();
+    expect(await waitForOutput(captured, 'READY', CHILD_START_OUTPUT_TIMEOUT_MS)).toBe(true);
+    expect(await injectIntoHostWithConfirmation(sock, { mode: 'carry-respawn', ownerId,
+      data: 'Frozen initial task', systemPromptAddendum })).toMatchObject({ ok: true, reason: 'accepted' });
+    const deadline = Date.now() + 4000;
+    while (!mint.mock.calls.length && Date.now() < deadline) await sleep(15);
+    expect(mint, hostTestDiagnostics(ownerId, captured)).toHaveBeenCalledWith(expect.any(Array), expect.objectContaining({
+      ownerId, systemPromptAddendum,
+      ...(!systemPromptAddendum ? { firstPrompt: expect.stringMatching(
+        /^⟦turn-origin:host-control nonce:[a-f0-9]{16}⟧\nFrozen initial task$/) } : {}),
+    }));
+    expect(readFileSync(log, 'utf8')).toContain('"mode":"carry-respawn"');
+  } finally {
+    await injectIntoHost(sock, { mode: 'raw', ownerId, data: '\x04' }).catch(() => false);
+    await done;
+    rmSync(root, { recursive: true, force: true }); rmSync(log, { force: true });
+  }
+}, 15_000);
+
 it('defers an already-admitted wake before writing when carry becomes pending', async () => {
   const root = mkdtempSync(join(tmpdir(), 'pty-queued-carry-'));
   const ownerId = uniqueOwner('QUEUED-CARRY');
@@ -437,9 +472,9 @@ it('defers an already-admitted wake before writing when carry becomes pending', 
     expect(events).toContainEqual(expect.objectContaining({
       kind: 'wake-turn-deferred-for-pending-respawn', phase: 'pre-write',
     }));
-    // The carry mint seam is selected by systemPromptAddendum. Without it the
-    // fixture spawned a fresh child, and teardown's EOT raced onto its dying
-    // predecessor. Verify the intended pre-spawn refusal before cleanup.
+    // An explicit carry operation always selects the managed mint seam, even
+    // for a frozen assignment's empty addendum. A generic recycle would spawn
+    // a different child and lose carry lineage and preparation checks.
     const mintDeadline = Date.now() + 3000;
     while (Date.now() < mintDeadline && !readFileSync(log, 'utf8').includes('"reason":"argv-build-failed"')) await sleep(15);
     expect(readFileSync(log, 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line))).toContainEqual(

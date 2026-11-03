@@ -141,6 +141,21 @@ describe('extractReplicationSqlStatements', () => {
     expect(extractReplicationSqlStatements(text)).toEqual(['WITH t AS (SELECT 1 AS n) SELECT * FROM t']);
   });
 
+  it.each(['MATERIALIZED', 'NOT MATERIALIZED', 'materialized', 'not\n materialized'])(
+    'keeps an AS %s CTE and its nested SELECTs in one statement', (modifier) => {
+      const sql = `WITH first_sample AS ${modifier} (SELECT 1 AS n), ` +
+        'second_sample AS (SELECT n + 1 AS n FROM first_sample) SELECT * FROM second_sample';
+      expect(extractReplicationSqlStatements(`Measure the interval: ${sql}; Then SELECT 3 AS control;`))
+        .toEqual([sql, 'SELECT 3 AS control']);
+    },
+  );
+
+  it('preserves a recursive CTE with a materialization modifier', () => {
+    const sql = 'WITH RECURSIVE sample AS NOT MATERIALIZED ' +
+      '(SELECT 1 AS n UNION ALL SELECT n + 1 FROM sample WHERE n < 2) SELECT * FROM sample';
+    expect(extractReplicationSqlStatements(sql + ';')).toEqual([sql]);
+  });
+
   it('is case-insensitive on the leading keyword', () => {
     expect(extractReplicationSqlStatements('select 1 as n;')).toEqual(['select 1 as n']);
   });

@@ -11851,6 +11851,21 @@ describe("mintCarryRespawnArgs (P-018 deterministic successor launch context)", 
     expect(out.args).not.toContain(stale);
   });
 
+  it("mints a frozen Codex assignment from its explicit first prompt without ambient carry", () => {
+    const codexHome = join(home, "frozen-codex-home");
+    mkdirSync(codexHome, { recursive: true });
+    writeFileSync(join(codexHome, "AGENTS.md"), "# Frozen base persona\n", { mode: 0o600 });
+    const out = mintCarryRespawnArgs(["--dangerously-bypass-hook-trust", "resume", UUID], {
+      systemPromptAddendum: "", firstPrompt: "Frozen initial task\n\nBounded own note",
+      ownerId: "su-frozen-assignment", home, agent: "codex", codexHome,
+    });
+    expect(out.args).not.toContain("resume");
+    expect(out.args).not.toContain(UUID);
+    expect(out.carryText).toBe("Frozen initial task\n\nBounded own note\n\n" + codexCarryLineageMarker(null));
+    expect(readFileSync(out.launchContextPath, "utf8")).toBe(out.carryText + "\n");
+    expect(readFileSync(join(codexHome, "AGENTS.md"), "utf8")).not.toContain("Bounded own note");
+  });
+
   it("fails before any respawn when the carry is empty or the agent has no managed carry consumer", () => {
     expect(() =>
       mintCarryRespawnArgs(["claude", "--session-id", UUID], {

@@ -504,6 +504,9 @@ export function selectDeadOneShotConditions(
         s.open &&
         s.one_shot === true &&
         livenessByKey.get(s.condition_key) === 'dead' &&
+        // Managed ticks retain exact original provenance and use the independent
+        // managed-tick watcher/startup reconciler, with atomic per-episode resolution.
+        !s.condition_key.startsWith('alarm:managed-tick:') &&
         // A family whose lifecycle a recomputing source owns (catalog flag
         // `lifecycleOwnedBySource`) is resolved by that source's next tick, not by
         // the process that last emitted: emitter death/replacement is not evidence

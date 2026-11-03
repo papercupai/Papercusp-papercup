@@ -3,6 +3,7 @@ import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:f
 import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import * as fallbackObservations from '../degradation/fallback-observations';
 import {
   extractIdentifierTokens,
   gitGrepSymbolResolver,
@@ -109,6 +110,24 @@ describe('gitGrepSymbolResolver', () => {
     expect(out.get('routeThing')).toEqual(['src/router.ts', 'src/router.test.ts']);
     expect(out.get('ThingWeights')).toEqual(['src/router.ts']);
     expect(out.has('missingThing')).toBe(false);
+  });
+
+  it('attributes bounded resolver observations to the serving operator port and build', async () => {
+    const observe = vi.spyOn(fallbackObservations, 'observeFallback').mockReturnValue(true);
+    vi.stubEnv('PAPERCUSP_HONO_PORT', '3170');
+    vi.stubEnv('PAPERCUSP_BUILD_SHA', 'abcdef0123456789abcdef0123456789abcdef01');
+    try {
+      const resolve = gitGrepSymbolResolver({ cwd: repo });
+      await resolve(['routeThing']);
+      expect(observe).toHaveBeenCalledWith(
+        'bounded-operation',
+        { eligible: 1, applied: 1, reason: 'applied', scope: 'consult-symbol-resolution' },
+        expect.objectContaining({ processTag: 'consult-symbol-resolution:port-3170:build-abcdef012345' }),
+      );
+    } finally {
+      observe.mockRestore();
+      vi.unstubAllEnvs();
+    }
   });
 
   it('reports invalid inherited Git worker settings as unavailable', async () => {

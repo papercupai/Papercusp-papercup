@@ -1124,7 +1124,11 @@ export interface GitSyncRestartBarrierDeps {
     coordinationDomain: string;
     owner: string;
     lockId: string;
-  }) => Promise<{ released: number; exclusiveResources: string[] } | void>;
+  }) => Promise<{
+    released: number;
+    releasedExclusiveResources: string[];
+    exclusiveResources: string[];
+  } | void>;
   emitReleased?: (resource: string, workspaceId: string) => void;
 }
 
@@ -1258,7 +1262,7 @@ export async function acquireGitSyncRestartBarrier(
     // confirms a release, including removal of a timed-out queued exclusive.
     // A release signal does not assert that a restart happened or no peer holds
     // the resource; the awakened caller still has to acquire its own barrier.
-    if (receipt && receipt.released > 0 && receipt.exclusiveResources.includes(resource)) {
+    if (receipt && receipt.released > 0 && receipt.releasedExclusiveResources.includes(resource)) {
       d.emitReleased?.(resource, coordinationDomain);
     }
   };

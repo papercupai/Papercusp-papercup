@@ -172,6 +172,24 @@ describe('R-8: a code note whose code changed is withheld, not pushed as current
 });
 
 describe('notes leg wiring', () => {
+  it('lets a 130ms notes read finish within the remaining gather budget', async () => {
+    const { deps, committed } = channel({ fold: async () => [], staleness: readNoteAnchorStaleness });
+    const context: NotesContext = {
+      fresh: [{ key: 'code-note:slow-read', body: 'the note arrived inside the gather window',
+        paths: ['lib/target.ts'], scope: 'harness', scopeRef: 'papercusp' }],
+      withheld: [],
+    };
+    deps.notesContext = vi.fn(async () => {
+      await new Promise<void>(resolve => setTimeout(resolve, 130));
+      return context;
+    });
+
+    const text = await codeIntelPushText(input(), deps);
+
+    expect(text).toContain('Code note code-note:slow-read');
+    expect(committed.map(fact => fact.leg)).toEqual(['notes']);
+  });
+
   it('a timed-out or failing notes read delivers nothing rather than an unverified note', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const { deps, committed } = channel({ fold: async () => { throw new Error('pg down'); }, staleness: readNoteAnchorStaleness });

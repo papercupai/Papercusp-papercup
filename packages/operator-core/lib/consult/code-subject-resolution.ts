@@ -44,6 +44,16 @@ export const CODE_SUBJECT_MAX_IDENTIFIERS = 4;
 export const CODE_SUBJECT_MAX_FILES_PER_IDENTIFIER = 3;
 export const CODE_SUBJECT_RESOLVER_TIMEOUT_MS = 1_000;
 
+function resolverObservationProcessTag(env: NodeJS.ProcessEnv): string {
+  const rawPort = [env.PAPERCUSP_HONO_PORT, env.PORT]
+    .map((value) => value?.trim())
+    .find((value) => value && /^\d{1,5}$/.test(value) && Number(value) > 0 && Number(value) <= 65_535);
+  const port = rawPort ? String(Number(rawPort)) : 'unknown';
+  const rawBuild = env.PAPERCUSP_BUILD_SHA?.trim() ?? '';
+  const build = /^[a-f0-9]{7,64}$/i.test(rawBuild) ? rawBuild.slice(0, 12).toLowerCase() : 'unknown';
+  return `consult-symbol-resolution:port-${port}:build-${build}`;
+}
+
 const IDENTIFIER_SHAPE = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
 /** lowerCamel with at least one hump (routeConsult), or PascalCase with two (BlendWeights). */
 const CAMEL_TOKEN = /(?<![\w$.:/-])(?:[a-z_$][a-z0-9_$]*[A-Z][A-Za-z0-9_$]*|[A-Z][a-z0-9]+(?:[A-Z][a-z0-9]*)+)(?![\w$:/-])/g;
@@ -264,7 +274,13 @@ export function gitGrepSymbolResolver(opts: {
       }
       signal.throwIfAborted();
       return out;
-    }, { timeoutMs, fallback: null, label: 'consult-symbol-resolution', warn: false });
+    }, {
+      timeoutMs,
+      fallback: null,
+      label: 'consult-symbol-resolution',
+      processTag: resolverObservationProcessTag(process.env),
+      warn: false,
+    });
     if (result.degraded || !result.value) throw new Error(`symbol resolver unavailable: ${result.errorMessage ?? result.reason}`);
     return result.value;
   };

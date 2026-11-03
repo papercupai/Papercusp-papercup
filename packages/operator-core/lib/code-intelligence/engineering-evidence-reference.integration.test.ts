@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { parseTestRunExecutionDetails, type ExecutionBoundaryReceipt } from '@papercusp/test-config/execution-details';
 import getSpecs from '../agent-tools/plans/get-specs';
 import getPlan from '../agent-tools/plans/get';
 import getEvidence from '../agent-tools/plans/get-spec-evidence';
@@ -108,6 +109,55 @@ describe('canonical engineering evidence reference resolution', () => {
         expect(cases.find(test => test.caseKey === node.data.key && test.occurrence === 999)).toBeUndefined();
       }
     });
+  }, 90_000);
+
+  it('ee.reference-execution: opens the exact correlated execution record and respects an explicit tenant filter', async () => {
+    const { db, scope, harness, runId, publicQuery } = state;
+    // Persist a synthetic control in the private fixture database. This tests
+    // reference resolution; the live producer separately proves real spans.
+    const now = Date.now();
+    const receipt: ExecutionBoundaryReceipt = { boundary: 'graph:query:evidence', callId: 'ee-reference-execution',
+      workspaceId: scope.workspaceId, harness, traceId: '1'.repeat(32), spanId: '2'.repeat(16),
+      parentSpanId: '3'.repeat(16), traceFlags: 1, startedAt: now - 20, endedAt: now - 10,
+      outcome: 'ok', sourceFingerprint: '4'.repeat(64), buildSha: 'c'.repeat(40),
+      artifactFingerprint: '5'.repeat(64), environmentFingerprint: '6'.repeat(64), workflowId: null };
+    const observation = { caseKey: 'ee.intent-exact', occurrence: 1, receipt };
+    const cases = await db`SELECT status FROM harness_shared.test_case_runs WHERE test_run_id=${runId}`;
+    const details = { schemaVersion: 1, root: scope.root, filePath: 'evidence-feature.integration.test.ts',
+      runGroupId: null, workspaceId: scope.workspaceId, harnessSlug: harness, testNamePattern: null,
+      mutationPhase: null, commitSha: receipt.buildSha, worktreeDirty: false, collectionFailed: false,
+      passed: cases.filter(row => row.status === 'pass').length, failed: cases.filter(row => row.status === 'fail').length,
+      skipped: cases.filter(row => row.status === 'skip').length, boundaryObservations: [observation] };
+    expect(parseTestRunExecutionDetails(details), 'the canonical reader must accept the complete control metadata').toBeDefined();
+    const [invocation] = await db`INSERT INTO harness_shared.tool_invocations
+      (workspace_id,harness_slug,plugin_name,tool_name,role,spawn_id,window_key,status,serving_build_sha,invoked_at,metadata_json)
+      VALUES (${scope.workspaceId},${harness},'papercusp','graph:query','operator','ee-reference-fixture',
+        ${receipt.callId},'ok',${receipt.buildSha},${new Date(now - 15)},
+        ${db.json({ otel: { callId: receipt.callId, traceId: receipt.traceId, spanId: receipt.parentSpanId,
+          traceFlags: 1, boundaryObservations: [receipt] } })}) RETURNING id`;
+    await db`UPDATE harness_shared.test_runs SET started_at=${new Date(now - 30)}, finished_at=${new Date(now)},
+      execution_details=${db.json(details)}
+      WHERE id=${runId} AND workspace_id=${scope.workspaceId}`;
+    try {
+      const graph = (await publicQuery()).evidence!;
+      const execution = graph.nodes.find(node => node.kind === 'execution');
+      expect(execution?.data).toMatchObject({ runId, invocationId: String(invocation!.id), ...observation });
+      expect(execution?.ref).toEqual({ tool: 'testing:runs', args: { harness, testRunIds: [runId], cases: true } });
+      const ctx = { workspaceId: scope.workspaceId, harnessSlug: harness, role: 'operator', log: () => {} } as never;
+      await runWithWorkspace(scope.workspaceId, async () => {
+        const args = testingRuns.args.parse(execution!.ref.args);
+        const opened = data(await testingRuns.handler(args, ctx));
+        expect(opened.runs).toMatchObject([{ id: runId, executionDetails: { boundaryObservations: [observation] },
+          cases: expect.arrayContaining([expect.objectContaining({ caseKey: observation.caseKey, occurrence: 1 })]) }]);
+        // This operator diagnostic is global by default so NULL-scoped CI
+        // rows remain visible. Its documented tenant selector is an argument.
+        const foreign = data(await testingRuns.handler(testingRuns.args.parse({ ...args, workspace: 'ee-foreign' }), ctx));
+        expect(foreign.runs).toEqual([]);
+      });
+    } finally {
+      await db`UPDATE harness_shared.test_runs SET execution_details=NULL WHERE id=${runId}`;
+      await db`DELETE FROM harness_shared.tool_invocations WHERE id=${invocation!.id}`;
+    }
   }, 90_000);
 
   it('ee.reference-exact: selected immutable spec and case references resolve through their actual canonical tools', async () => {
