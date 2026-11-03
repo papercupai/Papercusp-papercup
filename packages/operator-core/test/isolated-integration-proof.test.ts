@@ -3,7 +3,14 @@
  * the process group mid-import, tsx's esbuild service died with it, and the phase
  * detail reported only "TransformError: The service is no longer running"). */
 import { describe, expect, it } from 'vitest';
-import { isolatedWorkerFailureDetail, isolatedWorkerOptions } from './isolated-integration-proof';
+import { codexManagedToolsNativeIntegrationSourcePaths, isolatedWorkerFailureDetail, isolatedWorkerOptions } from './isolated-integration-proof';
+
+it('pins the private registry writer and PG state store in the Codex proof source manifest', () => {
+  expect(codexManagedToolsNativeIntegrationSourcePaths).toEqual(expect.arrayContaining([
+    'packages/operator-core/lib/harness-registry.ts',
+    'packages/operator-core/lib/operator-state-pg.ts',
+  ]));
+});
 
 const killedMidImport = [
   'NATIVE_INCIDENT_API_STAGE=handler-loaded',

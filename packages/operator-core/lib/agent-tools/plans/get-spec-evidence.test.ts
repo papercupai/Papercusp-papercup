@@ -121,6 +121,22 @@ beforeEach(() => {
 });
 
 describe('plans:get-spec-evidence detail levels', () => {
+  it('resolves exact binding IDs in the caller workspace even when another namespace has the same ID', async () => {
+    const selected = binding(7, 'SELECTED', 'unknown');
+    const foreign = binding(7, 'FOREIGN', 'unknown');
+    listEvidence.mockImplementation(async options => [options.workspaceId === 'selected-workspace' ? selected : foreign]);
+    const result = await tool.handler(tool.args.parse({ harness: 'papercusp', slug: 'plan-a', bindingIds: [7] }),
+      { workspaceId: 'selected-workspace' } as never) as { data: { evidence: EvidenceRow[] } };
+    expect(result.data.evidence).toMatchObject([{ id: 7, specId: 'SELECTED' }]);
+    expect(listEvidence).toHaveBeenCalledWith(expect.objectContaining({ workspaceId: 'selected-workspace' }));
+  });
+
+  it('leaves operator wildcard workspace unpinned for canonical scope resolution', async () => {
+    listEvidence.mockResolvedValue([]);
+    await tool.handler(tool.args.parse({ harness: 'papercusp', slug: 'plan-a' }), { workspaceId: '*' } as never);
+    expect(listEvidence.mock.calls[0]![0]).not.toHaveProperty('workspaceId');
+  });
+
   it('allows exact-ID audit reads of withdrawn bindings and exposes their withdrawal stamp', async () => {
     const withdrawn = {
       ...binding(38856, 'SPEC-A', 'stale'),

@@ -53,6 +53,9 @@ import { systemDistinctId } from '../../flag-distinct-id';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { packageRecallEligibility, shapeIdentityPackageHits, wearerPackageResourcesOrEmpty } from '../../blueprint/package-memory-visibility';
 import { getOrgPg } from '@papercusp/db-org';
+import { lexicalSimilarity } from '@papercusp/memory';
+import { sessionMemoryReadPolicy } from '../../capability-envelope/session-confinement-port';
+import { readFrozenBenchmarkMemory } from '../../external-bench/reproducibility/context';
 
 /**
  * Per-session-tier hit shaping (context-trimming-tiers P-024). This tool's
@@ -202,6 +205,24 @@ export default defineTool({
       ),
   }),
   async handler(args, ctx) {
+    // Resolve before auth/backend/registry/package/embedder work. An empty
+    // frozen result or failed snapshot must never fall through to live recall.
+    try {
+      const frozen = await sessionMemoryReadPolicy(ctx, args);
+      if (frozen) {
+        const results = readFrozenBenchmarkMemory(frozen.checkout, frozen.snapshotSha256)
+          .map(entry => ({ id: entry.key, memory: entry.text,
+            metadata: { ...(entry.kind ? { kind: entry.kind } : {}), snapshotSha256: frozen.snapshotSha256 },
+            score: lexicalSimilarity(args.query, `${entry.key} ${entry.description ?? ''} ${entry.text}`) }))
+          .filter(entry => entry.score > 0)
+          .sort((a, b) => b.score - a.score || a.id.localeCompare(b.id)).slice(0, args.limit ?? 8);
+        return { content: [{ type: 'text', text: JSON.stringify({ ok: true, results,
+          retrieval: 'frozen-lexical', score_scale: 'trigram-jaccard', snapshotSha256: frozen.snapshotSha256 }) }] };
+      }
+    } catch {
+      return { content: [{ type: 'text', text: JSON.stringify({ ok: false,
+        reason: 'frozen_memory_unavailable', results: [] }) }] };
+    }
     const judgeScope = resolveJudgeMemorySearchScope(args, ctx);
     if (judgeScope?.ok === false) {
       return { content: [{ type: 'text', text: JSON.stringify({ ok: false, reason: judgeScope.reason, results: [] }) }] };

@@ -2,7 +2,14 @@
  *  producer→consumer bridge that turns a built CarryDoc into a respawn launch spec
  *  — the renderCarryDoc({budgetChars}) handoff + the open-owner-message first
  *  prompt (P-010) + the open-owner-question boundary gate. */
-import { describe, it, expect, vi } from 'vitest';
+import { beforeEach, describe, it, expect, vi } from 'vitest';
+import { createHash } from 'node:crypto';
+const carryPolicy = vi.hoisted(() => vi.fn());
+vi.mock('./capability-envelope/session-confinement-port', async importOriginal => ({
+  ...await importOriginal<typeof import('./capability-envelope/session-confinement-port')>(),
+  sessionCarryPolicy: carryPolicy,
+}));
+beforeEach(() => carryPolicy.mockReset().mockResolvedValue(undefined));
 import type { CarryBrief } from './carry-brief';
 import {
   renderCarryDoc,
@@ -17,11 +24,56 @@ import {
   compareCarryNoteFreshness,
   buildOwnerRespawnLaunchSpec,
   buildRespawnLaunchSpec,
+  buildFrozenAssignmentRespawnSpec,
   deriveRespawnFirstPrompt,
   renderCarryNoteFreshnessWarning,
 } from './carry-respawn';
 
 const NOW = 1_800_000_000_000;
+
+describe('frozen assignment carry assembly', () => {
+  const initialPrompt = 'Solve only this frozen task. Frozen memory: initial bytes.';
+  const hash = (text: string) => createHash('sha256').update(text).digest('hex');
+  const boundary = { initialPrompt, initialPromptSha256: hash(initialPrompt), mode: 'on' as const };
+  it('restarts from the same initial task and includes explicit prior state only when enabled', () => {
+    const on = buildFrozenAssignmentRespawnSpec(boundary, '  Work left: verify iron collection.  ');
+    const off = buildFrozenAssignmentRespawnSpec({ ...boundary, mode: 'off' }, 'SECRET prior progress');
+    expect(on.firstPrompt).toBe(initialPrompt + "\n\nContinuation note from this assignment's prior session:\nWork left: verify iron collection.");
+    expect(off.firstPrompt).toBe(initialPrompt);
+    expect(on.systemPromptAddendum).toBe(''); expect(off.systemPromptAddendum).toBe('');
+    expect(off.frozenAssignmentCarry).toEqual({ mode: 'off', initialPromptSha256: hash(initialPrompt),
+      noteSha256: null, firstPromptSha256: hash(initialPrompt) });
+    expect(on.frozenAssignmentCarry?.noteSha256).toBe(hash('Work left: verify iron collection.'));
+    expect(on.frozenAssignmentCarry?.firstPromptSha256).toBe(hash(on.firstPrompt!));
+  });
+  it('refuses modified initial bytes, malformed policy and oversized notes instead of silently falling back', () => {
+    for (const changed of [{ ...boundary, initialPrompt: initialPrompt + ' altered' },
+      { ...boundary, initialPromptSha256: 'invalid' }, { ...boundary, mode: 'unknown' },
+      { ...boundary, extra: true }])
+      expect(() => buildFrozenAssignmentRespawnSpec(changed as typeof boundary)).toThrow(/invalid/);
+    expect(() => buildFrozenAssignmentRespawnSpec(boundary, 'x'.repeat(1001))).toThrow(/invalid/);
+  });
+  it.each(['on', 'off'] as const)('branches before general readers for frozen carry %s', async mode => {
+    carryPolicy.mockResolvedValue({ ...boundary, mode });
+    const buildFn = vi.fn(async () => doc(NO_OWNER));
+    const refresh = vi.fn();
+    const spec = await buildOwnerRespawnLaunchSpec('su-private', { effectiveWindowTokens: 200_000,
+      buildOpts: { workspaceId: 'bench-private' }, buildFn, refreshLoopCarryNoteWithMetaFn: refresh,
+      continueNote: 'Own prior progress' });
+    expect(carryPolicy).toHaveBeenCalledWith({ ownerId: 'su-private', workspaceId: 'bench-private' });
+    expect(spec?.firstPrompt?.includes('Own prior progress')).toBe(mode === 'on');
+    expect(buildFn).not.toHaveBeenCalled(); expect(refresh).not.toHaveBeenCalled();
+  });
+  it('never falls through after a policy read or frozen-integrity failure', async () => {
+    const buildFn = vi.fn(async () => doc(NO_OWNER));
+    for (const kind of ['unreadable', 'modified'] as const) {
+      if (kind === 'unreadable') carryPolicy.mockRejectedValue(new Error('authority unavailable'));
+      else carryPolicy.mockResolvedValue({ ...boundary, initialPrompt: 'modified' });
+      expect(await buildOwnerRespawnLaunchSpec('su-private', { effectiveWindowTokens: 200_000, buildFn })).toBeNull();
+    }
+    expect(buildFn).not.toHaveBeenCalled();
+  });
+});
 
 function brief(over: Partial<CarryBrief> = {}): CarryBrief {
   return {

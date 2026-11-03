@@ -327,6 +327,29 @@ describe('sessions:digest narrow CTE + primary-key text join (WI-6843)', () => {
       expect(result.digests[0].hostEvidence[0].ref).toMatch(/^psu_pty_host_event:/);
     } finally { await sql`TRUNCATE harness_shared.psu_pty_host_events`; }
   });
+  it('keeps the latest pre-stop task when the bounded candidate set exceeds sixteen turns', async () => {
+    await sql`INSERT INTO harness_shared.session_turns
+      (workspace_id, source_kind, session_id, turn_idx, ts, speaker, text)
+      SELECT ${WORKSPACE}, 'codex', 'bounded-tasks', n * 2,
+        '2026-05-01T00:00Z'::timestamptz + n * interval '2 minutes', 'user', 'Task ' || n
+      FROM generate_series(0, 19) AS n`;
+    try {
+      await sql`INSERT INTO harness_shared.session_turns
+        (workspace_id, source_kind, session_id, turn_idx, ts, speaker, text)
+        VALUES (${WORKSPACE}, 'codex', 'bounded-tasks', 39, '2026-05-01T00:39Z', 'assistant', 'Latest prior checkpoint'),
+          (${WORKSPACE}, 'codex', 'bounded-tasks', 40, '2026-05-01T00:40Z', 'assistant', 'API Error: 429 Too many requests'),
+          (${WORKSPACE}, 'codex', 'bounded-tasks', 41, '2026-05-01T00:41Z', 'user', 'Later unrelated task'),
+          (${WORKSPACE}, 'codex', 'bounded-tasks', 42, '2026-05-01T00:42Z', 'assistant', 'Later progress')`;
+      const result = await callDigest({ session: 'bounded-tasks', stopKinds: ['rate_limit'] });
+      expect(result.digests).toHaveLength(1);
+      expect(result.digests[0]).toMatchObject({
+        kickoff: 'Task 19', kickoffRef: 'session_turn:codex:bounded-tasks:38',
+        checkpoint: 'Latest prior checkpoint', checkpointRef: 'session_turn:codex:bounded-tasks:39',
+        stopRef: 'session_turn:codex:bounded-tasks:40', kickoffProvenance: 'transcript-candidate',
+      });
+    } finally { await sql`DELETE FROM harness_shared.session_turns WHERE session_id = 'bounded-tasks'`; }
+  });
+
   it('finds the task after native bootstrap instructions and retains its source without claiming owner provenance', async () => {
     await sql`
       INSERT INTO harness_shared.session_turns

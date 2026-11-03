@@ -16,6 +16,7 @@ const h = vi.hoisted(() => ({
   diskEntries: [] as Array<{ path: string; mtimeMs: number; sizeBytes: number }>,
   sessionCandidates: [] as Array<{ path: string; keyKind: 'owner'; key: string; mtimeMs: number }>,
   unarchivedPaths: new Set<string>(),
+  registryRead: vi.fn(async () => ({ workspaces: [{ id: 'ws-test' }] })),
 }));
 
 function makeSql() {
@@ -60,7 +61,7 @@ vi.mock('../session-dir-gc', async (original) => ({
   findUnarchivedSessionDirs: async () => h.unarchivedPaths,
 }));
 vi.mock('../workspace-registry', () => ({
-  readRegistry: () => ({ workspaces: [{ id: 'ws-test' }] }),
+  readRegistryAsync: () => h.registryRead(),
 }));
 
 import { pruneStorageCategory } from './prune';
@@ -95,6 +96,7 @@ beforeEach(() => {
   h.diskEntries = [];
   h.sessionCandidates = [];
   h.unarchivedPaths = new Set();
+  h.registryRead.mockReset().mockResolvedValue({ workspaces: [{ id: 'ws-test' }] });
 });
 
 afterEach(() => {
@@ -437,6 +439,26 @@ describe('pruneStorageCategory — disk (plain store)', () => {
     expect(existsSync(fixture.freshRun)).toBe(true);
     expect(existsSync(fixture.workspaceRoot)).toBe(true);
     expect(existsSync(fixture.agentFile)).toBe(true);
+  });
+
+  it('keeps the event loop responsive while scratch pruning awaits the workspace registry', async () => {
+    makeScratchPruneFixture();
+    let resolveRegistry!: (value: { workspaces: Array<{ id: string }> }) => void;
+    const pendingRegistry = new Promise<{ workspaces: Array<{ id: string }> }>((resolve) => {
+      resolveRegistry = resolve;
+    });
+    h.registryRead.mockReturnValue(pendingRegistry);
+    const pruning = pruneStorageCategory(REQ({
+      categoryId: 'scratch',
+      olderThanDays: 1,
+      dryRun: true,
+      scanBudgetMs: 0,
+    }));
+
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(h.registryRead).toHaveBeenCalledOnce();
+    resolveRegistry({ workspaces: [{ id: 'ws-test' }] });
+    await expect(pruning).resolves.toMatchObject({ ok: true, partial: true });
   });
 
   it('returns a bounded partial scratch preview when the scan budget expires', async () => {

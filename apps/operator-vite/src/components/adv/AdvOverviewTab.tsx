@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { parseAsBoolean, parseAsString, useQueryState, useQueryStates } from 'nuqs';
 import {
   ArrowRight,
@@ -662,15 +662,17 @@ export default function AdvOverviewTab() {
     potScope.ready && [plansQ, attentionQ, rosterQ, activityQ, statsQ, deltaQ,
       healthQ, readinessQ, pipelineQ, reportsQ, spendQ, accountsQ]
       .every((query) => query.data !== undefined && query.data !== null && !query.error);
+  const [attachmentGeneration, setAttachmentGeneration] = useState(0);
   useEffect(() => {
-    if (!startupUsable) return;
-    endStartupUsable();
-    // Rust may attach after cached content commits. Retry on its existing
-    // restoration event; connection errors never count as usable startup.
-    const restored = () => endStartupUsable();
+    // Batch with ServerConnectionGate's state update from the SAME event.
+    // Reading during dispatch would still see its blocking dialog in the DOM.
+    const restored = () => setAttachmentGeneration((generation) => generation + 1);
     window.addEventListener('papercusp:server-connection-restored', restored);
     return () => window.removeEventListener('papercusp:server-connection-restored', restored);
-  }, [startupUsable]);
+  }, []);
+  useEffect(() => {
+    if (startupUsable) endStartupUsable();
+  }, [startupUsable, attachmentGeneration]);
 
   // ── derive tile data (pure helpers, exported + unit-tested) ────────────
   const plans = useMemo(() => selectActivePlans(plansQ.data?.plans ?? []), [plansQ.data]);

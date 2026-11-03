@@ -13,6 +13,7 @@ import {
   sessionAllowsAmbientContext,
   sessionPromptPolicy,
   sessionMemoryReadPolicy,
+  sessionCarryPolicy,
 } from './session-confinement-port';
 
 const CONFINEMENT = directedImplementerConfinement({
@@ -30,6 +31,33 @@ const SUPERUSER_CTX = {
 const PLAIN_CTX = { isSuperuser: false } as unknown as UnifiedToolContext;
 
 afterEach(() => setSessionConfinementResolver(undefined));
+
+describe('frozen assignment managed carry host policy', () => {
+  const input = { ownerId: 'su-private', workspaceId: 'bench-private' };
+  const confinement = { denyTools: [], denyOutside: ['coord:whoami', 'session:request-compaction'],
+    denyAmbientContext: true as const, denyWorkItemsOutside: { id: 'F-own', harness: 'bench', checkout: '/private/assignment' },
+    denyCarryOutside: { initialPrompt: 'Frozen initial task', initialPromptSha256: 'a'.repeat(64), mode: 'on' as const },
+    reason: 'private', imposedBy: 'host' };
+  it('reads authoritative identity-bound policy and snapshots it without permitting ambient context', async () => {
+    const resolve = vi.fn(() => confinement); setSessionConfinementResolver(resolve);
+    expect(await sessionCarryPolicy(input)).toEqual(confinement.denyCarryOutside);
+    expect(resolve).toHaveBeenCalledWith(expect.objectContaining({ uiClientId: input.ownerId, workspaceId: input.workspaceId }));
+    expect(await sessionAllowsAmbientContext(input)).toBe(false);
+  });
+  it('fails closed on unavailable, missing, malformed or expired frozen policy', async () => {
+    setSessionConfinementResolver(undefined);
+    await expect(sessionCarryPolicy(input)).rejects.toThrow(/unavailable/);
+    setSessionConfinementResolver(async () => { throw new Error('read failed'); });
+    await expect(sessionCarryPolicy(input)).rejects.toThrow(/read failed/);
+    for (const changed of [{ ...confinement, denyCarryOutside: undefined },
+      { ...confinement, denyOutside: [] }, { ...confinement, denyAmbientContext: undefined }]) {
+      setSessionConfinementResolver(() => changed);
+      await expect(sessionCarryPolicy(input)).rejects.toThrow(/not bound|invalid|expired/);
+    }
+    setSessionConfinementResolver(() => null);
+    expect(await sessionCarryPolicy(input)).toBeUndefined();
+  });
+});
 
 describe('explicit frozen recall host policy', () => {
   const confinement = { denyTools: [], denyOutside: ['memory:search'], denyAmbientContext: true as const,

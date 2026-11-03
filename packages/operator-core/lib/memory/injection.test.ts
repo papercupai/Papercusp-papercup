@@ -15,18 +15,20 @@ import {
 } from './op-deadline';
 
 // db-org is mocked so the dedup/bump paths (getOrgPg().sql) are deterministic and
-// never touch a real PG. `sqlRows` is the canned result the sql tag returns; the
+// never touch a real PG. `sqlMockState.rows` is the canned result the sql tag returns; the
 // dedup test sets it to mark a memory id as recently-surfaced.
-let sqlRows: Array<Record<string, unknown>> = [];
-let sqlFailure: Error | null = null;
-let sqlDelayMs = 0;
+const sqlMockState = vi.hoisted(() => ({
+  rows: [] as Array<Record<string, unknown>>,
+  failure: null as Error | null,
+  delayMs: 0,
+}));
 vi.mock('@papercusp/db-org', async (orig) => ({
   ...(await orig<typeof import('@papercusp/db-org')>()),
   getOrgPg: () => ({
     sql: async () => {
-      if (sqlDelayMs > 0) await new Promise((resolve) => setTimeout(resolve, sqlDelayMs));
-      if (sqlFailure) throw sqlFailure;
-      return sqlRows;
+      if (sqlMockState.delayMs > 0) await new Promise((resolve) => setTimeout(resolve, sqlMockState.delayMs));
+      if (sqlMockState.failure) throw sqlMockState.failure;
+      return sqlMockState.rows;
     },
   }),
 }));
@@ -369,15 +371,16 @@ beforeEach(() => {
     .mockImplementation(recallCorpusContext);
   vi.mocked(getMemoryBackend).mockReset();
   recordRecallStatsMock.mockClear();
+  recallCorpusContext.mockClear();
   // The Jev gate reuses answers through the process-wide operator cache
   // (WI-10004485); each test mocks its own answers, so start every test empty.
   resetOperatorCacheForTests();
   jev.mode = 'off';
   jev.decide = null;
   jev.clientBuilt = 0;
-  sqlRows = [];
-  sqlFailure = null;
-  sqlDelayMs = 0;
+  sqlMockState.rows = [];
+  sqlMockState.failure = null;
+  sqlMockState.delayMs = 0;
   registryProjects = [];
   corpusIoResult = null;
   coverageReport = null;
@@ -389,7 +392,7 @@ beforeEach(() => {
 
 it('attributes slow post-search database phases instead of hiding them inside postMs', async () => {
   const log = vi.spyOn(console, 'log').mockImplementation(() => {});
-  sqlDelayMs = 260;
+  sqlMockState.delayMs = 260;
   useBackend(mockBackend([{
     id: '11111111-1111-4111-8111-111111111111',
     text: 'phase attribution guard',
@@ -1771,7 +1774,7 @@ describe('buildMemoryContextBlock', () => {
       { id: fresh, text: 'fresh fact', kind: 'preference' },
     ]));
     // `stale` was surfaced recently → the guard must drop it; `fresh` stays.
-    sqlRows = [{ id: stale }];
+    sqlMockState.rows = [{ id: stale }];
     const block = await buildMemoryContextBlock({ userId: 'u1', workspaceId: 'ws', queryContext: 'q' });
     expect(block).toContain('fresh fact');
     expect(block).not.toContain('stale fact');
@@ -1782,7 +1785,7 @@ describe('buildMemoryContextBlock', () => {
     useBackend(mockBackend([
       { id, text: 'only fact', kind: 'preference' },
     ]));
-    sqlRows = [{ id }];
+    sqlMockState.rows = [{ id }];
     const block = await buildMemoryContextBlock({ userId: 'u1', workspaceId: 'ws', queryContext: 'q' });
     expect(block).toBeNull();
   });
@@ -1943,7 +1946,7 @@ describe('buildMemoryContextBlock', () => {
 
     it('prepends the stored dead-anchor warning while leaving healthy hits unchanged', async () => {
       process.env[FLAG_ENV] = '1';
-      sqlRows = [staleAnchor];
+      sqlMockState.rows = [staleAnchor];
       useBackend(
         mockBackend([
           { id: 'm-stale', text: 'guidance from the removed module', kind: 'project' },
@@ -1962,7 +1965,7 @@ describe('buildMemoryContextBlock', () => {
 
     it('flag-off preserves the pre-staleness block shape', async () => {
       process.env[FLAG_ENV] = '0';
-      sqlRows = [staleAnchor];
+      sqlMockState.rows = [staleAnchor];
       useBackend(mockBackend([{ id: 'm-stale', text: 'guidance from the removed module', kind: 'project' }]));
 
       const block = await buildMemoryContextBlock({ userId: 'u1', workspaceId: 'ws', queryContext: 'guidance' });
@@ -1973,7 +1976,7 @@ describe('buildMemoryContextBlock', () => {
 
     it('fails open when the stored-verdict lookup fails', async () => {
       process.env[FLAG_ENV] = '1';
-      sqlFailure = new Error('memory anchors unavailable');
+      sqlMockState.failure = new Error('memory anchors unavailable');
       useBackend(mockBackend([{ id: 'm-healthy', text: 'guidance from the current module', kind: 'project' }]));
 
       const block = await buildMemoryContextBlock({ userId: 'u1', workspaceId: 'ws', queryContext: 'guidance' });
@@ -2073,7 +2076,7 @@ describe('corpus leg carries its own retrieval health (P-001)', () => {
       lines: (['report','doc'] as const).map(kind => ({ line: `- [${kind} fixture] cited ${kind} section`,score: 1,
         handle: { kind,ref: `${kind}:fixture`,query: ['repair'],resolve: `${kind}:get` } })),
     };
-    sqlRows = [{ ref: 'report:fixture',epoch: 0 }];
+    sqlMockState.rows = [{ ref: 'report:fixture',epoch: 0 }];
     const block = await buildMemoryContextBlock({ userId: 'u1',workspaceId: 'ws',harnessSlugs: ['papercusp'],
       queryContext: 'repair the queue boundary',budgetChars: 1800,
       session: { sessionId: 'su-knowledge-dedup',epoch: 0,port: 'turn-start' } });
@@ -2112,7 +2115,7 @@ describe('corpus leg carries its own retrieval health (P-001)', () => {
 
   it('passes the durable ambient exclusion fence into corpus retrieval', async () => {
     corpusIoResult = oneLine({ embedderAvailable: true });
-    sqlRows = [{ ambient_excluded_refs: ['WI-40293'] }];
+    sqlMockState.rows = [{ ambient_excluded_refs: ['WI-40293'] }];
     await runWithSession();
 
     const passed = recallCorpusContext.mock.calls.at(-1)?.[0] ?? {};
@@ -2124,7 +2127,7 @@ describe('corpus leg carries its own retrieval health (P-001)', () => {
     ['a legacy row with a NULL fence', [{ ambient_excluded_refs: null }]],
   ])('treats %s as an available empty fence', async (_label, rows) => {
     corpusIoResult = oneLine({ embedderAvailable: true });
-    sqlRows = rows;
+    sqlMockState.rows = rows;
     await runWithSession();
 
     const passed = recallCorpusContext.mock.calls.at(-1)?.[0] as {
@@ -2135,7 +2138,7 @@ describe('corpus leg carries its own retrieval health (P-001)', () => {
 
   it('fails closed before corpus retrieval when the durable fence is malformed', async () => {
     corpusIoResult = oneLine({ embedderAvailable: true });
-    sqlRows = [{ ambient_excluded_refs: ['WI-40293', 42] }];
+    sqlMockState.rows = [{ ambient_excluded_refs: ['WI-40293', 42] }];
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
       const callsBefore = recallCorpusContext.mock.calls.length;
@@ -2478,6 +2481,19 @@ describe('records the corpus admission funnel on the same recall row (P-009)', (
     expect(corpus).toMatchObject({ outcome: 'timed-out', timeout });
   });
 
+  it('retains corpus diagnostics when recall throws a timeout instead of returning a result', async () => {
+    recallCorpusContext.mockImplementationOnce(async () => {
+      throw new MemoryTimeoutError('corpus recall timed out', 'backend-operation', 'corpus-leg', 2000);
+    });
+    const corpus = await run();
+    expect(corpus).toMatchObject({
+      outcome: 'timed-out',
+      timeout: { scope: 'backend-operation', phase: 'corpus-leg', elapsedMs: 2000 },
+      selected: 0,
+      sessionDedup: 0,
+    });
+  });
+
   it('attributes coverage-gate suppression instead of reporting an unexplained empty leg', async () => {
     corpusIoResult = oneLine({ legs: legsWith(0) });
     coverageReport = coverageOf('degraded', { coverage: 0.01, embeddedRows: 9 });
@@ -2492,7 +2508,7 @@ describe('records the corpus admission funnel on the same recall row (P-009)', (
 
   it('counts cross-moment corpus dedup separately from pure selection drops', async () => {
     corpusIoResult = oneLine();
-    sqlRows = [{ ref: 'work-item:WI-6512', epoch: 0 }];
+    sqlMockState.rows = [{ ref: 'work-item:WI-6512', epoch: 0 }];
     const corpus = await run(true);
     expect(corpus).toMatchObject({ selected: 1, admitted: 0, sessionDedup: 1 });
   });

@@ -2,6 +2,7 @@ import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { setupEngineeringEvidenceFixture } from './_engineering-evidence-fixture';
+import { setSpecClause } from '../agent-tools/plans/spec-clauses-store';
 
 describe('native engineering evidence public graph handler', () => {
   let state: Awaited<ReturnType<typeof setupEngineeringEvidenceFixture>>;
@@ -30,7 +31,20 @@ describe('native engineering evidence public graph handler', () => {
     expect(context.evidence?.edges.some(e => e.basis === 'unscoped-context')).toBe(true);
   }, 60_000);
   it('ee.query-negative: unknown item and foreign scope cannot acquire unrelated requirement support', async () => {
-    const { plan, publicQuery } = state;
+    const { db, scope, harness, plan, publicQuery } = state;
+    await db`INSERT INTO harness_shared.plan_items (workspace_id,harness_slug,plan_slug,item_id,seq,item_text,status)
+      VALUES (${scope.workspaceId},${harness},${plan},'P-002',1,'Another item in the same repository','todo')`;
+    expect(await db.begin(tx => setSpecClause({ planSlug: plan, specId: 'EE-OTHER-ITEM', expectedRevision: 0,
+      planItemId: 'P-002', behavior: 'A different item owns this requirement.', behaviorClass: 'happy-path',
+      requiredEvidence: ['tree'], requiredTestLayers: ['integration'], mutationRequired: false,
+      lifecycleStatus: 'active', actorId: 'su-ee-author',
+      falsifier: { observation: 'This requirement is attributed to P-001.', probeMethod: 'Query the P-001 anchored symbol.' },
+    }, { executor: tx as never, workspaceId: scope.workspaceId, harnessSlug: harness }))).toMatchObject({ status: 'created' });
+    const selected = (await publicQuery()).evidence!;
+    expect(selected.nodes.filter(node => node.kind === 'spec').map(node => node.data)).toEqual([
+      expect.objectContaining({ plan, item: 'P-001', id: 'EE-1', revision: 1 }),
+    ]);
+    expect(JSON.stringify(selected)).not.toContain('EE-OTHER-ITEM');
     const missing = await publicQuery({ plan, item: 'P-999' });
     expect(missing.evidence?.nodes).toEqual([]);
     expect(missing.evidence?.gaps.some(g => g.code === 'no-visible-item-anchor')).toBe(true);

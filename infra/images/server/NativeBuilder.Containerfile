@@ -33,7 +33,7 @@ done
 # NATIVE_PREFLIGHT_END
 export DEBIAN_FRONTEND=noninteractive
 # The maintained Ubuntu rootfs has no PGDG repository. The sidecar consumes
-# PostgreSQL 18's target-native pgvector library, control file and SQL scripts.
+# PostgreSQL 18's target-native pgvector and pg_textsearch extensions.
 # Configure the official signed repository before installing that build input.
 . /etc/os-release
 [[ "$ID" == "ubuntu" && "$VERSION_CODENAME" =~ ^[a-z]+$ ]]
@@ -43,7 +43,7 @@ curl -fSsL https://www.postgresql.org/media/keys/ACCC4CF8.asc \
 printf 'Types: deb\nURIs: https://apt.postgresql.org/pub/repos/apt\nSuites: %s-pgdg\nArchitectures: %s\nComponents: main\nSigned-By: /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc\n' \
   "$VERSION_CODENAME" "$TARGETARCH" > /etc/apt/sources.list.d/pgdg.sources
 apt-get update
-apt-get install -y --no-install-recommends pkg-config libasound2-dev libssl-dev file binutils rsync gh patchelf postgresql-18-pgvector
+apt-get install -y --no-install-recommends pkg-config libasound2-dev libssl-dev file binutils rsync gh patchelf postgresql-18-pgvector postgresql-18-pg-textsearch
 # NATIVE_PGVECTOR_PREFLIGHT_BEGIN
 pgvector_sql=(/usr/share/postgresql/18/extension/vector--*.sql)
 [[ -s /usr/lib/postgresql/18/lib/vector.so \
@@ -60,6 +60,22 @@ esac
 }
 unset pgvector_sql pgvector_machine
 # NATIVE_PGVECTOR_PREFLIGHT_END
+# NATIVE_PGTEXTSEARCH_PREFLIGHT_BEGIN
+pgtextsearch_sql=(/usr/share/postgresql/18/extension/pg_textsearch--*.sql)
+[[ -s /usr/lib/postgresql/18/lib/pg_textsearch.so \
+   && -s /usr/share/postgresql/18/extension/pg_textsearch.control \
+   && -s "${pgtextsearch_sql[0]}" ]] || {
+  echo "ERROR: native builder requires PostgreSQL 18 pg_textsearch library, control and SQL files" >&2; exit 2;
+}
+case "$TARGETARCH" in
+  arm64) pgtextsearch_machine='ARM aarch64' ;;
+  amd64) pgtextsearch_machine='x86-64' ;;
+esac
+[[ "$(file -b /usr/lib/postgresql/18/lib/pg_textsearch.so)" == *"$pgtextsearch_machine"* ]] || {
+  echo "ERROR: native builder pg_textsearch architecture differs from target" >&2; exit 2;
+}
+unset pgtextsearch_sql pgtextsearch_machine
+# NATIVE_PGTEXTSEARCH_PREFLIGHT_END
 rm -rf /var/lib/apt/lists/*
 mkdir -p /opt/build-node /opt/cargo /opt/rustup /tmp/native-toolchains
 cd /tmp/native-toolchains

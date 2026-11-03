@@ -4,6 +4,7 @@ import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   readRegistry,
+  readRegistryAsync,
   writeRegistry,
   WorkspaceRegistryUnreadableError,
   activeWorkspaceId,
@@ -46,6 +47,16 @@ describe('workspace-registry', () => {
     const reg = readRegistry();
     expect(reg).toHaveProperty('workspaces');
     expect(Array.isArray(reg.workspaces)).toBe(true);
+  });
+
+  it('readRegistryAsync keeps a missing registry empty and reads a present registry', async () => {
+    await expect(readRegistryAsync()).resolves.toEqual({ workspaces: [] });
+    const expected = {
+      current: 'ws-async',
+      workspaces: [{ id: 'ws-async', name: 'Async workspace', createdAt: 1 }],
+    };
+    writeFileSync(join(registryRoot, 'registry.json'), JSON.stringify(expected));
+    await expect(readRegistryAsync()).resolves.toEqual(expected);
   });
 
   it('activeWorkspaceId returns a non-empty string', () => {
@@ -434,6 +445,16 @@ describe('workspace-registry — a corrupt registry is not an empty one (WI-6734
   it('THROWS on an unparseable registry instead of silently returning an empty one', () => {
     writeFileSync(join(root, 'registry.json'), '{"current":"papercusp-workspace","workspa');
     expect(() => readRegistry()).toThrow(WorkspaceRegistryUnreadableError);
+  });
+
+  it('keeps the event loop responsive while retrying a corrupt async registry read', async () => {
+    writeFileSync(join(root, 'registry.json'), 'not json at all');
+    let settled = false;
+    const pending = readRegistryAsync();
+    void pending.then(() => { settled = true; }, () => { settled = true; });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(settled).toBe(false);
+    await expect(pending).rejects.toBeInstanceOf(WorkspaceRegistryUnreadableError);
   });
 
   it('the throw names the false-NOT-FOUND consequence, so the cause is not re-derived', () => {

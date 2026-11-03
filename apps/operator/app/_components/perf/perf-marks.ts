@@ -265,6 +265,7 @@ export function endStartupUsable(): number | null {
   };
   if (!origin?.primaryWindow || connection.__papercuspServerConnectionRestored !== true ||
       connection.__papercuspServerConnectionRequired || connection.__papercuspBootError ||
+      document.querySelector('[data-testid="server-connection-reason"]') ||
       !Number.isSafeInteger(origin.pid) || origin.pid <= 0 ||
       !Number.isSafeInteger(origin.startedAtEpochMs) || origin.startedAtEpochMs <= 0 ||
       !Number.isFinite(p.timeOrigin) || origin.startedAtEpochMs > p.timeOrigin) return null;

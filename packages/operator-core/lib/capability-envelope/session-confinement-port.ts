@@ -33,7 +33,7 @@ import type { UnifiedToolContext } from '@papercusp/agent-mcp';
 import { realpath } from 'node:fs/promises';
 import { dirname, isAbsolute, relative, resolve } from 'node:path';
 
-import { evaluateSessionConfinement, validWorkItemBoundary, validScratchPlanBoundary, type SessionToolConfinement } from './session-confinement';
+import { evaluateSessionConfinement, validWorkItemBoundary, validScratchPlanBoundary, validFrozenCarryBoundary, type SessionToolConfinement } from './session-confinement';
 import { isHookReleasedOperationContinuationCall } from '../released-operation-continuation-door';
 
 /**
@@ -72,6 +72,27 @@ export function setSessionConfinementResolver(
 /** Whether a resolver is installed — for boot assertions and tests. */
 export function hasSessionConfinementResolver(): boolean {
   return state.resolver !== undefined;
+}
+
+/** Consult before any general carry producer. Unknown policy never becomes
+ * permission to inject live workspace, transcript, plan or memory context. */
+export async function sessionCarryPolicy(input: { ownerId: string; workspaceId?: string }): Promise<
+  SessionToolConfinement['denyCarryOutside']
+> {
+  if (!state.resolver) throw new Error('Session carry policy is unavailable.');
+  await state.ensureReady?.();
+  const confinement = await state.resolver({ uiClientId: input.ownerId,
+    workspaceId: input.workspaceId, isSuperuser: true } as UnifiedToolContext);
+  if (!confinement) return undefined;
+  if (confinement.denyCarryOutside === undefined) {
+    if (confinement.denyAmbientContext && confinement.denyWorkItemsOutside)
+      throw new Error('Managed carry is not bound to this frozen assignment.');
+    return undefined;
+  }
+  if (!validFrozenCarryBoundary(confinement.denyCarryOutside) ||
+      !evaluateSessionConfinement({ toolName: 'coord:whoami', purpose: 'listing', confinement }).allowed)
+    throw new Error('Managed carry policy is invalid or expired.');
+  return Object.freeze({ ...confinement.denyCarryOutside });
 }
 
 /** Resolve explicit recall from the same authoritative policy as dispatch.

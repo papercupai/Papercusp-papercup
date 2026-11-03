@@ -272,6 +272,26 @@ export function nativeStartupDuration(reading: NativeStartupReading, sessionStar
   return Math.round(entry.duration);
 }
 
+export interface WorkJourneyReading {
+  now: number;
+  entries: Array<{ startTime: number; duration: number }>;
+  contentReady: boolean;
+  connectionReady: boolean;
+}
+
+/** Only the one measure produced after this gesture in this document counts.
+ * Missing content, a stale entry, a duplicate, or a reload leaves it unknown.
+ */
+export function workJourneyDuration(reading: WorkJourneyReading, gestureAt: number): number | null {
+  if (!reading.contentReady || !reading.connectionReady || reading.entries.length !== 1 ||
+      !Number.isFinite(gestureAt) || gestureAt < 0 || !Number.isFinite(reading.now)) return null;
+  const entry = reading.entries[0];
+  if (!Number.isFinite(entry.startTime) || entry.startTime < gestureAt ||
+      !Number.isFinite(entry.duration) || entry.duration < 0 || entry.duration > 30_000 ||
+      entry.startTime + entry.duration > reading.now || reading.now - gestureAt > 30_000) return null;
+  return Math.round(entry.duration);
+}
+
 const RESULTS_DIR = path.resolve(__dirname, "results");
 
 // The launcher initializes this BEFORE forking spec workers; workers inherit its

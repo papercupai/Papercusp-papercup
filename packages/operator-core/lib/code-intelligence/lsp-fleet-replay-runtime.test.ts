@@ -152,6 +152,47 @@ describe('prelaunch replay runtime dependency population', () => {
       } else expect(() => freezeReplayRuntimeFiles([f.modules])).toThrow(`missing-replay-native-dependency:${addon}`);
     } finally { spy.mockRestore(); syncBuiltinESMExports(); }
   });
+  it.runIf(process.platform === 'linux').each([
+    { host: 'glibc', abi: 'musl', loader: 'napi', excluded: true },
+    { host: 'musl', abi: 'gnu', loader: 'napi', excluded: true },
+    { host: 'glibc', abi: 'gnu', loader: 'napi', excluded: false },
+    { host: 'musl', abi: 'musl', loader: 'napi', excluded: false },
+    { host: 'unknown', abi: 'musl', loader: 'napi', excluded: false },
+    { host: 'glibc', abi: 'musl', loader: 'unknown', excluded: false },
+    { host: 'glibc', abi: 'unknown', loader: 'napi', excluded: false },
+    { host: 'glibc', abi: 'musl', loader: 'node-gyp-build', excluded: true },
+    { host: 'musl', abi: 'musl', loader: 'node-gyp-build', excluded: false },
+  ])('freezes co-packaged Linux ABI bytes without traversing foreign dependencies: $host/$abi/$loader', ({ host, abi, loader, excluded }) => {
+    const f = fixture();
+    const directory = loader === 'node-gyp-build' ? join(f.pkg, 'prebuilds', `linux-${process.arch}-${abi}`) : f.pkg;
+    mkdirSync(directory, { recursive: true });
+    const addon = join(directory, loader === 'node-gyp-build' ? 'addon.node' : `external.linux-${process.arch}-${abi}.node`);
+    const metadata = join(f.pkg, 'package.json');
+    writeFileSync(metadata, JSON.stringify(loader === 'napi' ? { napi: { binaryName: 'external' } } :
+      { dependencies: { [loader]: '^1.0.0' } }));
+    const header = Buffer.alloc(20);
+    header.set([0x7f, 0x45, 0x4c, 0x46]); header[5] = 1;
+    const machines: Partial<Record<typeof process.arch, number>> = { x64: 62, arm64: 183, ia32: 3, arm: 40 };
+    header.writeUInt16LE(machines[process.arch] ?? 0, 18); writeFileSync(addon, header);
+    const spy = vi.spyOn(childProcess, 'execFileSync').mockImplementation(((command: string, args: string[]) => {
+      expect(command).toBe('ldd');
+      if (args[0] === process.execPath) return host === 'glibc' ? 'libc.so.6 => /lib/libc.so.6 (0x1)' :
+        host === 'musl' ? '/lib/ld-musl-x86_64.so.1 (0x1)' : 'statically linked';
+      expect(args[0]).toBe(addon);
+      return 'libmissing.so => not found';
+    }) as typeof childProcess.execFileSync);
+    syncBuiltinESMExports();
+    try {
+      if (excluded) {
+        const files = freezeReplayRuntimeFiles([f.modules]);
+        expect(files[addon]).toBe(replayHash(header));
+        expect(files[metadata]).toBe(replayHash(readFileSync(metadata)));
+        expect(spy.mock.calls.some(([, args]) => args?.[0] === addon)).toBe(false);
+        writeFileSync(addon, 'changed foreign ABI bytes');
+        expect(replayFileMismatches(files)).toContain(`changed-file:${addon}`);
+      } else expect(() => freezeReplayRuntimeFiles([f.modules])).toThrow(`missing-replay-native-dependency:${addon}`);
+    } finally { spy.mockRestore(); syncBuiltinESMExports(); }
+  });
   it.runIf(process.platform === 'linux')('captures the actual Node ELF dependency graph with the default scanner', () => {
     const files = freezeReplayRuntimeFiles([process.execPath]);
     const libraries = [...execFileSync('ldd', [process.execPath], { encoding: 'utf8' })

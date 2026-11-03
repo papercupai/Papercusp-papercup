@@ -23,6 +23,30 @@ const CONFINEMENT: SessionToolConfinement = directedImplementerConfinement({
 const evaluate = (toolName: string) =>
   evaluateSessionConfinement({ toolName, confinement: CONFINEMENT });
 
+describe('frozen assignment carry confinement', () => {
+  const confinement: SessionToolConfinement = { denyTools: [], denyOutside: ['coord:whoami', 'session:request-compaction'],
+    denyAmbientContext: true, denyWorkItemsOutside: { id: 'F-own', harness: 'bench', checkout: '/private/assignment' },
+    denyCarryOutside: { initialPrompt: 'Frozen assignment', initialPromptSha256: 'a'.repeat(64), mode: 'on' },
+    reason: 'private', imposedBy: 'host' };
+  const decide = (args: unknown, changed = confinement) => evaluateSessionConfinement({
+    toolName: 'session:request-compaction', args, confinement: changed });
+  it('permits only a bounded own note when enabled and preserves the exact ceiling', () => {
+    expect(decide({}).allowed).toBe(true);
+    expect(decide({ continueNote: 'Own task progress' }).allowed).toBe(true);
+    for (const args of [{ focus: 'foreign task' }, { continueNote: 'x'.repeat(1001) },
+      { continueNote: 5 }, { continueNote: 'own', respawn: true }, [], null]) expect(decide(args).allowed).toBe(false);
+    expect(decide({ continueNote: 'Own task progress' }, { ...confinement,
+      denyCarryOutside: { ...confinement.denyCarryOutside!, mode: 'off' } }).allowed).toBe(false);
+    expect(decide({}, { ...confinement, denyOutside: ['coord:whoami'] }).allowed).toBe(false);
+  });
+  it('fails closed on malformed or unbound carry even during listing', () => {
+    for (const change of [{ denyWorkItemsOutside: undefined }, { denyAmbientContext: undefined },
+      { denyCarryOutside: { ...confinement.denyCarryOutside!, initialPrompt: '' } }])
+      expect(evaluateSessionConfinement({ toolName: 'coord:whoami', purpose: 'listing',
+        confinement: { ...confinement, ...change } }).allowed).toBe(false);
+  });
+});
+
 describe('frozen assignment memory confinement', () => {
   const boundary = { id: 'F-own', harness: 'bench-private', checkout: '/private/assignment' };
   const confinement: SessionToolConfinement = { denyTools: [], denyOutside: ['memory:search', 'memory:list', 'memory:remember'],

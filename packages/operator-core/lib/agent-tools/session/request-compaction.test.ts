@@ -850,6 +850,20 @@ describe('session:request-compaction — P-018/P-022 carry-respawn actuation', (
     expect(injectIntoHost).not.toHaveBeenCalled();
   });
 
+  it('reports frozen assignment assembly hashes and labels its mocked host queue without claiming delivery', async () => {
+    findLiveHost.mockReturnValue(carryHost);
+    const frozenAssignmentCarry = { mode: 'off', initialPromptSha256: 'a'.repeat(64),
+      noteSha256: null, firstPromptSha256: 'a'.repeat(64) };
+    buildOwnerRespawnLaunchSpec.mockResolvedValue({ firstPrompt: 'Frozen initial assignment',
+      systemPromptAddendum: '', budgetChars: 0, openOwnerQuestion: { crossesOpenOwnerMessage: false }, frozenAssignmentCarry });
+    const result = body(await call({}));
+    expect(result).toMatchObject({ ok: true, respawn: 'queued', firstPromptSource: 'frozen-assignment', frozenAssignmentCarry });
+    expect(injected().data).toBe('Frozen initial assignment');
+    expect(injected().systemPromptAddendum).toBe('');
+    expect(savePendingCarryRespawn).toHaveBeenCalledWith(expect.anything(),
+      { firstPrompt: 'Frozen initial assignment', systemPromptAddendum: '' });
+  });
+
   it('the spec build is a DELIBERATE boundary with the resolved (fallback) window', async () => {
     findLiveHost.mockReturnValue(carryHost);
     await call({ focus: 'x' });
@@ -875,6 +889,8 @@ describe('session:request-compaction — P-018/P-022 carry-respawn actuation', (
   it('continueNote overrides the derived first prompt verbatim (behind the provenance envelope + WI-2140968 address line)', async () => {
     findLiveHost.mockReturnValue(carryHost);
     await call({ focus: 'x', continueNote: 'resume: do the thing' });
+    expect(buildOwnerRespawnLaunchSpec).toHaveBeenCalledWith('su-caller',
+      expect.objectContaining({ continueNote: 'resume: do the thing' }));
     const msg = injected();
     expect(msg.mode).toBe('carry-respawn');
     expect(msg.data).toMatch(ENVELOPE_LINE);

@@ -4074,6 +4074,9 @@ fi
         : variant === 'pid-mismatch' ? 'launcher-pid-mismatch' : 'subject-dependent-or-unknown-child');
       expect(out).toContain('verdict=harness-error');
       expect(out).not.toContain('VERDICT: MUTANT CAUGHT');
+      const diagnostic = JSON.parse(out.match(/^MUTATION_PROBE_DIAGNOSTICS_JSON=(.+)$/m)![1]);
+      expect(readFileSync(join(diagnostic.path, 'child-source-notices.baseline.jsonl'), 'utf8'))
+        .toBe(prefix + JSON.stringify(notice) + '\n');
       expect(readFileSync(file, 'utf8')).toBe(original);
     },
   );

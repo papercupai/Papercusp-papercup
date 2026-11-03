@@ -7,6 +7,7 @@
  * status — an active rubric stays active.
  */
 import { createHash, randomUUID } from 'node:crypto';
+import { managedSetInterval } from '@papercusp/scheduled-registry';
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { projectBoundedPayload, type AbortCompletionReceipt, type ToolResult } from '@papercusp/tooldef';
@@ -74,22 +75,27 @@ async function guardAmendRun(
     reason: 'rubrics:amend keeps its serving runtime alive through terminal receipt settlement',
   }, async (fence) => {
     let renewal: Promise<void> | undefined;
-    const timer = setInterval(() => {
-      if (renewal) return;
-      renewal = heartbeatSharedResourceAtomic({
-        coordinationDomain, resource, owner: leaseOwner, lockId: fence.lockId,
-        ttlSec: DEFAULT_LOCK_TTL_SEC,
-      }).then((result) => {
-        if (!result.extended) console.warn('rubrics:amend runtime lease lost', { resource, lockId: fence.lockId });
-      }).catch((error: unknown) => {
-        console.warn('rubrics:amend runtime lease renewal failed', { resource, lockId: fence.lockId, error });
-      }).finally(() => { renewal = undefined; });
-    }, DEFAULT_LOCK_TTL_SEC * 500);
-    timer.unref();
+    const timer = managedSetInterval(
+      'rubrics-amend-runtime-lease-renewal',
+      DEFAULT_LOCK_TTL_SEC * 500,
+      () => {
+        if (renewal) return renewal;
+        renewal = heartbeatSharedResourceAtomic({
+          coordinationDomain, resource, owner: leaseOwner, lockId: fence.lockId,
+          ttlSec: DEFAULT_LOCK_TTL_SEC,
+        }).then((result) => {
+          if (!result.extended) console.warn('rubrics:amend runtime lease lost', { resource, lockId: fence.lockId });
+        }).catch((error: unknown) => {
+          console.warn('rubrics:amend runtime lease renewal failed', { resource, lockId: fence.lockId, error });
+        }).finally(() => { renewal = undefined; });
+        return renewal;
+      },
+      { category: 'lifecycle', classification: 'must-sample', allowInTest: true, instanced: true },
+    );
     try {
       return await run();
     } finally {
-      clearInterval(timer);
+      timer.stop();
       // Finish any in-flight renewal before guardResource releases the lease.
       await renewal;
     }

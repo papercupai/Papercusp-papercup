@@ -538,24 +538,35 @@ describe("coord:conditions handler", () => {
     expect(nextParams).toContain(String(CONDITIONS_FAST_PATH_ROW_CAP));
   });
 
-  it("keeps recent PG resolutions inside the capped window and folds it chronologically", async () => {
+  it("keeps a matching resolution beyond the oldest capped page and folds newest rows chronologically", async () => {
     const key = "bounded-condition";
     M.pgFastPath = true;
-    M.pgQuery.mockImplementation(async (..._args: unknown[]) => [
-      { body: resolution(2, key) },
-      { body: alarm(1, key) },
-    ]);
+    const rows = [
+      { id: "1", body: alarm(1, key) },
+      ...Array.from({ length: CONDITIONS_FAST_PATH_ROW_CAP - 1 }, (_, index) => ({
+        id: String(index + 2),
+        body: alarm(3, "noise"),
+      })),
+      { id: String(CONDITIONS_FAST_PATH_ROW_CAP + 1), body: resolution(2, key) },
+    ];
+    M.pgQuery.mockImplementation(async (...args: unknown[]) => {
+      const [template] = args as [TemplateStringsArray, ...unknown[]];
+      const descending = template.join(" ").includes("ORDER BY id DESC");
+      const ordered = descending ? [...rows].reverse() : rows;
+      const limit = args.find((value): value is number => typeof value === "number");
+      return ordered.slice(0, limit ?? ordered.length);
+    });
 
     const out = await call();
 
     const template = M.pgQuery.mock.calls[0]?.[0] as TemplateStringsArray | undefined;
     expect(template?.join(" ")).toContain("ORDER BY id DESC");
-    expect(out.open_count).toBe(0);
-    expect(out.resolved[0]).toMatchObject({
+    expect(M.pgQuery.mock.calls[0]).toContain(CONDITIONS_FAST_PATH_ROW_CAP);
+    expect(out.open.some((state) => state.condition_key === key)).toBe(false);
+    expect(out.resolved.find((state) => state.condition_key === key)).toMatchObject({
       condition_key: key,
-      first_seen: at(1),
-      last_seen: at(1),
-      latest_summary: "alarm " + key,
+      open: false,
+      alarm_count: 0,
       resolved_at: at(2),
     });
   });

@@ -29,7 +29,7 @@ describe('complete knowledge sections against canonical PostgreSQL', () => {
     await applyMigrationForTest(db.adminSql,existsSync(lexicalIndex) ? lexicalIndex.pathname : lexicalIndexDraft.pathname);
     await db.adminSql`INSERT INTO harness_shared.harness_registry (workspace_id,payload)
       VALUES (${workspaceId},${db.adminSql.json({ projects: [{ slug: 'pot-a' }, { slug: 'pot-b' }] })}),
-        (${otherWorkspace},${db.adminSql.json({ projects: [{ slug: 'foreign-pot' }] })})`;
+        (${otherWorkspace},${db.adminSql.json({ projects: [{ slug: 'foreign-pot' }, { slug: 'foreign-pot-b' }] })})`;
     for (const [ws,harness,slug,content] of [
       [workspaceId,'pot-a','late-plan', 'ordinary filler '.repeat(5_000) + '\n## Late repair\nPrerequisite: retain the snapshot.\nApply zephyrquartz recovery.'],
       [workspaceId,'pot-b','crowding-plan','zephyrquartz '.repeat(20)],
@@ -71,6 +71,50 @@ describe('complete knowledge sections against canonical PostgreSQL', () => {
       expect(rows[0].row.excerpt).toContain('retain the snapshot');
       expect(rows[0].row.excerpt).toContain('zephyrquartz');
       expect(rows[0].row.meta?.section).toBe('Late repair');
+    }
+  });
+
+  it('searches a plan title through the public handler and isolates its harness', async () => {
+    const token = 'fulltexttitle' + process.pid + 'x' + Date.now();
+    for (const [harness,slug] of [['foreign-pot','public-title-a'],['foreign-pot-b','public-title-b']] as const) {
+      await db.adminSql`INSERT INTO harness_shared.harness_plans
+        (workspace_id,harness_slug,plan_slug,title,content,status,embedding,embedding_profile,embedding_mode)
+        VALUES (${otherWorkspace},${harness},${slug},${token + '-' + harness},
+          'unrelated body','active',${vec(false)}::vector,${profileId},'gemma')`;
+    }
+    vi.doMock('./rerank', async (importOriginal) => {
+      const actual = await importOriginal<typeof import('./rerank')>();
+      return {
+        ...actual,
+        rerankPageHead: async (
+          _query: Parameters<typeof actual.rerankPageHead>[0],
+          rows: Parameters<typeof actual.rerankPageHead>[1],
+          limit: Parameters<typeof actual.rerankPageHead>[2],
+        ) => rows.slice(0, limit),
+      };
+    });
+    try {
+      const { default: fulltext } = await import('./fulltext');
+      const context = () => ({
+        log: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+        signal: new AbortController().signal,
+        progress: vi.fn(),
+        workspaceId: otherWorkspace,
+        harnessSlug: 'foreign-pot',
+        role: 'operator' as const,
+        tx: db.adminSql,
+        principal: { slug: 'integration-test' },
+        metadata: vi.fn(),
+      } as never);
+      const response: any = await fulltext.handler(
+        { query: token, scope: ['plan'], harness_slug: 'foreign-pot', limit: 5 },
+        context(),
+      );
+      const result = JSON.parse(response.content[0].text);
+      expect(result.results.map((row: { source_id: string }) => row.source_id))
+        .toEqual(['foreign-pot:public-title-a']);
+    } finally {
+      vi.doUnmock('./rerank');
     }
   });
 

@@ -711,6 +711,23 @@ export function assertIsolatedFileRunBudget(requiredMs: number, env: NodeJS.Proc
     'Refusing before proof source observation or private worker allocation.');
 }
 
+/** Inputs loaded by the installed-Codex private profile, including its embedded
+ * worker imports that the static fixture import graph cannot discover. */
+export const codexManagedToolsNativeIntegrationSourcePaths = [
+  'packages/operator-core/lib/backend-bin-resolve.mjs',
+  'libs/papercusp/packages/orchestrator/src/codex-gateway-config.ts',
+  'libs/papercusp/packages/orchestrator/src/managed-capability-policy.ts',
+  'libs/papercusp/packages/orchestrator/src/managed-capability-client-inventory.ts',
+  'packages/operator-core/test/isolated-integration-proof.ts',
+  'packages/operator-core/test/staging-first-http-fixture.ts',
+  'packages/operator-core/test/private-http-workspace-preflight.ts',
+  'packages/operator-core/lib/process-identity.ts',
+  'packages/operator-core/lib/harness-registry.ts',
+  'packages/operator-core/lib/operator-state-pg.ts',
+  'scripts/with-test-pg.mjs',
+  'scripts/test-files.mjs',
+] as const;
+
 /** Keep the original receipt complete for calibrated fromTestRun evidence. */
 export function isolatedIntegrationProofSourcePaths(filePath: string, sourcePaths: readonly string[]) {
   return [...new Set([filePath,

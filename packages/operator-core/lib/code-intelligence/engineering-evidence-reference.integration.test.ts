@@ -27,7 +27,7 @@ describe('canonical engineering evidence reference resolution', () => {
       expect(selected, `Expected a resolving ${kind} reference`).toBeDefined();
       return selected!;
     };
-    const ctx = { workspaceId: scope.workspaceId, harnessSlug: harness, role: 'operator', log: () => {},
+    const ctx = { workspaceId: scope.workspaceId, harnessSlug: harness, projectDir: scope.root, role: 'operator', log: () => {},
       principal: { slug: 'ee-reader', workspaceId: scope.workspaceId, capabilities: new Set(['intel:read']) } } as never;
     await runWithWorkspace(scope.workspaceId, async () => {
       const item = node('item');
@@ -69,6 +69,9 @@ describe('canonical engineering evidence reference resolution', () => {
         .toMatchObject({ count: 0, evidence: [] });
       expect(data(await getPlan.handler(getPlan.args.parse({ harness, slug: plan, decisionId: 'D-999' }), ctx)))
         .toMatchObject({ results: [{ decisions: [], decisionSelection: { missing: ['D-999'] } }] });
+      const foreignCtx = { ...ctx as object, workspaceId: 'ee-foreign' } as never;
+      expect(data(await getEvidence.handler(getEvidence.args.parse(proof.ref.args), foreignCtx)))
+        .toMatchObject({ count: 0, evidence: [] });
     });
     // These use the real scoped PG adapters, including the foreign fixture's
     // same repository/path controls, rather than fabricated empty tool results.
@@ -80,6 +83,31 @@ describe('canonical engineering evidence reference resolution', () => {
     expect(repair?.at).toMatchObject({ tool: 'graph:query', args: { harnesses: [harness], plan, item: 'P-999' } });
     expect(repair?.repair).toMatchObject({ tool: 'plans:add-item', args: { harness } });
     expect((await publicQuery(repair!.at.args)).evidence?.nodes).toEqual([]);
+  }, 90_000);
+
+  it('ee.reference-case-occurrences: repeated case names retain distinct outcomes and a missing occurrence stays absent', async () => {
+    const { db, runId, scope, harness, publicQuery } = state;
+    await db`INSERT INTO harness_shared.test_case_runs (test_run_id,case_index,case_key,occurrence,status)
+      VALUES (${runId},1,'ee.intent-exact',2,'fail')`;
+    const graph = (await publicQuery()).evidence!;
+    const nodes = graph.nodes.filter(node => node.kind === 'test-case');
+    expect(nodes.map(node => node.id)).toHaveLength(2);
+    expect(new Set(nodes.map(node => node.id)).size).toBe(2);
+    expect(nodes.map(node => node.data)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ runId, key: 'ee.intent-exact', occurrence: 1, status: 'pass' }),
+      expect.objectContaining({ runId, key: 'ee.intent-exact', occurrence: 2, status: 'fail' }),
+    ]));
+    const ctx = { workspaceId: scope.workspaceId, harnessSlug: harness, role: 'operator', log: () => {} } as never;
+    await runWithWorkspace(scope.workspaceId, async () => {
+      for (const node of nodes) {
+        const opened = data(await testingRuns.handler(testingRuns.args.parse(node.ref.args), ctx));
+        const runs = opened.runs as { id: number; cases: { caseKey: string; occurrence: number; status: string }[] }[];
+        const cases = runs.find(run => run.id === runId)!.cases;
+        expect(cases.find(test => test.caseKey === node.data.key && test.occurrence === node.data.occurrence))
+          .toMatchObject({ status: node.data.status });
+        expect(cases.find(test => test.caseKey === node.data.key && test.occurrence === 999)).toBeUndefined();
+      }
+    });
   }, 90_000);
 
   it('ee.reference-exact: selected immutable spec and case references resolve through their actual canonical tools', async () => {
@@ -108,7 +136,9 @@ describe('canonical engineering evidence reference resolution', () => {
       expect(data(current).specs).toMatchObject([{ specId: 'EE-1', revision: 2 }]);
 
       const opened = await testingRuns.handler(testingRuns.args.parse(testCase.ref.args), ctx);
-      expect(data(opened).runs).toMatchObject([{ id: runId, cases: [{ caseKey: 'ee.intent-exact', occurrence: 1, status: 'pass' }] }]);
+      expect(data(opened).runs).toMatchObject([{ id: runId, cases: expect.arrayContaining([
+        expect.objectContaining({ caseKey: 'ee.intent-exact', occurrence: 1, status: 'pass' }),
+      ]) }]);
       const missing = await getSpecs.handler(getSpecs.args.parse({ ...spec.ref.args, specIds: ['EE-foreign'] }), ctx);
       expect(data(missing).specs).toEqual([]);
     });

@@ -222,6 +222,9 @@ export interface HarnessRegistry {
   hiveDirectoryMeta?: Record<string, import('./hive-publish').HiveDirectoryMeta>;
 }
 
+export type SaveRegistryProgress = 'read-start' | 'read-complete' | 'write-start' | 'write-complete' |
+  'audit-start' | 'audit-complete' | 'notification-start' | 'notification-complete';
+
 export interface SaveRegistryOptions {
   /**
    * Permit reducing a populated registry to empty. Required by the
@@ -231,6 +234,8 @@ export interface SaveRegistryOptions {
    * the `default` workspace's harnesses on 2026-05-25.
    */
   allowEmpty?: boolean;
+  /** Optional best-effort stage observer for long-running integration proofs. */
+  onProgress?: (stage: SaveRegistryProgress) => void;
 }
 
 export async function loadHarnessRegistry(
@@ -539,7 +544,13 @@ export async function saveHarnessRegistry(
      
     console.warn(`[harness-registry] saveHarnessRegistry collapsed duplicate slug '${slug}' (workspace '${ws}')`),
   );
+  const progress = (stage: SaveRegistryProgress) => {
+    try { opts.onProgress?.(stage); }
+    catch { /* Diagnostic observers cannot interrupt registry persistence. */ }
+  };
+  progress('read-start');
   const prev = await readOperatorState<HarnessRegistry>('harness_registry', workspaceId);
+  progress('read-complete');
   const prevCount = prev?.projects?.length ?? 0;
 
   // Catastrophic-empty guard: refuse to wipe a populated registry unless
@@ -553,6 +564,7 @@ export async function saveHarnessRegistry(
     );
   }
 
+  progress('write-start');
   await writeOperatorState(
     'harness_registry',
     {
@@ -564,10 +576,15 @@ export async function saveHarnessRegistry(
     },
     workspaceId,
   );
+  progress('write-complete');
   if (next.length !== prevCount) {
+    progress('audit-start');
     await auditRegistryWrite(ws, prevCount, next.length);
+    progress('audit-complete');
   }
+  progress('notification-start');
   await notifyRegistryChanged();
+  progress('notification-complete');
 }
 
 /**

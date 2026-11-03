@@ -257,6 +257,8 @@ export interface ManagedTickEpisode {
   startedAt: number;
   heldMs: number;
   thresholdMs: number;
+  /** Exact independent watcher cadence, including instanced timers. */
+  watcherIntervalMs: number;
 }
 
 type ResolvedConfig = Required<Omit<ScheduledRegistryConfig, 'onHungTick' | 'onHungTickSettled' | 'onTickStarted'>> &
@@ -477,6 +479,7 @@ function makeTick(name: string, fn: (context: { signal: AbortSignal }) => void |
           startedAt: rec.entry.runningSince!,
           heldMs: 0,
           thresholdMs: managedTickThresholdMs(rec.entry.intervalMs, opts.hungTickThresholdMs),
+          watcherIntervalMs: Math.min(rec.entry.intervalMs, 60_000),
         };
         let announced = false;
         // Serialize resolution AFTER delivery, even when the tick settles during an async raise.
@@ -486,7 +489,7 @@ function makeTick(name: string, fn: (context: { signal: AbortSignal }) => void |
             state.resolved.log(`${name} hung-tick alarm delivery failed: ${String(err)}`);
           });
         };
-        const watcher = managedSetInterval('managed-tick-watch', Math.min(rec.entry.intervalMs, 60_000), () => {
+        const watcher = managedSetInterval('managed-tick-watch', episode.watcherIntervalMs, () => {
           const heldMs = state.resolved.now() - episode.startedAt;
           if (announced || heldMs <= episode.thresholdMs) return;
           announced = true;

@@ -83,6 +83,17 @@ describe('saveHarnessRegistry — catastrophic-empty guard', () => {
 });
 
 describe('saveHarnessRegistry — audit trail', () => {
+  it('reports read, write, audit and notification boundaries in order', async () => {
+    prevState = { projects: [] };
+    const progress: string[] = [];
+    await saveHarnessRegistry({ projects: [{ slug: 'a', path: '/a' }] }, undefined,
+      { onProgress: stage => progress.push(stage) });
+    expect(progress).toEqual([
+      'read-start', 'read-complete', 'write-start', 'write-complete',
+      'audit-start', 'audit-complete', 'notification-start', 'notification-complete',
+    ]);
+  });
+
   it('emits a harness_registry.write audit row when the count changes', async () => {
     prevState = { projects: [{ slug: 'a', path: '/a' }] };
     await saveHarnessRegistry({

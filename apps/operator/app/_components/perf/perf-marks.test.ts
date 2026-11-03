@@ -139,6 +139,17 @@ describe('native startup to usable content', () => {
     expect(endStartupUsable()).toBe(2250);
   });
 
+  it('waits for removal of the blocking connection dialog after the flag changes', () => {
+    const gate = document.createElement('p');
+    gate.dataset.testid = 'server-connection-reason';
+    document.body.append(gate);
+    try {
+      expect(endStartupUsable()).toBeNull();
+      expect(measure).not.toHaveBeenCalled();
+    } finally { gate.remove(); }
+    expect(endStartupUsable()).toBe(2250);
+  });
+
   it.each([
     undefined,
     { startedAtEpochMs: 10001, pid: 42, primaryWindow: true },

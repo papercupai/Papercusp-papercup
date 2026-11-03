@@ -455,6 +455,19 @@ describe('openAcceptanceBarAmendmentReview (P-006)', () => {
     expect(result.next).toContain('launcher screened out');
   });
 
+  it('retains an oversized review in its conversation and passes that source to the fresh reviewer', async () => {
+    const route = vi.fn().mockResolvedValue({ state: 'no-eligible-reviewer', conversationId: 'conv-large', reason: 'none', screenedOut: [] });
+    const launchFresh = vi.fn().mockResolvedValue({ state: 'not-launched', reason: 'test' });
+    const reason = `first-source-detail ${'x'.repeat(1_100_000)} last-source-detail`;
+
+    await openAcceptanceBarAmendmentReview({ ...baseInput, reason }, {
+      verifyPreviewPost: vi.fn(), route, launchFresh, hasLaterPost: noLaterPost,
+    });
+
+    expect(route.mock.calls[0]![0].brief).toContain(reason);
+    expect(launchFresh).toHaveBeenCalledWith(expect.objectContaining({ reviewConversationId: 'conv-large' }));
+  });
+
   it('does not treat an unrelated later thread reply as the retained preview reviewer response', async () => {
     const route = vi.fn().mockResolvedValue({
       state: 'no-eligible-reviewer',
@@ -1007,6 +1020,31 @@ describe('launchFreshAmendmentReviewer (WI-10003299)', () => {
     const keys = d.launch.mock.calls.map((call) => (call[0] as { idempotencyKey: string }).idempotencyKey);
     expect(keys[0]).toBe(keys[1]);
     expect(keys[2]).not.toBe(keys[0]);
+  });
+
+  it('launches an oversized review from its complete durable source within native input limits', async () => {
+    const large = { ...input, reason: 'review-evidence '.repeat(80_000), reviewConversationId: 'conv-large' };
+    const d = deps();
+    expect(buildAmendmentReviewBrief(large, answerOn).length).toBeGreaterThan(1_048_576);
+
+    await launchFreshAmendmentReviewer(large, d as never);
+
+    const brief = d.launch.mock.calls[0]![0].brief;
+    expect(brief.length).toBeLessThan(100_000);
+    expect(brief).toContain("conversations:get { id:'conv-large' }");
+    expect(brief).toContain('eof:true');
+    expect(brief).toContain('next_cursor:null');
+    expect(brief).toContain(JSON.stringify(input.preview.approval));
+    expect(brief).toContain('approve thread-post:42');
+    expect(brief).toContain("work_items:comment { id:'WI-7', harness:'papercusp' }");
+    expect(brief).toContain('Do not approve until');
+  });
+
+  it('rejects an oversized fresh kickoff without its durable source before spawning', async () => {
+    const d = deps();
+    await expect(launchFreshAmendmentReviewer({ ...input, reason: 'x'.repeat(1_100_000) }, d as never))
+      .rejects.toThrow('amendment_review_brief_source_required');
+    expect(d.launch).not.toHaveBeenCalled();
   });
 
   it('uses the requested backend and effort and keys dedupe by the model choice', async () => {

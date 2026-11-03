@@ -973,7 +973,7 @@ fs.mkdirSync(parent, { recursive: true, mode: 0o700 });
 const destination = fs.mkdtempSync(path.join(parent, 'evidence-'));
 const files = [];
 for (const entry of fs.readdirSync(source, { withFileTypes: true })) {
-  if (!entry.isFile() || !/(?:\.(?:log|err)|^test-run-receipts\.[^.]+\.jsonl)$/.test(entry.name)) continue;
+  if (!entry.isFile() || !/(?:\.(?:log|err)|^(?:test-run-receipts|child-source-notices)\.[^.]+\.jsonl)$/.test(entry.name)) continue;
   fs.copyFileSync(path.join(source, entry.name), path.join(destination, entry.name));
   files.push(entry.name);
 }
@@ -2256,6 +2256,30 @@ if (!within(repoRoot, testConfigRoot) || within(testConfigRoot, subject)) {
   fail('test-config-subject-or-root-boundary');
 }
 
+// Reject unknown child imports before consulting the one permitted reader's
+// source. A missing reader checkout must not obscure a subject-dependent child.
+for (const record of records) {
+  if (record?.schemaVersion !== 'committed-source-notice-v1'
+    || !['substituted', 'refused'].includes(record.kind)
+    || !['esm', 'cjs'].includes(record.via)
+    || typeof record.top !== 'string' || !isAbsolute(record.top)
+    || typeof record.rel !== 'string' || isAbsolute(record.rel) || record.rel.includes('\\')
+    || typeof record.entry !== 'string'
+    || !Number.isSafeInteger(record.pid) || record.pid < 1) {
+    fail('malformed-notice-record');
+  }
+  const top = canonical(record.top);
+  const sourcePath = canonical(resolve(top, record.rel));
+  const entryPath = canonical(isAbsolute(record.entry) ? record.entry : resolve(top, record.entry));
+  if (!within(repoRoot, top) || !within(top, sourcePath) || !within(repoRoot, entryPath)) {
+    fail('notice-path-outside-repository', record);
+  }
+  const exactGitReader = record.kind === 'substituted' && record.via === 'esm'
+    && top === testConfigRoot && sourcePath === expectedWorker && entryPath === expectedWorker
+    && record.rel === 'src/git-read-worker.mjs' && record.entry === 'src/git-read-worker.mjs';
+  if (!exactGitReader) fail('subject-dependent-or-unknown-child', record);
+}
+
 let verifiedWorkerSource;
 let verifiedReporterSource;
 try {
@@ -2285,28 +2309,6 @@ if (!verifiedReporterSource.includes("new Worker(new URL('./git-read-worker.mjs'
   || runGitCalls.length === 0 || runGitOccurrences !== runGitCalls.length + 1
   || runGitCalls.some((command) => !/^git(?:\s|$)/.test(command))) {
   fail('git-reader-command-provenance-unverified');
-}
-
-for (const record of records) {
-  if (record?.schemaVersion !== 'committed-source-notice-v1'
-    || !['substituted', 'refused'].includes(record.kind)
-    || !['esm', 'cjs'].includes(record.via)
-    || typeof record.top !== 'string' || !isAbsolute(record.top)
-    || typeof record.rel !== 'string' || isAbsolute(record.rel) || record.rel.includes('\\')
-    || typeof record.entry !== 'string'
-    || !Number.isSafeInteger(record.pid) || record.pid < 1) {
-    fail('malformed-notice-record');
-  }
-  const top = canonical(record.top);
-  const sourcePath = canonical(resolve(top, record.rel));
-  const entryPath = canonical(isAbsolute(record.entry) ? record.entry : resolve(top, record.entry));
-  if (!within(repoRoot, top) || !within(top, sourcePath) || !within(repoRoot, entryPath)) {
-    fail('notice-path-outside-repository', record);
-  }
-  const exactGitReader = record.kind === 'substituted' && record.via === 'esm'
-    && top === testConfigRoot && sourcePath === expectedWorker && entryPath === expectedWorker
-    && record.rel === 'src/git-read-worker.mjs' && record.entry === 'src/git-read-worker.mjs';
-  if (!exactGitReader) fail('subject-dependent-or-unknown-child', record);
 }
 
 console.error('MUTATION_PROBE_CHILD_SOURCE_NOTICES records=' + (acceptedLauncherRecords.length + records.length)

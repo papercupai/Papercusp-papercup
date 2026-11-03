@@ -333,6 +333,15 @@ export function freezeReplayRuntimeFiles(paths: readonly string[], options: {
   const directories = new Set<string>();
   const buffer = Buffer.allocUnsafe(64 * 1024);
   let hostLibc: 'glibc' | 'musl' | null | undefined;
+  const resolveHostLibc = () => {
+    if (hostLibc === undefined) {
+      const host = execFileSync('ldd', [process.execPath], { encoding: 'utf8', timeout: 10_000 });
+      const glibc = /\blibc\.so\.6\b/.test(host);
+      const musl = /\b(?:libc\.musl-|ld-musl-)/.test(host);
+      hostLibc = glibc !== musl ? (glibc ? 'glibc' : 'musl') : null;
+    }
+    return hostLibc;
+  };
   const dependencies = options.nativeDependencies ?? ((file: string) => {
     if (!/(?:\.node|\.so(?:\.\d+)*|\/node)$/.test(file)) return [];
     const fd = openSync(file, 'r');
@@ -356,22 +365,30 @@ export function freezeReplayRuntimeFiles(paths: readonly string[], options: {
         // Maintained addon loaders select prebuilds by platform/architecture.
         // Android can share Linux's ELF machine and OSABI, so those headers
         // alone do not make its dependency graph loadable by this host.
-        const prebuild = /^prebuilds\/(aix|android|darwin|freebsd|haiku|ios|linux|openbsd|sunos|win32)-(arm|arm64|ia32|loong64|mips|mipsel|ppc|ppc64|riscv64|s390|s390x|x64)(?:-musl)?\//
+        const prebuild = /^prebuilds\/(aix|android|darwin|freebsd|haiku|ios|linux|openbsd|sunos|win32)-(arm|arm64|ia32|loong64|mips|mipsel|ppc|ppc64|riscv64|s390|s390x|x64)(?:-(musl))?\//
           .exec(relative(directory, file));
         const hasPrebuildLoader = ['require-addon', 'bare-addon', 'node-gyp-build', 'node-gyp-build-optional-packages']
           .some(loader => typeof packageJson.dependencies?.[loader] === 'string' ||
             typeof packageJson.optionalDependencies?.[loader] === 'string');
         if (prebuild && hasPrebuildLoader && prebuild[2] === process.arch && prebuild[1] !== process.platform) return [];
+        if (prebuild && hasPrebuildLoader && prebuild[1] === 'linux' && prebuild[2] === process.arch &&
+            prebuild[3] === 'musl' && process.platform === 'linux' && resolveHostLibc() === 'glibc') return [];
+        // NAPI packages can ship both libc variants in ONE package, without a
+        // package-level libc field (e.g. tokenizers). Recognize only the declared
+        // binary's maintained platform filenames; unknown names/hosts still use ldd.
+        const binaryName: unknown = packageJson.napi?.binaryName;
+        const napiAbi = typeof binaryName === 'string' && /^[\w-]+$/.test(binaryName) ?
+          ['gnu', 'musl', 'gnueabihf', 'musleabihf'].find(abi =>
+            relative(directory, file) === `${binaryName}.linux-${process.arch}-${abi}.node`) : undefined;
+        if (napiAbi && process.platform === 'linux') {
+          const libc = resolveHostLibc();
+          if (libc && libc !== (napiAbi.startsWith('musl') ? 'musl' : 'glibc')) return [];
+        }
         const declared: unknown = packageJson.libc;
         const selectors = typeof declared === 'string' ? [declared] : declared;
         if (Array.isArray(selectors) && selectors.length > 0 && selectors.every(selector =>
           typeof selector === 'string' && ['glibc', 'musl', '!glibc', '!musl', 'any'].includes(selector))) {
-          if (hostLibc === undefined) {
-            const host = execFileSync('ldd', [process.execPath], { encoding: 'utf8', timeout: 10_000 });
-            const glibc = /\blibc\.so\.6\b/.test(host);
-            const musl = /\b(?:libc\.musl-|ld-musl-)/.test(host);
-            hostLibc = glibc !== musl ? (glibc ? 'glibc' : 'musl') : null;
-          }
+          resolveHostLibc();
           const allowed = selectors.filter(selector => !selector.startsWith('!'));
           if (hostLibc && (selectors.includes(`!${hostLibc}`) ||
               (allowed.length > 0 && !allowed.includes('any') && !allowed.includes(hostLibc)))) return [];

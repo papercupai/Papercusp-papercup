@@ -28,6 +28,66 @@ ${decisions}
 `);
 
 describe('staging-first activation guard', () => {
+  describe('source-only dependency release clauses (D098)', () => {
+    it('allows the exact P039 source-only dependency on the P040 no-deployment repair', () => {
+      const source = "Enforce the existing verifier's absolute cleanup-reserve cutoff, the concrete preallocation blocker proved by D072/WI5858 post1188965. Extend scripts/source-preview.mjs runVerifierCommand/budget admission and its existing processGroupLifetime cancellation path; reuse the existing task deadline, phase/task ownership receipts and maintained source-preview-export.test.ts suite. Reserve R=max(120000ms, observed cleanup, source.freeze, deps.snapshot); refuse impossible budgets before child launch and terminate the owned child group by deadline-R, verify exit before cleanup, retain deadline/reserve/cutoff/cleanup evidence. Add deterministic clock and owned hung-child behavioral regressions for cutoff, completion/cancellation races, signal cleanup, no-deadline compatibility and peer-root preservation. No new runner/service, timeout increase, custody override or PG/P037 proof replay. This is independent source work; sole5858 stays proof custodian,6515 remains terminal. Acceptance is focused maintained test evidence plus matching committed source identity, not main/ship acceptance.";
+      const prerequisite = "Repair the retained Codex wake launch-receipt recurrence tracked by existing WI-6554700010017051. First distinguish the actual original owner/native/writer, retained-wake/bootstrap/keyed-finalization path, acknowledged revision and loaded runtime against completed EI-25629617087753850; do not duplicate its applied-receipt finalization/replay fix. Extend existing receipt and authorization surfaces only where original evidence proves a gap. Acceptance: maintained distinguishing red/green regressions cover exact retained-wake ordinary-tool convergence, owner/workspace/revision and historical-provenance refusal, and atomic failure/replay/concurrency behavior; preserve existing safety and tested/current/committed source identities. Source-only work in Avi's existing headless Codex gpt-6.1-sol:xhigh/account auto/warm fleet; leader coordinates without implementing source. D074's single interrupted P039 allocation remains consumed with result/children/cleanup UNKNOWN. No rerun, P037/PG/compiler/key proof, actual native/actor restoration, fabricated or borrowed receipt, authority bypass, reviewer/publisher change, deployment or LIVE_GATE_OPS. Operational recovery requires separate measured governing disposition.";
+      expect(stagingFirstActivationProblems(plan([
+        '- **P-039** `todo` ' + source + ' blocked-by: P-040',
+        '- **P-040** `todo` ' + prerequisite,
+      ]))).toEqual([]);
+    });
+
+    it.each([
+      'No deployment or LIVE_GATE_OPS.',
+      'Do not deploy to main.',
+      'Do not promote to main.',
+      'Do not release to main.',
+      'Do not ship to main.',
+      'Do not roll out to :3070.',
+      'Never deploy to main.',
+      'Deployment is forbidden.',
+    ])('allows a source prerequisite that prohibits release: %s', (prohibition) => {
+      expect(stagingFirstActivationProblems(plan([
+        '- **P-001** `todo` Repair source receipts on current-build. ' + prohibition,
+        '- **P-002** `todo` Implement the dependent source regression. blocked-by: P-001',
+      ]))).toEqual([]);
+    });
+
+    it.each(['; ', '. ', ', but ', ' and '])(
+      'retains a real release obligation after a prohibition separated by %s',
+      (separator) => {
+        expect(stagingFirstActivationProblems(plan([
+          '- **P-001** `todo` Repair source receipts. No deployment or LIVE_GATE_OPS' + separator + 'verify the deployed host.',
+          '- **P-002** `todo` Implement the dependent source regression. blocked-by: P-001',
+        ]))).toEqual([
+          expect.objectContaining({ itemId: 'P-002', code: 'non_final_deployed_main_wait' }),
+        ]);
+      },
+    );
+
+    it.each(['; ', '. ', ', but ', ' and '])(
+      'retains a real release obligation after a negated action separated by %s',
+      (separator) => {
+        expect(stagingFirstActivationProblems(plan([
+          `- **P-001** \x60todo\x60 Repair source receipts. Do not deploy to main${separator}verify the deployed host.`,
+          '- **P-002** `todo` Implement the dependent source regression. blocked-by: P-001',
+        ]))).toEqual([
+          expect.objectContaining({ itemId: 'P-002', code: 'non_final_deployed_main_wait' }),
+        ]);
+      },
+    );
+
+    it('keeps an ambiguous deployment obligation fail-closed', () => {
+      expect(stagingFirstActivationProblems(plan([
+        '- **P-001** `todo` Repair deployment readiness.',
+        '- **P-002** `todo` Implement the dependent source regression. blocked-by: P-001',
+      ]))).toEqual([
+        expect.objectContaining({ itemId: 'P-002', code: 'non_final_deployed_main_wait' }),
+      ]);
+    });
+  });
+
   it.each(['green-checkpoint', 'main', ':3070'])(
     'does not pair a scanned %s subject with measured condition recovery',
     (subject) => {
@@ -599,6 +659,16 @@ describe('staging-first activation guard', () => {
     expect(stagingFirstActivationProblems(parsed)).toEqual([
       expect.objectContaining({ itemId: 'P-002', code: 'non_final_deployed_main_wait' }),
     ]);
+  });
+
+  it('does not treat a main-named example in an ordinary blocker as a release-plane wait', () => {
+    const parsed = plan([
+      '- **P-001** `todo` Reproduce the three gaps on the main-greening example.',
+      '- **P-003** `todo` Implement the source classifier correction on staging. blocked-by: P-001',
+      '- **P-004** `todo` Add regression coverage on staging/current-build. blocked-by: P-001',
+    ]);
+
+    expect(stagingFirstActivationProblems(parsed)).toEqual([]);
   });
 
   it.each(['whichever build', 'the current build', 'a green build', 'the release build'])(

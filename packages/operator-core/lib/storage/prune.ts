@@ -31,7 +31,7 @@ import {
   findUnarchivedSessionDirs,
   planSessionDirGc,
 } from '../session-dir-gc';
-import { readRegistry } from '../workspace-registry';
+import { readRegistryAsync } from '../workspace-registry';
 import { RETENTION_MS, runScratchGc } from '../scratch-gc';
 
 export interface PruneRequest {
@@ -422,7 +422,7 @@ async function pruneScratch(cat: DiskStorageCategory, req: PruneRequest): Promis
   const requestedMs = req.olderThanDays == null ? 0 : req.olderThanDays * 86400000;
   const categoryFloorMs = (cat.minOlderThanDays ?? 0) * 86400000;
   const retentionMs = Math.max(RETENTION_MS, categoryFloorMs, requestedMs);
-  const workspaceRegistry = readRegistry().workspaces.map((workspace) => workspace.id);
+  const workspaceRegistry = (await readRegistryAsync()).workspaces.map((workspace) => workspace.id);
   const gc = await runScratchGc({
     workspaceRegistry,
     dryRun: req.dryRun,

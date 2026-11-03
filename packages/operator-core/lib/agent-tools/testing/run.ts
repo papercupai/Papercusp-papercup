@@ -68,6 +68,7 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import { pinModuleState } from '@papercusp/module-singleton';
 import { createRequire } from 'node:module';
 import {
+  appendFileSync,
   closeSync,
   existsSync,
   mkdtempSync,
@@ -561,7 +562,10 @@ export function buildDetachedTestRunRequest(opts: {
         'console.log(JSON.stringify(result));',
         'process.exitCode = result.ok ? 0 : 1;',
       ].join('\n')],
-      cwd: opts.root,
+      // The worker runs platform code whose helper paths are resolved from
+      // cwd at import time. Keep it in the serving checkout; the replay's
+      // explicit root still selects the external corpus and its test cwd.
+      cwd: REPO_ROOT,
       detachedReportArtifacts: reportArtifacts,
       runtimeMaxSec: Math.max(1, Math.floor((opts.deadline.taskDeadlineAtMs - Date.now()) / 1_000)),
       ...(opts.workItemId ? { workItemId: opts.workItemId } : {}),
@@ -2444,6 +2448,9 @@ export async function launchManagedTestProcess(
     workspaceId: string;
     outputPath: string;
     stderrPath?: string;
+    /** Observe terminal events before managedSpawn awaits its post-fork ledger write. */
+    onSpawn?: (child: ChildProcess, taskId: string) => void;
+    stage?: (stage: string) => void;
   },
   deps: ManagedTestProcessDeps = {},
 ): Promise<ManagedTestProcess> {
@@ -2476,6 +2483,8 @@ export async function launchManagedTestProcess(
       },
       {
         workspaceId: opts.workspaceId,
+        onSpawn: opts.onSpawn,
+        stage: opts.stage,
         spawnOptions: {
           cwd: opts.cwd,
           env: opts.env,
@@ -2812,6 +2821,16 @@ export function runTestProcess(
           }
           return new Promise((resolve) => {
             const outputCapture = createBoundedRouterOutputCapture();
+            const recordProcessPhase = (stage: string, detail: Record<string, unknown> = {}): void => {
+              if (!env.PAPERCUSP_TEST_ARTIFACT_DIR) return;
+              try {
+                appendFileSync(join(env.PAPERCUSP_TEST_ARTIFACT_DIR, 'phases.jsonl'), JSON.stringify({
+                  kind: 'testing-run-phase', runId: runGroup, stage: `process-${stage}`, atMs: Date.now(), ...detail,
+                }) + '\n', { mode: 0o600 });
+              } catch (error) {
+                outputCapture.append('stderr', `\n[process-stage-error] ${String(error)}\n`);
+              }
+            };
             const outputBase = env.PAPERCUSP_TEST_ARTIFACT_DIR ?? ensurePapercuspTmpdir() ?? tmpdir();
             const routerOutputPath = join(outputBase, `router-${runGroup}-${randomUUID()}.stdout.log`);
             const routerStderrPath = `${routerOutputPath}.stderr.log`;
@@ -2898,6 +2917,7 @@ export function runTestProcess(
                 return;
               }
               terminationConfirmationStarted = true;
+              recordProcessPhase('termination-requested', { taskId: terminating.taskId });
               terminating.terminate();
               const taskDeadline = Number(env.PAPERCUSP_TEST_TASK_DEADLINE_AT_MS);
               const grace = taskDeadline > 0
@@ -2905,6 +2925,7 @@ export function runTestProcess(
                 : FOREGROUND_TERMINATION_GRACE_MS;
               void waitForTestProcessClose(childClosed, grace).then((closed) => {
                 if (closed || settled) return;
+                recordProcessPhase('termination-unconfirmed', { taskId: terminating.taskId });
                 finish({
                   code: null,
                   signal: null,
@@ -2934,6 +2955,7 @@ export function runTestProcess(
               if (running) terminateAndConfirm();
               else settleBeforeLaunchHandoff();
             }, launchTimeoutMs);
+            recordProcessPhase('launch-start');
             void launchManagedTestProcess({
               // The wrapper serializes admission with in-tree probe publication
               // and keeps the original-byte bind over the entire child tree.
@@ -2948,33 +2970,13 @@ export function runTestProcess(
               workspaceId: env.PAPERCUSP_WORKSPACE_ID ?? activeWorkspaceId(),
               outputPath: routerOutputPath,
               stderrPath: routerStderrPath,
-            }).then(
-              (launched) => {
-                running = launched;
-                if (settled) {
-                  // A bounded caller may have returned while managedSpawn's
-                  // probe/ledger admission was still pending. Observe the late
-                  // handoff and terminate it immediately; never leak work that
-                  // arrived after its caller's deadline.
-                  launched.terminate();
-                  return;
-                }
-                const child = launched.child;
-                sampler = createTestProcessDemandSampler(plannedDemand, () =>
-                  readManagedTestProcessResourceSnapshot(launched),
-                );
-                sampler.attach(child.pid);
-                // The deadline starts before managedSpawn's async probe/ledger
-                // admission. If it elapsed (or the caller aborted) while that
-                // boundary was resolving, terminate immediately on handoff.
-                if (timedOut || aborted || childSignal.aborted) terminateAndConfirm();
-                // Cap retained diagnostics — the router's own output is a fallback for the
-                // error paths, never the success path's payload.
-                const append = (channel: 'stdout' | 'stderr') => (b: Buffer) => {
-                  outputBytes += b.byteLength;
-                  outputCapture.append(channel, b);
-                };
+              stage: stage => recordProcessPhase(stage),
+              onSpawn: (child, taskId) => {
+                recordProcessPhase('child-spawned', { taskId, pid: child.pid ?? null });
+                // managedSpawn can await PG after forking. Events emitted in
+                // that interval are not replayed when its promise resolves.
                 child.on('error', (e) => {
+                  recordProcessPhase('child-error', { taskId });
                   spawnError = e.message;
                   outputCapture.append('stderr', `\n[spawn-error] ${e.message}\n`);
                   if (terminationConfirmationStarted) return;
@@ -2988,20 +2990,42 @@ export function runTestProcess(
                     output: outputCapture.finish(),
                   });
                 });
-                child.on(
-                  'close',
-                  (code, closeSignal) => (
-                    resolveChildClosed(),
-                    loadOutput(),
-                    finish({
-                      code,
-                      signal: closeSignal ?? null,
-                      timedOut,
-                      aborted,
-                      output: outputCapture.finish(),
-                    })
-                  ),
+                child.on('close', (code, closeSignal) => {
+                  recordProcessPhase('child-close', { taskId, code, signal: closeSignal ?? null });
+                  resolveChildClosed();
+                  loadOutput();
+                  finish({
+                    code,
+                    signal: closeSignal ?? null,
+                    timedOut,
+                    aborted,
+                    output: outputCapture.finish(),
+                  });
+                });
+              },
+            }).then(
+              (launched) => {
+                recordProcessPhase('launch-handoff', { taskId: launched.taskId, settled });
+                running = launched;
+                if (settled) {
+                  // A bounded caller may have returned while managedSpawn's
+                  // probe/ledger admission was still pending. Observe the late
+                  // handoff and terminate it immediately; never leak work that
+                  // arrived after its caller's deadline.
+                  // An ordinary early close already finished the run. Only
+                  // cancellation/deadline settlement needs late-launch cleanup.
+                  if (timedOut || aborted) launched.terminate();
+                  return;
+                }
+                const child = launched.child;
+                sampler = createTestProcessDemandSampler(plannedDemand, () =>
+                  readManagedTestProcessResourceSnapshot(launched),
                 );
+                sampler.attach(child.pid);
+                // The deadline starts before managedSpawn's async probe/ledger
+                // admission. If it elapsed (or the caller aborted) while that
+                // boundary was resolving, terminate immediately on handoff.
+                if (timedOut || aborted || childSignal.aborted) terminateAndConfirm();
               },
               (error) => {
                 spawnError = error instanceof Error ? error.message : String(error);

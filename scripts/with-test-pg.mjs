@@ -30,7 +30,7 @@
 import { execFile, spawn, spawnSync } from 'node:child_process';
 import { createServer } from 'node:net';
 import { access, stat, mkdir, mkdtemp, realpath, rm, symlink, writeFile } from 'node:fs/promises';
-import { constants, existsSync, readFileSync, readdirSync } from 'node:fs';
+import { appendFileSync, constants, existsSync, readFileSync, readdirSync } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { delimiter, dirname, join, resolve } from 'node:path';
@@ -300,6 +300,15 @@ let cleanupStartedAt = null;
 let managedTaskCleanupEnv = null;
 const cleanupReceiptFailures = [];
 const pendingCleanupReceipts = new Set();
+function persistIsolatedProgress(record) {
+  const path = process.env.PAPERCUSP_ISOLATED_PROGRESS_FILE;
+  if (!isolatedRuntime || process.env.PC_ISOLATED_RUNTIME_PROOF !== '1' || !path) return;
+  try {
+    appendFileSync(path, JSON.stringify({ observedAt: new Date().toISOString(), ...record }) + '\n', { mode: 0o600 });
+  } catch (error) {
+    console.error('[with-test-pg] isolated progress persistence failed: ' + (error?.message ?? error));
+  }
+}
 function cleanupStage(stage, detail = {}) {
   // Cleanup is operational evidence for every isolated CLI. The proof flag
   // gates original-worker admission and detailed /proc sampling, not whether
@@ -308,6 +317,11 @@ function cleanupStage(stage, detail = {}) {
   const message = { kind: 'isolated-runtime-cleanup', stage,
     elapsedMs: Date.now() - cleanupStartedAt,
     supervisorPid: process.pid, workspace: runtimeId, runtimeRoot, dataDir, pgPort: port, ...detail };
+  persistIsolatedProgress({ kind: 'cleanup', stage, elapsedMs: message.elapsedMs,
+    ...(detail.runtimeRemoved === undefined ? {} : { runtimeRemoved: detail.runtimeRemoved }),
+    ...(detail.pgDataRemoved === undefined ? {} : { pgDataRemoved: detail.pgDataRemoved }),
+    ...(detail.exitCode === undefined ? {} : { exitCode: detail.exitCode }),
+    ...(detail.signal === undefined ? {} : { signal: detail.signal }) });
   console.log('[with-test-pg] cleanup ' + JSON.stringify(message));
   return sendCleanupReceipt(message);
 }
@@ -453,6 +467,8 @@ if (isolatedRuntime) {
 for (const sig of ['SIGINT', 'SIGTERM']) {
   process.on(sig, () => {
     if (terminatingSignal) return;
+    persistIsolatedProgress({ kind: 'termination-requested', signal: sig,
+      phase: cleanupStartedAt === null ? 'runtime' : 'cleanup' });
     terminatingSignal = sig;
     // Once startEmbeddedPostgresServer has returned, cleanup owns the PG handle
     // and its supervisor. Let pg.stop() fence supervision before stopping the
@@ -738,15 +754,26 @@ if (operatorApi) {
   runtimeEnv.PAPERCUSP_EXTERNAL_INGRESS_PORT = String(ingressPort);
   const profileSource = `
     import { performance, monitorEventLoopDelay } from 'node:perf_hooks';
+    import { appendFileSync } from 'node:fs';
     const started = performance.now();
     const loopDelay = monitorEventLoopDelay({ resolution: 20 });
     loopDelay.enable();
     let activeStage = 'process-start';
     let activePhase = 'start';
-    const send = (name, detail = {}) => process.send({ stage: name,
+    const progressFile = process.env.PAPERCUSP_ISOLATED_PROGRESS_FILE;
+    const send = (name, detail = {}) => {
+      const message = { stage: name,
       childPid: process.pid, childElapsedMs: performance.now() - started,
-      childEmittedAtMs: performance.timeOrigin + performance.now(),
-      childEventLoopDelayMaxMs: loopDelay.max / 1e6, ...detail });
+        childEmittedAtMs: performance.timeOrigin + performance.now(),
+        childEventLoopDelayMaxMs: loopDelay.max / 1e6, ...detail };
+      if (progressFile) {
+        try { appendFileSync(progressFile, JSON.stringify({ kind: 'profile-progress',
+          observedAt: new Date().toISOString(), stage: name, phase: detail.phase ?? activePhase,
+          heartbeat: detail.heartbeat === true, childElapsedMs: message.childElapsedMs }) + '\\n', { mode: 0o600 }); }
+        catch (error) { process.stderr.write('[with-test-pg] profile progress persistence failed: ' + error.message + '\\n'); }
+      }
+      process.send(message);
+    };
     const stage = (name, detail = {}) => {
       activeStage = name;
       activePhase = detail.phase ?? 'stage';
@@ -775,12 +802,18 @@ if (operatorApi) {
     const { createEmbedSidecarServer } = await trackedImport('imports:embed-sidecar', './packages/operator-core/lib/memory/embed-sidecar-server.ts');
     const { getOrgPg, upsertRoutine } = await trackedImport('imports:db-org', '@papercusp/db-org');
     const { releaseGateTile } = await trackedImport('imports:device-monitoring', './packages/operator-core/lib/device-monitoring.ts');
-    stage('private-registry');
+    stage('private-registry:mkdir-start');
     const id = process.env.PAPERCUSP_WORKSPACE_ID;
     const home = join(process.env.PAPERCUSP_WORKSPACES_ROOT, id, 'operator-home');
     await mkdir(home, { recursive: true });
-    await saveHarnessRegistry({ projects: [{ slug: id, path: home, harness_kind: 'hive' }] }, id);
+    stage('private-registry:mkdir-complete');
+    stage('private-registry:save-start');
+    await saveHarnessRegistry({ projects: [{ slug: id, path: home, harness_kind: 'hive' }] }, id,
+      { onProgress: progress => stage('private-registry:save:' + progress) });
+    stage('private-registry:save-complete');
+    stage('private-registry:fresh-load-start');
     const registry = await loadHarnessRegistry(id, { fresh: true });
+    stage('private-registry:fresh-load-complete', { projectCount: registry.projects.length });
     if (!registry.projects.some(p => p.slug === id && p.path === home)) throw new Error('private home harness was not registered');
     // The first native spawn signs before an MCP request can lazily mint the
     // verifier's key. Reuse fresh-database provisioning, before admitting work.
@@ -853,12 +886,22 @@ if (operatorApi) {
         expectedTick = now + 100;
       }, 100);
       const started = Date.now();
-      const timer = setTimeout(() => failed(new Error('operator-api profile preflight timed out at ' + lastStage +
-        '; pending gate sources=' + pendingGateSources.join(',') +
-        '; timing=' + JSON.stringify({ lastTiming, parentLoopLateMaxMs, profileSourceSha256 }) + ': ' + errors)), 45000);
+      const timer = setTimeout(() => {
+        persistIsolatedProgress({ kind: 'profile-timeout', lastStage, pendingGateSources,
+          timing: { lastTiming, parentLoopLateMaxMs, profileSourceSha256 } });
+        failed(new Error('operator-api profile preflight timed out at ' + lastStage +
+          '; pending gate sources=' + pendingGateSources.join(',') +
+          '; timing=' + JSON.stringify({ lastTiming, parentLoopLateMaxMs, profileSourceSha256 }) + ': ' + errors));
+      }, 45000);
       const failed = (error) => { clearTimeout(timer); clearInterval(loopSample); rej(error); };
-      profileProcess.once('error', failed);
-      profileProcess.once('exit', (code, signal) => failed(new Error('operator-api profile exited ' + code + '/' + signal + ': ' + errors)));
+      profileProcess.once('error', error => {
+        persistIsolatedProgress({ kind: 'profile-failed', source: 'child-error' });
+        failed(error);
+      });
+      profileProcess.once('exit', (code, signal) => {
+        persistIsolatedProgress({ kind: 'profile-failed', source: 'child-exit', code, signal });
+        failed(new Error('operator-api profile exited ' + code + '/' + signal + ': ' + errors));
+      });
       profileProcess.on('message', (message) => {
         if (typeof message?.stage === 'string') {
           if (!message.heartbeat) lastStage = message.stage;

@@ -117,6 +117,7 @@ vi.mock('../../rubrics', async (importOriginal) => ({
   getAcceptanceRubricsForPlan: async () => [{ rubricId: 'reconnect-acceptance', classRef: 'plan-class-feature-ship' }],
   getRetiredAcceptanceRubricsForPlan: async () => [],
   getRubric: (...args: unknown[]) => getRubric(...args),
+  getRubricCriteriaHash: async (rubricId: string) => (await getRubric(rubricId))?.criteriaHash ?? null,
   getRubricWithoutSeeding: (...args: unknown[]) => getRubric(...args),
   readRubric: async (...args: unknown[]) => {
     const rubric = await getRubric(...args);
@@ -913,6 +914,7 @@ describe('plans:certify-spec-clauses', () => {
       evaluatorBuild: { sha: string; version: string },
       gradingAudit: Record<string, unknown> = {},
       sameEvidence = false,
+      stalePendingCards: object[] = [],
     ) => {
       const observation = await realObservation();
       const subjectRef = specTestAdequacySubjectRef(PLAN, 'SPEC-PASS', 1);
@@ -940,7 +942,9 @@ describe('plans:certify-spec-clauses', () => {
         extraKeys: [],
       };
       listScorecards.mockImplementation(async (filter: { rubricRef?: string; subjectRef?: string }) =>
-        filter.rubricRef === 'spec-test-adequacy' && filter.subjectRef === subjectRef ? [stranded] : []);
+        filter.rubricRef === 'spec-test-adequacy' && filter.subjectRef === subjectRef
+          ? [stranded, ...stalePendingCards]
+          : []);
       getIssue.mockImplementation(async (id: string) =>
         id === stranded.issueId ? { id, payload: { observation } } : null);
     };
@@ -986,6 +990,46 @@ describe('plans:certify-spec-clauses', () => {
       expect(filed).toMatchObject({
         ok: true,
         counts: { filed: 1, unchanged: 0, refused: 0 },
+        clauses: [{ card: { status: 'filed' }, strandedSuperseded: { issueId: 'EI-stranded-pending' } }],
+      });
+      const written = asStructuredObservation(
+        (captureImprovement.mock.calls[0]![0] as { payloadExtra: { observation: unknown } }).payloadExtra.observation,
+      );
+      expect(written?.supersedes).toBe('EI-stranded-pending');
+    });
+
+    it('ignores pending cards whose cited proof was retracted when superseding a stranded card', async () => {
+      const subjectRef = specTestAdequacySubjectRef(PLAN, 'SPEC-PASS', 1);
+      const stalePendingCard = {
+        issueId: 'EI-stale-retracted-proof',
+        createdBy: 'su-prior-grader',
+        sourceHive: 'papercusp',
+        rubricRef: 'spec-test-adequacy',
+        subject: { kind: 'plan', ref: subjectRef },
+        gradingAudit: { state: 'pending', metaRubricRef: 'grading-integrity' },
+        supersededBy: null,
+        auditTarget: {
+          current: false,
+          superseded: false,
+          supersededBy: null,
+          retracted: false,
+          subjectRubricCurrentness: null,
+          evidenceBindingCurrentness: {
+            state: 'stale',
+            reason: 'cited-binding-retracted',
+            citedBindingCount: 2,
+            retractedBindingIds: ['37610', '37592'],
+            unavailableBindingIds: [],
+          },
+        },
+      };
+      await arrangeStranded(RETIRED_BUILD, {}, false, [stalePendingCard]);
+
+      const filed = await certify({ specIds: ['SPEC-PASS'] });
+
+      expect(filed).toMatchObject({
+        ok: true,
+        counts: { filed: 1, refused: 0 },
         clauses: [{ card: { status: 'filed' }, strandedSuperseded: { issueId: 'EI-stranded-pending' } }],
       });
       const written = asStructuredObservation(

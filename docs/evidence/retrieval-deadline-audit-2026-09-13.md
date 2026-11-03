@@ -18,10 +18,15 @@ The same session's turns 44, 46, and 47 specify:
 - Investigate and correct the cause of target breaches separately from tolerating them.
 - Return to the GitNexus recommendation only after the retrieval work is verified.
 
-Activation audit 1 resolved 16 source references across this conversation and the
-two historical technology-choice conversations. The spec-quality evaluation
-passed; its emitted card was awaiting mandatory non-author grading-integrity
-review at the time of this document.
+Activation audit 7 records plan revision 33, including eight requirement mappings
+and four source ranges carried from the complete source audit. Audit 6 resolved
+18 archive references, including the original comparison and the explicit
+Serena rejection. The current spec set
+`dadbd517fc5fccedebefd90f7cb6324f885c1a271324151a49355ea72145e1be`
+passed the canonical evaluator. Its scorecard `EI-27720456071179458` passed
+independent grading-integrity review in `EI-27721431528544656` on
+2026-11-02 at 23:40:17 UTC. These are preparation proofs; they do not establish
+implementation, functional acceptance, or shipment.
 
 ## Current deadline chain
 
@@ -176,8 +181,10 @@ does not establish end-to-end delivery.
 
 The original comparison is
 `codex:01a01fbc-6171-7d02-b205-8a3faeb65a8f`, turns 4–6.
-The explicit Serena rejection is
-`claude:5ba8194a-9964-42d5-ade2-7699a0120deb`, turns 32–34.
+The historical Serena discussion is
+`claude:5ba8194a-9964-42d5-ade2-7699a0120deb`, turns 32–36.
+Turn 34 asks about dropping Serena; turn 36 explicitly requests the removal.
+Activation audit 6 added turns 35–36 while preserving the earlier source span.
 The latter occurred August 20 evening in New York; its plan decision is dated
 August 21 UTC.
 

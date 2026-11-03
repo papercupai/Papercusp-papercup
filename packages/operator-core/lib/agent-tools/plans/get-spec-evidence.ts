@@ -190,6 +190,7 @@ export default defineTool({
       limit: limit + 1,
       planSlugs: [args.slug],
       harnessSlug,
+      ...(sctx.workspaceId && sctx.workspaceId !== '*' ? { workspaceId: sctx.workspaceId } : {}),
       diagnostics,
     });
     ctx.metadata?.({

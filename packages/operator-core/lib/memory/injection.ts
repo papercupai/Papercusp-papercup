@@ -759,6 +759,37 @@ async function assessCorpusGate(
 function startCorpusLeg(input: MemoryInjectionInput): Promise<CorpusLegResult | null> {
   const deadline = input.deadline!;
   return (async (): Promise<CorpusLegResult | null> => {
+    // Both the normal result and the timeout handler retain the same receipts.
+    // Keep this type-only reference from pulling search into the startup graph.
+    type RecallCorpus = typeof import('./corpus-recall-io').recallCorpusContext;
+    const diagnostics: NonNullable<Parameters<RecallCorpus>[1]> = {
+      correlationIds: [],
+      stages: [],
+      partialSourceCalls: [],
+      partialSourceCallsTruncated: false,
+    };
+    const diagnosticTelemetry = (fallback?: Awaited<ReturnType<RecallCorpus>>) => {
+      const correlationIds = diagnostics.correlationIds.length
+        ? diagnostics.correlationIds : fallback?.correlationIds ?? [];
+      const stages = diagnostics.stages.length ? diagnostics.stages : fallback?.stages ?? [];
+      const includePartialSourceCalls = fallback === undefined
+        || fallback.outcome !== 'ok'
+        || fallback.partialSourceCalls !== undefined;
+      const partialSourceCalls = includePartialSourceCalls
+        ? diagnostics.partialSourceCalls.length
+          ? diagnostics.partialSourceCalls : fallback?.partialSourceCalls ?? []
+        : [];
+      return {
+        ...(correlationIds.length ? { correlationIds: [...correlationIds] } : {}),
+        ...(stages.length ? { stages: stages as unknown as Record<string, unknown>[] } : {}),
+        ...(partialSourceCalls.length
+          ? { partialSourceCalls: partialSourceCalls as unknown as Record<string, unknown>[] } : {}),
+        ...(includePartialSourceCalls
+          && (diagnostics.partialSourceCallsTruncated || fallback?.partialSourceCallsTruncated)
+          ? { partialSourceCallsTruncated: true } : {}),
+      };
+    };
+
     try {
       const query = toRecallQuery(input.queryContext);
       const queryText = retrievalQueryText(query);
@@ -769,33 +800,6 @@ function startCorpusLeg(input: MemoryInjectionInput): Promise<CorpusLegResult | 
 
       const { recallCorpusContext } = await import('./corpus-recall-io');
       const { CORPUS_BLOCK_HEADING } = await import('./corpus-recall');
-      const diagnostics: NonNullable<Parameters<typeof recallCorpusContext>[1]> = {
-        correlationIds: [],
-        stages: [],
-        partialSourceCalls: [],
-        partialSourceCallsTruncated: false,
-      };
-      const diagnosticTelemetry = (fallback?: Awaited<ReturnType<typeof recallCorpusContext>>) => {
-        const correlationIds = diagnostics.correlationIds.length
-          ? diagnostics.correlationIds : fallback?.correlationIds ?? [];
-        const stages = diagnostics.stages.length ? diagnostics.stages : fallback?.stages ?? [];
-        const includePartialSourceCalls = fallback === undefined
-          || fallback.outcome !== 'ok'
-          || fallback.partialSourceCalls !== undefined;
-        const partialSourceCalls = includePartialSourceCalls
-          ? diagnostics.partialSourceCalls.length
-            ? diagnostics.partialSourceCalls : fallback?.partialSourceCalls ?? []
-          : [];
-        return {
-          ...(correlationIds.length ? { correlationIds: [...correlationIds] } : {}),
-          ...(stages.length ? { stages: stages as unknown as Record<string, unknown>[] } : {}),
-          ...(partialSourceCalls.length
-            ? { partialSourceCalls: partialSourceCalls as unknown as Record<string, unknown>[] } : {}),
-          ...(includePartialSourceCalls
-            && (diagnostics.partialSourceCallsTruncated || fallback?.partialSourceCallsTruncated)
-            ? { partialSourceCallsTruncated: true } : {}),
-        };
-      };
 
       // Cross-moment dedup (migration 712): a warm session must not be handed
       // the same pointer every turn. The compaction `epoch` is resolved here

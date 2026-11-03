@@ -2480,6 +2480,8 @@ describe('current benchmark restart and live binding', () => {
       expect(evaluateSessionConfinement({ toolName: 'plans:new', args: {}, confinement }).allowed).toBe(false);
       expect(evaluateSessionConfinement({ toolName: 'plans:get', args: {}, confinement }).allowed).toBe(false);
     }
+    expect(confinement.denyCarryOutside).toEqual({ initialPrompt: args.brief,
+      initialPromptSha256: createHash('sha256').update(args.brief!).digest('hex'), mode: ledger ? 'off' : 'on' });
     // Controlled carry-off arms deny managed carry; legacy assignments retain
     // their existing hook path. Neither is a measurement of a real respawn.
     expect(evaluateSessionConfinement({ toolName: 'session:request-compaction', args: {}, confinement }).allowed).toBe(!ledger);
@@ -2508,7 +2510,9 @@ describe('current benchmark restart and live binding', () => {
     expect(dispatch).toHaveBeenCalledTimes(1);
     expect(preCompact.continue).toBe(false);
     expect(preCompact.systemMessage).toContain('Managed carry-respawn is QUEUED, not yet completed.');
-    for (const args of [{ focus: 'WI-neighbor' }, { continueNote: 'Change the frozen context' },
+    expect(evaluateSessionConfinement({ toolName: 'session:request-compaction',
+      args: { continueNote: 'Own assignment progress' }, confinement }).allowed).toBe(true);
+    for (const args of [{ focus: 'WI-neighbor' }, { continueNote: 'x'.repeat(1001) },
       { id: restoredHandle.featureId, harness: restoredHandle.slug }])
       expect(evaluateSessionConfinement({ toolName: 'session:request-compaction', args,
         confinement })).toMatchObject({ allowed: false, matchedGlob: 'outside-exact-carry' });
@@ -2801,6 +2805,29 @@ describe('P-019 host-issued fresh native session allowances', () => {
       await expect(second.restoreContext(sameHandle, 't1')).rejects.toThrow(/snapshot bytes differ/);
       expect(readFileSync(context.corpusPath, 'utf8')).toBe('Changed context must not be silently restored.');
     } finally { await f.hosted.stop(); rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it('launches a repeated-session allowance without solo admission or prior-state carry', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'bench-fresh-launch-')), checkout = join(root, 'assignment');
+    mkdirSync(checkout);
+    const snapshot = JSON.stringify({ entries: [{ key: 'permitted:test', text: 'Frozen initial task context.' }] });
+    for (const name of ['corpus', 'memory']) writeFileSync(join(root, `${name}.json`), snapshot);
+    const f = await sessionFixture(root), sameHandle = { ...handle, worktreePath: checkout };
+    const receipt = f.hosted.issueSessionBudget(f.budget), ports = f.ports(receipt);
+    try {
+      const context = await ports.restoreContext(sameHandle, 't1');
+      await ports.admit(sameHandle, receipt.budget, 't1');
+      const request = currentBenchLaunchRequest(f.opts, sameHandle, 'Complete the frozen task', context);
+      await ports.launch(request);
+      const confinement = native.launch.mock.calls.at(-1)![1][Symbol.for('benchmark-test-server-ceiling')] as SessionToolConfinement;
+      expect(confinement.denyCarryOutside).toMatchObject({ initialPrompt: request.brief, mode: 'off' });
+      expect(confinement.denyOutside).not.toContain('work_items:checkpoint');
+      expect(confinement.denyOutside).not.toContain('memory:search');
+      await expect(ports.launch(request)).rejects.toThrow(/already used|already spawned/);
+    } finally {
+      try { await ports.releaseGateway?.(); }
+      finally { await f.hosted.stop(); rmSync(root, { recursive: true, force: true }); }
+    }
   });
 
   it('pins tightened execution caps separately from the frozen protocol and consumes one native start', async () => {

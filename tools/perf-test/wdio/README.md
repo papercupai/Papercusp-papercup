@@ -100,6 +100,19 @@ required for the private IPC lifetime and receipt checks.
 
 ## Architecture vs the in-process `/tests` page
 
+The three work journeys use `specs/work-journeys.perf.spec.ts`. Inside an owned
+isolated verifier assertion, run `node --import tsx
+scripts/lib/desktop-work-perf-fixture.ts` from the frozen source root before WDIO.
+It checks the actual verifier process's private workspace, home and database
+environment, then reuses the canonical account, harness registry and work-item
+stores. It writes only fixture identifiers to
+`$PAPERCUSP_HOME/work-perf-fixture.json`. Export its `harness`, `itemId` and
+`username` as `PAPERCUSP_PERF_HARNESS`, `PAPERCUSP_PERF_WORK_ITEM` and
+`PAPERCUSP_PERF_HUMAN_USERNAME`. The driver logs in through the product's cookie
+jar, clicks the Overview Work items tile, selects the exact offered row, and
+claims it. The fixture performs no submission, grading or payment. Create a new
+isolated fixture for each cohort; a previously claimed offer is refused.
+
 | | Where it runs | Speed | Catches |
 |---|---|---|---|
 | `/tests` page (Gremlins + react-scan + web-vitals) | Inside the running app | Live, every iteration | 95% of UI perf bugs |

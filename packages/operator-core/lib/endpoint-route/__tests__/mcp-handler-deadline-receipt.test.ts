@@ -1049,11 +1049,15 @@ describe('P2-5 deadline path — background persist + real-outcome receipt (WI-6
         spillPaths: [...h.spillPaths],
       }));
       releaseWrite();
+      await vi.waitFor(() => expect(h.realScratchWriteTimings.some((timing) =>
+        !('progress' in timing))).toBe(true), { timeout: 5_000 });
       await vi.waitFor(() => expect(h.replayStores.some((store) =>
         store.idempotencyKey === receiptKey)).toBe(true));
       expect(h.scratchWriteTimings).toEqual([]); // no synthetic phase injection
-      expect(h.realScratchWriteTimings).toHaveLength(1);
-      const timing = structuredClone(h.realScratchWriteTimings[0]);
+      const settledScratchWriteTimings = h.realScratchWriteTimings.filter((timing) =>
+        !('progress' in timing));
+      expect(settledScratchWriteTimings).toHaveLength(1);
+      const timing = structuredClone(settledScratchWriteTimings[0]);
       // Concurrent quota bookkeeping may add a short, legitimate wait.
       expect(Number.isFinite(timing.quotaWaitMs)).toBe(true);
       expect(timing.quotaWaitMs).toBeGreaterThanOrEqual(0);

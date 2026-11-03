@@ -526,9 +526,40 @@ export async function resolveAmendmentReviewEvidence(args: {
 export interface FreshAmendmentReviewerInput extends AmendmentReviewBriefInput {
   applierId: string;
   workspaceId: string;
+  /** Existing routed conversation retaining the complete, revision-pinned review. */
+  reviewConversationId?: string;
   /** The requesting tool call's context; overridden with the system principal. */
   launchCtx?: unknown;
   reviewerModel?: ConsultReviewerModel;
+}
+
+// Leave room for the launcher/persona around the first-turn brief. A large
+// review stays complete in the existing conversation, rather than being clipped
+// or repeated past the native client's input limit (WI-6554700010045145).
+const FRESH_REVIEWER_INLINE_MAX_CHARS = 128_000;
+
+function freshReviewerKickoff(input: FreshAmendmentReviewerInput, target: FreshReviewerAnswerTarget): string {
+  const full = buildAmendmentReviewBrief(input, target);
+  if (full.length <= FRESH_REVIEWER_INLINE_MAX_CHARS) return full;
+  const conversationId = input.reviewConversationId?.trim();
+  if (!conversationId) {
+    throw new Error('amendment_review_brief_source_required: oversized review has no durable full conversation; no reviewer was launched');
+  }
+  const commentCall = `work_items:comment { id:'${target.workItemId}'${target.harness ? `, harness:'${target.harness}'` : ''} }`;
+  const brief = [
+    `Outside-lineage PRE-APPLY review of ${input.rubricRef}, launched by ${ACCEPTANCE_BAR_AMENDMENT_REVIEW_ACTOR}.`,
+    `The complete review is retained without clipping in conversations:get { id:'${conversationId}' }. Read that conversation's original review question, including its source blocks, normalized before/after criteria, requested patch and approval JSON.`,
+    "If the response is truncated or spilled, use capability:read with the returned cursor's file_path or uri, byte_offset and byte_limit; follow next_cursor until eof:true and next_cursor:null. Do not approve until the complete evidence has been read and its revision-pinned sources verified against current rubric/subject-plan reads.",
+    'Use the review procedure and source recovery instructions in that full question. Its consult reply instructions apply to a routed responder; your answer target is the work-item below. Do not call rubrics:amend, reopen the review, edit files or recruit anyone.',
+    `This exact preview is ${input.previewPostRef}. Its immutable approval JSON must match the full review:`,
+    JSON.stringify(input.preview.approval),
+    `To approve, use ${commentCall}, body: approve ${input.previewPostRef} on the first non-empty line. Add verification notes after it. If evidence is incomplete, stale or substantively wrong, post the objection there instead.`,
+    "Post once, then call session:end { reason: 'BAR amendment review complete' }.",
+  ].join('\n');
+  if (brief.length > FRESH_REVIEWER_INLINE_MAX_CHARS) {
+    throw new Error('amendment_review_brief_too_large: immutable approval exceeds the safe kickoff budget; no reviewer was launched');
+  }
+  return brief;
 }
 
 /** Choose the first permitted expert rank with a serviceable account, including
@@ -685,6 +716,7 @@ export async function launchFreshAmendmentReviewer(
   }
   // Hoisted helpers below do not see the narrowing above; bind it non-null.
   const target: FreshReviewerAnswerTarget = answerOn;
+  const kickoff = freshReviewerKickoff(input, target);
   const rubricId = input.rubricRef.trim().replace(/^plan:/i, '').trim();
   if (input.reviewerModel) await (deps.assertAllowed ?? assertReviewerModelAllowed)(input.workspaceId, input.reviewerModel);
   let reviewerModels: Array<ConsultReviewerModel | undefined>;
@@ -841,7 +873,7 @@ export async function launchFreshAmendmentReviewer(
   async function launchOnce(key: string, attemptLabelArg: string, modelChoice?: ConsultReviewerModel): Promise<LaunchResult> {
     return (await launch(
     {
-      brief: buildAmendmentReviewBrief({ ...input, previewPostRef }, target),
+      brief: kickoff,
       ...(target.harness ? { harness: target.harness } : {}),
       headless: true,
       // Review the candidate on the runtime that recruited it. The stable
@@ -1193,6 +1225,7 @@ export async function openAcceptanceBarAmendmentReview(
       previewPostRef,
       preview: input.preview,
       reviewSources,
+      ...(routed.conversationId ? { reviewConversationId: routed.conversationId } : {}),
       ...(input.reason ? { reason: input.reason } : {}),
       patch: input.patch,
       ...(reviewEvidence ? { reviewEvidence } : {}),

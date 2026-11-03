@@ -38,6 +38,7 @@
 import { registerCell, type CellSpec } from './cell-registry';
 import { AGENT_GOAL_CELL_ID } from './agent-goal-ref';
 import { AUTHORITATIVE_JUDGING_SHA_SOURCES } from './judging-sha-source';
+import { HARNESS_CHECKPOINT_CELL } from './release/harness-checkpoint-cell';
 
 /* ═══════════════════════════════════════════════════════════════════════════════
  * cell-assessment-schema-and-falsifier-removal-2026-08-21 P-004/P-006 — EVERY CELL
@@ -3138,6 +3139,7 @@ export const BUILTIN_CELLS: CellSpec[] = [
   GATE_QUALIFICATION_CELL,
   GATE_RETRIAGE_CELL,
   GATE_RUN_CELL,
+  HARNESS_CHECKPOINT_CELL,
   GATE_OWNERSHIP_CELL,
   DEPLOYED_SHA_CELL,
   MAIN_BEHIND_STAGING_CELL,

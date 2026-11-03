@@ -20,6 +20,15 @@ describe('native engineering evidence canonical PG adapters', () => {
       anchor: { kind: 'path', fingerprintKind: 'file', fingerprint: digest, state: 'current' } });
     expect(graph.nodes.find(n => n.kind === 'proof')?.data).toMatchObject({ id: bindingId, revision: 1, runId });
     expect(graph.nodes.find(n => n.kind === 'test-case')?.data).toMatchObject({ runId, key: 'ee.intent-exact', occurrence: 1, status: 'pass' });
+    expect(graph.edges.length).toBeGreaterThan(0);
+    for (const edge of graph.edges) {
+      expect(['plans:get', 'plans:get-specs', 'plans:get-spec-evidence', 'testing:runs']).toContain(edge.authority?.tool);
+      expect(edge.authority.args).toMatchObject({ harness: scope.harness });
+      if (edge.authority.tool === 'testing:runs') expect(edge.authority.args.testRunIds).toEqual([runId]);
+      else expect(edge.authority.args.slug).toBe(plan);
+      if (edge.authority.tool === 'plans:get-spec-evidence') expect(edge.authority.args.bindingIds).toEqual([bindingId]);
+      if (edge.authority.tool === 'plans:get-specs') expect(edge.authority.args).toMatchObject({ specIds: ['EE-1'], revision: 1 });
+    }
     expect(graph.nodes.filter(n => n.kind === 'decision').map(n => n.data.decision)).toEqual(['D-001']);
     expect(graph.execution.status).toBe('unobserved');
     expect(JSON.stringify(graph)).not.toContain('foreign-plan');

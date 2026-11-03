@@ -31,4 +31,21 @@ describe('graph item rendering preserves the author document', () => {
     const items = deriveIndexFromContent('## Items\n- **P-002** `todo` new').items;
     expect(deriveIndexFromContent(renderPlanLines(empty, items)).items).toEqual(items);
   });
+  it('consumes wrapped acceptance once across repeated graph read and write cycles', () => {
+    const body = '---\ntitle: title\nslug: probe\nstatus: ready\n---\n\n## Phase 1\n\n- **P-001** `todo` Ship the journey.\n  Acceptance: preserve employee and reviewer evidence.\n  blocked-by: P-002 importance: high\n\n  This separate paragraph belongs to the author.\n\n- **P-002** `done` Prerequisite.\n';
+    const items = deriveIndexFromContent(body).items;
+    let rendered = renderPlanLines(body, items);
+    expect(rendered.match(/Acceptance:/g)).toHaveLength(1);
+    expect(deriveIndexFromContent(rendered).items).toEqual(items);
+    expect(rendered).toContain('\n\n  This separate paragraph belongs to the author.\n');
+    for (let cycle = 0; cycle < 3; cycle++) {
+      const next = renderPlanLines(rendered, deriveIndexFromContent(rendered).items);
+      expect(next).toBe(rendered);
+      rendered = next;
+    }
+  });
+  it('removes a deleted item continuation while preserving nested blocks and following prose', () => {
+    const body = '## Phase 1\n\n- **P-001** `todo` Old journey.\n  Acceptance: old evidence.\n  - Nested author list.\n\nAfter.\n';
+    expect(renderPlanLines(body, [])).toBe('## Phase 1\n\n  - Nested author list.\n\nAfter.\n');
+  });
 });

@@ -385,6 +385,7 @@ import {
 import { applyRoleModel } from "@papercusp/operator-core/lib/harness-invoke-once";
 import {
   ledgerPathForSid,
+  LOOP_FIRE_PROVENANCE_TTL_MS,
   tagTurnForInjection,
 } from "@papercusp/operator-core/lib/turn-provenance/turn-provenance";
 // weak-model-tool-tier: the canonical core spine — psu-launcher.mjs carries an
@@ -888,7 +889,12 @@ describe("tagKickoffProvenance (turn-provenance-owner-vs-agent-2026-07-11 P-002)
         text,
         dir: canonicalDir,
         nowMs,
-        ...(origin === "loop-fire" ? { loopFire: { routineId: "loop-mirror", wakeCount: 9 } } : {}),
+        ...(origin === "loop-fire"
+          ? {
+              loopFire: { routineId: "loop-mirror", wakeCount: 9 },
+              ttlMs: LOOP_FIRE_PROVENANCE_TTL_MS,
+            }
+          : {}),
       });
       const mirror = tagKickoffProvenance(
         text,

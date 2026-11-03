@@ -3,7 +3,7 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { consultReadDoorLine, consultResponderVerbMenu, consultVoidExitLine } from './responder-verb-menu';
+import { consultCurrentReviewContext, consultReadDoorLine, consultResponderVerbMenu, consultVoidExitLine } from './responder-verb-menu';
 import { cascadeWakeBody, cascadeWakeCopyForRouting } from './cascade-core';
 import { consultDispatchBrief } from './consult-dispatch';
 
@@ -63,7 +63,20 @@ describe('the amendment request remains answerable after a cascade', () => {
 });
 
 describe('current review evidence survives the dispatch frame', () => {
-  for (const policy of ['rubric-vetting', 'acceptance-bar-amendment-review', 'method-review']) {
+  it('BAR critics inspect the current contract without treating it as execution approval', () => {
+    const context = consultCurrentReviewContext('bar-critique');
+    expect(context).toContain('CURRENT BARS');
+    expect(context).toContain('current plan');
+    expect(context).toContain('spec clauses');
+    expect(context).toContain('Verify reviewer independence');
+    expect(context).toContain('does not authorize execution');
+    expect(context).toContain('do not decline solely');
+    expect(context).toContain('results[0].conversation.body');
+    expect(consultCurrentReviewContext(undefined)).toBeNull();
+    expect(consultCurrentReviewContext('consult-default')).toBeNull();
+  });
+
+  for (const policy of ['rubric-vetting', 'acceptance-bar-amendment-review', 'method-review', 'bar-critique']) {
     for (const via of ['floor', 'minimum'] as const) {
       it.each(['fork', 'convert', 'brief'] as const)(`${policy}/${via} reviews current evidence on a %s launch`, (operation) => {
         const conversationId = 'conv-current-review';
@@ -83,6 +96,12 @@ describe('current review evidence survives the dispatch frame', () => {
           expect(brief).toContain('CURRENT METHOD');
           expect(brief).toContain('does not authorize execution');
           expect(brief).toContain('Verify reviewer independence');
+        }
+        if (policy === 'bar-critique') {
+          expect(brief).toContain('CURRENT BARS');
+          expect(brief).toContain('spec clauses');
+          expect(brief).toContain('Verify reviewer independence');
+          expect(brief).toContain('does not authorize execution');
         }
         expect(brief).not.toMatch(/you answer from the transcript you inherited|Answer from the cited turns|Answer from the transcript\.|answer FROM your transcript/);
         expect(brief).toContain('ANSWER-ONLY');

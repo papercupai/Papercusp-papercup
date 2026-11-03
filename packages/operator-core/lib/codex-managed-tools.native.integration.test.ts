@@ -3,7 +3,7 @@ import { execFileSync, fork, spawn, type SpawnOptions } from 'node:child_process
 import { createHash } from 'node:crypto';
 import { once } from 'node:events';
 import { appendFileSync, existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { mkdir, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -14,7 +14,7 @@ import type { CapabilityPolicyRequest, CapabilityPolicySurface } from '@papercus
 import { resolveOnPath, wellKnownBackendBin } from './backend-bin-resolve.mjs';
 import { nativeToolInventory } from '../../../libs/papercusp/packages/orchestrator/src/managed-capability-client-inventory';
 import { captureIsolatedWorker, isolatedTestFileWorkerOptions, isolatedWorkerFailureDetail,
-  recordIsolatedIntegrationProof } from '../test/isolated-integration-proof';
+  codexManagedToolsNativeIntegrationSourcePaths, recordIsolatedIntegrationProof } from '../test/isolated-integration-proof';
 import { preparePrivateOperatorApiBundle } from '../test/private-http-workspace-preflight';
 
 const root = resolve(import.meta.dirname, '../../..');
@@ -416,16 +416,10 @@ describe('Codex managed replacement installed-client census', () => {
   it('retains the installed Codex removal, resume, wake and drift controls with their original runtime', async context => {
     let prepared: Awaited<ReturnType<typeof preparePrivateOperatorApiBundle>> | undefined;
     const runId = await recordIsolatedIntegrationProof({ root, filePath,
-      sourcePaths: ['packages/operator-core/lib/backend-bin-resolve.mjs',
-        'libs/papercusp/packages/orchestrator/src/codex-gateway-config.ts',
-        'libs/papercusp/packages/orchestrator/src/managed-capability-policy.ts',
-        'libs/papercusp/packages/orchestrator/src/managed-capability-client-inventory.ts',
-        'packages/operator-core/test/isolated-integration-proof.ts',
-        'packages/operator-core/test/staging-first-http-fixture.ts',
-        'packages/operator-core/test/private-http-workspace-preflight.ts',
-        'packages/operator-core/lib/process-identity.ts', 'scripts/with-test-pg.mjs', 'scripts/test-files.mjs'],
+      sourcePaths: [...codexManagedToolsNativeIntegrationSourcePaths],
       retainedArtifacts: ['phases/execute/worker.log', 'phases/execute/census/worker.log',
         'phases/execute/census/managed-tool-replies.ndjson',
+        'phases/execute/profile-progress.ndjson',
         'phases/prepare/dispatcher-approval-preflight.json',
         'phases/execute/native-tool-surface.json', 'phases/execute/operator-mcp-receipt.json'],
       prepare: async evidenceDir => {
@@ -453,8 +447,11 @@ describe('Codex managed replacement installed-client census', () => {
         expect(prepared, 'Prepared current-build API is required before private PG allocation').toBeDefined();
         await symlink(join(root, 'node_modules'), join(evidenceDir, 'node_modules'), 'dir');
         await mkdir(join(evidenceDir, 'tmp'));
+        const profileProgressPath = join(evidenceDir, 'profile-progress.ndjson');
+        await writeFile(profileProgressPath, '', { mode: 0o600 });
         const env: NodeJS.ProcessEnv = { ...process.env, PC_ISOLATED_RUNTIME_PROOF: '1', FORCE_COLOR: '0',
           STAGING_FIRST_HTTP_SCENARIO: 'codex-managed-tools', STAGING_FIRST_HTTP_EVIDENCE_DIR: evidenceDir,
+          PAPERCUSP_ISOLATED_PROGRESS_FILE: profileProgressPath,
           TMPDIR: process.env.TMPDIR ?? join(evidenceDir, 'tmp') };
         // The outer reporter owns the canonical sink. The inner router runs
         // against its disposable database and retains its own native output.
@@ -491,6 +488,16 @@ describe('Codex managed replacement installed-client census', () => {
         }
         expect(measured.retained.hasNativeExecution).toBe(true);
         expect(measured.drift.hasNativeExecution).toBe(true);
+        const progressRows = (await readFile(profileProgressPath, 'utf8')).trim().split('\n').filter(Boolean)
+          .map(line => JSON.parse(line) as { kind: string; stage?: string });
+        const profileStages = new Set(progressRows.filter(row => row.kind === 'profile-progress').map(row => row.stage));
+        expect(profileStages).toEqual(expect.arrayContaining([
+          'private-registry:save:read-start', 'private-registry:save:write-start',
+          'private-registry:save:audit-start', 'private-registry:save:notification-start',
+          'private-registry:fresh-load-start', 'private-registry:fresh-load-complete',
+        ]));
+        expect(progressRows.some(row => row.kind === 'cleanup' && row.stage === 'complete')).toBe(true);
+        expect(progressRows.some(row => row.kind === 'profile-timeout')).toBe(false);
       },
     });
     Object.assign(context.task.meta, { papercuspIsolatedRuntimeRunId: runId });

@@ -3350,7 +3350,7 @@ export function liveCurrentSuBenchPorts(
           !args.brief.endsWith(readRestoredBenchmarkContext(input).contextText))
         throw new Error('Benchmark native launch requires its physically restored frozen context.');
       const ledger = currentBenchLedgerEnabled(requireBinding().arm);
-      const control = requireBinding().arm.control
+      const control = requireBinding().arm.control?.topology === 'solo'
         ? currentBenchSoloCapabilityControl(requireBinding().arm) : undefined;
       const planning = currentBenchPlanningBoundary(opts, { slug: input.binding.harnessSlug,
         featureId: input.workItemId, worktreePath: input.checkout });
@@ -3373,6 +3373,8 @@ export function liveCurrentSuBenchPorts(
           ? ['coord:whoami', 'session:request-compaction', 'work_items:get', 'work_items:checkpoint', 'work_items:complete']
           : ['coord:whoami', 'session:request-compaction']),
         denyAmbientContext: true as const,
+        denyCarryOutside: Object.freeze({ initialPrompt: args.brief, initialPromptSha256: hash(args.brief),
+          mode: requireBinding().arm.control?.capabilities['carry-respawn'] === 'off' ? 'off' as const : 'on' as const }),
         ...(control?.capabilities['memory-recall'] === 'on'
           ? { denyMemoryOutside: Object.freeze({ snapshotSha256: input.context.memoryHash }) } : {}),
         ...(planning ? { denyPlansOutside: planning } : {}),

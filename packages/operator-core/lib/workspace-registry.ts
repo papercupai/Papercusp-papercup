@@ -18,6 +18,7 @@ import {
   statSync,
   writeSync,
 } from 'node:fs';
+import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
@@ -155,6 +156,39 @@ export function readRegistry(): WorkspaceRegistry {
       const delayMs = REGISTRY_READ_RETRY_DELAYS_MS[attempt];
       if (delayMs === undefined) throw new WorkspaceRegistryUnreadableError(p, firstErr);
       sleepSyncMs(delayMs);
+    }
+  }
+}
+
+/**
+ * Asynchronous counterpart for foreground paths that must keep the event loop
+ * responsive while the registry is read or while a transient read is retried.
+ * Missing remains a legitimate empty registry; unreadable or corrupt remains
+ * an error, matching {@link readRegistry} without its synchronous I/O/backoff.
+ */
+export async function readRegistryAsync(): Promise<WorkspaceRegistry> {
+  const p = registryPath();
+  let firstErr: unknown;
+  for (let attempt = 0; ; attempt++) {
+    let raw: string;
+    try {
+      raw = await readFile(p, 'utf8');
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException | null)?.code === 'ENOENT') return { workspaces: [] };
+      if (firstErr === undefined) firstErr = err;
+      const delayMs = REGISTRY_READ_RETRY_DELAYS_MS[attempt];
+      if (delayMs === undefined) throw new WorkspaceRegistryUnreadableError(p, firstErr);
+      await new Promise<void>((resolve) => setTimeout(resolve, delayMs));
+      continue;
+    }
+
+    try {
+      return JSON.parse(raw) as WorkspaceRegistry;
+    } catch (err) {
+      if (firstErr === undefined) firstErr = err;
+      const delayMs = REGISTRY_READ_RETRY_DELAYS_MS[attempt];
+      if (delayMs === undefined) throw new WorkspaceRegistryUnreadableError(p, firstErr);
+      await new Promise<void>((resolve) => setTimeout(resolve, delayMs));
     }
   }
 }

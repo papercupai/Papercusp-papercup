@@ -95,6 +95,9 @@ export interface SessionToolConfinement {
   /** Explicit recall is confined to the frozen bytes in the exact assignment
    * checkout. This does not enable automatic ambient injection. */
   readonly denyMemoryOutside?: { readonly snapshotSha256: string };
+  /** Managed respawns may replay only this host-pinned initial assignment and,
+   * when enabled, the caller's bounded continuation note. Never ambient carry. */
+  readonly denyCarryOutside?: FrozenCarryBoundary;
   /** Why this session is confined — surfaced verbatim in the refusal. */
   readonly reason: string;
   /** Who imposed it (the launching director/fleet), for audit and for the refusal text. */
@@ -110,6 +113,22 @@ export interface SessionConfinementDecision {
   readonly reason?: string;
   /** The specific glob that matched — so a refusal is debuggable, not just a wall. */
   readonly matchedGlob?: string;
+}
+
+export interface FrozenCarryBoundary {
+  readonly initialPrompt: string;
+  readonly initialPromptSha256: string;
+  readonly mode: 'on' | 'off';
+}
+
+export function validFrozenCarryBoundary(value: unknown): value is FrozenCarryBoundary {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const row = value as Record<string, unknown>;
+  return Object.keys(row).length === 3 && Object.keys(row).every(key =>
+    ['initialPrompt', 'initialPromptSha256', 'mode'].includes(key)) &&
+    typeof row.initialPrompt === 'string' && row.initialPrompt.trim().length > 0 && row.initialPrompt.length <= 200_000 &&
+    typeof row.initialPromptSha256 === 'string' && /^[a-f0-9]{64}$/.test(row.initialPromptSha256) &&
+    (row.mode === 'on' || row.mode === 'off');
 }
 
 const ALLOWED: SessionConfinementDecision = { allowed: true, applied: true };
@@ -414,10 +433,19 @@ export function evaluateSessionConfinement(args: {
   // tool; it neither grants it outside denyOutside nor lifts denyTools.
   if (confinement.denyWorkItemsOutside !== undefined && toolName.trim() === 'session:request-compaction' &&
       args.purpose !== 'listing' && (!args.args || typeof args.args !== 'object' ||
-        Array.isArray(args.args) || Object.keys(args.args).length !== 0)) {
+        Array.isArray(args.args) || Object.keys(args.args).some(key => key !== 'continueNote') ||
+        Object.keys(args.args).length !== 0 &&
+          (!validFrozenCarryBoundary(confinement.denyCarryOutside) || confinement.denyCarryOutside.mode !== 'on' ||
+           typeof (args.args as Record<string, unknown>).continueNote !== 'string' ||
+           ((args.args as Record<string, unknown>).continueNote as string).length > 1000))) {
     return { allowed: false, applied: true, matchedGlob: 'outside-exact-carry',
-      reason: `managed self-compaction must use empty arguments inside the assignment imposed by ${confinement.imposedBy}: ${confinement.reason}` };
+      reason: `managed self-compaction may only use its enabled bounded continuation note inside the assignment imposed by ${confinement.imposedBy}: ${confinement.reason}` };
   }
+  if (confinement.denyCarryOutside !== undefined &&
+      (!validFrozenCarryBoundary(confinement.denyCarryOutside) || !validWorkItemBoundary(confinement.denyWorkItemsOutside) ||
+       confinement.denyAmbientContext !== true || confinement.denyOutside === undefined))
+    return { allowed: false, applied: true, matchedGlob: 'outside-frozen-carry',
+      reason: 'Managed carry requires a valid host-pinned frozen assignment and exact tool ceiling.' };
   if (confinement.denyMemoryOutside !== undefined &&
       (!validFrozenMemoryBoundary(confinement.denyMemoryOutside) || !validWorkItemBoundary(confinement.denyWorkItemsOutside) ||
        args.purpose !== 'listing' && toDenyMatchKey(toolName).startsWith('memory_') &&
@@ -444,7 +472,7 @@ export function evaluateSessionConfinement(args: {
   if (confinement.denyTools.length === 0)
     return confinement.denyOutside === undefined && confinement.denyWorkItemsOutside === undefined &&
       confinement.denyProductReadsOutside === undefined && confinement.denyPlansOutside === undefined &&
-      confinement.denyMemoryOutside === undefined ? UNCONFINED : ALLOWED;
+      confinement.denyMemoryOutside === undefined && confinement.denyCarryOutside === undefined ? UNCONFINED : ALLOWED;
 
   const key = toDenyMatchKey(toolName);
   for (const glob of confinement.denyTools) {

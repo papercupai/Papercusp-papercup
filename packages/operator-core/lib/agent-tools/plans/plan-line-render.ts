@@ -1,7 +1,7 @@
-import { maskFences, parsePlan, renderPlanItem, type PlanItem } from '@papercusp/plan-parser';
+import { isItemContinuation, maskFences, parsePlan, renderPlanItem, type PlanItem } from '@papercusp/plan-parser';
 import type { PlanIndexItem } from './derive-index';
 
-/** Replace only item lines. All other bytes (including free prose) belong to the author. */
+/** Replace physical item spans. All other bytes (including free prose) belong to the author. */
 export function renderPlanLines(content: string, items: readonly PlanIndexItem[]): string {
   const parsed = parsePlan(content);
   // Parser coordinates are relative to the body AFTER the frontmatter fence.
@@ -11,6 +11,14 @@ export function renderPlanLines(content: string, items: readonly PlanIndexItem[]
   const priorById = new Map(parsed.items.map((item) => [item.id, item]));
   const lines = content.split('\n');
   const masked = maskFences(content).split('\n');
+  // The parser already folds these lines into item.text. Retaining them after
+  // rendering the logical item would append the same prose on every write.
+  const continuationLines = new Set<number>();
+  for (const item of parsed.items) {
+    for (let i = item.lineNumber + offset; i < lines.length && isItemContinuation(lines[i]); i++) {
+      continuationLines.add(i + 1);
+    }
+  }
   const output: string[] = [];
   let phase: string | null = null;
   let next = 0;
@@ -26,6 +34,7 @@ export function renderPlanLines(content: string, items: readonly PlanIndexItem[]
   };
   const emitRest = () => { while (next < items.length) emit(); };
   for (let i = 0; i < lines.length; i++) {
+    if (continuationLines.has(i + 1)) continue;
     if (itemLines.has(i + 1)) {
       if (next < items.length) emit();
       continue;

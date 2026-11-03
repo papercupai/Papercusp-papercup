@@ -54,6 +54,27 @@ beforeEach(() => {
   __markSessionConfinementsPrimedForTest();
 });
 
+describe('frozen carry policy persistence', () => {
+  const confinement = { denyTools: [], denyOutside: ['coord:whoami', 'session:request-compaction'],
+    denyAmbientContext: true as const, denyWorkItemsOutside: { id: 'F-own', harness: 'bench', checkout: '/private/assignment' },
+    denyCarryOutside: { initialPrompt: 'Frozen task', initialPromptSha256: 'a'.repeat(64), mode: 'on' as const },
+    reason: 'private', imposedBy: 'host' };
+  it('snapshots the host declaration and refuses changing its frozen initial task', async () => {
+    const input = structuredClone(confinement);
+    expect(await declareSessionConfinement({ ownerId: IMPLEMENTER_OWNER, workspaceId: 'private', confinement: input })).toEqual({ ok: true });
+    input.denyCarryOutside.initialPrompt = 'caller mutation';
+    expect((await readSessionConfinement(IMPLEMENTER_OWNER, 'private'))?.denyCarryOutside?.initialPrompt).toBe('Frozen task');
+    await expect(declareSessionConfinement({ ownerId: IMPLEMENTER_OWNER, workspaceId: 'private', confinement: input }))
+      .rejects.toThrow(/cannot be replaced/);
+  });
+  it('refuses malformed carry at declaration and authoritative read', async () => {
+    const malformed = { ...confinement, denyCarryOutside: { ...confinement.denyCarryOutside, initialPrompt: '' } };
+    expect(await declareSessionConfinement({ ownerId: IMPLEMENTER_OWNER, confinement: malformed })).toMatchObject({ ok: false });
+    pgState.payload = { sessions: { [IMPLEMENTER_OWNER]: stored({ confinement: malformed }) } };
+    await expect(readSessionConfinement(IMPLEMENTER_OWNER, 'private')).rejects.toThrow(/malformed/);
+  });
+});
+
 // ── D-017 §5: installation is bound to the import, not to a boot step ─────────────
 describe('session-confinement store — installation', () => {
   it('installs the resolver merely by being imported', () => {

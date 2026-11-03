@@ -63,7 +63,16 @@ const STRONG_GATE_RE =
 const RELEASE_PLANE_UNTIL_RE =
   /\buntil\b\s*:?[\s,-]*(?:(?:the\s+)?main\b(?!(?:\s+|-)(?:bundle|chunk|entry|thread|loop|event(?:\s+|-)loop)\b)|:3070\b|\bgreen[- ]checkpoint\b|\bdeploy(?:ed|ment|ing)?\b)/i;
 const NEGATED_OR_META_GATE_RE =
-  /(?:\b(?:reject|refus|forbid|prevent|detect|flag|exclud)\w*\b|\bguard(?:s|ed|ing)?\s+against\b|\bno\b.{0,80}\b(?:block|wait|require(?:d|ment)?|prerequisite)\w*\b|\bnot\s+(?:an?\s+)?(?:\w+[- ]){0,3}(?:prerequisite|wait|block(?:er|ing)?|gate)\b|\b(?:does|do|must|should|is|are)\s+not\b.{0,80}\b(?:block|wait|require(?:d|ment)?|prerequisite)\w*\b|\bnever\s+(?:an?\s+)?(?:block|wait|require|prerequisite)\w*\b|\bwithout\s+wait(?:ing)?\s+(?:for|on)\b|\binstead\s+of\s+wait(?:ing)?\s+(?:for|on)\b)/i;
+  /(?:\b(?:reject|refus|forbid|prohibit|prevent|detect|flag|exclud)\w*\b|\b(?:(?:do|does|did|must|should|will|can)\s+not|cannot|can['’]t|won['’]t|never)\s+(?:be\s+)?(?:deploy|promote|release|ship|roll[- ]?out)\w*\b|\bguard(?:s|ed|ing)?\s+against\b|\bno\b.{0,80}\b(?:block|wait|require(?:d|ment)?|prerequisite)\w*\b|\bnot\s+(?:an?\s+)?(?:\w+[- ]){0,3}(?:prerequisite|wait|block(?:er|ing)?|gate)\b|\b(?:does|do|must|should|is|are)\s+not\b.{0,80}\b(?:block|wait|require(?:d|ment)?|prerequisite)\w*\b|\bnever\s+(?:an?\s+)?(?:block|wait|require|prerequisite)\w*\b|\bwithout\s+wait(?:ing)?\s+(?:for|on)\b|\binstead\s+of\s+wait(?:ing)?\s+(?:for|on)\b)/i;
+const GATE_PROSE_CLAUSE_SEPARATOR_RE =
+  /\n+|(?<=[.!?;])\s+|\s+but\s+|\s+and\s+(?=(?:(?:then\s+)?(?:(?:it|this item|that item|the item)\s+)?(?:wait(?:ing)?|block(?:ed|ing)?|require(?:d|ment|s)?|prerequisite|must|should|need(?:s)?|verify|confirm|validate|check|test|only after|after|following|once|final\s+(?:shipment|deployment|release|rollout|verification|acceptance)))\b)/i;
+
+function gateProseClauses(text: string): string[] {
+  return text
+    .split(GATE_PROSE_CLAUSE_SEPARATOR_RE)
+    .map((clause) => clause.trim())
+    .filter(Boolean);
+}
 const FINAL_LIFECYCLE_RE =
   /(?:\bfinal\s+(?:shipment|promotion|deploy(?:ment)?|release|rollout|verification|acceptance)\b|\bship(?:ment)?\s+verification\b|\brelease\s+packag(?:e|ing)\b|\brollback\b|\bmigration\s+order(?:ing)?\b)/i;
 const FINAL_PHASE_RE = /(?:\brelease\b|\bshipment\b|\brollout\b|\bclosure\b|\bship\b)/i;
@@ -207,10 +216,7 @@ function relatedExceptionText(item: PlanItem, decisions: PlanDecision[]): string
 }
 
 function strongDeployedGateClauses(text: string): string[] {
-  return neutralizePlanIdentifiers(text)
-    .split(/\n+|(?<=[.!?])\s+/)
-    .map((clause) => clause.trim())
-    .filter(
+  return gateProseClauses(neutralizePlanIdentifiers(text)).filter(
       (clause) =>
         DEPLOYED_ENV_RE.test(clause) &&
         (STRONG_GATE_RE.test(clause) || RELEASE_PLANE_UNTIL_RE.test(clause) ||
@@ -415,15 +421,28 @@ export function stagingFirstActivationProblems(plan: ParsedPlan): StagingFirstAc
         const blocker = plan.items.find((candidate) => candidate.id === ref);
         // A terminal blocker imposes no wait, even when its text names the release plane.
         if (!blocker || isTerminalItemStatus(blocker.storedStatus)) return false;
-        // Preparing, selecting, or defining a deployment contract is source work, not proof
-        // that dependent implementation must await released code. Keep actual
-        // deployed/main/production and final obligations protected for every verb.
-        const sourcePreparation = /^(?:prepare|configure|inventory|audit|review|inspect|document|map|finalize|define|specify|select|choose|design)\b/i.test(blocker.text);
-        return DEPLOYED_ENV_RE.test(blocker.text) && (
-          !sourcePreparation ||
-          /\bdeploy(?:ed|ing)?\b/i.test(blocker.text) ||
-          MAIN_RELEASE_BLOCKER_RE.test(blocker.text) ||
-          FINAL_LIFECYCLE_RE.test(blocker.text)
+        // A release-plane word can be part of an example name (for example,
+        // "main-greening"). Require the predecessor to describe a release
+        // obligation, action, verification, or ordering before treating the
+        // dependency as a wait on released code.
+        const positiveReleaseText = gateProseClauses(blocker.text)
+          .filter((clause) => !NEGATED_OR_META_GATE_RE.test(clause))
+          .join('\n');
+        const explicitReleaseCheck =
+          /\b(?:verify|confirm|validate|check|test)\b.{0,120}(?:\bmain\s+(?:promotion|release|branch)\b|:3070\b|\bgreen[- ](?:checkpoint|pin)\b|\bproduction\b|\bdeployed[- ]host\b)/i.test(positiveReleaseText);
+        const explicitReleaseOrder =
+          /\b(?:after|following|once|only after)\b.{0,120}(?:\bmain\s+(?:promotion|release|branch)\b|:3070\b|\bgreen[- ](?:checkpoint|pin)\b|\bproduction\b|\bdeployed[- ]host\b|\bfinal\s+(?:deployment|promotion|release|rollout)\b)/i.test(positiveReleaseText);
+        const explicitReleaseOperation =
+          /\b(?:deploy|promote|release|ship|rollout)\b.{0,120}(?:\bmain\b|:3070\b|\bgreen[- ](?:checkpoint|pin)\b|\bproduction\b|\bdeployed[- ]host\b)/i.test(positiveReleaseText);
+        return DEPLOYED_ENV_RE.test(positiveReleaseText) && (
+          hasStrongDeployedGate(positiveReleaseText) ||
+          /\bdeploy(?:ed|ing)?\b/i.test(positiveReleaseText) ||
+          /\bdeployment\s+readiness\b/i.test(positiveReleaseText) ||
+          FINAL_LIFECYCLE_RE.test(positiveReleaseText) ||
+          FINAL_PHASE_RE.test(blocker.phase ?? '') ||
+          explicitReleaseCheck ||
+          explicitReleaseOrder ||
+          explicitReleaseOperation
         );
       })
     ) {

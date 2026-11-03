@@ -610,6 +610,7 @@ export default defineTool({
     };
     const spec = await buildOwnerRespawnLaunchSpec(identity.ownerId, {
       effectiveWindowTokens,
+      continueNote: args.continueNote,
       role: callerContext.role,
       buildOpts: {
         workspaceId: identity.workspaceId ?? undefined,
@@ -976,7 +977,9 @@ export default defineTool({
             // `if (res.respawn)` is unaffected.
             respawn: ok ? 'queued' : false,
             budgetChars: spec.budgetChars,
-            firstPromptSource: spec.firstPrompt ? 'open-owner-message' : 'continuation-note',
+            firstPromptSource: spec.frozenAssignmentCarry ? 'frozen-assignment' :
+              spec.firstPrompt ? 'open-owner-message' : 'continuation-note',
+            ...(spec.frozenAssignmentCarry ? { frozenAssignmentCarry: spec.frozenAssignmentCarry } : {}),
             staleCheckpoints,
             // WI-5936: present only when this cut would actually kill something,
             // so a clean session pays no payload for it.

@@ -13,7 +13,7 @@ import { captureOwnedNativeStacks, collectOwnedWebKitSample, NativeSampleBuffer,
   parseNativeStackDelayMs, parseSchedstat, schedstatDelta, startNativeProcessProbe,
   stopNativeProcessProbe } from './native-process-probe';
 
-import { assertPrivateIpcFixture, assertPrivateIpcFixtureUnchanged, assertVerifierBuildFixture, assertVerifierBuildFixtureUnchanged, bindVerifierEnvironment, BINARY_BUILT_AT_KEY, BUILD_IDENTITY_FILE, CONTEXT_STAMP_PREFIXES, desktopPerfRunPayload, hasRunOutcomeMeasure, readBuildIdentity, readPublisherToken, type PerfMeasure } from "./perf-report";
+import { assertPrivateIpcFixture, assertPrivateIpcFixtureUnchanged, assertVerifierBuildFixture, assertVerifierBuildFixtureUnchanged, bindVerifierEnvironment, BINARY_BUILT_AT_KEY, BUILD_IDENTITY_FILE, CONTEXT_STAMP_PREFIXES, desktopPerfRunPayload, hasRunOutcomeMeasure, nativeStartupDuration, workJourneyDuration, readBuildIdentity, readPublisherToken, type NativeStartupReading, type PerfMeasure, type WorkJourneyReading } from "./perf-report";
 import {
   installPopupLayoutProbe,
   installPopupReactProbe,
@@ -26,6 +26,74 @@ import {
 } from "./app-mount";
 import { classifyAttemptTimeout } from "../../../libs/generic/gui-readiness/src/interaction-measure";
 import { beginInteraction, endInteraction, markInteractionPhase } from "../../../apps/operator/app/_components/perf/perf-marks";
+
+test('work journeys reject stale, duplicate, missing, failed and cross-document timing evidence', () => {
+  const reading: WorkJourneyReading = { now: 1600, entries: [{ startTime: 1000, duration: 500 }],
+    contentReady: true, connectionReady: true };
+  assert.equal(workJourneyDuration(reading, 999), 500);
+  // A measured regression remains a real sample, even when over its budget.
+  assert.equal(workJourneyDuration({ ...reading, now: 4000,
+    entries: [{ startTime: 1000, duration: 2500 }] }, 999), 2500);
+  for (const patch of [
+    { entries: [] }, { entries: [...reading.entries, ...reading.entries] },
+    { contentReady: false }, { connectionReady: false }, { now: 900 }, { now: NaN },
+    { now: 32_000 }, { entries: [{ startTime: 998, duration: 500 }] },
+    { entries: [{ startTime: NaN, duration: 500 }] },
+    { entries: [{ startTime: 1000, duration: -1 }] },
+    { entries: [{ startTime: 1000, duration: NaN }] },
+    { now: 40_000, entries: [{ startTime: 1000, duration: 30_001 }] },
+  ]) assert.equal(workJourneyDuration({ ...reading, ...patch }, 999), null, JSON.stringify(patch));
+  assert.equal(workJourneyDuration(reading, NaN), null);
+  assert.equal(workJourneyDuration(reading, -1), null);
+});
+
+test('native startup accepts only one fresh process span with matching endpoints and current content', () => {
+  const origin = { startedAtEpochMs: 8000, pid: 42, primaryWindow: true };
+  const detail = { ...origin, endedAtEpochMs: 10250, pageTimeOrigin: 10000,
+    clock: 'native-entry-epoch', endpoint: 'overview-usable' };
+  const reading: NativeStartupReading = { origin, entries: [{ duration: 2250, detail }],
+    capturedAtEpochMs: 10300, overview: true, connectionReady: true };
+  assert.equal(nativeStartupDuration(reading, 7999), 2250);
+  assert.equal(nativeStartupDuration(reading, 8001), null); // long-lived process
+  assert.equal(nativeStartupDuration(reading, NaN), null);
+  for (const change of [
+    { origin: null }, { overview: false }, { connectionReady: false },
+    { entries: [] }, { entries: [...reading.entries, ...reading.entries] },
+    { origin: { ...origin, pid: 43 } }, { origin: { ...origin, primaryWindow: false } },
+    { capturedAtEpochMs: 10200 },
+    { entries: [{ duration: 250, detail }] }, // navigation-only excludes native boot
+    { entries: [{ duration: NaN, detail }] },
+    ...[{ pid: 43 }, { startedAtEpochMs: 7000 }, { pageTimeOrigin: 7000 },
+      { clock: 'external-shell' }, { endpoint: 'dock-mounted' }].map((patch) => ({
+        entries: [{ duration: 2250, detail: { ...detail, ...patch } }],
+      })),
+  ]) assert.equal(nativeStartupDuration({ ...reading, ...change }, 7999), null, JSON.stringify(change));
+});
+
+test('native initialization supplies immutable process-entry timing before toolkit boot', () => {
+  const source = readFileSync(path.resolve(__dirname, '../../../papercusp-desktop/src-tauri/src/main.rs'), 'utf8');
+  const run = source.slice(source.indexOf('pub fn run()'));
+  assert(run.indexOf('let native_started_at_ms') < run.indexOf('run_headless_service()'));
+  assert(run.indexOf('let native_started_at_ms') < run.indexOf('fd_limit::raise_fd_limit()'));
+  const literal = run.match(/("Object\.defineProperty\(window, '__papercuspStartupOrigin', (?:[^"\\]|\\.)*")/);
+  assert(literal, 'native initialization must carry the process-entry origin');
+  const script = (JSON.parse(literal[1]) as string).replace('{native_started_at_ms}', '8000')
+    .replace('{}', '42').replaceAll('{{', '{').replaceAll('}}', '}');
+  for (const label of ['main', 'quick-panel']) {
+    // Match Tauri's real ordering: invoke init precedes metadata registration.
+    const internals: Record<string, unknown> = {};
+    const window: Record<string, unknown> = { __TAURI_INTERNALS__: internals };
+    runInNewContext(script, { window });
+    const origin = window.__papercuspStartupOrigin as { startedAtEpochMs: number; pid: number; primaryWindow: boolean };
+    assert.equal(origin.startedAtEpochMs, 8000);
+    assert.equal(origin.pid, 42);
+    assert.equal(origin.primaryWindow, false);
+    internals.metadata = { currentWindow: { label } };
+    assert.equal(origin.primaryWindow, label === 'main');
+    assert(Object.isFrozen(origin));
+    assert.equal(Object.getOwnPropertyDescriptor(window, '__papercuspStartupOrigin')?.writable, false);
+  }
+});
 
 function verifierBuildFixture() {
   const root = mkdtempSync(path.join(tmpdir(), 'native-build-fixture-'));

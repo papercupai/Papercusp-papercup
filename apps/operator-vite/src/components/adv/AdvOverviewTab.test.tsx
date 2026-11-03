@@ -13,7 +13,7 @@
 // stubbed out here.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { nuqsParsers } from '@papercusp/test-config/nuqs-mock';
 
 // nuqs: writers (tab / inboxTier) + the `slug` reader (the selected harness,
@@ -142,6 +142,7 @@ vi.mock('@papercusp/sync', () => ({
 }));
 
 import AdvOverviewTab from './AdvOverviewTab';
+import ServerConnectionGate from '../ServerConnectionGate';
 import type { AttentionItem, PlanListRow } from '@/app/admin/plans/plans-api';
 import { advRosterArgs } from '@/lib/adv-roster-args';
 import { configureOperatorUi } from '@papercusp/operator-ui/seam';
@@ -250,6 +251,9 @@ describe('AdvOverviewTab component', () => {
     cleanup();
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
+    delete window.__papercuspServerConnectionRestored;
+    delete window.__papercuspServerConnectionRequired;
+    delete window.__papercuspBootError;
   });
 
   const makeStartupContentReady = () => {
@@ -300,11 +304,29 @@ describe('AdvOverviewTab component', () => {
     rosterResult.loading = true; // valid cached rows remain usable
     const view = render(<AdvOverviewTab />);
     expect(end).toHaveBeenCalledTimes(1);
-    window.dispatchEvent(new Event('papercusp:server-connection-restored'));
+    act(() => window.dispatchEvent(new Event('papercusp:server-connection-restored')));
     expect(end).toHaveBeenCalledTimes(2);
     view.unmount();
-    window.dispatchEvent(new Event('papercusp:server-connection-restored'));
+    act(() => window.dispatchEvent(new Event('papercusp:server-connection-restored')));
     expect(end).toHaveBeenCalledTimes(2);
+  });
+
+  it('records restored startup after the real ServerConnectionGate releases input', () => {
+    makeStartupContentReady();
+    window.__papercuspServerConnectionRestored = false;
+    window.__papercuspServerConnectionRequired = 'Waiting for the Server';
+    const end = vi.spyOn(perfMarks, 'endStartupUsable').mockReturnValue(null);
+    render(<><ServerConnectionGate /><AdvOverviewTab /></>);
+    expect(screen.getByTestId('server-connection-reason')).toBeTruthy();
+    end.mockImplementation(() => {
+      expect(window.__papercuspServerConnectionRestored).toBe(true);
+      expect(screen.queryByTestId('server-connection-reason')).toBeNull();
+      expect(document.querySelector('.pc-overview')).toBeTruthy();
+      return null;
+    });
+    end.mockClear();
+    act(() => window.dispatchEvent(new Event('papercusp:server-connection-restored')));
+    expect(end).toHaveBeenCalledTimes(1);
   });
 
   it('renders the ten tiles, the top-bar rate control, and the empty states', async () => {

@@ -1,8 +1,8 @@
 /** Real PostgreSQL and shared dispatch regression for launch-declared ceilings. */
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import postgres from 'postgres';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createFreshTestDb, type MigratedTestDb } from '@papercusp/test-config/pg';
@@ -32,6 +32,8 @@ import { BENCHMARK_SCRATCH_PLAN_TOOLS, type SessionToolConfinement } from './ses
 import { BLIND_REVIEW_TOOL } from '../blind-review-gate';
 import { blindReviewerConfinement } from '../blind-reviewer-mint';
 import { runManagedPreCompact } from '../../../../apps/operator/scripts/hooks/cc/precompact-managed-carry.mjs';
+import memorySearch from '../agent-tools/memory/search';
+import { buildOwnerRespawnLaunchSpec } from '../carry-respawn';
 
 const WORKSPACE = 'private-benchmark-confinement';
 const OWNER = 'su-private-benchmark';
@@ -55,7 +57,13 @@ async function dispatch(name: string, args: unknown = {}, ctx = context()) {
   const tool: ProjectedTool = name === 'tools:invoke' ? lookupByMcpName(name)! : {
     pluginName: 'private-confinement-fixture', description: 'harmless execution witness',
     inputSchema: { type: 'object' }, capabilities: [], requirePrincipal: false,
-    expose: { mcp: { name } }, fn: target,
+    expose: { mcp: { name } }, fn: name === 'memory:search'
+      ? async (args, ctx) => {
+        const result = await memorySearch.handler(args as never, ctx as never);
+        // defineTool types admit both response envelopes; this handler returns MCP.
+        if (!('content' in result)) throw new Error('memory:search fixture requires its native ToolResult');
+        return result;
+      } : target,
   };
   expect(tool).toBeDefined();
   ctx.dispatchTool = async (nestedName, nestedArgs) => {
@@ -103,6 +111,35 @@ afterAll(async () => {
 });
 
 describe('durable launch confinement at the dispatch boundary', () => {
+  it.each(['on', 'off'] as const)('assembles frozen carry %s from real persisted policy without ambient readers', async mode => {
+    const initialPrompt = 'Exact frozen assignment with identical initial context.';
+    const initialPromptSha256 = createHash('sha256').update(initialPrompt).digest('hex');
+    const confinement: SessionToolConfinement = { ...ceiling(['coord:whoami', 'session:request-compaction']),
+      denyAmbientContext: true, denyWorkItemsOutside: { id: 'F-own', harness: 'bench', checkout: '/private/assignment' },
+      denyCarryOutside: { initialPrompt, initialPromptSha256, mode } };
+    expect(await declare(OWNER, confinement)).toEqual({ ok: true });
+    __setSessionConfinementCacheForTest({});
+    const buildFn = vi.fn(async () => { throw new Error('Ambient carry reader must never run'); });
+    const opts = { effectiveWindowTokens: 200_000, buildOpts: { workspaceId: WORKSPACE },
+      continueNote: 'Own prior task progress', buildFn };
+    const spec = await buildOwnerRespawnLaunchSpec(OWNER, opts);
+    expect(spec?.firstPrompt?.startsWith(initialPrompt)).toBe(true);
+    expect(spec?.firstPrompt?.includes('Own prior task progress')).toBe(mode === 'on');
+    expect(spec?.systemPromptAddendum).toBe('');
+    expect(spec?.frozenAssignmentCarry).toMatchObject({ mode, initialPromptSha256 });
+    expect(await dispatch('session:request-compaction', { continueNote: 'Own prior task progress' }))
+      .toMatchObject(mode === 'on' ? { ok: true } : { ok: false, error: { code: 'capability_denied' } });
+    connection.unavailable = true;
+    expect(await buildOwnerRespawnLaunchSpec(OWNER, opts)).toBeNull();
+    connection.unavailable = false;
+    expect(buildFn).not.toHaveBeenCalled();
+    // Digest mismatch survives JSONB but is rejected at assembly, never passed
+    // to a live reader as an alternate source of initial assignment bytes.
+    const changed = { ...confinement, denyCarryOutside: { ...confinement.denyCarryOutside!, initialPrompt: 'modified' } };
+    expect(await declare('su-private-modified', changed)).toEqual({ ok: true });
+    expect(await buildOwnerRespawnLaunchSpec('su-private-modified', opts)).toBeNull();
+    expect(buildFn).not.toHaveBeenCalled();
+  });
   it.each([
     ['coord:whoami'],
     ['coord:whoami', 'work_items:get', 'work_items:checkpoint', 'work_items:complete'],
@@ -274,6 +311,45 @@ describe('durable launch confinement at the dispatch boundary', () => {
     }
     expect(await dispatch('plans:items', { slug: `${prefix}probe` })).toMatchObject({ ok: false, error: { code: 'capability_denied' } });
     expect(target).toHaveBeenCalledTimes(2);
+  });
+
+  it('persists frozen memory and recalls pinned bytes through the real handler direct and nested', async () => {
+    const checkout = mkdtempSync(join(tmpdir(), 'pg-frozen-memory-'));
+    mkdirSync(join(checkout, '.papercusp/benchmark-context'), { recursive: true });
+    const path = join(checkout, '.papercusp/benchmark-context/memory.json');
+    const bytes = JSON.stringify({ entries: [{ key: 'recipe:iron', text: 'iron ingots for an iron pickaxe' }] });
+    const snapshotSha256 = createHash('sha256').update(bytes).digest('hex');
+    writeFileSync(path, bytes);
+    try {
+      await declare(OWNER, { ...ceiling(['memory:search', 'tools:invoke']), denyAmbientContext: true,
+        denyWorkItemsOutside: { id: 'WI-own', harness: 'bench-private', checkout },
+        denyMemoryOutside: { snapshotSha256 } });
+      expect((await readSessionConfinement(OWNER, WORKSPACE))?.denyMemoryOutside).toEqual({ snapshotSha256 });
+      __setSessionConfinementCacheForTest({});
+      const own = { query: 'iron pickaxe', harness_slug: 'bench-private', harnessOnly: true };
+      for (const result of [await dispatch('memory:search', own),
+        await dispatch('tools:invoke', { name: 'memory:search', args: own })]) {
+        expect(result).toMatchObject({ ok: true });
+        expect(JSON.stringify(result)).toContain('iron ingots for an iron pickaxe');
+        expect(JSON.stringify(result)).toContain('frozen-lexical');
+        expect(JSON.stringify(result)).toContain(snapshotSha256);
+      }
+      for (const args of [{ ...own, harness_slug: 'production' }, { ...own, harnessOnly: false },
+        { ...own, workspace: 'production' }, { query: own.query }]) {
+        expect(await dispatch('memory:search', args)).toMatchObject({ ok: false, error: { code: 'capability_denied' } });
+        const nested = await dispatch('tools:invoke', { name: 'memory:search', args });
+        expect(nested.ok).toBe(false);
+      }
+      await declare('su-memory-off', { ...ceiling(), denyAmbientContext: true,
+        denyWorkItemsOutside: { id: 'WI-off', harness: 'bench-off', checkout } });
+      expect(await dispatch('memory:search', own, context(WORKSPACE, 'su-memory-off')))
+        .toMatchObject({ ok: false, error: { code: 'capability_denied' } });
+      writeFileSync(path, JSON.stringify({ entries: [{ key: 'foreign', text: 'PRIVATE_SENTINEL' }] }));
+      const changed = await dispatch('memory:search', own);
+      expect(JSON.stringify(changed)).toContain('frozen_memory_unavailable');
+      expect(JSON.stringify(changed)).not.toContain('PRIVATE_SENTINEL');
+      expect(target).not.toHaveBeenCalled();
+    } finally { rmSync(checkout, { recursive: true, force: true }); }
   });
 
   it('persists benchmark draft planning and enforces its namespace direct and nested at the real seat', async () => {
