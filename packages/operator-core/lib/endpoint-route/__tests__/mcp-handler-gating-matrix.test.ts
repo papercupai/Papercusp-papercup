@@ -1240,13 +1240,21 @@ async function callTool(
 const textOf = (r: CallResult): string => r.content.map((c) => c.text ?? '').join('');
 
 function projectionRefusalText(result: CallResult): string {
-  const door = result._meta?.resultDoor as { reason?: string; spillPath?: string } | undefined;
+  const door = result._meta?.resultDoor as { reason?: string; spillPath?: string; spillUri?: string } | undefined;
   if (!door) return textOf(result);
   expect(door.reason).toBe('under-budget-partial-result');
-  const envelope = JSON.parse(textOf(result));
-  expect(envelope).toMatchObject({ schemaVersion: 'papercusp.output-envelope/v1', state: 'incomplete' });
+  const partial = JSON.parse(textOf(result));
+  // Partial reads preserve the refusal's machine-readable fields inline and
+  // retain the exact emitted body behind their scratch-page cursor.
+  expect(partial).toMatchObject({
+    _partial: true,
+    projection_refused: 'pick_matched_nothing',
+    _projection: { truncated: true, cursor: { kind: 'scratch-page', tool: 'capability:read', bodyComplete: false } },
+  });
   const reference = parseScratchReference(readFileSync(door.spillPath!));
   expect(reference).not.toBeNull();
+  expect(door.spillUri).toEqual(expect.any(String));
+  expect(partial._projection.cursor.args.file_path).toBe(door.spillUri);
   return reference!.payload.toString('utf8');
 }
 /** Read one JSON payload block without concatenating separate advisory text blocks. */
@@ -4120,7 +4128,9 @@ describe('scoped-superuser-workspace-clamp', () => {
     expect(res.isError).toBe(true);
     expect(textOf(res)).toContain('harness_forbidden');
     expect(textOf(res)).toContain('other-ws');
-    expect(h.resolveWorkspaceForHarnessSlugIn).toHaveBeenCalledWith('ws-test', 'foreign-ws-harness');
+    expect(h.resolveWorkspaceForHarnessSlugIn).toHaveBeenCalledWith(
+      'ws-test', 'foreign-ws-harness', expect.objectContaining({ track: expect.any(Function) }),
+    );
   });
 
   it('flag ON: ALLOWS a per-call `harness` that belongs to the session\'s OWN workspace', async () => {
@@ -6556,6 +6566,29 @@ describe('su identity precedence (EI-7066: explicit SID before Mcp-Session-Id)',
 });
 
 describe('successful native-session audit (get-feedback D-006)', () => {
+  function bindNativeOwnerSession(native: string): void {
+    h.nativeSessionRows = new Map([['su-owner', [{ id: 541, session_id: native, active: true }]]]);
+    // Native-owner dispatch requires a concrete workspace and its persisted
+    // adv_sessions authority row for either supported correlation carrier.
+    h.kernelAuthority.rows = [{
+      control_state: null,
+      control_generation: null,
+      workspace_id: 'ws-test',
+      adv_session_id: 541,
+      adv_session_xmin: 'native-test-row-version',
+      launch_header_known: false,
+      launch_spec_type: 'object',
+      launch_spec_workspace_id: 'ws-test',
+      launch_spec_harness_slug: 'papercup',
+      launch_spec_has_accepted_operation: false,
+      launch_spec_accepted_operation: null,
+    }];
+    h.kernelAuthority.launchRecord = {
+      launch_spec: { workspaceId: 'ws-test', harnessSlug: 'papercup' },
+      launch_spec_xmin: 'native-test-row-version',
+    };
+  }
+
   it.each([
     ['wildcard workspace', { spawn: { workspaceId: '*' }, native: {} }],
     ['mismatched adv-session id', { spawn: {}, native: { candidateAdvSessionId: 542 } }],
@@ -6594,27 +6627,7 @@ describe('successful native-session audit (get-feedback D-006)', () => {
 
   it('retains exact native call correlation only with a bound per-call thread', async () => {
     const native = 'native-owner-session', callId = 'call_exact-native-item';
-    h.nativeSessionRows = new Map([['su-owner', [{ id: 541, session_id: native, active: true }]]]);
-    // A concrete workspace requires the persisted adv_sessions authority row.
-    // Keep this row deliberately ungoverned: the case tests correlation binding,
-    // not the identity-grant policy attached to a launched agent.
-    h.kernelAuthority.rows = [{
-      control_state: null,
-      control_generation: null,
-      workspace_id: 'ws-test',
-      adv_session_id: 541,
-      adv_session_xmin: 'native-test-row-version',
-      launch_header_known: false,
-      launch_spec_type: 'object',
-      launch_spec_workspace_id: 'ws-test',
-      launch_spec_harness_slug: 'papercup',
-      launch_spec_has_accepted_operation: false,
-      launch_spec_accepted_operation: null,
-    }];
-    h.kernelAuthority.launchRecord = {
-      launch_spec: { workspaceId: 'ws-test', harnessSlug: 'papercup' },
-      launch_spec_xmin: 'native-test-row-version',
-    };
+    bindNativeOwnerSession(native);
     const meta = { threadId: native, callId };
     const extra = { ...(superuserExtra('&workspace=ws-test&client=su-owner') as Record<string, unknown>), _meta: meta };
     const res = await callTool('gatingtest:scoped', {}, extra, meta);
@@ -6630,18 +6643,23 @@ describe('successful native-session audit (get-feedback D-006)', () => {
 
   it('retains Claude native call correlation as diagnostics on its verified header carrier', async () => {
     const native = 'native-owner-session', callId = 'toolu_claude-native-item';
-    h.nativeSessionRows = new Map([['su-owner', [{ id: 541, session_id: native, active: true }]]]);
+    bindNativeOwnerSession(native);
     const meta = { 'claudecode/toolUseId': callId };
-    const extra = { ...(superuserExtra('&client=su-owner', { 'x-papercusp-native-session': native }) as Record<string, unknown>), _meta: meta };
+    const extra = { ...(superuserExtra('&workspace=ws-test&client=su-owner', { 'x-papercusp-native-session': native }) as Record<string, unknown>), _meta: meta };
     const res = await callTool('gatingtest:scoped', {}, extra, meta);
     expect(res.isError, textOf(res)).toBeUndefined();
+    expect(h.nativeSessionWorkspaceScopes).toEqual(['ws-test']);
+    expect(h.invocations[0]?.ctx.advSessionId).toBe(541);
     expect(h.invocations[0]?.ctx.requestOrigin).toMatchObject({ nativeSession: {
       carrier: 'header:x-papercusp-native-session', binding: 'bound', candidateAdvSessionId: 541,
       callIdFingerprint: createHash('sha256').update(callId, 'utf8').digest('hex'),
     } });
     expect(JSON.stringify(h.invocations[0]?.ctx.requestOrigin)).not.toContain(callId);
     expect(JSON.stringify(h.invocations[0]?.ctx.requestOrigin)).not.toContain(native);
-    expect(h.invocations[0]?.ctx.principal).toBeNull();
+    expect(h.invocations[0]?.ctx.principal).toEqual({
+      kind: 'system', slug: 'system:operator', workspaceId: 'ws-test',
+      authMethod: 'bearer-token', trust: 'trusted', capabilities: new Set(),
+    });
   });
 
   it.each([undefined, '', ' leading-space', 'trailing-space ', 'a/b', 'x'.repeat(257), 7, { callId: 'nested' }])(

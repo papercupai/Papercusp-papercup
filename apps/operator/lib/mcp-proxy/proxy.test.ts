@@ -2883,6 +2883,62 @@ describe("createMcpProxy — forwarding + restart recovery", () => {
     }
   });
 
+  it("correlates native guard completion and disconnect phases without persisting inputs", async () => {
+    const fs = await import("node:fs");
+    const os = await import("node:os");
+    const path = await import("node:path");
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "proxy-guard-timing-"));
+    const logFile = path.join(dir, "events.jsonl");
+    const previous = process.env.PAPERCUSP_MCP_PROXY_FAILURE_LOG;
+    process.env.PAPERCUSP_MCP_PROXY_FAILURE_LOG = logFile;
+    let reached!: () => void;
+    const upstreamReached = new Promise<void>(resolve => { reached = resolve; });
+    let slow = false;
+    const upstream = track(http.createServer((req, res) => {
+      req.resume();
+      req.on("end", () => {
+        if (slow) { reached(); setTimeout(() => res.end('{"ok":true}'), 80); }
+        else res.end('{"ok":true}');
+      });
+    }));
+    try {
+      await listen(upstream);
+      const proxy = track(createMcpProxy({ listenPort: 0, targetHost: "127.0.0.1",
+        targetPort: port(upstream), log: () => {} }));
+      await listen(proxy);
+      const guardId = "11111111-1111-4111-8111-111111111111";
+      const body = JSON.stringify({ owner: "private-owner", input: "private-input" });
+      const header = { "x-papercusp-guard-request-id": guardId };
+      expect((await request(port(proxy), body, "/api/agent-mcp/tool-guard", header)).status).toBe(200);
+      await request(port(proxy), body, "/api/agent-mcp/mid-turn-context", header);
+      await request(port(proxy), body, "/api/agent-mcp/tool-guard",
+        { "x-papercusp-guard-request-id": "private-invalid-header" });
+      slow = true;
+      const client = http.request({ host: "127.0.0.1", port: port(proxy), method: "POST",
+        path: "/api/agent-mcp/tool-guard", headers: header });
+      client.on("error", () => {});
+      client.end(body);
+      await upstreamReached;
+      client.destroy();
+      const timings = () => fs.readFileSync(logFile, "utf8").trim().split("\n")
+        .map(line => JSON.parse(line)).filter(row => row.kind === "tool_guard_timing");
+      await waitFor(() => timings().length === 2);
+      const [complete, disconnected] = timings();
+      expect(complete).toMatchObject({ guardRequestId: guardId, outcome: "response_finished", httpStatus: 200 });
+      expect(complete.bodyReadyMs).toBeGreaterThanOrEqual(0);
+      expect(complete.forwardStartedMs).toBeGreaterThanOrEqual(complete.bodyReadyMs);
+      expect(complete.responseHeadersMs).toBeGreaterThanOrEqual(complete.forwardStartedMs);
+      expect(disconnected).toMatchObject({ guardRequestId: guardId, outcome: "client_disconnected",
+        bodyReadyMs: expect.any(Number), forwardStartedMs: expect.any(Number), responseHeadersMs: null });
+      expect(disconnected.elapsedMs).toBeGreaterThanOrEqual(disconnected.forwardStartedMs);
+      expect(JSON.stringify(timings())).not.toMatch(/private-owner|private-input|private-invalid-header/);
+    } finally {
+      if (previous === undefined) delete process.env.PAPERCUSP_MCP_PROXY_FAILURE_LOG;
+      else process.env.PAPERCUSP_MCP_PROXY_FAILURE_LOG = previous;
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("rotates the durable failure sink before it exceeds the configured ceiling", async () => {
     const os = await import("node:os");
     const fs = await import("node:fs");

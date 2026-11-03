@@ -255,6 +255,30 @@ describe('recordAccountPenalty + window rolling', () => {
     expect(getAccount(p, 'a')!.rate).toEqual({ pausedUntil: 0, lastPenaltyAt: 0, penaltyCount: 0, windowStartedAt: 0 });
   });
 
+  it('confirmed serving clears an older sustained penalty streak while retaining observations', () => {
+    let p = recordAccountWindow(poolOf('a'), 'a', { utilization: 0.2, utilization7d: 0.73 }, T0);
+    for (let i = 1; i <= 3; i++) p = recordAccountPenalty(p, 'a', T0 + i, { pausedUntil: T0 + MIN });
+    expect(isSpawnEligible(getAccount(p, 'a')!, T0 + 4)).toBe(false);
+    const before = getAccount(p, 'a')!.rate;
+    p = recordAccountReset(p, 'a', { confirmedServingSince: T0 + 4 });
+    expect(isSpawnEligible(getAccount(p, 'a')!, T0 + 5)).toBe(true);
+    expect(getAccount(p, 'a')!.rate).toEqual({ ...before, pausedUntil: 0, penaltyCount: 0, windowStartedAt: 0 });
+    // A later real wall must start a new streak; recovery does not disable it.
+    for (let i = 5; i <= 7; i++) p = recordAccountPenalty(p, 'a', T0 + i);
+    expect(isSpawnEligible(getAccount(p, 'a')!, T0 + 8)).toBe(false);
+  });
+
+  it('confirmed serving preserves newer penalties, full budgets and failed credentials', () => {
+    const p = recordAccountPenalty(poolOf('a'), 'a', T0 + 2, { pausedUntil: T0 + MIN });
+    expect(recordAccountReset(p, 'a', { confirmedServingSince: T0 + 1 })).toEqual(p);
+    expect(recordAccountReset(p, 'a', { confirmedServingSince: T0 + 2 })).toEqual(p);
+    expect(recordAccountReset(p, 'a', { confirmedServingSince: NaN })).toBe(p);
+    const full = recordAccountWindow(p, 'a', { utilization7d: 1, windowResetAt7d: T0 + 100 * MIN }, T0 + 3);
+    expect(isSpawnEligible(getAccount(recordAccountReset(full, 'a', { confirmedServingSince: T0 + 4 }), 'a')!, T0 + 5)).toBe(false);
+    const failed = recordAccountCredentialFailure(p, 'a', T0 + 3, 'owner');
+    expect(isSpawnEligible(getAccount(recordAccountReset(failed, 'a', { confirmedServingSince: T0 + 4 }), 'a')!, T0 + 5)).toBe(false);
+  });
+
   it('a 429 penalty PRESERVES the last-known observed budget (utilization survives)', () => {
     // Regression: the rate object was rebuilt on every penalty WITHOUT the utilization fields, so an
     // account's "% used" vanished the instant it got rate-limited — exactly when the Accounts tab

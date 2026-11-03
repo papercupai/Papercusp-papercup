@@ -649,7 +649,8 @@ export interface OrientResult {
     more: string;
   };
   /** Whether the optional coord:declare-intent succeeded (present only when
-   *  `intent` was passed; false = the caller lacked coord:write). */
+   *  `intent` was passed; false also covers skipped, failed or timed-out calls).
+   *  Failure does not establish whether previously held claims still exist. */
   intentDeclared?: boolean;
   taskBrief?: import('../../../code-intelligence/task-brief').TaskBrief;
   /** EI-20013545515660920: the OUTCOME of the `planItems` lane claim that
@@ -668,7 +669,9 @@ export interface OrientResult {
    *  unclaimed lane is invisible to peers and the Mug — so the failure only
    *  surfaces later, as a double-placement.
    *
-   *  `warning` is set whenever NONE of the requested items ended up held. */
+   *  `warning` is set when no requested item was confirmed held by this call.
+   *  A failed declaration leaves ownership unknown; prior holdings remain in
+   *  planNow.myClaims when that independent read was available. */
   laneClaim?: OrientLaneClaim;
   /** A bounded slice of the caller's fleet audience-history (coord:catch-up on
    *  @fleet:<own slug>) — present only when the caller belongs to a fleet; null on a
@@ -2853,17 +2856,16 @@ function laneClaimFallback(requested: readonly string[]): string {
 }
 
 /** EI-20013545515660920: turn coord:declare-intent's `claims` block into an
- *  UNAMBIGUOUS statement of whether the caller now holds the lane it asked for.
+ *  statement of what the declaration confirmed about the requested lane.
  *
  *  The bug this closes is a silent no-op: orient returned `ok: true` (and
  *  `intentDeclared: true`) while claiming nothing, because the diagnostic
  *  explaining why was thrown away at the call site. So the rule here is that
- *  every path which ends with the caller holding NONE of the requested items
- *  MUST set `warning` — including the paths where declare-intent never even
- *  attempted a claim:
+ *  every path without confirmed holdings MUST set `warning`. A failed or
+ *  unobserved declaration cannot prove that an existing lane is unheld:
  *    - `planItems` passed without `planSlug` (declare-intent reconciles a lane
  *      only when BOTH are present, so it silently skips);
- *    - the declaration call itself failed (no coord:write);
+ *    - the declaration call itself failed or timed out;
  *    - no `claims` block came back at all.
  *  An absent warning must mean "you hold at least part of this lane", never
  *  "nothing went wrong as far as I looked".
@@ -2887,14 +2889,16 @@ export function summarizeLaneClaim(
   if (opts.declareFailed) {
     return {
       ...base,
-      warning: `coord:declare-intent FAILED, so NONE of the ${req.length} requested plan item(s) were claimed — you do NOT hold this lane. This usually means the caller lacks coord:write. ${laneClaimFallback(req)}`,
+      unknown: req,
+      warning: `coord:declare-intent FAILED or timed out; ownership of the ${req.length} requested plan item(s) is UNKNOWN. Existing claims may still be held, and an unobserved declaration may have completed. Check current ownership before retrying. ${laneClaimFallback(req)}`,
     };
   }
 
   if (!opts.planSlugGiven) {
     return {
       ...base,
-      warning: `planItems was passed WITHOUT planSlug, so NOTHING was claimed — you do NOT hold this lane. A lane is reconciled only when BOTH are given. Re-call with planSlug, or ${laneClaimFallback(req)}`,
+      unknown: req,
+      warning: `planItems was passed WITHOUT planSlug, so no lane claim was attempted. Existing ownership is UNKNOWN. A lane is reconciled only when BOTH are given. Check current ownership before re-calling with planSlug, or ${laneClaimFallback(req)}`,
     };
   }
 
@@ -2902,6 +2906,7 @@ export function summarizeLaneClaim(
   if (!c) {
     return {
       ...base,
+      unknown: req,
       warning: `coord:declare-intent returned no claims block, so NONE of the ${req.length} requested plan item(s) can be confirmed as claimed — do NOT assume you hold this lane. ${laneClaimFallback(req)}`,
     };
   }

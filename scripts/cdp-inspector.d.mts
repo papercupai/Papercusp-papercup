@@ -2,6 +2,70 @@
 // Edits here are silently discarded on the next run — change the JSDoc in
 // scripts/cdp-inspector.mjs and regenerate.
 /**
+ * The client accepts either Node or browser-style event transports. Injected
+ * test transports need only these operations, not WebSocket's static constants.
+ * @typedef {{ readyState: number, send: (payload: string) => void, close: () => void,
+ *   on?: (event: string, handler: (...args: any[]) => void) => unknown,
+ *   once?: (event: string, handler: (...args: any[]) => void) => unknown,
+ *   addEventListener?: (...args: any[]) => unknown }} CdpSocket
+ * @typedef {(url: string, options?: RequestInit) => Promise<{ ok: boolean, json: () => Promise<any> }>} InspectorFetch
+ * @typedef {(delay: number) => Promise<unknown>} InspectorSleep
+ */
+/**
+ * Observe an existing owner's sampler without enabling, starting, stopping or
+ * reconfiguring it. CDP cannot atomically claim an inactive isolate-wide sampler.
+ * The authoritative owner reader MUST change generation on every start/rearm,
+ * never reuse a generation, and report the actual GC sampling settings. Do not
+ * substitute a constant/caller assertion: CDP profiles contain no sampler epoch.
+ * Snapshots are fenced on both sides by this owner state and PID/timeOrigin.
+ * Only endpoint-live samples newer than the baseline ordinal are reported.
+ * This is neither total allocated bytes nor exclusive request attribution.
+ * The caller retains ownership of its transport and inspector-port cleanup.
+ *
+ * @template T
+ * @param {Pick<ReturnType<typeof createCdpClient>, 'evaluate' | 'send'>} client
+ * @param {{ expectedPid: number, expectedTimeOrigin: number,
+ *   readSamplerState: () => Promise<{generation: string, active: boolean,
+ *     includeObjectsCollectedByMajorGC: boolean, includeObjectsCollectedByMinorGC: boolean}>,
+ *   durationMs?: number, maxSamples?: number }} options
+ * @param {(signal: AbortSignal) => Promise<T>} during
+ */
+export function withBorrowedHeapSamples<T>(client: Pick<ReturnType<typeof createCdpClient>, "evaluate" | "send">, { expectedPid, expectedTimeOrigin, readSamplerState, durationMs, maxSamples, }: {
+    expectedPid: number;
+    expectedTimeOrigin: number;
+    readSamplerState: () => Promise<{
+        generation: string;
+        active: boolean;
+        includeObjectsCollectedByMajorGC: boolean;
+        includeObjectsCollectedByMinorGC: boolean;
+    }>;
+    durationMs?: number;
+    maxSamples?: number;
+}, during: (signal: AbortSignal) => Promise<T>): Promise<{
+    value: Awaited<T>;
+    sampling: {
+        ownership: string;
+        pid: number;
+        timeOrigin: number;
+        generation: string | undefined;
+        baselineOrdinal: number;
+        samples: {
+            ordinal: any;
+            size: any;
+            nodeId: any;
+            stack: any;
+            siteStatus: string;
+        }[];
+        sampledBytes: number;
+        siteCoverage: {
+            baselineMissingNodes: number;
+            endpointMissingNodes: number;
+            newMissingNodes: number;
+        };
+        definition: string;
+    };
+}>;
+/**
  * Read process/V8 counters without GC or changing an active heap profiler.
  * Inspector evaluations have no ESM dynamic-import callback on Node targets;
  * getBuiltinModule reaches the target's existing builtin instead. The caller
@@ -315,16 +379,6 @@ export function closeInspector(client: Pick<ReturnType<typeof createCdpClient>, 
 }): Promise<{
     closed: boolean;
 }>;
-/**
- * The client accepts either Node or browser-style event transports. Injected
- * test transports need only these operations, not WebSocket's static constants.
- * @typedef {{ readyState: number, send: (payload: string) => void, close: () => void,
- *   on?: (event: string, handler: (...args: any[]) => void) => unknown,
- *   once?: (event: string, handler: (...args: any[]) => void) => unknown,
- *   addEventListener?: (...args: any[]) => unknown }} CdpSocket
- * @typedef {(url: string, options?: RequestInit) => Promise<{ ok: boolean, json: () => Promise<any> }>} InspectorFetch
- * @typedef {(delay: number) => Promise<unknown>} InspectorSleep
- */
 export class CdpEvaluationError extends Error {
     constructor(expression: any, exceptionDetails: any);
     expression: any;
@@ -350,6 +404,31 @@ export class CdpTransportClosedError extends Error {
  * Node script, so this literal is the cross-runtime seam rather than an import.
  */
 export const SEED_RESTORE_DIAGNOSTIC_SLOT: "@papercusp/seed-bundle.restore-diagnostics";
+/**
+ * The client accepts either Node or browser-style event transports. Injected
+ * test transports need only these operations, not WebSocket's static constants.
+ */
+export type CdpSocket = {
+    readyState: number;
+    send: (payload: string) => void;
+    close: () => void;
+    on?: (event: string, handler: (...args: any[]) => void) => unknown;
+    once?: (event: string, handler: (...args: any[]) => void) => unknown;
+    addEventListener?: (...args: any[]) => unknown;
+};
+/**
+ * The client accepts either Node or browser-style event transports. Injected
+ * test transports need only these operations, not WebSocket's static constants.
+ */
+export type InspectorFetch = (url: string, options?: RequestInit) => Promise<{
+    ok: boolean;
+    json: () => Promise<any>;
+}>;
+/**
+ * The client accepts either Node or browser-style event transports. Injected
+ * test transports need only these operations, not WebSocket's static constants.
+ */
+export type InspectorSleep = (delay: number) => Promise<unknown>;
 export type CacheHeapObject = {
     phase: string;
     status: string;
@@ -421,29 +500,4 @@ export type FunctionCallTrace = {
         stacks: string[];
     }>;
 };
-/**
- * The client accepts either Node or browser-style event transports. Injected
- * test transports need only these operations, not WebSocket's static constants.
- */
-export type CdpSocket = {
-    readyState: number;
-    send: (payload: string) => void;
-    close: () => void;
-    on?: (event: string, handler: (...args: any[]) => void) => unknown;
-    once?: (event: string, handler: (...args: any[]) => void) => unknown;
-    addEventListener?: (...args: any[]) => unknown;
-};
-/**
- * The client accepts either Node or browser-style event transports. Injected
- * test transports need only these operations, not WebSocket's static constants.
- */
-export type InspectorFetch = (url: string, options?: RequestInit) => Promise<{
-    ok: boolean;
-    json: () => Promise<any>;
-}>;
-/**
- * The client accepts either Node or browser-style event transports. Injected
- * test transports need only these operations, not WebSocket's static constants.
- */
-export type InspectorSleep = (delay: number) => Promise<unknown>;
 import WebSocket from 'ws';

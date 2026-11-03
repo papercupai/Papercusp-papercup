@@ -133,6 +133,12 @@ export function consultResponderVerbMenu(input: ConsultResponderVerbMenuInput): 
     `Reply in conversation ${input.conversationId} with consult:reply { kind } (${evidenceNote}); ` +
     `consult:decline { reason } ${declineNote}; consult:close { outcome } when settled. ` +
     `Untyped conversations:post is refused.\n` +
+    `For a substantive design review, ask in the initial review: is this the simplest design that meets the original scenarios? ` +
+    `What existing components can be reused, which complexity is necessary, and what can be removed? ` +
+    `After a material design revision, reassess the revised design as a whole against those original scenarios, ` +
+    `including whether the added complexity is still necessary and whether a simpler reused approach now fits. ` +
+    `Use the existing review and follow-up exchange limit; this adds no review stage or requirement for a clean review. ` +
+    `Cosmetic-only changes do not trigger another simplicity review.\n` +
     `${consultVoidExitLine(input.conversationId)}`
   );
 }

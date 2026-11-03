@@ -6,13 +6,13 @@
  * PAPERCUSP_ENGINEERING_JOURNEY_INPUTS manifest. Missing live proof fails the
  * enabled run; ordinary collection skips this opt-in live suite. */
 import { randomBytes } from 'node:crypto';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { expect, it } from 'vitest';
+import { beforeAll, expect, it } from 'vitest';
 import { parseExecutionBoundaryReceipt } from '@papercusp/test-config/execution-details';
 import type { EngineeringQueryReport } from './engineering-evidence';
-import { verifyProducerBuildIdentity } from './engineering-evidence-producer';
+import { verifyEngineeringJourneySources, verifyProducerBuildIdentity } from './engineering-evidence-producer';
 import { readEngineeringJourneyConfig } from '../../../../apps/operator/e2e/_engineering-evidence-journey-config';
 import { readEngineeringRuntimeHealth, readEngineeringTool } from '../../../../scripts/verify-engineering-evidence-tauri.mjs';
 
@@ -100,6 +100,27 @@ it.skipIf(!live)('ee.live-boundary: records an actual sampled serving graph boun
 // These cases consume the actual producer receipt through the frozen journey
 // manifest. Their framework identities are separate from the producing case;
 // the existing owned Tauri executor still verifies the mounted product UI.
+beforeAll(async () => {
+  // Producer-only runs have no journey manifest. The four consuming cases
+  // share this proof, while retaining their own before/after runtime checks.
+  if (!live || !process.env.PAPERCUSP_ENGINEERING_JOURNEY_INPUTS) return;
+  expect(process.env.PAPERCUSP_TEST_RUN_RECEIPT_FILE, 'retain each framework insertion receipt').toBeTruthy();
+  const config = readEngineeringJourneyConfig();
+  verifyProducerBuildIdentity(config.input.buildSha);
+  const output = process.env.PAPERCUSP_ENGINEERING_JOURNEY_OUTPUT;
+  expect(output, 'retain source preflight timings and failures').toBeTruthy();
+  mkdirSync(output!, { recursive: true });
+  await verifyEngineeringJourneySources({ pins: config.input.sourcePins,
+    runtime: config.plane === 'final-release' ? 'release-operator' : 'staging-operator',
+    health: () => readEngineeringRuntimeHealth({ origin: config.origin, buildSha: config.input.buildSha }),
+    read: pin => readEngineeringTool(config, 'dev:pipeline_position', {
+      path: pin.path, expectedSourceSha256: pin.sha256, sourceRuntimeOnly: true,
+    }) as Promise<{ acceptedSource?: { matches?: boolean; runtimeContainment?: Record<string, boolean> } }>,
+    retain: reading => appendFileSync(join(output!, 'source-preflight.jsonl'),
+      JSON.stringify({ buildSha: config.input.buildSha, observedAt: new Date().toISOString(), ...reading }) + '\n'),
+  });
+}, 180_000);
+
 async function recordedJourney() {
   const config = readEngineeringJourneyConfig();
   expect(process.env.PAPERCUSP_TEST_RUN_RECEIPT_FILE, 'retain each framework insertion receipt').toBeTruthy();
@@ -109,14 +130,6 @@ async function recordedJourney() {
   verifyProducerBuildIdentity(config.input.buildSha);
   const health = () => readEngineeringRuntimeHealth({ origin: config.origin, buildSha: config.input.buildSha });
   const before = await health();
-  const runtime = config.plane === 'final-release' ? 'release-operator' : 'staging-operator';
-  for (const pin of config.input.sourcePins) {
-    const measured = await readEngineeringTool(config, 'dev:pipeline_position', {
-      path: pin.path, expectedSourceSha256: pin.sha256, sourceRuntimeOnly: true,
-    }) as { acceptedSource?: { matches?: boolean; runtimeContainment?: Record<string, boolean> } };
-    expect(measured.acceptedSource?.matches, pin.path).toBe(true);
-    expect(measured.acceptedSource?.runtimeContainment?.[runtime], pin.path).toBe(true);
-  }
   const query = (selectors: Record<string, unknown>) => readEngineeringTool(config, 'graph:query', {
     op: 'evidence', harnesses: [config.input.harness], ...selectors,
   }) as Promise<unknown> as Promise<EngineeringQueryReport>;

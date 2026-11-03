@@ -47,7 +47,7 @@ describe('native child committed source preflight', () => {
   const suites = ['packages/operator-core/lib/__tests__/vitest-startup-trace.test.ts',
     'packages/operator-core/test/committed-reader-source-preflight.test.ts'];
   const inputs = ['scripts/lib/vitest-startup-trace.mjs', 'packages/operator-core/lib/process-identity.ts',
-    'libs/test-config/src/configuration-snapshot.ts'];
+    'libs/test-config/src/configuration-snapshot.ts', 'libs/test-config/src/executed-config-load-capture.ts'];
   const root = '/native-source-fixture';
   const bytes = Buffer.from('same native inputs');
 

@@ -104,6 +104,33 @@ describe('dev:pg_health completed-result delivery', () => {
       acquisition.release();
     }
   });
+  it('surfaces scheduler-claim acquisition and query diagnostics', async () => {
+    const acquisition = beginAcquire('scheduler-claim');
+    acquisition.acquired();
+    recordResult('scheduler-claim', 91);
+
+    try {
+      const { data } = await run({ localOnly: true });
+      const acquisitionPool = data.acquisitionDiagnostics.pools.find(
+        (pool: { counters: { pool: string } }) => pool.counters.pool === 'scheduler-claim',
+      );
+      expect(acquisitionPool).toMatchObject({
+        counters: { pool: 'scheduler-claim', waiting: 0, held: 1, max: null, totalAcquired: 1 },
+        tickets: { pool: 'scheduler-claim', active: 1, tickets: [{ state: 'held' }] },
+      });
+
+      const queryPool = data.processDiagnostics.pools.find(
+        (pool: { pool: string }) => pool.pool === 'scheduler-claim',
+      );
+      expect(queryPool).toMatchObject({
+        observed: true,
+        totalRecorded: 1,
+        results: [expect.objectContaining({ pool: 'scheduler-claim', queryId: 91 })],
+      });
+    } finally {
+      acquisition.release();
+    }
+  });
   it.each([
     { label: 'is explicitly configured', value: '24', expected: '24' },
     { label: 'is unset', value: undefined, expected: null },
@@ -143,6 +170,7 @@ describe('dev:pg_health completed-result delivery', () => {
       'org-app',
       'org-admin',
       'org-admin-lossless-bigint',
+      'scheduler-claim',
     ]);
     expect(diagnostic.pools[0].results).toEqual([
       expect.objectContaining({
@@ -205,7 +233,7 @@ describe('dev:pg_health completed-result delivery', () => {
   });
 
   it('returns the requested bounded window across pools', async () => {
-    for (const pool of ['org-app', 'org-admin', 'org-admin-lossless-bigint']) {
+    for (const pool of ['org-app', 'org-admin', 'org-admin-lossless-bigint', 'scheduler-claim']) {
       for (let queryId = 1; queryId <= 6; queryId += 1) recordResult(pool, queryId);
     }
 
@@ -251,14 +279,14 @@ describe('dev:pg_health completed-result delivery', () => {
   });
 
   it('bounds all selected pools and preserves terminal failure metadata', async () => {
-    for (const pool of ['org-app', 'org-admin', 'org-admin-lossless-bigint']) {
+    for (const pool of ['org-app', 'org-admin', 'org-admin-lossless-bigint', 'scheduler-claim']) {
       for (let queryId = 1; queryId <= 6; queryId += 1) recordResult(pool, queryId, 'error');
     }
 
     const { data } = await run({ localOnly: true });
     const pools = data.processDiagnostics.pools;
 
-    expect(pools).toHaveLength(3);
+    expect(pools).toHaveLength(4);
     for (const pool of pools) {
       expect(pool).toMatchObject({ totalRecorded: 6, dropped: 0, retained: 6, omittedRetained: 2 });
       expect(pool.results).toHaveLength(4);

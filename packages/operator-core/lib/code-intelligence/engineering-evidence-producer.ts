@@ -2,6 +2,40 @@ import { execFileSync } from 'node:child_process';
 import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+/** Check every frozen source pin in one bounded journey phase. */
+export async function verifyEngineeringJourneySources(input: {
+  pins: { path: string; sha256: string }[];
+  runtime: string;
+  health: () => Promise<string>;
+  read: (pin: { path: string; sha256: string }) => Promise<{
+    acceptedSource?: { matches?: boolean; runtimeContainment?: Record<string, boolean> };
+  }>;
+  retain?: (reading: { path: string; status: 'pass' | 'fail'; elapsedMs: number; error?: string }) => void;
+}): Promise<void> {
+  if (!input.pins.length) throw new Error('Engineering journey requires source pins.');
+  const before = await input.health();
+  // The reads are independent. Settle every read before leaving the phase so
+  // a failed pin cannot leave unobserved work running inside another case.
+  const results = await Promise.allSettled(input.pins.map(async pin => {
+    const startedAt = Date.now();
+    try {
+      const measured = await input.read(pin);
+      if (measured.acceptedSource?.matches !== true
+        || measured.acceptedSource.runtimeContainment?.[input.runtime] !== true)
+        throw new Error('Selected runtime does not contain accepted source: ' + pin.path);
+      input.retain?.({ path: pin.path, status: 'pass', elapsedMs: Date.now() - startedAt });
+    } catch (error) {
+      input.retain?.({ path: pin.path, status: 'fail', elapsedMs: Date.now() - startedAt,
+        error: String(error instanceof Error ? error.message : error) });
+      throw error;
+    }
+  }));
+  if (await input.health() !== before) throw new Error('Selected runtime changed during source preflight.');
+  const failures = results.filter(result => result.status === 'rejected');
+  if (failures.length) throw new AggregateError(failures.map(result => result.reason),
+    'Engineering journey source preflight failed.');
+}
+
 /** A passing producer must be joinable to the selected serving artifact. */
 export function assertProducerBuildIdentity(buildSha: string, runnerCommit: string | null,
   reporterCommit?: string): void {

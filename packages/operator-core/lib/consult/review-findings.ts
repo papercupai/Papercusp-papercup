@@ -1,5 +1,6 @@
 /** Typed review evidence on the existing consult outcome; no separate review store. */
 import { z } from 'zod';
+import { isDeepStrictEqual } from 'node:util';
 
 const text = (max: number) => z.string().trim().min(1).max(max);
 export const reviewAnswerSchema = z.object({
@@ -66,23 +67,37 @@ export function appendConsultReview(input: {
     ? structuredClone(input.current) : { version: 1, answers: [], findings: [], dispositions: [] };
   if (input.answer) {
     const answer = reviewAnswerSchema.parse(input.answer);
-    state.answers.push({ postId: input.postId, reviewerId: input.authorId, subjectRef: answer.subjectRef,
-      coverage: answer.coverage, at: input.at });
-    for (const finding of answer.findings) state.findings.push({ ...finding,
+    const assessment = { postId: input.postId, reviewerId: input.authorId, subjectRef: answer.subjectRef,
+      coverage: answer.coverage, at: input.at };
+    const findings = answer.findings.map(finding => ({ ...finding,
       id: `post:${input.postId}#${finding.key}`, postId: input.postId,
-      reviewerId: input.authorId, subjectRef: answer.subjectRef });
+      reviewerId: input.authorId, subjectRef: answer.subjectRef }));
+    const previous = state.answers.find(a => a.postId === input.postId);
+    if (previous) {
+      if (!isDeepStrictEqual(previous, assessment) ||
+          !isDeepStrictEqual(state.findings.filter(f => f.postId === input.postId), findings))
+        throw new Error('Conflicting replay of review answer');
+    } else {
+      state.answers.push(assessment);
+      state.findings.push(...findings);
+    }
   }
   if (input.dispositions !== undefined) {
     if (input.authorId !== input.requesterId) throw new Error('Only the requester may disposition review findings');
     const dispositions = reviewDispositionsSchema.parse(input.dispositions);
     const seen = new Set<string>();
+    const events: StoredReviewDisposition[] = [];
     for (const disposition of dispositions) {
       if (seen.has(disposition.findingId)) throw new Error('Duplicate finding disposition');
       seen.add(disposition.findingId);
       if (!state.findings.some(finding => finding.id === disposition.findingId))
         throw new Error(`Unknown review finding: ${disposition.findingId}`);
-      state.dispositions.push({ ...disposition, postId: input.postId, authorId: input.authorId, at: input.at });
+      events.push({ ...disposition, postId: input.postId, authorId: input.authorId, at: input.at });
     }
+    const previous = state.dispositions.filter(d => d.postId === input.postId);
+    if (previous.length) {
+      if (!isDeepStrictEqual(previous, events)) throw new Error('Conflicting replay of review dispositions');
+    } else state.dispositions.push(...events);
   }
   // Refuse overflow rather than silently lose findings or disposition history.
   if (state.answers.length > 100 || state.findings.length > 400 || state.dispositions.length > 1000)

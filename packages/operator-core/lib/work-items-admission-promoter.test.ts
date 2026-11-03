@@ -598,17 +598,24 @@ describe('admission endpoint protection — terminal twins', () => {
     });
   });
 
-  describe('authenticated audited agent park comparison', () => {
+  describe.each(['agent', 'watchdog'] as const)('authenticated audited %s park comparison', creator => {
     const actor = 'su-f376159c-ff71-45aa-b34c-cded72705429';
     const pending = item('EI-original');
     const twin = item('EI-parked', { admission: 'admitted' });
     const comparison = pair(pending, twin, [pending.id]);
-    const parkPayload = { _claimHold: true, _ei: { source: 'su', created_by: actor },
+    const releaseContract = { owner: actor, trigger: 'work-item:done:EI-canonical',
+      condition: 'EI-canonical reaches done, then reconcile this duplicate.',
+      evidence: 'canonical work item', reachability: 'reachable' };
+    const parkPayload = { _claimHold: true, _ei: creator === 'watchdog'
+      ? { source: 'su', created_by: 'system:improvement-watchdog', found_during: 'improvement-watchdog' }
+      : { source: 'su', created_by: actor },
+      ...(creator === 'watchdog' ? { claim_hold_release: releaseContract } : {}),
       claim_hold_by: actor, claim_hold_reason: 'future independent source work',
       claim_hold_at: new Date(1000).toISOString() };
-    const parked = snapshot(twin.id, { payload: parkPayload, agentParkAudit: {
+    const parked = snapshot(twin.id, { kind: 'bug', payload: parkPayload, agentParkAudit: {
       id: 'audit-park', atMs: 1008, actor, action: 'work_items:claim_hold:set',
-      details: { mode: 'claim_hold', by: actor, reason: parkPayload.claim_hold_reason },
+      details: { mode: 'claim_hold', by: actor, reason: parkPayload.claim_hold_reason,
+        ...(creator === 'watchdog' ? { releaseContract } : {}) },
     } });
     const select = (overrides: Partial<AdmissionMergeSnapshot> = {}, authenticated = true,
       original: Partial<AdmissionMergeSnapshot> = {}) => prescreenPromoterWindow({
@@ -626,6 +633,22 @@ describe('admission endpoint protection — terminal twins', () => {
       expect(select({}, true, { assignee: actor }).batch).toEqual([]);
       expect(select({}, true, { payload: { _claimHold: true } }).batch).toEqual([]);
       expect(admissionEndpointBlock(parked)).toMatchObject({ reason: 'claim-held' });
+      if (creator === 'watchdog') expect(select({ kind: 'change' }).pairs).toEqual([]);
+    });
+
+    if (creator === 'watchdog') it.each([
+      undefined,
+      { ...releaseContract, owner: 'su-other' },
+      { ...releaseContract, reachability: 'unreachable' },
+      { ...releaseContract, trigger: 'work-item:done:EI-parked' },
+      { ...releaseContract, trigger: 'arbitrary:event' },
+      { ...releaseContract, condition: 'policy-tier approval is required' },
+    ])('refuses a watchdog comparison with an invalid release contract %j', contract => {
+      const payload = { ...parkPayload, claim_hold_release: contract };
+      const agentParkAudit = { ...parked.agentParkAudit!, details: {
+        mode: 'claim_hold', by: actor, reason: parkPayload.claim_hold_reason, releaseContract: contract,
+      } };
+      expect(select({ payload, agentParkAudit }).pairs).toEqual([]);
     });
 
     it.each([

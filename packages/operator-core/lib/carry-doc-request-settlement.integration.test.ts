@@ -15,6 +15,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { buildCarryDoc, type BuildCarryDocOpts } from './carry-doc';
+import { dialogAnswerText } from './transcript-wire';
 
 const OWNER = 'su-request-settlement-fixture';
 let sandbox: string;
@@ -235,10 +236,19 @@ describe('P-005-request-settlement: transcript → carry continuation', () => {
     type: 'assistant', uuid, parentUuid,
     message: { role: 'assistant', stop_reason: 'tool_use', content: [{ type: 'tool_use', id: `toolu_${uuid}`, name: 'AskUserQuestion', input: {} }] },
   });
-  const dialogAnswer = (uuid: string, parentUuid: string, answer: string): Line => ({
-    type: 'user', uuid, parentUuid, promptId: 'prompt-1',
-    message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: `toolu_${parentUuid}`, content: `Your questions have been answered: "Is the mic connected?"="${answer}".` }] },
-  });
+  const dialogAnswer = (uuid: string, parentUuid: string, answer: string): Line => {
+    const payload = `Your questions have been answered: "Is the mic connected?"="${answer}".`;
+    return {
+      type: 'user', uuid, parentUuid, promptId: 'prompt-1',
+      message: { role: 'user', content: [
+        // Carry the normalized human-source marker from the PostToolUse
+        // receipt alongside the native tool_result payload. The parent UUID
+        // remains available to exercise request settlement through the tail.
+        { type: 'text', text: dialogAnswerText(payload, 'human') },
+        { type: 'tool_result', tool_use_id: `toolu_${parentUuid}`, content: payload },
+      ] },
+    };
+  };
   const dialogChain = (final: Line): Line[] => [
     owner('o1', null, 'Start the guided microphone session when I am ready.'),
     assistant('a1', 'o1', 'Checking for the microphone first.', 'tool_use'),
@@ -312,5 +322,34 @@ describe('P-005-request-settlement: transcript → carry continuation', () => {
     expect(correctionTurn).toMatchObject({ requestId: 'o2', provenance: { verdict: 'owner-typed' } });
     expect(finalReply).toMatchObject({ requestId: 'o2', responseDisposition: 'delivered' });
     expect(doc.continuation.pendingOwnerMessages).toBeUndefined();
+  });
+
+  it('a closed parent settles only its linked dialog answer, leaving a separate owner request open', async () => {
+    const parentText = 'Please check the release plan.';
+    const unrelatedText = 'Separately, explain the database retry policy.';
+    const parentTs = '2026-10-18T02:17:08.718Z';
+    const dialogTs = '2026-10-18T02:22:27.853Z';
+    const unrelatedTs = '2026-10-18T02:23:26.993Z';
+    const path = transcript('closed-parent-preserves-unrelated-request', [
+      { ...owner('o1', null, parentText), timestamp: parentTs },
+      assistant('a1', 'o1', 'Which part should I check?', 'tool_use'),
+      askDialog('q1', 'a1'),
+      { ...dialogAnswer('d1', 'q1', 'The current release plan.'), timestamp: dialogTs },
+      assistant('a2', 'd1', 'Checking that now.', 'tool_use'),
+      { ...owner('o2', 'a2', unrelatedText), timestamp: unrelatedTs },
+      assistant('a3', 'o2', 'I will answer that next.', 'tool_use'),
+    ]);
+    const doc = await buildCarryDoc(OWNER, {
+      ...opts(path),
+      getClosedDirectivesFn: async () => [
+        { text: parentText, createdAtMs: Date.parse(parentTs) + 560 },
+      ],
+    });
+
+    expect(doc.continuation.lastOwnerMessage?.text).toBe(unrelatedText);
+    expect(doc.continuation.answered).toBe(false);
+    expect(doc.continuation.pendingOwnerMessages).toEqual([
+      expect.objectContaining({ requestId: 'o2', text: unrelatedText }),
+    ]);
   });
 });

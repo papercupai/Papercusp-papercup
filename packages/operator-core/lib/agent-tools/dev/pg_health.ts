@@ -24,6 +24,7 @@ const ACQUISITION_POOLS = [
   SU_LOCK_TX_POOL_LABEL,
   'org-admin-priority',
   'org-app-priority',
+  'scheduler-claim',
 ] as const;
 
 export default defineTool({
@@ -74,7 +75,7 @@ export default defineTool({
         'ReadyForQuery, not acquisition, CPU, GC or root cause. preBuildMs spans first Query.handle to build, ' +
         'including queue/connect/preparation but excluding caller-controlled lazy time; it is not pure acquisition ' +
         'or CPU, and null means unmeasured. Non-ReadyForQuery failures are not covered.',
-      pools: ['org-app', 'org-admin', 'org-admin-lossless-bigint'].map((pool) => {
+      pools: ['org-app', 'org-admin', 'org-admin-lossless-bigint', 'scheduler-claim'].map((pool) => {
         const snapshot = pgResultDiagnosticSnapshot(pool, resultLimitPerPool);
         const retained = snapshot.totalRecorded - snapshot.dropped;
         return {

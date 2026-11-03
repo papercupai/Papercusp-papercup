@@ -375,6 +375,7 @@ describe('writeRoleCodexHome', () => {
       promptText: 'P',
     });
     expect(parseToml(readFileSync(role.configPath, 'utf8')).check_for_update_on_startup).toBe(false);
+    expect(parseToml(readFileSync(role.configPath, 'utf8')).mcp_servers).toMatchObject({ papercusp: { required: true } });
     const opts = {
       sessionKey: 'no-update-su',
       model: RESOLVED_CODEX_DEFAULT,
@@ -384,7 +385,7 @@ describe('writeRoleCodexHome', () => {
       promptText: 'P',
     };
     const su = mod.writeSuCodexHome(opts);
-    const expectedMcp = { 'papercusp-su': { tools: { 'tools:invoke': { approval_mode: 'approve' } } } };
+    const expectedMcp = { 'papercusp-su': { required: true, tools: { 'tools:invoke': { approval_mode: 'approve' } } } };
     expect(parseToml(readFileSync(su.configPath, 'utf8')).mcp_servers).toMatchObject(expectedMcp);
     expect(parseToml(readFileSync(su.configPath, 'utf8')).check_for_update_on_startup).toBe(false);
     const history = join(su.codexHome, 'sessions', 'retained.jsonl');
@@ -392,6 +393,7 @@ describe('writeRoleCodexHome', () => {
     writeFileSync(history, 'retained transcript');
     writeFileSync(su.configPath,
       readFileSync(su.configPath, 'utf8').replace('check_for_update_on_startup = false', 'check_for_update_on_startup = true')
+        .replace('required = true', 'required = false')
         .replace('tools = { "tools:invoke" = { approval_mode = "approve" } }', ''));
     const repaired = mod.ensureSuCodexHomeConfig(opts);
     expect(repaired.repaired).toBe(true);

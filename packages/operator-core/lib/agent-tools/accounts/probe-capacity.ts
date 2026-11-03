@@ -204,7 +204,7 @@ function hasPremiumHeadroom(account: ClaudeAccount, result: CapacityProbeResult,
  */
 export async function runCapacityProbe(args: CapacityProbeArgs) {
   const { loadAccountPool, updateAccountPool } = await import('../../deployment/account-pool-store');
-  const { recordProbeFailure } = await import('../../deployment/account-pool');
+  const { recordProbeFailure, recordAccountReset } = await import('../../deployment/account-pool');
   const { recordAccountWindowWithBurnAlert } = await import('../../inference-gateway/burn-alert');
   const ws = args.workspace ?? activeWorkspaceId();
   // A direct probe is an observation, not an implicit repair. The scheduled reprobe action passes
@@ -217,6 +217,7 @@ export async function runCapacityProbe(args: CapacityProbeArgs) {
   const providerAccounts = pool.accounts.filter((a) => (a.provider ?? 'claude') === provider);
   const accounts = wanted.size > 0 ? providerAccounts.filter((a) => wanted.has(a.id)) : providerAccounts;
 
+  const probeStartedAt = Date.now();
   const results = await probeCapacityForAccounts(accounts, {
     walledOnly: args.walledOnly ?? false,
     fullUtil: DRAIN_FULL_UTIL,
@@ -268,6 +269,16 @@ export async function runCapacityProbe(args: CapacityProbeArgs) {
         ws,
       );
       if (transition) burnTransitions.push(transition);
+      const account = accounts.find(a => a.id === r.accountId);
+      if (r.status !== undefined && r.status >= 200 && r.status < 300 && account &&
+          hasPremiumHeadroom(account, r, t)) {
+        // Reconcile the third store too: old sustained penalties otherwise
+        // veto a fresh consult before it can reach the readmitted gateway.
+        // The reset's timestamp fence preserves any concurrent new 429.
+        await updateAccountPool(p => recordAccountReset(p, r.accountId, {
+          confirmedServingSince: probeStartedAt,
+        }), ws);
+      }
       applied.push(r.accountId);
     }
     if (applied.length > 0) {

@@ -1,5 +1,51 @@
 import { describe, expect, it } from 'vitest';
-import { assertProducerBuildIdentity } from './engineering-evidence-producer';
+import { assertProducerBuildIdentity, verifyEngineeringJourneySources } from './engineering-evidence-producer';
+
+describe('engineering journey source preflight', () => {
+  const pins = ['one.ts', 'two.ts', 'three.ts'].map(path => ({ path, sha256: 'a'.repeat(64) }));
+  const accepted = { acceptedSource: { matches: true, runtimeContainment: { 'staging-operator': true } } };
+
+  it('starts every pin read before waiting, and joins them before the final health check', async () => {
+    const pending: (() => void)[] = [];
+    const events: string[] = [];
+    const run = verifyEngineeringJourneySources({ pins, runtime: 'staging-operator',
+      health: async () => { events.push('health'); return 'selected'; },
+      read: async pin => { events.push(pin.path); await new Promise<void>(resolve => pending.push(resolve)); return accepted; } });
+    await Promise.resolve();
+    expect(events).toEqual(['health', 'one.ts', 'two.ts', 'three.ts']);
+    pending.forEach(resolve => resolve());
+    await run;
+    expect(events.at(-1)).toBe('health');
+    expect(events.filter(event => event === 'health')).toHaveLength(2);
+  });
+
+  it.each(['source-mismatch', 'wrong-runtime', 'read-failure'])(
+    'refuses %s while retaining the outcome of every pin', async failure => {
+      const readings: { path: string; status: string }[] = [];
+      await expect(verifyEngineeringJourneySources({ pins, runtime: 'staging-operator',
+        health: async () => 'selected', retain: reading => readings.push(reading),
+        read: async pin => {
+          if (pin.path !== 'two.ts') return accepted;
+          if (failure === 'read-failure') throw new Error('reader refused');
+          return { acceptedSource: { matches: failure !== 'source-mismatch',
+            runtimeContainment: { 'staging-operator': failure !== 'wrong-runtime' } } };
+        } })).rejects.toThrow('source preflight failed');
+      expect(readings.map(reading => reading.path).sort()).toEqual(pins.map(pin => pin.path).sort());
+      expect(readings.find(reading => reading.path === 'two.ts')?.status).toBe('fail');
+    });
+
+  it('refuses a runtime transition even when every source pin matches', async () => {
+    let healthReads = 0;
+    await expect(verifyEngineeringJourneySources({ pins, runtime: 'staging-operator',
+      health: async () => ++healthReads === 1 ? 'selected' : 'replacement', read: async () => accepted }))
+      .rejects.toThrow('runtime changed');
+  });
+
+  it('refuses an empty source census', async () => {
+    await expect(verifyEngineeringJourneySources({ pins: [], runtime: 'staging-operator',
+      health: async () => 'selected', read: async () => accepted })).rejects.toThrow('requires source pins');
+  });
+});
 
 describe('engineering live producer source identity', () => {
   const selected = 'b0b5d23760' + 'a'.repeat(30);

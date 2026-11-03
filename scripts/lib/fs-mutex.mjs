@@ -702,35 +702,48 @@ async function ticketDirectoryStamp(ticketsDir) {
 }
 
 async function scanOldestTicketDir(ticketsDir, staleMs, io, measureSubphase) {
-  const beforeStamp = await ticketDirectoryStamp(ticketsDir);
+  const beforeStamp = await measureSubphase(
+    "ticket-scan.directory-stamp",
+    () => ticketDirectoryStamp(ticketsDir),
+  );
   let entries;
   try {
-    entries = await (io.readdir ?? readdir)(ticketsDir, { withFileTypes: true });
+    entries = await measureSubphase(
+      "ticket-scan.readdir",
+      () => (io.readdir ?? readdir)(ticketsDir, { withFileTypes: true }),
+    );
   } catch {
     return null;
   }
-  const ticketNames = entries
+  const ticketNames = await measureSubphase("ticket-scan.sort", () => entries
     .filter((entry) => entry.isDirectory())
     .map((entry) => entry.name)
-    .sort();
+    .sort());
   for (const ticketName of ticketNames) {
     const ticketDir = join(ticketsDir, ticketName);
     let observedOwner = "(unreadable)";
-    if (await reclaimAbandonedLock(ticketDir, staleMs, io, measureSubphase, (rawOwner) => {
-      observedOwner = rawOwner;
-    })) continue;
+    const reclaimed = await measureSubphase(
+      "ticket-scan.head-reclaim",
+      () => reclaimAbandonedLock(ticketDir, staleMs, io, measureSubphase, (rawOwner) => {
+        observedOwner = rawOwner;
+      }),
+    );
+    if (reclaimed) continue;
     try {
       // Another waiter may have cleaned this candidate after our directory
       // snapshot. Skip that vanished entry and continue through the ordered
       // prefix instead of treating it as the live head.
-      if (!(await lstat(ticketDir)).isDirectory()) continue;
+      if (!(await measureSubphase("ticket-scan.head-lstat", () => lstat(ticketDir))).isDirectory()) continue;
     } catch (error) {
       if (error?.code === "ENOENT") continue;
       return null;
     }
     // Reuse the liveness check's owner read. FIFO-only waiters never reach the
     // writer-lock reclaim path, and diagnostics must not require onWaiting.
-    const afterStamp = await ticketDirectoryStamp(ticketsDir);
+    const afterStamp = await measureSubphase(
+      "ticket-scan.directory-stamp",
+      () => ticketDirectoryStamp(ticketsDir),
+    );
     return {
       ticketDir,
       owner: observedOwner,

@@ -1,5 +1,5 @@
 import type { Sql } from 'postgres';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   BAR_CRITIQUE_POLICY,
   barCritiqueThreshold,
@@ -214,6 +214,58 @@ describe('loadBarCritiqueEvidence (P-007 reader)', () => {
   }
 
   const S1 = clause('S-1');
+
+  it('bounds independent snapshot reads and preserves close-order pins when reads finish out of order', async () => {
+    const rows: Row[] = Array.from({ length: 6 }, (_, index) => ({
+      conversation_id: `c-${index}`,
+      closed_at: new Date(Date.UTC(2026, 9, 3 + index)).toISOString(),
+      responder_id: `critic-${index}`, author_id: null, answered_at: null,
+    }));
+    const { sql } = fakeSql(rows);
+    const releases = new Map<string, () => void>();
+    let active = 0;
+    let maxActive = 0;
+    const listClauses = (async (opts: { asOf?: string; includeHistory?: boolean }) => {
+      if (opts.includeHistory) return [S1];
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      await new Promise<void>((resolve) => releases.set(opts.asOf!, resolve));
+      active -= 1;
+      return [{ ...S1, revision: rows.findIndex((row) => row.closed_at === opts.asOf) + 1 }];
+    }) as unknown as typeof listSpecClauses;
+    const result = loadBarCritiqueEvidence(
+      { workspaceId: 'ws', harnessSlug: 'h', planSlug: PLAN, authorIds: [] },
+      { sql, listClauses, partyKeys: async () => new Map() },
+    );
+
+    await vi.waitFor(() => expect(releases.size).toBe(4));
+    releases.get(rows[3].closed_at)!();
+    await Promise.resolve();
+    expect(releases.size).toBe(4);
+    for (const index of [2, 1, 0]) releases.get(rows[index].closed_at)!();
+    await vi.waitFor(() => expect(releases.size).toBe(6));
+    for (const index of [5, 4]) releases.get(rows[index].closed_at)!();
+
+    const out = await result;
+    expect(maxActive).toBe(4);
+    expect(out.critiques.map((critique) => critique.consultId)).toEqual(rows.map((row) => row.conversation_id));
+    expect(out.critiques.map((critique) => critique.record.pins[0].revision)).toEqual([1, 2, 3, 4, 5, 6]);
+  });
+
+  it('propagates a snapshot read failure instead of returning partial critique evidence', async () => {
+    const { sql } = fakeSql([
+      { conversation_id: 'c-ok', closed_at: '2026-10-03T00:00:00.000Z', responder_id: 'a', author_id: null, answered_at: null },
+      { conversation_id: 'c-failed', closed_at: '2026-10-04T00:00:00.000Z', responder_id: 'b', author_id: null, answered_at: null },
+    ]);
+    const listClauses = (async (opts: { asOf?: string; includeHistory?: boolean }) => {
+      if (opts.asOf === '2026-10-04T00:00:00.000Z') throw new Error('snapshot unavailable');
+      return [S1];
+    }) as unknown as typeof listSpecClauses;
+    await expect(loadBarCritiqueEvidence(
+      { workspaceId: 'ws', harnessSlug: 'h', planSlug: PLAN, authorIds: [] },
+      { sql, listClauses, partyKeys: async () => new Map() },
+    )).rejects.toThrow('snapshot unavailable');
+  });
 
   it("SPEC-P-007-AUTHOR-LINEAGE: the critic is the answer author, not the routed consult's source expert", async () => {
     const { sql, calls } = fakeSql([

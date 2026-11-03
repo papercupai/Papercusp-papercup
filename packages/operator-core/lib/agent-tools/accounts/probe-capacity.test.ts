@@ -12,7 +12,7 @@
  * Run: cd packages/operator-core && npx vitest run lib/agent-tools/accounts/probe-capacity.test.ts
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { emptyPool, registerAccount, getAccount, recordAccountWindow, type AccountPool } from '../../deployment/account-pool';
+import { emptyPool, registerAccount, getAccount, recordAccountWindow, recordAccountPenalty, isSpawnEligible, type AccountPool } from '../../deployment/account-pool';
 
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: vi.fn(() => 'default') }));
 
@@ -58,6 +58,44 @@ afterEach(() => {
 });
 
 describe('accounts:probe-capacity — failure persistence', () => {
+  it('applied successful inference clears stale sustained penalties before fresh consult selection', async () => {
+    const recent = Date.now() - 1000;
+    pool = recordAccountWindow(pool, 'a', { utilization: 0.2, utilization7d: 0.73 }, recent);
+    for (let i = 1; i <= 3; i++) pool = recordAccountPenalty(pool, 'a', recent + i);
+    const before = getAccount(pool, 'a')!.rate;
+    expect(isSpawnEligible(getAccount(pool, 'a')!, Date.now())).toBe(false);
+    probeM.mockResolvedValue([{ accountId: 'a', ok: true, status: 200,
+      windows: { utilization: 0.2, utilization7d: 0.73 }, before: {}, unwalls: false }]);
+    await tool.handler({ apply: true } as never, {} as never);
+    expect(getAccount(pool, 'a')!.rate.penaltyCount).toBe(0);
+    expect(getAccount(pool, 'a')!.rate.lastPenaltyAt).toBe(before.lastPenaltyAt);
+    expect(isSpawnEligible(getAccount(pool, 'a')!, Date.now())).toBe(true);
+  });
+
+  it.each([
+    { status: 429, apply: true, bucket: 'premium' },
+    { status: 503, apply: true, bucket: 'premium' },
+    { status: 200, apply: false, bucket: 'premium' },
+    { status: 200, apply: true, bucket: 'base_model_inference' },
+  ])('keeps penalties for an unproven premium recovery: %j', async ({ status, apply, bucket }) => {
+    for (let i = 1; i <= 3; i++) pool = recordAccountPenalty(pool, 'a', T0 + i);
+    probeM.mockResolvedValue([{ accountId: 'a', ok: true, status,
+      windows: { utilization: 0.1, utilization7d: 0.5, bucket }, before: {}, unwalls: false }]);
+    await tool.handler({ apply } as never, {} as never);
+    expect(getAccount(pool, 'a')!.rate.penaltyCount).toBe(3);
+  });
+
+  it('keeps a new penalty that arrives while the successful probe is in flight', async () => {
+    probeM.mockImplementation(async () => {
+      pool = recordAccountPenalty(pool, 'a', Date.now() + 1, { pausedUntil: Date.now() + 60_000 });
+      return [{ accountId: 'a', ok: true, status: 200,
+        windows: { utilization: 0.1, utilization7d: 0.5 }, before: {}, unwalls: false }];
+    });
+    await tool.handler({ apply: true } as never, {} as never);
+    expect(getAccount(pool, 'a')!.rate.penaltyCount).toBe(1);
+    expect(getAccount(pool, 'a')!.rate.pausedUntil).toBeGreaterThan(Date.now());
+  });
+
   it.each(['refused', 'relink-required'])('reports %s authentication without mutating accounts or launching recovery', async (authentication) => {
     const before = JSON.stringify(pool);
     probeM.mockResolvedValue([{ accountId: 'a', ok: false, status: 401, authentication, windows: {}, before: {}, unwalls: false }]);

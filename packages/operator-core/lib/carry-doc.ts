@@ -160,6 +160,7 @@ export interface CarryDocTailTurn {
 
 export interface CarryDocOwnerRequest {
   requestId: string | null;
+  parentRequestId?: string | null;
   text: string;
   ts: string | null;
 }
@@ -187,7 +188,9 @@ const normalizeRequestText = (text: string): string => text.replace(/\s+/g, ' ')
  * message as open the carry-respawn re-delivers it to the successor as a fresh
  * prompt (the owner sees a question they asked half an hour earlier). A pending
  * request whose exact capture (same text, captured within the match window of
- * the turn's timestamp) is already CLOSED is resolved, not pending. Pure.
+ * the turn's timestamp) is already CLOSED is resolved, not pending. A closed
+ * parent also settles linked dialog descendants through their native request
+ * ids; unrelated requests remain open. Pure.
  */
 export function settleByClosedDirectives(
   cont: CarryDocContinuation,
@@ -205,9 +208,42 @@ export function settleByClosedDirectives(
         normalizeRequestText(directive.text) === text,
     );
   };
-  const remaining = pending.filter((request) => !isClosed(request));
+  const closedRequestIds = new Set(
+    pending
+      .filter((request) => isClosed(request))
+      .map((request) => request.requestId)
+      .filter((requestId): requestId is string => Boolean(requestId)),
+  );
+  // A dialog answer has its own request id. Follow only its structural parent
+  // edge when the parent directive is closed; unrelated owner requests stay open.
+  let expanded = true;
+  while (expanded) {
+    expanded = false;
+    for (const request of pending) {
+      if (
+        request.requestId &&
+        request.parentRequestId &&
+        closedRequestIds.has(request.parentRequestId) &&
+        !closedRequestIds.has(request.requestId)
+      ) {
+        closedRequestIds.add(request.requestId);
+        expanded = true;
+      }
+    }
+  }
+
+  const isSettled = (request: CarryDocOwnerRequest) =>
+    isClosed(request) || Boolean(request.requestId && closedRequestIds.has(request.requestId));
+  const remaining = pending.filter((request) => !isSettled(request));
   if (remaining.length === pending.length) return cont;
-  const latestClosed = cont.lastOwnerMessage != null && isClosed(cont.lastOwnerMessage);
+  const latestClosed = cont.lastOwnerMessage != null && (
+    isClosed(cont.lastOwnerMessage) ||
+    pending.some((request) =>
+      request.text === cont.lastOwnerMessage?.text &&
+      request.ts === cont.lastOwnerMessage?.ts &&
+      Boolean(request.requestId && closedRequestIds.has(request.requestId)),
+    )
+  );
   const { pendingOwnerMessages: _resolved, ...rest } = cont;
   return {
     ...rest,
@@ -1096,7 +1132,19 @@ export function deriveContinuation(
       const key = turn.requestId ?? `tail-owner-${i}`;
       const entry = {
         key,
-        request: { requestId: turn.requestId ?? null, text: turn.text, ts: turn.ts },
+        request: {
+          requestId: turn.requestId ?? null,
+          // Only AskUserQuestion answers inherit a parent request for ledger
+          // cascade. A queued owner-typed message can also have a native parent
+          // UUID, but remains an independent request.
+          ...(turn.provenance?.verdict === 'owner-dialog' &&
+          turn.parentRequestId &&
+          turn.parentRequestId !== turn.requestId
+            ? { parentRequestId: turn.parentRequestId }
+            : {}),
+          text: turn.text,
+          ts: turn.ts,
+        },
         settled: false,
       };
       requests.push(entry);

@@ -41,6 +41,7 @@ vi.mock('../../scorecards', async (importOriginal) => {
 });
 
 import { readScorecardEvidence, readScorecardRecipeHeader } from '../../scorecards';
+import { runInstrument } from '../../rubric-instrument-registry';
 import { BAKED_DOOR_CONSTANTS, CHARS_PER_TOKEN_ESTIMATE, computeTurnDoors } from '../../context-doors';
 import { applyResultDoor, resetResultDoorAggregatesForTests } from '../../result-door';
 
@@ -142,6 +143,45 @@ describe('scorecards:get evidence-first projection', () => {
 
   it('does not retain an ambient workspace transaction while awaiting the bounded read', () => {
     expect((getTool as unknown as { skipWorkspaceTx?: boolean }).skipWorkspaceTx).toBe(true);
+  });
+
+  it('requires an exact criterion and refuses paging for retained historical replay', () => {
+    expect(scorecardGetArgs.safeParse({ issueId: 'EI-audited-card', replay: 'retained-measurement' }).success).toBe(false);
+    expect(scorecardGetArgs.safeParse({ issueId: 'EI-audited-card', criterionKey: 'disk', replay: 'retained-measurement', evidenceOffset: 0 }).success).toBe(false);
+  });
+
+  it('recomputes the selected card retained measurement through the judge-readable tool', async () => {
+    const reading = await runInstrument('host:df-max-used-pct', { exec: async () => 'Use%\n 96%\n', now: () => 1_700_000_000_000 });
+    readScorecardEvidenceM.mockResolvedValue({ kind: 'found', scorecard: { ...scorecard, criteria: [{
+      key: 'disk', rating: 'fail', evidence: 'original measurement', ratedFrom: 'ledger',
+      ledgerResult: { testRunId: 123, value: reading.value, unit: reading.unit, provenance: reading.provenance },
+    }] } } as never);
+    const result = await getTool.handler({ issueId: scorecard.issueId, criterionKey: 'disk', replay: 'retained-measurement' }, makeDispatchContext());
+    if (!('data' in result)) throw new Error('Expected a structured replay response');
+    expect(result.data).toMatchObject({ ok: true, replay: { issueId: scorecard.issueId, criterionKey: 'disk',
+      testRunId: 123, mode: 'historical', status: 'reproduced', value: 96, evidenceFingerprint: scorecard.evidenceFingerprint } });
+    expect(resultContract.safeParse(result.data).success).toBe(true);
+    expect((getTool as unknown as { agentRoles: string[] }).agentRoles).toContain('judge');
+    expect(resultContract.safeParse({ ok: true, replay: { status: 'reproduced', value: 96 } }).success).toBe(false);
+    expect(gradingAuditRubricMock).not.toHaveBeenCalled();
+    const selected = await getTool.handler({ issueId: scorecard.issueId, criterionKey: 'disk' }, makeDispatchContext());
+    if (!('data' in selected)) throw new Error('Expected a structured evidence response');
+    expect(selected.data).toMatchObject({ retainedMeasurementReplay: {
+      tool: 'scorecards:get', args: { issueId: scorecard.issueId, criterionKey: 'disk', replay: 'retained-measurement' },
+    } });
+  });
+
+  it('preserves historical gaps and cannot select a measurement from another criterion', async () => {
+    readScorecardEvidenceM.mockResolvedValue({ kind: 'found', scorecard: { ...scorecard, criteria: [{
+      key: 'disk', rating: 'fail', evidence: 'legacy scalar', ratedFrom: 'ledger',
+      ledgerResult: { testRunId: 123, value: 96, unit: '%' },
+    }] } } as never);
+    const missing = await getTool.handler({ issueId: scorecard.issueId, criterionKey: 'foreign', replay: 'retained-measurement' }, makeDispatchContext());
+    if (!('data' in missing)) throw new Error('Expected a structured refusal');
+    expect(missing.data).toMatchObject({ ok: false, error: 'criterion_not_found' });
+    const legacy = await getTool.handler({ issueId: scorecard.issueId, criterionKey: 'disk', replay: 'retained-measurement' }, makeDispatchContext());
+    if (!('data' in legacy)) throw new Error('Expected a structured replay response');
+    expect(legacy.data).toMatchObject({ ok: true, replay: { status: 'unavailable', value: null, recordedValue: 96 } });
   });
 
   it('distinguishes live adequacy freshness checks from creation-time grading audits', () => {

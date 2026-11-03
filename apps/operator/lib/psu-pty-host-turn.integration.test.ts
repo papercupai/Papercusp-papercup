@@ -333,7 +333,28 @@ it.each(['retry', 'late-native', 'rearmed-late-native', 'replaced', 'replaced-af
   20_000,
 );
 
-it.each([503, 403])('preserves the classified Codex home failure and retries only transient HTTP %s before stopping the child', async (status) => {
+it.each([
+  {
+    label: 'transient HTTP 503',
+    failure: { stage: 'response', reason: 'http-error', status: 503 },
+    retryable: true,
+    expectedPreparations: 2,
+  },
+  {
+    label: 'permanent HTTP 403',
+    failure: { stage: 'response', reason: 'http-error', status: 403 },
+    retryable: false,
+    expectedPreparations: 1,
+  },
+  {
+    label: 'request-stage TimeoutError without an HTTP status',
+    failure: { stage: 'request', reason: 'request-failed', status: null, errorName: 'TimeoutError' },
+    retryable: true,
+    expectedPreparations: 2,
+  },
+])('preserves the classified Codex home failure: $label before stopping the child', async ({
+  failure, retryable, expectedPreparations,
+}) => {
   const root = mkdtempSync(join(tmpdir(), 'pty-carry-route-failure-'));
   const ownerId = uniqueOwner('CARRY-ROUTE-FAILURE');
   const sock = socketPathFor(ownerId);
@@ -341,7 +362,6 @@ it.each([503, 403])('preserves the classified Codex home failure and retries onl
   const { io, captured } = fakeIo();
   const diagnostic = vi.spyOn(process.stderr, 'write');
   let mints = 0;
-  const failure = { stage: 'response', reason: 'http-error', status };
   let preparations = 0;
   const childCode = "process.stdin.setRawMode(true);process.stdout.write('READY\\n');" +
     "process.stdin.on('data',d=>{if(d.includes(4))process.exit(0);process.stdout.write('ORIGINAL-ALIVE\\n');});" +
@@ -361,19 +381,20 @@ it.each([503, 403])('preserves the classified Codex home failure and retries onl
       data: 'saved work', systemPromptAddendum: 'saved work', deliveryId: 'classified-route-failure' }))
       .toMatchObject({ ok: true, reason: 'accepted' });
     const deadline = Date.now() + 6500;
-    while (Date.now() < deadline && (status === 503 ? preparations < 2 :
+    while (Date.now() < deadline && (preparations < expectedPreparations ||
       !(existsSync(log) && readFileSync(log, 'utf8').includes('codex-route-unavailable')))) await sleep(15);
     const events = readFileSync(log, 'utf8').split('\n').filter(Boolean).map(line => JSON.parse(line));
     expect(events).toContainEqual(expect.objectContaining({ kind: 'respawn-failed', mode: 'carry-respawn',
       reason: 'codex-route-unavailable', homeEnsureFailure: failure,
-      retryable: status === 503, capMs: 1000 }));
+      retryable, capMs: 1000 }));
     expect(mints).toBe(0);
     expect(events.some(event => event.kind === 'respawn-predecessor-stop-started')).toBe(false);
+    const statusText = failure.status === null ? '' : ` (HTTP ${failure.status})`;
     expect(diagnostic.mock.calls.some(([value]) => String(value).includes(
-      `carry-respawn NOT completed for ${ownerId}: Codex home preparation failed (HTTP ${status})`,
+      `carry-respawn NOT completed for ${ownerId}: Codex home preparation failed${statusText}`,
     ))).toBe(true);
-    expect(preparations).toBe(status === 503 ? 2 : 1);
-    if (status === 503) {
+    expect(preparations).toBe(expectedPreparations);
+    if (retryable) {
       expect(await injectIntoHostWithConfirmation(sock, { mode: 'carry-respawn', ownerId,
         data: 'saved work', systemPromptAddendum: 'saved work', deliveryId: 'classified-route-failure' }))
         .toMatchObject({ ok: true, reason: 'pending-delivery-id' });

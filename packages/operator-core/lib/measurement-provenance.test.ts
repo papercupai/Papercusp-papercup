@@ -30,6 +30,18 @@ describe('bounded original measurement retention', () => {
     expect(p.procedure.snapshot).toBe('{}');
     expect(p.gaps).toEqual(['procedure-truncated', 'transaction-clock-unavailable']);
   });
+  it('redacts indented assignments after multiline headers without changing line endings', () => {
+    const stdout = 'Use%\r\n42%\r\n  Authorization: Bearer tiny\r\n\tpassword=short\r\n';
+    const p = retainMeasurementProvenance({ ...times, procedure: { argv: ['probe', stdout] }, result: { stdout } });
+    expect(p.diagnostics).toEqual([{
+      path: '$["stdout"]',
+      value: 'Use%\r\n42%\r\n  Authorization=[redacted]\r\n\tpassword=[redacted]\r\n',
+    }]);
+    expect(p.gaps).toEqual(['redacted']);
+    expect(p.truncated).toBe(false);
+    for (const secret of ['tiny', 'short']) expect(JSON.stringify(p)).not.toContain(secret);
+    expect(parseRecordedMeasurementProvenance(p)).toEqual(p);
+  });
   it('shrinks only context for a bounded multi-probe envelope', () => {
     const p = retainMeasurementProvenance({ ...times, procedure: { sql: 'SELECT ' + 'x'.repeat(5000) },
       result: { values: Array.from({ length: 60 }, () => 'x'.repeat(200)) } });

@@ -12,7 +12,7 @@
 // it makes that process execute only committed bytes for every ES module inside a git checkout:
 //   committed    the bytes read equal the file's HEAD blob (git's own blob hash): they run as read;
 //   substituted  the bytes differ from HEAD: the HEAD blob runs instead, so a dirty file runs its
-//                committed version (one stderr line names it);
+//                committed version (a notice record, or a fallback stderr line, names it);
 //   uncommitted  no HEAD blob and git does not ignore the path: it can only be new, uncommitted
 //                code, so loading it throws and the census fails closed;
 //   commonjs     a checkout module reached through CommonJS never passes the ES load hook, so the
@@ -57,7 +57,9 @@ export const COMMITTED_SOURCE_MARKER = 'COMMITTED_SOURCE';
 /**
  * When set to a file path, one JSON line is appended there for every checkout module this loader
  * did NOT run as read: a substitution (its HEAD bytes ran instead) or a refusal
- * (WI-6554700010009516). The stderr line says the same, but stderr goes wherever the process's
+ * (WI-6554700010009516). This replaces the substitution stderr line when the append succeeds:
+ * stderr belongs to the target runtime and may be measured byte-for-byte. Without a working
+ * notice channel the stderr fallback still makes the substitution visible. Stderr goes wherever the process's
  * parent sends it, and a test that spawns `node` (inheriting NODE_OPTIONS, so this loader) captures
  * its child's stderr: the launcher that prints the verdict never sees it. Unlike the audit channel
  * this stays silent for committed modules, so a launcher can collect it from every process it
@@ -410,23 +412,25 @@ function audit(record) {
 }
 
 /**
- * Append one notice line (see COMMITTED_SOURCE_NOTICE_ENV). Reporting must never change what runs,
- * so a failed append is said on stderr rather than thrown into the module load.
+ * Append one notice line (see COMMITTED_SOURCE_NOTICE_ENV), returning whether it was recorded.
+ * Reporting must never change what runs, so a failed append is said on stderr rather than thrown.
  * `top` is the checkout the module belongs to, so a reader can tell its own tree from a scratch one.
  * @param {{ kind: 'substituted' | 'refused', via: 'esm' | 'cjs', rel: string, top: string, reason?: string }} record
  */
 function notice(record) {
   const target = process.env[COMMITTED_SOURCE_NOTICE_ENV];
-  if (!target) return;
+  if (!target) return false;
   const line = JSON.stringify({
     schemaVersion: COMMITTED_SOURCE_NOTICE_SCHEMA, ...record, pid: process.pid, entry: entryLabel,
   });
   try {
     appendFileSync(target, `${line}\n`);
+    return true;
   } catch (error) {
     process.stderr.write(
       `${COMMITTED_SOURCE_MARKER} notice-unrecorded ${record.rel}: could not append to ${target} (${error?.code ?? error})\n`,
     );
+    return false;
   }
 }
 
@@ -485,8 +489,8 @@ export async function load(url, context, nextLoad) {
     );
   }
   if (verdict.kind === 'substituted') {
-    notice({ kind: 'substituted', via: 'esm', rel: verdict.rel, top: verdict.top });
-    process.stderr.write(`${formatSubstitutedLine(verdict.rel, process.pid, entryLabel)}\n`);
+    const recorded = notice({ kind: 'substituted', via: 'esm', rel: verdict.rel, top: verdict.top });
+    if (!recorded) process.stderr.write(`${formatSubstitutedLine(verdict.rel, process.pid, entryLabel)}\n`);
     return { ...result, source: verdict.head };
   }
   return result;

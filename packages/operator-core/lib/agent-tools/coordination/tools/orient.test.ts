@@ -5467,10 +5467,9 @@ describe('P-016 role-specific pane folds (papercup paneContext / papercup-deep d
  *  computed the reason (unknown ids + a `hint`); orient discarded its entire
  *  response and recorded only `intentDeclared: true`.
  *
- *  The invariant these tests pin: after orient, a caller can always tell whether
- *  it HOLDS the lane it asked for. Every path ending in "you hold none of it"
- *  must say so — including the paths where declare-intent never even attempted a
- *  claim (no planSlug, no coord:write, no claims block). */
+ *  The invariant these tests pin: orient distinguishes confirmed holdings from
+ *  unknown ownership. A failed or unobserved declaration cannot establish that
+ *  a previously held lane is unheld. */
 describe('EI-20013545515660920 laneClaim — a failed lane claim is never silent', () => {
   describe('summarizeLaneClaim (pure)', () => {
     it('warns when the declaration SUCCEEDED but nothing was claimed (the filed bug)', () => {
@@ -5538,11 +5537,17 @@ describe('EI-20013545515660920 laneClaim — a failed lane claim is never silent
       const s = summarizeLaneClaim(['P-005'], undefined, { planSlugGiven: false });
       expect(s.warning).toContain('WITHOUT planSlug');
       expect(s.claimed).toEqual([]);
+      expect(s.unknown).toEqual(['P-005']);
+      expect(s.warning).not.toContain('do NOT hold this lane');
     });
 
-    it('warns when the declaration itself failed (no coord:write)', () => {
+    it('reports unknown ownership when the declaration failed or timed out', () => {
       const s = summarizeLaneClaim(['P-005'], undefined, { planSlugGiven: true, declareFailed: true });
       expect(s.warning).toContain('FAILED');
+      expect(s.warning).toContain('UNKNOWN');
+      expect(s.unknown).toEqual(['P-005']);
+      expect(s.warning).not.toContain('do NOT hold this lane');
+      expect(s.warning).not.toContain('lacks coord:write');
     });
 
     it('routes WI/EI/F work-item ids to work_items:claim instead of plans:set-status', () => {
@@ -5559,6 +5564,7 @@ describe('EI-20013545515660920 laneClaim — a failed lane claim is never silent
     it('warns when no claims block came back at all', () => {
       const s = summarizeLaneClaim(['P-005'], undefined, { planSlugGiven: true });
       expect(s.warning).toContain('no claims block');
+      expect(s.unknown).toEqual(['P-005']);
     });
 
     it('never reports a claim the payload did not contain (defensive against a shape change)', () => {
@@ -5632,15 +5638,20 @@ describe('EI-20013545515660920 laneClaim — a failed lane claim is never silent
       expect(r.laneClaim).toBeUndefined();
     });
 
-    it('still reports the lane as unheld when declare-intent throws', async () => {
+    it('preserves independently read holdings when declare-intent throws', async () => {
       // EI-21127719036550806: declare-intent is now wrapped in withBoundedTimeout,
       // which logs a console.warn on a caught failure — expected here since this
       // test deliberately makes coord:declare-intent throw.
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
       const { call } = fakeCall({
         ...LANE_CORE,
+        'fleet:assignments': () => ({
+          ok: true,
+          summary: { agents: 1 },
+          agents: [{ ownerId: 'me', isSelf: true, claims: [{ planSlug: 'p', id: 'P-005' }] }],
+        }),
         'coord:declare-intent': () => {
-          throw new Error('no coord:write');
+          throw new Error('dependency unavailable');
         },
       });
       const r = await composeOrient(
@@ -5650,6 +5661,10 @@ describe('EI-20013545515660920 laneClaim — a failed lane claim is never silent
       );
       expect(r.intentDeclared).toBe(false);
       expect(r.laneClaim?.warning).toContain('FAILED');
+      expect(r.laneClaim?.unknown).toEqual(['P-005']);
+      expect(r.laneClaim?.warning).not.toContain('do NOT hold this lane');
+      expect(r.laneClaim?.warning).not.toContain('lacks coord:write');
+      expect(r.planNow?.myClaims).toEqual(['P-005']);
       expect(warnSpy).toHaveBeenCalled();
       warnSpy.mockRestore();
     });

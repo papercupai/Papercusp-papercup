@@ -77,6 +77,7 @@ export function nativeChildSourcePreflight({ root, files }, readers = {}) {
     'scripts/lib/vitest-startup-trace.mjs',
     'packages/operator-core/lib/process-identity.ts',
     'libs/test-config/src/configuration-snapshot.ts',
+    'libs/test-config/src/executed-config-load-capture.ts',
     ...new Set(selected),
   ]) {
     try {

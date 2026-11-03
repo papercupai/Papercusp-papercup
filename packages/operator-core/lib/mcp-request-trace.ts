@@ -33,6 +33,8 @@ export type McpRequestTraceStage =
 export type McpHttpHandlerPhase =
   | 'auth_challenge'
   | 'route_handler_load'
+  | 'host_module_load'
+  | 'operator_catalogue_load'
   | 'request_pipeline'
   | 'mcp_adapter';
 

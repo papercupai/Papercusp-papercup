@@ -11,7 +11,7 @@
  * need Docker). Run: npm run test:file -- <this file>
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { execFile, spawnSync } from 'node:child_process';
+import { execFile, spawn, spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { createServer } from 'node:http';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
@@ -19,6 +19,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createRequire } from 'node:module';
 import { createScopedNativeSandboxSpawn, NATIVE_CONTAINER_EXEC_ENV } from '@papercusp/orchestrator/fleet-srt-spawn';
+import { codexGatewayPort } from '@papercusp/orchestrator/codex-gateway-config';
 import { codexSessionFrameObserved, resolveLinuxCodexStartupPid } from '../../../../apps/operator/scripts/psu-pty-host.mjs';
 import { codexContainerProcessForPty, codexNativeIdForPty, codexThreadWriterHolder, ensureCodexHomeViaOperator } from '../../../../apps/operator/scripts/psu-launcher.mjs';
 
@@ -40,7 +41,7 @@ let root: string;
 async function command(bin: string, args: string[], env?: NodeJS.ProcessEnv, timeout = 30_000) {
   const phase = bin === 'docker' ? args.slice(0, 2).join(' ') : 'wrapper';
   const started = Date.now();
-  console.info('CONTAINER_EXEC_PHASE', JSON.stringify({ phase, state: 'started', containerIds: containers }));
+  console.info('CONTAINER_EXEC_PHASE', JSON.stringify({ phase, state: 'started', at: new Date(started).toISOString(), containerIds: containers }));
   const result = await new Promise<{ stdout: string; stderr: string; status: number | null; signal: string | null; timedOut: boolean; error: string | null }>(resolve => {
     const child = execFile(bin, args, { env, encoding: 'utf8', timeout }, (error, stdout, stderr) => {
       resolve({ stdout, stderr, status: typeof error?.code === 'number' ? error.code : error ? null : 0,
@@ -49,7 +50,7 @@ async function command(bin: string, args: string[], env?: NodeJS.ProcessEnv, tim
     });
     child.stdin?.end();
   });
-  console.info('CONTAINER_EXEC_PHASE', JSON.stringify({ phase, state: result.error ? 'failed' : 'completed', elapsedMs: Date.now() - started,
+  console.info('CONTAINER_EXEC_PHASE', JSON.stringify({ phase, state: result.error ? 'failed' : 'completed', at: new Date().toISOString(), elapsedMs: Date.now() - started,
     status: result.status, signal: result.signal, timedOut: result.timedOut, error: result.error }));
   return result;
 }
@@ -82,13 +83,32 @@ async function startContainer(extra: string[] = [], network = 'none'): Promise<s
 async function removeContainer(id: string, primaryError?: unknown): Promise<void> {
   const index = containers.indexOf(id);
   if (index >= 0) containers.splice(index, 1);
+  // Subscribe before removal: Docker's shared historical event buffer can
+  // evict this container's events before a later diagnostic query reads it.
+  const watcher = spawn('docker', ['events', '--since', new Date().toISOString(), '--filter', `container=${id}`,
+    '--format', '{{json .}}'], { stdio: ['ignore', 'pipe', 'pipe'] });
+  let events = '', watcherError: string | null = null;
+  watcher.stdout.on('data', chunk => { events = (events + String(chunk)).slice(-12_000); });
+  watcher.stderr.on('data', chunk => { watcherError = ((watcherError ?? '') + String(chunk)).slice(-1000); });
+  const watcherDone = new Promise<void>(resolve => {
+    watcher.once('error', error => { watcherError = String(error); resolve(); });
+    watcher.once('close', () => resolve());
+  });
   try {
     const removed = await command('docker', ['rm', '-f', id]);
+    if (removed.error) {
+      const inspected = await command('docker', ['inspect', '--format', '{{json .State}}', id], undefined, 5000);
+      console.info('CONTAINER_EXEC_REMOVAL_FAILURE', JSON.stringify({ id, inspected }));
+    }
     expect(removed.status, JSON.stringify({ id, removed })).toBe(0);
   } catch (error) {
     cleanupFailures.push({ containerId: id, error: String(error) });
     throw primaryError === undefined ? error : new AggregateError([primaryError, error],
       'Container assertion and cleanup both failed');
+  } finally {
+    watcher.kill('SIGKILL');
+    await watcherDone;
+    console.info('CONTAINER_EXEC_REMOVAL_EVENTS', JSON.stringify({ id, events, watcherError }));
   }
 }
 
@@ -703,7 +723,7 @@ describe('container exec target against a live container', () => {
     }
   }, 180_000);
 
-  it('initializes native MCP through the maintained container egress without model inference', async () => {
+  it.each([false, true])('initializes native MCP through the maintained container egress without model inference (generated=%s)', async generated => {
     const base = mkdtempSync(join(root, 'native-mcp-'));
     const homes = join(base, 'homes'), perHomes = join(base, 'task-homes'), home = join(homes, 'session-7');
     // This probe exercises the egress/MCP path only. Keep its cwd inside the
@@ -733,12 +753,28 @@ describe('container exec target against a live container', () => {
     let lease: Awaited<ReturnType<NonNullable<typeof egress>['openTaskNetwork']>> | undefined;
     let cid: string | undefined, primaryError: unknown;
     try {
-      egress = await startBenchEgress({ runId: `native-mcp-${randomUUID()}`, endpoints: [
+      const image = await command('docker', ['image', 'inspect', '--format', '{{.Id}}', 'nginx:alpine']);
+      expect(image.status, JSON.stringify(image)).toBe(0);
+      const { liveProcExec } = await import('./grader/index');
+      egress = await startBenchEgress({ runId: `native-mcp-${randomUUID()}`, exec: async (bin, args, opts) => {
+        const startedAt = Date.now();
+        console.info('NATIVE_MCP_EGRESS_PHASE', JSON.stringify({ args, at: new Date(startedAt).toISOString(), state: 'started', timeoutMs: opts?.timeoutMs }));
+        try {
+          const result = await liveProcExec(bin, args, opts);
+          console.info('NATIVE_MCP_EGRESS_PHASE', JSON.stringify({ args, at: new Date().toISOString(), state: 'completed',
+            elapsedMs: Date.now() - startedAt, code: result.code }));
+          return result;
+        } catch (error) {
+          console.info('NATIVE_MCP_EGRESS_PHASE', JSON.stringify({ args, at: new Date().toISOString(), state: 'failed',
+            elapsedMs: Date.now() - startedAt, error: String(error) }));
+          throw error;
+        }
+      }, endpoints: [
         { name: 'mcp', listenPort: 9071, targetPort: port, transport: 'http' },
         { name: 'gw', listenPort: 8788, targetPort: port },
       ] });
       lease = await egress.openTaskNetwork('mcp');
-      writeFileSync(join(home, 'config.toml'), [
+      let config = [
         'model = "gpt-6-luna"', 'model_provider = "private-mcp"',
         '[features]', 'apps = false', 'plugins = false', 'remote_plugin = false',
         '[model_providers.private-mcp]', 'name = "Offline MCP fixture"',
@@ -746,12 +782,24 @@ describe('container exec target against a live container', () => {
         'wire_api = "responses"', 'requires_openai_auth = false',
         '[mcp_servers.papercusp-su]', `url = "${egress.originFor('mcp')}/mcp"`,
         'env_http_headers = { "x-papercusp-native-session" = "CODEX_SESSION_ID" }',
-      ].join('\n'));
-      cid = await startContainer(['--user', `${process.getuid!()}:${process.getgid!()}`,
+      ].join('\n');
+      if (generated) {
+        const { suCodexConfigToml } = await import('../role-codex-home');
+        config = suCodexConfigToml({ sid: 'su-private-container-bootstrap', model: 'gpt-6-luna',
+          mcpUrl: `http://127.0.0.1:${port}/mcp`, token: 'private-mcp-fixture',
+          nativeRuntimeBearer: 'n'.repeat(43), codexGatewayAuto: true,
+          headless: true, denyAmbientContext: true, trustDir: base });
+      }
+      writeFileSync(join(home, 'config.toml'), config);
+      cid = await startContainer([...(generated ? [] : ['--user', `${process.getuid!()}:${process.getgid!()}`]),
         '-v', `${perHomes}:${homes}`, '-v', `${resolveContainerCodexBinary()}:${CONTAINER_CODEX_BIN_PATH}:ro`], lease.network);
       const { wrapperPath } = materializeDockerExecWrapper({ kind: 'docker-exec', containerId: cid,
         workdir: '/', binPath: CONTAINER_CODEX_BIN_PATH,
-        sessionRelocation: { sessionEnv: 'CODEX_HOME', roots: [{ hostRoot: homes, perTaskDir: perHomes }] } },
+        sessionRelocation: { sessionEnv: 'CODEX_HOME', roots: [{ hostRoot: homes, perTaskDir: perHomes }] },
+        ...(generated ? { originRewrites: [
+          { from: `http://127.0.0.1:${port}`, to: egress.originFor('mcp') },
+          { from: `http://127.0.0.1:${codexGatewayPort()}`, to: egress.originFor('gw') },
+        ] } : {}) },
       { dir: mkdtempSync(join(root, 'mcp-wrapper-')) });
       const child = createRequire(import.meta.url)('@lydell/node-pty').spawn(wrapperPath,
         ['--no-alt-screen', '--dangerously-bypass-approvals-and-sandbox', '--dangerously-bypass-hook-trust'],
@@ -769,10 +817,16 @@ describe('container exec target against a live container', () => {
       expect(methods, output).toContain('initialize');
       expect(methods, output).toContain('tools/list');
       expect(methods, output).not.toContain('unknown');
+      console.info('NATIVE_MCP_FUNCTIONAL_PROOF', JSON.stringify({ generated, cid, methods, at: new Date().toISOString() }));
     } catch (error) { primaryError = error; throw error; }
     finally {
       const failures: unknown[] = [];
       const clean = async (action: () => Promise<unknown>) => { try { await action(); } catch (error) { failures.push(error); } };
+      if (cid && generated) await clean(async () => {
+        const returned = await command('docker', ['exec', '-u', '0', cid!, 'chown', '-hR',
+          `${process.getuid!()}:${process.getgid!()}`, homes]);
+        expect(returned.status, JSON.stringify(returned)).toBe(0);
+      });
       if (cid) await clean(() => removeContainer(cid!));
       if (lease) await clean(async () => expect(await lease!.release()).toEqual([]));
       if (egress) await clean(async () => expect((await egress!.stop()).errors).toEqual([]));

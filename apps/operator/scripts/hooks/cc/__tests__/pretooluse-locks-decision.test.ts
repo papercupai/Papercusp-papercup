@@ -1196,7 +1196,12 @@ describe("cc PreToolUse hook — operator decision rendering (stub operator)", (
         cwd: repo,
       };
 
-      nextInner = { ok: true, lock_id: `lock-${scenario}` };
+      nextInnerSeq = [
+        { ok: true, active_locks: [] },
+        { ok: false, reason: "operation_authority_required", operation_authority: "nested-test-authority" },
+        { ok: true, lock_id: `lock-${scenario}`, newly_held: [path] },
+        { ok: true, released: [path], requested_paths: [path], held_before: 1 },
+      ];
       const pre = await run(parentInput, identity);
       expect(pre.status).toBe(0);
       expect(pre.stdout).toBe("");

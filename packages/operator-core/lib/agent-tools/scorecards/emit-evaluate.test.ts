@@ -2141,9 +2141,20 @@ describe('evaluateScorecard', () => {
     expect(result.ok, JSON.stringify(result)).toBe(true);
     expect(readJsonResult(result.result!)).toMatchObject({
       ok: false, code: 'acceptance_bar_contract_not_ready', lifecycle,
+      evidenceApplicabilityRead: { tool: 'plans:get-spec-evidence', args: { slug: 'bar-plan' } },
     });
     expect(listM).not.toHaveBeenCalled();
     expect(captureM).not.toHaveBeenCalled();
+  });
+
+  it('links an ad-hoc criterion to its actual work-item namespace without inventing a plan', async () => {
+    getRubricM.mockResolvedValue(RUBRIC);
+    const result = await evaluateScorecard({ rubricRef: RUBRIC.rubricId,
+      subject: { kind: 'work-item', ref: 'WI-ad-hoc' } });
+    expect(result).toMatchObject({ ok: true, skeleton: expect.arrayContaining([
+      expect.objectContaining({ evidenceApplicabilityRead: { tool: 'plans:get-spec-evidence',
+        args: { slug: 'adhoc-work-item-specs', workItemIds: ['WI-ad-hoc'] }, criterionKey: expect.any(String) } }),
+    ]) });
   });
 
   // WI-10005160: a plan slug is unique per harness, not per workspace, so the BAR read must be

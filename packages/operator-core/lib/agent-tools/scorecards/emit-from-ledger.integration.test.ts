@@ -74,10 +74,15 @@ const { SQL_PROBE_TOOL, continuityProbeRevision } = await import('../../continui
 const { asStructuredObservation } = await import('../../harness/improvements/observation-types');
 const { retainMeasurementProvenance } = await import('../../measurement-provenance');
 const { readScorecardEvidence } = await import('../../scorecards');
+const { runInstrument } = await import('../../rubric-instrument-registry');
+const { default: getScorecard } = await import('./get');
+const { resolveAgentIdentity } = await import('../coordination/identity');
 type RubricCheckResult = import('../../check-results-ledger').RubricCheckResult;
 
 const RUBRIC = 'emit-from-ledger-fixture';
 const OWNER = 'su-emit-from-ledger-grader';
+const REPLAY_JUDGE = { uiClientId: 'ledger-replay-judge', role: 'judge',
+  principal: { kind: 'system' as const, slug: 'system:judge', workspaceId: 'ledger-replay-fixture' } };
 const MANUAL_RATING = { rating: 'healthy', evidence: 'read the release notes; the wording matches the shipped behaviour' };
 const CPU_REMEDIATION = 'WI-6554700010009536 cpu regression follow-up';
 const QUERY_SQL = 'SELECT 62.38 AS mean_ms';
@@ -160,6 +165,8 @@ const emit = (args: Record<string, unknown>) =>
   }, { dispatchTool });
 
 beforeAll(async () => {
+  // Check authenticated fixture identity before allocating an isolated database.
+  expect(resolveAgentIdentity(REPLAY_JUDGE).ownerId).toBe('system:judge/ledger-replay-judge');
   db = await createOrgTestDb({ adminPoolMax: 8 });
   h.sql = db.adminSql;
   process.env.HARNESS_ADMIN_DATABASE_URL = db.adminDsn;
@@ -197,9 +204,11 @@ beforeAll(async () => {
   [ids.diskOlder] = await recordRubricCheckResults(
     [row('disk-latest', 'instrument', 91, '%', 'fail', '2026-10-13T01:00:00.000Z', { op: 'lt', value: 80 })], scope, sql(),
   );
-  [ids.diskNewer] = await recordRubricCheckResults(
-    [row('disk-latest', 'instrument', 42, '%', 'pass', '2026-10-13T01:30:00.000Z', { op: 'lt', value: 80 })], scope, sql(),
-  );
+  const diskNewer = row('disk-latest', 'instrument', 42, '%', 'pass', '2026-10-13T01:30:00.000Z', { op: 'lt', value: 80 });
+  diskNewer.check.provenance = (await runInstrument('host:df-root-used-pct', {
+    exec: async () => 'Use%\n 42%\n', now: () => Date.parse('2026-10-13T01:30:00.000Z'),
+  })).provenance;
+  [ids.diskNewer] = await recordRubricCheckResults([diskNewer], scope, sql());
   // Recorded as pass under an older, looser threshold (<= 4); today's rubric says <= 2.
   [ids.cpu] = await recordRubricCheckResults(
     [row('cpu-threshold', 'instrument', 3.5, 'cores', 'pass', '2026-10-13T01:30:00.000Z', { op: 'lte', value: 4 })], scope, sql(),
@@ -338,6 +347,16 @@ describe('R-7 — scorecards:emit { fromLedger: true } rates executable criteria
     const evidenceRead = await readScorecardEvidence(issueId as string);
     expect(evidenceRead.kind).toBe('found');
     if (evidenceRead.kind !== 'found') throw new Error('emitted card missing from evidence reader');
+    // Judge-readable historical replay traverses the real ledger -> emitted
+    // observation -> evidence reader path and cannot execute the live probe.
+    const historical = await getScorecard.handler({ issueId: issueId as string, criterionKey: 'disk-latest', replay: 'retained-measurement' }, {
+      ...REPLAY_JUDGE, workspaceId, principal: { ...REPLAY_JUDGE.principal, workspaceId: workspaceId ?? activeWorkspaceId() },
+      log: vi.fn(), metadata: vi.fn(),
+    } as never);
+    if (!('data' in historical)) throw new Error('Expected a structured historical replay response');
+    expect(historical.data).toMatchObject({ ok: true, replay: { mode: 'historical', status: 'reproduced',
+      criterionKey: 'disk-latest', testRunId: ids.diskNewer, value: 42,
+      window: { startedAt: '2026-10-13T01:30:00.000Z', finishedAt: '2026-10-13T01:30:00.000Z' } } });
     const evidence = evidenceRead.scorecard.criteria.find((entry) => entry.key === 'query-cost')!.evidence;
     expect(evidence).toBe(ratings['query-cost']!.evidence);
     const retained = JSON.parse(evidence.split('; retained procedure ')[1]!.split('\n')[0]!);

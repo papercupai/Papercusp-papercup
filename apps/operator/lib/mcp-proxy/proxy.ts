@@ -4776,6 +4776,25 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
     // max hold was 120,004ms against a 600,000ms `maxHoldMs`, i.e. the cap was never
     // approached. What this DOES cut is AMPLIFICATION: work spent on a dead client during
     // exactly the upstream-stall windows when capacity is scarcest.
+    // Join the native hook's timeout to this proxy hop without recording its
+    // owner, tool input or arbitrary headers. Reuse the bounded diagnostic sink.
+    const guardHeader = req.method === "POST" &&
+      req.url?.split("?")[0]?.replace(/\/$/, "") === "/api/agent-mcp/tool-guard"
+      ? req.headers["x-papercusp-guard-request-id"] : null;
+    const guardTiming = typeof guardHeader === "string" &&
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(guardHeader)
+      ? { guardRequestId: guardHeader.toLowerCase(), bodyReadyMs: null as number | null,
+        forwardStartedMs: null as number | null, responseHeadersMs: null as number | null }
+      : null;
+    let guardTimingRecorded = false;
+    const recordGuardTiming = (outcome: "response_finished" | "client_disconnected"): void => {
+      if (!guardTiming || guardTimingRecorded) return;
+      guardTimingRecorded = true;
+      record({ kind: "tool_guard_timing", ...guardTiming, outcome,
+        elapsedMs: boundedMcpProxyStageMs(Date.now() - receivedAt),
+        ...(outcome === "response_finished" ? { httpStatus: res.statusCode } : {}) });
+    };
+    res.once("finish", () => recordGuardTiming("response_finished"));
     let clientGone = false;
     let abortAttempt: (() => void) | null = null;
     let cancelQueuedAdmission: (() => void) | null = null;
@@ -4787,6 +4806,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
       // every successful request would mark itself aborted.
       if (clientGone || res.writableFinished) return;
       clientGone = true;
+      recordGuardTiming("client_disconnected");
       recordInboundSocketReset(req.socket, source);
       cancelQueuedAdmission?.();
       abortAttempt?.();
@@ -4822,6 +4842,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
       void (async () => {
         const rawBody = Buffer.concat(chunks);
         const bodyReadyAt = Date.now();
+        if (guardTiming) guardTiming.bodyReadyMs = boundedMcpProxyStageMs(bodyReadyAt - receivedAt);
         // EI-19305299022434394 — admission control, checked BEFORE any upstream socket is
         // opened (and before we even bother classifying the forward). A request that arrives
         // while `maxInFlight` forwards are already outstanding is shed immediately with 429 +
@@ -6336,6 +6357,8 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
               candidateIndex = Math.min(candidateIndex, candidates.length - 1);
               const attemptTarget = candidates[candidateIndex]!;
               attemptTargetKey = attemptTarget.host + ":" + attemptTarget.port;
+              if (guardTiming && guardTiming.forwardStartedMs === null)
+                guardTiming.forwardStartedMs = boundedMcpProxyStageMs(Date.now() - receivedAt);
               outcome = await forwardOnce(
                 opts,
                 attemptTarget,
@@ -6362,7 +6385,10 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
                     : 0,
                 attemptAbort?.signal,
               );
-              if (outcome.ures) lastResponseTarget = attemptTarget;
+              if (outcome.ures) {
+                lastResponseTarget = attemptTarget;
+                if (guardTiming) guardTiming.responseHeadersMs = boundedMcpProxyStageMs(Date.now() - receivedAt);
+              }
             } finally {
               abortAttempt = null;
             }

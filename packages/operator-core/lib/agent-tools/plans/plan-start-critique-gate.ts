@@ -354,23 +354,32 @@ export async function loadBarCritiqueEvidence(
   const history = await listClauses({ ...scope, includeHistory: true });
   const iso = (v: Date | string) => new Date(v).toISOString();
   const critiques: BarCritiqueEvidence[] = [];
-  for (const row of rows) {
-    const criticId = criticOf(row);
-    if (!criticId) continue;
-    const closedAt = iso(row.closed_at);
-    const clausesAsOfClose = await listClauses({ ...scope, asOf: closedAt });
-    critiques.push({
-      consultId: row.conversation_id,
-      criticId,
-      partyKey: keys.get(criticId) ?? criticId,
-      record: buildBarCritiqueRecord({
-        planSlug: input.planSlug,
-        closedAt,
-        answeredAt: row.answered_at ? iso(row.answered_at) : null,
-        clausesAsOfClose,
-        history,
-      }),
-    });
+  // These immutable close-time snapshots are independent. Bound concurrency so
+  // readiness does not serialize one database round trip per historical consult
+  // or admit unbounded reads for a plan with a long critique history.
+  const attributableRows = rows.filter((row) => criticOf(row) !== null);
+  const snapshotBatchSize = 4;
+  for (let offset = 0; offset < attributableRows.length; offset += snapshotBatchSize) {
+    const batch = await Promise.all(attributableRows.slice(offset, offset + snapshotBatchSize).map(async (row) => {
+      const criticId = criticOf(row)!;
+      const closedAt = iso(row.closed_at);
+      const clausesAsOfClose = await listClauses({ ...scope, asOf: closedAt });
+      return {
+        consultId: row.conversation_id,
+        criticId,
+        partyKey: keys.get(criticId) ?? criticId,
+        record: buildBarCritiqueRecord({
+          planSlug: input.planSlug,
+          closedAt,
+          answeredAt: row.answered_at ? iso(row.answered_at) : null,
+          clausesAsOfClose,
+          history,
+        }),
+      };
+    }));
+    // Promise.all retains database order even when snapshots finish out of order.
+    // A rejected read propagates; partial records never become an allowed verdict.
+    critiques.push(...batch);
   }
   return { critiques, authorPartyKeys };
 }

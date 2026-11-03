@@ -8,10 +8,15 @@ import {
   listSpecEvidence,
   SPEC_EVIDENCE_KINDS,
   evidenceCurrentInputSchema,
+  readSpecEvidencePlane,
   type ListSpecEvidenceDiagnostics,
 } from './spec-evidence-store';
 import { fullBodyRef, isFullDetail, reviewReadDetailArg } from '../_review-read-detail';
 import { hasMatchingDeclaredCaseTitle } from '../../testing-case-filter';
+import { listSpecClauses, type SpecClauseRevision } from './spec-clauses-store';
+import { getWorkItem } from '../../work-items';
+import { resolveWorkItemBehaviorContract } from './behavior-contract-resolver';
+import { ADHOC_WORK_ITEM_SPEC_SCOPE } from './adhoc-spec-scope';
 
 type EvidenceRow = Awaited<ReturnType<typeof listSpecEvidence>>[number];
 
@@ -87,6 +92,62 @@ function byClause(evidence: EvidenceRow[]) {
     clauses.set(key, entry);
   }
   return [...clauses.values()];
+}
+
+/** Read-time diagnosis only: this projection never grants proof or changes a gate. */
+function criterionApplicability(clause: SpecClauseRevision, evidence: EvidenceRow[], evaluatedAt: string,
+  target: { workItemId: string | null; planSlug: string | null }, incomplete: boolean) {
+  const receipts = evidence.filter(row => row.planSlug === clause.planSlug && row.specId === clause.specId &&
+    (target.workItemId === null || row.workItemId === target.workItemId)).map(row => {
+    const reasons = [...row.currentness.staleReasons, ...row.currentness.unknownReasons];
+    const plane = readSpecEvidencePlane(row.details);
+    const subject = row.details?.subject;
+    const subjectRecord = subject && typeof subject === 'object' && !Array.isArray(subject)
+      ? subject as Record<string, unknown> : null;
+    const window = row.details?.window ?? (subjectRecord?.windowStart && subjectRecord?.windowEnd
+      ? { from: subjectRecord.windowStart, to: subjectRecord.windowEnd } : null);
+    const missingLiveIdentity = (plane === 'live' || plane === 'deployed') && (!subjectRecord || !window);
+    const incompatible = row.specRevision !== clause.revision || row.specFingerprint !== clause.contentHash;
+    const state = row.withdrawal ? 'rejected' : incompatible ? 'incompatible'
+      : row.serverMeasurement?.status === 'unavailable' ? 'unavailable'
+      : row.currentness.overall === 'stale' ? 'stale'
+      : row.currentness.overall !== 'current' || !plane || missingLiveIdentity ? 'unknown' : 'current';
+    if (row.withdrawal) reasons.push('evidence-withdrawn');
+    if (incompatible) reasons.push('spec-identity-incompatible');
+    if (!plane) reasons.push('evidence-plane-unmeasured');
+    if (missingLiveIdentity) reasons.push('applicable-live-target-or-window-unmeasured');
+    if (state === 'unavailable') reasons.push('measurement-instrument-unavailable');
+    return {
+      bindingId: row.id, evidenceRef: row.evidenceRef, evidenceKind: row.evidenceKind,
+      testRunId: row.testRunId, observedAt: row.observedAt, state, reasons,
+      target: subject ?? null, window,
+      evidencePlane: plane ?? null, fingerprints: row.fingerprints,
+      currentness: row.currentness, freshnessBasis: row.serverMeasurement ?? null,
+      ...(row.withdrawal ? { withdrawal: row.withdrawal } : {}),
+    };
+  });
+  const states = new Set(receipts.map(row => row.state));
+  const state = incomplete ? 'unknown' : receipts.length === 0 ? 'missing'
+    : ['rejected', 'incompatible', 'unavailable', 'stale', 'unknown'].find(value => states.has(value)) ?? 'current';
+  const reasons = [...new Set(receipts.flatMap(row => row.reasons))];
+  if (!receipts.length) reasons.push('no-bindings-in-requested-selection');
+  if (incomplete) reasons.push('evidence-selection-incomplete');
+  const nextEvidenceAction = state === 'current' ? 'Use these receipts only within their measured scope; ordinary acceptance checks still apply.'
+    : state === 'missing' ? 'Run the criterion check and bind its exact current spec identity.'
+    : state === 'incompatible' ? 'Measure and bind the current spec revision; preserve the incompatible receipt as history.'
+    : state === 'rejected' ? 'Read the withdrawal reason and produce replacement proof; withdrawn receipts cannot satisfy a gate.'
+    : state === 'unavailable' ? 'Restore the named measurement instrument and remeasure; no current pass is established.'
+    : state === 'stale' ? 'Rerun the check against the changed fingerprint dimensions and bind the new result.'
+    : 'Resolve the listed unknown dimensions or narrow the bounded selection, then remeasure.';
+  return {
+    evaluatedAt, criterionKey: clause.sourceBar?.barKey ?? clause.specId,
+    spec: { planSlug: clause.planSlug, specId: clause.specId, revision: clause.revision, fingerprint: clause.contentHash },
+    rubric: clause.sourceBar ?? null, target,
+    window: { evaluatedAt, evidenceObservedAt: receipts.map(receipt => receipt.observedAt),
+      subjectWindows: receipts.map(receipt => receipt.window) },
+    state, reasons, nextEvidenceAction, responsibleRole: 'evidence-producer',
+    coverage: { scope: 'requested-selection', bindings: receipts.length, complete: !incomplete }, receipts,
+  };
 }
 
 const argsSchema = z.object({
@@ -206,12 +267,54 @@ export default defineTool({
     const evidence = truncatedByLimit ? evidenceWithLookahead.slice(0, limit) : evidenceWithLookahead;
     const counts = { current: 0, stale: 0, unknown: 0 };
     for (const row of evidence) counts[row.currentness.overall] += 1;
+    const evaluatedAt = new Date().toISOString();
+    // Resolve real work-item contracts rather than attaching an ad-hoc item to
+    // whichever namespace the caller happened to supply. Bound both reads and rows.
+    const targetLimit = Math.min(limit, 50);
+    const selectedTargets = (args.workItemIds ?? []).slice(0, targetLimit);
+    const targets = await Promise.all(selectedTargets.map(async workItemId => {
+      try {
+        const item = await getWorkItem(workItemId, harnessSlug);
+        if (!item || item.harness !== harnessSlug) throw new Error('work-item-unresolved-in-harness');
+        const contract = await resolveWorkItemBehaviorContract(item);
+        return { workItemId, planSlug: item.sourcePlanSlug ?? null,
+          specIds: contract.groups.filter(group => group.planSlug === args.slug)
+            .flatMap(group => group.clauses.map(clause => clause.specId)), error: null };
+      } catch (error) {
+        return { workItemId, planSlug: null, specIds: [] as string[],
+          error: error instanceof Error ? error.message : String(error) };
+      }
+    }));
+    const targetSpecIds = args.workItemIds ? [...new Set(targets.flatMap(target => target.specIds))] : args.specIds;
+    const clausesWithLookahead = args.workItemIds && targetSpecIds?.length === 0 ? [] : await listSpecClauses({
+      harnessSlug, ...(sctx.workspaceId && sctx.workspaceId !== '*' ? { workspaceId: sctx.workspaceId } : {}),
+      planSlug: args.slug, specIds: args.specIds ?? targetSpecIds, sourceValIds: args.sourceValIds, limit: limit + 1,
+    });
+    const clauses = clausesWithLookahead.slice(0, limit);
+    const filteredEvidence = Boolean(args.bindingIds || args.evidenceRefs || args.evidenceKinds || args.currentness);
+    const incomplete = truncatedByLimit || filteredEvidence;
+    const applicabilityRows = clauses.flatMap(clause => {
+      const clauseTargets = args.workItemIds ? targets.filter(target => target.specIds.includes(clause.specId))
+        : [{ workItemId: null, planSlug: args.slug === ADHOC_WORK_ITEM_SPEC_SCOPE ? null : args.slug }];
+      return clauseTargets.map(target => criterionApplicability(clause, evidence, evaluatedAt,
+        { workItemId: target.workItemId, planSlug: target.planSlug }, incomplete));
+    });
+    const applicability = {
+      evaluatedAt, criteria: applicabilityRows.slice(0, limit),
+      coverage: { scope: 'requested-selection', limit, evidenceTruncated: truncatedByLimit,
+        criteriaTruncated: clausesWithLookahead.length > limit || applicabilityRows.length > limit,
+        targetsTruncated: (args.workItemIds?.length ?? 0) > targetLimit,
+        filteredEvidence, returnedCriteria: Math.min(applicabilityRows.length, limit) },
+      unavailableTargets: targets.filter(target => target.error !== null)
+        .map(target => ({ workItemId: target.workItemId, reason: target.error, nextEvidenceAction: 'Restore the work-item/contract reader and retry this exact target.' })),
+    };
     return {
       data: {
         ok: true,
         slug: args.slug,
         harnessSlug,
         bounded: { limit, truncatedByLimit },
+        applicability,
         ...(isFullDetail(detail)
           ? { detail: 'full' as const, evidence: evidence.map(fullEvidenceRow) }
           : {

@@ -40,12 +40,14 @@ import { OBSERVABILITY_INSTRUMENT_KEYS } from './observability/instrument-keys';
  * criterion is grandfathered and reported, so the ~60 legacy rubrics stay amendable.
  */
 import { execFile } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { canonicalJson } from '@papercusp/hash-chain';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { effectiveCriterionInstrumentKey } from './rubrics';
 import type { RubricCriterionCheck } from './agent-tools/plans/rubric-template';
 import { retainMeasurementProvenance } from './measurement-provenance';
-import type { RecordedMeasurementProvenance } from '@papercusp/test-config/execution-details';
+import { parseRecordedMeasurementProvenance, type RecordedMeasurementProvenance } from '@papercusp/test-config/execution-details';
 import { isSensitiveValueKey } from './sensitive-text';
 import { HOLDER_BEHAVIOR_INSTRUMENT_KEYS } from './goal-holder-behavior-metrics';
 import { GOAL_MODE_INSTRUMENT_KEYS } from './goal-mode-computed-instruments';
@@ -1027,6 +1029,104 @@ export function defaultExec(
  * Measure one registered COMMAND instrument. Platform instruments and unknown keys throw:
  * the caller asked to run something this module does not execute.
  */
+function commandProcedure(instrument: CommandInstrument) {
+  // These parsers and their closed-over configuration are local and deterministic.
+  // Imported evaluators are deliberately unavailable until their dependencies can
+  // be pinned too. A wrapper's toString alone misses changes in its helper.
+  const replayable = APP_PERFORMANCE_INSTRUMENTS.some(entry => entry.key === instrument.key) ||
+    instrument.key.startsWith('host:psi-') || [
+      'host:cgroup-cpu-delta-cores', 'host:df-root-used-pct',
+      'host:docker-test-container-max-age-s', 'host:loadavg1-not-authoritative',
+    ].includes(instrument.key);
+  return { kind: 'command', key: instrument.key, argv: instrument.argv,
+    parser: instrument.parse.toString(),
+    combine: instrument.sample?.combine.toString() ?? instrument.sampleStdout?.combine.toString() ?? null,
+    intervalMs: instrument.sample?.intervalMs ?? instrument.sampleStdout?.intervalMs ?? null,
+    ...(replayable ? { replayDependencySha256: createHash('sha256').update(canonicalJson({
+      helpers: [psiValues, parsePsiAvg, parsePsiAvg10, parseMaxPsiAvg, parseDfMaxPercent,
+        parseHttpTimesP95Ms, budgetUtilisationPct, parseLoopProfileBudgetPct, parseAnonBudgetPct,
+        memoryPagingBudgetPct, parseSpaInitialJsBudgetPct, parseCgroupUsageUsec, parseDfPercent,
+        parseLoadavg1, parseOldestDockerAgeSec].map(fn => fn.toString()),
+      loopProfileName: LOOP_PROFILE_NAME.source, servingCpuPressureFiles: SERVING_CPU_PRESSURE_FILES,
+      servingAnonBudgets: SERVING_ANON_BUDGETS, healthTimeoutSeconds: HEALTH_TIMEOUT_S,
+    })).digest('hex') } : {}),
+  };
+}
+
+export interface RetainedInstrumentReplay {
+  mode: 'historical';
+  status: 'reproduced' | 'mismatch' | 'unavailable';
+  value: number | null;
+  recordedValue: number | string | boolean | null;
+  unit: string | null;
+  reason: string;
+  window?: { startedAt: string; finishedAt: string };
+}
+
+/** Recompute retained inputs with registered code only: never eval, exec or remeasure. */
+export function replayRetainedInstrument(input: {
+  value: number | string | boolean | null;
+  unit: string | null;
+  provenance?: RecordedMeasurementProvenance;
+}): RetainedInstrumentReplay {
+  const base = { mode: 'historical' as const, recordedValue: input.value, unit: input.unit, value: null };
+  const unavailable = (reason: string): RetainedInstrumentReplay => ({ ...base, status: 'unavailable', reason });
+  const p = parseRecordedMeasurementProvenance(input.provenance);
+  if (!p) return unavailable('Original measurement provenance is missing or invalid.');
+  if (p.truncated || p.redacted || p.gaps.length) return unavailable('Original inputs have retention gaps; exact replay is unavailable.');
+  let procedure: { kind?: unknown; key?: unknown };
+  try { procedure = JSON.parse(p.procedure.snapshot); }
+  catch { return unavailable('Original procedure is invalid.'); }
+  if (!procedure || procedure.kind !== 'command' || typeof procedure.key !== 'string') {
+    return unavailable('Historical replay requires retained command inputs; mutable SQL/probe snapshots are not reconstructed.');
+  }
+  const instrument = getRegisteredInstrument(procedure.key);
+  if (instrument?.evaluator !== 'command') return unavailable('The original command instrument is no longer registered.');
+  const current = commandProcedure(instrument);
+  const encoded = canonicalJson(current);
+  if (!current.replayDependencySha256 || p.procedure.snapshot !== encoded ||
+      p.procedure.sha256 !== createHash('sha256').update(encoded).digest('hex') || input.unit !== instrument.unit) {
+    return unavailable('Registered parser, dependencies, argv or unit differ from the retained procedure.');
+  }
+  const diagnostics = new Map(p.diagnostics.map(entry => [entry.path, entry.value]));
+  if (diagnostics.size !== p.diagnostics.length) return unavailable('Duplicate diagnostic paths make the original inputs ambiguous.');
+  if (typeof input.value !== 'number' || !Number.isFinite(input.value) || diagnostics.get('$["value"]') !== input.value ||
+      diagnostics.get('$["unit"]') !== input.unit) return unavailable('No consistent finite original reading is retained.');
+  const started = Date.parse(p.startedAt), finished = Date.parse(p.finishedAt);
+  const count = instrument.sample || instrument.sampleStdout ? 2 : 1;
+  if (!Number.isFinite(started) || !Number.isFinite(finished) || finished < started ||
+      [...diagnostics.keys()].some(path => path.startsWith('$["samples"]') &&
+        !Array.from({ length: count }, (_, i) => `$["samples"]["${i}"]`).some(prefix => path.startsWith(prefix + '[')))) {
+    return unavailable('Original sample population or time window is invalid.');
+  }
+  const samples: Array<{ stdout: string; at: number; value: number }> = [];
+  try {
+    for (let i = 0; i < count; i++) {
+      const prefix = `$["samples"]["${i}"]`;
+      const stdout = diagnostics.get(prefix + '["stdout"]'), atText = diagnostics.get(prefix + '["at"]');
+      const at = typeof atText === 'string' ? Date.parse(atText) : NaN;
+      if (typeof stdout !== 'string' || !Number.isFinite(at) || at < started || at > finished) {
+        return unavailable('An original raw sample or its clock is missing.');
+      }
+      const value = instrument.parse(stdout, { now: at });
+      if (value === null || !Number.isFinite(value)) return unavailable('An original sample no longer parses.');
+      if (diagnostics.get(prefix + '["value"]') !== value) return { ...base, status: 'mismatch', reason: 'Recomputed sample differs from the retained sample.' };
+      samples.push({ stdout, at, value });
+    }
+    const first = samples[0]!, second = samples[1];
+    if (first.at > finished || samples.at(-1)!.at !== finished || (second && second.at <= first.at)) {
+      return unavailable('Original sample clocks do not describe the recorded measurement window.');
+    }
+    const value = instrument.sampleStdout && second
+      ? instrument.sampleStdout.combine(first.stdout, second.stdout, second.at - first.at, { now: second.at })
+      : instrument.sample && second ? instrument.sample.combine(first.value, second.value, second.at - first.at) : first.value;
+    if (value === null || !Number.isFinite(value)) return unavailable('Original sample combination is unavailable.');
+    return { ...base, value, status: value === input.value ? 'reproduced' : 'mismatch',
+      window: { startedAt: p.startedAt, finishedAt: p.finishedAt },
+      reason: value === input.value ? 'Recomputed from original retained inputs and clocks; no current measurement was taken.' : 'Recomputed value differs from the recorded reading.' };
+  } catch { return unavailable('The registered parser could not replay the original inputs.'); }
+}
+
 export async function runInstrument(key: string, deps: InstrumentRunDeps = {}): Promise<InstrumentReading> {
   const instrument = getRegisteredInstrument(key);
   if (!instrument) {
@@ -1045,10 +1145,7 @@ export async function runInstrument(key: string, deps: InstrumentRunDeps = {}): 
   const finish = (reading: InstrumentReading): InstrumentReading => ({
     ...reading,
     provenance: retainMeasurementProvenance({
-      procedure: { kind: 'command', key: instrument.key, argv: instrument.argv,
-        parser: instrument.parse.toString(),
-        combine: instrument.sample?.combine.toString() ?? instrument.sampleStdout?.combine.toString() ?? null,
-        intervalMs: instrument.sample?.intervalMs ?? instrument.sampleStdout?.intervalMs ?? null },
+      procedure: commandProcedure(instrument),
       result: { samples, value: reading.value, unit: reading.unit },
       startedAt, finishedAt: reading.measuredAt,
     }),

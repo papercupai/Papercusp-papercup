@@ -331,9 +331,81 @@ def lock_operation_arguments(record, finish=False):
     return args
 
 
+def _cached_operation_release_paths(path):
+    """Read the exact newly-held paths cached by PreToolUse for safe fallback."""
+    suffix = '.operation.json'
+    if not isinstance(path, str) or not path.endswith(suffix):
+        return None
+    sidecar = path[:-len(suffix)] + '.paths'
+    try:
+        with open(sidecar, encoding='utf-8') as stream:
+            paths = json.load(stream)
+    except FileNotFoundError:
+        return []
+    except (OSError, ValueError, TypeError):
+        return None
+    if (not isinstance(paths, list)
+            or any(not isinstance(value, str) or not value for value in paths)
+            or len(set(paths)) != len(paths)):
+        return None
+    return paths
+
+
+def _release_cached_operation_paths(path, record, call_tool, paths):
+    """Recover a lock when a terminal operation reply did not prove release."""
+    suffix = '.operation.json'
+    if not isinstance(path, str) or not path.endswith(suffix):
+        return False
+    base = path[:-len(suffix)]
+    try:
+        with open(base + '.lock', encoding='utf-8') as stream:
+            lock_id = stream.read().strip()
+    except OSError:
+        return False
+    if not lock_id or not paths:
+        return False
+
+    arguments = {'lock_id': lock_id, 'paths': paths}
+    domain = record.get('coordination_domain')
+    if isinstance(domain, str) and domain:
+        arguments['coordination_domain'] = domain
+    released, error = call_tool('locks:release', arguments)
+    if error is not None or not isinstance(released, dict) or released.get('ok') is not True:
+        return False
+    actual = released.get('released')
+    if isinstance(actual, list) and all(value in actual for value in paths):
+        return True
+    held_before = released.get('held_before', released.get('heldBefore'))
+    if isinstance(actual, list) and not actual and held_before == 0:
+        return True
+
+    owner = record.get('owner')
+    if not isinstance(owner, str) or not owner:
+        return False
+    queue_arguments = {'owner': owner, 'paths': paths}
+    if isinstance(domain, str) and domain:
+        queue_arguments['coordination_domain'] = domain
+    queued, queue_error = call_tool('locks:queue', queue_arguments)
+    if queue_error is not None or not isinstance(queued, dict):
+        return False
+    rows = queued.get('active_locks', queued.get('activeLocks'))
+    if not isinstance(rows, list):
+        return False
+    return not any(
+        isinstance(row, dict)
+        and (row.get('owner') or row.get('ownerId')) == owner
+        and row.get('path') in paths
+        for row in rows
+    )
+
+
 def settle_lock_operation(path, record, call_tool, proof=None):
     """Never downgrade operation identity, pin, or exact scope on a retry."""
-    if record.get('terminal') == 'completed' or (record.get('terminal') == 'cancelled' and proof is None):
+    cached_paths = _cached_operation_release_paths(path)
+    if cached_paths is None:
+        return False
+    if (record.get('terminal') == 'completed' and not cached_paths
+            or record.get('terminal') == 'cancelled' and proof is None and not cached_paths):
         return True
     if lock_operation_inert(record):
         # Nothing was admitted and nothing can be: there is no grant to fence,
@@ -352,9 +424,14 @@ def settle_lock_operation(path, record, call_tool, proof=None):
     if proof is not None:
         args['native_edit_proof'] = proof
     result, error = call_tool('locks:release' if proof is not None else 'locks:cancel_wait', args)
+    expected_state = 'completed' if proof is not None else 'cancelled'
     confirmed = (error is None and isinstance(result, dict) and result.get('ok') is True
             and result.get('operation_id') == record['operation']['id']
-            and result.get('state') in ('completed', 'cancelled'))
+            and result.get('state') == expected_state)
+    if confirmed and cached_paths:
+        released = result.get('released')
+        if not isinstance(released, list) or not all(value in released for value in cached_paths):
+            confirmed = _release_cached_operation_paths(path, record, call_tool, cached_paths)
     if confirmed:
         record['terminal'] = result['state']
         write_lock_operation(path, record)

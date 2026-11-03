@@ -1688,7 +1688,10 @@ describe('spec-test-adequacy per-clause evaluator', () => {
           'This replay remeasures currentness at replay time, so freshness-dependent ratings may differ from the emitted card after evidence changes. ' +
           'It is not a historical as-of replay; grading-integrity audits reconstruct the emitted card using its creation-time snapshot.',
       );
-      expect(result.ratings[criterion].evidence).not.toContain('with args=');
+      // The declaration read is distinct from the shared evaluator replay.
+      const withoutDeclarationProbe = result.ratings[criterion].evidence
+        .replaceAll('Probe plans:get-specs with args=', 'Probe plans:get-specs ');
+      expect(withoutDeclarationProbe).not.toContain('with args=');
     }
   });
 
@@ -2324,6 +2327,37 @@ describe('spec-test-adequacy per-clause evaluator', () => {
     expect(correctLayerEvidence).toContain('expected ["integration"]');
     expect(correctLayerEvidence).not.toContain('Probe plans:get-spec-evidence');
     expect(correctLayerEvidence).not.toMatch(/\b(planSlug|specId|specRevision|specFingerprint)=/);
+  });
+
+  it.each([
+    { state: 'pass', layers: ['integration'], measured: true },
+    { state: 'unknown', layers: ['integration'], measured: false },
+    { state: 'fail', layers: ['unit'], measured: true },
+    { state: 'not-applicable', layers: [], measured: true },
+    { state: 'not-applicable', layers: ['integration'], measured: true, codeDeliverable: false },
+  ])('makes declared layers and evidence requirements replayable for correct-layer $state', ({ state, layers, measured, codeDeliverable }) => {
+    const binding = evidence({ evidenceKind: 'test', ...(measured ? {} : { testRunId: null }) });
+    binding.details.evidencePlane = 'tree';
+    const result = evaluateSpecTestAdequacy({
+      clause: clause({ requiredTestLayers: layers, requiredEvidence: ['test', 'tree'] }),
+      evidence: [binding],
+      harness: 'papercusp',
+      classRef: 'plan-class-feature-ship',
+      ...(codeDeliverable === false ? { codeDeliverable } : {}),
+    });
+
+    expect(result.ratings['correct-layer'].rating).toBe(state);
+    for (const text of [result.ratings['correct-layer'].evidence, result.scorecardDraft.ratings['correct-layer'].evidence]) {
+      const probes = [...text.matchAll(/Probe plans:get-specs with args=(\{[^\n]*?\});/g)];
+      expect(probes).toHaveLength(1);
+      expect(JSON.parse(probes[0]![1]!)).toEqual({
+        harness: 'papercusp', slug: 'reconnect-plan', specIds: ['SPEC-003-01'],
+      });
+      expect(text).toContain('specs[0].requiredTestLayers');
+      expect(text).toContain(`expected ${JSON.stringify(layers)}`);
+      expect(text).toContain('specs[0].requiredEvidence');
+      expect(text).toContain('expected ["test","tree"]');
+    }
   });
 
   it('requires targeted L4 for high-risk, bugfix, migration, and mutation-required clauses', () => {
@@ -5683,7 +5717,9 @@ describe('rerunRecipe is submittable to its own evaluator', () => {
         'It is not a historical as-of replay; grading-integrity audits reconstruct the emitted card using its creation-time snapshot.',
     );
     expect(evidenceText).not.toContain('with args=');
-    expect(Object.values(result.ratings).every((rating) => !rating.evidence.includes('with args='))).toBe(true);
+    expect(Object.values(result.ratings).every((rating) => !rating.evidence
+      .replaceAll('Probe plans:get-specs with args=', 'Probe plans:get-specs ')
+      .includes('with args='))).toBe(true);
     expect(recipe.args).toMatchObject({
       harness: 'papercusp',
       slug: 'reconnect-plan',

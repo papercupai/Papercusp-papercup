@@ -680,11 +680,11 @@ export default defineTool({
       };
     }
     // P-010: an OPEN owner message becomes the successor's first prompt (a live
-    // ask, never quoted history) — spec.firstPrompt already carries it through
-    // the ONE shared kickoff source (deriveLaunchPromptText). Otherwise the
-    // successor opens on the continue+re-orient note, envelope-tagged
-    // `self-compaction` so the turn-provenance hook classifies it machine-origin
-    // (turn-provenance-owner-vs-agent P-002).
+    // ask, never quoted history). Its text stays verbatim, but the carry boundary
+    // tags the delivery as `self-compaction` so the hook does not capture the
+    // replay as a fresh owner directive. Frozen assignment prompts are hash-bound
+    // and keep their exact bytes. Without an open message, the successor gets the
+    // continue+re-orient note, also tagged `self-compaction`.
     // P-010's transcript-tail gate covers an unanswered human turn. An
     // immediately-created coord:ask-owner question has no such turn: it lives
     // in the conversation ledger and is carried in the spec's asks slot. Keep
@@ -694,8 +694,21 @@ export default defineTool({
     const openOwnerMessageQuestion = spec.openOwnerQuestion.crossesOpenOwnerMessage;
     const openOwnerAskCount = spec.openOwnerAskCount ?? 0;
     const openOwnerQuestion = openOwnerMessageQuestion || openOwnerAskCount > 0;
+    const tagOpenOwnerFirstPrompt = async (text: string): Promise<string> => {
+      try {
+        return (await tagTurnForInjection({
+          sid: identity.ownerId,
+          origin: 'self-compaction',
+          text,
+        })).taggedText;
+      } catch {
+        return text; // provenance must never break a boundary
+      }
+    };
     const firstPrompt =
-      spec.firstPrompt ??
+      (spec.firstPrompt != null && !spec.frozenAssignmentCarry
+        ? await tagOpenOwnerFirstPrompt(spec.firstPrompt)
+        : spec.firstPrompt) ??
       (await (async () => {
         // EI-22131227584499489: `focus`/`continueNote` are free text the
         // CALLING owner wrote itself — nothing else verifies it actually names
@@ -735,8 +748,8 @@ export default defineTool({
           return note; // provenance must never break a boundary
         }
       })());
-    // Only the first prompt is live caller-authored successor input at this
-    // boundary. The deterministic system addendum may contain immutable
+    // Only the first prompt is executable successor input at this boundary.
+    // The deterministic system addendum may contain immutable
     // transcript/history prose that names a stale candidate while documenting
     // what the carry contains; scanning it again turns historical evidence into
     // an executable instruction and can strand compaction permanently.

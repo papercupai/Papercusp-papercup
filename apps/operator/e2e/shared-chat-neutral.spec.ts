@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { test, expect } from './_egress';
 import { root, startDesktopGridFixtureServer as startFixtureServer } from './_desktop-grid-fixture-server';
@@ -36,12 +36,18 @@ test.beforeEach(async ({ page }) => {
   }
 });
 test.afterEach(async ({ page }, info) => {
-  await info.attach('neutral-source', { body: JSON.stringify({
+  const sourcePath = info.outputPath('neutral-source.json');
+  await writeFile(sourcePath, JSON.stringify({
     entry, sourceFingerprint, profile: 'in-memory-fixture', productionHostEvidence: false,
-  }), contentType: 'application/json' });
-  if (info.status === 'passed') await info.attach('neutral-browser', {
-    body: await page.screenshot(), contentType: 'image/png',
-  });
+  }));
+  await info.attach('neutral-source', { path: sourcePath, contentType: 'application/json' });
+  // Element capture waits for a stable rendered box before capturing the fast
+  // protocol case. Explicit paths retain the evidence with the list reporter.
+  if (info.status === 'passed') {
+    const screenshotPath = info.outputPath('neutral-browser.png');
+    await page.locator('main').screenshot({ path: screenshotPath });
+    await info.attach('neutral-browser', { path: screenshotPath, contentType: 'image/png' });
+  }
 });
 
 test('P011 neutral browser executes the shared oracle and catches duplicate effects', async ({ page }) => {

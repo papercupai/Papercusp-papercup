@@ -524,6 +524,7 @@ def recover_failed_code_mode_edit(current_cache_path):
             cleanup_sidecars(base)
         else:
             mark_release_error('parent-operation-finish', 'terminal operation not confirmed')
+            emit_release_warning(record['paths'])
 
     for lock_file in Path(cache_dir).glob('*.lock'):
         base = str(lock_file)[:-len('.lock')]
@@ -603,6 +604,11 @@ operation_path = os.path.join(cache_dir, tool_use_id + '.operation.json')
 if os.path.exists(operation_path):
     record = read_lock_operation(operation_path, owner, session_id)
     if record:
+        if (tool_name in ('exec', 'functions.exec', 'functions__exec')
+                and not parent_tool_terminal(payload.get('tool_response', payload.get('toolResponse')))):
+            # functions.exec can yield while its nested patch is still running.
+            # Keep the operation and its cached lock until the parent is terminal.
+            sys.exit(0)
         proof = native_edit_proof(
             tool_name, payload.get('tool_response', payload.get('toolResponse')),
             record['paths'], tool_input, record.get('coordination_domain'),
@@ -612,6 +618,7 @@ if os.path.exists(operation_path):
             mark_release_success('operation-finish')
         else:
             mark_release_error('operation-finish', 'terminal operation not confirmed; sidecar retained')
+            emit_release_warning(record['paths'])
         recover_failed_code_mode_edit(os.path.join(cache_dir, tool_use_id + '.lock'))
     sys.exit(0)
 

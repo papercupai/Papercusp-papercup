@@ -11,14 +11,31 @@ import { resolveOnPath, wellKnownBackendBin } from './backend-bin-resolve.mjs';
 import { isCodexWorkspaceDiscoveryTimeout } from './psu-launch-log.mjs';
 import { codexSessionFrameObserved } from '../../../apps/operator/scripts/psu-pty-host.mjs';
 import { resolveContainerCodexBinary } from './external-bench/container-exec-target';
+import { codexCliResponsesBody, codexCliResponsesCompletionSse } from './inference-gateway/codex-cli-bridge';
 
 // Use the maintained per-user install precedence. The test worker's PATH can
 // prefer a broken system wrapper over the Codex PSU actually launches.
 const codex = wellKnownBackendBin('codex') ?? resolveOnPath('codex');
 const require = createRequire(import.meta.url);
 
+async function privateSuConfig(baseURL: string, home: string) {
+  const { suCodexConfigToml } = await import('./role-codex-home');
+  const previousPort = process.env.PAPERCUSP_GATEWAY_PORT;
+  process.env.PAPERCUSP_GATEWAY_PORT = String(new URL(baseURL).port);
+  try {
+    return suCodexConfigToml({ sid: 'su-private-bootstrap', model: 'gpt-6-luna',
+      mcpUrl: `${baseURL}/mcp`, token: 'private-mcp-fixture',
+      nativeRuntimeBearer: 'n'.repeat(43), codexGatewayAuto: true,
+      headless: true, denyAmbientContext: true, trustDir: home });
+  } finally {
+    if (previousPort === undefined) delete process.env.PAPERCUSP_GATEWAY_PORT;
+    else process.env.PAPERCUSP_GATEWAY_PORT = previousPort;
+  }
+}
+
 /** Exercise the TUI's mandatory account/read path, including terminal probes. */
-async function readNativeTui(home: string, budgetMs: number, nativeSessionId?: string | null, binary = codex): Promise<{ output: string; exitedBeforeBudget: boolean; exitCode: number }> {
+async function readNativeTui(home: string, budgetMs: number, nativeSessionId?: string | null, binary = codex,
+  prompt?: string): Promise<{ output: string; exitedBeforeBudget: boolean; exitCode: number }> {
   const env: NodeJS.ProcessEnv = { ...process.env, CODEX_HOME: home, TERM: 'xterm-256color' };
   delete env.OPENAI_API_KEY;
   if (nativeSessionId === null) delete env.CODEX_SESSION_ID;
@@ -28,7 +45,7 @@ async function readNativeTui(home: string, budgetMs: number, nativeSessionId?: s
     '--dangerously-bypass-hook-trust', '-C', home,
   ], { env, cwd: home, cols: 120, rows: 30 });
   return new Promise((resolve, reject) => {
-    let output = '', probeTail = '', budgetExpired = false;
+    let output = '', probeTail = '', budgetExpired = false, submitted = false;
     const timer = setTimeout(() => { budgetExpired = true; child.kill('SIGTERM'); }, budgetMs);
     const cleanupTimer = setTimeout(() => { child.kill('SIGKILL'); reject(new Error('native TUI failed to terminate')); }, budgetMs + 2000);
     const data = child.onData((chunk: string) => {
@@ -36,6 +53,10 @@ async function readNativeTui(home: string, budgetMs: number, nativeSessionId?: s
       const probes = probeTail + chunk;
       probeTail = probes.slice(-3);
       if (probes.includes('\x1b[6n')) child.write('\x1b[1;1R');
+      if (prompt && !submitted && codexSessionFrameObserved(output, { dims: { cols: 120, rows: 30 } })) {
+        submitted = true;
+        child.write(prompt + '\r');
+      }
     });
     child.onExit(({ exitCode }: { exitCode: number }) => {
       clearTimeout(timer); clearTimeout(cleanupTimer); data.dispose();
@@ -94,12 +115,72 @@ async function readNativeAccount(home: string): Promise<{ result?: unknown; erro
 }
 
 describe('native gateway account bootstrap', () => {
+  it.runIf(Boolean(codex) && process.platform === 'linux').each([false, true])(
+    'measures initial native MCP availability with delayed initialization (required=%s)', async required => {
+      const home = mkdtempSync(join(tmpdir(), 'codex-native-mcp-startup-'));
+      const events: string[] = [], toolNames: string[][] = [];
+      const server = createServer(async (req, res) => {
+        if (req.url?.includes('/models')) {
+          res.writeHead(200, { 'content-type': 'application/json' }); res.end('{"models":[]}'); return;
+        }
+        const chunks: Buffer[] = []; for await (const chunk of req) chunks.push(Buffer.from(chunk));
+        let body: Record<string, unknown>;
+        try { body = JSON.parse(Buffer.concat(chunks).toString()); }
+        catch { res.writeHead(405); res.end(); return; }
+        if (req.url?.endsWith('/responses')) {
+          events.push('model');
+          type WireTool = { name?: string; tools?: WireTool[] };
+          const names = (tools: WireTool[], prefix = ''): string[] => tools.flatMap(tool =>
+            tool.tools ? names(tool.tools, prefix + tool.name + '__') : [prefix + (tool.name ?? '')]);
+          toolNames.push(names(body.tools as WireTool[] ?? []));
+          res.writeHead(200, { 'content-type': 'text/event-stream' });
+          res.end(codexCliResponsesCompletionSse(codexCliResponsesBody({
+            model: 'gpt-6-luna', text: 'Private startup measurement complete.', inputTokens: 100, outputTokens: 8 })));
+          return;
+        }
+        if (body.id === undefined) { res.writeHead(202); res.end(); return; }
+        if (body.method === 'initialize') {
+          events.push('initialize-start');
+          await new Promise(done => setTimeout(done, 4000));
+        }
+        const result = body.method === 'initialize'
+          ? { protocolVersion: '2025-03-26', capabilities: { tools: {} }, serverInfo: { name: 'private-mcp', version: '1' } }
+          : body.method === 'tools/list' ? { tools: [{ name: 'startup_probe', description: 'Private startup probe.',
+            inputSchema: { type: 'object', properties: {} } }] } : {};
+        events.push(String(body.method));
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ jsonrpc: '2.0', id: body.id, result }));
+      });
+      await new Promise<void>(done => server.listen(0, '127.0.0.1', done));
+      const baseURL = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+      const gateway = codexGatewayConfigToml(null, { gateway: { baseURL, token: 'a'.repeat(64) } });
+      const config = required ? await privateSuConfig(baseURL, home) : ['model = "gpt-6-luna"', ...gateway.root,
+        ...codexManagedFeaturesToml({ headless: true }), ...gateway.tables,
+        '[mcp_servers.papercusp-su]', `url = "${baseURL}/mcp"`, `required = ${required}`,
+      ].join('\n');
+      writeFileSync(join(home, 'config.toml'), config);
+      try {
+        const native = await readNativeTui(home, 9000, null, resolveContainerCodexBinary(), 'Measure the configured tool surface.');
+        const diagnostic = JSON.stringify({ required, events, toolNames, ...native });
+        console.info('PRIVATE_NATIVE_MCP_STARTUP ' + JSON.stringify({ required, events, toolNames }));
+        expect(toolNames.length, diagnostic).toBeGreaterThan(0);
+        expect(toolNames[0].some(name => name.endsWith('__startup_probe')), diagnostic).toBe(required);
+        expect(events.indexOf('model') > events.indexOf('tools/list'), diagnostic).toBe(required);
+      } finally {
+        server.closeAllConnections();
+        await new Promise<void>(done => server.close(() => done()));
+        rmSync(home, { recursive: true, force: true });
+      }
+    }, 15_000);
+
   it.runIf(Boolean(codex) && process.platform === 'linux').each([
-    { binary: 'host', nativeSessionId: null },
-    { binary: 'host', nativeSessionId: 'private-inherited-native-session' },
-    { binary: 'musl', nativeSessionId: null },
-    { binary: 'musl', nativeSessionId: 'private-inherited-native-session' },
-  ])('initializes managed MCP without model inference ($binary, $nativeSessionId)', async ({ binary, nativeSessionId }) => {
+    { binary: 'host', nativeSessionId: null, generated: false },
+    { binary: 'host', nativeSessionId: 'private-inherited-native-session', generated: false },
+    { binary: 'musl', nativeSessionId: null, generated: false },
+    { binary: 'musl', nativeSessionId: 'private-inherited-native-session', generated: false },
+    { binary: 'host', nativeSessionId: null, generated: true },
+    { binary: 'musl', nativeSessionId: null, generated: true },
+  ])('initializes managed MCP without model inference ($binary, $nativeSessionId, generated=$generated)', async ({ binary, nativeSessionId, generated }) => {
       const home = mkdtempSync(join(tmpdir(), 'codex-native-mcp-'));
       const methods: string[] = [];
       const server = createServer(async (req, res) => {
@@ -125,14 +206,21 @@ describe('native gateway account bootstrap', () => {
       try {
         const baseURL = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
         const gateway = codexGatewayConfigToml(null, { gateway: { baseURL, token: 'a'.repeat(64) } });
-        writeFileSync(join(home, 'config.toml'), ['model = "gpt-6-luna"', ...gateway.root,
+        let config = ['model = "gpt-6-luna"', ...gateway.root,
           ...codexManagedFeaturesToml({ headless: true }), ...gateway.tables,
           '[mcp_servers.papercusp-su]', `url = "${baseURL}/mcp"`,
           'env_http_headers = { "x-papercusp-native-session" = "CODEX_SESSION_ID" }',
-        ].join('\n'));
+        ].join('\n');
+        if (generated) {
+          // Exercise the production generator, including its MCP tool policy,
+          // private runtime headers and ambient-context confinement. A hand
+          // assembled config cannot catch a managed-home projection defect.
+          config = await privateSuConfig(baseURL, home);
+        }
+        writeFileSync(join(home, 'config.toml'), config);
         const result = await readNativeTui(home, 7000, nativeSessionId,
           binary === 'musl' ? resolveContainerCodexBinary() : codex);
-        const diagnostic = JSON.stringify({ binary, nativeSessionId, methods, ...result });
+        const diagnostic = JSON.stringify({ binary, nativeSessionId, generated, methods, ...result });
         expect(methods, diagnostic).toContain('initialize');
         expect(methods, diagnostic).toContain('tools/list');
         expect(methods, diagnostic).not.toContain('unknown');

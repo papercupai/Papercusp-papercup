@@ -44,6 +44,7 @@ function cleanEnv(): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {};
   for (const [key, value] of Object.entries(process.env)) if (!key.startsWith('GIT_')) env[key] = value;
   delete env.NODE_OPTIONS;
+  delete env.PAPERCUSP_COMMITTED_SOURCE_NOTICES;
   return env;
 }
 
@@ -538,6 +539,57 @@ describe('committed-source loader — a scratch checkout', () => {
     const loaded = run([...prefix, 'entry.mjs'], env);
     expect(loaded.stderr).toContain('COMMITTED_SOURCE substituted mod.mjs');
     expect(readFileSync(notices, 'utf8')).toBe(before);
+  }, 60_000);
+
+  it('preserves raw runtime streams when an inherited loader records the substitution notice', () => {
+    const notices = join(scratch, 'raw-stream.notices');
+    const audit = join(scratch, 'raw-stream.audit');
+    const source = [
+      "import { v } from './mod.mjs';",
+      "if (v !== 'HEAD') throw new Error('wrong source');",
+      'process.stdout.write(Buffer.from([0, 1, 127, 255]));',
+      "process.stderr.write('target stderr\\n');",
+    ].join('\n');
+    const result = spawnSync(process.execPath, ['--input-type=module', '-e', source], {
+      cwd: fixture,
+      env: { ...cleanEnv(), NODE_OPTIONS: `--import=${COMMITTED_SOURCE_LOADER}`,
+        PAPERCUSP_COMMITTED_SOURCE_NOTICES: notices, [AUDIT_ENV]: audit },
+      timeout: 60_000,
+    });
+    expect(result.error).toBeUndefined();
+    expect(result.status, result.stderr?.toString()).toBe(0);
+    expect(result.stdout).toEqual(Buffer.from([0, 1, 127, 255]));
+    expect(result.stderr).toEqual(Buffer.from('target stderr\n'));
+    const receipt = JSON.parse(readFileSync(notices, 'utf8').trim());
+    expect(receipt).toMatchObject({ schemaVersion: 'committed-source-notice-v1',
+      kind: 'substituted', via: 'esm', rel: 'mod.mjs', top: realpathSync(fixture), pid: result.pid });
+    expect(readAudit(audit).find(record => record.rel === 'mod.mjs')).toMatchObject({
+      kind: 'substituted', returnedSha256: sha256("export const v = 'HEAD';\n"),
+    });
+  }, 60_000);
+
+  it.each(['absent', 'unwritable'] as const)('retains stderr substitution evidence when the notice channel is %s', mode => {
+    const env = cleanEnv();
+    if (mode === 'unwritable') env.PAPERCUSP_COMMITTED_SOURCE_NOTICES = scratch; // A directory cannot accept JSONL.
+    const result = run(['--import', COMMITTED_SOURCE_LOADER, 'entry.mjs'], env);
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toBe('V=HEAD\n');
+    expect(result.stderr).toContain('COMMITTED_SOURCE substituted mod.mjs');
+    if (mode === 'unwritable') expect(result.stderr).toContain('COMMITTED_SOURCE notice-unrecorded mod.mjs');
+    else expect(result.stderr).not.toContain('notice-unrecorded');
+  }, 60_000);
+
+  it('records forked child substitution evidence without adding to runtime stderr', () => {
+    const notices = join(scratch, 'fork-stream.notices');
+    const result = run(['fork-entry.mjs'], { ...cleanEnv(),
+      NODE_OPTIONS: `--import=${COMMITTED_SOURCE_LOADER}`, PAPERCUSP_COMMITTED_SOURCE_NOTICES: notices });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toBe('CHILD=HEAD\n');
+    expect(result.stderr).toBe('');
+    expect(JSON.parse(readFileSync(notices, 'utf8').trim())).toMatchObject({
+      schemaVersion: 'committed-source-notice-v1', kind: 'substituted', via: 'esm',
+      rel: 'mod.mjs', entry: 'child.mjs', pid: expect.any(Number),
+    });
   }, 60_000);
 
   it('refuses an uncommitted checkout CommonJS module', () => {

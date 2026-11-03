@@ -17,6 +17,135 @@ const DEFAULT_CLOSE_POLL_MS = 100;
  * @typedef {(delay: number) => Promise<unknown>} InspectorSleep
  */
 
+/**
+ * Observe an existing owner's sampler without enabling, starting, stopping or
+ * reconfiguring it. CDP cannot atomically claim an inactive isolate-wide sampler.
+ * The authoritative owner reader MUST change generation on every start/rearm,
+ * never reuse a generation, and report the actual GC sampling settings. Do not
+ * substitute a constant/caller assertion: CDP profiles contain no sampler epoch.
+ * Snapshots are fenced on both sides by this owner state and PID/timeOrigin.
+ * Only endpoint-live samples newer than the baseline ordinal are reported.
+ * This is neither total allocated bytes nor exclusive request attribution.
+ * The caller retains ownership of its transport and inspector-port cleanup.
+ *
+ * @template T
+ * @param {Pick<ReturnType<typeof createCdpClient>, 'evaluate' | 'send'>} client
+ * @param {{ expectedPid: number, expectedTimeOrigin: number,
+ *   readSamplerState: () => Promise<{generation: string, active: boolean,
+ *     includeObjectsCollectedByMajorGC: boolean, includeObjectsCollectedByMinorGC: boolean}>,
+ *   durationMs?: number, maxSamples?: number }} options
+ * @param {(signal: AbortSignal) => Promise<T>} during
+ */
+export async function withBorrowedHeapSamples(client, {
+  expectedPid, expectedTimeOrigin, readSamplerState, durationMs = 30_000, maxSamples = 200_000,
+}, during) {
+  if (!Number.isInteger(expectedPid) || expectedPid <= 0 ||
+      !Number.isFinite(expectedTimeOrigin) || expectedTimeOrigin <= 0)
+    throw new TypeError('Positive expectedPid and expectedTimeOrigin required');
+  if (typeof readSamplerState !== 'function' || typeof during !== 'function')
+    throw new TypeError('An authoritative sampler owner reader and body are required');
+  if (!Number.isInteger(durationMs) || durationMs < 1 || durationMs > 120_000 ||
+      !Number.isInteger(maxSamples) || maxSamples < 1 || maxSamples > 1_000_000)
+    throw new TypeError('Invalid heap sampling duration/sample limits');
+  const abort = new AbortController();
+  /** @type {ReturnType<typeof setTimeout> | undefined} */
+  let timer;
+  /** @type {string | undefined} */
+  let generation;
+  const identity = async () => {
+    abort.signal.throwIfAborted();
+    const result = await client.evaluate('({ pid: process.pid, timeOrigin: performance.timeOrigin })',
+      { returnByValue: true });
+    if (result?.result?.value?.pid !== expectedPid ||
+        result.result.value.timeOrigin !== expectedTimeOrigin)
+      throw new Error('Heap sampling process lifetime mismatch');
+    const state = await readSamplerState();
+    abort.signal.throwIfAborted();
+    if (!state || state.active !== true || typeof state.generation !== 'string' || !state.generation ||
+        state.includeObjectsCollectedByMajorGC !== false || state.includeObjectsCollectedByMinorGC !== false)
+      throw new Error('Live sampler owner generation/settings unavailable');
+    generation ??= state.generation;
+    if (state.generation !== generation) throw new Error('Heap sampler generation changed');
+  };
+  const snapshot = async () => {
+    await identity();
+    const response = await client.send('HeapProfiler.getSamplingProfile');
+    const parsed = indexHeapSamples(response?.profile, maxSamples);
+    await identity();
+    return parsed;
+  };
+  const capture = async () => {
+    const before = await snapshot();
+    const value = await during(abort.signal);
+    abort.signal.throwIfAborted();
+    const after = await snapshot();
+    let baselineOrdinal = 0;
+    for (const ordinal of before.samples.keys()) baselineOrdinal = Math.max(baselineOrdinal, ordinal);
+    for (const [ordinal, sample] of after.samples) {
+      const previous = before.samples.get(ordinal);
+      if (previous && (previous.size !== sample.size || previous.nodeId !== sample.nodeId ||
+          (previous.stack !== null && sample.stack !== null && previous.stack !== sample.stack)))
+        throw new Error('Heap sampler sample identity changed');
+      if (!previous && ordinal <= baselineOrdinal)
+        throw new Error('Heap sampler ordinals reset or history changed');
+    }
+    const samples = [...after.samples.entries()].filter(([ordinal]) => ordinal > baselineOrdinal)
+      .map(([ordinal, sample]) => ({ ordinal, size: sample.size, nodeId: sample.nodeId,
+        stack: sample.stack, siteStatus: sample.stack === null ? 'unavailable' : 'observed' }));
+    const sampledBytes = samples.reduce((sum, sample) => sum + sample.size, 0);
+    if (!Number.isSafeInteger(sampledBytes)) throw new Error('Heap sample size overflow');
+    return { value, sampling: { ownership: 'borrowed', pid: expectedPid, timeOrigin: expectedTimeOrigin,
+      generation, baselineOrdinal, samples, sampledBytes,
+      siteCoverage: { baselineMissingNodes: before.missingNodes, endpointMissingNodes: after.missingNodes,
+        newMissingNodes: samples.filter(sample => sample.stack === null).length },
+      definition: 'New sampled objects still live at endpoint; missing stack nodes remain explicit site gaps. Sampling estimates, not total allocations, retained-owner bytes or exclusive request attribution.' } };
+  };
+  try {
+    /** @type {Promise<never>} */
+    const timeout = new Promise((_, reject) => {
+      timer = setTimeout(() => {
+        abort.abort();
+        reject(new Error('Heap sampling capture deadline exceeded'));
+      }, durationMs);
+    });
+    return await Promise.race([capture(), timeout]);
+  } finally {
+    clearTimeout(timer);
+    abort.abort();
+  }
+}
+
+/** Validate the complete profile before reporting any interval measurement. */
+function indexHeapSamples(profile, maxSamples) {
+  if (!profile?.head || !Array.isArray(profile.samples) || profile.samples.length > maxSamples)
+    throw new Error('Heap sampling profile unavailable or sample limit exceeded');
+  const nodes = new Map(), pending = [{ node: profile.head, stack: '' }];
+  while (pending.length) {
+    const { node, stack } = pending.pop();
+    if (!node || !Number.isSafeInteger(node.id) || node.id < 1 || nodes.has(node.id) ||
+        !node.callFrame || !Array.isArray(node.children) || nodes.size >= maxSamples)
+      throw new Error('Malformed heap sampling tree');
+    const path = stack + JSON.stringify(node.callFrame) + '\n';
+    nodes.set(node.id, path);
+    for (const child of node.children) pending.push({ node: child, stack: path });
+  }
+  const samples = new Map();
+  let missingNodes = 0;
+  for (const sample of profile.samples) {
+    if (!Number.isSafeInteger(sample?.ordinal) || sample.ordinal < 1 || samples.has(sample.ordinal) ||
+        !Number.isSafeInteger(sample.size) || sample.size <= 0 ||
+        !Number.isSafeInteger(sample.nodeId) || sample.nodeId < 1)
+      throw new Error('Malformed heap sampling sample: ' + JSON.stringify({ ordinal: sample?.ordinal,
+        size: sample?.size, nodeId: sample?.nodeId, nodeExists: nodes.has(sample?.nodeId) }));
+    // Native V8 snapshots can expose samples whose stack node is unavailable.
+    // Preserve their measured bytes and ordinal, but never fabricate attribution.
+    const stack = nodes.get(sample.nodeId) ?? null;
+    if (stack === null) missingNodes++;
+    samples.set(sample.ordinal, { size: sample.size, nodeId: sample.nodeId, stack });
+  }
+  return { samples, missingNodes };
+}
+
 export class CdpEvaluationError extends Error {
   constructor(expression, exceptionDetails) {
     const description = exceptionDetails?.exception?.description

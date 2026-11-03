@@ -6,6 +6,7 @@ import { DbCallDeadlineError } from '@papercusp/db-org';
 import { CHARS_PER_TOKEN_ESTIMATE, computeTurnDoors } from '../../context-doors';
 import { getDoorConstantsSync } from '../../context-doors-config';
 import { resolveAgentIdentity } from '../coordination/identity';
+import { replayRetainedInstrument } from '../../rubric-instrument-registry';
 import { COORD_ROLES } from '../coordination/roles';
 import {
   classifyGradingAuditCurrentness,
@@ -58,6 +59,8 @@ export const scorecardGetArgs = z.object({
     .describe('Compatibility alias for issueId for generic id-based read callers; issueId wins when both are supplied.'),
   criterionKey: z.string().min(1).max(200).optional()
     .describe('Read one criterion from an oversized card index. Evidence remains exact; follow evidenceRead.next until complete.'),
+  replay: z.literal('retained-measurement').optional()
+    .describe('Recompute one criterion original retained command inputs with registered parsers only. Requires criterionKey; no commands, SQL or current-state measurements run. Missing or incompatible inputs stay unavailable.'),
   indexOffset: z.number().int().min(0).optional()
     .describe('Resume a paged criterion index at evidenceRead.next.args.indexOffset.'),
   evidenceOffset: z.number().int().min(0).optional()
@@ -67,6 +70,10 @@ export const scorecardGetArgs = z.object({
 }).refine(({ issueId, id }) => issueId !== undefined || id !== undefined, {
   message: 'issueId or id is required',
   path: ['issueId'],
+}).refine(({ replay, criterionKey, evidenceOffset, indexOffset, rerunRecipeOffset }) => !replay ||
+  (criterionKey !== undefined && evidenceOffset === undefined && indexOffset === undefined && rerunRecipeOffset === undefined), {
+  message: 'retained-measurement replay requires criterionKey and cannot be combined with paging',
+  path: ['replay'],
 }).refine(({ criterionKey, indexOffset }) => criterionKey === undefined || indexOffset === undefined, {
   message: 'criterionKey and indexOffset cannot be combined',
   path: ['indexOffset'],
@@ -411,6 +418,14 @@ const scorecardGetDiagnosticsSchema = z.object({
 
 const scorecardGetResultSchema = z.object({
   ok: z.boolean(),
+  replay: z.object({
+    issueId: z.string(), criterionKey: z.string(), rubricRef: z.string(),
+    evidenceFingerprint: z.string().optional(), testRunId: z.number().int().positive(),
+    mode: z.literal('historical'), status: z.enum(['reproduced', 'mismatch', 'unavailable']),
+    value: z.number().finite().nullable(), recordedValue: z.union([z.number(), z.string(), z.boolean(), z.null()]),
+    unit: z.string().nullable(), reason: z.string(),
+    window: z.object({ startedAt: z.string(), finishedAt: z.string() }).optional(),
+  }).optional(),
   diagnostics: scorecardGetDiagnosticsSchema.optional(),
   scorecard: z.union([scorecardEvidenceSchema, scorecardRecipeHeaderSchema]).optional(),
   evidenceRead: scorecardEvidenceReadSchema.optional(),
@@ -538,6 +553,9 @@ function boundedEvidenceRead(
     return {
       ok: true as const,
       scorecard: { ...scorecard, criteria: [{ ...criterion, evidence: criterion.evidence.slice(offset, nextOffset) }] },
+      ...(criterion.ratedFrom === 'ledger' && criterion.ledgerResult ? {
+        retainedMeasurementReplay: { tool: 'scorecards:get', args: { issueId, criterionKey: criterion.key, replay: 'retained-measurement' } },
+      } : {}),
       ...recipeRead,
       evidenceRead: {
         complete,
@@ -599,13 +617,16 @@ export default defineTool({
   name: 'scorecards:get',
   profile: 'engineer',
   description:
-    'Read one rubric scorecard by issueId (id is a compatibility alias; issueId wins). Small cards return exact criterion evidence; oversized cards return an index via evidenceRead and recipes via rerunRecipeRead; follow their cursors, and never treat an incomplete page or index as missing evidence. Select with criterionKey; resume with indexOffset, evidenceOffset or rerunRecipeOffset. History-only payload is omitted.',
+    'Read one rubric scorecard by issueId (id is a compatibility alias; issueId wins). Small cards return exact criterion evidence; oversized cards return an index via evidenceRead and recipes via rerunRecipeRead; follow their cursors, and never treat an incomplete page or index as missing evidence. Select with criterionKey; resume with indexOffset, evidenceOffset or rerunRecipeOffset. Add replay:retained-measurement with criterionKey for historical command-input recomputation without live execution. History-only payload is omitted.',
   guidance: {
     when: 'Audit one existing scorecard and re-run the probes its criterion evidence names. Take issueId from scorecards:list or a grading-audit reservation.',
     notWhen:
       'Use scorecards:list for history or multiple rows, rubrics:get for rubric definitions, scorecards:emit to file a scorecard.',
     chaining:
-      'For grading-integrity audits, call dev:pipeline_position for this path and use the same serving route for plans:evaluate-spec-test-adequacy. Compare an emitted card by replaying its stored recipe there; verify historicalAuditOnly.asOf matches scorecard.createdAt. Use rerunRecipe.args only for current-state measurement. Recover all evidence pages before grading; emit the audit last.',
+      'For grading-integrity audits, call dev:pipeline_position for this path and use the same exact serving route for both scorecards:get and plans:evaluate-spec-test-adequacy: the process serving scorecards:get owns its currentness comparison; cross-route calls may report different currentness. ' +
+      'For a spec-test-adequacy card call plans:evaluate-spec-test-adequacy with { slug: rerunRecipe.args.slug, scorecardId: issueId }; this replays its exact bindings as of scorecard.createdAt. Verify historicalAuditOnly.asOf matches scorecard.createdAt. Do not compare a direct replay of rerunRecipe.args with the historical card: freshness can change after evidence changes. Use rerunRecipe.args only when measuring the present state (current-state measurement). ' +
+      'For a ledger measurement use scorecards:get { issueId, criterionKey, replay:"retained-measurement" } or the selected criterion retainedMeasurementReplay call. It recomputes retained command inputs; unavailable SQL/counter snapshots remain unavailable, never current measurements. ' +
+      'Read independent criteria in small Promise.all groups; follow each criterion pages sequentially. Concatenate complete pages before grading. If a call returns papercusp.output-envelope/v1, recover it through capability:read before reading scorecard.criteria. Recover all evidence pages before grading; emit the audit last.',
     returns:
     'Returns `{ ok, scorecard, evidenceRead, rerunRecipeRead? }`. The scorecard includes `evidenceFingerprint` when recorded, `evaluatorBuildCurrentness` when the recipe pins an evaluator build, and an inline `rerunRecipe` or a recoverable rerunRecipeRead cursor. Recipe pages retain card identity and gradingAudit; chunks encode exact JSON with UTF-16 offset/totalChars/next. Full evidence reads contain every exact criterion; an oversized read contains criteria:[] plus a complete or paged criterion index. Index pages preserve metadata and report offset/totalCriteria/next; criterion pages retain full-card identity and nKeys/missingKeys and report offset/totalChars/next. Recover recipe, index and evidence pages before grading.',
     seeAlso: ['scorecards:list', 'scorecards:emit', 'rubrics:get'],
@@ -698,6 +719,19 @@ export default defineTool({
             }
             if (result.kind === 'not_scorecard') {
               return respond({ ok: false, error: `'${issueId}' is not a scorecard` });
+            }
+            if (args.replay) {
+              const criterion = (result.scorecard as ScorecardEvidenceRow).criteria.find(entry => entry.key === args.criterionKey);
+              if (!criterion) return respond({ ok: false, error: 'criterion_not_found' });
+              if (!criterion.ledgerResult || criterion.ratedFrom !== 'ledger') {
+                return respond({ ok: false, error: 'retained_measurement_not_found' });
+              }
+              return respond({ ok: true, replay: {
+                issueId, criterionKey: criterion.key, rubricRef: result.scorecard.rubricRef,
+                evidenceFingerprint: result.scorecard.evidenceFingerprint,
+                testRunId: criterion.ledgerResult.testRunId,
+                ...replayRetainedInstrument(criterion.ledgerResult),
+              } });
             }
             const gradingAuditRubric = result.scorecard.gradingAudit
               ? await runDiagnosticStage(

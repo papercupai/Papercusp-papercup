@@ -1698,6 +1698,9 @@ export function writeRoleCodexHome(opts: WriteRoleCodexHomeOptions): RoleCodexHo
     // tools:invoke allows 1080s and the MCP host adds a 5s buffer; keep
     // Codex's per-server timeout 5s above that 1085s wrapper deadline.
     'tool_timeout_sec = 1090',
+    // Coordination is part of the managed runtime. An optional MCP server
+    // lets Codex submit its first model step before its catalog is available.
+    'required = true',
     ...CODEX_MANAGED_DISPATCHER_APPROVAL_TOML,
     '',
   ].join('\n');
@@ -1949,6 +1952,8 @@ export function suCodexConfigToml(opts: SuCodexConfigInput): string {
     // Papercusp tools can declare a 600s deadline plus a 5s MCP buffer.
     // Keep Codex's per-server client timeout just above that contract.
     'tool_timeout_sec = 610',
+    // Managed turns require Papercusp tools from their first model step.
+    'required = true',
     ...CODEX_MANAGED_DISPATCHER_APPROVAL_TOML,
     ...(opts.token || opts.nativeRuntimeBearer ? [`http_headers = { ${[
       ...(opts.token ? [`Authorization = "Bearer ${tomlEscape(opts.token)}"`] : []),
@@ -2071,7 +2076,7 @@ function ensureSuCodexHomeConfigImpl(opts: SuCodexConfigInput & {
   const expectedSuMcpRoute =
     '[mcp_servers.papercusp-su]\nurl = "' +
     tomlEscape(mcpUrlWithClient(opts.mcpUrl, opts.sid)) +
-    '"\ntool_timeout_sec = 610';
+    '"\ntool_timeout_sec = 610\nrequired = true';
   const expectedGateway = codexGatewayConfigToml(opts.codexGatewayAccountId, {
     nativeRuntimeBearer: opts.nativeRuntimeBearer,
     gatewayOn: opts.codexGatewayAuto,

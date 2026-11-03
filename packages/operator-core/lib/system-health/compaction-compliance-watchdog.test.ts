@@ -115,7 +115,7 @@ const {
   injectMock: vi.fn(async (_sock: string, _payload: unknown) => true),
   findTranscriptMock: vi.fn(async () => '/tmp/live-session.jsonl' as string | null),
   newestTranscriptMock: vi.fn((_ownerId: string) => null as string | null),
-  buildOwnerRespawnMock: vi.fn(async (): Promise<RespawnLaunchSpec | null> => ({
+  buildOwnerRespawnMock: vi.fn(async (..._args: Parameters<typeof import('../carry-respawn').buildOwnerRespawnLaunchSpec>): Promise<RespawnLaunchSpec | null> => ({
     systemPromptAddendum: 'deterministic carry',
     firstPrompt: null as string | null,
     budgetChars: 32_000,

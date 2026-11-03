@@ -587,7 +587,17 @@ export function recordAccountPenalty(
 const keepModelRefusals = (rate: AccountRateState): Pick<AccountRateState, 'modelRefusals'> =>
   rate.modelRefusals ? { modelRefusals: rate.modelRefusals } : {};
 
-export function recordAccountReset(pool: AccountPool, id: string, opts: { resetWindows?: boolean } = {}): AccountPool {
+export function recordAccountReset(pool: AccountPool, id: string,
+  opts: { resetWindows?: boolean; confirmedServingSince?: number } = {}): AccountPool {
+  // A successful inference probe disproves an older penalty streak. Preserve
+  // every observed field, and never erase a penalty that raced the probe.
+  if (opts.confirmedServingSince !== undefined) {
+    const since = opts.confirmedServingSince;
+    if (!Number.isFinite(since) || since <= 0 || opts.resetWindows) return pool;
+    return { accounts: pool.accounts.map(a => a.id !== id || a.rate.lastPenaltyAt >= since ? a : {
+      ...a, rate: { ...a.rate, pausedUntil: 0, penaltyCount: 0, windowStartedAt: 0 },
+    }) };
+  }
   return {
     accounts: pool.accounts.map((a) =>
       a.id === id

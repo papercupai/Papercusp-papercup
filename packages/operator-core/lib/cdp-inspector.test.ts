@@ -9,7 +9,7 @@ import { runInNewContext } from 'node:vm';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { describe, expect, it, vi } from 'vitest';
 
-import { closeInspector, createCdpClient, readPinnedState, readPinnedHeapObjectIds, capturePinnedHeapSnapshot, readProcessMemory, redactDiagnosticUrl, withFunctionCallTrace, readSeedRestoreDiagnostics, captureSeedRestorePhases, SEED_RESTORE_DIAGNOSTIC_SLOT } from '../../../scripts/cdp-inspector.mjs';
+import { closeInspector, createCdpClient, readPinnedState, readPinnedHeapObjectIds, capturePinnedHeapSnapshot, withBorrowedHeapSamples, readProcessMemory, redactDiagnosticUrl, withFunctionCallTrace, readSeedRestoreDiagnostics, captureSeedRestorePhases, SEED_RESTORE_DIAGNOSTIC_SLOT } from '../../../scripts/cdp-inspector.mjs';
 import { restoreSeed, SeedProviderRegistry, type SeedManifest } from '../../../libs/generic/seed-bundle/src/index';
 import { types } from 'node:util';
 
@@ -1368,6 +1368,159 @@ describe('bounded function caller attribution on a real Node inspector', () => {
       child.stdout.destroy(); child.stderr.destroy();
     }
   }, 20_000);
+});
+
+describe('borrowed heap sampling windows', () => {
+  const options = { expectedPid: 7, expectedTimeOrigin: 1234, durationMs: 1000 };
+  function fixture() {
+    const state = { generation: 'owner-1', active: true,
+      includeObjectsCollectedByMajorGC: false, includeObjectsCollectedByMinorGC: false };
+    const frame = { functionName: 'allocation', scriptId: '1', url: 'fixture', lineNumber: 0, columnNumber: 0 };
+    const profile = (samples: Array<{ ordinal: number, size: number, nodeId: number }>) =>
+      ({ head: { id: 1, callFrame: frame, children: [] }, samples });
+    const profiles = [profile([{ ordinal: 41, size: 3000, nodeId: 1 }]),
+      profile([{ ordinal: 41, size: 3000, nodeId: 1 }, { ordinal: 42, size: 20, nodeId: 1 }])];
+    const client = { evaluate: vi.fn(async () => ({ result: { value: { pid: 7, timeOrigin: 1234 } } })),
+      send: vi.fn(async (method: string) => {
+        expect(method).toBe('HeapProfiler.getSamplingProfile');
+        return { profile: profiles.shift() };
+      }) };
+    return { client, state, profiles, profile, readSamplerState: async () => ({ ...state }) };
+  }
+
+  it('excludes the cumulative baseline without lifecycle calls', async () => {
+    const f = fixture();
+    const result = await withBorrowedHeapSamples(f.client, { ...options, readSamplerState: f.readSamplerState }, async () => 'done');
+    expect(result.value).toBe('done');
+    expect(result.sampling).toMatchObject({ ownership: 'borrowed', baselineOrdinal: 41, sampledBytes: 20 });
+    expect(result.sampling.samples.map(sample => sample.ordinal)).toEqual([42]);
+    expect(result.sampling.definition).toContain('not total allocations');
+    expect(f.client.send.mock.calls.map(([method]) => method)).toEqual([
+      'HeapProfiler.getSamplingProfile', 'HeapProfiler.getSamplingProfile',
+    ]);
+  });
+
+  it.each(['generation', 'collected', 'inactive', 'lifetime', 'missing', 'reset', 'malformed'] as const)(
+    'refuses %s evidence without changing the sampler', async failure => {
+      const f = fixture();
+      const body = async () => {
+        if (failure === 'generation') f.state.generation = 'owner-2';
+        if (failure === 'collected') f.state.includeObjectsCollectedByMajorGC = true;
+        if (failure === 'inactive') f.state.active = false;
+        if (failure === 'lifetime') f.client.evaluate.mockResolvedValue({ result: { value: { pid: 7, timeOrigin: 9999 } } });
+        if (failure === 'missing') f.profiles.splice(0);
+        if (failure === 'reset') f.profiles[0] = f.profile([{ ordinal: 1, size: 20, nodeId: 1 }]);
+        if (failure === 'malformed') f.profiles[0] = f.profile([{ ordinal: 42, size: -20, nodeId: 1 }]);
+      };
+      await expect(withBorrowedHeapSamples(f.client, { ...options, readSamplerState: f.readSamplerState }, body)).rejects.toThrow();
+      expect(f.client.send.mock.calls.every(([method]) => method === 'HeapProfiler.getSamplingProfile')).toBe(true);
+    });
+
+  it('preserves native samples with missing stack nodes as explicit site gaps', async () => {
+    const f = fixture();
+    f.profiles[1] = f.profile([{ ordinal: 42, size: 20, nodeId: 88 }]);
+    const result = await withBorrowedHeapSamples(f.client, { ...options, readSamplerState: f.readSamplerState }, async () => {});
+    expect(result.sampling).toMatchObject({ sampledBytes: 20,
+      siteCoverage: { baselineMissingNodes: 0, endpointMissingNodes: 1, newMissingNodes: 1 } });
+    expect(result.sampling.samples).toEqual([{ ordinal: 42, size: 20, nodeId: 88,
+      stack: null, siteStatus: 'unavailable' }]);
+  });
+
+  it('allows baseline collection without mistaking it for a reset', async () => {
+    const f = fixture();
+    f.profiles[1] = f.profile([{ ordinal: 42, size: 20, nodeId: 1 }]);
+    const result = await withBorrowedHeapSamples(f.client, { ...options, readSamplerState: f.readSamplerState }, async () => {});
+    expect(result.sampling.sampledBytes).toBe(20);
+  });
+
+  it('requires owner and lifetime pins before target access', async () => {
+    const f = fixture(), body = vi.fn(async () => {});
+    for (const invalid of [{ expectedPid: 0 }, { expectedTimeOrigin: NaN },
+      { readSamplerState: undefined }, { durationMs: 120001 }, { maxSamples: 0 }]) {
+      await expect(withBorrowedHeapSamples(f.client, { ...options, readSamplerState: f.readSamplerState,
+        ...invalid } as any, body)).rejects.toThrow();
+    }
+    expect(f.client.evaluate).not.toHaveBeenCalled();
+    expect(f.client.send).not.toHaveBeenCalled();
+    expect(body).not.toHaveBeenCalled();
+  });
+
+  it('aborts at deadline without late profile reads when the body settles', async () => {
+    vi.useFakeTimers();
+    const f = fixture();
+    let finish!: () => void, signal!: AbortSignal;
+    const body = new Promise<void>(resolve => { finish = resolve; });
+    const pending = expect(withBorrowedHeapSamples(f.client, { ...options, readSamplerState: f.readSamplerState },
+      async current => { signal = current; await body; })).rejects.toThrow('deadline');
+    try {
+      await vi.advanceTimersByTimeAsync(1001); await pending;
+      expect(signal.aborted).toBe(true);
+      finish(); await vi.advanceTimersByTimeAsync(0);
+      expect(f.client.send).toHaveBeenCalledTimes(1);
+    } finally { finish(); vi.useRealTimers(); }
+  });
+
+  it('preserves a real owner through success, body error, reset and observer detach', async () => {
+    const code = [
+      "const { Session } = require('node:inspector');",
+      "const owner = new Session(); owner.connect(); let generation = 0;",
+      "const post = (method, params = {}) => new Promise((resolve, reject) => owner.post(method, params, (error, value) => error ? reject(error) : resolve(value)));",
+      "globalThis.startOwner = async () => { await post('HeapProfiler.startSampling', { samplingInterval: 512 }); globalThis.samplerState = { generation: 'real-' + ++generation, active: true, includeObjectsCollectedByMajorGC: false, includeObjectsCollectedByMinorGC: false }; };",
+      "globalThis.stopOwner = async () => { await post('HeapProfiler.stopSampling'); samplerState.active = false; };",
+      "globalThis.ownerProfile = () => post('HeapProfiler.getSamplingProfile');",
+      "globalThis.keep = [];",
+      "globalThis.beforeWindow = () => keep.push(Array.from({ length: 20000 }, (_, i) => ({ before: i })));",
+      "globalThis.duringWindow = () => keep.push(Array.from({ length: 20000 }, (_, i) => ({ during: i })));",
+      "startOwner().then(() => { beforeWindow(); console.log('ready'); }); setInterval(() => {}, 1000);",
+    ].join('\n');
+    const child = spawn(process.execPath, ['--inspect=127.0.0.1:0', '-e', code], { stdio: ['ignore', 'pipe', 'pipe'] });
+    let stderr = '', stdout = '', observer: ReturnType<typeof createCdpClient> | undefined;
+    let witness: ReturnType<typeof createCdpClient> | undefined;
+    child.stderr.setEncoding('utf8').on('data', (chunk: string) => { stderr += chunk; });
+    child.stdout.setEncoding('utf8').on('data', (chunk: string) => { stdout += chunk; });
+    try {
+      const deadline = Date.now() + 10000;
+      while (!stdout.includes('ready') && Date.now() < deadline && child.exitCode === null) await sleep(20);
+      expect(stdout, stderr).toContain('ready');
+      const endpoint = stderr.match(/ws:\/\/[^\s]+/)![0];
+      observer = createCdpClient(endpoint); witness = createCdpClient(endpoint);
+      await observer.connect(); await witness.connect();
+      const read = async (expression: string) => (await witness!.evaluate(expression,
+        { returnByValue: true, awaitPromise: true })).result.value;
+      const pinned = { expectedPid: child.pid!, expectedTimeOrigin: await read('performance.timeOrigin'),
+        readSamplerState: () => read('samplerState'), durationMs: 10000 };
+      const methods: string[] = [];
+      const client = { evaluate: observer.evaluate, send: async (method: string) => {
+        methods.push(method); return observer!.send(method);
+      } };
+      const result = await withBorrowedHeapSamples(client, pinned, async () => {
+        await read('duringWindow()'); return 'real';
+      });
+      expect(result.value).toBe('real');
+      expect(result.sampling.sampledBytes).toBeGreaterThan(0);
+      expect(result.sampling.samples.some(sample => sample.stack?.includes('duringWindow'))).toBe(true);
+      expect(result.sampling.samples.some(sample => sample.stack?.includes('beforeWindow'))).toBe(false);
+      expect(result.sampling.samples.every(sample => sample.ordinal > result.sampling.baselineOrdinal)).toBe(true);
+      await expect(withBorrowedHeapSamples(client, pinned, async () => { throw new Error('body failed'); }))
+        .rejects.toThrow('body failed');
+      expect((await read('ownerProfile()')).profile.samples.length).toBeGreaterThan(0);
+      await expect(withBorrowedHeapSamples(client, pinned, async () => {
+        await read('stopOwner().then(() => startOwner())');
+      })).rejects.toThrow('generation changed');
+      await expect(withBorrowedHeapSamples(client, pinned, async () => { observer!.close(); }))
+        .rejects.toThrow('closed');
+      expect((await read('ownerProfile()')).profile.samples.length).toBeGreaterThan(0);
+      expect(methods.every(method => method === 'HeapProfiler.getSamplingProfile')).toBe(true);
+      await read('stopOwner()');
+    } finally {
+      observer?.close(); witness?.close();
+      if (child.exitCode === null && child.signalCode === null) {
+        const exited = new Promise(resolve => child.once('exit', resolve));
+        child.kill('SIGKILL'); await exited;
+      }
+      child.stdout.destroy(); child.stderr.destroy();
+    }
+  }, 30000);
 });
 
 describe('CDP inspector seam', () => {

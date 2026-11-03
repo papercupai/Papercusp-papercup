@@ -2002,18 +2002,25 @@ describe('work-item admission promoter (real Postgres)', () => {
       expect(await admissionOf('WI-request')).toBe('pending');
     }, 90_000);
 
-    describe('authenticated audited agent park comparison', () => {
+    describe.each(['agent', 'watchdog'] as const)('authenticated audited %s park comparison', creator => {
       const actor = 'su-f376159c-ff71-45aa-b34c-cded72705429';
       const reason = 'future independent source work';
       const readComparison = async () => (await db.sql`
         SELECT * FROM harness_shared.work_items WHERE feature_id = 'WI-parked'`)[0];
       const seedPark = async (id = 'WI-parked', admission = 'admitted') => {
-        const payload = { _claimHold: true, _ei: { source: 'su', created_by: actor },
+        const releaseContract = { owner: actor, trigger: 'work-item:done:WI-canonical',
+          condition: 'WI-canonical reaches done, then reconcile this duplicate.',
+          evidence: 'canonical work item', reachability: 'reachable' };
+        const payload = { _claimHold: true, _ei: creator === 'watchdog'
+          ? { source: 'su', created_by: 'system:improvement-watchdog', found_during: 'improvement-watchdog' }
+          : { source: 'su', created_by: actor },
+          ...(creator === 'watchdog' ? { claim_hold_release: releaseContract } : {}),
           claim_hold_by: actor, claim_hold_reason: reason, claim_hold_at: new Date(NOW - 1000).toISOString() };
         await seedItem({ id, admission, takenBy: null, payload, createdAtMs: NOW - 10_000 });
         await db.sql`INSERT INTO harness_shared.audit_log (id, ts, workspace_id, actor, action, subject, details)
           VALUES (${id + '-audit'}, ${NOW - 992}, ${WS}, ${actor}, 'work_items:claim_hold:set', ${id},
-            ${JSON.stringify({ mode: 'claim_hold', by: actor, reason })}::text::jsonb)`;
+            ${JSON.stringify({ mode: 'claim_hold', by: actor, reason,
+              ...(creator === 'watchdog' ? { releaseContract } : {}) })}::text::jsonb)`;
         return readComparison();
       };
       const run = (llmCall: Parameters<typeof runWorkItemAdmissionPromoter>[0]['llmCall'], beforePersist?: () => Promise<void>) =>

@@ -40,11 +40,16 @@ let handlerLoad: Promise<McpRouteHandler> | null = null;
  * interval at construction time; doing that at module scope made importing a
  * pure exported helper keep direct tsx probes alive forever.
  */
-async function getMcpRouteHandler(): Promise<McpRouteHandler> {
+async function getMcpRouteHandler(traceId: string): Promise<McpRouteHandler> {
   if (!handlerLoad) {
     handlerLoad = (async () => {
-      const host = await import('./_mcp-host');
-      await host.ensureOperatorToolsLoaded();
+      // Keep the shared initializer's two awaited boundaries distinguishable.
+      // A pending route_handler_load alone cannot tell a slow host import from
+      // a catalogue import that never finishes registering its tools.
+      const host = await withMcpHttpHandlerPhaseTrace(traceId, 'host_module_load', () =>
+        import('./_mcp-host'));
+      await withMcpHttpHandlerPhaseTrace(traceId, 'operator_catalogue_load', () =>
+        host.ensureOperatorToolsLoaded());
       return createMcpHandler(host.registerMcpHost, host.mcpHostServerOptions(), {
         basePath: '/api',
         maxDuration: 60,
@@ -222,7 +227,7 @@ const mcpHandler = async (req: Request): Promise<Response> => {
     mcpAuthChallenge(req, mcpAuthChallengeDependencies));
   if (refused) return refused;
   const handler = await withMcpHttpHandlerPhaseTrace(traceId, 'route_handler_load', () =>
-    getMcpRouteHandler());
+    getMcpRouteHandler(traceId));
   return withMcpHttpHandlerPhaseTrace(traceId, 'request_pipeline', () =>
     withMcpAdmission(req, loopPressure(), ADMISSION_CONTROL_ENABLED, async () =>
       withMcpHttpHandlerPhaseTrace(traceId, 'mcp_adapter', async () =>

@@ -14,7 +14,7 @@ let server: Server;
 let requests: Array<{ name: string; args: any; url: string }>;
 let mutations: Map<string, { state: string; paths: string[] }>;
 let grants: Set<string>, explicit: Set<string>, proofs: Map<string, any>;
-let loseAcquire: boolean, unknownFinish: boolean, legacy: boolean;
+let loseAcquire: boolean, unknownFinish: boolean, terminalWithoutRelease: boolean, legacy: boolean;
 let lateAcquire: (() => void) | undefined;
 let persistedBeforeHttp: boolean;
 let schemaQualified: boolean, rejectOperation: boolean, listRequests: string[];
@@ -31,7 +31,7 @@ beforeEach(async () => {
   fs.writeFileSync(join(home, '.papercusp/superuser-token'), 'fixture-bearer');
   fs.writeFileSync(join(home, '.papercusp/su-agent-id'), 'fixture-agent');
   requests = []; mutations = new Map(); grants = new Set(); explicit = new Set(); proofs = new Map();
-  loseAcquire = false; unknownFinish = false; legacy = false; lateAcquire = undefined;
+  loseAcquire = false; unknownFinish = false; terminalWithoutRelease = false; legacy = false; lateAcquire = undefined;
   persistedBeforeHttp = true;
   schemaQualified = true; rejectOperation = false; listRequests = []; schemaBySession = new Map();
   server = createServer((req, res) => {
@@ -92,6 +92,12 @@ beforeEach(async () => {
             : { ok: false, reason: 'operation_finished', operation_id: op.id };
         } else if (unknownFinish) {
           result = { ok: false, reason: 'operation_authority_unknown', operation_id: op.id };
+        } else if (terminalWithoutRelease) {
+          const held = mutations.get(op.id)?.paths ?? [];
+          const state = name === 'locks:release' ? 'completed' : 'cancelled';
+          mutations.set(op.id, { state, paths: held });
+          if (args.native_edit_proof) proofs.set(op.id, args.native_edit_proof);
+          result = { ok: true, operation_id: op.id, state, released: [] };
         } else {
           const held = mutations.get(op.id)?.paths ?? [];
           for (const path of held) grants.delete(path);
@@ -100,6 +106,11 @@ beforeEach(async () => {
           if (args.native_edit_proof) proofs.set(op.id, args.native_edit_proof);
           result = { ok: true, operation_id: op.id, state, released: held };
         }
+      } else if (name === 'locks:release' && args.lock_id) {
+        const paths = Array.isArray(args.paths) ? args.paths : [];
+        const released = paths.filter((path: string) => grants.has(path));
+        for (const path of released) grants.delete(path);
+        result = { ok: true, released, held_before: released.length };
       }
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end(JSON.stringify({ jsonrpc: '2.0', id: 1, result: {
@@ -382,6 +393,53 @@ describe('native hook operation fence', () => {
       sessionId: 'native-operation-session',
     });
     expect(record('edit-submodule').terminal).toBe('completed');
+  });
+
+  it('uses the cached exact lock scope when a terminal operation reply omits released paths', async () => {
+    const paths = ['sub/one.ts'];
+    const response = { status: 'completed', tool_results: [{
+      tool_name: 'apply_patch', result: { ok: true, content: [{ type: 'text', text: 'Updated sub/one.ts' }] },
+    }] };
+    const input = parent(response, paths);
+    await hook('pretooluse-locks-acquire.sh', input);
+    expect(grants.has('sub/one.ts')).toBe(true);
+    expect(JSON.parse(fs.readFileSync(join(cache, 'parent.paths'), 'utf8'))).toEqual(paths);
+
+    terminalWithoutRelease = true;
+    await hook('posttooluse-locks-release.sh', input);
+
+    const operationFinish = requests.find(r => r.name === 'locks:release' && r.args.hook_operation);
+    expect(operationFinish?.args.native_edit_proof).toMatchObject({
+      success: true, source: 'codex', tool: 'apply_patch', paths,
+    });
+    const exactFallback = requests.find(r => r.name === 'locks:release' && !r.args.hook_operation);
+    expect(exactFallback?.args).toMatchObject({
+      lock_id: 'correlated-grant', paths, coordination_domain: repo,
+    });
+    expect(grants.size).toBe(0);
+    expect(record('parent').terminal).toBe('completed');
+    expect(fs.existsSync(join(cache, 'parent.paths'))).toBe(false);
+  });
+
+  it('keeps a nested functions.exec operation locked across a yielded PostToolUse result', async () => {
+    const response = { status: 'completed', tool_results: [{
+      tool_name: 'apply_patch', result: { ok: true, content: [{ type: 'text', text: 'Updated sub/one.ts' }] },
+    }] };
+    const input = parent(response);
+    await hook('pretooluse-locks-acquire.sh', input);
+    const saved = record('parent');
+    expect(grants.has('sub/one.ts')).toBe(true);
+
+    await hook('posttooluse-locks-release.sh', parent({ session_id: 73, output: '' }));
+
+    expect(record('parent').operation).toEqual(saved.operation);
+    expect(record('parent')).not.toHaveProperty('terminal');
+    expect(grants.has('sub/one.ts')).toBe(true);
+    expect(requests.some(r => r.name === 'locks:release' || r.name === 'locks:cancel_wait')).toBe(false);
+
+    await hook('posttooluse-locks-release.sh', input);
+    expect(record('parent').terminal).toBe('completed');
+    expect(grants.size).toBe(0);
   });
 
   it('a lost acquire reply completes without a lock token and fences the delayed grant', async () => {

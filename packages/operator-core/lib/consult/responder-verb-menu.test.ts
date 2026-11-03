@@ -29,6 +29,34 @@ const dispatchedFirstTurn = (conversationId: string) =>
 
 const CONSULT_DIR = resolve(dirname(fileURLToPath(import.meta.url)));
 
+describe('simplicity in the existing review', () => {
+  it('asks initial design simplicity questions in first and cascade review briefs', () => {
+    const initial = consultResponderVerbMenu({ conversationId: 'conv-initial' });
+    const cascade = dispatchedFirstTurn('conv-next');
+    for (const brief of [initial, cascade]) {
+      expect(brief).toContain('initial review: is this the simplest design that meets the original scenarios?');
+      expect(brief).toContain('What existing components can be reused');
+      expect(brief).toContain('which complexity is necessary');
+      expect(brief).toContain('what can be removed');
+    }
+  });
+  it('renders the revised whole-design simplicity question for material revisions', () => {
+    const menu = consultResponderVerbMenu({ conversationId: 'conv-revised' });
+    expect(menu).toContain('After a material design revision, reassess the revised design as a whole');
+    expect(menu).toContain('against those original scenarios');
+    expect(menu).toContain('whether the added complexity is still necessary');
+    expect(menu).toContain('a simpler reused approach');
+  });
+  it('adds simplicity guidance without changing the responder routing menu', () => {
+    const menu = consultResponderVerbMenu({ conversationId: 'conv-bounded' });
+    for (const verb of ['conversations:get', 'consult:reply', 'consult:decline', 'consult:close']) expect(menu).toContain(verb);
+    expect(menu).toContain('existing review and follow-up exchange limit');
+    expect(menu).toContain('adds no review stage or requirement for a clean review');
+    expect(menu).toContain('Cosmetic-only changes do not trigger another simplicity review');
+    expect(menu).toContain('TERMINAL and NON-ADVANCING');
+  });
+});
+
 // EI-21761566265989000 — a routed reviewer answered a real consult without reading the thread,
 // because every wake that routes a consult named the WRITE verbs and none named the READ door.
 // These guards pin both halves: the menu says the right thing, and it is the ONLY thing that

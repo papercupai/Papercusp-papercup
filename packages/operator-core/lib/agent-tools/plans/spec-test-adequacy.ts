@@ -1291,8 +1291,10 @@ function clauseDeclarationProbe(clause: SpecClauseRevision, harness?: string): s
   });
   return (
     `Probe plans:get-specs with args=${args}; inspect specs[0].requiredTestLayers. ` +
+    `Also inspect specs[0].requiredEvidence. ` +
     `This reads the canonical declared test-layer requirement for ${clauseIdentity(clause)} ` +
-    `(expected ${JSON.stringify(clause.requiredTestLayers)}).`
+    `(expected ${JSON.stringify(clause.requiredTestLayers)}) and evidence requirements ` +
+    `(expected ${JSON.stringify(clause.requiredEvidence)}).`
   );
 }
 
@@ -3671,7 +3673,7 @@ export function evaluateSpecTestAdequacy(input: {
   if (clause.requiredTestLayers.length === 0) {
     layerRating = boundCorrectLayerPart(
       'not-applicable',
-      `The clause ${clauseIdentity(clause)} declares no required test layer; layer reachability is not evaluated. ${clauseDeclarationProbe(clause, input.harness)}`,
+      `The clause ${clauseIdentity(clause)} declares no required test layer; layer reachability is not evaluated.`,
       evidence.filter((row) => row.evidenceKind !== 'mutation'),
     );
   } else if (input.codeDeliverable === false) {
@@ -3683,7 +3685,7 @@ export function evaluateSpecTestAdequacy(input: {
       'not-applicable',
       `The clause ${clauseIdentity(clause)} belongs to plan item ${clause.planItemId}, which resolves to a non-code ` +
         `deliverable, so its required test layer(s) (${clause.requiredTestLayers.join(', ')}) describe no code test ` +
-        `and layer reachability is not evaluated. ${clauseDeclarationProbe(clause, input.harness)}`,
+        `and layer reachability is not evaluated.`,
       evidence.filter((row) => row.evidenceKind !== 'mutation'),
     );
   } else {
@@ -3779,7 +3781,6 @@ export function evaluateSpecTestAdequacy(input: {
             ].join(', ')}.`,
             [...new Set([...contradictoryLayerRows, ...evidence])],
             'Bind passing measured evidence for every requiredTestLayer; its canonical layer and exact passing case or LLM scenario must match the binding, with path reachability attested.',
-            ` ${clauseDeclarationProbe(clause, input.harness)}`,
           )
         : unresolvedTarget.length > 0
           ? boundCorrectLayerPart(
@@ -3974,7 +3975,7 @@ export function evaluateSpecTestAdequacy(input: {
     rating: combinedRating,
     evidence:
       evidenceWithBindings(
-        parts.map((part) => part.statement).join(' '),
+        `${parts.map((part) => part.statement).join(' ')} ${clauseDeclarationProbe(clause, input.harness)}`,
         uniqueBindingRows(parts.flatMap((part) => part.bindingRows)),
       ) + correctLayerMutationExclusion(
         evidence,

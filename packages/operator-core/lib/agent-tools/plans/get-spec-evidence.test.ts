@@ -13,6 +13,16 @@ import {
 } from '@papercusp/agent-mcp';
 import { PAYLOAD_TIER_HARD_CEILING_CHARS, PAYLOAD_TIER_RATCHET_CHARS } from '@papercusp/tooldef';
 
+vi.mock('./spec-clauses-store', async original => ({
+  ...(await original<typeof import('./spec-clauses-store')>()), listSpecClauses: vi.fn(async () => []),
+}));
+vi.mock('../../work-items', async original => ({
+  ...(await original<typeof import('../../work-items')>()), getWorkItem: vi.fn(),
+}));
+vi.mock('./behavior-contract-resolver', async original => ({
+  ...(await original<typeof import('./behavior-contract-resolver')>()), resolveWorkItemBehaviorContract: vi.fn(),
+}));
+
 vi.mock('../_harness-scope', async (original) => ({
   ...(await original<typeof import('../_harness-scope')>()),
   harnessScopedCtx: vi.fn((_harness: unknown, ctx: unknown) => ctx),
@@ -30,6 +40,9 @@ import tool from './get-spec-evidence';
 import { listSpecEvidence } from './spec-evidence-store';
 import { createCommittedTreeDiagnostics } from './committed-tree-reader';
 import { mockResolvedTyped } from '../../testing/typed-mock';
+import { listSpecClauses, type SpecClauseRevision } from './spec-clauses-store';
+import { getWorkItem } from '../../work-items';
+import { resolveWorkItemBehaviorContract } from './behavior-contract-resolver';
 
 const listEvidence = vi.mocked(listSpecEvidence);
 type EvidenceRow = Awaited<ReturnType<typeof listSpecEvidence>>[number];
@@ -113,11 +126,97 @@ const binding = (id: number, specId: string, overall: 'current' | 'stale' | 'unk
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.mocked(listSpecClauses).mockResolvedValue([]);
   mockResolvedTyped(listEvidence, [
     binding(1, 'SPEC-A', 'current'),
     binding(2, 'SPEC-A', 'stale'),
     binding(3, 'SPEC-B', 'unknown'),
   ]);
+});
+
+describe('criterion evidence applicability', () => {
+  const clause: SpecClauseRevision = {
+    planSlug: 'plan-a', specId: 'SPEC-A', sourceValId: null, currentRevision: 1, revision: 1,
+    planItemId: 'P-001', behavior: 'Measured evidence', behaviorClass: 'observability',
+    requiredEvidence: ['test'], requiredTestLayers: ['unit'], mutationRequired: false,
+    lifecycleStatus: 'active', supersedes: null, exemption: null, falsifier: null,
+    contentHash: 'sha256:SPEC-A', createdBy: 'author', createdAt: '2026-09-23T00:00:00Z',
+    acceptedBy: 'author', acceptedAt: '2026-09-23T00:00:00Z', acceptanceRef: 'test',
+  };
+  beforeEach(() => {
+    vi.mocked(listSpecClauses).mockResolvedValue([clause]);
+    const row = binding(1, 'SPEC-A', 'current');
+    row.details = { ...row.details, evidencePlane: 'tree' };
+    listEvidence.mockResolvedValue([row]);
+  });
+  it('criterion-zero-bindings: emits a missing row with an evaluation stamp and next action', async () => {
+    listEvidence.mockResolvedValue([]);
+    const result = await call({ slug: 'plan-a' });
+    expect(result.applicability.criteria).toMatchObject([{ state: 'missing', spec: { specId: 'SPEC-A' },
+      receipts: [], reasons: ['no-bindings-in-requested-selection'], responsibleRole: 'evidence-producer' }]);
+    expect(Date.parse(result.applicability.criteria[0].evaluatedAt)).toBeGreaterThan(0);
+    expect(result.applicability.criteria[0].nextEvidenceAction).toContain('bind');
+  });
+  it('evidence-current and fingerprint-fields: retains every measured dimension and receipt identity', async () => {
+    const result = await call({ slug: 'plan-a' });
+    expect(result.applicability.criteria[0]).toMatchObject({ state: 'current', target: { planSlug: 'plan-a' },
+      receipts: [{ bindingId: 1, evidencePlane: 'tree', fingerprints: binding(1, 'SPEC-A', 'current').fingerprints,
+        currentness: { dimensions: { source: 'current', test: 'current', fixture: 'not-applicable',
+          rubric: 'not-applicable', environment: 'not-applicable' } }, freshnessBasis: { status: 'measured' } }] });
+  });
+  it.each(['stale', 'unknown'] as const)('evidence-%s: cannot present an unresolved measurement as current', async state => {
+    const row = binding(1, 'SPEC-A', state); row.details = { evidencePlane: 'tree' };
+    listEvidence.mockResolvedValue([row]);
+    expect((await call({ slug: 'plan-a' })).applicability.criteria[0].state).toBe(state);
+  });
+  it('evidence-incompatible: identifies a prior spec fingerprint separately from stale source', async () => {
+    const row = binding(1, 'SPEC-A', 'current'); row.specFingerprint = 'old';
+    listEvidence.mockResolvedValue([row]);
+    expect((await call({ slug: 'plan-a' })).applicability.criteria[0]).toMatchObject({ state: 'incompatible',
+      reasons: expect.arrayContaining(['spec-identity-incompatible']) });
+  });
+  it('evidence-instrument-unavailable: exposes the failed instrument and recovery action', async () => {
+    const row = binding(1, 'SPEC-A', 'unknown');
+    row.serverMeasurement = { status: 'unavailable', reason: 'compiler-unavailable' };
+    listEvidence.mockResolvedValue([row]);
+    expect((await call({ slug: 'plan-a' })).applicability.criteria[0]).toMatchObject({ state: 'unavailable',
+      nextEvidenceAction: expect.stringContaining('Restore') });
+  });
+  it('evidence-withdrawn: preserves withdrawal without allowing a current pass', async () => {
+    const row = { ...binding(1, 'SPEC-A', 'current'), withdrawal: {
+      at: '2026-09-23T00:01:00Z', by: 'author', reason: 'incorrect proof' } };
+    listEvidence.mockResolvedValue([row]);
+    expect((await call({ slug: 'plan-a', bindingIds: [1], includeRetracted: true })).applicability.criteria[0])
+      .toMatchObject({ receipts: [{ state: 'rejected', reasons: expect.arrayContaining(['evidence-withdrawn']) }] });
+  });
+  it('bounded-coverage: returns one bounded row and cannot certify a truncated evidence selection', async () => {
+    listEvidence.mockResolvedValue([binding(1, 'SPEC-A', 'current'), binding(2, 'SPEC-A', 'current')]);
+    const result = await call({ slug: 'plan-a', limit: 1 });
+    expect(result.applicability.criteria).toHaveLength(1);
+    expect(result.applicability.criteria[0]).toMatchObject({ state: 'unknown', coverage: { complete: false } });
+    expect(result.applicability.coverage.evidenceTruncated).toBe(true);
+  });
+  it('live target/window applicability: missing identity remains unknown even when fingerprints match', async () => {
+    const row = binding(1, 'SPEC-A', 'current'); row.details = { evidencePlane: 'live' };
+    listEvidence.mockResolvedValue([row]);
+    expect((await call({ slug: 'plan-a' })).applicability.criteria[0]).toMatchObject({ state: 'unknown',
+      reasons: ['applicable-live-target-or-window-unmeasured'] });
+  });
+  it('dirty-source: preserves the measured dirty-source gap without fabricating freshness', async () => {
+    const row = binding(1, 'SPEC-A', 'unknown');
+    row.details = { evidencePlane: 'tree' };
+    row.currentness.unknownReasons = ['test-run-worktree-dirty'];
+    listEvidence.mockResolvedValue([row]);
+    expect((await call({ slug: 'plan-a' })).applicability.criteria[0]).toMatchObject({ state: 'unknown',
+      reasons: ['test-run-worktree-dirty'], nextEvidenceAction: expect.stringContaining('unknown dimensions') });
+  });
+  it('adhoc-plan-association: preserves a null actual association while reading the clause namespace', async () => {
+    vi.mocked(getWorkItem).mockResolvedValue({ id: 'WI-1', harness: 'papercusp', sourcePlanSlug: null } as Awaited<ReturnType<typeof getWorkItem>>);
+    vi.mocked(resolveWorkItemBehaviorContract).mockResolvedValue({ groups: [{ planSlug: 'plan-a', clauses: [clause] }] } as Awaited<ReturnType<typeof resolveWorkItemBehaviorContract>>);
+    const result = await call({ slug: 'plan-a', workItemIds: ['WI-1'] });
+    expect(result.applicability.criteria[0]).toMatchObject({ target: { workItemId: 'WI-1', planSlug: null },
+      spec: { planSlug: 'plan-a' } });
+  });
 });
 
 describe('plans:get-spec-evidence detail levels', () => {
@@ -187,13 +286,19 @@ describe('plans:get-spec-evidence detail levels', () => {
   });
 
   it.each([[true, 'full'], [false, 'summary']] as const)('detail %s and %s preserve scope, currentness and tier', async (booleanDetail, stringDetail) => {
-    const base = { harness: 'papercusp', slug: 'plan-a' };
-    const aliased = await call({ ...base, detail: booleanDetail });
-    const canonical = await call({ ...base, detail: stringDetail });
-    expect(aliased).toEqual(canonical);
-    expect(aliased).toMatchObject({ ok: true, detail: stringDetail, count: 3 });
-    expect(aliased.evidence.map((row: EvidenceRow) => row.currentness.overall)).toEqual(['current', 'stale', 'unknown']);
-    expect(Boolean(aliased.evidence[0].fingerprints)).toBe(booleanDetail);
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-09-23T00:02:00Z'));
+    try {
+      const base = { harness: 'papercusp', slug: 'plan-a' };
+      const aliased = await call({ ...base, detail: booleanDetail });
+      const canonical = await call({ ...base, detail: stringDetail });
+      expect(aliased).toEqual(canonical);
+      expect(aliased).toMatchObject({ ok: true, detail: stringDetail, count: 3 });
+      expect(aliased.evidence.map((row: EvidenceRow) => row.currentness.overall)).toEqual(['current', 'stale', 'unknown']);
+      expect(Boolean(aliased.evidence[0].fingerprints)).toBe(booleanDetail);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it.each([true, false])('boolean current=%s omits caller fingerprints without promoting stale or unavailable evidence', async (current) => {

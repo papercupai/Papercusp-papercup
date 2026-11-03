@@ -1,5 +1,6 @@
 /** scorecards:evaluate — typed rubric skeleton + deterministic evidence delta. */
 import { z } from 'zod';
+import { ADHOC_WORK_ITEM_SPEC_SCOPE } from '../plans/adhoc-spec-scope';
 import { defineTool } from '@papercusp/agent-mcp';
 import { COORD_ROLES } from '../coordination/roles';
 import { resolveAgentIdentity } from '../coordination/identity';
@@ -330,6 +331,12 @@ export async function evaluateScorecard(
     rubricMeaningRevision: rubric.barContract?.meaningRevision ?? null,
     ...(args.purpose === 'diagnostic' ? { barSetHash: rubric.barSetHash ?? null } : {}),
   };
+  const evidenceApplicabilityRead = rubric.subjectPlan ? {
+    tool: 'plans:get-spec-evidence', args: { slug: rubric.subjectPlan,
+      ...(rubric.subjectHarnessSlug ? { harness: rubric.subjectHarnessSlug } : {}) },
+  } : args.subject?.kind === 'work-item' ? {
+    tool: 'plans:get-spec-evidence', args: { slug: ADHOC_WORK_ITEM_SPEC_SCOPE, workItemIds: [args.subject.ref] },
+  } : null;
   if (args.eligibilityOnly) {
     return {
       ok: true as const,
@@ -349,7 +356,7 @@ export async function evaluateScorecard(
   // skeleton in that state makes a grader spend the full pass only to have the
   // terminal emit refuse the same payload.
   if (args.purpose !== 'diagnostic' && rubric.kind === 'acceptance' && rubric.barContract?.adoptionEpoch != null && rubric.subjectPlan) {
-    // Same harness scope as scorecards:emit: a plan slug is unique per harness, not per
+  // Same harness scope as scorecards:emit: a plan slug is unique per harness, not per
     // workspace (WI-10005160).
     const lifecycle = await readAndEvaluateAcceptanceBarLifecycle(rubric.subjectPlan, 'pre-grading', {
       expectedApplicable: true,
@@ -361,6 +368,7 @@ export async function evaluateScorecard(
       return {
         ok: false as const,
         code: 'acceptance_bar_contract_not_ready' as const,
+        evidenceApplicabilityRead,
         error: lifecycle.message ?? 'acceptance BAR contract is not ready for grading',
         lifecycle,
       };
@@ -381,6 +389,9 @@ export async function evaluateScorecard(
     rating: null,
     evidence: null,
     required: true,
+    ...(evidenceApplicabilityRead ? { evidenceApplicabilityRead: {
+      ...evidenceApplicabilityRead, criterionKey: criterion.barKey ?? criterion.key,
+    } } : {}),
     ...(args.pendingDeliveryBarKeys?.includes(criterion.barKey ?? '') ? { pendingDelivery: true, requiredRating: 'unknown' } : {}),
   }));
   const candidate = (

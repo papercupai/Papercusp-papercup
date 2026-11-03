@@ -98,15 +98,15 @@ const sqlMock = Object.assign(sqlTag, {
 vi.spyOn(dbOrg, 'getOrgPg').mockReturnValue({ sql: sqlMock } as unknown as ReturnType<typeof dbOrg.getOrgPg>);
 
 const issuesOutLinksMany = vi.fn(
-  async (_ids: string[]) =>
+  async (_ids: readonly string[]): Promise<Map<string, issuesEngineer.IssueOutLink[]>> =>
     new Map([['EI-1', [{ rel: 'grades', dst: { kind: 'work_item', ref: 'WI-1' } }]]]),
 );
 
 /** P-010: scorecardTrend's supersession check — a rel-filtered in-edge read, NOT the join. */
-const issuesSupersededByRevision = vi.fn(async (_ids: string[]) => new Set<string>());
+const issuesSupersededByRevision = vi.fn(async (_ids: readonly string[]) => new Set<string>());
 
 vi.spyOn(issuesEngineer, 'issuesScopeWorkspace').mockReturnValue('test-workspace');
-vi.spyOn(issuesEngineer, 'issuesOutLinksMany').mockImplementation(issuesOutLinksMany as typeof issuesEngineer.issuesOutLinksMany);
+vi.spyOn(issuesEngineer, 'issuesOutLinksMany').mockImplementation(issuesOutLinksMany);
 vi.spyOn(issuesEngineer, 'issuesSupersededByRevision').mockImplementation(issuesSupersededByRevision);
 
 vi.spyOn(rubrics, 'getRubric').mockResolvedValue({
@@ -117,7 +117,9 @@ vi.spyOn(rubrics, 'getRubricWithoutSeeding').mockImplementation(async (ref: stri
   rubricId: ref, kind: 'standard', revision: 1,
   criteriaHash: 'criteria-v1', criteria: [{ key: 'alpha' }],
 } as Awaited<ReturnType<typeof rubrics.getRubricWithoutSeeding>>));
-vi.spyOn(rubrics, 'rubricInstrumentContract').mockReturnValue(null);
+vi.spyOn(rubrics, 'rubricInstrumentContract').mockReturnValue({
+  valid: true, bindings: { alpha: null }, criteriaWithoutInstrument: [], duplicateInstrumentKeys: [],
+});
 
 beforeEach(() => {
   issuesOutLinksMany.mockClear();

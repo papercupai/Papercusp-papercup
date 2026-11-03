@@ -3999,6 +3999,13 @@ describe('carry completion follows native delivery and reanchor (WI-10004791)', 
   ])('does not confuse a booted Codex with a completed carry (persists=$persists, deferred=$deferred, stuckOnce=$stuckOnce)', async ({ persists, deferred, stuckOnce }) => {
     const root = mkdtempSync(join(tmpdir(), 'psu-carry-completion-'));
     const codexHome = join(root, 'codex');
+    const childPhaseTrace = join(root, 'child-phases.jsonl');
+    const phaseStartedAt = performance.now();
+    const phaseStartedEpochMs = Date.now();
+    const phaseMarks: Record<string, number> = { started: 0 };
+    const markPhase = (name: string) => {
+      phaseMarks[name] = Math.round(performance.now() - phaseStartedAt);
+    };
     const sourceNativeId = '1f0e2c3d-4b5a-4678-9012-abcdefabcdef';
     const nativeId = '01a0f68e-3037-7dc3-b898-a1cc12441884';
     const sourceNativeFile = join(codexHome, 'sessions', '2026', '10', '01', `rollout-2026-10-01T09-00-00-${sourceNativeId}.jsonl`);
@@ -4025,12 +4032,14 @@ describe('carry completion follows native delivery and reanchor (WI-10004791)', 
     const emit = vi.fn(() => { order.push('emit'); return null; });
     const childCode = [
       "const fs=require('fs'),path=require('path');",
+      "const trace=(phase,extra={})=>fs.appendFileSync(process.env.PHASE_TRACE,JSON.stringify({phase,ts:new Date().toISOString(),pid:process.pid,...extra})+'\\n');",
       "const c=process.env.BOOT_COUNTER,n=fs.existsSync(c)?Number(fs.readFileSync(c,'utf8'))+1:1;fs.writeFileSync(c,String(n));",
       "const starting=n>1&&(process.env.PERSISTS!=='yes'||(process.env.STUCK_ONCE==='yes'&&n===2));",
+      "trace('spawned',{child:n});trace(starting?'starting':'ready',{child:n});",
       "process.stdout.write('BOOT:'+process.pid+'\\n'+(starting?'Starting':'Ready')+' · GPT-6.1-Sol xhigh · Context 100% left\\n');",
-      "process.stdin.setEncoding('utf8');let b='';process.stdin.on('data',d=>{b+=d;let at;while((at=b.indexOf('\\n'))>=0){const line=b.slice(0,at);b=b.slice(at+1);if(line==='QUIT')process.exit(0);",
-      "if(n>1&&!starting){fs.mkdirSync(path.dirname(process.env.NATIVE_FILE),{recursive:true});const timestamp=new Date().toISOString();fs.appendFileSync(process.env.NATIVE_FILE,JSON.stringify({type:'response_item',timestamp,payload:{type:'message',role:'user',content:[{type:'input_text',text:line}]}})+'\\n');}",
-      "process.stdout.write('ECHO:'+line+'\\n');}});setTimeout(()=>process.exit(0),8000);",
+      "process.stdin.setEncoding('utf8');let b='';process.stdin.on('data',d=>{b+=d;let at;while((at=b.indexOf('\\n'))>=0){const line=b.slice(0,at);b=b.slice(at+1);if(line==='QUIT'){trace('quit',{child:n});process.exit(0);}",
+      "if(n>1&&!starting){fs.mkdirSync(path.dirname(process.env.NATIVE_FILE),{recursive:true});const timestamp=new Date().toISOString();fs.appendFileSync(process.env.NATIVE_FILE,JSON.stringify({type:'response_item',timestamp,payload:{type:'message',role:'user',content:[{type:'input_text',text:line}]}})+'\\n');trace('carry-received',{child:n});}",
+      "process.stdout.write('ECHO:'+line+'\\n');}});setTimeout(()=>{trace('auto-exit',{child:n});process.exit(0)},8000);",
     ].join('');
     // This test exercises a child with a KNOWN Starting/Ready footer. Pause its
     // deadline clock only during OS process boot, until its actual first output
@@ -4051,6 +4060,7 @@ describe('carry completion follows native delivery and reanchor (WI-10004791)', 
         CODEX_HOME: codexHome, BOOT_COUNTER: join(root, 'boots'), NATIVE_FILE: nativeFile,
         PERSISTS: persists ? 'yes' : 'no', TERM: 'xterm-256color',
         STUCK_ONCE: stuckOnce ? 'yes' : 'no',
+        PHASE_TRACE: childPhaseTrace,
         PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '50',
         PAPERCUSP_PSU_PTY_BUSY_CAP_MS: '500',
         PAPERCUSP_PSU_PTY_RECYCLE_CARRY_BUDGET_MS: '1500',
@@ -4090,18 +4100,58 @@ describe('carry completion follows native delivery and reanchor (WI-10004791)', 
       mintCarryRespawnArgs: (args: string[]) => ({ args, nativeId: null, launchContextPath: '/test/carry.md' }),
       onRespawn: report, emitCompacted: emit, nativePersistenceTimeoutMs: 200, onExit: () => {},
     });
+    const readJsonLines = (path: string): Array<Record<string, unknown>> => {
+      if (!existsSync(path)) return [];
+      const rows: Array<Record<string, unknown>> = [];
+      for (const line of readFileSync(path, 'utf8').split('\n').filter(Boolean)) {
+        try {
+          rows.push(JSON.parse(line) as Record<string, unknown>);
+        } catch {
+          // A diagnostic snapshot may race the final append; omit only that row.
+        }
+      }
+      return rows;
+    };
+    const hostRows = () => readJsonLines(eventLog);
+    const childRows = () => readJsonLines(childPhaseTrace);
+    const timingSnapshot = () => ({
+      elapsedMs: Math.round(performance.now() - phaseStartedAt),
+      phases: { ...phaseMarks },
+      childEvents: childRows().map((row) => ({
+        phase: row.phase,
+        child: row.child,
+        ts: row.ts,
+      })),
+      hostEvents: hostRows().map((row) => ({
+        phase: row.kind,
+        elapsedMs: typeof row.ts === 'string' ? Date.parse(row.ts) - phaseStartedEpochMs : null,
+        reason: row.reason,
+        attempt: row.attempt,
+        stuckMs: row.stuckMs,
+        budgetMs: row.budgetMs,
+      })),
+    });
+    // If the historical ~20s timeout returns, this fires one second before it
+    // and captures independent child, host-event, and test-phase clocks. A child
+    // that advances while host events stop points at host processing; completed
+    // host events with no test completion point at later assertions/shutdown.
+    const slowTraceTimer = stuckOnce
+      ? setTimeout(() => console.error('[carry-completion slow trace]', JSON.stringify(timingSnapshot())), 19_000)
+      : null;
     try {
       await vi.waitFor(() => expect(captured()).toContain('BOOT:'), { timeout: 8000 });
+      markPhase('initial-boot-output');
       await envelopeInject(sock, {
         mode: 'carry-respawn', ownerId, data: `${marker}\nContinue saved work`,
         systemPromptAddendum: 'verified carry completion',
       });
-      const hostRows = () => readFileSync(eventLog, 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+      markPhase('carry-inject-returned');
       await vi.waitFor(() => {
         expect(hostRows().some((row) => (persists
           ? row.kind === 'respawn-carry-delivered'
           : row.kind === 'respawn-carry-dropped' && row.reason === 'codex-startup-still-starting'))).toBe(true);
       }, { timeout: 9000 });
+      markPhase('terminal-host-event');
       if (persists && !stuckOnce) {
         const rows = hostRows();
         expect(rows.find((row) => row.kind === 'respawned')).toMatchObject({
@@ -4143,6 +4193,11 @@ describe('carry completion follows native delivery and reanchor (WI-10004791)', 
         expect(freshEpochRetries()).toEqual([
           expect.objectContaining({ reason: 'codex-startup-still-starting', attempt: 1 }),
         ]);
+        expect(childRows()
+          .filter((row) => row.phase === 'ready' || row.phase === 'starting')
+          .map((row) => [row.phase, row.child]))
+          .toEqual([['ready', 1], ['starting', 2], ['ready', 3]]);
+        expect(childRows().some((row) => row.phase === 'carry-received' && row.child === 3)).toBe(true);
       }
       if (!persists) {
         // One fresh-epoch retry, then the LAST attempt holds (bounded by the
@@ -4186,9 +4241,15 @@ describe('carry completion follows native delivery and reanchor (WI-10004791)', 
         expect(emit).not.toHaveBeenCalled();
         expect(readFileSync(eventLog, 'utf8')).toContain('"reason":"codex-startup-still-starting"');
       }
+      markPhase('before-quit');
       await rawInject(sock, 'QUIT\n');
       expect(await done).toBe(0);
+      markPhase('host-exited');
+    } catch (error) {
+      if (stuckOnce) console.error('[carry-completion failure trace]', JSON.stringify(timingSnapshot()));
+      throw error;
     } finally {
+      if (slowTraceTimer !== null) clearTimeout(slowTraceTimer);
       clock.mockRestore();
       signalSource.emit('SIGTERM');
       await done.catch(() => undefined);

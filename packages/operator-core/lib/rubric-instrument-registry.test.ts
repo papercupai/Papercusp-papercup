@@ -29,6 +29,7 @@ import { COLD_MOUNTS_INSTRUMENT_KEY, COLD_MOVES_INSTRUMENT_KEY } from './storage
 import { LIVE_FORKSERVER_INSTRUMENT_KEY } from './fleet/forkserver/live-instrument';
 import { DURABLE_HEADROOM_TARGETS_INSTRUMENT_KEY, POSTGRES_RETENTION_INSTRUMENT_KEY } from './storage/retention-interval-evidence';
 import { LEAD_SOURCE_OBSERVATIONS_INSTRUMENT_KEY } from './relationship-graph/qualification-instrument';
+import { retainMeasurementProvenance } from './measurement-provenance';
 import {
   BM25_LATENCY_INSTRUMENT_KEY,
   P544_QUALIFICATION_COMMAND,
@@ -60,6 +61,7 @@ import {
   platformComputedInstrumentKeys,
   registeredInstrumentKeys,
   runInstrument,
+  replayRetainedInstrument,
   unregisteredInstrumentRefusal,
 } from './rubric-instrument-registry';
 
@@ -422,6 +424,76 @@ describe('the registry seed set', () => {
 });
 
 describe('runInstrument', () => {
+  it('replays retained inputs without running a command or consulting the present clock', async () => {
+    const exec = vi.fn(async () => 'Use%\n 42%\n 96%\n');
+    const reading = await runInstrument('host:df-max-used-pct', { exec, now: () => 1_700_000_000_000 });
+    expect(replayRetainedInstrument(reading)).toMatchObject({ mode: 'historical', status: 'reproduced', value: 96 });
+    expect(exec).toHaveBeenCalledTimes(1);
+    expect(replayRetainedInstrument({ ...reading, value: 1 })).toMatchObject({ status: 'unavailable', value: null });
+  });
+
+  it('replays time-sensitive parsers with the original sample clock', async () => {
+    const at = 1_700_000_000_000;
+    const reading = await runInstrument('host:loop-profile-budget-pct', {
+      now: () => at, exec: async () => `loop-saturation-${at - 1000}-pid1-p95_700ms.cpuprofile\n`,
+    });
+    expect(reading.value).toBe(140);
+    expect(replayRetainedInstrument(reading)).toMatchObject({ status: 'reproduced', value: 140 });
+  });
+
+  it('replays both cumulative counters using their measured elapsed interval', async () => {
+    let clock = 1_700_000_000_000;
+    const exec = vi.fn().mockResolvedValueOnce('usage_usec 1000000\n').mockResolvedValueOnce('usage_usec 5000000\n');
+    const reading = await runInstrument('host:cgroup-cpu-delta-cores', {
+      now: () => clock, sleep: async () => { clock += 2000; }, exec,
+    });
+    expect(replayRetainedInstrument(reading)).toMatchObject({ status: 'reproduced', value: 2 });
+    expect(exec).toHaveBeenCalledTimes(2);
+  });
+
+  it('replays raw-output combiners from both retained inputs', async () => {
+    let clock = 1_700_000_000_000;
+    const exec = vi.fn().mockResolvedValueOnce('some avg10=0 avg60=1 avg300=0 total=1\npswpin 10\n')
+      .mockResolvedValueOnce('some avg10=0 avg60=2 avg300=0 total=2\npswpin 20\n');
+    const reading = await runInstrument('host:memory-paging-budget-pct', {
+      now: () => clock, sleep: async () => { clock += 5000; }, exec,
+    });
+    expect(replayRetainedInstrument(reading)).toMatchObject({ status: 'reproduced', value: 40 });
+  });
+
+  it('refuses missing, redacted, truncated, incompatible or ambiguous historical inputs', async () => {
+    const reading = await runInstrument('host:df-max-used-pct', { exec: async () => 'Use%\n 96%\n' });
+    const p = reading.provenance!;
+    const missingRaw = { ...p, diagnostics: p.diagnostics.filter(entry => !entry.path.endsWith('["stdout"]')) };
+    const changedRaw = { ...p, diagnostics: p.diagnostics.map(entry => entry.path.endsWith('["stdout"]') ? { ...entry, value: 'Use%\n 12%\n' } : entry) };
+    for (const provenance of [undefined, missingRaw, { ...p, redacted: true, gaps: ['redacted'] as const },
+      { ...p, truncated: true, gaps: ['diagnostics-truncated'] as const },
+      { ...p, procedure: { ...p.procedure, sha256: '0'.repeat(64) } },
+      { ...p, diagnostics: [...p.diagnostics, p.diagnostics[0]!] }]) {
+      expect(replayRetainedInstrument({ ...reading, provenance: provenance as typeof p })).toMatchObject({ status: 'unavailable', value: null });
+    }
+    expect(replayRetainedInstrument({ ...reading, provenance: changedRaw })).toMatchObject({ status: 'mismatch' });
+    expect(replayRetainedInstrument({ ...reading, unit: 'ms' })).toMatchObject({ status: 'unavailable' });
+  });
+
+  it('does not convert SQL, lost inputs or missing dependency identity into replay proof', async () => {
+    const reading = await runInstrument('host:df-root-used-pct', { exec: async () => 'Use%\n 0%\n' });
+    expect(replayRetainedInstrument(reading)).toMatchObject({ status: 'reproduced', value: 0 });
+    const p = reading.provenance!;
+    const legacy = JSON.parse(p.procedure.snapshot);
+    delete legacy.replayDependencySha256;
+    const old = retainMeasurementProvenance({ startedAt: p.startedAt, finishedAt: p.finishedAt,
+      procedure: legacy, result: { samples: [{ at: p.finishedAt, stdout: 'Use%\n 0%\n', value: 0 }], unit: '%', value: 0 } });
+    expect(replayRetainedInstrument({ ...reading, provenance: old })).toMatchObject({ status: 'unavailable' });
+    const sql = retainMeasurementProvenance({ startedAt: p.startedAt, finishedAt: p.finishedAt,
+      transactionAt: p.finishedAt, procedure: { kind: 'sql', sql: 'SELECT now()' }, result: { rows: [{ value: 0 }] } });
+    expect(replayRetainedInstrument({ ...reading, provenance: sql })).toMatchObject({ status: 'unavailable' });
+    const invalidClock = { ...p, diagnostics: p.diagnostics.map(entry => entry.path.endsWith('["at"]') ? { ...entry, value: '2100-01-01T00:00:00Z' } : entry) };
+    expect(replayRetainedInstrument({ ...reading, provenance: invalidClock })).toMatchObject({ status: 'unavailable' });
+    const extra = { ...p, diagnostics: [...p.diagnostics, { path: '$["samples"]["1"]["stdout"]', value: 'Use%\n 0%\n' }] };
+    expect(replayRetainedInstrument({ ...reading, provenance: extra })).toMatchObject({ status: 'unavailable' });
+  });
+
   it('retains the command input so an independent parser can reproduce the measured maximum', async () => {
     const stdout = 'Use%\n 42%\n 96%\n';
     const reading = await runInstrument('host:df-max-used-pct', { exec: async () => stdout });

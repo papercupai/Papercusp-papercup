@@ -17,7 +17,7 @@
  *  - exchange-cap arithmetic against real column defaults (max_exchanges 4);
  *  - the D-005 follow-up wake-budget aggregation over origin_task_ref rows.
  */
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import postgres, { type Sql } from 'postgres';
 import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -33,6 +33,7 @@ import {
 } from './consult-verbs-core';
 import { advanceCascade, continueCascadeDispatchCore, makeDigestEntry } from './cascade-core';
 import { acquireConsultSpawnLease, makeDeferredConsultReachDispatcher } from './consult-dispatch';
+import { readConsultReview } from './review-findings';
 
 const WS = 'ws-consult-verbs';
 const NOW = new Date('2026-08-16T00:00:00Z');
@@ -78,6 +79,243 @@ describe('preserving review findings through consult settlement', () => {
     expect(result).toMatchObject({ error: 'invalid_review' });
     expect(posts).toEqual([]);
     expect((await stateRow(id)).state).toBe('awaiting_responder');
+  });
+
+  async function reviewed() {
+    const id = await seedConsult({ maxExchanges: 20 });
+    const harness = makeDeps({ withDispatch: false });
+    const answer = await consultReplyCore({ workspaceId: WS, conversationId: id, authorId: RESPONDER,
+      kind: 'answer', body: 'Review', evidence: [{ session_id: 'review-session', turn_idx: 1 }], review }, harness.deps);
+    if ('error' in answer) throw new Error(answer.error);
+    return { id, ...harness, findingId: `post:${answer.post_id}#F1` };
+  }
+  function disposition(findingId: string, status: 'planned' | 'fixed' = 'planned') {
+    return { findingId, status, reason: 'Existing queue repair', reference: 'plan:recovery#P-001' };
+  }
+  async function snapshot(id: string, posts: unknown[]) {
+    return { row: await stateRow(id), posts: structuredClone(posts),
+      meta: [...await rootSql`SELECT * FROM harness_shared.consult_post_meta
+        WHERE workspace_id=${WS} AND conversation_id=${id} ORDER BY post_id`],
+      conversation: [...await rootSql`SELECT * FROM harness_shared.coord_conversations
+        WHERE workspace_id=${WS} AND id=${id}`] };
+  }
+  it('reprocesses an identical accepted source post without duplicating disposition history', async () => {
+    const { id, deps, posts, findingId } = await reviewed();
+    const post = await deps.post({ conversation_id: id, body: 'Planned', via_consult_verb: true });
+    if ('error' in post) throw new Error(post.error);
+    const req = { workspaceId: WS, conversationId: id, authorId: REQUESTER, kind: 'new_fact' as const,
+      body: 'Planned', reviewDispositions: [disposition(findingId)] };
+    const replayDeps = { ...deps, post: async () => post };
+    expect(await consultReplyCore(req, replayDeps)).toMatchObject({ ok: true });
+    const before = await snapshot(id, posts);
+    expect(await consultReplyCore(req, { ...replayDeps, now: () => new Date('2026-11-03') })).toMatchObject({ ok: true });
+    expect(await snapshot(id, posts)).toEqual(before);
+    expect(readConsultReview(before.row.outcome)?.dispositions).toHaveLength(1);
+  });
+  it('refuses a conflicting same-source disposition payload before persistence', async () => {
+    const { id, deps, posts, findingId } = await reviewed();
+    const post = await deps.post({ conversation_id: id, body: 'Planned', via_consult_verb: true });
+    if ('error' in post) throw new Error(post.error);
+    const req = { workspaceId: WS, conversationId: id, authorId: REQUESTER, kind: 'new_fact' as const,
+      body: 'Planned', reviewDispositions: [disposition(findingId)] };
+    const replayDeps = { ...deps, post: async () => post };
+    await consultReplyCore(req, replayDeps);
+    const before = await snapshot(id, posts);
+    expect(await consultReplyCore({ ...req, reviewDispositions: [disposition(findingId, 'fixed')] }, replayDeps))
+      .toMatchObject({ error: 'invalid_review', hint: expect.stringContaining('Conflicting replay') });
+    expect(await snapshot(id, posts)).toEqual(before);
+  });
+  it('refuses an authorized attempt to replace prior review history before mutation', async () => {
+    const { id, deps, posts, findingId } = await reviewed();
+    const before = await snapshot(id, posts);
+    expect(await consultReplyCore({ workspaceId: WS, conversationId: id, authorId: REQUESTER,
+      kind: 'new_fact', body: 'Replace review', review: { ...review, findings: [] } }, deps))
+      .toMatchObject({ error: 'invalid_review' });
+    expect(await consultCloseCore({ workspaceId: WS, conversationId: id, authorId: REQUESTER,
+      outcome: 'answered', answer: 'Replace history',
+      reviewDispositions: [{ ...disposition(findingId), history: [] }] as never }, deps))
+      .toMatchObject({ error: 'invalid_review' });
+    expect(await snapshot(id, posts)).toEqual(before);
+  });
+
+  // Invoke the production tools and their real identity resolver. Only the DB,
+  // conversation post and notification adapters are isolated to this fixture;
+  // neither authorization nor the persistence decision is replaced.
+  async function publicTools(deps: ConsultVerbDeps, run: (tools: {
+    reply: (args: Record<string, unknown>, owner: string, transport: string) => Promise<unknown>;
+    close: (args: Record<string, unknown>, owner: string, transport: string) => Promise<unknown>;
+  }) => Promise<void>) {
+    const [db, conversations, notify, dispatch, liveness, deadSessions, stopper, events, reply, close] = await Promise.all([
+      import('@papercusp/db-org'), import('../agent-tools/coordination/conversations'),
+      import('../agent-tools/coordination/notify-agents'), import('./consult-dispatch'),
+      import('../agent-tools/coordination/inbox-wake'), import('../agent-tools/coordination/dead-session-recipient-guidance'),
+      import('./consult-expiry-adapters'), import('../events/await/engine'),
+      import('../agent-tools/consult/reply'), import('../agent-tools/consult/close'),
+    ]);
+    const spies = [
+      vi.spyOn(db, 'getOrgPg').mockReturnValue({ sql: rootSql } as never),
+      vi.spyOn(conversations, 'postReply').mockImplementation((_identity, input) => deps.post(input as never)),
+      vi.spyOn(conversations, 'conversationsScopeWorkspace').mockReturnValue(WS),
+      vi.spyOn(conversations, 'settleConsultConversation').mockImplementation(async (_identity, input, tx) => {
+        await deps.settleConversation?.(input as never, tx as never);
+      }),
+      vi.spyOn(notify, 'notifyAgents').mockResolvedValue({ woke: 0 } as never),
+      vi.spyOn(liveness, 'reportIdleRecipients').mockResolvedValue({ degraded: false, confirmedDead: [] } as never),
+      vi.spyOn(deadSessions, 'lookupEndedSessions').mockResolvedValue(new Map()),
+      vi.spyOn(dispatch, 'makeDeferredConsultReachDispatcher').mockReturnValue(deps.dispatch as never),
+      vi.spyOn(stopper, 'consultExpiryStopAnsweringSession').mockReturnValue(async () => 'none' as never),
+      vi.spyOn(events, 'emitAwaitedEvent').mockResolvedValue({} as never),
+    ];
+    type PublicTool = { args: { parse: (args: unknown) => unknown }; handler: (args: unknown, ctx: unknown) => Promise<unknown> };
+    const invoke = (tool: unknown) => async (args: Record<string, unknown>, owner: string, transport: string) => {
+      const definition = tool as PublicTool;
+      // Server-authenticated superuser context keeps the durable client/owner;
+      // the MCP handshake and per-call run ids change on managed resume.
+      return definition.handler(definition.args.parse(args), {
+        isSuperuser: true, uiClientId: owner, workspaceId: WS, runId: transport, mcpSessionId: transport,
+      });
+    };
+    try { await run({ reply: invoke(reply.default), close: invoke(close.default) }); }
+    finally { for (const spy of spies) spy.mockRestore(); }
+  }
+  it('accepts a valid disposition from the same verified requester after managed resume on a new transport', async () => {
+    const { id, deps, findingId } = await reviewed();
+    await publicTools(deps, async ({ reply, close }) => {
+      expect(await reply({ conversation_id: id, kind: 'new_fact', body: 'Planned before resume',
+        reviewDispositions: [disposition(findingId)] }, REQUESTER, 'mcp-before-respawn'))
+        .toMatchObject({ data: { ok: true } });
+      expect(await close({ conversation_id: id, outcome: 'answered', answer: 'Verified after resume',
+        reviewDispositions: [disposition(findingId, 'fixed')] }, REQUESTER, 'mcp-after-respawn'))
+        .toMatchObject({ data: { ok: true } });
+    });
+    expect(readConsultReview((await stateRow(id)).outcome)?.dispositions.map(d => [d.authorId, d.status]))
+      .toEqual([[REQUESTER, 'planned'], [REQUESTER, 'fixed']]);
+  });
+  it('refuses valid-finding dispositions from peer and reviewer identities before any mutation', async () => {
+    const { id, deps, posts, findingId } = await reviewed();
+    const before = await snapshot(id, posts);
+    await publicTools(deps, async ({ reply, close }) => {
+      for (const owner of ['unrelated-peer', RESPONDER]) {
+        // A caller-supplied authorId must not override the verified transport.
+        const reviewDispositions = [disposition(findingId)];
+        expect(await reply({ conversation_id: id, kind: 'new_fact', body: 'Dismissed',
+          authorId: REQUESTER, reviewDispositions }, owner, `mcp-${owner}`))
+          .toMatchObject({ data: { error: expect.stringMatching(/not_a_participant|invalid_review/) } });
+        expect(await close({ conversation_id: id, outcome: 'answered', answer: 'Dismissed',
+          authorId: REQUESTER, reviewDispositions }, owner, `mcp-${owner}-close`))
+          .toMatchObject({ data: { error: expect.stringMatching(/not_a_participant|invalid_review/) } });
+        expect(await snapshot(id, posts)).toEqual(before);
+      }
+    });
+  });
+
+  async function overlapping(id: string, deps: ConsultVerbDeps, first: Parameters<typeof consultReplyCore>[0],
+    second: Parameters<typeof consultReplyCore>[0]) {
+    const sql = postgres(fixtureDb.url, { max: 4, onnotice: () => {}, connection: { application_name: 'egm-disposition-overlap' } });
+    const locked = Promise.withResolvers<void>();
+    const unlock = Promise.withResolvers<void>();
+    const secondPosted = Promise.withResolvers<void>();
+    const permitSecond = Promise.withResolvers<void>();
+    const commits: number[] = [];
+    const hold = rootSql.begin(async tx => {
+      await tx`SELECT outcome FROM harness_shared.consult_state
+        WHERE workspace_id=${WS} AND conversation_id=${id} FOR UPDATE`;
+      locked.resolve(); await unlock.promise;
+    });
+    try {
+      await locked.promise;
+      const a = consultReplyCore(first, { ...deps, getSql: () => sql, post: async input => {
+        const result = await deps.post(input);
+        if (!('error' in result)) result.post.created_ts = '2026-11-03T03:00:00Z';
+        return result;
+      } });
+      await expect.poll(async () => Number((await sql`SELECT count(*) AS n FROM pg_stat_activity
+        WHERE application_name='egm-disposition-overlap' AND wait_event_type='Lock'`)[0].n)).toBe(1);
+      const b = consultReplyCore(second, { ...deps, getSql: () => sql, post: async input => {
+        secondPosted.resolve(); await permitSecond.promise;
+        const result = await deps.post(input);
+        if (!('error' in result)) result.post.created_ts = '2026-11-03T01:00:00Z';
+        return result;
+      } });
+      await secondPosted.promise;
+      unlock.resolve(); await hold;
+      const firstResult = await a;
+      if ('error' in firstResult) throw new Error(firstResult.error);
+      commits.push(firstResult.post_id); // Observed committed result BEFORE permitting B.
+      permitSecond.resolve();
+      const secondResult = await b;
+      if ('error' in secondResult) throw new Error(secondResult.error);
+      commits.push(secondResult.post_id);
+      return commits;
+    } finally { unlock.resolve(); permitSecond.resolve(); await hold; await sql.end({ timeout: 5 }); }
+  }
+  it('preserves both concurrent authorized disposition appends in committed order', async () => {
+    const { id, deps, findingId } = await reviewed();
+    const base = { workspaceId: WS, conversationId: id, authorId: REQUESTER, kind: 'new_fact' as const, body: 'Disposition' };
+    const commits = await overlapping(id, deps,
+      { ...base, reviewDispositions: [disposition(findingId)] },
+      { ...base, reviewDispositions: [disposition(findingId, 'fixed')] });
+    const row = await stateRow(id);
+    const events = readConsultReview(row.outcome)!.dispositions;
+    expect(events.map(d => d.postId)).toEqual(commits);
+    expect(events.map(d => d.status)).toEqual(['planned', 'fixed']);
+    expect(events.map(d => d.at)).toEqual(['2026-11-03T03:00:00Z', '2026-11-03T01:00:00Z']);
+    expect(row.exchanges_used).toBe(2);
+  });
+
+  const sentinel = { acceptedBeforeReview: { nested: ['keep', 17] }, reconciliation: { status: 'confirmed', ref: 'WI-existing' } };
+  it('preserves unrelated accepted outcome data through review reply, disposition, close and canonical round trips', async () => {
+    const id = await seedConsult({ maxExchanges: 20 });
+    const { deps } = makeDeps({ withDispatch: false });
+    await rootSql`UPDATE harness_shared.consult_state SET outcome=${rootSql.json(sentinel)} WHERE conversation_id=${id}`;
+    const result = await consultReplyCore({ workspaceId: WS, conversationId: id, authorId: RESPONDER,
+      kind: 'answer', body: 'Review', evidence: [{ session_id: 'review-session', turn_idx: 1 }], review }, deps);
+    if ('error' in result) throw new Error(result.error);
+    const findingId = `post:${result.post_id}#F1`;
+    const check = async () => {
+      const stored = (await stateRow(id)).outcome;
+      expect(stored).toMatchObject(sentinel);
+      const roundTrip = readConsultReview(JSON.stringify(stored));
+      expect(roundTrip).toEqual(readConsultReview(stored));
+      await rootSql`UPDATE harness_shared.consult_state
+        SET outcome=outcome || ${rootSql.json({ review: roundTrip } as never)}::jsonb WHERE conversation_id=${id}`;
+      expect((await stateRow(id)).outcome).toEqual(stored);
+    };
+    await check();
+    await consultReplyCore({ workspaceId: WS, conversationId: id, authorId: REQUESTER, kind: 'new_fact', body: 'Planned',
+      reviewDispositions: [disposition(findingId)] }, deps);
+    await check();
+    await consultCloseCore({ workspaceId: WS, conversationId: id, authorId: REQUESTER,
+      outcome: 'answered', answer: 'Repair carried', reviewDispositions: [disposition(findingId, 'fixed')] }, deps);
+    await check();
+  });
+  it('preserves unrelated accepted outcome data through an ordinary edit to another field', async () => {
+    const { id, deps, findingId } = await reviewed();
+    await rootSql`UPDATE harness_shared.consult_state SET outcome=outcome || ${rootSql.json(sentinel)}::jsonb WHERE conversation_id=${id}`;
+    const before = (await stateRow(id)).outcome;
+    await consultReplyCore({ workspaceId: WS, conversationId: id, authorId: REQUESTER,
+      kind: 'question', body: 'Clarify the implementation boundary' }, deps);
+    expect((await stateRow(id)).outcome).toEqual(before);
+    await consultReplyCore({ workspaceId: WS, conversationId: id, authorId: REQUESTER, kind: 'new_fact', body: 'Disposition',
+      reviewDispositions: [disposition(findingId)] }, deps);
+    expect((await stateRow(id)).outcome).toMatchObject(sentinel);
+  });
+  it('preserves unrelated and concurrently accepted outcome data during overlapping accepted updates', async () => {
+    const { id, deps, findingId } = await reviewed();
+    await rootSql`UPDATE harness_shared.consult_state SET outcome=outcome || ${rootSql.json(sentinel)}::jsonb WHERE conversation_id=${id}`;
+    const base = { workspaceId: WS, conversationId: id, authorId: REQUESTER, kind: 'new_fact' as const, body: 'Disposition' };
+    let posts = 0;
+    const commits = await overlapping(id, { ...deps, post: async input => {
+      // An independently accepted non-review update overlaps the pending review
+      // transaction and must survive its merge of the review field.
+      if (++posts === 2) await rootSql`UPDATE harness_shared.consult_state
+        SET outcome=outcome || '{"acceptedConcurrently":{"retained":true}}'::jsonb WHERE conversation_id=${id}`;
+      return deps.post(input);
+    } }, { ...base, reviewDispositions: [disposition(findingId)] },
+    { ...base, reviewDispositions: [disposition(findingId, 'fixed')] });
+    const outcome = (await stateRow(id)).outcome;
+    expect(outcome).toMatchObject({ ...sentinel, acceptedConcurrently: { retained: true } });
+    expect(readConsultReview(outcome)?.dispositions.map(d => d.postId)).toEqual(commits);
   });
 });
 

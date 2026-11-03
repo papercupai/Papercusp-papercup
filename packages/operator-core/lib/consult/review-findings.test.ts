@@ -34,4 +34,28 @@ describe('durable consult finding provenance', () => {
     expect(() => readConsultReview({ review: { ...review, findings: [{ ...review.findings[0], reviewerId: '' }] } }))
       .toThrow('Invalid persisted');
   });
+  const disposition = { findingId: 'post:7#F1', status: 'planned' as const,
+    reason: 'Repair in the existing queue', reference: 'plan:review#P-002' };
+  it('replays the same disposition event without duplicating or rewriting history', () => {
+    const input = { ...author, postId: 8, authorId: 'builder', dispositions: [disposition] };
+    const current = appendConsultReview({ ...input, current: appendConsultReview({ ...author, answer }) });
+    expect(appendConsultReview({ ...input, current })).toEqual(current);
+    expect(appendConsultReview({ ...input, postId: 9, current }).dispositions).toHaveLength(2);
+  });
+  it('rejects conflicting replay of an existing disposition event', () => {
+    const input = { ...author, postId: 8, authorId: 'builder', dispositions: [disposition] };
+    const current = appendConsultReview({ ...input, current: appendConsultReview({ ...author, answer }) });
+    for (const changed of [{ ...disposition, status: 'fixed' }, { ...disposition, reason: 'Changed' },
+      { ...disposition, reference: 'test-run:99' }]) {
+      expect(() => appendConsultReview({ ...input, current, dispositions: [changed] as never }))
+        .toThrow('Conflicting replay');
+    }
+    expect(current.dispositions).toEqual([{ ...disposition, postId: 8, authorId: 'builder', at: author.at }]);
+  });
+  it('rejects a replay that changes the original reviewer evidence', () => {
+    const current = appendConsultReview({ ...author, answer });
+    expect(appendConsultReview({ ...author, current, answer })).toEqual(current);
+    expect(() => appendConsultReview({ ...author, current, answer: { ...answer, findings: [] } }))
+      .toThrow('Conflicting replay');
+  });
 });

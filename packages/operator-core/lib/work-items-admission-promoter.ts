@@ -4209,17 +4209,30 @@ function agentParkMetadata(value: unknown) {
   const actor = payload.claim_hold_by;
   const reason = payload.claim_hold_reason;
   const atMs = typeof payload.claim_hold_at === 'string' ? Date.parse(payload.claim_hold_at) : Number.NaN;
+  const watchdogCreated = metadata.created_by === 'system:improvement-watchdog' &&
+    metadata.found_during === 'improvement-watchdog';
   if (String(payload._claimHold) !== 'true' || typeof actor !== 'string' ||
       !/^su-[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(actor) ||
-      metadata.created_by !== actor || metadata.source !== 'su' ||
+      (metadata.created_by !== actor && !watchdogCreated) || metadata.source !== 'su' ||
       typeof reason !== 'string' || !reason.trim() || looksLikePolicyGate(reason) || !Number.isFinite(atMs) ||
       Object.keys(payload).some(key => key.startsWith('held_open_'))) return undefined;
-  return { payload, actor, reason, atMs };
+  return { payload, actor, reason, atMs, watchdogCreated };
 }
 
 function qualifiedAgentPark(snapshot: AdmissionMergeSnapshot) {
   const park = agentParkMetadata(snapshot.payload), audit = snapshot.agentParkAudit;
   if (!park || !audit || snapshot.origin !== 'local' || snapshot.assignee || snapshot.state !== 'open') return false;
+  // A watchdog authors the finding; an authenticated agent authors its park.
+  // This remains an immutable comparison only, with the existing hold audit
+  // binding every release-contract byte. It grants no merge or park release.
+  if (park.watchdogCreated) {
+    const contract = recordValue(park.payload.claim_hold_release);
+    try { assertDurableParkReleaseContract(contract); } catch { return false; }
+    if (snapshot.kind !== 'bug' || contract.owner !== park.actor || contract.reachability !== 'reachable' ||
+        !/^work-item:done:[^\s]+$/.test(String(contract.trigger)) ||
+        releaseContractContradiction(String(contract.condition), String(contract.trigger), snapshot.id) ||
+        looksLikePolicyGate(String(contract.condition))) return false;
+  }
   const details = recordValue(audit.details);
   return audit.action === 'work_items:claim_hold:set' && audit.actor === park.actor &&
     details.mode === 'claim_hold' && details.by === park.actor && details.reason === park.reason &&

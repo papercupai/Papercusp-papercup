@@ -20,9 +20,13 @@ export function retainMeasurementProvenance(input: {
   let procedureTruncated = false;
   let diagnosticsTruncated = false;
   const scrub = (text: string): string => {
-    const assignment = /^([^:=\s]+)\s*[:=]\s*(.+)$/s.exec(text);
-    const safe = assignment && isSensitiveValueKey(assignment[1]!)
-      ? `${assignment[1]}=[redacted]` : redactSensitiveText(text);
+    // Command output can put a sensitive assignment after a harmless header.
+    // Inspect each line while preserving its original LF/CRLF separators.
+    const safe = text.replace(/[^\r\n]+/g, line => {
+      const assignment = /^(\s*)([^:=\s]+)\s*[:=]\s*(.+)$/.exec(line);
+      return assignment && isSensitiveValueKey(assignment[2]!)
+        ? `${assignment[1]}${assignment[2]}=[redacted]` : redactSensitiveText(line);
+    });
     redacted ||= safe !== text;
     return safe;
   };

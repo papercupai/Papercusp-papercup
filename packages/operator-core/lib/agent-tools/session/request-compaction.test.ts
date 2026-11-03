@@ -1883,7 +1883,7 @@ describe('session:request-compaction — P-010 open-owner-question first-prompt 
     buildCarryBrief.mockResolvedValue(emptyBrief);
   });
 
-  it('an OPEN owner message → it IS the successor first prompt (verbatim, un-enveloped), warn surfaced, cut STILL queued', async () => {
+  it('an OPEN owner message is the successor first prompt with machine provenance, warn surfaced, cut STILL queued', async () => {
     buildOwnerRespawnLaunchSpec.mockResolvedValue({
       ...closedSpec,
       firstPrompt: 'ship the release when green',
@@ -1899,8 +1899,8 @@ describe('session:request-compaction — P-010 open-owner-question first-prompt 
     expect(b.ok).toBe(true);
     expect(b.requested).toBe(true);
     const msg = injected();
-    expect(msg.data).toBe('ship the release when green'); // verbatim spec prompt, no envelope
-    expect(msg.data).not.toMatch(ENVELOPE_LINE);
+    expect(msg.data).toMatch(ENVELOPE_LINE);
+    expect(msg.data.replace(ENVELOPE_LINE, '')).toBe('ship the release when green');
   });
 
   it('no open owner message → the tagged continuation note rides and no warn appears', async () => {

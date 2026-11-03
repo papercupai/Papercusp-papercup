@@ -37,6 +37,7 @@
  *    not wake the responder. Debited ON THE ATTEMPT.
  */
 import type { Sql, TransactionSql } from 'postgres';
+import { isDeepStrictEqual } from 'node:util';
 import type { PostResult } from '../agent-tools/coordination/conversations-core';
 import { consultParkKey as parkKey } from './get-feedback-core';
 import {
@@ -689,15 +690,35 @@ export async function consultReplyCore(
     role === 'responder' && (row.state === 'awaiting_responder' || row.state === 'no_qualified_responder')
       ? 'active'
       : row.state;
-  const exchangesUsed = row.exchanges_used + (isPerspective ? 0 : 1);
+  let exchangesUsed = row.exchanges_used + (isPerspective ? 0 : 1);
   let review: ConsultReviewState | undefined;
+  let replayed = false;
   // Serialize structured history with close/other answers so neither can erase it.
-  await sql.begin(async (tx) => {
+  const reviewError = await sql.begin(async (tx) => {
     if (changesReview) {
-      const [latest] = await tx`SELECT outcome FROM harness_shared.consult_state
+      const [latest] = await tx`SELECT outcome, state, exchanges_used FROM harness_shared.consult_state
         WHERE workspace_id=${req.workspaceId} AND conversation_id=${req.conversationId} FOR UPDATE`;
-      review = appendConsultReview({ current: readConsultReview(latest?.outcome), answer: req.review,
-        dispositions: req.reviewDispositions, postId, authorId: req.authorId, requesterId: row.requester_id, at: now });
+      try {
+        review = appendConsultReview({ current: readConsultReview(latest?.outcome), answer: req.review,
+          dispositions: req.reviewDispositions, postId, authorId: req.authorId, requesterId: row.requester_id,
+          at: posted.post.created_ts ?? now });
+      } catch (error) {
+        return { error: 'invalid_review' as const, hint: error instanceof Error ? error.message : String(error) };
+      }
+      // A repaired/reprocessed source post keeps its accepted identity. A fresh
+      // network submission creates a different post and therefore a new event.
+      const [meta] = await tx`SELECT * FROM harness_shared.consult_post_meta
+        WHERE workspace_id=${req.workspaceId} AND post_id=${postId}`;
+      if (meta) {
+        if (meta.conversation_id !== req.conversationId || meta.author_id !== req.authorId || meta.kind !== req.kind ||
+            !isDeepStrictEqual(meta.evidence, req.evidence ?? null) ||
+            !isDeepStrictEqual(meta.stance ?? null, stance ?? null) ||
+            !isDeepStrictEqual(review, readConsultReview(latest?.outcome)))
+          return { error: 'invalid_review' as const, hint: 'Conflicting replay of accepted consult post' };
+        replayed = true;
+        exchangesUsed = Number(latest.exchanges_used);
+        return;
+      }
     }
   // The stance column (migration 1482) is written ONLY when a stance exists, so an
   // ordinary consult insert keeps the pre-1482 column list (fixtures that hand-roll
@@ -720,16 +741,24 @@ export async function consultReplyCore(
     `;
   }
 
-  await tx`
+  const [updated] = await tx`
     UPDATE harness_shared.consult_state
-       SET state = CASE WHEN ${resumesUndelivered}::boolean THEN state ELSE ${nextState} END,
-           exchanges_used = CASE WHEN ${resumesUndelivered}::boolean THEN exchanges_used + 1 ELSE ${exchangesUsed} END,
+       SET state = CASE WHEN ${role === 'responder'}::boolean AND state IN ('awaiting_responder', 'no_qualified_responder')
+                        THEN 'active' ELSE state END,
+           exchanges_used = exchanges_used + ${isPerspective ? 0 : 1},
            wakes_used = wakes_used + ${willWake ? 1 : 0},
            outcome = COALESCE(outcome, '{}'::jsonb) || ${tx.json(review ? { review } as never : {} as never)}::jsonb,
            updated_at = ${now}::timestamptz
      WHERE workspace_id = ${req.workspaceId} AND conversation_id = ${req.conversationId}
+     RETURNING exchanges_used
   `;
+  exchangesUsed = Number(updated.exchanges_used);
   });
+  if (reviewError) return reviewError;
+  if (replayed) return { ok: true, post_id: postId, role, review,
+    state: (await readState(sql, req.workspaceId, req.conversationId))?.state ?? nextState,
+    exchanges_used: exchangesUsed, max_exchanges: row.max_exchanges,
+    hint: 'Accepted source post reprocessed; review history is unchanged.' };
 
   // consult-backed-parking P-006: the parker's adopt/rebut is data, recorded on the
   // committed reply (not fail-soft); the resolver run after it is a side effect (fail-soft).

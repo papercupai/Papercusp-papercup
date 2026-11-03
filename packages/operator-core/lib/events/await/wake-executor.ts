@@ -1627,15 +1627,13 @@ async function revalidateSupersededTimeoutDelivery(
   const candidateIds = [...new Set(candidates.map((candidate) => candidate.awaitId))];
   let supersededIds: number[];
   try {
-    supersededIds = [
-      ...new Set(
-        (await withWakeTimeout(
-          Promise.resolve().then(() => lookup(delivery.subscriberId, candidateIds)),
-          `superseded timeout-await lookup/${delivery.subscriberId}`,
-          Math.max(1, timeoutMs),
-        )).filter(validAwaitId),
-      ),
-    ];
+    const lookupResult = await withWakeTimeout(
+      Promise.resolve().then(() => lookup(delivery.subscriberId, candidateIds)),
+      `superseded timeout-await lookup/${delivery.subscriberId}`,
+      Math.max(1, timeoutMs),
+    );
+    if (lookupResult === null) return { delivery, staleOnly: false, staleAwaitIds: [] };
+    supersededIds = [...new Set(lookupResult.filter(validAwaitId))];
   } catch {
     // Uncertainty must preserve a valid wake; only a positive store result suppresses it.
     return { delivery, staleOnly: false, staleAwaitIds: [] };

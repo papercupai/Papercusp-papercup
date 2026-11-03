@@ -595,10 +595,10 @@ describe('GET /api/updates/manifest — static release host is authoritative (LO
 
   it('preserves exact per-platform approval bytes through the real static response', async () => {
     const updateAuthorization = {
-      payload: encodeTauriUpdateAuthorization({ schema: 'tauri-update-authorization-v1',
+      payload: encodeTauriUpdateAuthorization({ schema: 'tauri-update-authorization-v2',
         artifactSha256: 'a'.repeat(64), policySha256: 'b'.repeat(64), configurationSha256: 'c'.repeat(64),
         sourceRevision: 'd'.repeat(40), version: '0.0.9', product: 'gui', platform: 'linux-x86_64',
-        authorId: 'author', approverId: 'reviewer', approverEpoch: 1, signerId: 'signer', signerEpoch: 1,
+        authorIds: ['author', 'coauthor'], approverId: 'reviewer', approverEpoch: 1, signerId: 'signer', signerEpoch: 1,
         rootEpoch: 1, rollbackCounter: 5, issuedAt: 1000, expiresAt: 2000 }),
       // Structural transport fixture; authenticity is covered by the release-kit suite.
       signature: Buffer.from('untrusted comment: transport\nAA\ntrusted comment: transport\nAA\n').toString('base64'),
