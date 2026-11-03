@@ -2457,9 +2457,10 @@ export function classifySubjectRubricCurrentness(
 export function settledGradingAuditIsCurrent(row: {
   gradingAudit?: ScorecardGradingAudit;
   gradingAuditCurrentness?: ScorecardGradingAuditCurrentness;
-}): boolean {
-  if (!row.gradingAudit) return true;
+}, required = false): boolean {
+  if (!row.gradingAudit) return !required;
   if (row.gradingAudit.state !== 'passed') return false;
+  if (required) return row.gradingAuditCurrentness?.state === 'current';
   // Older injected/test rows do not carry the read-time projection. Production
   // scorecards:list always does; preserving the absent case keeps the helper
   // compatible with pre-P-013 readers while rejecting explicit uncertainty.
@@ -4364,7 +4365,10 @@ async function listScorecardsAtLimit(
           needsGradingAudit({ rubricKind: rubric?.kind, rubricRef: observation.rubricRef,
             provisional: observation.provisional !== undefined }), audit, gradingAuditRubric);
         if (!reasons.length && filter.comparableOnly) {
-          if (!rubric || observation.rubricRevision !== rubric.revision ||
+          const resetAt = rubric?.historyResetAt ? Date.parse(rubric.historyResetAt) : NaN;
+          if (Number.isFinite(resetAt) && Date.parse(tsIso(row.created_at)) < resetAt) {
+            reasons.push('pre-contract-reset');
+          } else if (!rubric || observation.rubricRevision !== rubric.revision ||
               !observation.criteriaHash || observation.criteriaHash !== rubric.criteriaHash ||
               (observation.barSetHash ?? null) !== (rubric.barSetHash ?? null)) {
             reasons.push('incompatible-rubric');
@@ -4390,7 +4394,7 @@ async function listScorecardsAtLimit(
       keys: string[] | null;
       overrides?: Record<string, number>;
       ratingRubric: ScorecardRatingRubric | null;
-      kind: Rubric['kind'];
+      kind: Rubric['kind'] | undefined;
       liveIdentity: Pick<Rubric, 'revision' | 'criteriaHash'> | null;
     }
   >();
@@ -4428,7 +4432,9 @@ async function listScorecardsAtLimit(
     // payload yields no structured view) so a bad row degrades, never throws.
     if (!observation?.rubricRef || !observation.ratings) continue;
     if (!rubricMeta.has(observation.rubricRef)) {
-      const rubric = await traceNamedQueryStage('scorecards-rubric', () => getRubricWithoutSeeding(observation.rubricRef!));
+      const rubric = finalizedRubrics.has(observation.rubricRef)
+        ? finalizedRubrics.get(observation.rubricRef)!
+        : await traceNamedQueryStage('scorecards-rubric', () => getRubricWithoutSeeding(observation.rubricRef!));
       rubricMeta.set(observation.rubricRef, {
         keys: rubric ? rubric.criteria.map((c) => c.key) : builtInCriterionKeysForRubric(observation.rubricRef),
         overrides: scoreOverridesForScale(rubric?.ratingScale),
@@ -5135,7 +5141,8 @@ export async function scorecardTrend(filter: ScorecardTrendFilter): Promise<Rubr
   // contract trends exactly as before.
   const resetAtMs = trendRubric?.historyResetAt ? Date.parse(trendRubric.historyResetAt) : NaN;
   const inGeneration = Number.isFinite(resetAtMs) ? rows.filter((r) => Date.parse(r.createdAt) >= resetAtMs) : rows;
-  const preContractResetExcluded = rows.length - inGeneration.length;
+  const preContractResetExcluded = rows.length - inGeneration.length +
+    (page.selection?.excludedCounts['pre-contract-reset'] ?? 0);
 
   // P-010: drop scorecards a later filing REVISED. A correction used to enter the
   // series as an extra sample, so re-grading moved the trend twice — once for the
@@ -5265,7 +5272,7 @@ export async function scorecardTrend(filter: ScorecardTrendFilter): Promise<Rubr
     ['provisional', provisionalExcluded],
     ['grading-audit-pending', gradingAuditPendingExcluded],
     ...Object.entries(page.selection?.excludedCounts ?? {}).filter(([key]) =>
-      key !== 'provisional' && key !== 'grading-audit-pending'),
+      key !== 'provisional' && key !== 'grading-audit-pending' && key !== 'pre-contract-reset'),
   ];
   const excludedPopulations = excludedPopulationCounts.filter(([, count]) => count > 0);
   const excludedTotal = excludedPopulations.reduce((total, [, count]) => total + count, 0);

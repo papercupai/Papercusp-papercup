@@ -4017,6 +4017,58 @@ describe('applyResultDoor', () => {
       expect(inline._projection.cursor).toMatchObject({ tool: 'capability:read', bodyComplete: false });
     });
 
+    it('keeps requested work-item thread details inline when a sibling checkpoint is clipped', () => {
+      const post = { id: 17, body: 'the complete thread reply', createdAt: '2026-11-03T03:00:00Z' };
+      const detailRow = {
+        id: 'WI-detail',
+        workItem: {
+          id: 'WI-detail',
+          state: 'blocked',
+          checkpoint: 'checkpoint prefix…[TRUNCATED +1200 chars — re-read with payloadTier:"full"]',
+          checkpointTruncated: true,
+          posts: [post],
+          topics: [{ slug: 'retrieval' }],
+          links: [{ rel: 'relates', target: 'EI-1' }],
+          detailOmitted: { posts: 0, topics: 0, links: 0 },
+        },
+      };
+      const threadWindowRow = {
+        id: 'WI-window',
+        checkpoint: 'checkpoint prefix…[TRUNCATED +1200 chars — re-read with payloadTier:"full"]',
+        checkpointTruncated: true,
+        threadWindow: { total: 1, posts: [post] },
+      };
+
+      for (const row of [detailRow, threadWindowRow]) {
+        const text = JSON.stringify({ ok: true, results: [row], counts: { ok: 1, failed: 0 } });
+        expect(Buffer.byteLength(text, 'utf8')).toBeLessThan(BUDGET_CHARS);
+
+        for (const nested of [false, true]) {
+          const doored = applyResultDoor(
+            { content: [{ type: 'text' as const, text }] },
+            {
+              toolName: nested ? 'tools:invoke' : 'work_items:get',
+              ...(nested ? { nestedTargetToolName: 'work_items:get' } : {}),
+              effect: 'read', workspaceId: 'ws-1', runId: RUN_ID,
+            },
+          );
+          const inline = JSON.parse((doored.content[0] as { text: string }).text);
+          const resultRow = inline.results[0];
+
+          expect(inline._partial).toBe(true);
+          expect(inline._projection.cursor).toMatchObject({ tool: 'capability:read', bodyComplete: false });
+          expect(resultRow.workItem?.posts ?? resultRow.threadWindow?.posts).toEqual([post]);
+          expect(resultRow.workItem?.checkpointTruncated ?? resultRow.checkpointTruncated).toBe(true);
+          if (resultRow.workItem) {
+            expect(resultRow.workItem.topics).toEqual([{ slug: 'retrieval' }]);
+            expect(resultRow.workItem.links).toEqual([{ rel: 'relates', target: 'EI-1' }]);
+            expect(resultRow.workItem.detailOmitted).toEqual({ posts: 0, topics: 0, links: 0 });
+          }
+          expect(Buffer.byteLength(JSON.stringify(inline), 'utf8')).toBeLessThanOrEqual(BUDGET_CHARS);
+        }
+      }
+    });
+
     it('uses the nested target in recovery advice for an under-budget tools:invoke result', () => {
       const result = {
         content: [{ type: 'text' as const, text: 'small nested partial result' }],

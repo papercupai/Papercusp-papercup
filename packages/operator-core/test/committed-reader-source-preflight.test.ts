@@ -147,6 +147,39 @@ function loadedFixture(source?: string, admit = true, buildObservationOnly = fal
 }
 
 describe('committed reader loader-return source binding', () => {
+  it('binds native pinned engine outer execution while an uncalled function stays unobserved', () => {
+    const f = loadedFixture('export function uncalled() { return 4; } export const host = "🌱";');
+    const observed = f.observe();
+    expect(observed.engineExecution).toMatchObject({ status: 'observed', gaps: [],
+      sourceTextSha256: f.closure.sha256 });
+    expect(observed.engineExecution.coverageRanges).toContainEqual(expect.objectContaining({ functionName: 'uncalled', count: 0 }));
+    expect(observed.pending).toContain('module-evaluation');
+  });
+
+  it('bounds pinned engine ranges without promoting partial coverage to full module closure', () => {
+    const f = loadedFixture(Array.from({ length: 180 }, (_, i) => `export function uncalled${i}() { return ${i}; }`).join('\n'));
+    const observed = f.observe();
+    expect(observed.engineExecution).toMatchObject({ status: 'observed', coverageRangesComplete: false });
+    expect(observed.engineExecution.coverageRanges).toHaveLength(128);
+    expect(observed.pending).toContain('module-evaluation');
+  });
+
+  it.each(['missing', 'digest', 'zero', 'offset', 'duplicate', 'isolate'] as const)(
+    'keeps %s engine evidence unknown without weakening loader binding', mode => {
+      const f = loadedFixture();
+      if (mode === 'missing') rmSync(join(f.traceRoot, f.rows.find(({ row }) => row.event === 'engine-script-execution')!.name));
+      else f.replace('engine-script-execution', row => {
+        const script = row.observation.scripts[0];
+        if (mode === 'digest') script.sourceTextSha256 = '0'.repeat(64);
+        if (mode === 'zero') for (const range of script.coverageRanges) range.count = 0;
+        if (mode === 'offset') script.coverageRanges[0].endOffset = script.sourceTextLength + 1;
+        if (mode === 'duplicate') row.observation.scripts.push(script);
+        if (mode === 'isolate') row.threadId = 1;
+      });
+      expect(f.observe()).toMatchObject({ status: 'bound', engineExecution: { status: 'unknown' } });
+      expect(f.observe().engineExecution.gaps.length).toBeGreaterThan(0);
+    });
+
   it.skipIf(process.platform !== 'linux')('binds a kernel process identity independently of the trace UUID', () => {
     const f = loadedFixture(`import { readFileSync } from 'node:fs';
       console.log(JSON.stringify({ boot: readFileSync('/proc/sys/kernel/random/boot_id', 'utf8'),

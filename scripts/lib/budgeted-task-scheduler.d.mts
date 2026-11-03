@@ -77,6 +77,9 @@ export function retainNativeProofPacket(directory: string, input: {
   identity: NativeCustodyIdentity; expected: NativeCustodyGroup[];
   observations: Array<{ id: string; out: string | null; captureComplete?: boolean }>;
   execution?: unknown; cleanup?: unknown; predecessor?: NativeCustodyLocator;
+  /** Bounded diagnostic phases; observer errors never change the custody verdict. */
+  onProgress?: (progress: { phase: string; elapsedMs: number; group?: string; family?: string;
+    objectsRead?: number; bytesRead?: number; completed?: number; total?: number; status?: string }) => void;
 }): { directory: string; locator: NativeCustodyLocator; status: 'complete' | 'partial'; verified: true; manifest: NativeCustodyManifest };
 export function verifyNativeProofPacket(directory: string, locator: NativeCustodyLocator,
   contract: { identity: NativeCustodyIdentity; expected: NativeCustodyGroup[] }):

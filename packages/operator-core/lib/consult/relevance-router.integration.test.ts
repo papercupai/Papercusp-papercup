@@ -499,6 +499,42 @@ describe('bounded subject evidence against real transcript SQL', () => {
     expect(measured.snapshot.subjectValidation?.failures).toBeUndefined();
   });
 
+  it('freezes pending scorer phase evidence when the routing deadline wins', async () => {
+    const text = 'Fixed computer:provision_desktop source receipt; private passage payload.';
+    await passage('subject-deadline', text, 0);
+    let finish!: (scores: Array<number | null>) => void;
+    let settled = false;
+    const result = await routeConsult({ ...baseParams, question, subjectRefs: ['computer:provision_desktop'] }, deps(0, {
+      scoreSubjectEvidence: async (_subject, _texts, _deadline, onPhase) => {
+        expect(_texts).toEqual([text]);
+        onPhase?.({ phase: 'contracts', outcome: 'started', durationMs: 0 });
+        onPhase?.({ phase: 'contracts', outcome: 'returned', durationMs: 1 });
+        onPhase?.({ phase: 'acquisition', outcome: 'started', durationMs: 0 });
+        const scores = await new Promise<Array<number | null>>(resolve => { finish = resolve; });
+        onPhase?.({ phase: 'acquisition', outcome: 'returned', durationMs: SUBJECT_EVIDENCE_TIMEOUT_MS });
+        settled = true;
+        return scores;
+      },
+    }));
+    expect(result.verdict).toBe('relevance_unmeasured');
+    expect(result.qualified).toEqual([]);
+    expect(result.snapshot.subjectValidation?.failures).toContainEqual({ reason: 'deadline', count: 1 });
+    expect(result.snapshot.subjectValidation?.scoring).toEqual([expect.objectContaining({
+      subject: 'computer:provision_desktop', passages: 1, textChars: text.length, outcome: 'pending',
+      phases: [
+        { phase: 'contracts', outcome: 'returned', durationMs: 1 },
+        { phase: 'acquisition', outcome: 'pending', durationMs: expect.any(Number) },
+      ],
+    })]);
+    expect(result.snapshot.subjectValidation!.scoring![0].phases[1].durationMs).toBeGreaterThan(0);
+    const verdictSnapshot = JSON.stringify(result.snapshot);
+    expect(verdictSnapshot).not.toContain('private passage payload');
+    finish([0.99]);
+    await vi.waitFor(() => expect(settled).toBe(true));
+    expect(JSON.stringify(result.snapshot)).toBe(verdictSnapshot);
+    expect(result.qualified).toEqual([]);
+  }, 15_000);
+
   it('caps scored owners and leaves overflow explicitly unmeasured', async () => {
     for (let i = 0; i < SUBJECT_EVIDENCE_OWNER_LIMIT + 2; i++) await passage(`subject-cap-${i}`, 'virtual screen lease diagnosis', i * 0.01);
     let pairs = 0;

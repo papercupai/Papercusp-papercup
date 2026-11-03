@@ -4173,10 +4173,4 @@ export async function gradingAuditGateEnabled(): Promise<boolean> {
  * - terminal only (not provisional): an interim is a working note (D-004 bound 2).
  * - never the audit card itself (D-004 bound 1 — one level, no regress).
  */
-export function needsGradingAudit(input: {
-  rubricKind: string | undefined;
-  rubricRef: string;
-  provisional: boolean;
-}): boolean {
-  return input.rubricKind === 'standard' && !input.provisional && input.rubricRef !== GRADING_INTEGRITY_RUBRIC_REF;
-}
+export { needsGradingAudit } from './harness/improvements/observation-types';

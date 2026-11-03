@@ -17,6 +17,9 @@ beforeAll(() => {
   // catches an accidental scheduler/toolchain import before dependency copy.
   cpSync(join(repo, 'scripts/lib'), join(stage, 'scripts/lib'), { recursive: true });
   cpSync(join(repo, 'scripts/check-vitest-config-enrollment.mjs'), join(stage, 'scripts/check-vitest-config-enrollment.mjs'));
+  mkdirSync(join(stage, 'papercusp-desktop/bin/lib'), { recursive: true });
+  writeFileSync(join(stage, 'papercusp-desktop/bin/lib/pinned-deps.sh'),
+    '#!/bin/bash\ncase "$1" in\n snapshot-locked) exit 0 ;;\nesac\n');
   writeFileSync(join(stage, 'cgroup-fixture.mjs'), [
     "import fs from 'node:fs';",
     "import { syncBuiltinESMExports } from 'node:module';",
@@ -90,10 +93,11 @@ describe('native probe subprocess diagnostics', () => {
   });
 });
 
-function probe(memory: string) {
+function probe(memory: string, generation = false) {
   const env = { ...process.env, FIXTURE_PRELOAD: join(stage, 'cgroup-fixture.mjs'),
     NODE_PATH: '', STAGED_ROOT: stage, WORK: join(stage, 'work'), REPO_DIR: repo,
-    VERIFY_TAURI_DEPENDENCY_SNAPSHOT_MODE: 'copy', FIXTURE_MEMORY: memory };
+    VERIFY_TAURI_DEPENDENCY_SNAPSHOT_MODE: 'copy', FIXTURE_MEMORY: memory,
+    PAPERCUSP_DEPENDENCY_GENERATION_ROOT: generation ? join(stage, 'immutable-store') : '' };
   return runProbe('bash', ['-c', [
     'set -euo pipefail',
     // Governed nested runners may normalize NODE_OPTIONS. Use Node's explicit
@@ -101,13 +105,26 @@ function probe(memory: string) {
     'node() { command node --import "$FIXTURE_PRELOAD" "$@"; }',
     // Only the actual payload copy is replaced. The production Node import,
     // memory measurement, rejection and shell return path all execute.
-    'bash() { echo COPY_FIXTURE_ALLOCATED; }',
+    'bash() { echo COPY_FIXTURE_ALLOCATED "$@"; }',
     copyFunction!,
     'snapshot_verifier_pinned_deps "$STAGED_ROOT" "$STAGED_ROOT/papercusp-desktop/bin/lib/pinned-deps.sh"',
   ].join('\n')], { cwd: stage, env, encoding: 'utf8', timeout: 10_000 });
 }
 
 describe('native dependency-copy bootstrap before node_modules', () => {
+  it('consumes an explicitly selected generation without a canonical prewarm', () => {
+    const helper = join(stage, 'papercusp-desktop/bin/lib/pinned-deps.sh');
+    const original = readFileSync(helper, 'utf8');
+    try {
+      writeFileSync(helper, '#!/bin/bash\ncase "$1" in\n snapshot-generation-locked) exit 0 ;;\nesac\n');
+      const result = probe(String(8 * 1024 * 1024 * 1024), true);
+      expectProbeStatus(result, 0);
+      expect(result.stdout).toContain('snapshot-generation-locked');
+      expect(result.stdout).not.toContain('--integration');
+      expect(result.stdout).not.toContain('--ensure-ref');
+    } finally { writeFileSync(helper, original); }
+  });
+
   it('measures a finite task limit before admitting the copy without installed packages', () => {
     const result = probe(String(8 * 1024 * 1024 * 1024));
     expectProbeStatus(result, 0);
@@ -264,8 +281,11 @@ describe('native verifier parent deadline admission', () => {
     expect(source).toContain('verifier_run_step verifier-spa-build');
     expect(source).toMatch(/while :; do\s+preflight_verifier_task_deadline boot \|\| exit \$\?/);
     expect(source).toContain('preflight_verifier_task_deadline assert || exit $?');
+    // Restricted code must be fenced before any other Node helper executes.
+    expect(source.indexOf('restricted-hold-tree-gate.mjs'))
+      .toBeLessThan(source.indexOf('preflight_verifier_task_deadline prepare || exit $?'));
     expect(source.indexOf('preflight_verifier_task_deadline prepare || exit $?'))
-      .toBeLessThan(source.indexOf('restricted-hold-tree-gate.mjs'));
+      .toBeLessThan(source.indexOf('WORK="$(mktemp -d'));
   });
 });
 
@@ -320,8 +340,10 @@ describe('native frozen SPA cleanup', () => {
     expectProbeStatus(result, phase === 'early' ? 2 : 0);
     for (const directory of ['spa', 'verifier-spa']) {
       expect(existsSync(join(result.work, directory)), directory).toBe(false);
-      expect(result.stdout).toContain(`GUARD ${join(result.work, directory)} run-owned`);
     }
+    expect(result.stdout.trim().split('\n')).toEqual([
+      `GUARD ${join(result.work, 'spa')} run-owned ${join(result.work, 'verifier-spa')}`,
+    ]);
     expect(readFileSync(join(result.work, 'tauri.log'), 'utf8')).toBe('diagnostic');
     expect(readFileSync(join(result.work, 'verifier-source-receipt.json'), 'utf8')).toBe('provenance');
   });
@@ -354,7 +376,7 @@ function cleanupProbe(phase: 'early' | 'teardown', blocked: boolean) {
     'for fn in vh_capture_phase_stop cleanup_verifier_source_snapshot retain_boot_attempt_evidence retain_assertion_artifacts capture_isolated_pg_diagnostics wait_owned_ports_free fed_release_port_locks display_lock_release cleanup_operator_source_snapshot release_verifier_disk_reservations cleanup_assertion_script_snapshot vh_step vh_exit; do eval "$fn() { :; }"; done',
     'log() { echo "$*" >&2; }',
     'write_stop_script() { printf "#!/bin/sh\\nexit 0\\n" > "$WORK/stop.sh"; chmod +x "$WORK/stop.sh"; }',
-    'reap_frozen_source_survivors() { echo "GUARD $1 $2"; return "$FIXTURE_GUARD_EXIT"; }',
+    'reap_frozen_source_survivors() { echo "GUARD $*"; return "$FIXTURE_GUARD_EXIT"; }',
     helper,
     phase === 'early' ? earlyTrap! : `${teardown}\ntrap teardown EXIT`,
     phase === 'early' ? 'exit 2' : 'exit 0',

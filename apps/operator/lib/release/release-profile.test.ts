@@ -8,7 +8,7 @@
  * fail / stale / lineage-mismatch case, wired through the actual adapter (not just the
  * generic lib's fabricated-component tests in libs/generic/release-profile).
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
   buildPapercuspReleaseProfile,
   buildAutoloopReleaseProfile,
@@ -72,6 +72,11 @@ function scorecardRow(overrides: Partial<ScorecardRow> = {}): ScorecardRow {
     synthesized: false,
     score10: 10,
     linkedItems: [],
+    gradingAudit: { state: 'passed', metaRubricRef: 'grading-integrity', stampedAt: new Date(NOW).toISOString(),
+      auditIssueId: 'EI-independent-audit', auditor: 'agent-independent', auditedAt: new Date(NOW).toISOString(),
+      rubricRevision: 1, criteriaHash: 'audit-v1' },
+    gradingAuditCurrentness: { state: 'current', reason: 'current', recordedRevision: 1, currentRevision: 1,
+      recordedCriteriaHash: 'audit-v1', currentCriteriaHash: 'audit-v1' },
     ...overrides,
   };
 }
@@ -149,6 +154,25 @@ describe('rubricReleaseComponent — real adapter, injected deps', () => {
     expect(result.verdict).toBe('pass');
     expect(result.evidence[0]).toEqual({ ref: 'EI-1', kind: 'scorecard', detail: { sourceHive: null } });
   });
+
+  it.each(['diagnostic', 'provisional', 'pending-audit', 'failed-audit', 'missing-audit', 'stale-audit', 'unknown-audit'])(
+    'cannot authorize release with a %s receipt', async scenario => {
+      const row = scorecardRow();
+      if (scenario === 'diagnostic') row.purpose = 'diagnostic';
+      if (scenario === 'provisional') row.provisional = { stampedAt: row.createdAt, violatableKeys: ['c1'] };
+      if (scenario === 'pending-audit') row.gradingAudit!.state = 'pending';
+      if (scenario === 'failed-audit') row.gradingAudit!.state = 'failed';
+      if (scenario === 'missing-audit') delete row.gradingAudit;
+      if (scenario === 'stale-audit') row.gradingAuditCurrentness!.state = 'stale';
+      if (scenario === 'unknown-audit') delete row.gradingAuditCurrentness;
+      const list = vi.fn(async () => [row]);
+      const result = await rubricReleaseComponent('test-rubric', {
+        deps: { getRubric: async () => rubric(), listScorecards: list },
+      }).check();
+      expect(result.verdict).toBe('unknown');
+      expect(result.reason).toContain('not settled');
+      expect(list).toHaveBeenCalledWith(expect.objectContaining({ finalizedOnly: true, comparableOnly: true, limit: 1 }));
+    });
 
   it('unknown when a persisted release-gating scorecard is missing its instrument snapshot', async () => {
     const nowMs = Date.parse('2026-07-16T12:00:00.000Z');

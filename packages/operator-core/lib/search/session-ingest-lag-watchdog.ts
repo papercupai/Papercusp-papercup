@@ -135,7 +135,7 @@ const MAX_TAIL_PROBE_BYTES = 1024 * 1024;
  *      unconsumable, and will stay unconsumed forever once the session ends
  *      mid-line. That is the shape that made the age counter run away: the
  *      state row stops advancing precisely because there is nothing valid to
- *      consume, so `now - updated_at` grows without bound and eventually
+ *      consume, so `now - byte_offset_changed_at` grows without bound and eventually
  *      crosses any threshold.
  */
 export function remainderIsConsumableWork(
@@ -154,7 +154,7 @@ export interface AdapterLagObservation {
   /** Total unconsumed bytes across those files. */
   backlogBytes: number;
   /** Age (ms) of the OLDEST unconsumed backlog — how long the adapter has been
-   *  sitting on work, measured from that file's ingest-state updated_at. */
+   *  sitting on work, measured from that file's primary byte_offset_changed_at. */
   oldestBacklogAgeMs: number;
   /** The worst offender, for the alert body. */
   worstPath: string | null;
@@ -294,8 +294,8 @@ async function remainderHasCompleteLine(
 export async function readIngestBacklogRecovery(sourceKind: string, path: string,
   thresholdMs: number, nowMs: number): Promise<boolean | null> {
   const { sql } = getOrgPg();
-  const rows = await sql<Array<{ source_kind: string; file_path: string; byte_offset: number | string; updated_at: string }>>`
-    SELECT source_kind, file_path, byte_offset, updated_at::text AS updated_at
+  const rows = await sql<Array<{ source_kind: string; file_path: string; byte_offset: number | string; byte_offset_changed_at: string }>>`
+    SELECT source_kind, file_path, byte_offset, byte_offset_changed_at::text AS byte_offset_changed_at
       FROM harness_shared.session_ingest_state
      WHERE source_kind = ${sourceKind} AND file_path = ${path}
   `;
@@ -303,8 +303,8 @@ export async function readIngestBacklogRecovery(sourceKind: string, path: string
   const row = rows[0];
   if (typeof row.byte_offset !== 'number' &&
       !(typeof row.byte_offset === 'string' && /^\d+$/.test(row.byte_offset))) return null;
-  const offset = Number(row.byte_offset), updated = Date.parse(row.updated_at);
-  if (!validCount(offset) || !Number.isFinite(updated) || !Number.isFinite(nowMs) ||
+  const offset = Number(row.byte_offset), changedAt = Date.parse(row.byte_offset_changed_at);
+  if (!validCount(offset) || !Number.isFinite(changedAt) || !Number.isFinite(nowMs) ||
       !Number.isFinite(thresholdMs) || thresholdMs <= 0) return null;
   const file = await stat(path);
   if (!file.isFile() || !validCount(file.size) || file.size < offset) return null;
@@ -312,18 +312,18 @@ export async function readIngestBacklogRecovery(sourceKind: string, path: string
   if (behind < INGEST_LAG_MIN_BACKLOG_BYTES) return true;
   const consumable = await remainderHasCompleteLine(path, offset, behind);
   if (consumable === null) return null;
-  return !consumable || Math.max(0, nowMs - updated) < thresholdMs;
+  return !consumable || Math.max(0, nowMs - changedAt) < thresholdMs;
 }
 
-async function observeAdapterLag(): Promise<AdapterLagObservation[]> {
+export async function observeAdapterLag(): Promise<AdapterLagObservation[]> {
   const { sql } = getOrgPg();
   const MAX_FILES_PER_KIND = 250;
   const rows = await sql<Array<{
-    source_kind: string; file_path: string; byte_offset: string | number; updated_at: string;
+    source_kind: string; file_path: string; byte_offset: string | number; byte_offset_changed_at: string;
   }>>`
-    SELECT source_kind, file_path, byte_offset, updated_at::text AS updated_at
+    SELECT source_kind, file_path, byte_offset, byte_offset_changed_at::text AS byte_offset_changed_at
       FROM (
-        SELECT source_kind, file_path, byte_offset, updated_at,
+        SELECT source_kind, file_path, byte_offset, byte_offset_changed_at, updated_at,
                row_number() OVER (PARTITION BY source_kind ORDER BY updated_at DESC) AS rn
           FROM harness_shared.session_ingest_state
          WHERE file_path <> '__hwm__'
@@ -348,8 +348,8 @@ async function observeAdapterLag(): Promise<AdapterLagObservation[]> {
       continue;
     }
     const offset = measuredCount(r.byte_offset);
-    const updated = Date.parse(r.updated_at);
-    if (!Number.isFinite(updated)) throw new Error('invalid ingest bookkeeping timestamp');
+    const changedAt = Date.parse(r.byte_offset_changed_at);
+    if (!Number.isFinite(changedAt)) throw new Error('invalid byte-offset progress timestamp');
     const behind = size - offset;
     if (behind <= 0) continue;
     // EI-19280389878453845: filter PER FILE before aggregating. Both of these
@@ -364,7 +364,7 @@ async function observeAdapterLag(): Promise<AdapterLagObservation[]> {
       obs.ignoredIncompleteFiles = (obs.ignoredIncompleteFiles ?? 0) + 1;
       continue;
     }
-    const ageMs = Math.max(0, now - updated);
+    const ageMs = Math.max(0, now - changedAt);
     obs.behindFiles += 1;
     obs.backlogBytes += behind;
     if (ageMs > obs.oldestBacklogAgeMs) {
@@ -432,7 +432,7 @@ export async function sessionIngestLagSweep(
             `Why this is trustworthy: the condition is SOURCE-RELATIVE, not a lag threshold — it fires only ` +
             `because unconsumed bytes exist on disk, so a quiet client can never trigger it (D-005).\n\n` +
             `To diagnose: read harness_shared.session_ingest_state for this source_kind (last_error, ` +
-            `byte_offset, updated_at) and compare against the file on disk. A stuck byte_offset with a ` +
+            `byte_offset, byte_offset_changed_at, updated_at) and compare against the file on disk. A stuck byte_offset with a ` +
             `recurring last_error is a parse/DB failure; a stuck offset with NO error is usually the sweep ` +
             `not reaching this adapter (per-tick file/byte caps, or an enumerate failure earlier in the ` +
             `adapter loop). Force one pass with ingestFileNow on the worst path to surface the real error.`,

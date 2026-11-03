@@ -1,7 +1,11 @@
+import { existsSync } from 'node:fs';
+import { readFile } from 'node:fs/promises';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as org from '@papercusp/db-org';
 import {
-  evaluatePartsWriter, readIngestBacklogRecovery, sessionIngestConditionKey,
+  evaluatePartsWriter, observeAdapterLag, readIngestBacklogRecovery, sessionIngestConditionKey,
   sessionIngestLagSweep, sessionPartsWriterSweep,
   type AdapterLagObservation, type PartsWriterObservation,
 } from './session-ingest-lag-watchdog';
@@ -18,6 +22,13 @@ vi.mock('./session-ingest', () => ({ FILE_ADAPTERS: [{ sourceKind: 'claude', par
 
 const hour = 3600_000, now = Date.parse('2026-10-12T12:00:00Z');
 const opts = { workspaceId: 'fixture:workspace', installSlug: 'fixture:install' };
+const progressMigrationBase = resolve(
+  dirname(fileURLToPath(import.meta.url)),
+  '../../../../libs/papercusp/libs/db/sql/1616-session-ingest-byte-offset-progress.sql',
+);
+const progressMigrationPath = existsSync(progressMigrationBase)
+  ? progressMigrationBase
+  : progressMigrationBase + '.DRAFT';
 const backlog = (over: Partial<AdapterLagObservation> = {}): AdapterLagObservation => ({
   sourceKind: 'codex', behindFiles: 1, backlogBytes: 9e6, oldestBacklogAgeMs: 6 * hour,
   worstPath: '/fixture/rollout', ...over,
@@ -179,10 +190,18 @@ describe('original parts verdict producer', () => {
 describe('exact affected-file production reader', () => {
   function readerFixture() {
     const row = { source_kind: 'codex', file_path: '/fixture/rollout', byte_offset: '0',
+      byte_offset_changed_at: new Date(now - 6 * hour).toISOString(),
       updated_at: new Date(now - 6 * hour).toISOString() };
     const sql = vi.fn(async (_strings: TemplateStringsArray, ..._values: unknown[]) => [row]);
     stubOrgSql(sql);
     const stat = filesystem.stat.mockResolvedValue({ isFile: () => true, size: 2e6 });
+    filesystem.open.mockResolvedValue({
+      read: async (buffer: Buffer, _offset: number, length: number) => {
+        buffer.fill(0x0a, 0, length);
+        return { bytesRead: length };
+      },
+      close: async () => {},
+    } as never);
     return { row, sql, stat, read: () => readIngestBacklogRecovery('codex', '/fixture/rollout', hour, now) };
   }
   it('reads the exact source/file without the candidate limit and distinguishes stale from caught up', async () => {
@@ -190,7 +209,16 @@ describe('exact affected-file production reader', () => {
     expect(f.sql.mock.calls[0].slice(1)).toEqual(['codex', '/fixture/rollout']);
     const query = (f.sql.mock.calls[0][0] as unknown as TemplateStringsArray).join(' ');
     expect(query).not.toMatch(/LIMIT|45 days/); expect(query).toContain('source_kind =');
+    expect(query).toContain('byte_offset_changed_at');
+    expect(query).not.toContain('updated_at');
     f.row.byte_offset = '2000000'; expect(await f.read()).toBe(true);
+  });
+  it('does not clear a large consumable backlog after an auxiliary state-row write', async () => {
+    const f = readerFixture();
+    f.row.updated_at = new Date(now - 5 * 60_000).toISOString();
+    expect(await f.read()).toBe(false);
+    f.row.byte_offset_changed_at = new Date(now - 5 * 60_000).toISOString();
+    expect(await f.read()).toBe(true);
   });
   it('missing or foreign rows preserve instead of clearing', async () => {
     const f = readerFixture(); f.sql.mockResolvedValueOnce([]); expect(await f.read()).toBe(null);
@@ -202,7 +230,25 @@ describe('exact affected-file production reader', () => {
   });
   it('truncated files and invalid clocks are unknown', async () => {
     const f = readerFixture(); f.row.byte_offset = '3000000'; expect(await f.read()).toBe(null);
-    f.row.byte_offset = '0'; f.row.updated_at = 'invalid'; expect(await f.read()).toBe(null);
+    f.row.byte_offset = '0'; f.row.byte_offset_changed_at = 'invalid'; expect(await f.read()).toBe(null);
+  });
+  it('ages backlog from primary cursor change even when updated_at is fresh', async () => {
+    const f = readerFixture();
+    const nowMs = Date.now();
+    f.row.updated_at = new Date(nowMs).toISOString();
+    f.row.byte_offset_changed_at = new Date(nowMs - 6 * hour).toISOString();
+    const [observation] = await observeAdapterLag();
+    expect(observation.oldestBacklogAgeMs).toBeGreaterThanOrEqual(6 * hour);
+    const query = (f.sql.mock.calls[0][0] as unknown as TemplateStringsArray).join(' ');
+    expect(query).toContain('byte_offset_changed_at');
+    expect(query).toContain('ORDER BY updated_at DESC');
+  });
+  it('keeps the migration marker tied to primary byte_offset changes', async () => {
+    const migration = await readFile(progressMigrationPath, 'utf8');
+    expect(migration).toContain('SET byte_offset_changed_at = updated_at');
+    expect(migration).toContain('NEW.byte_offset IS DISTINCT FROM OLD.byte_offset');
+    expect(migration).toContain('NEW.byte_offset_changed_at := OLD.byte_offset_changed_at');
+    expect(migration).toContain('NEW.byte_offset_changed_at := now()');
   });
   it('file read failure and short reads are unknown', async () => {
     const f = readerFixture(); f.stat.mockResolvedValue({ isFile: () => true, size: 128 * 1024 });

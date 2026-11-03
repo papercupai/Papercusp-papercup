@@ -155,6 +155,39 @@ describe('problem-specific expertise qualification', () => {
     })).toEqual([null]);
   });
 
+  it('separates scorer acquisition from pending inference without exposing its inputs', async () => {
+    const events: Array<{ phase: string; outcome: string; durationMs: number }> = [];
+    let finish!: (scores: number[]) => void;
+    const scoring = scoreSubjectEvidence('src/private-receipt.ts', ['private transcript payload'], Date.now() + 4000, {
+      contracts: [],
+      scorer: () => new Promise(resolve => { finish = resolve; }),
+      onPhase: event => { events.push(event); },
+    });
+    await vi.waitFor(() => expect(finish).toBeTypeOf('function'));
+    expect(events.map(e => [e.phase, e.outcome])).toEqual([
+      ['contracts', 'started'], ['contracts', 'returned'],
+      ['acquisition', 'started'], ['acquisition', 'returned'], ['inference', 'started'],
+    ]);
+    expect(JSON.stringify(events)).not.toContain('private');
+    finish([0.9]);
+    expect(await scoring).toEqual([0.9]);
+    expect(events.at(-1)).toMatchObject({ phase: 'inference', outcome: 'returned' });
+    expect(events.every(e => Number.isFinite(e.durationMs) && e.durationMs >= 0)).toBe(true);
+    expect(await scoreSubjectEvidence('src/private-receipt.ts', ['private transcript payload'], Date.now() + 4000, {
+      contracts: [], scorer: async () => [0.9], onPhase: () => { throw new Error('broken observer'); },
+    })).toEqual([0.9]);
+  });
+
+  it('reports inference failure without copying provider error text into phase diagnostics', async () => {
+    const events: Array<{ phase: string; outcome: string }> = [];
+    await expect(scoreSubjectEvidence('src/receipt.ts', ['a passage'], Date.now() + 4000, {
+      contracts: [], scorer: async () => { throw new Error('private provider error'); },
+      onPhase: event => { events.push(event); },
+    })).rejects.toThrow('private provider error');
+    expect(events.at(-1)).toMatchObject({ phase: 'inference', outcome: 'threw' });
+    expect(JSON.stringify(events)).not.toContain('private');
+  });
+
   it('nominates competing primary actions without matching their operational boilerplate', () => {
     const contracts = [
       { name: 'db:migrate', description: 'Apply a SQL migration.' },

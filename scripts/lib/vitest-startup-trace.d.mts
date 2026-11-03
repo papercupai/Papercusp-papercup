@@ -50,10 +50,5 @@ export function diagnoseVitestStartup(argv: string[], emit: (row: Record<string,
     workers: any[];
     status: string;
 }>;
-export const nativeSourceRetentionLimits: Readonly<{
-    sourceBytes: number;
-    processBytes: number;
-    pinnedSourceBytes: number;
-    pinnedProcessBytes: number;
-    pins: 4;
-}>;
+export { nativeSourceRetentionLimits };
+import { nativeSourceRetentionLimits } from '../../libs/test-config/src/executed-config-load-capture.ts';

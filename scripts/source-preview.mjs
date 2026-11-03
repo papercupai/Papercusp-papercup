@@ -692,7 +692,7 @@ export async function prepareVerifierSource({ repo, ref, dest, inputs = [], inpu
 }
 
 /** @typedef {{ completedTrees: number, totalTrees: number, currentTree: string, cacheHit?: boolean }} VerifierDependencyProgress */
-/** @typedef {{ copyMode: 'copy' | 'hardlink', generationSnapshotSupported: boolean,
+/** @typedef {{ copyMode: 'copy' | 'hardlink', generationSnapshotSupported: boolean, explicitGeneration?: boolean,
  *   command: 'snapshot-locked' | 'snapshot-generation-locked' }} VerifierSnapshotSelection */
 /** @typedef {{ snapshotSelection?: VerifierSnapshotSelection }} VerifierPhaseMetadata */
 /** @typedef {(<T>(phase: string, operation: () => T | Promise<T>, metadata?: VerifierPhaseMetadata) => Promise<T>) & {
@@ -702,19 +702,23 @@ export async function prepareVerifierSource({ repo, ref, dest, inputs = [], inpu
 /** Keep the verifier's snapshot path selection explicit and independently checkable.
  * @param {VerifierSnapshotSelection['copyMode']} copyMode
  * @param {boolean} generationSnapshotSupported
+ * @param {boolean} [explicitGeneration]
  * @returns {VerifierSnapshotSelection}
  */
-export function selectVerifierDependencySnapshot(copyMode, generationSnapshotSupported) {
+export function selectVerifierDependencySnapshot(copyMode, generationSnapshotSupported, explicitGeneration = false) {
   assert.ok(['copy', 'hardlink'].includes(copyMode), 'Invalid verifier dependency copy mode');
   assert.equal(typeof generationSnapshotSupported, 'boolean', 'Invalid generation snapshot capability');
-  return { copyMode, generationSnapshotSupported,
-    command: copyMode === 'copy' && generationSnapshotSupported
+  assert.equal(typeof explicitGeneration, 'boolean', 'Invalid explicit generation selection');
+  if (explicitGeneration && !generationSnapshotSupported)
+    throw new PreviewError('selected source does not support immutable verifier generations', 2);
+  return { copyMode, generationSnapshotSupported, ...(explicitGeneration ? { explicitGeneration } : {}),
+    command: (copyMode === 'copy' || explicitGeneration) && generationSnapshotSupported
       ? 'snapshot-generation-locked' : 'snapshot-locked' };
 }
 
 function assertVerifierSnapshotSelection(selection) {
   assert.deepEqual(selection,
-    selectVerifierDependencySnapshot(selection?.copyMode, selection?.generationSnapshotSupported),
+    selectVerifierDependencySnapshot(selection?.copyMode, selection?.generationSnapshotSupported, selection?.explicitGeneration),
     'Verifier snapshot selection metadata does not match its route inputs');
 }
 
@@ -1707,7 +1711,7 @@ export function verifyBgVerifierBuildOutputSet(output, args) {
  * @param {{ output: ReturnType<typeof qualifyBgVerifierBuildOutputSet> } &
  *   Parameters<typeof qualifyBgVerifierBuildOutputSet>[0]} args
  */
-export function qualifyBgVerifierLogicalOutputSet(args) {
+export async function qualifyBgVerifierLogicalOutputSet(args) {
   const { output, binding } = args;
   verifyBgVerifierBuildOutputSet(output, args);
   // The complete output fence just validated these same immutable records.
@@ -1732,7 +1736,7 @@ export function qualifyBgVerifierLogicalOutputSet(args) {
     linkSync(join(stage, row.temporary), join(stage, row.final));
     unlinkSync(join(stage, row.temporary));
   }
-  const artifact = qualifyBgVerifierOutput({ record: { ...contexts.record, invocation: main.original },
+  const artifact = await qualifyBgVerifierOutput({ record: { ...contexts.record, invocation: main.original },
     invocation: main.invocation, entry: join(stage, entry.final) });
   const controls = ['.bg-build-binding.json', '.bg-build-context.json']
     .filter(path => existsSync(join(stage, path))).map(path => readBgIndependentOutputIdentity(join(stage, path)));
@@ -1746,7 +1750,7 @@ export function qualifyBgVerifierLogicalOutputSet(args) {
 }
 
 /** Recheck retained logical outputs without regenerating a manifest or receipt.
- * @param {ReturnType<typeof qualifyBgVerifierLogicalOutputSet>} logical
+ * @param {Awaited<ReturnType<typeof qualifyBgVerifierLogicalOutputSet>>} logical
  * @param {Parameters<typeof qualifyBgVerifierLogicalOutputSet>[0]} args
  */
 export function verifyBgVerifierLogicalOutputSet(logical, { output, binding, receipts }) {
@@ -1788,7 +1792,7 @@ export function verifyBgVerifierLogicalOutputSet(logical, { output, binding, rec
  * dangling links. Keep artifact paths physical: moving this directory would
  * invalidate the maintained boot reader's manifest suffix check. This publishes
  * evidence only; activation must independently recheck the receipt and cohort.
- * @param {{ logical: ReturnType<typeof qualifyBgVerifierLogicalOutputSet> } &
+ * @param {{ logical: Awaited<ReturnType<typeof qualifyBgVerifierLogicalOutputSet>> } &
  *   Parameters<typeof qualifyBgVerifierLogicalOutputSet>[0]} args
  */
 export function publishBgVerifierLogicalOutputSet(args) {
@@ -2068,15 +2072,15 @@ function readBgFileIdentity(path) {
  *     { status: 'measured' }> }} BgVerifierOutputRecord
  * @param {{ record: ReturnType<typeof prepareBgVerifierBuildRecord>,
  *   invocation: BgBuildInvocation, entry: string }} options
- * @returns {BgVerifierOutputRecord}
+ * @returns {Promise<BgVerifierOutputRecord>}
  */
-export function qualifyBgVerifierOutput({ record, invocation, entry }) {
+export async function qualifyBgVerifierOutput({ record, invocation, entry }) {
   verifyBgVerifierBuildRecord(record, invocation, 'before-publication');
   const file = readBgFileIdentity(entry);
   const local = relative(record.prepared.root, file.realpath);
   assert.ok(file.path === file.realpath && local && !isAbsolute(local)
     && local !== '..' && !local.startsWith(`..${sep}`), 'BG output escaped selected generation');
-  const artifact = writeOperatorArtifactManifest({ root: record.prepared.root, entry,
+  const artifact = await writeOperatorArtifactManifest({ root: record.prepared.root, entry,
     sourceSha: record.prepared.source.sourceCommit });
   assert.equal(artifact.status, 'measured', 'BG output artifact is UNKNOWN');
   if (artifact.status !== 'measured') throw new Error('BG output artifact is UNKNOWN');
@@ -2161,7 +2165,8 @@ export async function prepareVerifierDependencies({ donor, dest, receipt, runPha
   // must still refuse invalid custody rather than retrying through the donor.
   const snapshotHelper = join(dest, 'papercusp-desktop/bin/lib/pinned-deps.sh');
   const generationSnapshotSupported = /^\s*snapshot-generation-locked\s*\)/m.test(await fs.readFile(snapshotHelper, 'utf8'));
-  const snapshotSelection = selectVerifierDependencySnapshot(copyMode, generationSnapshotSupported);
+  const snapshotSelection = selectVerifierDependencySnapshot(copyMode, generationSnapshotSupported,
+    Boolean(env.PAPERCUSP_DEPENDENCY_GENERATION_ROOT));
   await runPhase('deps.snapshot', () => run('bash', [snapshotHelper,
     snapshotSelection.command, realpathSync(donor), realpathSync(dest), copyMode]), { snapshotSelection });
   await runPhase('deps.source.after-snapshot', () => verifyVerifierSource(dest, receipt, { runtimeArtifacts: true }));
@@ -2302,7 +2307,7 @@ function captureVerifierDependencyPopulation({ dest, receipt, env = process.env,
       .update(sourceReceiptSha256).update('\0').update(records.stdout).digest('hex');
     const cachedFiles = readVerifierDependencyCache(cacheKey, fingerprint);
     const cacheHit = cachedFiles !== null;
-    onProgress?.({ completedTrees: treeIndex + 1, totalTrees: paths.length,
+    onProgress?.({ completedTrees: treeIndex, totalTrees: paths.length,
       currentTree: path.slice(0, 256), cacheHit });
     const files = cachedFiles ?? verifierSourceFiles(tree, { symlinkRoot: root,
       includedPaths: new Set(population.map(row => row[0])) });
@@ -2481,8 +2486,17 @@ export async function runVerifierCommand({ repo, ref, receiptPath, inputs = [], 
   if (preparationMaxMs !== undefined && (!Number.isSafeInteger(preparationMaxMs) || preparationMaxMs <= 0 || readTaskDeadlineEpochMs(env) === null))
     throw new PreviewError('explicit verifier preparation allowance needs positive integer milliseconds and a finite caller task deadline', 2);
   const sourceCommit = resolveCommit(sourceRepo, ref);
-  const donor = committedWorkRootDependencyDonor(sourceRepo);
-  preflightVerifierWorkspaceBinDonor({ repo: sourceRepo, commit: sourceCommit, donor });
+  const explicitGeneration = Boolean(env.PAPERCUSP_DEPENDENCY_GENERATION_ROOT);
+  const donor = explicitGeneration ? sourceRepo : committedWorkRootDependencyDonor(sourceRepo);
+  if (explicitGeneration) {
+    const helper = join(sourceRepo, 'papercusp-desktop/bin/lib/pinned-deps.sh');
+    if (!existsSync(helper) || !/^\s*preflight-generation\s*\)/m.test(readFileSync(helper, 'utf8')))
+      throw new PreviewError('selected source does not support immutable verifier generations', 2);
+    const check = spawnSync('bash', [helper, 'preflight-generation', sourceRepo, sourceRepo],
+      { env: verifierDependencyEnv(env), encoding: 'utf8', timeout: 120_000, maxBuffer: 1024 * 1024 });
+    if (check.error || check.status !== 0)
+      throw new PreviewError('verifier generation preflight failed: ' + (check.error?.message || check.stderr || check.status), 2);
+  } else preflightVerifierWorkspaceBinDonor({ repo: sourceRepo, commit: sourceCommit, donor });
   // Keep hardlinks beside a donor on a data device. A donor on the root device
   // must use the admitted data scratch instead; pinned-deps already supports
   // independent cross-device copies and checks their headroom before copying.

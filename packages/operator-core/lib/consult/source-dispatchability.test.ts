@@ -17,10 +17,14 @@ import { probeTranscriptArchive } from '../session-transcript-remat';
 
 const findSessionTranscript = vi.hoisted(() => vi.fn<(id: string, opts?: unknown) => Promise<string | null>>());
 vi.mock('../claude-sessions', () => ({ findSessionTranscript }));
+const resolveDispatchSource = vi.hoisted(() => vi.fn<typeof import('./consult-dispatch').resolveDispatchSource>());
+vi.mock('./consult-dispatch', () => ({ resolveDispatchSource }));
 
 beforeEach(() => {
   findSessionTranscript.mockReset();
   findSessionTranscript.mockResolvedValue(null);
+  resolveDispatchSource.mockReset();
+  resolveDispatchSource.mockResolvedValue({ refusal: 'fixture source unavailable' });
 });
 
 const cand = (ownerId: string): RoutingCandidate => ({ ownerId, evidence: [] } as unknown as RoutingCandidate);
@@ -54,6 +58,34 @@ describe('filterDispatchableRoute', () => {
     expect(out.verdict).toBe('no_qualified_responder');
     // The minimum-fill pool still offers the dispatchable source.
     expect(out.snapshot.candidates.map((c) => c.ownerId)).toEqual(['su-alive']);
+  });
+
+  it.each([
+    { sessionId: 'evidence-native', advSessionId: 71 },
+    { sessionId: null, advSessionId: 72 },
+  ])('retains the resolved rejected source identity ($sessionId/$advSessionId)', async ({ sessionId, advSessionId }) => {
+    const target: ResumeTarget = {
+      sessionId, advSessionId, resumeId: sessionId ?? String(advSessionId),
+      ownerId: 'dead', agent: 'codex', ompThreadId: null,
+      workspaceId: 'workspace-1', harnessSlug: 'papercusp', role: null,
+      feature: null, cwd: null, model: null, modelSource: null, account: null,
+      endedAt: '2026-10-24T20:00:00Z', endedBy: 'self', live: false, binding: null,
+    };
+    resolveDispatchSource.mockResolvedValue({ target: { ok: true, ...target }, evidenceSource: null });
+    const probeTranscript = vi.fn(async () => ({
+      dispatchable: false, detail: 'Codex transcript absent on disk and not_archived',
+    }));
+    const out = await filterDispatchableRoute(route(['dead']), (candidate, workspaceId) =>
+      probeConsultSourceDispatchable(candidate, workspaceId, { probeTranscript }));
+
+    expect(out.qualified).toEqual([]);
+    expect(out.snapshot.candidates).toEqual([]);
+    expect(out.snapshot.undispatchableSources).toEqual([{
+      ownerId: 'dead', dispatchable: false,
+      detail: 'Codex transcript absent on disk and not_archived',
+      source: { agent: 'codex', sessionId, advSessionId, ownerId: 'dead' },
+    }]);
+    expect(probeTranscript).toHaveBeenCalledWith({ ok: true, ...target });
   });
 
   it('returns the route untouched when nothing is removed (no disclosure noise)', async () => {

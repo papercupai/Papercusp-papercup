@@ -147,10 +147,11 @@ export function nativeVerifierEnv(env, launch) {
   const child = { ...env };
   if (launch?.repoRoot !== undefined) {
     const source = resolve(launch.repoRoot);
-    const donor = committedWorkRootDependencyDonor(source);
+    const explicitGeneration = Boolean(child.PAPERCUSP_DEPENDENCY_GENERATION_ROOT);
+    const donor = explicitGeneration ? source : committedWorkRootDependencyDonor(source);
     const modules = join(donor, 'node_modules');
-    if (!existsSync(modules) || !lstatSync(modules).isDirectory()
-      || existsSync(join(donor, OWNER_MARKER))) {
+    if (!explicitGeneration && (!existsSync(modules) || !lstatSync(modules).isDirectory()
+      || existsSync(join(donor, OWNER_MARKER)))) {
       throw new Error('Native verifier requires a physical installed dependency donor');
     }
     // The invoked wrapper remains in the tested checkout. Pin its Git source
@@ -160,6 +161,18 @@ export function nativeVerifierEnv(env, launch) {
     }).trim();
     if (child.VERIFY_TAURI_SOURCE_REF && child.VERIFY_TAURI_SOURCE_REF !== sourceRef) {
       throw new Error('Native verifier source ref must match the invoked checkout');
+    }
+    if (explicitGeneration) {
+      const helper = join(source, 'papercusp-desktop/bin/lib/pinned-deps.sh');
+      if (!existsSync(helper) || !/^\s*preflight-generation\s*\)/m.test(readFileSync(helper, 'utf8')))
+        throw new Error('Native source does not support immutable verifier generations');
+      const check = spawnSync('bash', [helper, 'preflight-generation', source, source], {
+        env: { ...child, NODE_OPTIONS: '', NODE_PATH: '', DEPENDENCY_GENERATION_NODE: process.execPath },
+        encoding: 'utf8', timeout: 120_000, maxBuffer: 1024 * 1024,
+      });
+      if (check.error || check.status !== 0)
+        throw new Error('Native verifier generation preflight failed: ' + (check.error?.message || check.stderr || check.status));
+      child.VERIFY_TAURI_DEPENDENCY_SNAPSHOT_MODE = 'copy';
     }
     child.PAPERCUSP_REPO_DIR = donor;
     child.VERIFY_TAURI_SOURCE_REF = sourceRef;

@@ -3960,13 +3960,31 @@ case "$FILE" in
   *.mts|*.cts|*.ts)
     if ! command -v node >/dev/null 2>&1; then
       MUTANT_PARSE="unchecked-no-node"
-    # Node's --check does not strip types, even on Node 25. Parse and
-    # transform with its built-in TypeScript parser, then check the emitted
-    # JavaScript. Neither stage imports or executes the subject.
-    elif node - "$TARGET" >"$SCRATCH/mutant-parse.js" 2>"$MUTANT_PARSE_ERR" <<'NODE'
+    # Use the maintained compiler when available: Node's type stripping
+    # preserves decorators that its JavaScript --check cannot parse. Both
+    # paths only parse/transform; neither imports or executes the subject.
+    elif node - "$TARGET" "$RUNNER_SOURCE_ABSOLUTE" >"$SCRATCH/mutant-parse.js" 2>"$MUTANT_PARSE_ERR" <<'NODE'
 const { readFileSync } = require('node:fs');
-const { stripTypeScriptTypes } = require('node:module');
-process.stdout.write(stripTypeScriptTypes(readFileSync(process.argv[2], 'utf8'), { mode: 'transform' }));
+const { createRequire, stripTypeScriptTypes } = require('node:module');
+const source = readFileSync(process.argv[2], 'utf8');
+const compilerRequire = createRequire(process.argv[3]);
+let compilerPath;
+try { compilerPath = compilerRequire.resolve('typescript'); }
+catch (error) { if (error.code !== 'MODULE_NOT_FOUND') throw error; }
+if (compilerPath) {
+  const ts = compilerRequire(compilerPath);
+  const result = ts.transpileModule(source, {
+    fileName: process.argv[2], reportDiagnostics: true,
+    compilerOptions: { target: ts.ScriptTarget.ESNext, module: ts.ModuleKind.ESNext,
+      experimentalDecorators: true },
+  });
+  const errors = (result.diagnostics ?? []).filter(d => d.category === ts.DiagnosticCategory.Error);
+  if (errors.length) throw new SyntaxError(errors.map(d =>
+    ts.flattenDiagnosticMessageText(d.messageText, '\n')).join('\n'));
+  process.stdout.write(result.outputText);
+} else {
+  process.stdout.write(stripTypeScriptTypes(source, { mode: 'transform' }));
+}
 NODE
     then
       parse_input_type=module

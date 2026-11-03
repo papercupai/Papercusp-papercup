@@ -196,6 +196,8 @@ export interface ReleaseReadinessScoreEvidence {
   sampleCount: number;
   /** Excluded, by reason. Reported, never silent — the trend's own posture. */
   excluded: { provisional: number; gradingAuditPending: number };
+  /** Disjoint reasons recorded by the finalized reader before its page limit. */
+  exclusionReasons?: Record<string, number>;
   /** Oldest / newest admissible card — the window the sample spans. Null when none. */
   windowStart: string | null;
   windowEnd: string | null;
@@ -291,11 +293,13 @@ async function readRubricInfo(): Promise<ReleaseReadinessRubricInfo | null> {
   try {
     // listScorecardPage, not listScorecards: same query, but it over-fetches one row and
     // reports `hasMore`, which is the only way to know the counts below are a floor.
-    const page = await listScorecardPage({ rubricRef: RELEASE_READINESS_RUBRIC_ID, limit: SCORECARD_PAGE });
+    const page = await listScorecardPage({ rubricRef: RELEASE_READINESS_RUBRIC_ID, limit: SCORECARD_PAGE,
+      finalizedOnly: true });
 
     // The trend's admission policy, imported rather than re-derived. A provisional
     // working note or an unaudited grading must never BE the release score.
-    const excluded = { provisional: 0, gradingAuditPending: 0 };
+    const excluded = { provisional: page.selection?.excludedCounts.provisional ?? 0,
+      gradingAuditPending: page.selection?.excludedCounts['grading-audit-pending'] ?? 0 };
     const admissible: typeof page.rows = [];
     for (const s of page.rows) {
       const why = scorecardAdmissionExclusion(s);
@@ -317,6 +321,7 @@ async function readRubricInfo(): Promise<ReleaseReadinessRubricInfo | null> {
     scoreEvidence = {
       sampleCount: admissible.length,
       excluded,
+      ...(page.selection ? { exclusionReasons: page.selection.excludedCounts } : {}),
       windowStart,
       windowEnd: latestScorecardAt,
       latestAgeMs: latestScorecardAt ? Math.max(0, Date.now() - Date.parse(latestScorecardAt)) : null,

@@ -1081,17 +1081,38 @@ export async function dumpHeapSamplingProfile(args: {
 }): Promise<string | null> {
   const { rssMb, log, maxProfiles = 50 } = args;
   if (!_samplingSession) return null;
+  const session = _samplingSession;
   try {
     const os = await import('node:os');
     const path = await import('node:path');
     const fs = await import('node:fs/promises');
     const dir = args.dir ?? papercuspPath('heap-snapshots');
     await fs.mkdir(dir, { recursive: true });
-    const profile = await new Promise<{ head: SamplingNode }>((resolve, reject) => {
-      _samplingSession!.post('HeapProfiler.getSamplingProfile', (err, r) =>
-        err ? reject(err) : resolve((r as { profile: { head: SamplingNode } }).profile),
-      );
-    });
+    let profile: { head: SamplingNode };
+    try {
+      profile = await new Promise<{ head: SamplingNode }>((resolve, reject) => {
+        session.post('HeapProfiler.getSamplingProfile', (err, r) =>
+          err ? reject(err) : resolve((r as { profile: { head: SamplingNode } }).profile),
+        );
+      });
+    } catch (error) {
+      // V8 shares one sampler across inspector clients. A diagnostic client can
+      // stop it while our Session remains connected and samplingArmed is true.
+      // Re-arm through our own long-lived session so observer detach cannot
+      // stop the replacement sampler. Its previous allocation history is lost:
+      // report that gap and wait for the next dump rather than save an empty
+      // replacement profile as evidence for the missed observation window.
+      if (!(error instanceof Error)
+        || (error as NodeJS.ErrnoException).code !== 'ERR_INSPECTOR_COMMAND'
+        || !error.message.includes('V8 sampling heap profiler was not started')) throw error;
+      await new Promise<void>((resolve, reject) => {
+        session.post('HeapProfiler.startSampling', { samplingInterval: 262_144 }, (err) =>
+          err ? reject(err) : resolve(),
+        );
+      });
+      log('[heap-sampling] sampler unexpectedly stopped; re-armed monitor session; allocation history has a gap');
+      return null;
+    }
     const file = path.join(dir, `heap-sampling-${Date.now()}-pid${process.pid}-rss_${Math.round(rssMb)}mb.heapprofile`);
     await fs.writeFile(file, JSON.stringify(profile));
     const top = topAllocationSites(profile.head);

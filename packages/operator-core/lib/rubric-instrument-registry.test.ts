@@ -28,6 +28,7 @@ import { TOOL_DELIVERY_INSTRUMENTS } from './tool-delivery-acceptance';
 import { COLD_MOUNTS_INSTRUMENT_KEY, COLD_MOVES_INSTRUMENT_KEY } from './storage/cold-tier-evidence';
 import { LIVE_FORKSERVER_INSTRUMENT_KEY } from './fleet/forkserver/live-instrument';
 import { DURABLE_HEADROOM_TARGETS_INSTRUMENT_KEY, POSTGRES_RETENTION_INSTRUMENT_KEY } from './storage/retention-interval-evidence';
+import { LEAD_SOURCE_OBSERVATIONS_INSTRUMENT_KEY } from './relationship-graph/qualification-instrument';
 import {
   BM25_LATENCY_INSTRUMENT_KEY,
   P544_QUALIFICATION_COMMAND,
@@ -277,6 +278,7 @@ describe('the registry seed set', () => {
       COUPLING_SHADOW_WINDOW_INSTRUMENT_KEY,
       STRAGGLER_DISPOSITIONS_INSTRUMENT_KEY,
       ...Object.values(CLEANUP_OUTCOME_INSTRUMENT_KEYS),
+      LEAD_SOURCE_OBSERVATIONS_INSTRUMENT_KEY,
     ];
     expect(platformComputedInstrumentKeys().sort()).toEqual([...expected].sort());
     for (const key of expected) expect(instrumentRegistry().get(key)?.evaluator, key).toBe('platform');
@@ -356,6 +358,13 @@ describe('the registry seed set', () => {
             expect(instrument.rescore?.unit).toBe('count');
             expect(instrument.rescore?.scope).toBe('harness');
             expect(await instrument.rescore!.resolve(window)).toEqual({ verdict: 'unknown', detail: 'Exact workspace and harness required.' });
+          } else if (key === LEAD_SOURCE_OBSERVATIONS_INSTRUMENT_KEY) {
+            expect(instrument.rescore?.windowMs).toBe(30 * 24 * 60 * 60_000);
+            expect(instrument.rescore?.unit).toBe('count');
+            expect(instrument.rescore?.scope).toBe('subject');
+            expect(await instrument.rescore!.resolve(window)).toEqual({
+              verdict: 'unknown', detail: 'canonical_person_subject_required',
+            });
           } else expect(instrument.rescore).toBeUndefined();
           continue;
         }
@@ -413,6 +422,43 @@ describe('the registry seed set', () => {
 });
 
 describe('runInstrument', () => {
+  it('retains the command input so an independent parser can reproduce the measured maximum', async () => {
+    const stdout = 'Use%\n 42%\n 96%\n';
+    const reading = await runInstrument('host:df-max-used-pct', { exec: async () => stdout });
+    const input = reading.provenance?.diagnostics.find(entry => entry.path === '$["samples"]["0"]["stdout"]');
+    expect(input?.value).toBe(stdout);
+    expect(parseDfMaxPercent(input?.value as string)).toBe(96);
+    expect(reading.value).toBe(96);
+    expect(reading.provenance?.gaps).toEqual([]);
+  });
+
+  it('retains unparseable command input without replacing the missing measurement with zero', async () => {
+    const reading = await runInstrument('host:df-max-used-pct', { exec: async () => 'invalid df output' });
+    expect(reading.value).toBeNull();
+    expect(reading.provenance?.diagnostics).toContainEqual({
+      path: '$["samples"]["0"]["stdout"]', value: 'invalid df output',
+    });
+  });
+
+  it('uses the existing redaction and truncation policy for raw command inputs', async () => {
+    const redacted = await runInstrument('host:df-root-used-pct', {
+      exec: async () => 'Use%\n 42%\nAuthorization: Bearer tiny\n',
+    });
+    expect(redacted.value).toBe(42);
+    expect(JSON.stringify(redacted.provenance)).not.toContain('tiny');
+    expect(redacted.provenance?.gaps).toContain('redacted');
+
+    const bounded = await runInstrument('host:df-root-used-pct', {
+      exec: async () => 'Use%\n 42%\n' + 'x'.repeat(20_000),
+    });
+    const input = bounded.provenance?.diagnostics.find(entry => entry.path === '$["samples"]["0"]["stdout"]');
+    expect(typeof input?.value).toBe('string');
+    expect((input?.value as string).length).toBe(256);
+    expect(bounded.provenance?.gaps).toContain('diagnostics-truncated');
+    expect(Buffer.byteLength(JSON.stringify(bounded.provenance))).toBeLessThanOrEqual(16_384);
+    expect(bounded.value).toBe(42);
+  });
+
   it('runs the registered argv without a shell and parses one value', async () => {
     const calls: Array<readonly string[]> = [];
     const reading = await runInstrument('host:psi-cpu-some-avg10-pct', {
@@ -446,6 +492,8 @@ describe('runInstrument', () => {
     expect(reading.provenance?.diagnostics).toEqual(expect.arrayContaining([
       { path: '$["samples"]["0"]["value"]', value: 1000000 },
       { path: '$["samples"]["1"]["value"]', value: 5000000 },
+      { path: '$["samples"]["0"]["stdout"]', value: 'usage_usec 1000000\n' },
+      { path: '$["samples"]["1"]["stdout"]', value: 'usage_usec 5000000\n' },
     ]));
     expect(reading.provenance?.procedure.snapshot).toContain('host:cgroup-cpu-delta-cores');
     expect(reading.provenance?.startedAt).toBe('1970-01-01T00:00:00.000Z');

@@ -621,6 +621,17 @@ fi
 # after source/dependency preparation and native setup. Catch an incomplete
 # papercusp-desktop install before those expensive verifier phases begin.
 preflight_desktop_tauri_cli() {
+  if [ -n "${PAPERCUSP_DEPENDENCY_GENERATION_ROOT:-}" ]; then
+    local generation_source="${VERIFY_TAURI_SOURCE_REPO_DIR:-$REPO_DIR}"
+    local generation_helper="$generation_source/papercusp-desktop/bin/lib/pinned-deps.sh"
+    [ -n "${VERIFY_TAURI_SOURCE_REF:-}" ] && \
+      grep -Eq '^[[:space:]]*preflight-generation\)' "$generation_helper" || {
+      echo 'VERIFY_TAURI_GENERATION_UNSUPPORTED: explicit generations require pinned source and its supported helper.' >&2
+      return 2
+    }
+    bash "$generation_helper" preflight-generation "$generation_source" "$generation_source"
+    return $?
+  fi
   local cli="$DESKTOP_DIR/node_modules/.bin/tauri"
   if [ -x "$cli" ] || command -v tauri >/dev/null 2>&1; then
     return 0
@@ -699,6 +710,10 @@ export PAPERCUSP_TAURI_LAUNCH_PROVENANCE="$TAURI_LAUNCH_PROVENANCE"
 # only: it never reclaims a stale lock and a failed diagnostic must not prevent a
 # verifier launch.
 install_in_flight_preflight() {
+  if [ -n "${PAPERCUSP_DEPENDENCY_GENERATION_ROOT:-}" ]; then
+    preflight_desktop_tauri_cli
+    return $?
+  fi
   # A pinned source clone supplies code, while REPO_DIR supplies the installed
   # dependencies. Refuse a source-only/shadow donor before allocating WORK or
   # exporting another source snapshot; the snapshot repeats its full census.
@@ -1986,6 +2001,12 @@ reserve_verifier_disk() {
   case "${VERIFY_TAURI_DEPENDENCY_SNAPSHOT_MODE:-hardlink}" in
     hardlink) ;;
     copy)
+      if [ -n "${PAPERCUSP_DEPENDENCY_GENERATION_ROOT:-}" ]; then
+        local generation_source="${VERIFY_TAURI_SOURCE_REPO_DIR:-$REPO_DIR}"
+        dependency_bytes="$(bash "$generation_source/papercusp-desktop/bin/lib/pinned-deps.sh" \
+          preflight-generation "$generation_source" "$generation_source" size)" || return $?
+        case "$dependency_bytes" in ''|*[!0-9]*) echo 'FATAL: immutable dependency footprint is unmeasured' >&2; return 1 ;; esac
+      else
       # Enumerate the same trees as the maintained snapshot producer, including
       # trees that the live-source branch later removes. Apparent bytes account
       # for sparse files; measure each tree independently like rsync -aH.
@@ -1998,6 +2019,7 @@ reserve_verifier_disk() {
         case "$size" in ''|*[!0-9]*) echo "FATAL: dependency footprint is unmeasured: $rel" >&2; return 1 ;; esac
         dependency_bytes=$((dependency_bytes + size))
       done <<< "$trees"
+      fi
       ;;
     *) echo 'FATAL: VERIFY_TAURI_DEPENDENCY_SNAPSHOT_MODE must be hardlink or copy' >&2; return 2 ;;
   esac
@@ -2175,6 +2197,7 @@ verify_operator_source_lock_census() {
 snapshot_verifier_pinned_deps() {
   local snapshot_root="$1" helper_source="$2" pinned_deps_copy="$WORK/pinned-deps.sh"
   local mode="${VERIFY_TAURI_DEPENDENCY_SNAPSHOT_MODE:-hardlink}"
+  [ -z "${PAPERCUSP_DEPENDENCY_GENERATION_ROOT:-}" ] || mode=copy
   if [ "$mode" = copy ]; then
     # The helper resolves dependency-generation.sh relative to BASH_SOURCE.
     # Keep that layout inside the frozen source, never load a shared mutable
@@ -2210,6 +2233,13 @@ snapshot_verifier_pinned_deps() {
     # here, before the verifier spends time on native setup and acceptance.
     # Keep prewarm and materialization in one admitted heavy operation.
     if [ "$snapshot_command" = "snapshot-generation-locked" ]; then
+      if [ -n "${PAPERCUSP_DEPENDENCY_GENERATION_ROOT:-}" ]; then
+        # Explicit immutable stores are consumption-only. Never prewarm through
+        # the canonical install reader or publish missing inputs on this route.
+        bash "$snapshot_root/scripts/pc-heavy.sh" -- bash "$pinned_deps_copy" \
+          snapshot-generation-locked "$REPO_DIR" "$snapshot_root" "$mode"
+        return $?
+      fi
       local generation_script="$snapshot_root/apps/operator/bin/release/dependency-generation.sh"
       [ -f "$generation_script" ] || {
         echo "FATAL: frozen verifier source is missing dependency-generation.sh: $generation_script" >&2
@@ -3451,6 +3481,8 @@ write_boot_only_env_script() {
         printf 'export HARNESS_ADMIN_DATABASE_URL=%q\n' "$ISOLATED_ADMIN_URL"
         printf 'export HARNESS_DATABASE_URL=%q\n' "$ISOLATED_APP_URL"
         printf 'export PAPERCUSP_PG_PORT=%q\n' "$ISOLATED_PG_PORT"
+        printf 'export PAPERCUSP_USE_EMBEDDED_PG=%q\n' 0
+        printf 'export PAPERCUSP_PG_DATA_DIR=%q\n' "$ISOLATED_PG_DATA_DIR"
         printf 'export PAPERCUSP_SKIP_PG_DISCOVERY=1\n'
         printf 'export PAPERCUSP_VERIFY_TAURI_ISOLATED=1\n'
       fi
@@ -4556,6 +4588,9 @@ PGWATCHDOG
   # PAPERCUSP_HOME does not scope the host-wide PTY discovery default. Without
   # its dedicated pin, isolated owner-question replies can wake the live caller.
   ISOLATED_ENV_LINE="GH_CONFIG_DIR=\"$ISOLATED_GH_CONFIG_DIR\" PAPERCUSP_OPERATOR_BASE=\"$(verify_tauri_dev_url "$DEV_PORT")\" PAPERCUSP_OPERATOR_URL=\"$(verify_tauri_dev_url "$DEV_PORT")\" PAPERCUSP_HOME=\"$ISOLATED_HOME\" PAPERCUSP_SU_CODEX_HOMES_DIR=\"$ISOLATED_CODEX_HOMES_DIR\" PAPERCUSP_PSU_PTY_DIR=\"$ISOLATED_HOME/psu-pty\" PAPERCUSP_WORKSPACE=\"$ISOLATED_WORKSPACE\" PAPERCUSP_WORKSPACE_ID=\"$ISOLATED_WORKSPACE\" PAPERCUSP_WORKSPACES_ROOT=\"$ISOLATED_WORKSPACES_ROOT\" HARNESS_ADMIN_DATABASE_URL=\"$ISOLATED_ADMIN_URL\" HARNESS_DATABASE_URL=\"$ISOLATED_APP_URL\" PAPERCUSP_PG_PORT=\"$ISOLATED_PG_PORT\" PAPERCUSP_SKIP_PG_DISCOVERY=1 PAPERCUSP_VERIFY_TAURI_ISOLATED=1 XDG_DATA_HOME=\"$ISOLATED_WEBVIEW_DATA\" XDG_CACHE_HOME=\"$ISOLATED_WEBVIEW_CACHE\" XDG_CONFIG_HOME=\"$ISOLATED_WEBVIEW_CONFIG\""
+  # serve.ts manages embedded PG unless the child explicitly selects external
+  # PG; pin both controls so a hostile inherited parent data dir cannot leak in.
+  ISOLATED_ENV_LINE+=" PAPERCUSP_USE_EMBEDDED_PG=0 PAPERCUSP_PG_DATA_DIR=\"$ISOLATED_PG_DATA_DIR\""
   # The disposable PG cluster has no data in common with the host backup.
   # Keep the guard, with a coordination namespace private to this run.
   ISOLATED_ENV_LINE+=" KOPIA_BACKUP_LOCK_PATH=\"$WORK/backup-guard/kopia.lock\" KOPIA_BACKUP_STATE_DIR=\"$WORK/backup-guard/state\""
@@ -5005,8 +5040,10 @@ if [ "$ISOLATED_DB" = "1" ]; then
      ! grep -Fxq "PAPERCUSP_OPERATOR_URL=$(verify_tauri_dev_url "$DEV_PORT")" <<<"$SIDECAR_ENVIRON" ||
      ! grep -Fxq "PAPERCUSP_WORKSPACES_ROOT=$ISOLATED_WORKSPACES_ROOT" <<<"$SIDECAR_ENVIRON" ||
      ! grep -Fxq "PAPERCUSP_PSU_PTY_DIR=$ISOLATED_HOME/psu-pty" <<<"$SIDECAR_ENVIRON" ||
+     ! grep -Fxq "PAPERCUSP_USE_EMBEDDED_PG=0" <<<"$SIDECAR_ENVIRON" ||
+     ! grep -Fxq "PAPERCUSP_PG_DATA_DIR=$ISOLATED_PG_DATA_DIR" <<<"$SIDECAR_ENVIRON" ||
      ! grep -Fxq "PAPERCUSP_SU_CODEX_HOMES_DIR=$ISOLATED_CODEX_HOMES_DIR" <<<"$SIDECAR_ENVIRON"; then
-    echo "FATAL: isolated sidecar lost its workspace, private registry, PTY discovery or owned API pin; refusing to verify another workspace." >&2
+    echo "FATAL: isolated sidecar lost its workspace, database boundary, private registry, PTY discovery or owned API pin; refusing to verify another workspace." >&2
     exit 1
   fi
   SIDECAR_ADMIN_URL="$(sed -n 's/^HARNESS_ADMIN_DATABASE_URL=//p' <<<"$SIDECAR_ENVIRON")"

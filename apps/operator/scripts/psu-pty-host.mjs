@@ -13048,6 +13048,7 @@ export function hostThroughPty(o) {
         ? injectStartedAt + Math.max(budgetMs, Number(codexStartingHoldCeilingMs))
         : 0;
     let codexStartingHeldAt = 0;
+    let codexStartingHoldEndReported = false;
     const holdForCodexStartingFooter = () => {
       if (
         codexStartingHeldAt > 0 ||
@@ -13071,6 +13072,28 @@ export function hostThroughPty(o) {
       });
       return true;
     };
+    const reportCodexStartingHoldEnd = () => {
+      const frameObserved = startupReadinessProven();
+      if (codexStartingHeldAt <= 0 || codexStartingHoldEndReported) return frameObserved;
+      codexStartingHoldEndReported = true;
+      appendHostEvent(ownerId, 'kickoff-codex-frame-hold-ended', {
+        label,
+        outcome: frameObserved
+          ? 'frame-observed'
+          : hostCleanedUp
+            ? 'host-ended'
+            : freshChildWasInterrupted()
+              ? 'owner-input'
+              : codexStartupExplicitlyStarting()
+                ? 'ceiling-still-starting'
+                : 'footer-left-starting',
+        heldMs: Math.max(0, Date.now() - codexStartingHeldAt),
+      });
+      // A write-phase hold needs the same fresh, ceiling-bounded delivery
+      // budget as a hold during initial readiness.
+      if (frameObserved) deadline = Math.min(holdCeilingAt, Date.now() + budgetMs);
+      return frameObserved;
+    };
     // Model setup can repaint Starting after a Ready frame, including after
     // the short marker has echoed. Keep that staged prefix and wait under the
     // existing child/deadline gates instead of dropping or pasting it again.
@@ -13088,6 +13111,7 @@ export function hostThroughPty(o) {
       ) {
         await new Promise((resolve) => setTimeout(resolve, Math.min(25, Math.max(1, deadline - Date.now()))));
       }
+      reportCodexStartingHoldEnd();
       if (child !== injectChild) return 'superseded';
       if (hostCleanedUp || shuttingDown) return 'host-ended';
       if (freshChildWasInterrupted()) return 'fresh-child-owner-input';
@@ -13118,24 +13142,10 @@ export function hostThroughPty(o) {
         await new Promise((r) => setTimeout(r, Math.min(25, Math.max(1, deadline - Date.now()))));
       }
       if (codexStartingHeldAt > 0) {
-        const frameObserved = startupReadinessProven();
-        appendHostEvent(ownerId, 'kickoff-codex-frame-hold-ended', {
-          label,
-          outcome: frameObserved
-            ? 'frame-observed'
-            : hostCleanedUp
-              ? 'host-ended'
-              : freshChildWasInterrupted()
-              ? 'owner-input'
-              : codexStartupExplicitlyStarting()
-                ? 'ceiling-still-starting'
-                : 'footer-left-starting',
-          heldMs: Math.max(0, Date.now() - codexStartingHeldAt),
-        });
+        const frameObserved = reportCodexStartingHoldEnd();
         // Released by the frame: give delivery a fresh ordinary budget, never
         // past the ceiling. Every other outcome drops below as before.
-        if (frameObserved) deadline = Math.min(holdCeilingAt, Date.now() + budgetMs);
-        else if (hostCleanedUp) return { delivered: false, reason: 'host-ended', attempts };
+        if (!frameObserved && hostCleanedUp) return { delivered: false, reason: 'host-ended', attempts };
       }
       // The inner delivery loop below owns the common drop/diagnostic path. Do
       // not return or break from this outer try block when the recovery machine

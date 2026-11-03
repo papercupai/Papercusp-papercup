@@ -153,6 +153,22 @@ export const ALLOW_COUNTS = new Map([
  */
 export const STANDALONE_ENTRY_EXEMPTIONS = new Map([
   [
+    'apps/operator/bin/release/dependency-generation-verifier.mjs|file-url-to-path',
+    {
+      count: 1,
+      reason:
+        'Executed by bare Node from the pinned-deps shell before dependency materialization; its producer/consumer closure checks cannot depend on installed operator-core or be inlined as a sidecar entry.',
+    },
+  ],
+  [
+    'scripts/lib/verify-tauri-deadline.mjs|file-url-to-path',
+    {
+      count: 1,
+      reason:
+        'Copied verbatim into the frozen native verifier and executed by bare Node before dependency materialization; importing the installed TypeScript operator-core helper would prevent admission before node_modules exists.',
+    },
+  ],
+  [
     'apps/operator/scripts/hooks/cc/posttooluse-launch-prose-budget-nudge.mjs|file-url-to-path',
     {
       count: 1,

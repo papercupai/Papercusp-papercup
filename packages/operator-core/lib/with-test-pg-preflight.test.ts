@@ -367,7 +367,7 @@ describe('PostgreSQL bootstrap import boundary', () => {
 });
 
 describe('private API bundle durable evidence preflight', () => {
-  it.each(['PAPERCUSP_TEST_RUN_RECEIPT_FILE', 'PC_EXECUTED_SOURCE_MAP_RESULT'])(
+  it.each(['PAPERCUSP_TEST_RUN_RECEIPT_FILE', 'PC_EXECUTED_SOURCE_MAP_RESULT', 'PC_EXECUTED_SOURCE_MAP_OUT'])(
     'refuses %s without a ledger sink before compiling the API', receiptKey => {
       const directory = mkdtempSync(join(tmpdir(), 'private-api-ledger-'));
       const marker = join(directory, 'compiled');

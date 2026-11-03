@@ -766,6 +766,40 @@ describe('evaluatePlanSpecQuality', () => {
   });
 
   it.each([
+    "A goal scorecard criterion the grader has not yet assessed is recorded with unknownReason 'not-assessed', and rubrics:trend counts it separately from 'instrument-unavailable'.",
+    "The public response is returned with reviewState 'pending'.",
+    'An assessment is stored with resultCode "not-assessed".',
+  ])('recognizes public recorded field values in behavior and falsifiers: %s', (behavior) => {
+    const result = evaluatePlanSpecQuality({
+      planSlug: 'quality-plan', harnessSlug: 'papercusp', planItemIds: ['P-001'],
+      classRef: 'plan-class-feature-ship',
+      clauses: [clause({ behavior, falsifier: { observation: behavior } }), clause({
+        specId: 'AUTO-BAR-R-1-P-001', sourceValId: null, behavior,
+        falsifier: { observation: behavior },
+        sourceBar: { barKey: 'R-1', barHash: 'a'.repeat(64), barSetHash: 'b'.repeat(64),
+          rubricSlug: 'acceptance-quality-plan', rubricRevision: 1, evidencePlane: 'tree' },
+      })],
+    });
+    expect(result.ratings['implementation-independence'].rating).toBe('pass');
+  });
+
+  it.each([
+    "A scorecard is recorded with unknownReason before it is returned.",
+    "A scorecard is recorded with unknownReason 'not-assessed'; buildPrivateIndex evaluates it.",
+    "A scorecard is recorded with unknownReason 'not-assessed'; unknownReason evaluates it.",
+    "The private field unknownReason is recorded with reviewState 'pending'.",
+    "The helper is recorded with buildPrivateIndex 'pending'.",
+    "A completed tenure has no card, or bare setInterval drives it.",
+  ])('keeps private machinery checked beside recorded values: %s', (observation) => {
+    const result = evaluatePlanSpecQuality({
+      planSlug: 'quality-plan', harnessSlug: 'papercusp', planItemIds: ['P-001'],
+      clauses: [clause({ behavior: 'A goal scorecard preserves the recorded uncertainty reason.',
+        falsifier: { observation } })], classRef: 'plan-class-feature-ship',
+    });
+    expect(result.ratings['implementation-independence'].rating).toBe('fail');
+  });
+
+  it.each([
     'Review results include awaitKey; runSyncBatchDeltaCheck evaluates the batch.',
     'The await catalog lists bindingId params; bindingId evaluates the batch.',
     'A review fires plan:posted:<bindingId>; the private field bindingId holds its state.',

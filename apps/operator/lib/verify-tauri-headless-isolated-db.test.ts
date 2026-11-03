@@ -198,33 +198,35 @@ describe('EI-10387 — verify-tauri-headless can genuinely isolate the database'
     } finally { rmSync(work, { recursive: true, force: true }); }
   });
 
-  it('creates a private registered workspace and overrides hostile inherited identity at the real launch boundary', () => {
+  it('creates a private registered workspace and overrides hostile inherited identity and PostgreSQL settings at the real launch boundary', () => {
     const work = mkdtempSync(join(tmpdir(), 'dream-workspace-isolation-'));
     try {
       const helper = src.match(/prepare_isolated_workspace\(\) \{\n[\s\S]*?\n\}\n/)?.[0];
       // Match by content, not by which variable happens to come first: the line
       // grew a leading GH_CONFIG_DIR= (isolated gh auth) and may grow more.
       const envLine = src.split('\n').find((line) => line.trim().startsWith('ISOLATED_ENV_LINE="') && line.includes('PAPERCUSP_HOME='));
+      const pgEnvLine = src.split('\n').find((line) => line.trim().startsWith('ISOLATED_ENV_LINE+=') && line.includes('PAPERCUSP_USE_EMBEDDED_PG=')) ?? '';
       // The env line builds its operator URL through the script's own helper.
       const devUrlHelper = src.match(/verify_tauri_dev_url\(\) \{\n[\s\S]*?\n\}\n/)?.[0];
       expect(helper).toBeTruthy();
       expect(envLine).toBeTruthy();
+      expect(pgEnvLine).toBeTruthy();
       expect(devUrlHelper).toBeTruthy();
       const probe = join(work, 'probe.cjs');
-      writeFileSync(probe, `console.log(JSON.stringify({id:process.env.PAPERCUSP_WORKSPACE_ID,legacy:process.env.PAPERCUSP_WORKSPACE,root:process.env.PAPERCUSP_WORKSPACES_ROOT,codexHomes:process.env.PAPERCUSP_SU_CODEX_HOMES_DIR,ghConfig:process.env.GH_CONFIG_DIR,operatorBase:process.env.PAPERCUSP_OPERATOR_BASE,operatorUrl:process.env.PAPERCUSP_OPERATOR_URL}));`);
+      writeFileSync(probe, `console.log(JSON.stringify({id:process.env.PAPERCUSP_WORKSPACE_ID,legacy:process.env.PAPERCUSP_WORKSPACE,root:process.env.PAPERCUSP_WORKSPACES_ROOT,codexHomes:process.env.PAPERCUSP_SU_CODEX_HOMES_DIR,ghConfig:process.env.GH_CONFIG_DIR,operatorBase:process.env.PAPERCUSP_OPERATOR_BASE,operatorUrl:process.env.PAPERCUSP_OPERATOR_URL,embeddedPg:process.env.PAPERCUSP_USE_EMBEDDED_PG,pgDataDir:process.env.PAPERCUSP_PG_DATA_DIR}));`);
       const script = [
         'set -eu', helper, 'VERIFY_TAURI_DEV_HOST=127.0.0.1', devUrlHelper,
         'WORK="$1"; ISOLATED_WORKSPACE=verify-tauri-isolated-test; ISOLATED_HOME="$WORK/home"; ISOLATED_CODEX_HOMES_DIR="$WORK/su-codex-homes"; ISOLATED_GH_CONFIG_DIR="$WORK/gh-config"',
-        'ISOLATED_ADMIN_URL=test-admin; ISOLATED_APP_URL=test-app; ISOLATED_PG_PORT=1234; DEV_PORT=33799',
+        'ISOLATED_ADMIN_URL=test-admin; ISOLATED_APP_URL=test-app; ISOLATED_PG_PORT=1234; ISOLATED_PG_DATA_DIR="$WORK/isolated-pgdata"; DEV_PORT=33799',
         'ISOLATED_WEBVIEW_DATA="$WORK/data"; ISOLATED_WEBVIEW_CACHE="$WORK/cache"; ISOLATED_WEBVIEW_CONFIG="$WORK/config"',
-        'prepare_isolated_workspace', envLine,
+        'prepare_isolated_workspace', envLine, pgEnvLine,
         'eval "$ISOLATED_ENV_LINE node \\"$WORK/probe.cjs\\""',
       ].join('\n');
       const result = spawnSync('bash', ['-c', script, 'probe', work], {
-        encoding: 'utf8', env: { ...hermeticSpawnEnv(), PAPERCUSP_WORKSPACE_ID: 'live-owner', PAPERCUSP_WORKSPACE: 'live-owner', PAPERCUSP_WORKSPACES_ROOT: '/do-not-touch-live-registry', PAPERCUSP_OPERATOR_BASE: 'http://127.0.0.1:3070', PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:3070' },
+        encoding: 'utf8', env: { ...hermeticSpawnEnv(), PAPERCUSP_WORKSPACE_ID: 'live-owner', PAPERCUSP_WORKSPACE: 'live-owner', PAPERCUSP_WORKSPACES_ROOT: '/do-not-touch-live-registry', PAPERCUSP_OPERATOR_BASE: 'http://127.0.0.1:3070', PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:3070', PAPERCUSP_USE_EMBEDDED_PG: '1', PAPERCUSP_PG_DATA_DIR: '/parent/embedded-pg-data' },
       });
       expect(result.status, result.stderr).toBe(0);
-      expect(JSON.parse(result.stdout)).toEqual({ id: 'verify-tauri-isolated-test', legacy: 'verify-tauri-isolated-test', root: join(work, 'workspaces'), codexHomes: join(work, 'su-codex-homes'), ghConfig: join(work, 'gh-config'), operatorBase: 'http://127.0.0.1:33799', operatorUrl: 'http://127.0.0.1:33799' });
+      expect(JSON.parse(result.stdout)).toEqual({ id: 'verify-tauri-isolated-test', legacy: 'verify-tauri-isolated-test', root: join(work, 'workspaces'), codexHomes: join(work, 'su-codex-homes'), ghConfig: join(work, 'gh-config'), operatorBase: 'http://127.0.0.1:33799', operatorUrl: 'http://127.0.0.1:33799', embeddedPg: '0', pgDataDir: join(work, 'isolated-pgdata') });
       const registry = JSON.parse(readFileSync(join(work, 'workspaces/registry.json'), 'utf8'));
       expect(registry.current).toBe('verify-tauri-isolated-test');
       expect(registry.workspaces.map((row: { id: string }) => row.id)).toEqual(['verify-tauri-isolated-test']);
@@ -239,12 +241,16 @@ describe('EI-10387 — verify-tauri-headless can genuinely isolate the database'
     expect(src).toContain('grep -Fxq "PAPERCUSP_OPERATOR_BASE=$(verify_tauri_dev_url "$DEV_PORT")" <<<"$SIDECAR_ENVIRON"');
     expect(src).toContain('grep -Fxq "PAPERCUSP_OPERATOR_URL=$(verify_tauri_dev_url "$DEV_PORT")" <<<"$SIDECAR_ENVIRON"');
     expect(src).toContain('grep -Fxq "PAPERCUSP_SU_CODEX_HOMES_DIR=$ISOLATED_CODEX_HOMES_DIR" <<<"$SIDECAR_ENVIRON"');
+    expect(src).toContain('grep -Fxq "PAPERCUSP_USE_EMBEDDED_PG=0" <<<"$SIDECAR_ENVIRON"');
+    expect(src).toContain('grep -Fxq "PAPERCUSP_PG_DATA_DIR=$ISOLATED_PG_DATA_DIR" <<<"$SIDECAR_ENVIRON"');
     expect(src).toContain('export PAPERCUSP_WORKSPACE_ID="$ISOLATED_WORKSPACE"');
     expect(src).toContain('export PAPERCUSP_WORKSPACES_ROOT="$ISOLATED_WORKSPACES_ROOT"');
     expect(src).toContain('export PAPERCUSP_SU_CODEX_HOMES_DIR="$ISOLATED_CODEX_HOMES_DIR"');
     expect(src).toContain("printf 'export PAPERCUSP_WORKSPACE_ID=%q\\n'");
     expect(src).toContain("printf 'export PAPERCUSP_WORKSPACES_ROOT=%q\\n'");
     expect(src).toContain("printf 'export PAPERCUSP_SU_CODEX_HOMES_DIR=%q\\n'");
+    expect(src).toContain("printf 'export PAPERCUSP_USE_EMBEDDED_PG=%q\\n' 0");
+    expect(src).toContain("printf 'export PAPERCUSP_PG_DATA_DIR=%q\\n' \"$ISOLATED_PG_DATA_DIR\"");
     expect(src).toContain('grep -Fxq "PAPERCUSP_PSU_PTY_DIR=$ISOLATED_HOME/psu-pty" <<<"$SIDECAR_ENVIRON"');
     expect(src).toContain('export PAPERCUSP_PSU_PTY_DIR="$ISOLATED_HOME/psu-pty"');
     expect(src).toContain("printf 'export PAPERCUSP_PSU_PTY_DIR=%q\\n' \"$ISOLATED_HOME/psu-pty\"");

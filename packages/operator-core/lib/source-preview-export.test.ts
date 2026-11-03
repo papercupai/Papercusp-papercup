@@ -78,6 +78,7 @@ import { measureBootOperatorArtifact } from './release/operator-artifact';
 import { cleanupEndedVerifierDirectories, verifierResourceInventory, verifierSourceFiles, writeVerifierTaskReceipt } from './verifier-source';
 import { readProcessIdentity } from './process-identity';
 import { bindFrozenDependencyGeneration } from './dependency-generation-proof';
+import { buildWorkspace } from '../../../apps/operator/bin/release/dependency-generation-verifier.mjs';
 import { closeTask } from './task-manager/store';
 import type { TaskRow } from './task-manager/types';
 
@@ -306,25 +307,24 @@ describe('immutable generation verifier snapshots', () => {
     'materializes leased independent dependencies and refuses incomplete custody (%s)', async defect => {
       const root = mkdtempSync(join(tmpdir(), 'verifier-generation-case-'));
       const donor = join(root, 'donor'), dest = join(root, 'invoked'), store = join(root, 'generations');
-      // EI-26811538560256341: a new caller can be committed before its desktop
-      // gitlink advances. Reading the mutable desktop checkout hid that broken
-      // publication contract. Exercise the helper the parent actually records.
-      const parent = git(SOURCE_ROOT, ['rev-parse', 'HEAD']).trim();
-      const desktop = git(SOURCE_ROOT, ['rev-parse', `${parent}:papercusp-desktop`]).trim();
+      // Commit current tooling in an isolated fixture so the source loader
+      // measures this implementation without substituting older helper bytes.
       const helperPath = 'papercusp-desktop/bin/lib/pinned-deps.sh';
       const helper = join(root, helperPath);
-      write(root, helperPath, git(join(SOURCE_ROOT, 'papercusp-desktop'),
-        ['show', `${desktop}:bin/lib/pinned-deps.sh`]));
+      write(root, helperPath, readFileSync(join(SOURCE_ROOT, helperPath), 'utf8'));
       // The generation implementation remains this test's subject; preserve its
       // relative support files beside the separately frozen helper.
       cpSync(join(SOURCE_ROOT, 'apps/operator/bin/release'), join(root, 'apps/operator/bin/release'),
         { recursive: true });
+      git(root, ['init', '-q']);
+      git(root, ['add', '.']);
+      git(root, ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'current generation tooling']);
       const generation = join(root, 'apps/operator/bin/release/dependency-generation.sh');
       const env = { ...childEnv(), PAPERCUSP_DEPENDENCY_GENERATION_ROOT: store,
         DEPENDENCY_GENERATION_COPY_LOCK_FILE: join(root, 'copy.lock'),
         DEPENDENCY_GENERATION_ALLOW_HARDLINK: '1' };
-      const shell = (file: string, args: string[]) => spawnSync('bash', [file, ...args],
-        { env, encoding: 'utf8', timeout: 60_000 });
+      const shell = (file: string, args: string[], extra = {}) => spawnSync('bash', [file, ...args],
+        { env: { ...env, ...extra }, encoding: 'utf8', timeout: 60_000 });
       try {
         for (const path of ['package.json', 'package-lock.json']) {
           const body = path === 'package.json' ? '{"name":"fixture","private":true}'
@@ -346,37 +346,22 @@ describe('immutable generation verifier snapshots', () => {
         }
         const pkg = '{"name":"cli","bin":{"probe":"dist/run.js"}}';
         write(donor, 'packages/cli/package.json', pkg); write(dest, 'packages/cli/package.json', pkg);
-        write(donor, 'packages/cli/dist/run.js', 'console.log("workspace executable");\n');
+        write(donor, 'packages/cli/src/run.js', 'console.log("workspace executable");\n');
+        write(dest, 'packages/cli/src/run.js', 'console.log("workspace executable");\n');
         write(donor, 'node_modules/.bin/seed', '');
         symlinkSync('../../packages/cli/dist/run.js', join(donor, 'node_modules/.bin/probe'));
         write(dest, '.verifier-source.json', JSON.stringify({ files: [{ path: 'packages/cli/package.json' }] }));
-        let sourceCommit = '';
-        if (defect === 'verifier-binding') {
-          cpSync(join(root, 'apps/operator/bin/release'), join(dest, 'apps/operator/bin/release'),
-            { recursive: true });
-          write(dest, '.gitignore', 'node_modules/\n.verifier-source.json\n');
-          git(dest, ['init', '-q']);
-          git(dest, ['add', 'package.json', 'package-lock.json', 'packages/cli/package.json', '.gitignore']);
-          git(dest, ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'frozen input fixture']);
-          sourceCommit = git(dest, ['rev-parse', 'HEAD']).trim();
+        for (const tree of [donor, dest]) {
+          cpSync(join(root, 'apps/operator/bin/release'), join(tree, 'apps/operator/bin/release'), { recursive: true });
+          write(tree, '.gitignore', 'node_modules/\ndist/\n.verifier-source.json\n');
+          write(tree, 'scripts/npm-install-safe.mjs', 'process.stderr.write("DONOR_READ_FORBIDDEN");process.exit(91);');
+          git(tree, ['init', '-q']);
+          git(tree, ['add', '.']);
+          git(tree, ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'frozen input fixture']);
         }
-        // The reader adapter checks that custody is live while the workspace
-        // output child runs, and that materialization released copy capacity.
-        write(donor, 'scripts/npm-install-safe.mjs', `
-import { chmodSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
-import { spawnSync } from 'node:child_process';
-if (!readdirSync(${JSON.stringify(join(store, '.leases'))}).some(p => p.startsWith('selector-'))) process.exit(91);
-if (spawnSync('flock', ['-n', process.env.DEPENDENCY_GENERATION_COPY_LOCK_FILE, 'true']).status !== 0) process.exit(92);
-writeFileSync(${JSON.stringify(join(root, 'reader-entered'))}, 'held');
-if (${JSON.stringify(defect)} === 'changed-publication-after-copy') {
-  const published = readdirSync(${JSON.stringify(store)}).find(p => p.startsWith('v1-'));
-  const marker = ${JSON.stringify(store)} + '/' + published + '/.papercusp-dependency-generation';
-  chmodSync(marker, 0o644);
-  writeFileSync(marker, readFileSync(marker, 'utf8').replace(/^publication_token=.*$/m, 'publication_token=v3:' + '0'.repeat(64)));
-}
-const args = process.argv.slice(process.argv.indexOf('--') + 1);
-process.exit(spawnSync(args[0], args.slice(1), { stdio: 'inherit' }).status ?? 1);
-`);
+        const sourceCommit = git(dest, ['rev-parse', 'HEAD']).trim();
+        buildWorkspace(donor, 'packages/cli', [process.execPath, '-e',
+          'const fs=require("node:fs");fs.mkdirSync("dist");fs.copyFileSync("src/run.js","dist/run.js");']);
         const published = shell(generation, ['--integration', donor, '--generation-root', store]);
         expect(published.status, published.stderr).toBe(0);
         const generationPath = published.stdout.match(/\bpath=([^\n]+)$/m)![1]!;
@@ -387,10 +372,21 @@ process.exit(spawnSync(args[0], args.slice(1), { stdio: 'inherit' }).status ?? 1
           const selector = join(store, '.inputs', input);
           writeFileSync(selector, readFileSync(selector, 'utf8').replace(/^token=.*$/m, 'token=v3:' + '0'.repeat(64)));
         }
-        if (defect === 'missing-output') rmSync(join(donor, 'packages/cli/dist'), { recursive: true });
+        if (defect === 'missing-output') rmSync(join(generationPath, 'tree/packages/cli/dist/run.js'));
+        const extra: Record<string, string> = {};
+        if (defect === 'changed-publication-after-copy') {
+          const bin = join(root, 'fault-bin');
+          write(root, 'fault-bin/cp', '#!/bin/bash\n/bin/cp "$@" || exit $?\n' +
+            'chmod u+w "$TEST_PUBLICATION_MARKER"\n' +
+            "sed -i 's/^publication_token=.*/publication_token=invalid/' \"$TEST_PUBLICATION_MARKER\"\n");
+          chmodSync(join(bin, 'cp'), 0o755);
+          extra.PATH = bin + ':' + env.PATH;
+          extra.TEST_PUBLICATION_MARKER = join(generationPath, '.papercusp-dependency-generation');
+        }
         // A changed mutable install must never become the verifier's dependency.
         write(donor, 'node_modules/pkg/index.js', 'mutable donor changed');
-        const result = shell(helper, ['snapshot-generation-locked', donor, dest, 'copy']);
+        const result = shell(helper, ['snapshot-generation-locked', donor, dest, 'copy'], extra);
+        expect(result.stderr).not.toContain('DONOR_READ_FORBIDDEN');
         const leases = existsSync(join(store, '.leases')) ? readdirSync(join(store, '.leases')) : [];
         expect(leases.filter(p => p.startsWith('selector-'))).toEqual([]);
         expect(spawnSync('flock', ['-n', env.DEPENDENCY_GENERATION_COPY_LOCK_FILE, 'true']).status).toBe(0);
@@ -451,7 +447,7 @@ process.exit(spawnSync(args[0], args.slice(1), { stdio: 'inherit' }).status ?? 1
             const lock = join(dest, 'package-lock.json');
             const lockBytes = readFileSync(lock, 'utf8');
             writeFileSync(lock, '{}');
-            await expect(bindFrozenDependencyGeneration(dest, sourceCommit)).rejects.toThrow(/committed dependency input changed/);
+            await expect(bindFrozenDependencyGeneration(dest, sourceCommit)).rejects.toThrow(/committed dependency input changed|stale-build-input:package-lock.json/);
             await expect(binding.assertUnchanged()).rejects.toThrow(/committed dependency input changed/);
             writeFileSync(lock, lockBytes);
             const nested = join(dest, 'packages/cli/node_modules/nested/package.json');
@@ -3048,7 +3044,7 @@ describe('BG inherited manifest and original source boundaries', () => {
     expect(readFileSync(fixture.entry, 'utf8')).toContain('retained banner');
     expect(JSON.stringify(fixture.record)).toBe(original);
     expect(readFileSync(join(fixture.prepared.root, '.verifier-source.json'))).toEqual(receipt);
-    expect(qualifyBgVerifierOutput(fixture).artifact.sourceBlobs).toEqual(fixture.prepared.acceptedManifest.members);
+    expect((await qualifyBgVerifierOutput(fixture)).artifact.sourceBlobs).toEqual(fixture.prepared.acceptedManifest.members);
   });
 
   it('BG compiler API refuses substituted JavaScript before evaluation even when restored after import', async () => {
@@ -3182,7 +3178,7 @@ describe('BG inherited manifest and original source boundaries', () => {
     expect(receipt.argv).toEqual(fixture.argv);
     expect(receipt.binary.realpath).toBe(fixture.invocation.environment.ESBUILD_BINARY_PATH);
     expect(receipt.consumed.map((row: { path: string }) => row.path)).toContain('packages/core/index.ts');
-    expect(qualifyBgVerifierOutput(fixture).artifact.sourceBlobs).toEqual(fixture.prepared.acceptedManifest.members);
+    expect((await qualifyBgVerifierOutput(fixture)).artifact.sourceBlobs).toEqual(fixture.prepared.acceptedManifest.members);
   });
 
   async function maintainedCompilerContexts() {
@@ -3905,7 +3901,7 @@ describe('BG inherited manifest and original source boundaries', () => {
     const { prepared, invocation, record, entry } = await outputCandidate();
     const original = readFileSync(join(prepared.root, '.verifier-source.json'));
     const originalRecord = JSON.stringify(record);
-    const output = qualifyBgVerifierOutput({ record, invocation, entry });
+    const output = await qualifyBgVerifierOutput({ record, invocation, entry });
     expect(output.artifact.sourceBlobs).toEqual(prepared.acceptedManifest.members);
     expect(output.entry.sha256).toBe(digest(readFileSync(entry)));
     expect(output.manifest.sha256).toBe(digest(readFileSync(output.artifact.evidenceRef)));
@@ -3919,7 +3915,7 @@ describe('BG inherited manifest and original source boundaries', () => {
   it('refuses zero-exit compiler output with UNKNOWN artifact provenance', async () => {
     const { invocation, record, entry } = await outputCandidate();
     rmSync(entry + '.meta.json');
-    expect(() => qualifyBgVerifierOutput({ record, invocation, entry })).toThrow(/ENOENT/);
+    await expect(qualifyBgVerifierOutput({ record, invocation, entry })).rejects.toThrow(/ENOENT/);
     expect(readdirSync(dirname(entry)).some(path => path.includes('.artifact-'))).toBe(false);
   });
 
@@ -3930,14 +3926,14 @@ describe('BG inherited manifest and original source boundaries', () => {
     else meta.inputs['libs/papercusp/package.json'] = { bytes: 1 };
     writeFileSync(entry + '.meta.json', JSON.stringify(meta));
     const before = JSON.stringify(record);
-    expect(() => qualifyBgVerifierOutput({ record, invocation, entry })).toThrow('BG output accepted member census mismatch');
+    await expect(qualifyBgVerifierOutput({ record, invocation, entry })).rejects.toThrow('BG output accepted member census mismatch');
     expect(JSON.stringify(record)).toBe(before);
   });
 
   it.each(['bundle', 'manifest', 'build-record', 'environment', 'dependency'] as const)(
     'refuses %s replacement after retaining the original output record', async defect => {
       const { prepared, invocation, record, entry } = await outputCandidate();
-      const output = qualifyBgVerifierOutput({ record, invocation, entry });
+      const output = await qualifyBgVerifierOutput({ record, invocation, entry });
       const outputBytes = JSON.stringify(output), originalRecord = JSON.stringify(record);
       let supplied = record;
       if (defect === 'bundle') writeFileSync(entry, 'export default 99;');

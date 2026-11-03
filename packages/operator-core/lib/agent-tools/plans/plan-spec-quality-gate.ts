@@ -395,6 +395,10 @@ export async function evaluatePlanSpecQualityGate(
       rubricRef: SPEC_QUALITY_RUBRIC_REF,
       subjectRef: evaluation.scorecardDraft.subject.ref,
       limit: 20,
+      // This gate compares the live clause/rubric identity and settled audit.
+      // Host-generation telemetry is not part of that contract, and measuring
+      // it here adds a systemd lookup to every implementation-authority check.
+      includeGeneration: false,
     });
     const matching = cards.find((card) => scorecardMatches(card, evaluation));
     if (matching) {

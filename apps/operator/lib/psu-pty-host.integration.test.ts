@@ -4194,7 +4194,11 @@ describe('carry completion follows native delivery and reanchor (WI-10004791)', 
       await done.catch(() => undefined);
       rmSync(root, { recursive: true, force: true });
     }
-  }, 20_000);
+  // The two sequential phase waits allow up to 8s for the initial child output
+  // and 9s for carry completion, followed by real-PTY shutdown. A 20s outer
+  // deadline could preempt that lifecycle in a full-file run; the bounded phase
+  // waits above still report a missing boot or carry directly.
+  }, 45_000);
 });
 
 describe('P-020 carry-respawn drill correlation', () => {

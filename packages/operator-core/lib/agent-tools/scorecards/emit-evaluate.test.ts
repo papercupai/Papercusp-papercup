@@ -224,6 +224,17 @@ const RATINGS = {
   'crit-b': { rating: 'pass', evidence: 'observed B working' },
 };
 
+function scorecardFixture(fields: Partial<ScorecardRow>): ScorecardRow {
+  return { issueId: 'EI-fixture', createdAt: '2026-11-02T00:00:00Z', createdBy: 'su-grader',
+    rubricRef: RUBRIC.rubricId, ratings: RATINGS, nKeys: 2, missingKeys: [], extraKeys: [],
+    rubricResolved: true, synthesized: false, score10: 10, linkedItems: [], ...fields };
+}
+
+function currentRubricFixture(): NonNullable<ScorecardRow['rubricCurrentness']> {
+  return { state: 'current', reason: 'current', recordedRevision: 7, currentRevision: 7,
+    recordedCriteriaHash: 'a'.repeat(64), currentCriteriaHash: 'a'.repeat(64) };
+}
+
 // EI-22177729599840121: a valid meta-acceptance-rubric attestation for the CURRENT
 // rubric revision (7, matching getRubricPlanRevisionM's default) — satisfies the
 // vet-before-grade check emitScorecard now runs for every non-implementer
@@ -377,9 +388,9 @@ describe('diagnostic scorecard baseline', () => {
   });
 
   it('corrects an exact diagnostic without losing the prior immutable observation', async () => {
-    const prior = { issueId: 'EI-baseline', createdBy: 'su-implementer', purpose: 'diagnostic',
+    const prior = scorecardFixture({ issueId: 'EI-baseline', createdBy: 'su-implementer', purpose: 'diagnostic',
       rubricRef: rubric.rubricId, rubricRevision: 7, criteriaHash: rubric.criteriaHash,
-      barSetHash: rubric.barSetHash, subject, ratings: RATINGS } as ScorecardRow;
+      barSetHash: rubric.barSetHash, subject, ratings: RATINGS });
     listM.mockResolvedValue([prior]);
     const result = await emitScorecard({ rubricRef: rubric.rubricId, purpose: 'diagnostic', subject,
       ratings: RATINGS, supersedes: prior.issueId }, { createdBy: 'su-implementer' });
@@ -391,9 +402,9 @@ describe('diagnostic scorecard baseline', () => {
   });
 
   it('refuses a diagnostic correction of another author or window', async () => {
-    listM.mockResolvedValue([{ issueId: 'EI-baseline', createdBy: 'su-other', purpose: 'diagnostic',
+    listM.mockResolvedValue([scorecardFixture({ issueId: 'EI-baseline', createdBy: 'su-other', purpose: 'diagnostic',
       rubricRef: rubric.rubricId, rubricRevision: 7, criteriaHash: rubric.criteriaHash,
-      barSetHash: rubric.barSetHash, subject, ratings: RATINGS } as ScorecardRow]);
+      barSetHash: rubric.barSetHash, subject, ratings: RATINGS })]);
     expect(await emitScorecard({ rubricRef: rubric.rubricId, purpose: 'diagnostic', subject,
       ratings: RATINGS, supersedes: 'EI-baseline' }, { createdBy: 'su-implementer' }))
       .toMatchObject({ ok: false, code: 'diagnostic_correction_invalid' });
@@ -403,12 +414,12 @@ describe('diagnostic scorecard baseline', () => {
   it.each(['comparison-rubric-mismatch', 'comparison-scope-mismatch', 'comparison-window-mismatch'])(
     'does not compute a delta across %s', async scenario => {
       readAndEvaluateAcceptanceBarLifecycleM.mockResolvedValue({ satisfied: true });
-      const candidate = { issueId: 'EI-old', rubricRef: rubric.rubricId, rubricRevision: 7,
+      const candidate = scorecardFixture({ issueId: 'EI-old', rubricRef: rubric.rubricId, rubricRevision: 7,
         criteriaHash: rubric.criteriaHash, barSetHash: rubric.barSetHash, subject, ratings: RATINGS,
         ...(scenario === 'comparison-rubric-mismatch' ? { barSetHash: 'c'.repeat(64) } : {}),
         ...(scenario === 'comparison-scope-mismatch' ? { sourceHive: 'other-hive' } : {}),
         ...(scenario === 'comparison-window-mismatch' ? { subject: { ...subject, windowEnd: '2026-11-04T00:00:00Z' } } : {}),
-      } as ScorecardRow;
+      });
       listM.mockResolvedValue([candidate]);
       const result = await evaluateScorecard({ rubricRef: rubric.rubricId, subject, ratings: RATINGS });
       expect(result).toMatchObject({ ok: true, latest: null, comparison: { status: 'incompatible',
@@ -423,10 +434,10 @@ describe('emitScorecard', () => {
     const subject = { kind: 'work-item' as const, ref: 'WI-exact', windowStart: '2026-11-01T00:00:00Z' };
     const rubric = { ...RUBRIC, revision: 7, criteriaHash: 'a'.repeat(64) };
     getRubricM.mockResolvedValue(rubric);
-    const baseline = { issueId: 'EI-baseline', purpose: 'diagnostic', rubricRef: rubric.rubricId,
+    const baseline = scorecardFixture({ issueId: 'EI-baseline', purpose: 'diagnostic', rubricRef: rubric.rubricId,
       rubricRevision: 7, criteriaHash: rubric.criteriaHash, barSetHash: null, subject,
       ratings: RATINGS, missingKeys: [], extraKeys: [], rubricResolved: true,
-      rubricCurrentness: { state: 'current' } } as ScorecardRow;
+      rubricCurrentness: currentRubricFixture() });
     listM.mockImplementation(async filter => filter?.issueIds ? [baseline] : []);
     const result = await emitScorecard({ rubricRef: rubric.rubricId, subject,
       baselineRef: baseline.issueId, ratings: RATINGS }, { createdBy: 'su-grader' });
@@ -442,14 +453,14 @@ describe('emitScorecard', () => {
     const subject = { kind: 'work-item' as const, ref: 'WI-exact', windowEnd: '2026-11-01T00:00:00Z' };
     const rubric = { ...RUBRIC, revision: 7, criteriaHash: 'a'.repeat(64) };
     getRubricM.mockResolvedValue(rubric);
-    const baseline = { issueId: 'EI-baseline', purpose: 'diagnostic', rubricRef: rubric.rubricId,
+    const baseline = scorecardFixture({ issueId: 'EI-baseline', purpose: 'diagnostic', rubricRef: rubric.rubricId,
       rubricRevision: 7, criteriaHash: rubric.criteriaHash, subject,
       ratings: RATINGS, missingKeys: [], extraKeys: [], rubricResolved: true,
-      rubricCurrentness: { state: 'current' },
+      rubricCurrentness: currentRubricFixture(),
       ...(dimension === 'rubric' ? { barSetHash: 'b'.repeat(64) } : {}),
       ...(dimension === 'scope' ? { sourceHive: 'other-hive' } : {}),
       ...(dimension === 'window' ? { subject: { ...subject, windowEnd: '2026-11-02T00:00:00Z' } } : {}),
-    } as ScorecardRow;
+    });
     listM.mockImplementation(async filter => filter?.issueIds ? [baseline] : []);
     expect(await emitScorecard({ rubricRef: rubric.rubricId, subject,
       baselineRef: baseline.issueId, ratings: RATINGS }, { createdBy: 'su-grader' }))

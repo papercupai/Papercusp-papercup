@@ -42,9 +42,11 @@ import { getRubric as defaultGetRubric, listRubrics as defaultListRubrics } from
 import {
   evaluateScorecardInstrumentContract,
   listScorecards as defaultListScorecards,
+  settledGradingAuditIsCurrent,
   type ScorecardInstrumentContractEvaluation,
   type ScorecardRow,
 } from '@papercusp/operator-core/lib/scorecards';
+import { needsGradingAudit, scorecardAdmissionExclusion } from '@papercusp/operator-core/lib/harness/improvements/observation-types';
 import {
   readRunningGeneration as defaultReadRunningGeneration,
   readBgHostActiveEnterMs as defaultReadBgHostActiveEnterMs,
@@ -177,7 +179,8 @@ export function rubricReleaseComponent(rubricRef: string, opts: RubricComponentO
           evidence: [],
         };
       }
-      const rows: ScorecardRow[] = await listScorecardsFn({ rubricRef, sourceHive: opts.sourceHive, limit: 1 });
+      const rows: ScorecardRow[] = await listScorecardsFn({ rubricRef, sourceHive: opts.sourceHive, limit: 1,
+        finalizedOnly: true, comparableOnly: true });
       const latest = rows[0];
       if (!latest) {
         return { verdict: 'unknown', reason: `no scorecard on record for '${rubricRef}'`, measuredAt: now, evidence: [] };
@@ -190,6 +193,13 @@ export function rubricReleaseComponent(rubricRef: string, opts: RubricComponentO
         ? { sha: latest.gradedGeneration.deployedSha, generation: latest.gradedGeneration.hostStartedAt }
         : null;
       const evidence = [{ ref: latest.issueId, kind: 'scorecard', detail: { sourceHive: latest.sourceHive ?? null } }];
+      const admission = scorecardAdmissionExclusion(latest);
+      const auditRequired = needsGradingAudit({ rubricKind: rubric.kind, rubricRef,
+        provisional: latest.provisional !== undefined });
+      if (admission || !settledGradingAuditIsCurrent(latest, auditRequired)) {
+        return { verdict: 'unknown', reason: `latest scorecard for '${rubricRef}' is not settled evidence (${admission ?? 'independent audit missing, unverified or stale'})`,
+          measuredAt: latest.createdAt, evidence, lineage };
+      }
       // WI-5277: dead evidence can never authorize GO. A scorecard graded against a
       // generation that has since ENDED is exactly as unusable as an incomplete or
       // unratified one, so it reports 'unknown' — blocking a mandatory component instead

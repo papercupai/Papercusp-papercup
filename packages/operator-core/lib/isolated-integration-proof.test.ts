@@ -7,9 +7,39 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, 
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pruneRuns, runHarness } from '@papercusp/verification-harness';
-import { assertIsolatedFileRunBudget, assertIsolatedWorkerReaped, captureIsolatedWorker, isolatedIntegrationDiagnosticArtifacts, isolatedTestFileWorkerOptions, isolatedWorkerOptions, isolatedWorkerFailureDetail, isolatedWorkerPendingStage, recordIsolatedIntegrationProof, retainIsolatedNativeTaskDiagnostics, retainIsolatedWorkerProgress, withIsolatedNativeLaunchDiagnostics } from '../test/isolated-integration-proof';
+import { assertIsolatedFileRunBudget, assertIsolatedWorkerReaped, captureIsolatedWorker, isolatedIntegrationDiagnosticArtifacts, isolatedTestFileWorkerOptions, isolatedWorkerOptions, isolatedWorkerFailureDetail, isolatedWorkerPendingStage, preflightCurrentSuNativeEgress, recordIsolatedIntegrationProof, retainIsolatedNativeTaskDiagnostics, retainIsolatedWorkerProgress, withIsolatedNativeLaunchDiagnostics } from '../test/isolated-integration-proof';
 import { assertPrivateUnrelatedCheckpointObservation, privateClaudeModelConfig, privateCodexModelConfig, retainPrivateProviderResponse, stopPrivateOperatorHost, type PrivateUnrelatedCheckpointObservation } from '../test/private-http-workspace-preflight';
 const NEVER_EMIT_MARKER = 'never-emit-me';
+
+it.each(['ready', 'sidecar-timeout', 'missing-image'] as const)(
+  'retains native egress prerequisite %s before private API preparation', async outcome => {
+    const directory = mkdtempSync(join(tmpdir(), 'native-egress-check-'));
+    const calls: string[][] = [];
+    const exec: Parameters<typeof preflightCurrentSuNativeEgress>[1] = async (_command, args) => {
+      calls.push([...args]);
+      if (args[0] === 'image' && outcome === 'missing-image')
+        return { code: 1, stdout: '', stderr: 'image unavailable' };
+      if (args[0] === 'run' && outcome === 'sidecar-timeout')
+        return { code: 124, stdout: '', stderr: 'subprocess timed out' };
+      const stdout = args[0] === 'run' ? 'private-sidecar\n' : args[0] === 'exec'
+        ? [8788, 9071].map(port => `0: 00000000:${port.toString(16).toUpperCase()} 00000000:0000 0A 0 0 0 0`).join('\n') : '';
+      return { code: 0, stdout, stderr: '' };
+    };
+    try {
+      const operation = preflightCurrentSuNativeEgress(directory, exec);
+      if (outcome === 'ready') await expect(operation).resolves.toBeUndefined();
+      else await expect(operation).rejects.toThrow(outcome === 'missing-image' ? /requires local image/ : /sidecar start failed/);
+      const receipt = JSON.parse(readFileSync(join(directory, 'native-egress-preflight.json'), 'utf8'));
+      expect(receipt).toMatchObject({ status: outcome === 'ready' ? 'ready' : 'failed', cleanupErrors: [] });
+      expect(receipt.runId).toMatch(/^native-preflight-[a-f0-9-]+$/);
+      expect(existsSync(receipt.workRoot)).toBe(false);
+      expect(receipt.commands.length).toBe(calls.length);
+      expect(calls.some(args => args[0] === 'ps' && args.includes('label=papercusp.bench-egress=' + receipt.runId))).toBe(true);
+      if (outcome === 'ready') expect(receipt.relayConnections).toBe(0);
+      if (outcome === 'sidecar-timeout') expect(calls.some(args => args[0] === 'rm')).toBe(true);
+      if (outcome === 'missing-image') expect(calls.some(args => args[0] === 'network' && args[1] === 'create')).toBe(false);
+    } finally { rmSync(directory, { recursive: true, force: true }); }
+  });
 
 it('keeps a native tool refusal visible after verbose connection phase clocks', () => {
   const trace = 'ptool: connection trace ' + JSON.stringify({ event: 'http-request-start', detail: 'x'.repeat(1000) });
@@ -762,14 +792,16 @@ vi.mock('../test/_org-test-db', () => ({ createOrgTestDb: async () => ({
 vi.mock('./_baseline-coord-fixture', () => ({ setupBaselineCoordFixture: async () => ({ dispose: async () => {} }) }));
 vi.mock('./degradation/fallback-observations', () => ({ flushFallbackObservations: async () => ({ failed: 0 }) }));
 
-it('records a missing receipt sink as preparation failure with no worker to tear down', async () => {
+it.each(['PAPERCUSP_TEST_RUN_RECEIPT_FILE', 'PC_EXECUTED_SOURCE_MAP_RESULT', 'PC_EXECUTED_SOURCE_MAP_OUT'])(
+  'records missing %s receipt sink as preparation failure with no worker to tear down', async receiptKey => {
   const fixture = mkdtempSync(join(tmpdir(), 'isolated-proof-sink-'));
   const root = resolve(import.meta.dirname, '../../..');
   const prepare = vi.fn(), execute = vi.fn();
   vi.stubEnv('VH_EVIDENCE_ROOT_BASE', fixture);
   vi.stubEnv('PAPERCUSP_RELEASE_RETENTION_ROOT', join(fixture, 'retention'));
   vi.stubEnv('PAPERCUSP_FS_MUTEX_LOCK_DIR', join(fixture, 'locks'));
-  vi.stubEnv('PAPERCUSP_TEST_RUN_RECEIPT_FILE', join(fixture, 'receipts.ndjson'));
+  for (const key of ['PAPERCUSP_TEST_RUN_RECEIPT_FILE', 'PC_EXECUTED_SOURCE_MAP_RESULT', 'PC_EXECUTED_SOURCE_MAP_OUT'])
+    vi.stubEnv(key, key === receiptKey ? join(fixture, 'receipts.ndjson') : undefined);
   vi.stubEnv('PAPERCUSP_TEST_RUNS_DB_URL', undefined);
   try {
     await expect(recordIsolatedIntegrationProof({ root,

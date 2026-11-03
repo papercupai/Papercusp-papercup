@@ -34,6 +34,9 @@
  * double-count it excludes it.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import * as dbOrg from '@papercusp/db-org';
+import * as issuesEngineer from './issues-engineer';
+import * as rubrics from './rubrics';
 
 /** One scorecard row as the engineer_issues SELECT returns it. */
 const DB_ROWS = [
@@ -88,16 +91,11 @@ const sqlMock = Object.assign(sqlTag, {
   unsafe: vi.fn(async () => []),
 });
 
-// FULL-REPLACEMENT MOCK HAZARD (WI-39843 class, and the reason this file red-pinned the
-// gate at red #28): a bare factory replaces the WHOLE module, so every export this file's
-// import graph touches but does not re-declare becomes undefined — and vitest throws on
-// ANY access to a missing mock export. Here it was `setAdminPoolStatementTimeoutProvider`
-// (libs/papercusp/libs/db/src/connection.ts), reached transitively. Spreading the original
-// is what makes this robust to the NEXT export added, rather than stranding again.
-vi.mock('@papercusp/db-org', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('@papercusp/db-org')>()),
-  getOrgPg: () => ({ sql: sqlMock }),
-}));
+// Load the real graph before replacing these call-time seams. An async partial
+// mock can wait for importOriginal while another module in that graph waits for
+// the mock, leaving the first scorecards import pending until the test deadline.
+// Spies preserve every unrelated export without recursively loading a mock factory.
+vi.spyOn(dbOrg, 'getOrgPg').mockReturnValue({ sql: sqlMock } as unknown as ReturnType<typeof dbOrg.getOrgPg>);
 
 const issuesOutLinksMany = vi.fn(
   async (_ids: string[]) =>
@@ -107,20 +105,19 @@ const issuesOutLinksMany = vi.fn(
 /** P-010: scorecardTrend's supersession check — a rel-filtered in-edge read, NOT the join. */
 const issuesSupersededByRevision = vi.fn(async (_ids: string[]) => new Set<string>());
 
-vi.mock('./issues-engineer', () => ({
-  issuesScopeWorkspace: () => 'test-workspace',
-  issuesOutLinksMany: (ids: string[]) => issuesOutLinksMany(ids),
-  issuesSupersededByRevision: (ids: string[]) => issuesSupersededByRevision(ids),
-}));
+vi.spyOn(issuesEngineer, 'issuesScopeWorkspace').mockReturnValue('test-workspace');
+vi.spyOn(issuesEngineer, 'issuesOutLinksMany').mockImplementation(issuesOutLinksMany as typeof issuesEngineer.issuesOutLinksMany);
+vi.spyOn(issuesEngineer, 'issuesSupersededByRevision').mockImplementation(issuesSupersededByRevision);
 
-vi.mock('./rubrics', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('./rubrics')>()),
-  getRubric: async () => ({ rubricId: 'test-rubric', kind: 'standard', revision: 1,
-    criteriaHash: 'criteria-v1', criteria: [{ key: 'alpha' }] }),
-  getRubricWithoutSeeding: async (ref: string) => ({ rubricId: ref, kind: 'standard', revision: 1,
-    criteriaHash: 'criteria-v1', criteria: [{ key: 'alpha' }] }),
-  rubricInstrumentContract: () => null,
-}));
+vi.spyOn(rubrics, 'getRubric').mockResolvedValue({
+  rubricId: 'test-rubric', kind: 'standard', revision: 1,
+  criteriaHash: 'criteria-v1', criteria: [{ key: 'alpha' }],
+} as Awaited<ReturnType<typeof rubrics.getRubric>>);
+vi.spyOn(rubrics, 'getRubricWithoutSeeding').mockImplementation(async (ref: string) => ({
+  rubricId: ref, kind: 'standard', revision: 1,
+  criteriaHash: 'criteria-v1', criteria: [{ key: 'alpha' }],
+} as Awaited<ReturnType<typeof rubrics.getRubricWithoutSeeding>>));
+vi.spyOn(rubrics, 'rubricInstrumentContract').mockReturnValue(null);
 
 beforeEach(() => {
   issuesOutLinksMany.mockClear();
@@ -174,7 +171,8 @@ describe('the aggregate readers stay cheap (WI-6124)', () => {
       expect(rows).toHaveLength(2);
       expect(rows[0].gradedGeneration?.hostStartedAt).toBe('2026-07-14T18:08:24.000Z');
       expect(rows[0].generationFreshness).toBeUndefined();
-      expect(rows[0].rubricCurrentness?.state).toBe('unknown');
+      // Rubric identity can be current while generation freshness is deliberately unmeasured.
+      expect(rows[0].rubricCurrentness?.state).toBe('current');
       expect(rows[0].ratings.alpha.rating).toBe('healthy');
     } finally {
       delete observation.gradedGeneration;

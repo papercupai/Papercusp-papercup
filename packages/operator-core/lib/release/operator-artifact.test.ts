@@ -26,14 +26,14 @@ function fixture() {
   writeFileSync(entry + '.meta.json', JSON.stringify({ inputs: { [rel]: { bytes: source.length } } }));
   const sourceBlob = createHash('sha1').update(`blob ${Buffer.byteLength(source)}\0${source}`).digest('hex');
   let dirty = '', head = sourceSha;
-  const git = (_root: string, args: string[]) => {
+  const git = async (_root: string, args: string[]) => {
     if (args[0] === 'status') return dirty;
     if (args[0] === 'ls-tree') return `100644 blob ${sourceBlob}\t${rel}\0`;
     return head;
   };
   const write = () => writeOperatorArtifactManifest({ root, entry, sourceSha }, git);
-  const manifest = () => {
-    const id = write(); if (id.status !== 'measured') throw Error('fixture');
+  const manifest = async () => {
+    const id = await write(); if (id.status !== 'measured') throw Error('fixture');
     return id.evidenceRef;
   };
   return { root, rel, entry, sourceSha, sourceBlob, write, manifest, git,
@@ -44,7 +44,7 @@ describe('operator release artifact provenance', () => {
   it('BG-TEARDOWN-RECONCILE refuses terminal sealing with owned survivors', async () => {
     for (const outcome of ['success', 'failure', 'cancellation', 'timeout', 'interruption-recovery'] as const) {
       const f = fixture();
-      const manifest = f.manifest();
+      const manifest = await f.manifest();
       const original = readFileSync(manifest);
       const candidate = join(f.root, 'private-candidate');
       const binding = join(f.root, 'private-binding');
@@ -70,53 +70,72 @@ describe('operator release artifact provenance', () => {
     }
   });
 
-  it('binds source blobs to real built bytes and measures the boot entry independently', () => {
-    const f = fixture(); const written = f.write();
+  it('binds source blobs to real built bytes and measures the boot entry independently', async () => {
+    const f = fixture(); const written = await f.write();
     expect(written).toMatchObject({ status: 'measured', sourceSha: f.sourceSha, sourceBlobs: { [f.rel]: f.sourceBlob } });
     expect(measureBootOperatorArtifact(f.entry, f.sourceSha.slice(0, 10))).toEqual(written);
-    expect(f.write()).toEqual(written); // same deterministic artifact is immutable and reusable
+    expect(await f.write()).toEqual(written); // same deterministic artifact is immutable and reusable
   });
-  it('refuses dirty source and movement across the release build boundary', () => {
-    const f = fixture(); expect(operatorArtifactSource(f.root, f.git)).toBe(f.sourceSha);
-    f.dirty(); expect(f.write).toThrow('source-unqualified');
-    const moved = fixture(); moved.move(); expect(moved.write).toThrow('source-moved');
+  it('keeps the event loop available while a Git read is pending', async () => {
+    const f = fixture();
+    let release!: () => void;
+    let heldFirstRead = false;
+    const git = async (root: string, args: string[]) => {
+      if (args[0] === 'rev-parse' && !heldFirstRead) {
+        heldFirstRead = true;
+        await new Promise<void>(resolve => { release = resolve; });
+      }
+      return f.git(root, args);
+    };
+    let completed = false;
+    const pending = writeOperatorArtifactManifest({ root: f.root, entry: f.entry, sourceSha: f.sourceSha }, git)
+      .finally(() => { completed = true; });
+    await new Promise<void>(resolve => setImmediate(resolve));
+    expect(completed).toBe(false);
+    release();
+    await expect(pending).resolves.toMatchObject({ status: 'measured' });
   });
-  it('does not stamp a source input changed after the compiler read it', () => {
+  it('refuses dirty source and movement across the release build boundary', async () => {
+    const f = fixture(); expect(await operatorArtifactSource(f.root, f.git)).toBe(f.sourceSha);
+    f.dirty(); await expect(f.write()).rejects.toThrow('source-unqualified');
+    const moved = fixture(); moved.move(); await expect(moved.write()).rejects.toThrow('source-moved');
+  });
+  it('does not stamp a source input changed after the compiler read it', async () => {
     const f = fixture(); writeFileSync(join(f.root, f.rel), 'different source');
-    expect(f.write).toThrow('input-mismatch');
+    await expect(f.write()).rejects.toThrow('input-mismatch');
   });
-  it('does not turn the retained previous bundle into fresh release evidence', () => {
-    const f = fixture(); f.write();
+  it('does not turn the retained previous bundle into fresh release evidence', async () => {
+    const f = fixture(); await f.write();
     writeFileSync(join(dirname(f.entry), '.bundle-stale.json'), JSON.stringify({ reason: 'compile-failed' }));
-    expect(f.write).toThrow('stale-build');
+    await expect(f.write()).rejects.toThrow('stale-build');
     expect(measureBootOperatorArtifact(f.entry, f.sourceSha).status).toBe('unknown');
     rmSync(join(dirname(f.entry), '.bundle-stale.json'));
     expect(measureBootOperatorArtifact(f.entry, f.sourceSha).status).toBe('measured');
   });
-  it('rejects an empty or escaped metafile source population', () => {
+  it('rejects an empty or escaped metafile source population', async () => {
     const f = fixture(); writeFileSync(f.entry + '.meta.json', JSON.stringify({ inputs: {} }));
-    expect(f.write).toThrow('inputs-empty');
+    await expect(f.write()).rejects.toThrow('inputs-empty');
     writeFileSync(f.entry + '.meta.json', JSON.stringify({ inputs: { '../../../foreign.ts': {} } }));
-    expect(f.write).toThrow('outside-source');
+    await expect(f.write()).rejects.toThrow('outside-source');
   });
-  it('reads pinned submodule objects without treating the gitlink as a source blob', () => {
+  it('reads pinned submodule objects without treating the gitlink as a source blob', async () => {
     const f = fixture(); const rel = 'libs/tracing/runtime.ts';
     mkdirSync(dirname(join(f.root, rel)), { recursive: true });
     writeFileSync(join(f.root, rel), readFileSync(join(f.root, f.rel)));
     writeFileSync(f.entry + '.meta.json', JSON.stringify({ inputs: { [rel]: {} } }));
-    const git = (root: string, args: string[]) => args[0] !== 'ls-tree' ? f.git(root, args) :
+    const git = async (root: string, args: string[]) => args[0] !== 'ls-tree' ? f.git(root, args) :
       root === f.root ? `160000 commit ${'c'.repeat(40)}\tlibs/tracing\0` : `100644 blob ${f.sourceBlob}\truntime.ts\0`;
-    expect(writeOperatorArtifactManifest(f, git)).toMatchObject({ status: 'measured', sourceBlobs: { [rel]: f.sourceBlob } });
+    await expect(writeOperatorArtifactManifest(f, git)).resolves.toMatchObject({ status: 'measured', sourceBlobs: { [rel]: f.sourceBlob } });
   });
-  it('keeps a legacy, replaced, or foreign build unknown', () => {
+  it('keeps a legacy, replaced, or foreign build unknown', async () => {
     const f = fixture(); expect(measureBootOperatorArtifact(f.entry, f.sourceSha).status).toBe('unknown');
-    f.write(); expect(measureBootOperatorArtifact(f.entry, 'b'.repeat(40)).status).toBe('unknown');
+    await f.write(); expect(measureBootOperatorArtifact(f.entry, 'b'.repeat(40)).status).toBe('unknown');
     expect(measureBootOperatorArtifact(f.entry, f.sourceSha).status).toBe('measured');
     writeFileSync(f.entry, 'replacement runtime');
     expect(measureBootOperatorArtifact(f.entry, f.sourceSha).status).toBe('unknown');
   });
-  it.each(['bundle', 'source', 'blob', 'entry'] as const)('rejects a corrupted %s manifest with a healthy control', field => {
-    const f = fixture(); const file = f.manifest(); const original = readFileSync(file, 'utf8'); const m = JSON.parse(original);
+  it.each(['bundle', 'source', 'blob', 'entry'] as const)('rejects a corrupted %s manifest with a healthy control', async field => {
+    const f = fixture(); const file = await f.manifest(); const original = readFileSync(file, 'utf8'); const m = JSON.parse(original);
     if (field === 'bundle') m.bundleSha256 = 'd'.repeat(64);
     if (field === 'source') m.sourceSha = 'e'.repeat(40);
     if (field === 'blob') m.sourceBlobs[f.rel] = 'not-a-blob';
@@ -124,15 +143,15 @@ describe('operator release artifact provenance', () => {
     writeFileSync(file, JSON.stringify(m)); expect(measureBootOperatorArtifact(f.entry, f.sourceSha).status).toBe('unknown');
     writeFileSync(file, original); expect(measureBootOperatorArtifact(f.entry, f.sourceSha).status).toBe('measured');
   });
-  it('rejects a symlinked boot entry instead of borrowing another artifact identity', () => {
-    const f = fixture(); f.write(); const link = join(dirname(f.entry), 'other.mjs'); symlinkSync(f.entry, link);
+  it('rejects a symlinked boot entry instead of borrowing another artifact identity', async () => {
+    const f = fixture(); await f.write(); const link = join(dirname(f.entry), 'other.mjs'); symlinkSync(f.entry, link);
     expect(measureBootOperatorArtifact(link, f.sourceSha).status).toBe('unknown');
   });
-  it('rejects matching disk bytes and a valid manifest replaced after this process started', () => {
-    const f = fixture(); f.write();
+  it('rejects matching disk bytes and a valid manifest replaced after this process started', async () => {
+    const f = fixture(); await f.write();
     expect(measureArtifact(f.entry, f.sourceSha).status).toBe('unknown');
     expect(measureBootOperatorArtifact(f.entry, f.sourceSha).status).toBe('measured');
-    writeFileSync(f.entry, 'another bundle with the same baked source SHA'); f.write();
+    writeFileSync(f.entry, 'another bundle with the same baked source SHA'); await f.write();
     expect(measureArtifact(f.entry, f.sourceSha).status).toBe('unknown');
     expect(measureBootOperatorArtifact(f.entry, f.sourceSha).status).toBe('measured');
   });
@@ -147,8 +166,8 @@ describe('operator release artifact provenance', () => {
       schemaVersion: 1, sha256: createHash('sha256').update(bytes).digest('hex'), members } };
   }
 
-  function parentDefect(defect: typeof BG_R1_PARENT_CASES[number]['defect']) {
-      const f = fixture(); const written = f.write(); const parent = inheritedParent(f);
+  async function parentDefect(defect: typeof BG_R1_PARENT_CASES[number]['defect']) {
+      const f = fixture(); const written = await f.write(); const parent = inheritedParent(f);
       const boot = (input: OperatorArtifactParentExpectation) => measureArtifact(f.entry, f.sourceSha, Date.now() + 1000, input);
       expect(boot(parent)).toEqual(written);
       const bad = structuredClone(parent), expected = bad.acceptedManifest!;
@@ -181,20 +200,20 @@ describe('operator release artifact provenance', () => {
   // These source-level fixtures exercise the maintained boot artifact reader.
   // Full actual-service qualification still requires the independently retained
   // runtime packet; the selector's presence cannot confer that authority.
-  it(BG_R1_PARENT_SELECTORS.authority.testName, () => {
+  it(BG_R1_PARENT_SELECTORS.authority.testName, async () => {
     for (const defect of ['authority-absent', 'authority-unknown', 'authority-candidate-substitution'] as const)
-      parentDefect(defect);
+      await parentDefect(defect);
   });
-  it(BG_R1_PARENT_SELECTORS.schemaDigest.testName, () => {
-    for (const defect of ['schema-mismatch', 'digest-mismatch'] as const) parentDefect(defect);
+  it(BG_R1_PARENT_SELECTORS.schemaDigest.testName, async () => {
+    for (const defect of ['schema-mismatch', 'digest-mismatch'] as const) await parentDefect(defect);
   });
-  it(BG_R1_PARENT_SELECTORS.literalMembers.testName, () => {
+  it(BG_R1_PARENT_SELECTORS.literalMembers.testName, async () => {
     for (const defect of ['literal-member-added', 'literal-member-omitted', 'literal-member-changed'] as const)
-      parentDefect(defect);
+      await parentDefect(defect);
   });
 
-  it('refuses candidate artifact membership differing from the original inherited parent', () => {
-    const f = fixture(); const file = f.manifest(); const parent = inheritedParent(f);
+  it('refuses candidate artifact membership differing from the original inherited parent', async () => {
+    const f = fixture(); const file = await f.manifest(); const parent = inheritedParent(f);
     const original = readFileSync(file, 'utf8'), candidate = JSON.parse(original);
     candidate.sourceBlobs[f.rel] = 'e'.repeat(40); writeFileSync(file, JSON.stringify(candidate));
     expect(measureArtifact(f.entry, f.sourceSha, Date.now() + 1000, parent).status).toBe('unknown');
@@ -209,14 +228,20 @@ describe('operator release artifact provenance', () => {
     const result = await build({ absWorkingDir: sourceRoot, bundle: true, platform: 'node', format: 'esm',
       outfile: f.entry, metafile: true, logLevel: 'silent',
       // Neither dynamic configuration reader is called without an exported span.
-      // Keep the real runtime, tracing, exporter and artifact reader in this bundle.
+      // Keep the runtime and DBOS tracing adapters in the bundle; optional OTLP
+      // peers and native addons stay external so Node resolves only this host's ABI.
       external: [join(sourceRoot, 'packages/operator-core/lib/telemetry-flush'),
-        join(sourceRoot, 'packages/operator-core/lib/auth/loopback-peer-trust')],
-      banner: { js: "import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);" },
+        join(sourceRoot, 'packages/operator-core/lib/auth/loopback-peer-trust'),
+        '@opentelemetry/exporter-trace-otlp-proto', '@opentelemetry/exporter-logs-otlp-proto',
+        '@opentelemetry/sdk-logs', '@opentelemetry/sdk-trace-base',
+        'cpu-features', 'onnxruntime-node', 'ssh2'],
+      banner: { js: "import { createRequire } from 'node:module'; const require = createRequire("
+        + JSON.stringify(join(sourceRoot, 'package.json')) + ");" },
       define: { __PAPERCUSP_BUNDLED_SIDECAR__: 'true', __PAPERCUSP_BUNDLED_SOURCE_SHA__: JSON.stringify(f.sourceSha) },
       stdin: { resolveDir: sourceRoot, sourcefile: 'boot-parent-runtime-boundary.ts', loader: 'ts', contents: `
+        import { readFileSync } from 'node:fs';
         import { initializeRuntimeObservability, runtimeObservabilityHealth, shutdownRuntimeObservability } from ${JSON.stringify(runtimePath)};
-        const { parent, legacy } = JSON.parse(process.argv[2]);
+        const { parent, legacy } = JSON.parse(readFileSync(process.argv[2], 'utf8'));
         let ready = false, error = null;
         try {
           if (legacy) initializeRuntimeObservability();
@@ -244,7 +269,9 @@ describe('operator release artifact provenance', () => {
     Object.assign(parent.acceptedManifest!, { members, sha256: createHash('sha256').update(bytes).digest('hex') });
     writeFileSync(parent.acceptedManifest!.path, bytes);
     const boot = (input: typeof parent, legacy = false) => {
-      const child = spawnSync(process.execPath, [f.entry, JSON.stringify({ parent: input, legacy })], {
+      const configPath = join(dirname(f.entry), 'boot-parent-config.json');
+      writeFileSync(configPath, JSON.stringify({ parent: input, legacy }));
+      const child = spawnSync(process.execPath, [f.entry, configPath], {
         encoding: 'utf8', timeout: 15_000,
         env: { PATH: process.env.PATH, NODE_ENV: 'test', PAPERCUSP_BUILD_SHA: f.sourceSha },
       });

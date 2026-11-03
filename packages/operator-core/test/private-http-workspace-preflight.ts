@@ -28,6 +28,8 @@ import { findUnsatisfiedDeclaredDepRanges } from '../../../scripts/check-declare
 import { isolatedRuntimeEnv } from '../../../scripts/lib/isolation-child-env.mjs';
 import { hashNativeArtifactBytes, readNativeArtifactBytes, readNativeProcessTraceArtifacts } from '../../../scripts/lib/budgeted-task-scheduler.mjs';
 import { nativeProcessTraceEnv, nativeSourceRetentionLimits } from '../../../scripts/lib/vitest-startup-trace.mjs';
+// @ts-ignore -- share the router's evidence contract before direct bundle preparation too.
+import { assertPrivateIntegrationEvidence as assertPrivatePreparationEvidence } from '../../../scripts/test-files.mjs';
 
 export interface PrivateUnrelatedCheckpointObservation {
   workspace: string;
@@ -972,6 +974,12 @@ export function observeCommittedReaderLoadedSources(o: CommittedReaderSourceOpti
     startedAtMs: o.startedAtMs, finishedAtMs: o.finishedAtMs,
     population: null as ReturnType<typeof readNativeProcessTraceArtifacts>['population'] | null,
     entrySha256: null as string | null, exitObserved: false,
+    engineExecution: { scope: 'independently-pinned-bundle-outer-execution',
+      status: 'unknown' as 'observed' | 'unknown', scriptId: null as string | null,
+      sourceTextSha256: null as string | null, sourceTextLength: null as number | null,
+      coverageRangesComplete: false,
+      coverageRanges: [] as Array<{ functionName: string; startOffset: number; endOffset: number; count: number }>,
+      gaps: [] as string[] },
     configurationInputs: {
       scope: 'native-node-entry-configuration-inputs', status: 'unknown' as 'matched' | 'unknown',
       snapshot: null as ConfigurationSnapshot | null,
@@ -1079,6 +1087,49 @@ export function observeCommittedReaderLoadedSources(o: CommittedReaderSourceOpti
     if (!starts.size) gaps.push('host loader observations missing');
     if (starts.size !== returned.size) gaps.push('pending loader calls');
     if (!sources.some(source => source.url === pathToFileURL(o.bundle).href)) gaps.push('loaded bundle unbound');
+    // Positive outer execution is narrower than module/import closure. Consume
+    // the engine's script-id/source/range tuple only inside this process-bound
+    // channel; a loader return or source-map association cannot substitute.
+    try {
+      const events = own.filter(({ row }) => row.event === 'engine-script-execution');
+      assert.equal(events.length, 1, 'one host engine execution snapshot required');
+      assert.equal(events[0].row.threadId, entry.row.threadId, 'host engine isolate differs');
+      const observation = events[0].row.observation;
+      assert.ok(observation?.schemaVersion === 'node-engine-script-observations-v1' &&
+        observation.basis === 'v8-script-id-source-and-best-effort-coverage' &&
+        observation.scope === 'observed-independently-pinned-engine-scripts' &&
+        observation.sourceEncoding === 'utf8-of-engine-source-text' &&
+        observation.offsetUnits === 'utf16-code-units' && observation.populationStatus === 'unknown',
+      'unsupported host engine observation');
+      assert.ok(Array.isArray(observation.reasons) && observation.reasons.every(
+        (reason: unknown) => reason === 'engine-execution-range-limit'), 'host engine observation incomplete');
+      assert.ok(Array.isArray(observation.scripts) && observation.scripts.length <= result.limits.pins &&
+        new Set(observation.scripts.map((script: { scriptId: string }) => script.scriptId)).size === observation.scripts.length,
+      'host engine script population invalid');
+      const matches = observation.scripts.filter((script: { url: string }) => script.url === pathToFileURL(o.bundle).href);
+      assert.equal(matches.length, 1, 'one pinned bundle engine script required');
+      const script = matches[0], loaded = sources.find(source => source.url === script.url);
+      assert.ok(loaded && script.path === o.bundle && typeof script.scriptId === 'string' && script.scriptId.length > 0 &&
+        script.sourceTextSha256 === loaded.sha256 && loaded.sha256 === closure.sha256 &&
+        Number.isSafeInteger(script.sourceTextLength) && script.sourceTextLength > 0 &&
+        script.sourceTextLength <= loaded.byteLength, 'bundle engine text differs from independent loader pin');
+      assert.deepEqual(script.independentPin, { path: o.bundle, sha256: closure.sha256, byteLength: loaded.byteLength },
+        'bundle engine independent pin differs');
+      assert.ok(typeof script.coverageRangesComplete === 'boolean' &&
+        Array.isArray(script.coverageRanges) && script.coverageRanges.length <= 128 &&
+        script.coverageRanges.every((range: { functionName: string; startOffset: number; endOffset: number; count: number }) =>
+          typeof range.functionName === 'string' && Number.isSafeInteger(range.count) && range.count >= 0 &&
+          Number.isSafeInteger(range.startOffset) && Number.isSafeInteger(range.endOffset) &&
+          range.startOffset >= 0 && range.endOffset > range.startOffset && range.endOffset <= script.sourceTextLength),
+      'bundle engine ranges invalid');
+      assert.ok(script.execution === 'observed' && script.coverageRanges.some(
+        (range: { startOffset: number; endOffset: number; count: number }) =>
+          range.startOffset === 0 && range.endOffset === script.sourceTextLength && range.count > 0),
+      'bundle outer execution not observed');
+      Object.assign(result.engineExecution, { status: 'observed', scriptId: script.scriptId,
+        sourceTextSha256: script.sourceTextSha256, sourceTextLength: script.sourceTextLength,
+        coverageRanges: script.coverageRanges, coverageRangesComplete: script.coverageRangesComplete });
+    } catch (error) { result.engineExecution.gaps.push((error as Error).message.split('\n')[0]); }
     assert.deepEqual(readFileSync(o.receiptPath), closureBytes, 'preparation receipt changed during observation');
     assert.deepEqual(readFileSync(o.sourceReceiptPath), sourceBytes, 'source receipt changed during observation');
     if (!gaps.length) result.status = 'bound';
@@ -1272,14 +1323,6 @@ export function preparePrivateRosterSocketRoot(scratchRoot = tmpdir()) {
   assert.ok(Buffer.byteLength(socket) < 104,
     'Private roster scratch root exceeds native socket capacity; select a shorter task-owned TMPDIR before private PG');
   return socket;
-}
-
-function assertPrivatePreparationEvidence() {
-  // Match the child runtime's fail-closed evidence prerequisite before paying
-  // for compilation. A missing reporter sink must not become a late PG failure.
-  assert.ok(!(process.env.PAPERCUSP_TEST_RUN_RECEIPT_FILE?.trim()
-    || process.env.PC_EXECUTED_SOURCE_MAP_RESULT?.trim()) || process.env.PAPERCUSP_TEST_RUNS_DB_URL?.trim(),
-  'PAPERCUSP_TEST_RUNS_DB_URL is required for durable isolated test receipts');
 }
 
 /** A nested Git clone has its own source pin, not its donor archive's marker. */

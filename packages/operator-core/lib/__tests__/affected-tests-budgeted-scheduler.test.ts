@@ -130,6 +130,34 @@ describe('private native proof custody (P002)', () => {
     return result;
   }
 
+  it('reports bounded custody phases through synchronization and verification without trusting the observer', () => {
+    const f = fixture();
+    // Enough distinct files to cross the synchronization heartbeat boundary.
+    for (let index = 0; index < 300; index++) {
+      writeFileSync(join(f.contract.expected[0].out + '.modules', `extra-${index}.js`), `export const n = ${index};`);
+    }
+    const phases: Array<{ phase: string; elapsedMs: number; completed?: number; total?: number }> = [];
+    const result = retainNativeProofPacket(f.directory, { ...f.contract, observations: f.observations,
+      onProgress: record => {
+        phases.push(record);
+        if (record.phase === 'sync-progress') throw new Error('diagnostic sink unavailable');
+      },
+    });
+    expect(result.status).toBe('complete');
+    expect(verifyNativeProofPacket(f.directory, result.locator, f.contract).status).toBe('complete');
+    const names = phases.map(record => record.phase);
+    expect(names[0]).toBe('capture-start');
+    expect(names.slice(-4)).toEqual(['sync-progress', 'sync-complete', 'verification-start', 'verification-complete']);
+    expect(names.indexOf('metadata-complete')).toBeLessThan(names.indexOf('sync-start'));
+    const heartbeats = phases.filter(record => record.phase === 'sync-progress');
+    const synced = phases.find(record => record.phase === 'sync-complete')!;
+    expect(heartbeats.length).toBe(Math.floor(synced.total! / 128));
+    expect(heartbeats.map(record => record.completed)).toEqual([128, 256]);
+    expect(synced.completed).toBe(synced.total);
+    expect(phases.every((record, index) => record.elapsedMs >= 0 &&
+      (index === 0 || record.elapsedMs >= phases[index - 1].elapsedMs))).toBe(true);
+  });
+
   it('P003 reconciles independent raw-byte pins and private modes for two primaries and a detail after retirement', () => {
     const f = fixture(['primary', 'primary', 'detail']);
     const originals = f.contract.expected.flatMap(group => [group.out,

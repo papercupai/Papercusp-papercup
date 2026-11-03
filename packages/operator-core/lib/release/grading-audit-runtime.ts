@@ -85,12 +85,12 @@ export class GradingAuditRuntimeReadinessError extends Error {
 }
 
 /** A maintained exact-ref rebuild is a NEW artifact, never the old digest. */
-export function qualifyRematerializedGradingAuditSource(sourceRoot: string, build: BuildInfo) {
+export async function qualifyRematerializedGradingAuditSource(sourceRoot: string, build: BuildInfo) {
   sourceRoot = realpathSync(sourceRoot);
   if (basename(sourceRoot) !== 'checkout' || !basename(dirname(sourceRoot)).startsWith('.candidate-')) {
     throw new Error('Exact source recovery requires an immutable candidate checkout');
   }
-  const sourceSha = operatorArtifactSource(sourceRoot);
+  const sourceSha = await operatorArtifactSource(sourceRoot);
   if (!build.sha || !/^[a-f0-9]{7,40}$/.test(build.sha) || !sourceSha.startsWith(build.sha)) {
     throw new Error('Rematerialized audit source differs from the recorded evaluator');
   }
@@ -105,7 +105,7 @@ export function qualifyRematerializedGradingAuditSource(sourceRoot: string, buil
   if (artifact.status !== 'measured' || artifact.sourceSha !== sourceSha) {
     throw new Error('Rematerialized audit bundle has no exact source artifact proof');
   }
-  const checked = writeOperatorArtifactManifest({ root: sourceRoot, entry: bundlePath, sourceSha });
+  const checked = await writeOperatorArtifactManifest({ root: sourceRoot, entry: bundlePath, sourceSha });
   if (checked.status !== 'measured' || checked.manifestSha256 !== artifact.manifestSha256) {
     throw new Error('Rematerialized audit compiler provenance differs');
   }
@@ -453,7 +453,7 @@ export async function ensureGradingAuditRuntime(input: {
       }
       if (!input.recoverySourceRoot && input.allowSeed === false) throw new Error('No retained exact audit runtime source is available');
       const rebuilt = input.recoverySourceRoot
-        ? qualifyRematerializedGradingAuditSource(input.recoverySourceRoot, input.evaluatorBuild) : null;
+        ? await qualifyRematerializedGradingAuditSource(input.recoverySourceRoot, input.evaluatorBuild) : null;
       const source = rebuilt?.source ?? (deps.currentSource ?? currentSource)(input.evaluatorBuild);
       locator = { ...source, ownerRef: label, issueIds: previous?.locator?.issueIds ?? [],
         ...(rebuilt && previous?.locator ? { sourceRecovery: {

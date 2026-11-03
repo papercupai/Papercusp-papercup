@@ -3,11 +3,11 @@ import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, re
 import { execFileSync } from 'node:child_process';
 import childProcess from 'node:child_process';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire, syncBuiltinESMExports } from 'node:module';
 import ts from 'typescript';
-import { assertReplayOracleRuntimeQualified, assertReplaySemanticGraph, replaySemanticCompletionContext, freezeCompilerReplayConfig, freezeReplayRuntimeFiles, materializeReplaySource, replayBoundaryProblems, replayDurableReport, replayEvidenceProblems, replayFileMismatches, replayHash, replayOracleFingerprint,
+import { assertReplayOracleRuntimeQualified, assertReplaySemanticGraph, replaySemanticCompletionContext, freezeCompilerReplayConfig, freezeQualifiedReplayConfig, freezeReplayRuntimeFiles, materializeReplaySource, replayBoundaryProblems, replayDurableReport, replayEvidenceProblems, replayFileMismatches, replayHash, replayOracleFingerprint,
   replayPackageRuntimeSources, replayPopulationFingerprint, replayProcessIdentity, replayRepositorySources, replayServerPopulation, replaySourceFingerprint, replayWireOverlap,
   runDaemonReplay, validateDaemonReplayConfig, type DaemonReplayConfig, type ReplayBoundary, type ReplayOracleInput } from './lsp-fleet-replay-runtime';
 import { callLspDaemonRpc, readLspDaemonAdmission } from './lsp-daemon-client';
@@ -296,6 +296,45 @@ describe('independently declared semantic graph', () => {
       sourceSnapshot: { manifestPath: join(f.root, 'snapshot.json'), sha256: '0'.repeat(64) } }))
       .toThrow('snapshot-input-escape');
     expect(existsSync(marker)).toBe(false);
+  });
+  it.each(['absolute', 'relative', 'symlink'])('rejects a %s snapshot runtime escape before compiler execution or parent census', async kind => {
+    const f = fixture({ noLib: true });
+    const externalRoot = mkdtempSync(join(tmpdir(), 'lsp-external-runtime-')); roots.push(externalRoot);
+    const external = join(externalRoot, 'launcher'); writeFileSync(external, 'external launcher');
+    const marker = join(f.root, 'compiler-executed');
+    const compilerEntry = join(f.root, 'compiler.cjs');
+    writeFileSync(compilerEntry, `require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'executed');`);
+    const alias = join(f.root, 'launcher'); symlinkSync(external, alias);
+    const runtimeFile = kind === 'absolute' ? external : kind === 'relative' ? relative(f.root, external) : alias;
+    const input: ReplayOracleInput = { ...f.input, compilerEntry, runtimeFiles: [runtimeFile],
+      sourceSnapshot: { manifestPath: join(f.root, 'snapshot.json'), sha256: '0'.repeat(64) },
+      // Declaring an external executable witness does not turn it into copied source.
+      runtimeWitness: { directory: join(externalRoot, 'service'), runId: f.input.runId,
+        bootstraps: {}, files: { [external]: replayHash(readFileSync(external)) } } };
+    const phases: string[] = [];
+    expect(() => freezeCompilerReplayConfig(input, { onProgress: row => phases.push(row.phase) }))
+      .toThrow(`snapshot-input-escape:${external}`);
+    expect(phases).toEqual([]);
+    expect(existsSync(marker)).toBe(false);
+    const inputPath = join(externalRoot, 'input.json'); writeFileSync(inputPath, JSON.stringify(input));
+    const outputPath = join(externalRoot, 'qualified.json'); const witnessDirectory = join(externalRoot, 'oracle');
+    const nativeDependencies = vi.fn(() => []);
+    await expect(freezeQualifiedReplayConfig(inputPath, outputPath, { freezerEntry: compilerEntry,
+      compilerEntries: [compilerEntry], runtimePaths: [external], witnessDirectory, timeoutMs: 1000 },
+    { nativeDependencies })).rejects.toThrow(`snapshot-input-escape:${external}`);
+    expect(nativeDependencies).not.toHaveBeenCalled();
+    expect(existsSync(witnessDirectory)).toBe(false);
+    expect(existsSync(outputPath)).toBe(false);
+    expect(existsSync(marker)).toBe(false);
+  });
+  it('retains external runtime inputs for a source-only oracle without a snapshot claim', () => {
+    const f = fixture({ noLib: true });
+    const externalRoot = mkdtempSync(join(tmpdir(), 'lsp-source-only-runtime-')); roots.push(externalRoot);
+    const external = join(externalRoot, 'launcher'); writeFileSync(external, 'external launcher');
+    const frozen = freezeCompilerReplayConfig({ ...f.input, runtimeFiles: [external] });
+    expect(frozen.files[external]).toBe(replayHash(readFileSync(external)));
+    expect(frozen.corpus['hot-references'].oracle.sites).toHaveLength(2);
+    expect(() => assertReplayOracleRuntimeQualified(frozen)).toThrow('replay-oracle-runtime-unmeasured');
   });
   it('refuses an unconfigured cursor instead of silently adding it to roots', () => {
     const f = fixture({ noLib: true });

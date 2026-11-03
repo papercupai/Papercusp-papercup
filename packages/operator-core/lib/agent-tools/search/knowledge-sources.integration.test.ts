@@ -9,6 +9,8 @@ import { existsSync } from 'node:fs';
 import { splitDocSections,syncDocSourceSections } from '../../search/doc-embed-sync';
 import { runChunkSyncTick } from '../../search/chunks/tick';
 import { PLANS_CHUNK_SURFACE } from '../../search/chunks/registry';
+import { bm25Corpus } from '../../search/lexical/corpora';
+import { bm25IndexesFor, bm25Leg } from '../../search/lexical/rank';
 
 const profileId = EMBEDDER_DIM_SPECS.gemma.profileId;
 const vec = (match: boolean) => JSON.stringify([1, match ? 10 : 0, ...Array(766).fill(0)]);
@@ -72,6 +74,43 @@ describe('complete knowledge sections against canonical PostgreSQL', () => {
       expect(rows[0].row.excerpt).toContain('zephyrquartz');
       expect(rows[0].row.meta?.section).toBe('Late repair');
     }
+  });
+
+  it('keeps single-token plan search fresh across canonical content writes', async () => {
+    const slug = `single-token-freshness-${process.pid}-${Date.now()}`;
+    const source = createPlanSearchSource({ harnessSlugs: ['pot-a'] });
+    const find = () => source.lexical!({ ...params(), query: 'rubric' });
+    await db.adminSql`INSERT INTO harness_shared.harness_plans
+      (workspace_id,harness_slug,plan_slug,title,content,status)
+      VALUES (${workspaceId},'pot-a',${slug},'Index freshness fixture','Initial neutral content.','active')`;
+    expect((await find()).map(r => r.row.source_id)).not.toContain(`pot-a:${slug}`);
+
+    await db.adminSql`UPDATE harness_shared.harness_plans
+       SET content = 'Rubric grading evidence must remain searchable.'
+     WHERE workspace_id = ${workspaceId} AND harness_slug = 'pot-a' AND plan_slug = ${slug}`;
+    expect((await find()).map(r => r.row.source_id)).toContain(`pot-a:${slug}`);
+    const legacy = await db.adminSql`SELECT plan_slug FROM harness_shared.harness_plans
+      WHERE workspace_id = ${workspaceId} AND harness_slug = 'pot-a' AND plan_slug = ${slug}
+        AND _search @@ plainto_tsquery('english','rubric')`;
+    expect(legacy.map(r => r.plan_slug)).toContain(slug);
+
+    const indexes = await bm25IndexesFor(db.adminSql);
+    if (indexes.has('harness_plans_bm25')) {
+      const bm25 = bm25Leg(db.adminSql, bm25Corpus('harness_plans'), 'rubric', 'p');
+      const ranked = await db.adminSql`SELECT p.plan_slug FROM harness_shared.harness_plans p
+        WHERE p.workspace_id = ${workspaceId} AND p.harness_slug = 'pot-a' AND p.plan_slug = ${slug}
+          AND ${bm25.match}`;
+      expect(ranked.map(r => r.plan_slug)).toContain(slug);
+    }
+
+    await db.adminSql`UPDATE harness_shared.harness_plans
+       SET content = 'Revised content without the previous query term.'
+     WHERE workspace_id = ${workspaceId} AND harness_slug = 'pot-a' AND plan_slug = ${slug}`;
+    expect((await find()).map(r => r.row.source_id)).not.toContain(`pot-a:${slug}`);
+    const removed = await db.adminSql`SELECT plan_slug FROM harness_shared.harness_plans
+      WHERE workspace_id = ${workspaceId} AND harness_slug = 'pot-a' AND plan_slug = ${slug}
+        AND _search @@ plainto_tsquery('english','rubric')`;
+    expect(removed.map(r => r.plan_slug)).not.toContain(slug);
   });
 
   it('searches a plan title through the public handler and isolates its harness', async () => {

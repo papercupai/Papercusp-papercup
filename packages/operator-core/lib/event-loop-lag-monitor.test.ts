@@ -1071,6 +1071,40 @@ describe('sampling heap profiler (WI-1088 round 2 — the capture that cannot lo
     }
   });
 
+  it('recovers its sampler after another inspector client stops it, without claiming continuous history', async () => {
+    const { Session } = await import('node:inspector');
+    const { ensureHeapSampling, dumpHeapSamplingProfile } = await import('./event-loop-lag-monitor');
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'heap-sampling-recovery-'));
+    const lines: string[] = [];
+    let observer = new Session();
+    observer.connect();
+    const post = (method: string) => new Promise<{ profile?: unknown }>((resolve, reject) => {
+      observer.post(method, (error, result) => error ? reject(error) : resolve(result));
+    });
+    try {
+      expect(await ensureHeapSampling((line) => lines.push(line))).toBe(true);
+      expect((await post('HeapProfiler.getSamplingProfile')).profile).toBeTruthy();
+      // V8 shares this sampler across inspector sessions. The monitor still
+      // holds its Session after a different client stops the underlying sampler.
+      await post('HeapProfiler.stopSampling');
+      expect(await dumpHeapSamplingProfile({ dir, rssMb: 1, log: (line) => lines.push(line) })).toBeNull();
+      expect(lines.some((line) => line.includes('re-armed') && line.includes('history has a gap'))).toBe(true);
+      expect((await post('HeapProfiler.getSamplingProfile')).profile).toBeTruthy();
+      expect(await fs.readdir(dir)).toEqual([]);
+
+      observer.disconnect();
+      observer = new Session();
+      observer.connect();
+      expect((await post('HeapProfiler.getSamplingProfile')).profile).toBeTruthy();
+      const file = await dumpHeapSamplingProfile({ dir, rssMb: 1, log: (line) => lines.push(line) });
+      expect(file).toBeTruthy();
+      expect(JSON.parse(await fs.readFile(file!, 'utf8')).head).toBeTruthy();
+    } finally {
+      observer.disconnect();
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it('WI-4189: dumpHeapSamplingProfile defaults maxProfiles to 50 when omitted', async () => {
     const { ensureHeapSampling, dumpHeapSamplingProfile } = await import('./event-loop-lag-monitor');
     const { mkdtemp, readdir, writeFile, rm } = await import('node:fs/promises');

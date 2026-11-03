@@ -441,13 +441,13 @@ export function realDeps(cfg: ReleaseConfig, opts: RealDepsOpts = {}): DeployDep
 
     async bundleHost(): Promise<void> {
       const { operatorArtifactSource, writeOperatorArtifactManifest } = await import('@papercusp/operator-core/lib/release/operator-artifact');
-      const sourceSha = operatorArtifactSource(cfg.releaseRoot);
+      const sourceSha = await operatorArtifactSource(cfg.releaseRoot);
       const script = path.join(cfg.releaseRoot, 'apps/operator/bin/bundle-host.sh');
       await run('bash', [script], {
         cwd: path.join(cfg.releaseRoot, 'apps/operator'),
         timeoutMs: 10 * 60_000,
       });
-      const artifact = writeOperatorArtifactManifest({ root: cfg.releaseRoot, sourceSha,
+      const artifact = await writeOperatorArtifactManifest({ root: cfg.releaseRoot, sourceSha,
         entry: path.join(cfg.releaseRoot, 'apps/operator/dist-host/hono-host.mjs') });
       // Reuse the append-only audit ledger so a later checkout clean cannot
       // erase the writer's binding or let a changed manifest rewrite history.

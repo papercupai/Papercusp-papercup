@@ -73,6 +73,14 @@ export async function bindFrozenDependencyGeneration(root: string, sourceCommit:
   if (verifier && marker.get('token') !== selector.get('token')) throw new Error('frozen dependency token mismatch');
   await shell(root, 'dependency_generation_select_prevalidated "$1" "$2" "$3"', generationRoot,
     dependencyGeneration, selector.get('token') ?? '');
+  const assertOutputs = async () => {
+    if (!verifier) return;
+    await exec(process.execPath, [join(root, 'apps/operator/bin/release/dependency-generation-verifier.mjs'),
+      'verify-materialized', generation, root], {
+      env: { ...process.env, NODE_OPTIONS: '', NODE_PATH: '' }, maxBuffer: 1024 * 1024,
+    });
+  };
+  await assertOutputs();
   const assertSnapshot = async () => {
     const result = await shell(root, 'dependency_generation_set_fingerprint "$1"', join(generation, 'tree'));
     if (!HEX.test(result) || result !== publication.get('snapshot')) throw new Error('published dependency generation drift');
@@ -132,6 +140,7 @@ export async function bindFrozenDependencyGeneration(root: string, sourceCommit:
       if (hash(await readFile(join(root, path))) !== digest) throw new Error('committed dependency input changed');
     }
     await assertSnapshot();
+    await assertOutputs();
     await assertTreeCensus();
     for (const [tree, digest] of projections) {
       if (hash(await projection(join(root, tree))) !== digest) throw new Error('materialized dependency tree changed while binding');

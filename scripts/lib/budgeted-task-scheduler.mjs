@@ -500,6 +500,13 @@ function readCustodyManifest(pin, read) {
  * `expected` is the independent routing contract, including conditional objects.
  * Every auxiliary object needs a role and a producer-backed applicability state. */
 export function retainNativeProofPacket(directory, input) {
+  const startedAt = performance.now();
+  const progress = (phase, detail = {}) => {
+    // Diagnostics must not change custody, including when an output sink fails.
+    try { input.onProgress?.({ phase, elapsedMs: Math.round(performance.now() - startedAt), ...detail }); }
+    catch { /* the independently verified packet remains authoritative */ }
+  };
+  progress('capture-start');
   custodyIdentity(input.identity); custodyPopulation(input.expected);
   mkdirSync(directory, { recursive: true, mode: 0o700 });
   const root = custodyDirectory(directory, true);
@@ -586,6 +593,7 @@ export function retainNativeProofPacket(directory, input) {
     if (!observed || observed.out !== expected.out) gaps.push(`${expected.id}:group-binding-missing`);
     if (observed?.captureComplete === false) gaps.push(`${expected.id}:child-stream-capture-incomplete`);
     for (const [family, suffix] of [['A', ''], ['B', '.modules'], ['C', '.native-processes'], ['D', '.processes']]) {
+      progress('family-start', { group: expected.id, family });
       const entry = { family, state: 'unavailable', producer: expected.id, entries: [] };
       group.families.push(entry);
       if (!expected.armed || expected.runner !== 'vitest') {
@@ -644,6 +652,7 @@ export function retainNativeProofPacket(directory, input) {
         entry.state = entry.entries.length ? 'partial' : 'unavailable';
         gaps.push(expected.id + ':' + family + ':' + entry.reason);
       }
+      progress('family-complete', { group: expected.id, family, objectsRead: budget.objects, bytesRead: budget.bytes });
     }
     for (const spec of expected.auxiliary) {
       const entry = { ...spec };
@@ -661,6 +670,7 @@ export function retainNativeProofPacket(directory, input) {
     }
     return group;
   });
+  progress('metadata-start', { objectsRead: budget.objects, bytesRead: budget.bytes });
   const retainedSegments = segments.map(segment => ({ index: segment.index, ...custodyAccounting(segment.budget),
     artifact: store.persist(Buffer.from(JSON.stringify({ schemaVersion: 'native-proof-segment-v1',
       index: segment.index, entries: segment.entries })), 'native-segment.json') }));
@@ -677,21 +687,29 @@ export function retainNativeProofPacket(directory, input) {
       protocol: 'unqualified', producerRetirement: 'not-performed', cleanup: input.cleanup ?? 'unknown',
       nativeProof: 'unqualified', acceptance: 'unmeasured' } };
   const manifestPin = persistCustodyManifest(store, manifest);
+  progress('metadata-complete');
   // Segment/manifest metadata is separately object-bounded, not capture content.
-  for (const name of custodyInventory(objectRoot,
-    custodyLimits.objects + custodyArchiveLimits.segments + custodyMetadataParts + 1)) {
+  const syncNames = custodyInventory(objectRoot,
+    custodyLimits.objects + custodyArchiveLimits.segments + custodyMetadataParts + 1);
+  progress('sync-start', { total: syncNames.length });
+  for (const [index, name] of syncNames.entries()) {
     const fd = openSync(join(objectRoot, name), constants.O_RDONLY | constants.O_NOFOLLOW);
     try { fsyncSync(fd); } finally { closeSync(fd); }
+    // One bounded heartbeat per batch, rather than one line for each artifact.
+    if ((index + 1) % 128 === 0) progress('sync-progress', { completed: index + 1, total: syncNames.length });
   }
   for (const path of [objectRoot, root, dirname(root)]) {
     const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
     try { fsyncSync(fd); } finally { closeSync(fd); }
   }
+  progress('sync-complete', { completed: syncNames.length, total: syncNames.length });
   // Keep the producer's observed inventory and partial states in the original
   // locator. A newly sealed manifest cannot redefine which objects were captured.
   const locator = { manifest: manifestPin, identity: input.identity, expectedHash: manifest.expectedHash,
     inventoryHash: custodyHash({ groups, gaps, segments: retainedSegments }) };
+  progress('verification-start');
   const verified = verifyNativeProofPacket(root, locator, { identity: input.identity, expected: input.expected });
+  progress('verification-complete', { status: verified.status });
   return { directory: root, locator, ...verified };
 }
 

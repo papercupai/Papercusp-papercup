@@ -91,7 +91,8 @@ vi.mock('@papercusp/db-org', async (orig) => ({
   getOrgPg: () => ({ sql: sqlMock }),
 }));
 
-vi.mock('./issues-engineer', () => ({
+vi.mock('./issues-engineer', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./issues-engineer')>()),
   issuesScopeWorkspace: () => 'test-workspace',
   issuesOutLinksMany: async () => new Map(),
   issuesSupersededByRevision: async () => new Set<string>(),

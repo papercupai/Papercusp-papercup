@@ -1,6 +1,6 @@
 import { createHash, generateKeyPairSync, sign } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { expect, it } from 'vitest';
@@ -111,6 +111,7 @@ it('native consumer verifies real dual signatures, actual bytes, identities and 
       '[workspace]', '[lib]', 'path="driver.rs"', '[dependencies]',
       'base64="=0.22.1"', 'minisign-verify="=0.2.5"', 'sha2="=0.10.9"',
       'serde={version="1",features=["derive"]}', 'serde_json="1"', 'libc="0.2"',
+      'object={version="=0.37.3",default-features=false,features=["read","std"]}',
     ].join('\n'));
     writeFileSync(join(root, 'driver.rs'), `
 #[path = ${JSON.stringify(source)}] mod update_authorization;
@@ -156,3 +157,101 @@ it('native consumer verifies real dual signatures, actual bytes, identities and 
     rmSync(root, { recursive: true, force: true });
   }
 }, 180_000);
+
+it('extracts actual build inputs from a compiled native image and refuses decoys or malformed sections', () => {
+  const root = mkdtempSync(join(tmpdir(), 'tauri-update-candidate-'));
+  try {
+    const osNames: Record<string, string> = { linux: 'linux', darwin: 'darwin', win32: 'windows' };
+    const platform = `${osNames[process.platform]}-${process.arch === 'arm64' ? 'aarch64' : 'x86_64'}`;
+    const inputs = {
+      schema: 'tauri-update-inputs-v1', policy: '{"effect":"bounded"}', configuration: '{"product":"gui"}',
+      sourceRevision: 'd'.repeat(40), version: '1.2.3', product: 'gui', platform, authorId: 'author-principal',
+    };
+    const section = process.platform === 'darwin' ? '__DATA,__pcupd' : '.pcupd';
+    const compile = (name: string, payload: string, options: { decoy?: boolean; duplicate?: boolean } = {}) => {
+      const data = join(root, `${name}.json`);
+      const source = join(root, `${name}.rs`);
+      const binary = join(root, `${name}${process.platform === 'win32' ? '.exe' : ''}`);
+      writeFileSync(data, payload);
+      const size = Buffer.byteLength(payload);
+      const attr = options.decoy ? '' : `#[link_section=${JSON.stringify(section)}]`;
+      writeFileSync(source, `${attr}\n#[used] static INPUTS:[u8;${size}]=*include_bytes!(${JSON.stringify(data)});
+${options.duplicate ? `#[link_section=${JSON.stringify(process.platform === 'darwin' ? '__DATA,.pcupd' : '__pcupd')}]\n#[used] static SECOND:[u8;${size}]=*include_bytes!(${JSON.stringify(data)});` : ''}
+fn main(){ std::hint::black_box(&INPUTS); ${options.duplicate ? 'std::hint::black_box(&SECOND);' : ''} }
+`);
+      const result = spawnSync('rustc', ['--edition=2021', '--crate-name', 'candidate_fixture', source, '-o', binary],
+        { encoding: 'utf8', timeout: 30_000 });
+      expect(result.status, String(result.error || result.stderr)).toBe(0);
+      return binary;
+    };
+    const valid = compile('valid', JSON.stringify(inputs));
+    const variants: Array<[string, string, { decoy?: boolean; duplicate?: boolean }?]> = [
+      ['decoy outside provenance section', JSON.stringify(inputs), { decoy: true }],
+      ['two provenance sections', JSON.stringify(inputs), { duplicate: true }],
+      ['oversized section', ' '.repeat(1024 * 1024 + 1)],
+      ['unknown field', JSON.stringify({ ...inputs, ignored: true })],
+      ['reordered fields', JSON.stringify(Object.fromEntries(Object.entries(inputs).reverse()))],
+      ['duplicate field', JSON.stringify(inputs).replace('{', '{"schema":"tauri-update-inputs-v1",')],
+      ['wrong schema', JSON.stringify({ ...inputs, schema: 'unknown' })],
+      ['wrong platform identity', JSON.stringify({ ...inputs, platform: 'darwin-universal' })],
+      ['invalid source identity', JSON.stringify({ ...inputs, sourceRevision: 'dirty' })],
+      ['invalid author identity', JSON.stringify({ ...inputs, authorId: 'author principal' })],
+      ['nonobject policy', JSON.stringify({ ...inputs, policy: '[]' })],
+      ['nonobject configuration', JSON.stringify({ ...inputs, configuration: 'null' })],
+    ];
+    const images = variants.map(([name, payload, options], i) => ({ name, path: compile(`bad_${i}`, payload, options) }));
+    const fixtures = join(root, 'images.json');
+    writeFileSync(fixtures, JSON.stringify({ valid, inputs, images, artifactSha256: createHash('sha256').update(readFileSync(valid)).digest('hex') }));
+    const source = resolve(__dirname, '../../../../papercusp-desktop/src-tauri/src/update_authorization.rs');
+    writeFileSync(join(root, 'Cargo.toml'), [
+      '[package]', 'name="update-candidate-native-regression"', 'version="0.0.0"', 'edition="2021"',
+      '[workspace]', '[lib]', 'path="driver.rs"', '[dependencies]',
+      'base64="=0.22.1"', 'minisign-verify="=0.2.5"', 'sha2="=0.10.9"',
+      'serde={version="1",features=["derive"]}', 'serde_json="1"', 'libc="0.2"',
+      'object={version="=0.37.3",default-features=false,features=["read","std"]}',
+    ].join('\n'));
+    writeFileSync(join(root, 'driver.rs'), `
+#[path = ${JSON.stringify(source)}] mod update_authorization;
+#[cfg(test)] mod tests {
+    use super::update_authorization::extract_binary_inputs;
+    use sha2::{Digest,Sha256};
+    #[test] fn actual_compiled_image_and_negative_containers() {
+        let fixtures:serde_json::Value=serde_json::from_str(include_str!(${JSON.stringify(fixtures)})).unwrap();
+        let input=&fixtures["inputs"];
+        let platform=input["platform"].as_str().unwrap();
+        let bytes=std::fs::read(fixtures["valid"].as_str().unwrap()).unwrap();
+        let extracted=extract_binary_inputs(&bytes,platform).unwrap();
+        let candidate=extracted.candidate(&bytes);
+        assert_eq!(candidate.policy,input["policy"].as_str().unwrap().as_bytes());
+        assert_eq!(candidate.configuration,input["configuration"].as_str().unwrap().as_bytes());
+        assert_eq!(candidate.source_revision,input["sourceRevision"].as_str().unwrap());
+        assert_eq!(candidate.version,input["version"].as_str().unwrap());
+        assert_eq!(candidate.product,input["product"].as_str().unwrap());
+        assert_eq!(candidate.platform,platform);
+        assert_eq!(candidate.author_id,input["authorId"].as_str().unwrap());
+        assert_eq!(format!("{:x}",Sha256::digest(candidate.artifact)),fixtures["artifactSha256"].as_str().unwrap());
+        assert!(extract_binary_inputs(&bytes[..32],platform).is_err());
+        assert!(extract_binary_inputs(&bytes,"unknown").is_err());
+        let other=if platform=="linux-aarch64" {"linux-x86_64"}else{"linux-aarch64"};
+        assert!(extract_binary_inputs(&bytes,other).is_err());
+        let mut with_decoy=bytes.clone();
+        with_decoy.extend_from_slice(b"manifest-supplied policy/configuration digests are not build inputs");
+        assert_eq!(extract_binary_inputs(&with_decoy,platform).unwrap().candidate(&with_decoy).policy,candidate.policy);
+        for image in fixtures["images"].as_array().unwrap() {
+            let bytes=std::fs::read(image["path"].as_str().unwrap()).unwrap();
+            assert!(extract_binary_inputs(&bytes,platform).is_err(),"{}",image["name"]);
+            println!("native-extraction-refused: {}",image["name"]);
+        }
+        println!("native-extraction: actual compiled image and exact bytes");
+    }
+}
+`);
+    const result = spawnSync('cargo', ['test', '--offline', '--manifest-path', join(root, 'Cargo.toml'), 'actual_compiled_image_and_negative_containers', '--', '--nocapture'],
+      { encoding: 'utf8', timeout: 120_000, env: { ...process.env, CARGO_TARGET_DIR: join(root, 'target') } });
+    expect(result.status, String(result.error || result.stderr || result.stdout)).toBe(0);
+    expect(result.stdout).toContain('native-extraction: actual compiled image and exact bytes');
+    for (const [name] of variants) expect(result.stdout).toContain(`native-extraction-refused: "${name}"`);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}, 240_000);

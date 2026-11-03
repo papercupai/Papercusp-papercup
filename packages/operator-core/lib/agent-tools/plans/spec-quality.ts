@@ -407,6 +407,13 @@ function withoutPublicContractIdentifiers(behavior: string): string {
     /(\b(?:response|results?|payload)\s+(?:includes?|contains?|returns?)\s+)([A-Za-z_$][A-Za-z0-9_$]*)/gi,
     (_match, prefix: string, field: string) => prefix + ' '.repeat(field.length),
   );
+  // A recorded field with a literal value describes public data, just as a
+  // response field does. Require a data subject and the quoted value; mask only
+  // this occurrence so a helper or later use of the same name still fails.
+  text = text.replace(
+    /(\b(?:scorecard|criterion|rating|receipt|record|row|payload|response|result|assessment|entry)\b[^.;\n]{0,160}?\b(?:recorded|stored|persisted|returned)\s+with\s+)([a-z_$][A-Za-z0-9_$]*[A-Z][A-Za-z0-9_$]*)(?=\s+(?:'[^'\r\n]+'|"[^"\r\n]+"))/gi,
+    (_match, prefix: string, field: string) => prefix + ' '.repeat(field.length),
+  );
   // Names in persisted/public records are observable even when an observation
   // describes a missing or lost field instead of a successful response. Stop
   // before explanatory clauses so a private helper later in the sentence is

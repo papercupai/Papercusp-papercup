@@ -387,24 +387,37 @@ describe('test-files router', () => {
   });
 
   it('keeps the explicit private receipt sink separate from product database discovery', () => {
-    for (const key of ['PAPERCUSP_TEST_RUN_RECEIPT_FILE', 'PC_EXECUTED_SOURCE_MAP_RESULT']) {
+    for (const key of ['PAPERCUSP_TEST_RUN_RECEIPT_FILE', 'PC_EXECUTED_SOURCE_MAP_RESULT', 'PC_EXECUTED_SOURCE_MAP_OUT']) {
       expect(() => assertPrivateIntegrationEvidence({ [key]: '/tmp/receipt',
         HARNESS_ADMIN_DATABASE_URL: 'postgresql://product.invalid/db' }))
         .toThrow('PAPERCUSP_TEST_RUNS_DB_URL is required for durable isolated test receipts');
       expect(() => assertPrivateIntegrationEvidence({ [key]: '/tmp/receipt',
-        PAPERCUSP_TEST_RUNS_DB_URL: ' postgresql://ledger.invalid/evidence ' })).not.toThrow();
+        PAPERCUSP_TEST_RUNS_DB_URL: ' postgresql://ledger.invalid/evidence ',
+        PAPERCUSP_TEST_RUN_WORKSPACE: 'caller-workspace' })).not.toThrow();
     }
     expect(() => assertPrivateIntegrationEvidence({})).not.toThrow();
+  });
+
+  it('requires caller attribution before preparing private shared-ledger evidence', () => {
+    const sink = { PAPERCUSP_TEST_RUNS_DB_URL: 'postgresql://ledger.invalid/evidence' };
+    expect(() => assertPrivateIntegrationEvidence(sink)).toThrow(/nonblank caller workspace/);
+    for (const key of ['PAPERCUSP_TEST_RUN_WORKSPACE', 'PAPERCUSP_WORKSPACE_ID', 'PAPERCUSP_WORKSPACE']) {
+      expect(() => assertPrivateIntegrationEvidence({ ...sink, [key]: 'caller-workspace' })).not.toThrow();
+      expect(() => assertPrivateIntegrationEvidence({ ...sink, [key]: ' ' })).toThrow(/nonblank caller workspace/);
+    }
+    expect(() => assertPrivateIntegrationEvidence({ ...sink, PAPERCUSP_TEST_RUN_WORKSPACE: ' ',
+      PAPERCUSP_WORKSPACE: 'fallback-workspace' })).toThrow(/nonblank caller workspace/);
   });
 
   it.each([
     { sink: undefined, evidence: 'PAPERCUSP_TEST_RUN_RECEIPT_FILE', reason: 'is required for durable isolated test receipts' },
     { sink: undefined, evidence: 'PC_EXECUTED_SOURCE_MAP_RESULT', reason: 'is required for durable isolated test receipts' },
+    { sink: undefined, evidence: 'PC_EXECUTED_SOURCE_MAP_OUT', reason: 'is required for durable isolated test receipts' },
     { sink: ' ', evidence: 'PAPERCUSP_TEST_RUN_RECEIPT_FILE', reason: 'must not be blank' },
     { sink: 'https://secret:never-print-this@ledger.invalid/evidence', evidence: 'PAPERCUSP_TEST_RUN_RECEIPT_FILE', reason: 'must be a valid PostgreSQL URL' },
   ])('refuses private proof before source copying for $evidence / $reason', async ({ sink, evidence, reason }) => {
     const keys = ['NODE_OPTIONS', 'PAPERCUSP_TEST_RUNS_DB_URL', 'PAPERCUSP_TEST_RUN_RECEIPT_FILE',
-      'PC_EXECUTED_SOURCE_MAP_RESULT'];
+      'PC_EXECUTED_SOURCE_MAP_RESULT', 'PC_EXECUTED_SOURCE_MAP_OUT', 'PC_EXECUTED_SOURCE_MAP_WORKSPACE'];
     const previous = Object.fromEntries(keys.map(key => [key, process.env[key]]));
     const preflight = vi.fn(), frozen = vi.fn(), list = vi.fn(), run = vi.fn();
     const warning = vi.spyOn(console, 'error').mockImplementation(() => {});
@@ -413,6 +426,8 @@ describe('test-files router', () => {
       for (const key of keys.slice(1)) delete process.env[key];
       if (sink !== undefined) process.env.PAPERCUSP_TEST_RUNS_DB_URL = sink;
       process.env[evidence] = '/tmp/private-proof-test-receipt';
+      if (evidence === 'PC_EXECUTED_SOURCE_MAP_OUT')
+        process.env.PC_EXECUTED_SOURCE_MAP_WORKSPACE = '@papercusp/router-fixture';
       const file = 'packages/operator-core/lib/release/grading-audit-runtime.integration.test.ts';
       expect(await main([resolve(REPO_ROOT, file)], {
         restrictedHoldPreflightImpl: () => ({ verdict: 'admit' }),
@@ -1528,6 +1543,30 @@ describe('Vitest main-process close timeout is a finalization error', () => {
       rmSync(dir, { recursive: true, force: true });
     }
   }, 60_000);
+
+  it('focused source-preview export case group exits without server or worker teardown leaks', () => {
+    const target = 'packages/operator-core/lib/source-preview-export.test.ts';
+    const run = spawnSync(process.execPath, [
+      join(REPO_ROOT, 'scripts/test-files.mjs'),
+      target,
+      '-t', 'source-preview export',
+      '--reporter=default',
+      '--reporter=hanging-process',
+    ], {
+      cwd: REPO_ROOT,
+      env: { ...process.env, PAPERCUSP_TEST_RUN_HARNESS: 'papercusp' },
+      encoding: 'utf8',
+      timeout: 90_000,
+      maxBuffer: 4 * 1024 * 1024,
+    });
+    const output = `${run.stdout}\n${run.stderr}`;
+    expect(run.error, output).toBeUndefined();
+    expect(run.status, output).toBe(0);
+    expect(output).toMatch(/TEST_FILE_RESULT requested=\d+ executed=1 matched=1 status=passed\b/);
+    expect(output).not.toContain('TEST_FILE_CLOSE_TIMEOUT_FINALIZATION_ERROR');
+    expect(output).not.toContain('TEST_FILE_WORKER_TERMINATION_FINALIZATION_ERROR');
+    expect(output).not.toMatch(/Tests closed successfully but something prevents (?:Vite server|2 Vite servers|the main process) from exiting/);
+  }, 120_000);
 });
 
 describe('collection child identity evidence (WI-10007991)', () => {
@@ -3774,7 +3813,7 @@ describe('governed admission refusal terminal marker (EI-21984099786606751)', ()
       pid: 424242, stdout: new PassThrough(), stderr: new PassThrough(),
     });
     const events: string[] = [];
-    const forwarders = new Map<string, Function>();
+    const forwarders = new Map<string | symbol, Function>();
     const once = vi.spyOn(process, 'once');
     mockImplementationTyped(once, (signal, handler) => {
       forwarders.set(signal, handler); return process;

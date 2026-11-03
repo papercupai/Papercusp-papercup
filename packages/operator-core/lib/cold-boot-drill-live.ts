@@ -139,6 +139,19 @@ export interface ColdBootDrillHostEvent {
   drillId?: string;
   sessionClass?: string;
   nativeId?: string | null;
+  nativeRef?: string | null;
+  turnStartVerified?: boolean;
+  managedCarryLineage?: {
+    ownerId?: string;
+    advSessionId?: number;
+    hostStartedAt?: number;
+    sourceNativeId?: string | null;
+    sourceNativeRef?: string | null;
+    sourceChildGeneration?: number;
+    targetChildGeneration?: number;
+    targetNativeId?: string | null;
+    targetNativeRef?: string | null;
+  };
   mode?: string;
   launchContextPath?: string | null;
   reason?: string;

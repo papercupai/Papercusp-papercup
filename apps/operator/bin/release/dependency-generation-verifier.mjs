@@ -59,7 +59,8 @@ export function buildInputs(root) {
       { cwd: repo, maxBuffer: 64 * 1024 * 1024 }).toString().split('\0').filter(Boolean);
     for (const name of names) {
       const path = prefix + name;
-      if (path.split('/').some(p => ['node_modules', 'dist', '.papercusp', '.next'].includes(p))) continue;
+      if (path.split('/').some(p => ['node_modules', 'dist', '.papercusp', '.next'].includes(p)
+        || p.startsWith('.verifier-') || p.startsWith('.papercusp-'))) continue;
       const file = safe(root, path), stat = lstatSync(file);
       if (stat.isDirectory()) {
         if (existsSync(join(file, '.git'))) visit(file, path + '/');
@@ -79,7 +80,9 @@ export function buildWorkspace(root, packagePath, command) {
   // which the producer did not emit in this invocation.
   rmSync(safe(root, output), { recursive: true, force: true });
   const result = spawnSync(command[0], command.slice(1), { cwd: packageDir, stdio: 'inherit' });
-  if (result.error || result.status !== 0) fail('build-failed:' + packagePath);
+  if (result.error || result.status !== 0)
+    fail('build-failed:' + packagePath + ':status=' + result.status + ':signal=' + result.signal
+      + ':error=' + (result.error?.message ?? 'none'));
   equal(buildInputs(root), before, 'source-changed-during-build:' + packagePath);
   const outputs = files(root, output);
   if (!outputs.length) fail('empty-output:' + output);
@@ -112,21 +115,35 @@ function checkWorkspace(root, entry, sourceRoot = root) {
   equal(files(root, entry.output), entry.outputs, 'stale-workspace-output:' + entry.output);
 }
 
+function workspaceRequirements(root) {
+  const required = [];
+  for (const path of manifests(root)) {
+    const pkg = JSON.parse(readFileSync(join(root, path), 'utf8'));
+    const bins = typeof pkg.bin === 'string' ? [pkg.bin] : Object.values(pkg.bin || {});
+    const targets = bins.filter(bin => typeof bin === 'string' && /^(\.\/)?dist\//.test(bin));
+    if (!targets.length) continue;
+    const packagePath = dirname(path), output = packagePath + '/dist';
+    for (const target of targets) safe(root, packagePath + '/' + target.replace(/^\.\//, ''));
+    // Tracked output already belongs to the independently verified source.
+    // Git absence/errors never waive generated-output custody.
+    const tracked = targets.every(target => spawnSync('git', ['ls-files', '--error-unmatch', '--', target],
+      { cwd: join(root, packagePath), stdio: 'ignore' }).status === 0);
+    if (!tracked) required.push({ path, packagePath, output, targets });
+  }
+  return required;
+}
+
 export function captureClosure(root) {
   root = realpathSync(root);
   const workspaces = [];
   try {
-    for (const path of manifests(root)) {
-      const pkg = JSON.parse(readFileSync(join(root, path), 'utf8'));
-      const bins = typeof pkg.bin === 'string' ? [pkg.bin] : Object.values(pkg.bin || {});
-      if (!bins.some(bin => typeof bin === 'string' && /^(\.\/)?dist\//.test(bin))) continue;
-      const packagePath = dirname(path), output = packagePath + '/dist';
+    for (const { path, packagePath, output, targets } of workspaceRequirements(root)) {
       const receipt = JSON.parse(readFileSync(safe(root, output + '/' + RECEIPT), 'utf8'));
       if (receipt.schema !== 1 || receipt.packagePath !== packagePath) fail('invalid-build-receipt:' + path);
       const entry = { output, inputs: receipt.inputs, outputs: receipt.outputs };
       checkWorkspace(root, entry);
-      for (const bin of bins) {
-        if (typeof bin !== 'string' || !/^(\.\/)?dist\//.test(bin)) continue;
+      equal(buildInputs(root), receipt.inputs, 'build-source-population-changed:' + path);
+      for (const bin of targets) {
         if (!receipt.outputs.some(file => file.path === packagePath + '/' + bin.replace(/^\.\//, '')))
           fail('missing-workspace-bin:' + path);
       }
@@ -149,14 +166,21 @@ export function captureClosure(root) {
   }
 }
 
-export function verifyClosure(generation, sourceRoot, copy = false) {
+export function verifyClosure(generation, sourceRoot, copy = false, materialized = false) {
   generation = realpathSync(generation); sourceRoot = realpathSync(sourceRoot);
   const closure = JSON.parse(readFileSync(join(generation, CLOSURE), 'utf8'));
   if (closure.schema !== 1 || closure.complete !== true || !Array.isArray(closure.workspaces)) fail('incomplete-closure');
   const tree = join(generation, 'tree');
+  // The lock/patch selector alone cannot bind a source package's new bin.
+  // Check the selected requirement census even when the producer had none.
+  equal(workspaceRequirements(sourceRoot).map(row => row.output).sort(),
+    closure.workspaces.map(row => row.output).sort(), 'workspace-requirements-mismatch');
+  const population = closure.workspaces.length ? buildInputs(sourceRoot) : null;
   for (const entry of closure.workspaces) {
     if (!entry.output.endsWith('/dist')) fail('invalid-output-path');
     checkWorkspace(tree, entry, sourceRoot);
+    if (materialized) checkWorkspace(sourceRoot, entry);
+    equal(population, entry.inputs, 'selected-source-population-mismatch:' + entry.output);
   }
   const desktop = closure.desktop;
   if (existsSync(join(sourceRoot, 'papercusp-desktop/package.json'))) {
@@ -176,11 +200,25 @@ export function verifyClosure(generation, sourceRoot, copy = false) {
   return closure;
 }
 
+function stageClosure(generation, sourceRoot) {
+  const closure = JSON.parse(readFileSync(join(generation, CLOSURE), 'utf8'));
+  if (!closure.complete) return;
+  for (const entry of closure.workspaces) {
+    checkWorkspace(sourceRoot, entry);
+    const dest = safe(join(generation, 'tree'), entry.output);
+    mkdirSync(dirname(dest), { recursive: true });
+    cpSync(safe(sourceRoot, entry.output), dest, { recursive: true, dereference: false, errorOnExist: true, force: false });
+  }
+  verifyClosure(generation, sourceRoot);
+}
+
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const [command, root, dest] = process.argv.slice(2);
   try {
     if (command === 'capture') console.log(JSON.stringify(captureClosure(root)));
-    else if (command === 'verify' || command === 'copy') verifyClosure(root, dest, command === 'copy');
+    else if (command === 'stage') stageClosure(root, dest);
+    else if (command === 'verify' || command === 'copy' || command === 'verify-materialized')
+      verifyClosure(root, dest, command === 'copy', command === 'verify-materialized');
     else if (command === 'build') buildWorkspace(root, dest, process.argv.slice(6));
     else fail('unknown-command');
   } catch (error) { console.error(error.message); process.exitCode = 74; }

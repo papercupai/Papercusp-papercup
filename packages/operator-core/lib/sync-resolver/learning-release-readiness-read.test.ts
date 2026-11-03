@@ -96,7 +96,8 @@ describe('readReleaseReadiness', () => {
     });
     expect(snap.errors).toBeUndefined();
     expect(getRubric).toHaveBeenCalledWith(RELEASE_READINESS_RUBRIC_ID);
-    expect(listScorecardPage).toHaveBeenCalledWith({ rubricRef: RELEASE_READINESS_RUBRIC_ID, limit: 100 });
+    expect(listScorecardPage).toHaveBeenCalledWith({ rubricRef: RELEASE_READINESS_RUBRIC_ID, limit: 100,
+      finalizedOnly: true });
   });
 
   it('a newer diagnostic cannot hide the latest finalized failure', async () => {

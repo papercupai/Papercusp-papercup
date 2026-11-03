@@ -2,10 +2,10 @@
 import assert from 'node:assert/strict';
 import type { ChildProcess } from 'node:child_process';
 import { execFileSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { appendFileSync, closeSync, existsSync, openSync, readFileSync, readlinkSync, statSync, writeFileSync, writeSync } from 'node:fs';
-import { writeFile } from 'node:fs/promises';
-import { hostname } from 'node:os';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { hostname, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parse as parseToml } from '@iarna/toml';
 import { defaultEvidenceRoot, runHarness } from '@papercusp/verification-harness';
@@ -73,10 +73,64 @@ export async function withIsolatedIntegrationSourceObserver<T>(
 /** Shared with the cheap context guard so the expensive fixture uses the tested API. */
 export const isolatedIntegrationCases = it.for([false, true]);
 
+/** Exercise the maintained Docker startup path before compiling a private API.
+ * This is a prerequisite receipt, not native delivery or a Docker latency fix.
+ * The relay has no model service and readiness sends no endpoint requests. */
+export async function preflightCurrentSuNativeEgress(evidenceDir: string,
+  exec?: import('../lib/external-bench/grader/swe-bench-pro').ProcExec) {
+  const { startBenchEgress, sweepBenchEgress } = await import('../lib/external-bench/bench-egress');
+  const execute = exec ?? (await import('../lib/external-bench/grader/index')).liveProcExec;
+  const runId = 'native-preflight-' + randomUUID();
+  const workRoot = await mkdtemp(join(tmpdir(), 'pc-egr-check-'));
+  const commands: Array<{ args: string[]; elapsedMs: number; code?: number; error?: string }> = [];
+  const measured: NonNullable<typeof exec> = async (command, args, options) => {
+    const startedAt = performance.now();
+    try {
+      const result = await execute(command, args, options);
+      commands.push({ args: [...args], elapsedMs: performance.now() - startedAt, code: result.code });
+      return result;
+    } catch (error) {
+      commands.push({ args: [...args], elapsedMs: performance.now() - startedAt, error: String(error) });
+      throw error;
+    }
+  };
+  let egress: Awaited<ReturnType<typeof startBenchEgress>> | undefined;
+  let failure: unknown;
+  let relayConnections: number | null = null;
+  const cleanupErrors: string[] = [];
+  const receiptPath = join(evidenceDir, 'native-egress-preflight.json');
+  // Persist the exact scoped cleanup key before the first Docker allocation.
+  await writeFile(receiptPath, JSON.stringify({ runId, workRoot, status: 'starting' }));
+  try {
+    for (const image of ['alpine', 'nginx:alpine']) {
+      const result = await measured('docker', ['image', 'inspect', image], { timeoutMs: 15_000 });
+      assert.equal(result.code, 0, 'Native egress prerequisite requires local image ' + image);
+    }
+    egress = await startBenchEgress({ runId, workRoot, exec: measured,
+      endpoints: [{ name: 'gw', listenPort: 8788, targetPort: 9 },
+        { name: 'mcp', listenPort: 9071, targetPort: 9 }] });
+    relayConnections = Object.values(egress.stats()).reduce((sum, value) => sum + value.connections, 0);
+    assert.equal(relayConnections, 0, 'Native egress prerequisite must send no model or MCP request');
+  } catch (error) { failure = error; }
+  finally {
+    try {
+      if (egress) cleanupErrors.push(...(await egress.stop()).errors);
+      cleanupErrors.push(...(await sweepBenchEgress(runId, measured)).errors);
+    } catch (error) { cleanupErrors.push(String(error)); }
+    await rm(workRoot, { recursive: true, force: true });
+    await writeFile(receiptPath, JSON.stringify({ runId, workRoot, observedAt: new Date().toISOString(),
+      status: failure || cleanupErrors.length ? 'failed' : 'ready', commands, relayConnections,
+      cleanupErrors, ...(failure ? { error: String(failure) } : {}) }, null, 2));
+  }
+  if (failure) throw failure;
+  assert.deepEqual(cleanupErrors, [], 'Native egress prerequisite cleanup must complete');
+}
+
 /** The model-request census is produced only by the managed-carry protocol. */
 export function currentSuNativeRetainedArtifacts(managedCarry: boolean): string[] {
   return [
     'phases/prepare/operator-api-build.log', 'phases/prepare/operator-api-build-result.json',
+    'phases/prepare/native-egress-preflight.json',
     ...(managedCarry ? ['phases/execute/native-model-requests.json'] : []),
     'phases/prepare/bundle-restricted-hold-inputs.json',
     'phases/prepare/hono-host.mjs.build-steps.jsonl',

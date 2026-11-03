@@ -5,10 +5,11 @@ import { join, resolve } from 'node:path';
 import { mkdir, rm, symlink } from 'node:fs/promises';
 import { readdirSync } from 'node:fs';
 import { expect, it, type TestContext } from 'vitest';
+import { defaultEvidenceRoot, runHarness } from '@papercusp/verification-harness';
 import type {} from '../../test/current-su-native-http-scenario';
 import type {} from '../../test/staging-first-http-fixture';
 import { captureIsolatedWorker, currentSuNativeRetainedArtifacts, isolatedWorkerFailureDetail, isolatedWorkerOptions,
-  recordIsolatedIntegrationProof } from '../../test/isolated-integration-proof';
+  preflightCurrentSuNativeEgress, recordIsolatedIntegrationProof } from '../../test/isolated-integration-proof';
 import { preparePrivateOperatorApiBundle } from '../../test/private-http-workspace-preflight';
 import { CC_HOOK_FILES } from '../desktop-install/papercusp-files';
 
@@ -49,6 +50,7 @@ async function nativeScenario(scenario: 'current-su-native' | 'current-su-native
     retainedArtifacts: [...currentSuNativeRetainedArtifacts(scenario !== 'current-su-native'),
       ...(scenario.includes('-frozen-carry-') ? ['phases/execute/native-frozen-carry-delivery.json'] : [])],
     prepare: async evidenceDir => {
+      await preflightCurrentSuNativeEgress(evidenceDir);
       // Compilation and every guard must finish before the disposable native
       // runtime/database exists. The worker consumes only these pinned bytes.
       // Completed build steps may renew the stall checkpoint up to the shared
@@ -110,9 +112,25 @@ async function nativeScenario(scenario: 'current-su-native' | 'current-su-native
   console.info('CURRENT_SU_NATIVE_PROOF_RUN ' + runId);
 }
 
+it('checks native egress startup without private API compilation or model requests', async context => {
+  const result = await runHarness({
+    contract: { name: 'native-egress-prerequisite', phases: [{ id: 'prepare' }] },
+    evidenceRoot: defaultEvidenceRoot('native-egress-prerequisite'),
+    retainedArtifacts: ['phases/prepare/native-egress-preflight.json'],
+    runPhase: async phase => {
+      await preflightCurrentSuNativeEgress(phase.evidenceDir);
+      return { ok: true };
+    },
+  });
+  Object.assign(context.task.meta, { papercuspNativeEgressRunId: result.runId });
+  console.info('CURRENT_SU_NATIVE_EGRESS_PROOF_RUN ' + result.runId);
+  expect(result.verdict, JSON.stringify({ runId: result.runId, phases: result.phases })).toBe('pass');
+}, 120_000);
+
 it('launches autonomous current-su through the native container adapter without provider forwarding',
   context => nativeScenario('current-su-native', context), options.testTimeoutMs);
 it('resumes current-su through its maintained host after managed native container compaction',
   context => nativeScenario('current-su-native-carry', context), options.testTimeoutMs);
-it.each(['on', 'off'] as const)('delivers frozen carry %s through a fresh native session at the same measured threshold',
-  (mode, context) => nativeScenario(`current-su-native-frozen-carry-${mode}`, context), options.testTimeoutMs);
+it.for(['on', 'off'] as const)('delivers frozen carry %s through a fresh native session at the same measured threshold',
+  { timeout: options.testTimeoutMs },
+  (mode, context) => nativeScenario(`current-su-native-frozen-carry-${mode}`, context));

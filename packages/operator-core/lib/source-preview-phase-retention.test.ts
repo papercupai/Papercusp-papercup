@@ -104,8 +104,8 @@ describe('verifier phase evidence retention', () => {
     const rows = readFileSync(path, 'utf8').trim().split('\n').map(line => JSON.parse(line));
     const progress = rows.filter(row => row.event === 'progress');
     expect(progress.map(row => row.progress)).toEqual([
-      { completedTrees: 0, totalTrees: 2, currentTree: trees[0] },
-      { completedTrees: 1, totalTrees: 2, currentTree: trees[1] },
+      { completedTrees: 0, totalTrees: 2, currentTree: trees[0], cacheHit: false },
+      { completedTrees: 1, totalTrees: 2, currentTree: trees[1], cacheHit: false },
     ]);
     expect(rows.at(-1).event).toBe('completed');
     expect(readVerifierPhaseMeasurements(path)['deps.postverify']).toBe(rows.at(-1).durationMs);

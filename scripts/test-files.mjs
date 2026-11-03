@@ -712,7 +712,11 @@ export async function createRouterProofCustody(groups, env, repoRoot) {
       return id;
     },
     finish() {
-      const result = retainNativeProofPacket(directory, { identity, expected, observations, execution: 'router-settled' });
+      const result = retainNativeProofPacket(directory, { identity, expected, observations, execution: 'router-settled',
+        onProgress: record => console.error('TEST_FILE_FINALIZATION ' + JSON.stringify({
+          pid: process.pid, phase: 'native-proof-custody', ...record, custodyDirectory: directory,
+        })),
+      });
       writeFileSync(join(directory, 'locator.json'), JSON.stringify(result.locator), { mode: 0o600 });
       console.log(`TEST_FILE_NATIVE_CUSTODY status=${result.status} directory=${JSON.stringify(directory)} manifest=${JSON.stringify(result.locator.manifest)}`);
       return result;
@@ -3570,8 +3574,14 @@ export function assertPrivateIntegrationEvidence(env = process.env) {
       throw new Error('PAPERCUSP_TEST_RUNS_DB_URL must be a valid PostgreSQL URL');
     }
   }
-  if ((env.PAPERCUSP_TEST_RUN_RECEIPT_FILE?.trim() || env.PC_EXECUTED_SOURCE_MAP_RESULT?.trim()) && !sink?.trim())
+  const durableEvidenceRequested = ['PAPERCUSP_TEST_RUN_RECEIPT_FILE',
+    'PC_EXECUTED_SOURCE_MAP_RESULT', 'PC_EXECUTED_SOURCE_MAP_OUT'].some(key => env[key]?.trim());
+  if (durableEvidenceRequested && !sink?.trim())
     throw new Error('PAPERCUSP_TEST_RUNS_DB_URL is required for durable isolated test receipts');
+  const workspace = (env.PAPERCUSP_TEST_RUN_WORKSPACE || env.PAPERCUSP_WORKSPACE_ID || env.PAPERCUSP_WORKSPACE)?.trim();
+  if ((env.PAPERCUSP_TEST_RUN_WORKSPACE !== undefined && !env.PAPERCUSP_TEST_RUN_WORKSPACE.trim())
+    || (sink?.trim() && !workspace))
+    throw new Error('isolated shared-ledger runs require a nonblank caller workspace (PAPERCUSP_TEST_RUN_WORKSPACE, PAPERCUSP_WORKSPACE_ID or PAPERCUSP_WORKSPACE)');
 }
 
 /** Select the maintained immutable command route before collecting a committed

@@ -28,12 +28,17 @@
  * stops a measured absence from occupying a menu seat.
  */
 import type { RouteResult, RoutingCandidate } from './relevance-router';
+import type { ResumeTarget } from '../agent-launch-core';
+import type { ConsultTranscriptProbe } from './resume-transcript-preflight';
 
 export interface SourceDispatchabilityObservation {
   ownerId: string;
   /** `false` = measured absence; `null` = unknown (kept); `true` = openable. */
   dispatchable: boolean | null;
   detail: string;
+  /** Keep the exact resolved incarnation after its candidate leaves the pool.
+   * The owner's latest session may be unrelated to the missing transcript. */
+  source?: Pick<ResumeTarget, 'agent' | 'sessionId' | 'advSessionId' | 'ownerId'>;
 }
 
 export type SourceDispatchabilityProbe = (
@@ -158,8 +163,18 @@ export async function probeConsultSourceDispatchable(
   if ('refusal' in source) {
     return { ownerId: candidate.ownerId, dispatchable: null, detail: source.refusal };
   }
-  const probe = await probeConsultResumeTranscript(source.target);
-  return { ownerId: candidate.ownerId, dispatchable: probe.dispatchable, detail: probe.detail };
+  const probe = await (probes.probeTranscript ?? probeConsultResumeTranscript)(source.target);
+  return {
+    ownerId: candidate.ownerId,
+    dispatchable: probe.dispatchable,
+    detail: probe.detail,
+    source: {
+      agent: source.target.agent,
+      sessionId: source.target.sessionId,
+      advSessionId: source.target.advSessionId,
+      ownerId: source.target.ownerId,
+    },
+  };
 }
 
 export interface SourceCooldownEvidence {
@@ -169,6 +184,7 @@ export interface SourceCooldownEvidence {
 }
 
 export interface SourceDispatchabilityProbes {
+  probeTranscript?: (target: ResumeTarget) => Promise<ConsultTranscriptProbe>;
   readCooldown?: (
     workspaceId: string,
     sourceOwnerId: string,

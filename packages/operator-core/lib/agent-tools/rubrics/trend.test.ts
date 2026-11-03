@@ -36,7 +36,8 @@ describe('rubrics:trend public reference contract', () => {
 describe('rubrics:trend observation age contract', () => {
   it('forwards the validated explicit horizon and returns the age verdict', async () => {
     const result = {
-      rubricRef: 'test-rubric', scorecardCount: 0, sample: { limit: 500, inputCount: 0 }, window: {}, criteria: [],
+      rubricRef: 'test-rubric', scorecardCount: 0,
+      sample: { limit: 500, inputCount: 0, examinedCount: 0, hasMore: false, excludedCounts: {} }, window: {}, criteria: [],
       unknownBreakdown: { total: 0, graderIncomplete: 0, instrumentUnavailable: 0, byReason: {} },
       supersededExcluded: 0, preContractResetExcluded: 0, provisionalExcluded: 0, gradingAuditPendingExcluded: 0,
       staleness: { stale: false, staleCriteria: [], judgedCriteria: 0, assessed: false, reason: 'empty' },

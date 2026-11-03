@@ -34,7 +34,17 @@
  * unit-tested without a host. The row reader is the EXISTING
  * `readOwnerHostEvents` — deliberately not a second reader of the same file.
  */
+import { open } from 'node:fs/promises';
+import { isAbsolute } from 'node:path';
 import { readOwnerHostEvents, type ColdBootDrillHostEvent } from './cold-boot-drill-live';
+import { parseUserTurns } from './turn-provenance/turn-ref';
+import {
+  ledgerTtlMs,
+  parseCodexStopHookEnvelope,
+  parseEnvelope,
+  payloadSha256,
+  readLedgerRowsAsync,
+} from './turn-provenance/turn-provenance';
 
 /** Host event kinds that constitute the carry-respawn lifecycle, in the order a
  *  successful respawn emits them. Anything else in the log (wake deferrals,
@@ -66,12 +76,14 @@ const RESPAWN_IN_FLIGHT = new Set([
  */
 const RESPAWN_RETIRED_REASON = 'superseded';
 
-export type PriorRespawnOutcome = 'delivered' | 'dropped' | 'pending' | 'none';
+export type PriorRespawnOutcome = 'delivered' | 'delivered-unverified' | 'dropped' | 'pending' | 'none';
 
 export interface PriorRespawn {
-  /** delivered = the successor received its continuation; dropped = it
-   * terminally failed; pending = the cut or its first prompt is still awaiting
-   * delivery; none = this session has no respawn history. */
+  /** delivered = the successor received its continuation; delivered-unverified
+   * means the native transcript proves submission but the matching origin nonce
+   * expired, so delivery is known without granting origin authority. dropped =
+   * terminal failure; pending = the cut or first prompt awaits delivery; none =
+   * this session has no respawn history. */
   outcome: PriorRespawnOutcome;
   /** The host's own reason string on a drop (busy-gate-expired / carry-stale /
    *  rearm-error / turn-start-unverified), when it recorded one. `superseded` never
@@ -85,6 +97,8 @@ export interface PriorRespawn {
   /** One wait interval stamped by the host. Production can retry across several
    * intervals, so this is NOT the request lifetime or proof of controller death. */
   capMs?: number | null;
+  /** Evidence that an expired-origin prompt was submitted to its managed successor. */
+  deliveryEvidence?: 'native-transcript-expired-origin';
 }
 
 export interface RespawnIncarnation {
@@ -92,12 +106,10 @@ export interface RespawnIncarnation {
   startedAtMs: number | null;
 }
 
-/** Keep owner-log history from a prior native child out of the current banner. */
-export function deriveCurrentIncarnationRespawnOutcome(
+function rowsForCurrentIncarnation(
   rows: ColdBootDrillHostEvent[],
   incarnation: RespawnIncarnation,
-  opts: { now?: number } = {},
-): PriorRespawn {
+): ColdBootDrillHostEvent[] {
   const nativeId = incarnation.nativeSessionId;
   const matchingBirthTimes = nativeId
     ? rows
@@ -111,14 +123,24 @@ export function deriveCurrentIncarnationRespawnOutcome(
   const startMs = Number.isFinite(incarnation.startedAtMs) ? incarnation.startedAtMs : null;
   const birthMs = matchingBirthTimes.length ? Math.min(...matchingBirthTimes) : null;
   const boundaryMs = startMs == null ? birthMs : birthMs == null ? startMs : Math.max(startMs, birthMs);
-  if (boundaryMs == null) return { outcome: 'none' };
+  if (boundaryMs == null) return [];
 
-  const scopedRows = rows.filter((row) => {
+  return rows.filter((row) => {
     const at = typeof row.ts === 'string' ? Date.parse(row.ts) : NaN;
     if (!Number.isFinite(at) || at < boundaryMs) return false;
     if (row.nativeId != null && (!nativeId || row.nativeId !== nativeId)) return false;
     return true;
   });
+}
+
+/** Keep owner-log history from a prior native child out of the current banner. */
+export function deriveCurrentIncarnationRespawnOutcome(
+  rows: ColdBootDrillHostEvent[],
+  incarnation: RespawnIncarnation,
+  opts: { now?: number } = {},
+): PriorRespawn {
+  const scopedRows = rowsForCurrentIncarnation(rows, incarnation);
+  if (!scopedRows.length) return { outcome: 'none' };
   return deriveLastRespawnOutcome(scopedRows, opts);
 }
 
@@ -177,9 +199,99 @@ export function deriveLastRespawnOutcome(
   return { outcome: 'none' };
 }
 
-/** IO wrapper: read this owner's host event log and derive the verdict. Never
- *  throws — an unreadable/absent log is reported as `none`, exactly like a
- *  session that has never respawned. */
+/** Bound native transcript reads to the initial managed carry prompt region. */
+const NATIVE_TRANSCRIPT_PREFIX_BYTES = 8 * 1024 * 1024;
+
+async function readNativeTranscriptPrefix(path: string): Promise<string | null> {
+  let file: Awaited<ReturnType<typeof open>> | null = null;
+  try {
+    file = await open(path, 'r');
+    const { size } = await file.stat();
+    const length = Math.min(size, NATIVE_TRANSCRIPT_PREFIX_BYTES);
+    if (length <= 0) return '';
+    const buffer = Buffer.alloc(length);
+    const { bytesRead } = await file.read(buffer, 0, length, 0);
+    return buffer.toString('utf8', 0, bytesRead);
+  } catch {
+    return null;
+  } finally {
+    if (file) await file.close().catch(() => undefined);
+  }
+}
+
+/**
+ * A current native transcript can prove that the carry prompt was submitted
+ * even when its origin nonce expired before UserPromptSubmit. Keep those facts
+ * separate: this suppresses a false delivery-loss warning but never upgrades
+ * the expired origin claim into authority.
+ */
+async function hasExpiredOriginDeliveryEvidence(
+  event: ColdBootDrillHostEvent,
+  ownerId: string,
+  incarnation: RespawnIncarnation,
+  opts: { now: number; provenanceDir?: string },
+): Promise<boolean> {
+  const nativeId = incarnation.nativeSessionId;
+  const lineage = event.managedCarryLineage;
+  const nativeRef = typeof event.nativeRef === 'string' ? event.nativeRef : null;
+  const hostStartedAt = Number(lineage?.hostStartedAt);
+  const eventAt = typeof event.ts === 'string' ? Date.parse(event.ts) : NaN;
+  if (
+    event.kind !== 'respawn-carry-dropped' ||
+    event.mode !== 'carry-respawn' ||
+    event.reason !== 'turn-start-unverified' ||
+    event.turnStartVerified !== false ||
+    !nativeId ||
+    event.nativeId !== nativeId ||
+    !nativeRef ||
+    !isAbsolute(nativeRef) ||
+    !nativeRef.endsWith('.jsonl') ||
+    !lineage ||
+    lineage.ownerId !== ownerId ||
+    lineage.targetNativeId !== nativeId ||
+    lineage.targetNativeRef !== nativeRef ||
+    typeof lineage.sourceNativeId !== 'string' ||
+    !lineage.sourceNativeId ||
+    lineage.sourceNativeId === nativeId ||
+    typeof lineage.sourceNativeRef !== 'string' ||
+    !lineage.sourceNativeRef ||
+    !Number.isSafeInteger(lineage.advSessionId) ||
+    Number(lineage.advSessionId) <= 0 ||
+    !Number.isSafeInteger(lineage.sourceChildGeneration) ||
+    !Number.isSafeInteger(lineage.targetChildGeneration) ||
+    Number(lineage.targetChildGeneration) !== Number(lineage.sourceChildGeneration) + 1 ||
+    !Number.isFinite(hostStartedAt) ||
+    hostStartedAt <= 0 ||
+    !Number.isFinite(eventAt)
+  ) return false;
+
+  const transcript = await readNativeTranscriptPrefix(nativeRef);
+  if (transcript == null) return false;
+  const firstTurn = parseUserTurns(transcript).find((turn) => {
+    const turnAt = Date.parse(turn.ts);
+    return Number.isFinite(turnAt) && turnAt >= hostStartedAt && turnAt <= eventAt;
+  });
+  if (!firstTurn) return false;
+
+  const envelope = parseEnvelope(firstTurn.text) ?? parseCodexStopHookEnvelope(firstTurn.text);
+  if (!envelope) return false;
+  const ledgerRows = await readLedgerRowsAsync(nativeId, {
+    dir: opts.provenanceDir,
+    nowMs: opts.now,
+    includeExpired: true,
+  });
+  const ledgerRow = ledgerRows.find((row) =>
+    row.sid === nativeId &&
+    row.nonce === envelope.nonce &&
+    row.origin === envelope.origin &&
+    row.sha256 === payloadSha256(envelope.payload),
+  );
+  if (!ledgerRow) return false;
+  return opts.now - ledgerRow.ts > (ledgerRow.ttlMs ?? ledgerTtlMs());
+}
+
+/** IO wrapper: read the host lifecycle and, when needed, corroborate submission
+ * from the target native transcript without upgrading expired origin authority. */
 export async function readPriorRespawnOutcome(
   ownerId: string,
   opts: {
@@ -187,13 +299,37 @@ export async function readPriorRespawnOutcome(
     now?: number;
     requireComplete?: boolean;
     incarnation?: RespawnIncarnation;
+    provenanceDir?: string;
   } = {},
 ): Promise<PriorRespawn> {
   try {
     const rows = await readOwnerHostEvents(ownerId, opts.dir, { requireComplete: opts.requireComplete });
-    return opts.incarnation
-      ? deriveCurrentIncarnationRespawnOutcome(rows, opts.incarnation, { now: opts.now })
-      : deriveLastRespawnOutcome(rows, { now: opts.now });
+    const now = opts.now ?? Date.now();
+    if (!opts.incarnation) return deriveLastRespawnOutcome(rows, { now });
+
+    const scopedRows = rowsForCurrentIncarnation(rows, opts.incarnation);
+    const prior = deriveLastRespawnOutcome(scopedRows, { now });
+    if (prior.outcome !== 'dropped' || prior.reason !== 'turn-start-unverified') return prior;
+
+    const unverifiedDrop = [...scopedRows].reverse().find((row) =>
+      row.kind === 'respawn-carry-dropped' &&
+      row.reason === 'turn-start-unverified' &&
+      row.ts === prior.ts &&
+      row.nativeId === opts.incarnation?.nativeSessionId,
+    );
+    if (unverifiedDrop && await hasExpiredOriginDeliveryEvidence(
+      unverifiedDrop,
+      ownerId,
+      opts.incarnation,
+      { now, provenanceDir: opts.provenanceDir },
+    )) {
+      return {
+        ...prior,
+        outcome: 'delivered-unverified',
+        deliveryEvidence: 'native-transcript-expired-origin',
+      };
+    }
+    return prior;
   } catch {
     return { outcome: 'none' };
   }

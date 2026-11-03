@@ -643,7 +643,7 @@ describe('session:request-compaction — P-018/P-022 carry-respawn actuation', (
     expect(continuation?.loopFire).toEqual({ routineId: 'routine-10', wakeCount: 10 });
   });
 
-  it('does not attach loop identity to an open owner message carried as the successor prompt', async () => {
+  it('tags an open owner message for machine provenance without attaching loop identity', async () => {
     findLiveHost.mockReturnValue(carryHost);
     resolveSelfSession.mockResolvedValue({
       sourceKind: 'codex',
@@ -659,9 +659,14 @@ describe('session:request-compaction — P-018/P-022 carry-respawn actuation', (
 
     const result = body(await call({ focus: 'preserve the current work' }));
     const rows = readLedgerRows('su-caller', { dir: provDir, includeExpired: true });
+    const msg = injected();
 
     expect(result.firstPromptSource).toBe('open-owner-message');
-    expect(rows.some((row) => row.origin === 'self-compaction')).toBe(false);
+    expect(msg.data).toMatch(ENVELOPE_LINE);
+    expect(msg.data.replace(ENVELOPE_LINE, '')).toBe('owner-authored question');
+    const provenance = rows.filter((row) => row.origin === 'self-compaction').at(-1);
+    expect(provenance).toBeDefined();
+    expect(provenance?.loopFire).toBeUndefined();
   });
 
   it('persists the exact first prompt and addendum before asking the host to respawn', async () => {

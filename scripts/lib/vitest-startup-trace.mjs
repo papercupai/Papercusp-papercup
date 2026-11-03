@@ -9,21 +9,11 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { threadId } from 'node:worker_threads';
 import { captureConfigurationSnapshot } from '../../libs/test-config/src/configuration-snapshot.ts';
 import { readProcessIdentity } from '../../packages/operator-core/lib/process-identity.ts';
+import { nativeSourceRetentionLimits, validateSourcePins, observeEngineScriptExecution }
+  from '../../libs/test-config/src/executed-config-load-capture.ts';
 
-export const nativeSourceRetentionLimits = Object.freeze({ sourceBytes: 16 * 1024 ** 2,
-  processBytes: 64 * 1024 ** 2, pinnedSourceBytes: 128 * 1024 ** 2,
-  pinnedProcessBytes: 256 * 1024 ** 2, pins: 4 });
+export { nativeSourceRetentionLimits };
 const sourcePinsEnv = 'PC_NATIVE_LOADER_SOURCE_PINS';
-function validateSourcePins(pins) {
-  if (!Array.isArray(pins) || pins.length > nativeSourceRetentionLimits.pins ||
-      new Set(pins.map(pin => pin?.path)).size !== pins.length || pins.some(pin =>
-        typeof pin?.path !== 'string' || !isAbsolute(pin.path) || pin.path.length > 1024 ||
-        !/^[a-f0-9]{64}$/.test(pin.sha256) || !Number.isSafeInteger(pin.byteLength) ||
-        pin.byteLength < 0 || pin.byteLength > nativeSourceRetentionLimits.pinnedSourceBytes) ||
-      pins.reduce((total, pin) => total + pin.byteLength, 0) > nativeSourceRetentionLimits.pinnedProcessBytes)
-    throw new Error('Invalid bounded native loader source pins');
-  return pins;
-}
 
 /** Reuse the OUT channel and this preload without enabling stderr diagnostics.
  * @param {NodeJS.ProcessEnv} [env]
@@ -154,6 +144,7 @@ function installNativeProcessTrace(out) {
   // and silently lose their writes. Delegate the original emission first and
   // retain bytes after its synchronous listeners, preserving its return/throw.
   const originalEmit = process.emit;
+  let engine = null;
   process.emit = function(event, ...args) {
     if (this !== process || event !== 'exit') return originalEmit.call(this, event, ...args);
     // The program's own exit listeners can block. Preserve entry before calling
@@ -167,6 +158,10 @@ function installNativeProcessTrace(out) {
       return result;
     } finally {
       if (!listenersComplete) for (const state of Object.values(streams)) state.captureComplete = false;
+      try {
+        if (engine) emit('engine-script-execution', { observation: engine.snapshot() }, true);
+      } catch { emit('engine-script-execution-unavailable', {}, true); }
+      finally { engine?.disconnect(); }
       emit('node-exit', { code: args[0], exitListenersComplete: listenersComplete, streams: retainStreams() }, true);
     }
   };
@@ -289,6 +284,13 @@ function installNativeProcessTrace(out) {
     if (encoded.length > 8192) throw new Error('source pin enrollment too large');
     sourcePins = validateSourcePins(JSON.parse(encoded));
   } catch { emit('module-source-pins-invalid'); }
+  // Reuse the bounded independent prelaunch pins and the existing V8 observer.
+  // Loader return and script parsing alone never establish execution.
+  if (sourcePins.length) {
+    try { engine = observeEngineScriptExecution(process.cwd(), {
+      pinnedSources: sourcePins, repositorySources: false,
+    }); } catch { emit('engine-script-execution-unavailable'); }
+  }
   // Retain loader-returned bytes in bounded chunks. In particular, do not make
   // another full UTF-8 copy of the product bundle already owned by the loader.
   function* chunks(source) {

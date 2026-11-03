@@ -126,6 +126,17 @@ const supersede: { original: string; correction: string; independent: string } =
 };
 let roundtripScorecardId = '';
 
+async function seedAuditRubric() {
+  await proposeRubric({ rubricId: 'grading-integrity', characteristic: 'grading-integrity',
+    title: 'Independent audit fixture', status: 'active', by: 'su-independent',
+    criteria: [{ key: 'audit-valid', title: 'Audit validity', model: 'The independent audit reflects evidence.',
+      method: 'Read the fixture evidence.', driftMarkers: 'An unverified grade enters finalized history.' }],
+  });
+  const rubric = await getRubric('grading-integrity');
+  if (!rubric) throw new Error('Audit fixture rubric was not persisted in the isolated test database.');
+  return rubric;
+}
+
 /** File a scorecard via the real write path, then pin its created_at deterministically. */
 async function fileScorecard(
   db: OrgTestDb,
@@ -142,9 +153,16 @@ async function fileScorecard(
     rollup?: StructuredObservation['rollup'];
     createdAt: string;
     createdBy?: string;
+    finalized?: boolean;
     observationExtra?: Partial<StructuredObservation>;
   },
 ): Promise<string> {
+  const finalized = opts.finalized || opts.rubricRef === RUBRIC_SUPERSEDE || opts.rubricRef === RUBRIC_RESET;
+  const [definition, auditDefinition] = finalized
+    ? await Promise.all([getRubric(opts.rubricRef!), getRubric('grading-integrity')]) : [null, null];
+  if (finalized && (!definition || !auditDefinition)) {
+    throw new Error('Finalized fixtures require both their rubric and seedAuditRubric() in this test database.');
+  }
   const issue = await createIssue({
     title: `scorecard ${opts.id}`,
     kind: 'change',
@@ -152,6 +170,15 @@ async function fileScorecard(
     createdBy: opts.createdBy ?? 'kettle',
     payload: {
       observation: {
+        ...(finalized ? {
+          rubricRevision: definition!.revision, criteriaHash: definition!.criteriaHash,
+          barSetHash: definition!.barSetHash ?? null,
+          gradingAudit: {
+            state: 'passed', metaRubricRef: 'grading-integrity', stampedAt: opts.createdAt,
+            rubricRevision: auditDefinition!.revision, criteriaHash: auditDefinition!.criteriaHash,
+            auditIssueId: 'EI-independent-fixture-audit', auditor: 'su-independent', auditedAt: opts.createdAt,
+          },
+        } : {}),
         ...(opts.rubricRef ? { rubricRef: opts.rubricRef } : {}),
         ...(opts.rubricRevision != null ? { rubricRevision: opts.rubricRevision } : {}),
         ...(opts.criteriaHash ? { criteriaHash: opts.criteriaHash } : {}),
@@ -176,6 +203,7 @@ describe('listScorecards (P-013) — real PG', () => {
     db = await createOrgTestDb();
     h.sql = db.adminSql;
 
+    await seedAuditRubric();
     // Seed an ACTIVE test rubric (3 criteria) so missingKeys resolves.
     await proposeRubric({
       rubricId: RUBRIC,
@@ -540,111 +568,93 @@ describe('listScorecards (P-013) — real PG', () => {
   });
 
   it('fills the settled limit past diagnostics, legacy partial, provisional and unaudited history, retaining finalized failure', async () => {
+    const rubricRef = 'test-finalized-mixed-history';
+    await proposeRubric({ rubricId: rubricRef, characteristic: 'hive-coordination',
+      title: 'Finalized history fixture', criteria: CRITERIA, status: 'active', by: 'su-test' });
     const ratings = Object.fromEntries(CRITERIA.map(criterion => [criterion.key,
       { rating: 'broken', evidence: 'A confirmed finalized failure remains visible.' }]));
     const hive = 'mixed-finalized-history';
-    const finalized = await fileScorecard(db, { id: 'settled-failure', rubricRef: RUBRIC, sourceHive: hive,
+    const passed = await fileScorecard(db, { id: 'settled-pass', rubricRef, sourceHive: hive, finalized: true,
+      ratings: Object.fromEntries(CRITERIA.map(criterion => [criterion.key,
+        { rating: 'healthy', evidence: 'An independently confirmed prior pass.' }])), createdAt: '2026-09-01T00:00:00.000Z' });
+    const finalized = await fileScorecard(db, { id: 'settled-failure', rubricRef, sourceHive: hive, finalized: true,
       ratings, createdAt: '2026-10-01T00:00:00.000Z' });
     const extras: Partial<StructuredObservation>[] = [
       { purpose: 'diagnostic' },
       { ratings: { 'end-to-end-flow': ratings['end-to-end-flow'] } },
       { provisional: { stampedAt: '2026-10-04T00:00:00.000Z', violatableKeys: ['end-to-end-flow'] } },
       { gradingAudit: { state: 'pending', metaRubricRef: 'grading-integrity', stampedAt: '2026-10-05T00:00:00.000Z' } },
+      {}, // Complete standard card without an independent audit.
+      { gradingAudit: { state: 'passed', metaRubricRef: 'grading-integrity', stampedAt: '2026-10-07T00:00:00.000Z',
+        rubricRevision: 999, criteriaHash: 'obsolete-audit-contract', auditor: 'su-independent',
+        auditIssueId: 'EI-old-audit', auditedAt: '2026-10-07T00:00:00.000Z' } },
+      { gradingAudit: { state: 'failed', metaRubricRef: 'grading-integrity', stampedAt: '2026-10-08T00:00:00.000Z' } },
     ];
     for (const [index, observationExtra] of extras.entries()) {
-      await fileScorecard(db, { id: `unsettled-${index}`, rubricRef: RUBRIC, sourceHive: hive,
+      await fileScorecard(db, { id: `unsettled-${index}`, rubricRef, sourceHive: hive,
         ratings, observationExtra, createdAt: `2026-10-0${index + 2}T00:00:00.000Z` });
     }
-    const page = await listScorecardPage({ rubricRef: RUBRIC, sourceHive: hive, finalizedOnly: true, limit: 1 });
+    const page = await listScorecardPage({ rubricRef, sourceHive: hive, finalizedOnly: true, limit: 1 });
     expect(page.rows.map(row => row.issueId)).toEqual([finalized]);
     expect(page.rows[0].ratings).toEqual(ratings);
-    expect(page.hasMore).toBe(false);
-    const explicit = await listScorecards({ rubricRef: RUBRIC, sourceHive: hive, includeDiagnostics: true });
-    expect(explicit).toHaveLength(5);
+    expect(page.hasMore).toBe(true);
+    expect(page.selection?.excludedCounts).toEqual({ diagnostic: 1, incomplete: 1, provisional: 1,
+      'grading-audit-pending': 1, 'grading-audit-missing': 1, 'grading-audit-stale': 1, 'grading-audit-failed': 1 });
+    const tail = await listScorecardPage({ rubricRef, sourceHive: hive, finalizedOnly: true, limit: 1,
+      before: { createdAt: page.rows[0].createdAt, issueId: page.rows[0].issueId } });
+    expect(tail.rows.map(row => row.issueId)).toEqual([passed]);
+    expect(tail.hasMore).toBe(false);
+    const explicit = await listScorecards({ rubricRef, sourceHive: hive, includeDiagnostics: true });
+    expect(explicit).toHaveLength(9);
     expect(explicit.flatMap(row => row.exclusionReasons ?? [])).toEqual(expect.arrayContaining([
-      'diagnostic', 'incomplete', 'provisional', 'grading-audit-pending',
+      'diagnostic', 'incomplete', 'provisional', 'grading-audit-pending', 'grading-audit-missing',
+      'grading-audit-stale', 'grading-audit-failed',
     ]));
+    const trend = await scorecardTrend({ rubricRef, sourceHive: hive, includeSeries: true, limit: 2 });
+    expect(trend.scorecardCount).toBe(2);
+    expect(trend.sample).toMatchObject({ inputCount: 2, examinedCount: 9, hasMore: false,
+      excludedCounts: page.selection!.excludedCounts });
+    expect(trend.criteria.find(criterion => criterion.criterion === 'end-to-end-flow')).toMatchObject({
+      direction: 'worsening', instrumentKey: 'placement-count', distribution: { healthy: 1, broken: 1 },
+    });
+    expect(trend.comparison?.compatible).toBe(true);
   });
 
-  // ── scorecardTrend (P-010) — end-to-end aggregation over the same seeded data.
-  //    papercusp end-to-end-flow: partial(10:00, degraded) → complete(12:00, broken) = worsening.
-  it('scorecardTrend: groups per criterion, RLE series when requested, worsening direction (P-010)', async () => {
+  it('scorecardTrend: incomplete historical cards cannot define a settled trend', async () => {
     const trend = await scorecardTrend({ rubricRef: RUBRIC, sourceHive: 'papercusp', includeSeries: true });
     expect(trend.rubricRef).toBe(RUBRIC);
     expect(trend.sourceHive).toBe('papercusp');
-    expect(trend.scorecardCount).toBe(2); // complete + partial (generic-test excluded by sourceHive)
-    expect(trend.window).toEqual({ from: '2026-06-20T10:00:00.000Z', to: '2026-06-20T12:00:00.000Z' });
-    expect(trend.filingWindow).toEqual(trend.window);
-    expect(trend.observationWindow).toEqual({ from: '2026-06-05T00:00:00.000Z', to: '2026-06-06T00:00:00.000Z' });
-    const lag = Date.parse('2026-06-20T12:00:00.000Z') - Date.parse('2026-06-06T00:00:00.000Z');
-    expect(trend.filingLagMs).toEqual({ min: lag, max: lag, mean: lag, measured: 1 });
-    expect(trend.scorecardIdentities).toEqual([
-      expect.objectContaining({ createdAt: '2026-06-20T10:00:00.000Z' }),
-      expect.objectContaining({
-        issueId: roundtripScorecardId, rubricRevision: 17, criteriaHash: 'criteria-hash-roundtrip',
-        subject: { kind: 'agent-run', ref: 'historical-holder', windowStart: '2026-06-05T00:00:00.000Z', windowEnd: '2026-06-06T00:00:00.000Z' },
-      }),
-    ]);
-    // criteria sorted ASC by key.
-    expect(trend.criteria.map((c) => c.criterion)).toEqual([
-      'end-to-end-flow',
-      'ideation-quality',
-      'watchdog-determinism',
-    ]);
-    expect(trend.criteria.some((c) => c.criterion === 'legacy-ad-hoc-check')).toBe(false);
-
-    const e2e = trend.criteria.find((c) => c.criterion === 'end-to-end-flow')!;
-    expect(e2e.count).toBe(2);
-    // WI-2943: the series is RLE runs (oldest first), opt-in via includeSeries.
-    expect(e2e.series).toEqual([
-      { rating: 'degraded', from: '2026-06-20T10:00:00.000Z', to: '2026-06-20T10:00:00.000Z', n: 1 },
-      { rating: 'broken', from: '2026-06-20T12:00:00.000Z', to: '2026-06-20T12:00:00.000Z', n: 1 },
-    ]);
-    expect(e2e.first).toEqual({ rating: 'degraded', at: '2026-06-20T10:00:00.000Z' });
-    expect(e2e.latest).toEqual({ rating: 'broken', at: '2026-06-20T12:00:00.000Z' });
-    expect(e2e.direction).toBe('worsening');
-    expect(e2e.distribution).toEqual({ degraded: 1, broken: 1 });
-    expect(e2e.idleCount).toBe(0); // no idle-tagged unknowns seeded
-
-    // Single-point criteria (only the complete scorecard rated them) → unknown direction.
-    const single = trend.criteria.find((c) => c.criterion === 'ideation-quality')!;
-    expect(single.count).toBe(1);
-    expect(single.direction).toBe('unknown');
+    expect(trend.scorecardCount).toBe(0);
+    expect(trend.criteria).toEqual([]);
+    expect(trend.scorecardIdentities).toEqual([]);
+    expect(trend.sample.excludedCounts).toMatchObject({ incomplete: 2 });
+    expect(trend.comparison?.compatible).toBe(false);
+    expect(trend.filingWindow).toBeUndefined();
+    expect(trend.observationWindow).toBeUndefined();
   });
 
   it('scorecardTrend: series is OMITTED by default (WI-2943 — summary fields are the payload)', async () => {
     const trend = await scorecardTrend({ rubricRef: RUBRIC, sourceHive: 'papercusp' });
-    expect(trend.criteria.length).toBeGreaterThan(0);
+    expect(trend.criteria).toEqual([]);
     for (const c of trend.criteria) expect(c.series).toBeUndefined();
     expect(trend.scorecardIdentities).toBeUndefined();
-    // The summary fields still fully describe the criterion.
-    const e2e = trend.criteria.find((c) => c.criterion === 'end-to-end-flow')!;
-    expect(e2e.direction).toBe('worsening');
-    expect(e2e.distribution).toEqual({ degraded: 1, broken: 1 });
+    expect(trend.sample.excludedCounts).toMatchObject({ incomplete: 2 });
   });
 
-  it('scorecardTrend: threads governance provenance + per-criterion instrumentKey (WI-4607)', async () => {
+  it('scorecardTrend: retains governance provenance when historical evidence is ineligible', async () => {
     const trend = await scorecardTrend({ rubricRef: RUBRIC, sourceHive: 'papercusp' });
     // Governance provenance sourced from the same getRubric() read the mean10 scale uses.
     expect(trend.status).toBe('active');
     expect(typeof trend.proposedBy).toBe('string');
     expect((trend.proposedBy ?? '').length).toBeGreaterThan(0);
-    // instrumentKey parsed from each criterion's trailing model token.
-    const byKey = Object.fromEntries(trend.criteria.map((c) => [c.criterion, c.instrumentKey]));
-    expect(byKey['end-to-end-flow']).toBe('placement-count');
-    expect(byKey['watchdog-determinism']).toBe('none'); // explicit no-instrument binding
-    expect(byKey['ideation-quality']).toBeNull(); // no token → null
+    expect(trend.criteria).toEqual([]);
   });
 
-  it('scorecardTrend: cross-hive (no sourceHive) folds every source into one series', async () => {
+  it('scorecardTrend: cross-hive aggregation cannot promote partial evidence', async () => {
     const trend = await scorecardTrend({ rubricRef: RUBRIC, includeSeries: true });
-    expect(trend.scorecardCount).toBe(3); // papercusp complete + partial + generic-test
-    const e2e = trend.criteria.find((c) => c.criterion === 'end-to-end-flow')!;
-    // degraded(10:00, papercusp) → healthy(11:00, generic) → broken(12:00, papercusp): net first→latest = worsening.
-    expect(e2e.count).toBe(3);
-    expect(e2e.series!.map((p) => p.rating)).toEqual(['degraded', 'healthy', 'broken']);
-    expect(e2e.series!.every((p) => p.n === 1)).toBe(true);
-    expect(e2e.direction).toBe('worsening');
+    expect(trend.scorecardCount).toBe(0);
+    expect(trend.criteria).toEqual([]);
+    expect(trend.sample.excludedCounts).toMatchObject({ incomplete: 3 });
   });
 
   // ── P-010: a re-grade must not move the trend twice.
@@ -711,16 +721,22 @@ describe('listScorecards (P-013) — real PG', () => {
     // anyone later reroutes this through amendRubric.
     expect(updated?.status).toBe('active');
 
+    // A new rubric revision needs a new exact-identity measurement. Preserve the
+    // earlier post-boundary card as history; it cannot silently become this grade.
+    await fileScorecard(db, { id: 'reset-new-baseline', rubricRef: RUBRIC_RESET, sourceHive: 'papercusp',
+      finalized: true, createdAt: '2026-06-18T14:00:00.000Z',
+      ratings: { [RESET_KEY]: { rating: 'healthy', evidence: 'New measurement of the exact current rubric revision.' } },
+    });
     const afterReset = await scorecardTrend({ rubricRef: RUBRIC_RESET, sourceHive: 'papercusp', includeSeries: true });
     expect(afterReset.preContractResetExcluded).toBe(2); // both pre-rewrite gradings, said out loud
     expect(afterReset.scorecardCount).toBe(1); // only the sample that grades the LIVE contract
     const afterCriterion = afterReset.criteria.find((c) => c.criterion === RESET_KEY)!;
     expect(afterCriterion.count).toBe(1);
-    expect(afterCriterion.first).toEqual({ rating: 'healthy', at: '2026-06-18T13:00:00.000Z' });
+    expect(afterCriterion.first).toEqual({ rating: 'healthy', at: '2026-06-18T14:00:00.000Z' });
     // The retired gradings stop anchoring the reported window too — a window still
     // reaching back into the old contract would reintroduce the blend in the one field
     // a reader uses to judge how current the trend is.
-    expect(afterReset.window).toEqual({ from: '2026-06-18T13:00:00.000Z', to: '2026-06-18T13:00:00.000Z' });
+    expect(afterReset.window).toEqual({ from: '2026-06-18T14:00:00.000Z', to: '2026-06-18T14:00:00.000Z' });
 
     // THE DOUBLE-COUNT GUARD. `reset.oldSuperseded` qualifies for BOTH exclusions: it
     // pre-dates the boundary AND a later filing revises it. It must be counted ONCE.
@@ -731,7 +747,9 @@ describe('listScorecards (P-013) — real PG', () => {
     // series: arithmetic that cannot be true, in the exact fields that exist to make the
     // thinning legible.
     expect(afterReset.supersededExcluded).toBe(0);
-    expect(afterReset.preContractResetExcluded + afterReset.supersededExcluded).toBe(3 - afterReset.scorecardCount);
+    expect(afterReset.sample.excludedCounts['incompatible-rubric']).toBe(1);
+    expect(afterReset.preContractResetExcluded + afterReset.supersededExcluded +
+      afterReset.sample.excludedCounts['incompatible-rubric']).toBe(4 - afterReset.scorecardCount);
   });
 });
 
@@ -744,6 +762,7 @@ describe('scorecard history P-009 — real PG large-corpus contract', () => {
   beforeAll(async () => {
     db = await createOrgTestDb();
     h.sql = db.adminSql;
+    await seedAuditRubric();
     await proposeRubric({
       rubricId: rubricRef,
       characteristic: 'hive-coordination',
@@ -761,6 +780,7 @@ describe('scorecard history P-009 — real PG large-corpus contract', () => {
       by: 'su-test',
     });
 
+    const [definition, auditDefinition] = await Promise.all([getRubric(rubricRef), getRubric('grading-integrity')]);
     // Direct through the canonical issue-family compatibility view, in one
     // statement. Paired timestamps force the cursor's issue-id tie-breaker to
     // carry real correctness rather than merely decorate an all-unique fixture.
@@ -780,6 +800,12 @@ describe('scorecard history P-009 — real PG large-corpus contract', () => {
              ${JSON.stringify({
                observation: {
                  rubricRef,
+                rubricRevision: definition!.revision, criteriaHash: definition!.criteriaHash,
+                barSetHash: definition!.barSetHash ?? null,
+                gradingAudit: { state: 'passed', metaRubricRef: 'grading-integrity',
+                  stampedAt: '2026-08-01T00:00:00Z', rubricRevision: auditDefinition!.revision,
+                  criteriaHash: auditDefinition!.criteriaHash, auditIssueId: 'EI-independent-audit',
+                  auditor: 'su-independent', auditedAt: '2026-08-01T00:00:00Z' },
                  ratings: {
                    [criterion]: {
                      rating: 'pass',
@@ -812,7 +838,7 @@ describe('scorecard history P-009 — real PG large-corpus contract', () => {
     ]);
     const summary = composeCompanionSummary(aggregateRows);
     expect(summary).toMatchObject({ total: seededRows, matched: seededRows });
-    expect(trend.sample).toEqual({ limit: 500, inputCount: 500 });
+    expect(trend.sample).toMatchObject({ limit: 500, inputCount: 500, hasMore: true, examinedCount: 501 });
     expect(trend.scorecardCount).toBe(500);
     expect(performance.now() - started).toBeLessThan(6_000);
 

@@ -9068,10 +9068,9 @@ describe("cross-backend resume target + protocol-v1 launcher contract", () => {
         .mockRejectedValueOnce(timeout())
         .mockResolvedValueOnce(json({ ok: true, port: { id: port.portId, status: "pending", targetAdvSessionId: 99 } }))
         .mockResolvedValueOnce(json({ ok: true, status: "delivered", artifactDeleted: true }));
-      const result = await reportSessionPortDelivery(port, proof, {
+      await expect(reportSessionPortDelivery(port, proof, {
         fetchImpl, operatorUrl: "http://operator", token: "token", sleepImpl, coordOwnerId: "su-test", appendEventImpl,
-      });
-      expect(result).toMatchObject({ ok: true, status: "delivered" });
+      })).resolves.toMatchObject({ ok: true, status: "delivered" });
       expect(fetchImpl.mock.calls.map((call) => call[1].method)).toEqual(["POST", "GET", "POST"]);
       expect(fetchImpl.mock.calls[2][1].body).toBe(fetchImpl.mock.calls[0][1].body);
       expect(sleepImpl).toHaveBeenCalledTimes(1);
@@ -9125,10 +9124,9 @@ describe("cross-backend resume target + protocol-v1 launcher contract", () => {
         .mockResolvedValueOnce(json({ ok: true, port: { status: "pending", targetAdvSessionId: 99 } }))
         .mockResolvedValueOnce(json({ ok: false, error: "session port is not pending" }, 409))
         .mockResolvedValueOnce(json({ ok: true, port: { status: "delivered", targetAdvSessionId: 99 } }));
-      const result = await reportSessionPortDelivery(port, proof, {
+      await expect(reportSessionPortDelivery(port, proof, {
         fetchImpl, operatorUrl: "http://operator", token: "token", sleepImpl,
-      });
-      expect(result.port.status).toBe("delivered");
+      })).resolves.toMatchObject({ port: { status: "delivered" } });
       expect(fetchImpl.mock.calls.map((call) => call[1].method)).toEqual(["POST", "GET", "POST", "GET"]);
     });
 
@@ -9141,10 +9139,9 @@ describe("cross-backend resume target + protocol-v1 launcher contract", () => {
         .mockRejectedValueOnce(timeout())
         .mockResolvedValueOnce(json({ ok: true, port: { id: port.portId, status: "pending", targetAdvSessionId: 99 } }))
         .mockResolvedValueOnce(json({ ok: true, status: "delivered" }));
-      const result = await reportSessionPortDelivery(port, proof, {
+      await expect(reportSessionPortDelivery(port, proof, {
         fetchImpl, operatorUrl: "http://operator", token: "token", sleepImpl,
-      });
-      expect(result).toMatchObject({ ok: true, status: "delivered" });
+      })).resolves.toMatchObject({ ok: true, status: "delivered" });
       expect(fetchImpl.mock.calls.map((call) => call[1].method)).toEqual(["POST", "GET", "GET", "POST"]);
       expect(fetchImpl.mock.calls[3][1].body).toBe(fetchImpl.mock.calls[0][1].body);
       expect(sleepImpl.mock.calls).toEqual([[2_000], [2_000]]);

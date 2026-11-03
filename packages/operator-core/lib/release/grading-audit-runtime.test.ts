@@ -1,10 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createHash } from 'node:crypto';
 import { execFileSync, spawn } from 'node:child_process';
+import { EventEmitter } from 'node:events';
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { createServer } from 'node:net';
+import { runInNewContext } from 'node:vm';
 import * as databaseTargets from '@papercusp/db-org/connection';
 import type { TaskRow } from '../task-manager/types';
 import { readGradingAuditSourcePin, writeGradingAuditSourcePin } from './grading-audit-source-pin';
@@ -68,7 +70,7 @@ function fixture(evaluatorBuild = { sha: 'exact123456', version: '1.2.3' }) {
   return { root, rows, source, deps, stop, input: { workspaceId: 'ws', issueId: 'EI-a', evaluatorBuild } };
 }
 
-function rebuiltFixture() {
+async function rebuiltFixture() {
   const root = mkdtempSync(join(tmpdir(), 'audit-rebuilt-'));
   roots.push(root);
   const sourceRoot = join(root, '.candidate-rebuilt', 'checkout');
@@ -82,7 +84,7 @@ function rebuiltFixture() {
   const sourceSha = git('rev-parse', 'HEAD');
   writeFileSync(bundlePath, 'rebuilt evaluator ' + requestOnlyIdentityGuardMarker());
   writeFileSync(bundlePath + '.meta.json', JSON.stringify({ inputs: { 'entry.ts': {} } }));
-  writeOperatorArtifactManifest({ root: sourceRoot, entry: bundlePath, sourceSha });
+  await writeOperatorArtifactManifest({ root: sourceRoot, entry: bundlePath, sourceSha });
   return { sourceRoot, bundlePath, sourceSha, git, evaluatorBuild: { sha: sourceSha.slice(0, 10), version: '1.2.3' } };
 }
 
@@ -197,13 +199,51 @@ listen();`, 120);
   }, 12000);
 
   it('halts repeated short crashes instead of spinning until its lifetime expires', async () => {
-    const run = await launch("console.log('CRASH'); process.exit(42);");
+    const f = fixture();
+    const locator: GradingAuditRuntimeLocator = { ...f.source,
+      baseUrl: 'http://127.0.0.1:45187', issueIds: ['EI-a'],
+      expiresAtSec: Math.floor(Date.now() / 1000) + 60 };
+    const args = gradingAuditRuntimeSupervisorArgs(locator);
+    const children: EventEmitter[] = [];
+    const spawnChild = vi.fn(() => {
+      const child = Object.assign(new EventEmitter(), { pid: children.length + 1 });
+      children.push(child);
+      return child;
+    });
+    const exit = vi.fn();
+    const error = vi.fn();
+    const supervisorProcess = Object.assign(new EventEmitter(), {
+      argv: [process.execPath, args[2]], execPath: process.execPath, exit,
+    });
+    // Execute the exact production script. Real recycle/retirement coverage above
+    // remains separate from this policy check's controlled exits and clock.
+    vi.useFakeTimers();
     try {
-      expect(await run.closed).toEqual({ code: 1, signal: null });
-      expect(run.output().split('CRASH').length - 1).toBe(5);
-      expect(run.output()).toContain('restart budget exhausted');
-    } finally { await run.stop(); }
-  }, 10000);
+      runInNewContext(args[1], {
+        require: (id: string) => {
+          if (id === 'node:child_process') return { spawn: spawnChild };
+          if (id === 'node:fs') return { readFileSync };
+          if (id === 'node:crypto') return { createHash };
+          throw new Error(`Unexpected supervisor import: ${id}`);
+        },
+        process: supervisorProcess, console: { error }, Date, setTimeout, clearTimeout,
+      });
+      expect(spawnChild).toHaveBeenCalledTimes(1);
+      for (let attempt = 1; attempt <= 5; attempt += 1) {
+        children[attempt - 1].emit('exit', 42, null);
+        if (attempt === 5) break;
+        expect(exit).not.toHaveBeenCalled();
+        const delay = 100 * 2 ** attempt;
+        await vi.advanceTimersByTimeAsync(delay - 1);
+        expect(spawnChild).toHaveBeenCalledTimes(attempt);
+        await vi.advanceTimersByTimeAsync(1);
+        expect(spawnChild).toHaveBeenCalledTimes(attempt + 1);
+      }
+      expect(exit).toHaveBeenCalledExactlyOnceWith(1);
+      expect(error).toHaveBeenCalledWith('[grading-audit-supervisor] restart budget exhausted');
+      expect(vi.getTimerCount()).toBe(0);
+    } finally { vi.useRealTimers(); }
+  });
 
   it('refuses changed bundle bytes before restarting a recycled child', async () => {
     const run = await launch(`import { writeFileSync } from 'node:fs';
@@ -234,7 +274,7 @@ describe('exact grading audit runtime lifecycle (EI-25971079852455067)', () => {
   });
 
   it('recovers an expired, physically deleted source from an attested exact-ref rebuild with new artifact provenance', async () => {
-    const rebuilt = rebuiltFixture();
+    const rebuilt = await rebuiltFixture();
     const f = fixture(rebuilt.evaluatorBuild);
     const old = await ensureGradingAuditRuntime(f.input, f.deps);
     f.deps.now = () => 22600000;
@@ -255,7 +295,7 @@ describe('exact grading audit runtime lifecycle (EI-25971079852455067)', () => {
   });
 
   it('refuses a rebuild without ledger provenance and never replaces a live task with a missing pin', async () => {
-    const rebuilt = rebuiltFixture();
+    const rebuilt = await rebuiltFixture();
     const f = fixture(rebuilt.evaluatorBuild);
     await expect(ensureGradingAuditRuntime({ ...f.input, recoverySourceRoot: rebuilt.sourceRoot }, f.deps))
       .rejects.toThrow('registered prior');
@@ -266,16 +306,16 @@ describe('exact grading audit runtime lifecycle (EI-25971079852455067)', () => {
     expect(f.deps.spawn).toHaveBeenCalledTimes(1);
   });
 
-  it('refuses wrong commits, dirty source, missing artifact proof and replaced bundle bytes', () => {
-    const rebuilt = rebuiltFixture();
-    expect(qualifyRematerializedGradingAuditSource(rebuilt.sourceRoot, rebuilt.evaluatorBuild).sourceSha).toBe(rebuilt.sourceSha);
-    expect(() => qualifyRematerializedGradingAuditSource(rebuilt.sourceRoot, { ...rebuilt.evaluatorBuild, sha: 'f'.repeat(10) }))
-      .toThrow('differs');
+  it('refuses wrong commits, dirty source, missing artifact proof and replaced bundle bytes', async () => {
+    const rebuilt = await rebuiltFixture();
+    expect((await qualifyRematerializedGradingAuditSource(rebuilt.sourceRoot, rebuilt.evaluatorBuild)).sourceSha).toBe(rebuilt.sourceSha);
+    await expect(qualifyRematerializedGradingAuditSource(rebuilt.sourceRoot, { ...rebuilt.evaluatorBuild, sha: 'f'.repeat(10) }))
+      .rejects.toThrow('differs');
     writeFileSync(join(rebuilt.sourceRoot, 'entry.ts'), 'dirty source');
-    expect(() => qualifyRematerializedGradingAuditSource(rebuilt.sourceRoot, rebuilt.evaluatorBuild)).toThrow('source-unqualified');
+    await expect(qualifyRematerializedGradingAuditSource(rebuilt.sourceRoot, rebuilt.evaluatorBuild)).rejects.toThrow('source-unqualified');
     writeFileSync(join(rebuilt.sourceRoot, 'entry.ts'), 'export const evaluator = true;\n');
     writeFileSync(rebuilt.bundlePath, 'replacement ' + requestOnlyIdentityGuardMarker());
-    expect(() => qualifyRematerializedGradingAuditSource(rebuilt.sourceRoot, rebuilt.evaluatorBuild)).toThrow('artifact proof');
+    await expect(qualifyRematerializedGradingAuditSource(rebuilt.sourceRoot, rebuilt.evaluatorBuild)).rejects.toThrow('artifact proof');
   });
 
   it('shares one ledger-owned endpoint across concurrent audits of the same build', async () => {

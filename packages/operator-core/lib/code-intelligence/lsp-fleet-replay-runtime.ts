@@ -264,6 +264,7 @@ export async function freezeQualifiedReplayConfig(inputPath: string, outputPath:
       options.compilerEntries.some(file => !isAbsolute(file)) || !Number.isSafeInteger(options.timeoutMs) || options.timeoutMs < 1)
     throw new Error('invalid-replay-oracle-producer-options');
   const input = JSON.parse(readFileSync(inputPath, 'utf8')) as ReplayOracleInput;
+  assertReplaySnapshotRuntimeInputs(input);
   const directory = resolve(options.witnessDirectory);
   if (insideReplayRoot(resolve(input.rootPath), directory) || insideReplayRoot(resolve(input.rootPath), resolve(outputPath)))
     throw new Error('replay-oracle-output-inside-source');
@@ -504,7 +505,9 @@ export interface ReplayOracleInput {
   readonly compilerPackageRoot?: string;
   readonly definition: ReplayCorpus['cursor'];
   readonly references: ReplayCorpus['cursor'];
-  /** Additional runtime binaries and loaded daemon/config source whose drift invalidates qualification. */
+  /** Additional source/config inputs whose drift invalidates qualification. In a
+   * snapshot these must be copied inside rootPath; external executable closures
+   * belong in runtimeWitness and the producer's runtimePaths. */
   readonly runtimeFiles: readonly string[];
   readonly evidenceRef: string;
   readonly semanticCompletionPlugin?: SemanticCompletionPluginDeclaration;
@@ -517,6 +520,21 @@ export interface ReplayOracleInput {
 function insideReplayRoot(root: string, path: string): boolean {
   const rel = relative(root, path);
   return !isAbsolute(rel) && rel !== '..' && !rel.startsWith('../');
+}
+
+/** Reject an impossible source declaration before loading the compiler or
+ * hashing the parent's complete runtime closure. The final config validation
+ * still checks the frozen population and its bytes after the source census. */
+function assertReplaySnapshotRuntimeInputs(input: ReplayOracleInput): void {
+  if (!input.sourceSnapshot) return;
+  const root = resolve(input.rootPath);
+  const canonicalRoot = realpathSync(root);
+  for (const file of input.runtimeFiles) {
+    const absolute = resolve(root, file);
+    if (!insideReplayRoot(root, absolute)) throw new Error(`snapshot-input-escape:${absolute}`);
+    const canonical = realpathSync(absolute);
+    if (!insideReplayRoot(canonicalRoot, canonical)) throw new Error(`snapshot-input-escape:${canonical}`);
+  }
 }
 
 /** Read the root and tracked submodule populations, including nonignored new
@@ -986,6 +1004,7 @@ interface ReplayOracleProgress {
 export function freezeCompilerReplayConfig(input: ReplayOracleInput, options: {
   onProgress?: (progress: ReplayOracleProgress) => void;
 } = {}): DaemonReplayConfig {
+  assertReplaySnapshotRuntimeInputs(input);
   // Only plain config data crosses this boundary. Do not keep the compiler graph
   // reachable while rereading the complete source/config/binary population.
   const { config, sourceCount } = compilerReplayConfig(input, options);

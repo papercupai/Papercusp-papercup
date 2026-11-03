@@ -152,7 +152,7 @@ export function prepareVerifierSource({ repo, ref, dest, inputs, inputsFile, git
     };
 }>;
 /** @typedef {{ completedTrees: number, totalTrees: number, currentTree: string, cacheHit?: boolean }} VerifierDependencyProgress */
-/** @typedef {{ copyMode: 'copy' | 'hardlink', generationSnapshotSupported: boolean,
+/** @typedef {{ copyMode: 'copy' | 'hardlink', generationSnapshotSupported: boolean, explicitGeneration?: boolean,
  *   command: 'snapshot-locked' | 'snapshot-generation-locked' }} VerifierSnapshotSelection */
 /** @typedef {{ snapshotSelection?: VerifierSnapshotSelection }} VerifierPhaseMetadata */
 /** @typedef {(<T>(phase: string, operation: () => T | Promise<T>, metadata?: VerifierPhaseMetadata) => Promise<T>) & {
@@ -161,9 +161,10 @@ export function prepareVerifierSource({ repo, ref, dest, inputs, inputsFile, git
 /** Keep the verifier's snapshot path selection explicit and independently checkable.
  * @param {VerifierSnapshotSelection['copyMode']} copyMode
  * @param {boolean} generationSnapshotSupported
+ * @param {boolean} [explicitGeneration]
  * @returns {VerifierSnapshotSelection}
  */
-export function selectVerifierDependencySnapshot(copyMode: VerifierSnapshotSelection["copyMode"], generationSnapshotSupported: boolean): VerifierSnapshotSelection;
+export function selectVerifierDependencySnapshot(copyMode: VerifierSnapshotSelection["copyMode"], generationSnapshotSupported: boolean, explicitGeneration?: boolean): VerifierSnapshotSelection;
 /** Append outside the owned tree synchronously: a blocked event loop or SIGKILL
  * must leave the last started phase readable without claiming it completed.
  * Mirror exact records into the existing checkpoint-log store so temporary
@@ -967,7 +968,7 @@ export function qualifyBgVerifierLogicalOutputSet(args: {
     output: ReturnType<typeof qualifyBgVerifierBuildOutputSet>;
 } & Parameters<typeof qualifyBgVerifierBuildOutputSet>[0]): any;
 /** Recheck retained logical outputs without regenerating a manifest or receipt.
- * @param {ReturnType<typeof qualifyBgVerifierLogicalOutputSet>} logical
+ * @param {Awaited<ReturnType<typeof qualifyBgVerifierLogicalOutputSet>>} logical
  * @param {Parameters<typeof qualifyBgVerifierLogicalOutputSet>[0]} args
  */
 export function verifyBgVerifierLogicalOutputSet(logical: any, { output, binding, receipts }: Parameters<typeof qualifyBgVerifierLogicalOutputSet>[0]): any;
@@ -976,11 +977,11 @@ export function verifyBgVerifierLogicalOutputSet(logical: any, { output, binding
  * dangling links. Keep artifact paths physical: moving this directory would
  * invalidate the maintained boot reader's manifest suffix check. This publishes
  * evidence only; activation must independently recheck the receipt and cohort.
- * @param {{ logical: ReturnType<typeof qualifyBgVerifierLogicalOutputSet> } &
+ * @param {{ logical: Awaited<ReturnType<typeof qualifyBgVerifierLogicalOutputSet>> } &
  *   Parameters<typeof qualifyBgVerifierLogicalOutputSet>[0]} args
  */
 export function publishBgVerifierLogicalOutputSet(args: {
-    logical: ReturnType<typeof qualifyBgVerifierLogicalOutputSet>;
+    logical: Awaited<ReturnType<typeof qualifyBgVerifierLogicalOutputSet>>;
 } & Parameters<typeof qualifyBgVerifierLogicalOutputSet>[0]): {
     identity: {
         path: string;
@@ -1987,13 +1988,13 @@ export function compileBgVerifierInvocation({ record, invocation, argv, expected
  *     { status: 'measured' }> }} BgVerifierOutputRecord
  * @param {{ record: ReturnType<typeof prepareBgVerifierBuildRecord>,
  *   invocation: BgBuildInvocation, entry: string }} options
- * @returns {BgVerifierOutputRecord}
+ * @returns {Promise<BgVerifierOutputRecord>}
  */
 export function qualifyBgVerifierOutput({ record, invocation, entry }: {
     record: ReturnType<typeof prepareBgVerifierBuildRecord>;
     invocation: BgBuildInvocation;
     entry: string;
-}): BgVerifierOutputRecord;
+}): Promise<BgVerifierOutputRecord>;
 /** Recheck the same detached output immediately before publication; never
  * regenerate a source receipt, input record or manifest to bless replacement.
  * @param {BgVerifierOutputRecord} output
@@ -2621,6 +2622,7 @@ export type VerifierDependencyProgress = {
 export type VerifierSnapshotSelection = {
     copyMode: "copy" | "hardlink";
     generationSnapshotSupported: boolean;
+    explicitGeneration?: boolean;
     command: "snapshot-locked" | "snapshot-generation-locked";
 };
 export type VerifierPhaseMetadata = {

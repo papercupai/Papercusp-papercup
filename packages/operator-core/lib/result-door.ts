@@ -2092,22 +2092,29 @@ function spillRecoveryNote(
  * carried an upstream truncation marker, the bytes are still inspectable but
  * `recoverable` is false because the omitted fields never reached this door.
  */
-/** Preserve measured outcomes without treating a clipped auxiliary field as a
- * complete result. The existing bounded projector supplies the partial marker
- * and recovery cursor; it must not replace a useful small JSON status with an
- * empty-summary reference merely because a log or case title was clipped. */
-function partialOutcomePaths(value: unknown, path = '', depth = 0, paths: string[] = []): string[] {
+/** Preserve measured outcomes and explicitly requested work-item details
+ * without treating a clipped sibling field as a complete result. The bounded
+ * projector supplies the partial marker and recovery cursor; complete thread
+ * details should remain inline when a checkpoint or another auxiliary field
+ * was clipped upstream. */
+function partialReadPreservePaths(value: unknown, path = '', depth = 0, paths: string[] = []): string[] {
   if (depth > 4 || paths.length >= 32 || value == null || typeof value !== 'object') return paths;
   if (Array.isArray(value)) {
-    for (const row of value.slice(0, 12)) partialOutcomePaths(row, `${path}[]`, depth + 1, paths);
+    for (const row of value.slice(0, 12)) partialReadPreservePaths(row, `${path}[]`, depth + 1, paths);
     return paths;
   }
   for (const [key, child] of Object.entries(value)) {
     const childPath = path ? `${path}.${key}` : key;
-    if (/^(?:status|state|exitCode|exit_code|passed|failed|skipped|total|count|runId|id|ok)$/.test(key) &&
+    const workItemDetail = path.endsWith('.workItem') &&
+      (key === 'posts' || key === 'topics' || key === 'links' || key === 'detailOmitted');
+    const threadWindowPosts = path.endsWith('.threadWindow') && key === 'posts';
+    if ((workItemDetail || threadWindowPosts) && child != null && typeof child === 'object' &&
+      !paths.includes(childPath) && paths.length < 32) paths.push(childPath);
+    if ((/^(?:status|state|exitCode|exit_code|passed|failed|skipped|total|count|runId|id|ok)$/.test(key) ||
+      /truncated$/i.test(key)) &&
       (typeof child === 'string' || typeof child === 'number' || typeof child === 'boolean' || child === null) &&
       !paths.includes(childPath) && paths.length < 32) paths.push(childPath);
-    if (child && typeof child === 'object') partialOutcomePaths(child, childPath, depth + 1, paths);
+    if (child && typeof child === 'object') partialReadPreservePaths(child, childPath, depth + 1, paths);
   }
   return paths;
 }
@@ -2629,7 +2636,7 @@ function spillResultAsReferenceEnvelope<T extends DoorableResult>(input: {
   if (input.reason === 'under-budget-partial-result' && input.opts.effect === 'read' && reference) {
     const shape = classifyProjectionBody(input.result.content.filter(isTextItem));
     const body = shape.json?.parsed;
-    const preservePaths = partialOutcomePaths(body);
+    const preservePaths = partialReadPreservePaths(body);
     if (isJsonObject(body) && preservePaths.length > 0) {
       const projected = projectBoundedPayload({ ...body, _partial: true }, {
         toolName: input.opts.nestedTargetToolName ?? input.opts.toolName,

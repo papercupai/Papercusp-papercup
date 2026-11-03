@@ -1888,7 +1888,13 @@ export async function emitScorecard(
     }
     const evaluated = await evaluateScorecard({ rubricRef: args.rubricRef, purpose: 'diagnostic',
       subject: args.subject, ratings: args.ratings }, { id: input.createdBy, workspaceId: input.workspaceId });
-    if (!evaluated.ok || !('canonicalRatings' in evaluated) || !evaluated.canonicalRatings) return evaluated;
+    if (!evaluated.ok) return { ok: false as const,
+      code: 'code' in evaluated && evaluated.code === 'diagnostic_unknown_reason_required'
+        ? 'diagnostic_unknown_reason_required' as const : 'diagnostic_evaluation_invalid' as const,
+      error: evaluated.error ?? 'Diagnostic evaluation failed.' };
+    if (!('canonicalRatings' in evaluated) || !evaluated.canonicalRatings) return {
+      ok: false as const, code: 'diagnostic_evaluation_invalid' as const,
+      error: 'Diagnostic evaluation did not return complete canonical ratings.' };
     if (!('nextAction' in evaluated)) return { ok: false as const, code: 'diagnostic_evaluation_invalid',
       error: 'Diagnostic evaluation did not return its required next action.' };
     const identity = { rubricRevision: rubric.revision, criteriaHash: rubric.criteriaHash,
@@ -1917,7 +1923,7 @@ export async function emitScorecard(
     const evidenceFingerprint = createHash('sha256').update(JSON.stringify(diagnostic)).digest('hex');
     const response = { purpose: 'diagnostic' as const, acceptanceEligible: false, ...identity,
       evidenceFingerprint, canonicalRatings: ratings, nextAction: evaluated.nextAction };
-    if (input.previewOnly) return { ok: true as const, previewOnly: true as const, ...response };
+    if (input.previewOnly) return { ok: true as const, created: false as const, previewOnly: true as const, ...response };
     const prior = await listScorecards({ rubricRef: rubric.rubricId, subjectRef: args.subject.ref,
       subjectKind: args.subject.kind, sourceHive, includeDiagnostics: true, limit: 100 });
     const identical = prior.find(card => card.purpose === 'diagnostic' && card.evidenceFingerprint === evidenceFingerprint);

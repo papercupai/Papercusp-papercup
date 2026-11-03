@@ -251,12 +251,12 @@ function isOperatorHost(inputs) {
   return inputs.outfile === resolve(inputs.source.repoRoot, "apps/operator/dist-host/hono-host.mjs");
 }
 
-function stamp(values) {
+async function stamp(values) {
   const inputs = normalizedInputs(values);
   // The maintained staging build must carry the same compiler-input-to-bundle
   // provenance as a release build, before the fresh process starts. A source
   // freshness stamp alone cannot identify the bytes loaded by that process.
-  const artifact = isOperatorHost(inputs) ? writeOperatorArtifactManifest({
+  const artifact = isOperatorHost(inputs) ? await writeOperatorArtifactManifest({
     root: inputs.source.repoRoot, entry: inputs.outfile, sourceSha: inputs.source.headSha,
   }) : null;
   const dependencies = dependencyIdentity(inputs.source.repoRoot, inputs.entry);
@@ -316,7 +316,7 @@ function check(values) {
 
 try {
   const { operation, values } = parseArgs(process.argv.slice(2));
-  if (operation === "stamp") stamp(values);
+  if (operation === "stamp") await stamp(values);
   else if (operation === "check") check(values);
   else
     throw new Error(

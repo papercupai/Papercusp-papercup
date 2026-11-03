@@ -276,4 +276,41 @@ describe('P-005-request-settlement: transcript → carry continuation', () => {
     expect(pending[1]).toContain('Re-plugged');
     expect(pending[2]).toContain('Not at the machine now');
   });
+
+  it('a closed parent directive settles its unanswered dialog answer descendant', async () => {
+    const originalText = 'after you finish implementing the plan can you get the changes incorporated into staging so that we can take advantage of them to actually get main green.  2. after #1 can you monitor the main greening process to make sure the fixes/improvements are actually havving the desired effect?';
+    const correctionText = 'waut ignore my last message I meant to sent that to another agent.';
+    const originalTs = '2026-10-18T02:17:08.718Z';
+    const dialogTs = '2026-10-18T02:22:27.853Z';
+    const correctionTs = '2026-10-18T02:23:26.993Z';
+    const path = transcript('closed-dialog-parent', [
+      { ...owner('o1', null, originalText), timestamp: originalTs },
+      assistant('a1', 'o1', 'What did you mean by your last message?', 'tool_use'),
+      askDialog('q1', 'a1'),
+      { ...dialogAnswer('d1', 'q1', 'Ship it, then verify (Recommended)'), timestamp: dialogTs },
+      assistant('a2', 'd1', 'Working on the answer.', 'tool_use'),
+      owner('i1', 'a2', '[Request interrupted by user]'),
+      { ...owner('o2', 'i1', correctionText), timestamp: correctionTs },
+      assistant('a3', 'o2', 'Both directives are closed.', 'tool_use'),
+      assistant('a4', 'a3', 'Ignored as asked; no changes made.', 'end_turn'),
+    ]);
+    const doc = await buildCarryDoc(OWNER, {
+      ...opts(path),
+      getClosedDirectivesFn: async () => [
+        { text: originalText, createdAtMs: Date.parse(originalTs) + 560 },
+        { text: correctionText, createdAtMs: Date.parse(correctionTs) + 1782 },
+      ],
+    });
+
+    const originalTurn = doc.tail.find((turn) => turn.text === originalText);
+    const dialogTurn = doc.tail.find((turn) => turn.provenance?.verdict === 'owner-dialog');
+    const correctionTurn = doc.tail.find((turn) => turn.text === correctionText);
+    const finalReply = doc.tail.find((turn) => turn.text === 'Ignored as asked; no changes made.');
+    expect(originalTurn).toMatchObject({ requestId: 'o1', provenance: { verdict: 'owner-typed' } });
+    expect(dialogTurn).toMatchObject({ requestId: 'd1', parentRequestId: 'o1' });
+    expect(dialogTurn?.text).toContain('Ship it, then verify (Recommended)');
+    expect(correctionTurn).toMatchObject({ requestId: 'o2', provenance: { verdict: 'owner-typed' } });
+    expect(finalReply).toMatchObject({ requestId: 'o2', responseDisposition: 'delivered' });
+    expect(doc.continuation.pendingOwnerMessages).toBeUndefined();
+  });
 });

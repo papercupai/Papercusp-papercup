@@ -1041,7 +1041,7 @@ export async function runInstrument(key: string, deps: InstrumentRunDeps = {}): 
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   const base = { key: instrument.key, unit: instrument.unit, argv: instrument.argv };
   const startedAt = new Date(now()).toISOString();
-  const samples: Array<{ value: number | null; at: string; numericFields: Array<{ label: string; value: string }> }> = [];
+  const samples: Array<{ value: number | null; at: string; stdout: string; numericFields: Array<{ label: string; value: string }> }> = [];
   const finish = (reading: InstrumentReading): InstrumentReading => ({
     ...reading,
     provenance: retainMeasurementProvenance({
@@ -1071,7 +1071,9 @@ export async function runInstrument(key: string, deps: InstrumentRunDeps = {}): 
       // A sentinel beyond that limit makes the truncation explicit.
       if (numericFields.length === 65) break;
     }
-    samples.push({ value, at: new Date(at).toISOString(), numericFields });
+    // Retain the parser input, not just its answer. The shared provenance policy
+    // redacts and bounds stdout and records gaps when exact replay is unavailable.
+    samples.push({ value, at: new Date(at).toISOString(), stdout, numericFields });
     return { value, at, stdout };
   };
   try {

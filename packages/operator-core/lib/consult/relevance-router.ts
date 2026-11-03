@@ -282,6 +282,9 @@ export interface RoutingSnapshot {
     /** Bounded scoring failures, counted by invocation, never inferred from
      * unmeasured owners. Raw provider error text is deliberately excluded. */
     failures?: Array<SubjectEvidenceFailure & { count: number }>;
+    /** Input sizes and phase progress at the verdict boundary. Pending work
+     * stays pending even if its promise settles after the route times out. */
+    scoring?: SubjectEvidenceScoring[];
   };
   /** The bounded retrieval leg used while the semantic instrument was down. */
   fallback?: 'lexical';
@@ -507,7 +510,8 @@ export interface ConsultRouteParams {
 
 export interface ConsultRouteDeps {
   /** Same local crossencoder as prose search; no hosted credential required. */
-  scoreSubjectEvidence?: (subject: string, texts: string[], deadline: number) => Promise<Array<number | null>>;
+  scoreSubjectEvidence?: (subject: string, texts: string[], deadline: number,
+    onPhase?: (event: SubjectEvidencePhaseTiming) => void) => Promise<Array<number | null>>;
   recordTelemetry?: (receipt: ExpertiseRoutingReceipt) => void | Promise<void>;
   monotonicNow?: () => number;
   measure?: <T>(stage: ExpertiseRoutingStage, work: () => Promise<T>) => Promise<T>;
@@ -666,38 +670,70 @@ export interface SubjectEvidenceFailure {
   reason: 'missing-contract' | 'no-contrasts' | 'deadline' | 'scorer-error' | 'score-shape' | 'invalid-score';
   errorCode?: string;
 }
+export interface SubjectEvidencePhaseTiming {
+  phase: 'contracts' | 'acquisition' | 'inference';
+  outcome: 'started' | 'returned' | 'threw';
+  durationMs: number;
+}
+export interface SubjectEvidenceScoring {
+  subject: string;
+  passages: number;
+  textChars: number;
+  outcome: 'pending' | 'returned' | 'threw';
+  durationMs: number;
+  phases: Array<Omit<SubjectEvidencePhaseTiming, 'outcome'> & { outcome: 'pending' | 'returned' | 'threw' }>;
+}
 export async function scoreSubjectEvidence(subject: string, texts: string[], deadline: number,
   deps: { scorer?: RerankScoreFn; contracts?: readonly SubjectContract[];
-    onFailure?: (failure: SubjectEvidenceFailure) => void } = {}): Promise<Array<number | null>> {
+    onFailure?: (failure: SubjectEvidenceFailure) => void;
+    onPhase?: (event: SubjectEvidencePhaseTiming) => void } = {}): Promise<Array<number | null>> {
   const report = (failure: SubjectEvidenceFailure) => {
     try { deps.onFailure?.(failure); } catch { /* diagnostics never change qualification */ }
   };
-  const { listAllProjectedTools } = await import('@papercusp/tooldef');
-  const contracts = deps.contracts ?? listAllProjectedTools().flatMap(t => t.expose.mcp
-    ? [{ name: t.expose.mcp.name, description: t.description }] : []);
+  const phase = async <T>(name: SubjectEvidencePhaseTiming['phase'], run: () => Promise<T>): Promise<T> => {
+    const started = Date.now();
+    const emit = (outcome: SubjectEvidencePhaseTiming['outcome']) => {
+      try { deps.onPhase?.({ phase: name, outcome, durationMs: Math.max(0, Date.now() - started) }); }
+      catch { /* diagnostics never change qualification */ }
+    };
+    emit('started');
+    try {
+      const value = await run();
+      emit('returned');
+      return value;
+    } catch (error) { emit('threw'); throw error; }
+  };
+  const contracts = await phase('contracts', async () => {
+    if (deps.contracts) return deps.contracts;
+    const { listAllProjectedTools } = await import('@papercusp/tooldef');
+    return listAllProjectedTools().flatMap(t => t.expose.mcp
+      ? [{ name: t.expose.mcp.name, description: t.description }] : []);
+  });
   const query = subjectEvidenceQuery(subject, contracts.find(c => c.name === subject)?.description);
   if (!query) {
     report({ reason: 'missing-contract' });
     return texts.map(() => null);
   }
-  if (!deps.scorer && !subjectScorer) {
-    subjectScorer = import('../memory/embed-sidecar-wiring').then(async ({ buildSidecarAwareReranker }) => {
-      return buildSidecarAwareReranker();
-    }).catch(error => { subjectScorer = null; throw error; });
-  }
-  const scorer = deps.scorer ?? await subjectScorer!;
+  const scorer = await phase('acquisition', async () => {
+    if (!deps.scorer && !subjectScorer) {
+      subjectScorer = import('../memory/embed-sidecar-wiring').then(async ({ buildSidecarAwareReranker }) => {
+        return buildSidecarAwareReranker();
+      }).catch(error => { subjectScorer = null; throw error; });
+    }
+    return deps.scorer ?? await subjectScorer!;
+  });
   // Explicit source paths identify code directly. A natural question has no
   // registered target contract, but still needs the same competing-action
   // qualification: absolute similarity overcredits generic procedural overlap.
   if (!TOOL_SUBJECT_PATTERN.test(subject) && extractPathTokens(subject).includes(subject)) {
-    return scorer(query, texts, { deadline });
+    return phase('inference', () => scorer(query, texts, { deadline }));
   }
   const targets = TOOL_SUBJECT_PATTERN.test(subject) ? [query] : subjectEvidenceTargets(query);
   // At most 24 passages × (2 targets + 3 contrasts), all on the same 4s deadline.
   // Reverse retrieval asks which contract explains THIS passage, avoiding the
   // procedural vocabulary that made broad tool descriptions and natural
   // questions false friends. For a natural question the full query is retained.
-  return Promise.all(texts.map(async text => {
+  return phase('inference', () => Promise.all(texts.map(async text => {
     const contrasts = subjectContrasts(subject, text, contracts);
     if (!contrasts.length) { report({ reason: 'no-contrasts' }); return null; }
     if (Date.now() >= deadline) { report({ reason: 'deadline' }); return null; }
@@ -714,7 +750,7 @@ export async function scoreSubjectEvidence(subject: string, texts: string[], dea
     const alternatives = scores.slice(targets.length);
     const qualified = scores.slice(0, targets.length).map(target => contrastedSubjectScore(target, alternatives));
     return qualified.some(score => score === null) ? null : Math.min(...qualified as number[]);
-  }));
+  })));
 }
 
 /** Build a case-insensitive whole-reference matcher for transcript evidence.
@@ -1455,8 +1491,34 @@ async function routeConsultCore(
       const previous = failureCounts.get(key);
       failureCounts.set(key, { ...failure, count: (previous?.count ?? 0) + 1 });
     };
-    const scoreEvidence = deps.scoreSubjectEvidence ?? ((subject: string, texts: string[], deadline: number) =>
-      scoreSubjectEvidence(subject, texts, deadline, { onFailure: recordFailure }));
+    const scoring: Array<{
+      record: SubjectEvidenceScoring; started: number;
+      phaseStarts: Map<SubjectEvidencePhaseTiming['phase'], number>;
+    }> = [];
+    const scoreEvidence = async (subject: string, texts: string[], deadline: number) => {
+      const entry = { record: { subject, passages: texts.length,
+        textChars: texts.reduce((sum, text) => sum + text.length, 0),
+        outcome: 'pending', durationMs: 0, phases: [] } as SubjectEvidenceScoring,
+        started: Date.now(), phaseStarts: new Map<SubjectEvidencePhaseTiming['phase'], number>() };
+      scoring.push(entry);
+      const onPhase = (event: SubjectEvidencePhaseTiming) => {
+        if (event.outcome === 'started') {
+          entry.phaseStarts.set(event.phase, Date.now());
+          entry.record.phases.push({ ...event, outcome: 'pending' });
+        } else {
+          const current = entry.record.phases.find(p => p.phase === event.phase);
+          if (current) Object.assign(current, event);
+        }
+      };
+      try {
+        const scores = await (deps.scoreSubjectEvidence
+          ? deps.scoreSubjectEvidence(subject, texts, deadline, onPhase)
+          : scoreSubjectEvidence(subject, texts, deadline, { onFailure: recordFailure, onPhase }));
+        entry.record.outcome = 'returned';
+        return scores;
+      } catch (error) { entry.record.outcome = 'threw'; throw error; }
+      finally { entry.record.durationMs = Math.max(0, Date.now() - entry.started); }
+    };
     const eligible = owners.filter(ownerId => {
       const similarity = clamp01(Math.max(...byOwner.get(ownerId)!.sims));
       const c = verByOwner.get(ownerId) ?? 0;
@@ -1564,6 +1626,12 @@ async function routeConsultCore(
       limit: SUBJECT_EVIDENCE_OWNER_LIMIT,
       unresolved: unresolvedSubjectRefs,
       ...(failureCounts.size ? { failures: [...failureCounts.values()] } : {}),
+      ...(scoring.length ? { scoring: scoring.map(({ record, started, phaseStarts }) => ({
+        ...record,
+        durationMs: record.outcome === 'pending' ? Math.max(0, Date.now() - started) : record.durationMs,
+        phases: record.phases.map(phase => ({ ...phase, durationMs: phase.outcome === 'pending'
+          ? Math.max(0, Date.now() - (phaseStarts.get(phase.phase) ?? started)) : phase.durationMs })),
+      })) } : {}),
     };
     if (unmeasured) base.degraded = 'evidence-unavailable';
   }

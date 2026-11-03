@@ -44,6 +44,7 @@ import { produceSnapshotFromSource, writeSnapshotAtomic } from '../../../../scri
 import { computeGraphSuggestions, unionSuperset } from '../../../../scripts/lib/graph-dependency-suggestions.mjs';
 import { refreshDependencySnapshot } from '../harness/routines/gitnexus-reindex-action';
 import { createHash } from 'node:crypto';
+import { parseScratchReference } from '../scratch-reference';
 import { defineTool, lookupByMcpName, projectedToolCallContract } from '@papercusp/agent-mcp';
 import { z } from 'zod';
 
@@ -148,7 +149,10 @@ describe('native P021 required BAR bounded source pack expansion', () => {
       expect(bundle.tokens.retained).toBeLessThanOrEqual(bundle.tokens.budget);
       expect(bundle.coverage).toMatchObject({ sourceCompleteness: 'unverified', unavailableFiles: [] });
       writeFileSync(join(project, 'target.ts'), 'export function bundleTarget() { return "NEW_NATIVE_SOURCE"; }\n');
-      const document = readFileSync(artifactPath, 'utf8');
+      const captured = parseScratchReference(readFileSync(artifactPath));
+      expect(captured, 'Native expansion retains its verified recovery container').not.toBeNull();
+      expect(captured!.manifest.sha256).toBe(bundle.expansion.sha256);
+      const document = captured!.payload.toString('utf8');
       expect(createHash('sha256').update(document).digest('hex')).toBe(bundle.expansion.sha256);
       const expanded = JSON.parse(document);
       expect(expanded.context.symbols.length).toBeGreaterThan(bundle.context.symbols.length);

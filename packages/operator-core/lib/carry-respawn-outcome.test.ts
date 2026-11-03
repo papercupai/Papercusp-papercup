@@ -1,4 +1,7 @@
 import { describe, expect, it } from 'vitest';
+import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   deriveCurrentIncarnationRespawnOutcome,
   deriveLastRespawnOutcome,
@@ -8,8 +11,11 @@ import {
   LOST_RESPAWN_AMBIENT_MAX_AGE_MS,
   PENDING_RESPAWN_DEFAULT_CAP_MS,
   PENDING_RESPAWN_ORPHAN_GRACE_MS,
+  readPriorRespawnOutcome,
   type PriorRespawn,
 } from './carry-respawn-outcome';
+import { ownerHostEventPath } from './cold-boot-drill-live';
+import { formatEnvelope, ledgerPathForSid, payloadSha256 } from './turn-provenance/turn-provenance';
 
 /**
  * EI-19480099650947832 — `session:request-compaction` returned `respawn: true`
@@ -19,6 +25,88 @@ import {
  * ~/.papercusp/psu-pty/su-4a6e2255-….events.jsonl, 2026-08-03/04.
  */
 const NOW = Date.parse('2026-08-04T00:47:00.000Z');
+
+async function readManagedCarryFixture(opts: {
+  includePrompt?: boolean;
+  ledgerNonce?: string;
+  ledgerPayload?: string;
+  ledgerAgeMs?: number;
+} = {}): Promise<PriorRespawn> {
+  const root = await mkdtemp(join(tmpdir(), 'carry-respawn-outcome-'));
+  const ownerId = 'fixture-owner';
+  const nativeId = '12345678-1234-1234-1234-123456789abc';
+  const hostDir = join(root, 'host');
+  const provenanceDir = join(root, 'provenance');
+  const nativeRef = join(root, 'rollout-' + nativeId + '.jsonl');
+  const now = Date.parse('2026-10-28T12:30:00.000Z');
+  const hostStartedAt = now - 5_000;
+  const nonce = 'abcdef0123456789';
+  const payload = 'Continue the saved work';
+
+  try {
+    await mkdir(hostDir, { recursive: true });
+    await mkdir(provenanceDir, { recursive: true });
+    const prompt = formatEnvelope('self-compaction', nonce) + payload;
+    const transcriptRows = opts.includePrompt === false
+      ? []
+      : [{
+          type: 'response_item',
+          timestamp: new Date(now - 1_000).toISOString(),
+          payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: prompt }] },
+        }];
+    await writeFile(nativeRef, transcriptRows.map((row) => JSON.stringify(row)).join('\n') +
+      (transcriptRows.length ? '\n' : ''));
+
+    const lineage = {
+      ownerId,
+      advSessionId: 77,
+      hostStartedAt,
+      sourceNativeId: '87654321-4321-4321-4321-cba987654321',
+      sourceNativeRef: join(root, 'source-rollout.jsonl'),
+      sourceChildGeneration: 1,
+      targetChildGeneration: 2,
+      targetNativeId: nativeId,
+      targetNativeRef: nativeRef,
+    };
+    const events = [
+      {
+        ts: new Date(now - 3_000).toISOString(),
+        kind: 'respawned',
+        mode: 'carry-respawn',
+        nativeId,
+      },
+      {
+        ts: new Date(now).toISOString(),
+        kind: 'respawn-carry-dropped',
+        mode: 'carry-respawn',
+        nativeId,
+        nativeRef,
+        reason: 'turn-start-unverified',
+        turnStartVerified: false,
+        managedCarryLineage: lineage,
+      },
+    ];
+    await writeFile(ownerHostEventPath(ownerId, hostDir), events.map((row) => JSON.stringify(row)).join('\n') + '\n');
+
+    await writeFile(ledgerPathForSid(nativeId, provenanceDir), JSON.stringify({
+      sid: nativeId,
+      nonce: opts.ledgerNonce ?? nonce,
+      origin: 'self-compaction',
+      sha256: payloadSha256(opts.ledgerPayload ?? payload),
+      ts: now - (opts.ledgerAgeMs ?? 891_000),
+      ttlMs: 600_000,
+    }) + '\n');
+
+    return await readPriorRespawnOutcome(ownerId, {
+      dir: hostDir,
+      provenanceDir,
+      now,
+      incarnation: { nativeSessionId: nativeId, startedAtMs: hostStartedAt },
+    });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+}
 
 describe('deriveLastRespawnOutcome', () => {
   it('does not infer a dead retry from the real multi-window pending sequence (EI-23072259158385662)', () => {
@@ -279,6 +367,31 @@ describe('deriveCurrentIncarnationRespawnOutcome', () => {
       startedAtMs: Date.parse('2026-10-28T12:10:00.000Z'),
     }, { now: Date.parse('2026-10-28T12:20:00.000Z') });
     expect(out).toMatchObject({ outcome: 'dropped', reason: 'carry-stale' });
+  });
+});
+
+describe('readPriorRespawnOutcome — expired origin delivery', () => {
+  it('distinguishes a submitted carry with expired provenance from a genuinely dropped carry', async () => {
+    const prior = await readManagedCarryFixture();
+    expect(prior).toMatchObject({
+      outcome: 'delivered-unverified',
+      reason: 'turn-start-unverified',
+      deliveryEvidence: 'native-transcript-expired-origin',
+    });
+    expect(lostRespawnAmbientLine(prior)).toBeNull();
+    expect(priorRespawnNote(prior)).toBe('');
+  });
+
+  it('keeps the drop verdict unless transcript, nonce, payload, and expiry all match', async () => {
+    const noPrompt = await readManagedCarryFixture({ includePrompt: false });
+    const unknownNonce = await readManagedCarryFixture({ ledgerNonce: '1111111111111111' });
+    const changedPayload = await readManagedCarryFixture({ ledgerPayload: 'different carry payload' });
+    const liveNonce = await readManagedCarryFixture({ ledgerAgeMs: 30_000 });
+
+    for (const prior of [noPrompt, unknownNonce, changedPayload, liveNonce]) {
+      expect(prior.outcome).toBe('dropped');
+      expect(lostRespawnAmbientLine(prior)).toContain('carry-respawn DROPPED');
+    }
   });
 });
 
