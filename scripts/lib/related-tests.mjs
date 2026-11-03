@@ -1416,19 +1416,9 @@ function collectStaticSelection({ rootDir, changedPaths, idx, crossRoot = null }
       continue;
     }
     const deps = reach(t);
-    if (crossRoot) {
-      // Cross-root reads a hole ANYWHERE in the closure as reaching the change: a module
-      // the test loads may import the change through the edge we could not resolve.
-      for (const d of deps) {
-        if (changedSet.has(d) || idx.unresolved.has(d)) {
-          selected.add(t);
-          break;
-        }
-      }
-      continue;
-    }
-    for (const c of changedSet) {
-      if (deps.has(c)) {
+    // A hole anywhere in the closure could hide a path to the change, in either mode.
+    for (const d of deps) {
+      if (changedSet.has(d) || idx.unresolved.has(d)) {
         selected.add(t);
         break;
       }

@@ -879,6 +879,29 @@ describe('selectRelatedTests — every rail fails toward running MORE tests', ()
     expect(r.mode).toBe('full');
   });
 
+  it('selects a test when an unresolved alias appears in its transitive closure', () => {
+    const fs = vfs({
+      [`${ROOT}/target.ts`]: 'export const target = 1;',
+      [`${ROOT}/mid.ts`]: `import '@/unmapped/target';`,
+      [`${ROOT}/holey.test.ts`]: `import './mid';`,
+      [`${ROOT}/direct.test.ts`]: `import './target';`,
+      [`${ROOT}/unrelated.test.ts`]: 'expect(1).toBe(1);',
+    });
+    const index = buildIndex({ rootDir: ROOT, fs });
+    expect(index.unresolved.has(`${ROOT}/mid.ts`)).toBe(true);
+    expect(index.unresolved.has(`${ROOT}/holey.test.ts`)).toBe(false);
+
+    const r = selectRelatedTests({
+      rootDir: ROOT,
+      changedPaths: [`${ROOT}/target.ts`],
+      fs,
+      index,
+    });
+
+    expect(r.mode).toBe('related');
+    expect(r.selected).toEqual([`${ROOT}/direct.test.ts`, `${ROOT}/holey.test.ts`]);
+  });
+
   it('runs everything when the change is outside the indexed root', () => {
     const fs = vfs({
       [`${ROOT}/a.ts`]: 'export const a = 1;',

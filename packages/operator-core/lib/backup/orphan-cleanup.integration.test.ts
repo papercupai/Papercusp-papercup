@@ -34,12 +34,18 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest
 import postgres from 'postgres';
 import { randomBytes } from 'node:crypto';
 import { getTestPg, markManagedTestDatabase } from '@papercusp/test-config/pg';
+import { BACKUP_MIGRATION_ADVISORY_LOCK_KEY } from '@papercusp/backup/application-names';
 
-const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
+const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql, adminUrl: '' }));
 vi.mock('@papercusp/db-org', async (orig) => {
   const actual = await vi.importActual<typeof import('@papercusp/db-org')>('@papercusp/db-org');
   return { ...(await orig<typeof import('@papercusp/db-org')>()), ...actual, getOrgPg: () => ({ sql: h.sql }) };
 });
+
+vi.mock('../embedded-pg-discovery', async (orig) => ({
+  ...(await orig<typeof import('../embedded-pg-discovery')>()),
+  getHarnessAdminUrlWithSource: () => ({ url: h.adminUrl, source: 'isolated-orphan-sweep-test' }),
+}));
 
 const { sweepOrphanSnapshots } = await import('./orphan-cleanup');
 
@@ -58,6 +64,7 @@ beforeAll(async () => {
   }
   const u = new URL(adminUri);
   u.pathname = `/${dbName}`;
+  h.adminUrl = u.toString();
   rootSql = postgres(u.toString(), { max: 2, onnotice: () => {} });
   await rootSql.unsafe(`CREATE SCHEMA harness_shared`);
   // FAITHFUL to the baseline shape of harness_shared.backup_snapshots.
@@ -165,6 +172,27 @@ describe('sweepOrphanSnapshots', () => {
     const result = await sweepOrphanSnapshots();
     expect(result.sweptIds).not.toContain(id);
     expect((await getStatus(id)).status).toBe('running');
+  });
+
+  it('keeps a producer with a stale heartbeat running until its cross-process fence is released', async () => {
+    const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60_000).toISOString();
+    const ninetyMinAgo = new Date(Date.now() - 90 * 60_000).toISOString();
+    const id = await insertSnapshot('running', twoHoursAgo);
+    await insertEvent(id, ninetyMinAgo);
+    const producer = postgres(h.adminUrl, { max: 1, onnotice: () => {} });
+    try {
+      await producer`SELECT pg_advisory_lock(hashtext(${BACKUP_MIGRATION_ADVISORY_LOCK_KEY}))`;
+      const result = await sweepOrphanSnapshots();
+      expect(result.sweptIds).not.toContain(id);
+      expect((await getStatus(id)).status).toBe('running');
+    } finally {
+      await producer.end({ timeout: 5 });
+    }
+
+    // Once the producer session exits, the same stale receipt is a real orphan.
+    const result = await sweepOrphanSnapshots();
+    expect(result.sweptIds).toContain(id);
+    expect((await getStatus(id)).status).toBe('failed');
   });
 
   it('marks an old running row failed when its last event is also stale', async () => {
