@@ -58,7 +58,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 // because it drags nothing behind it, and because clampToBudget must stay a
 // pure sync function its tests can call directly.
 import { CORPUS_BLOCK_HEADING } from '../../../memory/corpus-recall';
-import { recordInjectionCoverage } from '../../../memory/injection-delivery-coverage';
+import { recordInjectionCoverage, type InjectionDeliveryOutcome } from '../../../memory/injection-delivery-coverage';
 import { takePendingFailureLoopHint, type FailureLoopHint } from '../../../failure-loop-circuit-breaker';
 import { turnStartRespondBy } from './turn-start-memory';
 import { createMemoryWorkDeadline } from '../../../memory/op-deadline';
@@ -137,22 +137,34 @@ function pruneRateState(now: number): void {
  *     (`ls` then `ls` then `ls`, or a retry loop on one failing command.)
  *   - more than MAX_PER_MIN recalls in the trailing minute ⇒ over the ceiling.
  */
-function admitCall(owner: string, query: string, now: number): boolean {
+type MidTurnCallAdmission = 'admitted' | 'duplicate-query' | 'rate-limit';
+
+function admitCall(owner: string, query: string, now: number): MidTurnCallAdmission {
   const state = recentCalls.get(owner);
   if (!state) {
     recentCalls.set(owner, { at: [now], lastQuery: query });
-    return true;
+    return 'admitted';
   }
-  if (state.lastQuery === query) return false;
+  if (state.lastQuery === query) return 'duplicate-query';
   const fresh = state.at.filter((t) => now - t <= RATE_WINDOW_MS);
   if (fresh.length >= MAX_PER_MIN) {
     state.at = fresh;
-    return false;
+    return 'rate-limit';
   }
   fresh.push(now);
   state.at = fresh;
   state.lastQuery = query;
-  return true;
+  return 'admitted';
+}
+
+function suppressionOutcomeForAdmissionReason(reason: string): InjectionDeliveryOutcome {
+  switch (reason) {
+    case 'identity_unreadable': return 'suppressed-identity-unreadable';
+    case 'admission_unavailable': return 'suppressed-admission-unavailable';
+    case 'at_capacity': return 'suppressed-admission-capacity';
+    case 'local_in_flight': return 'suppressed-admission-local-in-flight';
+    default: return 'suppressed-admission-other';
+  }
 }
 
 function str(value: unknown): string {
@@ -1069,6 +1081,7 @@ const midTurnContext = defineTool({
     try {
       body = (await req.json()) as typeof body;
     } catch {
+      void recordInjectionCoverage([{ port: 'mid-turn', outcome: 'suppressed-invalid-json' }]);
       return Response.json({ ok: true, text: '' });
     }
     const owner = (body.owner ?? '').trim();
@@ -1076,9 +1089,28 @@ const midTurnContext = defineTool({
     const { sessionAllowsAmbientContext } = await import('../../../capability-envelope/session-confinement-port');
     const { activeWorkspaceId } = await import('../../../workspace-registry');
     const contextWorkspace = body.workspace?.trim();
+    const coverageClient = typeof body.client === 'string' ? body.client : '';
+    // Resolve once for policy, suppression telemetry, rule context and recall.
+    const workspaceIdResolved = (async () => {
+      const workspace = (body.workspace ?? '').trim();
+      if (workspace && workspace !== '*') return workspace;
+      return activeWorkspaceId();
+    })();
+    workspaceIdResolved.catch(() => undefined);
+    const recordSuppression = (outcome: InjectionDeliveryOutcome): void => {
+      const record = (workspaceId: string) => void recordInjectionCoverage([{
+        port: 'mid-turn', client: coverageClient, workspaceId, outcome,
+      }]);
+      void workspaceIdResolved.then(
+        record,
+        () => record(contextWorkspace && contextWorkspace !== '*' ? contextWorkspace : ''),
+      );
+    };
     if (!await sessionAllowsAmbientContext({ ownerId: owner,
-      workspaceId: contextWorkspace && contextWorkspace !== '*' ? contextWorkspace : activeWorkspaceId() }))
+      workspaceId: contextWorkspace && contextWorkspace !== '*' ? contextWorkspace : activeWorkspaceId() })) {
+      recordSuppression('suppressed-ambient-policy');
       return Response.json({ ok: true, text: '' });
+    }
 
     // Drain before any query/admission branch. A repeated-failure advisory is
     // orthogonal to memory recall, so it must still be delivered when this
@@ -1098,15 +1130,6 @@ const midTurnContext = defineTool({
       : [body.tool])
       .map((tool) => (typeof tool === 'string' ? tool.trim() : ''))
       .filter(Boolean);
-    // Resolved once, for the rules and the recall alike.
-    const workspaceIdResolved = (async () => {
-      const workspace = (body.workspace ?? '').trim();
-      if (workspace && workspace !== '*') return workspace;
-      const { activeWorkspaceId } = await import('../../../workspace-registry');
-      return activeWorkspaceId();
-    })();
-    // Awaited inside the try below; an early throw there must not leave it unhandled.
-    workspaceIdResolved.catch(() => undefined);
     const ruleContextText = postToolRuleContextText(owner, workspaceIdResolved, batchTools);
     // WI-6554700010018438: resolve the harness ONCE, before the code-intel push.
     // The push used to read raw body.harness, which an operator/superuser-scope
@@ -1146,7 +1169,7 @@ const midTurnContext = defineTool({
 
       const coverage = {
         port: 'mid-turn' as const,
-        client: typeof body.client === 'string' ? body.client : '',
+        client: coverageClient,
         workspaceId,
       };
       // Recorded even when OTHER calls in the batch DID carry signal: a tool we
@@ -1177,7 +1200,13 @@ const midTurnContext = defineTool({
       // half — two batches that differ only in which files were read are
       // genuinely different questions for the lexical leg, and collapsing them
       // here would suppress the second one's recall entirely.
-      if (!admitCall(owner, derived, Date.now())) return respond();
+      const callAdmission = admitCall(owner, derived, Date.now());
+      if (callAdmission !== 'admitted') {
+        recordSuppression(callAdmission === 'duplicate-query'
+          ? 'suppressed-duplicate-query'
+          : 'suppressed-rate-limit');
+        return respond();
+      }
       pruneRateState(Date.now());
 
       // Resolved once above (resolveMidTurnHarness), shared with the code-intel push.
@@ -1252,7 +1281,10 @@ const midTurnContext = defineTool({
           })) ?? ''
         ); } finally { deadline?.close(); }
       });
-      if (!admitted.admitted) return respond();
+      if (!admitted.admitted) {
+        recordSuppression(suppressionOutcomeForAdmissionReason(admitted.reason));
+        return respond();
+      }
       const block = admitted.value;
 
       // The recall RAN. Separate "returned context" from "found nothing
@@ -1263,6 +1295,7 @@ const midTurnContext = defineTool({
       // The budget is advisory inside buildMemoryContextBlock; see clampToBudget.
       return respond(block);
     } catch {
+      recordSuppression('suppressed-handler-error');
       return respond();
     }
   },

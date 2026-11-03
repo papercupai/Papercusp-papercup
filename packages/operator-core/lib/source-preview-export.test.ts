@@ -303,7 +303,7 @@ it('bg-r1-census requires exact predeclared selector and branch population', () 
 });
 
 describe('immutable generation verifier snapshots', () => {
-  it.each(['complete', 'verifier-binding', 'missing-selector', 'changed-input', 'changed-token', 'changed-publication-after-copy', 'missing-output'])(
+  it.each(['complete', 'verifier-binding', 'missing-closure', 'missing-selector', 'changed-input', 'changed-token', 'changed-publication-after-copy', 'missing-output'])(
     'materializes leased independent dependencies and refuses incomplete custody (%s)', async defect => {
       const root = mkdtempSync(join(tmpdir(), 'verifier-generation-case-'));
       const donor = join(root, 'donor'), dest = join(root, 'invoked'), store = join(root, 'generations');
@@ -366,6 +366,7 @@ describe('immutable generation verifier snapshots', () => {
         expect(published.status, published.stderr).toBe(0);
         const generationPath = published.stdout.match(/\bpath=([^\n]+)$/m)![1]!;
         const input = published.stdout.match(/\binput=([a-f0-9]+)/)![1]!;
+        if (defect === 'missing-closure') rmSync(join(generationPath, '.verifier-closure.json'));
         if (defect === 'missing-selector') rmSync(join(store, '.inputs', input));
         if (defect === 'changed-input') write(dest, 'package-lock.json', '{"name":"different","lockfileVersion":3,"packages":{}}');
         if (defect === 'changed-token') {
@@ -1542,6 +1543,7 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
       '#!/bin/bash', 'set -eu',
       'case "$1" in',
       '  trees) echo node_modules; exit ;;',
+      ...(generationHelper ? ['  preflight-generation) exit ;;'] : []),
       '  ' + snapshotVerb + ') ;;',
       '  *) exit 94 ;;',
       'esac',
@@ -1590,6 +1592,36 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     expect(existsSync(join(tmp, 'refused-donor-receipt-' + caseId + '.json'))).toBe(false);
     } finally {
       if (fixtureParent !== tmp) rmSync(fixtureParent, { recursive: true, force: true });
+    }
+  });
+
+  it.each(['automatic', 'explicit'] as const)('rejects %s generation custody before allocating verifier source', async selection => {
+    const parent = process.platform === 'linux' ? mkdtempSync('/var/tmp/source-preview-generation-preflight-') : tmp;
+    try {
+      const fixture = makeSuperproject(join(parent, 'generation-' + selection));
+      const usesAutomaticGeneration = process.platform === 'linux' &&
+        statSync(fixture.repo).dev === statSync('/').dev;
+      if (selection === 'automatic' && !usesAutomaticGeneration) return;
+      const helper = 'papercusp-desktop/bin/lib/pinned-deps.sh';
+      write(fixture.repo, helper, [
+        '#!/bin/bash', 'set -eu', 'case "$1" in',
+        '  preflight-generation) echo "missing verifier closure" >&2; exit 74 ;;',
+        '  snapshot-generation-locked) echo "snapshot must not start" >&2; exit 93 ;;',
+        '  *) exit 94 ;;', 'esac', '',
+      ].join('\n'));
+      git(fixture.repo, ['add', helper]);
+      git(fixture.repo, ['commit', '-qm', 'generation admission fixture']);
+      const receiptPath = join(tmp, 'generation-preflight-' + selection + '.json');
+      await expect(runVerifierCommand({ repo: fixture.repo,
+        ref: git(fixture.repo, ['rev-parse', 'HEAD']).trim(), receiptPath,
+        env: { ...childEnv(), PAPERCUSP_DEPENDENCY_GENERATION_ROOT: selection === 'explicit' ? join(parent, 'store') : '' },
+        command: [process.execPath, '-e', 'throw Error("provider must not start")'],
+      })).rejects.toThrow('verifier generation preflight failed: missing verifier closure');
+      expect(existsSync(receiptPath)).toBe(false);
+      expect(existsSync(receiptPath + '.task.json')).toBe(false);
+      expect(existsSync(join(fixture.repo, '.papercusp/scratch'))).toBe(false);
+    } finally {
+      if (parent !== tmp) rmSync(parent, { recursive: true, force: true });
     }
   });
 

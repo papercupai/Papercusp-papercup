@@ -3,6 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { readRealPgRailBlocks } from '@papercusp/test-config/silenced-console-census';
 import * as recorder from '../degradation/fallback-observations';
+import { expertiseExecutionHealthFromRows } from '../consult/consult-routing-health-primitives';
 import { acceptanceProblems, inventoryTree, manifestProblems, migrationCoverageProblems } from '../../../../scripts/lib/condition-rail-inventory.mjs';
 import { listDegradationMechanisms } from '../system-health/degradation-watchdog';
 import { RAIL_MIGRATION_CASES, RAIL_MIGRATION_COMPLETE_ITEMS } from '../degradation/rail-migration-cases';
@@ -116,7 +117,7 @@ describe('condition-rail per-row executable coverage (P-017)', () => {
     });
   });
 
-  it('keeps the reviewed P-013 histogram and unit-tier refusal outside runtime degradation', async () => {
+  it('keeps the reviewed P-013 histogram and unit-tier refusal outside runtime degradation', () => {
     const histogramId = 'health-flag-no-condition|packages/operator-core/lib/consult/consult-routing-health.ts|expertiseExecutionHealthFromRows|1';
     const guardId = 'log-only-fallback|packages/agent-mcp/src/entity-resolvers-papercusp.ts|assertNotUnitTier|1';
     for (const rowId of [histogramId, guardId]) {
@@ -126,12 +127,13 @@ describe('condition-rail per-row executable coverage (P-017)', () => {
       });
     }
 
-    const { expertiseExecutionHealthFromRows } = await import('../consult/consult-routing-health');
+    const blockedBefore = readRealPgRailBlocks().blocked;
     const read = expertiseExecutionHealthFromRows(['returned', 'degraded', 'threw'].map((outcome) => ({
       metadata_json: { schemaVersion: 1, caller: 'fixture', policy: 'fixture', outcome },
     })));
     expect(read.groups).toHaveLength(1);
     expect(read.groups[0].outcomes).toEqual({ returned: 1, degraded: 1, threw: 1 });
+    expect(readRealPgRailBlocks().blocked).toBe(blockedBefore);
     expect(recorder.observeFallback).not.toHaveBeenCalled();
 
     // Execute the actual original guard without importing its live entity registry.

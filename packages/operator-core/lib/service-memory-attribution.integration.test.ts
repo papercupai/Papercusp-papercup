@@ -367,15 +367,7 @@ function auditSavedCompilerCaller(report: any) {
     historicalGigabyteRecovery: 'unmeasured', productionSavings: 'unmeasured' };
 }
 
-// Database/runtime launchers can emit substantial output before the cohort
-// publishes its first report. Do not buffer that output in spawnSync.
-function runCohortWithLog(args: string[], options: { cwd: string; timeout: number; env: NodeJS.ProcessEnv }, logPath: string,
-  archiveDirectory = join(root, '.papercusp', 'logs')) {
-  const descriptor = openSync(logPath, 'w', 0o600);
-  let result: ReturnType<typeof spawnSync>;
-  try {
-    result = spawnSync(process.execPath, args, { ...options, stdio: ['ignore', descriptor, descriptor] });
-  } finally { closeSync(descriptor); }
+function archiveCohortLog(logPath: string, archiveDirectory: string) {
   // Reuse the harness's private log archive. Cohort finally blocks remove the
   // working log; receipts must name retained, exact bytes instead. Hash-addressed
   // files avoid overwriting another run, and raw logs stay out of public JSON.
@@ -385,8 +377,42 @@ function runCohortWithLog(args: string[], options: { cwd: string; timeout: numbe
   try { writeFileSync(archived, bytes, { flag: 'wx', mode: 0o600 }); }
   catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error; }
   if (!readFileSync(archived).equals(bytes)) throw Error('Cohort log archive bytes do not match');
+  return { path: relative(root, archived), bytes: bytes.length, sha256 };
+}
+
+// Database/runtime launchers can emit substantial output before the cohort
+// publishes its first report. Do not buffer that output in spawnSync.
+function runCohortWithLog(args: string[], options: { cwd: string; timeout: number; env: NodeJS.ProcessEnv }, logPath: string,
+  archiveDirectory = join(root, '.papercusp', 'logs'), executable = process.execPath) {
+  const descriptor = openSync(logPath, 'w', 0o600);
+  let result: ReturnType<typeof spawnSync>;
+  try {
+    result = spawnSync(executable, args, { ...options, stdio: ['ignore', descriptor, descriptor] });
+  } finally { closeSync(descriptor); }
+  const log = archiveCohortLog(logPath, archiveDirectory), bytes = readFileSync(logPath);
   return { ...result, stdout: '', stderr: bytes.subarray(Math.max(0, bytes.length - 4000)).toString('utf8'),
-    log: { path: relative(root, archived), bytes: bytes.length, sha256 } };
+    log };
+}
+
+// A null status alone loses the distinction between timeout, signal and launch
+// failure. Retain those fields AND the host builder's phase log before cleanup.
+function runBuildWithLog(executable: string, args: string[],
+  options: { cwd: string; timeout: number; env: NodeJS.ProcessEnv }, logPath: string, output: string,
+  archiveDirectory = join(root, '.papercusp', 'logs')) {
+  const result = runCohortWithLog(args, options, logPath, archiveDirectory, executable);
+  const stepsPath = output + '.build-steps.jsonl';
+  const error = result.error as NodeJS.ErrnoException | undefined;
+  const diagnostics = {
+    executable, args, timeoutMs: options.timeout, status: result.status, signal: result.signal,
+    error: error ? { name: error.name, message: error.message, code: error.code, errno: error.errno,
+      syscall: error.syscall, path: error.path } : null,
+    log: result.log,
+    buildSteps: existsSync(stepsPath)
+      ? { state: 'retained', ...archiveCohortLog(stepsPath, archiveDirectory),
+        tail: readFileSync(stepsPath).subarray(-4000).toString('utf8') }
+      : { state: 'not-emitted', expectedPath: relative(root, stepsPath) },
+  };
+  return { ...result, diagnostics, failure: serializeIdentitySafeJson(diagnostics) + '\n' + result.stderr };
 }
 
 // Build both cohorts from one maintained bundle. The counterfactual restores
@@ -783,11 +809,11 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
       expect(() => new Function(probe)).not.toThrow();
       symlinkSync(resolve(root, 'node_modules'), join(directory, 'node_modules'), 'dir');
       for (const [entry, output] of [['bin/hono-host.ts', full], ['bin/spawner-sidecar.ts', standalone]]) {
-        const built = runCohortWithLog([resolve(root, 'scripts/npm-install-safe.mjs'), '--repo-root', root,
+        const built = runBuildWithLog(process.execPath, [resolve(root, 'scripts/npm-install-safe.mjs'), '--repo-root', root,
           '--exec-under-lock', '--', resolve(root, 'apps/operator/bin/bundle-host.sh'), entry, output],
-        { cwd: root, env: process.env, timeout: 180000 }, join(directory, entry.includes('hono') ? 'full-build.log' : 'standalone-build.log'));
-        builds.push({ entry, output, ...built.log, status: built.status, tail: built.stderr });
-        expect(built.status, built.stderr).toBe(0);
+        { cwd: root, env: process.env, timeout: 180000 }, join(directory, entry.includes('hono') ? 'full-build.log' : 'standalone-build.log'), output);
+        builds.push({ entry, output, ...built.log, ...built.diagnostics, tail: built.stderr });
+        expect(built.status, built.failure).toBe(0);
       }
       phase = 'runtime-cohorts';
       const result = runCohortWithLog([resolve(root, 'scripts/with-test-pg.mjs'), '--isolated-runtime=operator-api', '--',
@@ -1583,11 +1609,11 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
         assertServingInboxPin(servingPin, await readServingInboxPin(sourceDirectory, expectedBuild, servingPin.process.pid));
         build = { route: 'immutable-serving-generation-copy', loadedBuild: expectedBuild };
       } else {
-        const built = runCohortWithLog([resolve(root, 'scripts/npm-install-safe.mjs'), '--repo-root', root,
+        const built = runBuildWithLog(process.execPath, [resolve(root, 'scripts/npm-install-safe.mjs'), '--repo-root', root,
           '--exec-under-lock', '--', resolve(root, 'apps/operator/bin/bundle-host.sh'), 'bin/hono-host.ts', current],
-        { cwd: root, env: process.env, timeout: 180000 }, join(directory, 'build.log'));
-        preflight.build = { ...built.log, tail: built.stderr };
-        expect(built.status, built.stderr).toBe(0);
+        { cwd: root, env: process.env, timeout: 180000 }, join(directory, 'build.log'), current);
+        preflight.build = { ...built.log, ...built.diagnostics, tail: built.stderr };
+        expect(built.status, built.failure).toBe(0);
         build = built.log;
       }
       cpSync(dirname(current), dirname(baseline), { recursive: true });
@@ -1792,6 +1818,50 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
   });
 
   describe('P-011 cohort log retention guards', () => {
+    it('retains build failure and phase receipts after temporary output cleanup', () => {
+      const directory = mkdtempSync(join(tmpdir(), 'papercusp-build-diagnostics-'));
+      const archive = mkdtempSync(join(tmpdir(), 'papercusp-build-archive-'));
+      try {
+        const output = join(directory, 'host.mjs');
+        const steps = '{"phase":"source-reader","event":"start"}\n';
+        const result = runBuildWithLog(process.execPath, ['-e',
+          "require('node:fs').writeFileSync(process.argv[1] + '.build-steps.jsonl', process.argv[2]); process.stderr.write('build failed'); process.exitCode = 7;",
+          output, steps], { cwd: root, env: process.env, timeout: 5000 }, join(directory, 'build.log'), output, archive);
+        expect(result.status).toBe(7);
+        expect(result.diagnostics.error).toBeNull();
+        expect(result.diagnostics.signal).toBeNull();
+        expect(result.diagnostics.buildSteps.state).toBe('retained');
+        rmSync(directory, { recursive: true, force: true });
+        const stepReceipt = result.diagnostics.buildSteps;
+        expect(readFileSync(resolve(root, stepReceipt.path!), 'utf8')).toBe(steps);
+        expect(stepReceipt.sha256).toBe(createHash('sha256').update(steps).digest('hex'));
+        expect(stepReceipt.bytes).toBe(Buffer.byteLength(steps));
+        expect(readFileSync(resolve(root, result.log.path), 'utf8')).toContain('build failed');
+        expect(result.failure).toContain('source-reader');
+        expect(result.failure).toContain(result.log.sha256);
+      } finally {
+        rmSync(directory, { recursive: true, force: true }); rmSync(archive, { recursive: true, force: true });
+      }
+    });
+    it.each(['timeout', 'missing-executable'] as const)('distinguishes a null build status caused by %s', mode => {
+      const directory = mkdtempSync(join(tmpdir(), 'papercusp-build-termination-'));
+      const archive = mkdtempSync(join(tmpdir(), 'papercusp-build-archive-'));
+      try {
+        const result = runBuildWithLog(mode === 'timeout' ? process.execPath : join(directory, 'missing-executable'),
+          ['-e', 'setInterval(() => {}, 1000)'], { cwd: root, env: process.env, timeout: 250 },
+          join(directory, 'build.log'), join(directory, 'host.mjs'), archive);
+        expect(result.status).toBeNull();
+        expect(result.diagnostics.error?.code).toBe(mode === 'timeout' ? 'ETIMEDOUT' : 'ENOENT');
+        expect(result.diagnostics.signal).toBe(mode === 'timeout' ? 'SIGTERM' : null);
+        expect(result.diagnostics.timeoutMs).toBe(250);
+        expect(result.diagnostics.buildSteps.state).toBe('not-emitted');
+        expect(result.failure).toContain(mode === 'timeout' ? 'ETIMEDOUT' : 'ENOENT');
+        rmSync(directory, { recursive: true, force: true });
+        expect(existsSync(resolve(root, result.log.path))).toBe(true);
+      } finally {
+        rmSync(directory, { recursive: true, force: true }); rmSync(archive, { recursive: true, force: true });
+      }
+    });
     it('records a resolvable repository-relative path in the maintained harness log archive', () => {
       const directory = mkdtempSync(join(tmpdir(), 'papercusp-log-default-'));
       try {
@@ -1899,11 +1969,11 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
     try {
       // Compile the current application module into a private request fixture;
       // the metafile and exact bytes identify this plane, not a deployed host.
-      const built = spawnSync(compilerPath, [entry, '--bundle', '--platform=node', '--format=cjs',
+      const built = runBuildWithLog(compilerPath, [entry, '--bundle', '--platform=node', '--format=cjs',
         '--packages=external', '--outfile=' + bundle, '--metafile=' + meta], {
-        cwd: root, encoding: 'utf8', timeout: 20_000,
-      });
-      expect(built.status, built.stderr).toBe(0);
+        cwd: root, env: process.env, timeout: 20_000,
+      }, join(dir, 'build.log'), bundle);
+      expect(built.status, built.failure).toBe(0);
       const graph = Object.keys(JSON.parse(readFileSync(meta, 'utf8')).inputs).map(path => {
         const absolute = resolve(root, path);
         return { path: absolute === entry ? '<private-request-fixture>' : path, sha256: hash(readFileSync(absolute)) };
@@ -2251,10 +2321,10 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
         // Read a serving generation; only its disposable copy is written.
         cpSync(sourceDirectory, hostDirectory, { recursive: true });
       } else {
-        const built = spawnSync('bash', [resolve(root, 'apps/operator/bin/bundle-host.sh'), 'bin/hono-host.ts', bundle], {
-          cwd: resolve(root, 'apps/operator'), encoding: 'utf8', timeout: 120_000,
-        });
-        expect(built.status, built.stderr.slice(-2000)).toBe(0);
+        const built = runBuildWithLog('bash', [resolve(root, 'apps/operator/bin/bundle-host.sh'), 'bin/hono-host.ts', bundle], {
+          cwd: resolve(root, 'apps/operator'), env: process.env, timeout: 120_000,
+        }, join(directory, 'build.log'), bundle);
+        expect(built.status, built.failure).toBe(0);
       }
       symlinkSync(resolve(root, 'node_modules'), join(directory, 'node_modules'), 'dir');
       const bundleHash = sha256(readFileSync(bundle));
@@ -2899,10 +2969,10 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
       if (sourceDirectory) {
         cpSync(sourceDirectory, dirname(bundle), { recursive: true });
       } else {
-        const build = spawnSync('bash', [resolve(root, 'apps/operator/bin/bundle-host.sh'), 'bin/hono-host.ts', bundle], {
-          cwd: resolve(root, 'apps/operator'), encoding: 'utf8', timeout: 120_000,
-        });
-        expect(build.status, build.stderr.slice(-3000)).toBe(0);
+        const build = runBuildWithLog('bash', [resolve(root, 'apps/operator/bin/bundle-host.sh'), 'bin/hono-host.ts', bundle], {
+          cwd: resolve(root, 'apps/operator'), env: process.env, timeout: 120_000,
+        }, join(directory, 'build.log'), bundle);
+        expect(build.status, build.failure).toBe(0);
       }
       const bundleHash = createHash('sha256').update(readFileSync(bundle)).digest('hex');
       const result = spawnSync(process.execPath, [resolve(root, 'scripts/with-test-pg.mjs'),

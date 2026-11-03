@@ -3957,7 +3957,7 @@ verify_mutation_bytes "$TARGET"
 MUTANT_PARSE="unchecked"
 MUTANT_PARSE_ERR="$SCRATCH/mutant-parse.err"
 case "$FILE" in
-  *.mts|*.cts|*.ts)
+  *.mts|*.cts|*.ts|*.tsx)
     if ! command -v node >/dev/null 2>&1; then
       MUTANT_PARSE="unchecked-no-node"
     # Use the maintained compiler when available: Node's type stripping
@@ -3976,13 +3976,16 @@ if (compilerPath) {
   const result = ts.transpileModule(source, {
     fileName: process.argv[2], reportDiagnostics: true,
     compilerOptions: { target: ts.ScriptTarget.ESNext, module: ts.ModuleKind.ESNext,
-      experimentalDecorators: true },
+      experimentalDecorators: true, jsx: ts.JsxEmit.ReactJSX },
   });
   const errors = (result.diagnostics ?? []).filter(d => d.category === ts.DiagnosticCategory.Error);
   if (errors.length) throw new SyntaxError(errors.map(d =>
     ts.flattenDiagnosticMessageText(d.messageText, '\n')).join('\n'));
   process.stdout.write(result.outputText);
 } else {
+  // Node's type stripper cannot parse JSX. A missing compiler is an
+  // unmeasured syntax check, not evidence that a valid TSX mutant is broken.
+  if (/\.tsx$/i.test(process.argv[2])) process.exit(3);
   process.stdout.write(stripTypeScriptTypes(source, { mode: 'transform' }));
 }
 NODE
@@ -3995,7 +3998,12 @@ NODE
         MUTANT_PARSE="broken"
       fi
     else
-      MUTANT_PARSE="broken"
+      parse_rc=$?
+      if [ "$parse_rc" -eq 3 ]; then
+        MUTANT_PARSE="unchecked-no-typescript"
+      else
+        MUTANT_PARSE="broken"
+      fi
     fi
     ;;
   *.mjs|*.cjs|*.js)

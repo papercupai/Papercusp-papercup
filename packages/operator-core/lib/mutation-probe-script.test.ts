@@ -166,6 +166,28 @@ function makeHistoricalTsRepo(filename = 'subject.ts'): { repo: string; file: st
 
 describe('mutation-probe.sh — TypeScript mutant syntax', () => {
   it.each([
+    { name: 'valid', mutate: 's/ANSWER = 1/ANSWER = 2/', code: 0,
+      phases: ['baseline', 'copy-baseline', 'mutant'] },
+    { name: 'malformed', mutate: 's#</section>#</div>#', code: 2,
+      phases: ['baseline', 'copy-baseline'] },
+  ])('checks $name TSX JSX without executing the subject or scoring a parse failure', testCase => {
+    const typedSubject = join(dir, 'subject.tsx');
+    const marker = join(dir, 'guard-phases');
+    const original = [
+      'throw new Error("syntax checking must not execute the subject");',
+      'const ANSWER = 1;',
+      'export const view = <section data-answer={ANSWER}>answer</section>;',
+    ].join('\n');
+    writeFileSync(typedSubject, original);
+    const guard = `printf '%s\\n' "$PAPERCUSP_MUTATION_PHASE" >> "${marker}"; grep -q 'ANSWER = 1' {}`;
+    const { code, out } = runProbeIO(['--file', typedSubject, '--mutate', testCase.mutate, '--test', guard]);
+    expect(code, out).toBe(testCase.code);
+    expect(out).toContain(testCase.code === 0 ? 'mutant_parse=ok' : 'mutant_parse=broken');
+    expect(readFileSync(marker, 'utf8').trim().split('\n')).toEqual(testCase.phases);
+    expect(readFileSync(typedSubject, 'utf8')).toBe(original);
+  });
+
+  it.each([
     { name: 'valid', mutate: 's/= 1/= 2/', code: 0, phases: ['baseline', 'copy-baseline', 'mutant'] },
     { name: 'broken', mutate: 's/= 1/= (/', code: 2, phases: ['baseline', 'copy-baseline'] },
   ])('handles $name decorated TypeScript without executing it during syntax validation', testCase => {

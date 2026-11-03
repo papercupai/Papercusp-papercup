@@ -140,6 +140,30 @@ describe('independent parent oracle producer', () => {
     expect(preflight).toContain('replay-oracle-parent-channel-required');
     console.info(JSON.stringify({ kind: 'oracle-fixture-phase', phase: 'startup-preflight-complete', elapsedMs: performance.now() - startedAt }));
     });
+    it.each(['run', 'kind', 'hash'])('rejects a foreign preflight release %s before compiler work', async field => {
+      const { cli, inputPath, root } = prepared;
+      const output = join(root, `foreign-${field}.json`);
+      const child = spawn(process.execPath, [cli, '--freeze-replay-child', inputPath, output],
+        { env: { ...process.env, NODE_OPTIONS: '' }, stdio: ['ignore', 'ignore', 'pipe', 'ipc'] });
+      let stderr = '';
+      child.stderr!.on('data', chunk => { stderr += chunk; });
+      const closed = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve, reject) => {
+        const timer = setTimeout(() => {
+          child.kill('SIGKILL'); reject(new Error('foreign preflight release was accepted'));
+        }, 5000);
+        child.once('error', error => { clearTimeout(timer); reject(error); });
+        child.once('close', (code, signal) => { clearTimeout(timer); resolve({ code, signal }); });
+      });
+      child.once('message', message => {
+        const request = message as { runId: string };
+        child.send({ kind: field === 'kind' ? 'replay-oracle-release' : 'replay-oracle-preflight-release',
+          runId: field === 'run' ? 'foreign' : request.runId, ...(field === 'hash' ? { sha256: 'foreign' } : {}) });
+      });
+      expect(await closed).toEqual({ code: 1, signal: null });
+      expect(stderr).toContain('replay-oracle-invalid-parent-release');
+      expect(stderr).not.toContain('replay-oracle-progress');
+      expect(existsSync(output)).toBe(false);
+    });
     it('runs the actual compiler with the kernel native-mapping evaluator and parent heap argv', () => {
     const { cli, inputPath, outputPath, optionsPath, witnessDirectory, compilerEntries } = prepared;
     // Elevation is an explicit integration-run choice. Ordinary CI still checks
@@ -156,8 +180,11 @@ describe('independent parent oracle producer', () => {
     expect(existsSync(witnessDirectory), failure).toBe(true);
     if (privileged) execFileSync('sudo', ['-n', 'chmod', '-R', 'a+rX', witnessDirectory]);
     const rows = receipts(witnessDirectory);
-    for (const entry of compilerEntries) expect(rows).toContainEqual(expect.objectContaining({
-      kind: 'commonjs-compile', path: entry, sha256: replayHash(readFileSync(entry)) }));
+    for (const entry of compilerEntries) {
+      const compiled = rows.filter(row => row.kind === 'commonjs-compile' && row.path === entry);
+      if (!failure) expect(compiled).toContainEqual(expect.objectContaining({ sha256: replayHash(readFileSync(entry)) }));
+      else expect(compiled).toEqual([]); // Native access must fail before the compiler loads.
+    }
     const boot = rows.find(row => row.kind === 'bootstrap');
     expect(boot).toBeDefined();
     expect(boot.execArgv.slice(0, -2)).toEqual(['--max-old-space-size=512']);
@@ -181,8 +208,11 @@ describe('independent parent oracle producer', () => {
   function producer(suffix = '') {
     const f = fixture('cjs', `const fs=require('node:fs');require('./compiler.cjs');
       const input=JSON.parse(fs.readFileSync(process.argv[3],'utf8'));
+      process.once('message',preflight=>{
+      if(preflight.kind!=='replay-oracle-preflight-release'||preflight.runId!==input.runId)process.exit(10);
       const config=JSON.parse(fs.readFileSync(input.configPath,'utf8'));
       const candidatePath=process.argv[4];
+      fs.writeFileSync(require('node:path').join(require('node:path').dirname(candidatePath),'candidate-work-started'),'yes',{flag:'wx'});
       const bytes=JSON.stringify(config);fs.writeFileSync(candidatePath,bytes,{flag:'wx'});
       const sha256=require('node:crypto').createHash('sha256').update(bytes).digest('hex');
       process.on('message',row=>{
@@ -190,7 +220,9 @@ describe('independent parent oracle producer', () => {
         else process.disconnect();
       });
       ${suffix}
-      process.send({kind:'replay-oracle-frozen',runId:input.runId,candidatePath,sha256});`);
+      process.send({kind:'replay-oracle-frozen',runId:input.runId,candidatePath,sha256});
+      });
+      process.send({kind:'replay-oracle-preflight',runId:input.runId});`);
     const sourceRoot = join(f.root, 'source'); mkdirSync(sourceRoot);
     const source = join(sourceRoot, 'source.ts'); writeFileSync(source, 'export function hot() {}\n');
     const compiler = join(f.root, 'compiler.cjs'); writeFileSync(compiler, 'module.exports={version:"fixture-compiler"};');
@@ -223,9 +255,25 @@ describe('independent parent oracle producer', () => {
     expect(JSON.parse(readFileSync(f.outputPath, 'utf8'))).toEqual(qualified);
     const declaration = JSON.parse(readFileSync(join(f.options.witnessDirectory, 'declaration.json'), 'utf8'));
     expect(declaration.witness.files[f.source]).toBe(qualified.files[f.source]);
+    expect(JSON.parse(readFileSync(join(f.options.witnessDirectory, 'preflight.json'), 'utf8')))
+      .toMatchObject({ problems: [], process: { pid: qualified.oracleProvenance.runtime!.process.pid } });
     expect(JSON.parse(readFileSync(join(f.options.witnessDirectory, 'terminal.json'), 'utf8'))).toMatchObject({ code: 0, signal: null });
     expect(readProcessIdentity(qualified.oracleProvenance.runtime!.process.pid)).toBeNull();
     await expect(freezeQualifiedReplayConfig(f.inputPath, f.outputPath, f.options, f.deps)).rejects.toThrow('replay-oracle-output-exists');
+  });
+  it('refuses missing native closure before candidate work and succeeds only with a new prospective declaration', async () => {
+    const f = producer();
+    await expect(freezeQualifiedReplayConfig(f.inputPath, f.outputPath, { ...f.options, runtimePaths: [] }, f.deps))
+      .rejects.toThrow('replay-oracle-preflight-refused:unfrozen-native-mapping:');
+    const terminal = JSON.parse(readFileSync(join(f.options.witnessDirectory, 'terminal.json'), 'utf8'));
+    expect(terminal).toMatchObject({ phase: 'qualifying-preflight', signal: 'SIGKILL' });
+    expect(readProcessIdentity(terminal.pid)).toBeNull();
+    expect(existsSync(join(f.options.witnessDirectory, 'candidate-work-started'))).toBe(false);
+    expect(existsSync(join(f.options.witnessDirectory, 'candidate.json'))).toBe(false);
+    expect(existsSync(f.outputPath)).toBe(false);
+    const qualified = await freezeQualifiedReplayConfig(f.inputPath, f.outputPath,
+      { ...f.options, witnessDirectory: join(f.root, 'complete-receipts') }, f.deps);
+    expect(() => assertReplayOracleRuntimeQualified(qualified)).not.toThrow();
   });
   it('carries the configured heap into the actual child while dropping ambient preloads', async () => {
     const f = producer(`fs.writeFileSync(require('node:path').join(require('node:path').dirname(candidatePath),'heap.json'),
@@ -266,7 +314,7 @@ describe('independent parent oracle producer', () => {
     await expect(freezeQualifiedReplayConfig(f.inputPath, f.outputPath, f.options, f.deps))
       .rejects.toThrow('replay-oracle-child-exited:null:SIGTERM');
     const terminal = JSON.parse(readFileSync(join(f.options.witnessDirectory, 'terminal.json'), 'utf8'));
-    expect(terminal).toMatchObject({ signal: 'SIGTERM', phase: 'waiting-for-candidate' });
+    expect(terminal).toMatchObject({ signal: 'SIGTERM', phase: 'waiting-for-preflight' });
     expect(terminal.stderr).not.toContain('original compiler failure');
     expect(readFileSync(join(f.options.witnessDirectory, 'stderr.log'), 'utf8'))
       .toBe('original compiler failure\n'+'x'.repeat(10000));
@@ -304,7 +352,8 @@ describe('independent parent oracle producer', () => {
   it('refuses a missing compiler load without expanding the predeclared witness', async () => {
     const f = producer();
     const unused = join(f.root, 'unused.cjs'); writeFileSync(unused, 'module.exports=1;');
-    await expect(freezeQualifiedReplayConfig(f.inputPath, f.outputPath, { ...f.options, compilerEntries: [unused] }, f.deps))
+    await expect(freezeQualifiedReplayConfig(f.inputPath, f.outputPath, { ...f.options, compilerEntries: [unused],
+      runtimePaths: [...f.options.runtimePaths, join(f.root, 'compiler.cjs')] }, f.deps))
       .rejects.toThrow(`unloaded-oracle-code:${unused}`);
     expect(existsSync(f.outputPath)).toBe(false);
   });

@@ -18,7 +18,8 @@ import { fileURLToPath } from 'node:url';
 import { readFileSync } from 'node:fs';
 import { applyEventSubstrateMigrationsForTest, createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
 import { ensureCoordCapabilityTables } from '@papercusp/coordination/capabilities';
-import { HARNESS_FEATURES_CONSOLIDATED_DDL, WORK_ITEM_DEPS_DDL } from '../../test/_work-items-schema';
+import { ADV_SESSIONS_CLAIM_MIN_DDL, HARNESS_FEATURES_CONSOLIDATED_DDL, WORK_ITEM_DEPS_DDL } from '../../test/_work-items-schema';
+import { coerceJson } from '../pg-jsonb';
 import { ANY_FAMILY_TERMINAL_STATES } from '../work-item-dispatch-states';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -111,6 +112,9 @@ const {
   CONDITION_UPSERT_MARKER,
   adoptConditionIncumbent,
   reserveAcceptanceReviewTarget,
+  reserveAuthorVettingHandoff,
+  advanceAuthorVettingHandoff,
+  authorVettingTargetKey,
   settleAcceptanceReviewReservationsForPlan,
 } = await import('./condition-upsert');
 const { findConditionObject } = await import('./condition-object');
@@ -148,12 +152,99 @@ const spec = (title: string) => ({
   severity: 'major' as const,
 });
 
+describe('exact-identity author handoff — rubric workflow P004', () => {
+  const target = (name: string) => ({ workspaceId: WS, harnessSlug: H, planSlug: `handoff-${name}`,
+    rubricId: `ar-handoff-${name}`, revision: 3, criteriaHash: 'criteria-v3', barSetHash: 'bars-v3',
+    action: 'record-vetting' as const });
+  const request = { authorId: 'su-author', requestedBy: 'su-requester' };
+
+  it('keeps one durable obligation under concurrent retries and a later independent read', async () => {
+    const t = target('retry');
+    const [a, b] = await Promise.all([reserveAuthorVettingHandoff(t, request), reserveAuthorVettingHandoff(t, request)]);
+    expect(a.id).toBe(b.id);
+    const [row] = await db.sql`SELECT payload -> 'authorHandoff' AS receipt FROM harness_shared.work_items
+      WHERE workspace_id = ${WS} AND feature_id = ${a.id}`;
+    expect(row.receipt.target).toEqual(t);
+    expect((await reserveAuthorVettingHandoff(t, request)).id).toBe(a.id);
+    expect(await holdersOf(authorVettingTargetKey(t))).toEqual([a.id]);
+  });
+
+  it('records queued delivery separately from authorized pickup', async () => {
+    const t = target('delivery');
+    const queued = await reserveAuthorVettingHandoff(t, { ...request, deliver: async () => ({ queued: 1, pickupConfirmed: false }) });
+    expect(queued.state).toBe('queued');
+    expect(queued.receipts.some(row => row.state === 'picked-up')).toBe(false);
+    const picked = await advanceAuthorVettingHandoff({ id: queued.id, target: t, actorId: 'su-author', phase: 'pickup',
+      authorize: async () => true });
+    expect(picked).toMatchObject({ ok: true, state: 'picked-up' });
+  });
+
+  it('keeps an absent author blocked without manufacturing pickup or a verdict', async () => {
+    const queued = await reserveAuthorVettingHandoff(target('absent'), { ...request, authorId: null });
+    expect(queued).toMatchObject({ state: 'blocked', authorId: null });
+    expect(queued.receipts).toEqual([expect.objectContaining({ state: 'blocked', reason: 'author-of-record-unavailable' })]);
+  });
+
+  it('rechecks authority independently at pickup and settlement', async () => {
+    const t = target('authority');
+    const queued = await reserveAuthorVettingHandoff(t, request);
+    const advance = (phase: 'pickup' | 'settle', allowed: boolean) => advanceAuthorVettingHandoff({
+      id: queued.id, target: t, actorId: 'su-successor', phase, authorize: async () => allowed, verdictRef: 'EI-final',
+    });
+    expect(await advance('pickup', false)).toMatchObject({ ok: false, state: 'blocked' });
+    expect(await advance('pickup', true)).toMatchObject({ ok: true, state: 'picked-up' });
+    expect(await advance('settle', false)).toMatchObject({ ok: false, state: 'blocked' });
+    expect(await advance('pickup', true)).toMatchObject({ ok: true, state: 'picked-up' });
+    const final = await advance('settle', true);
+    expect(final).toMatchObject({ ok: true, state: 'completed' });
+    if (!('receipts' in final)) throw new Error('missing durable final receipt');
+    expect(final.receipts.at(-1)).toMatchObject({ state: 'completed', actorId: 'su-successor', verdictRef: 'EI-final' });
+    expect((await reserveAuthorVettingHandoff(t, request)).id).toBe(queued.id);
+  });
+
+  it.each(['revision', 'criteriaHash', 'barSetHash'] as const)('rejects a superseded %s instead of settling by slug', async key => {
+    const t = target(`obsolete-${key}`);
+    const queued = await reserveAuthorVettingHandoff(t, request);
+    const changed = { ...t, [key]: key === 'revision' ? 4 : 'changed' };
+    expect(await advanceAuthorVettingHandoff({ id: queued.id, target: changed, actorId: 'su-author', phase: 'settle',
+      authorize: async () => true, verdictRef: 'EI-obsolete' })).toMatchObject({ ok: false, state: 'superseded' });
+    expect((await reserveAuthorVettingHandoff(changed, request)).id).not.toBe(queued.id);
+  });
+
+  it('requires an observed authorized pickup before accepting a final verdict reference', async () => {
+    const t = target('no-pickup');
+    const queued = await reserveAuthorVettingHandoff(t, request);
+    expect(await advanceAuthorVettingHandoff({ id: queued.id, target: t, actorId: 'su-author', phase: 'settle',
+      authorize: async () => true, verdictRef: 'EI-unpicked' })).toMatchObject({ ok: false, state: 'blocked' });
+  });
+
+  it('keeps a persisted verdict unresolved until the passed audit settles the same authorized pickup', async () => {
+    const t = target('audit');
+    const queued = await reserveAuthorVettingHandoff(t, request);
+    const common = { id: queued.id, target: t, actorId: 'su-author', authorize: async () => true };
+    await advanceAuthorVettingHandoff({ ...common, phase: 'pickup' });
+    await advanceAuthorVettingHandoff({ ...common, phase: 'blocked', reason: 'awaiting-independent-audit' });
+    const final = await advanceAuthorVettingHandoff({ ...common, phase: 'settle', verdictRef: 'EI-audited-final',
+      reason: 'independent-audit:EI-independent-audit' });
+    expect(final).toMatchObject({ ok: true, state: 'completed' });
+    const [stored] = await db.sql`SELECT status, payload -> 'authorHandoff' AS receipt,
+      jsonb_typeof(payload -> 'authorHandoff') AS receipt_type FROM harness_shared.work_items
+      WHERE workspace_id = ${WS} AND feature_id = ${queued.id}`;
+    expect(ANY_FAMILY_TERMINAL_STATES).toContain(stored.status);
+    expect(stored.receipt_type).toBe('object');
+    expect(coerceJson<{ receipts: Array<Record<string, unknown>> }>(stored.receipt)?.receipts.at(-1)).toMatchObject({ verdictRef: 'EI-audited-final',
+      reason: 'independent-audit:EI-independent-audit' });
+  });
+});
+
 beforeAll(async () => {
   savedWsEnv = process.env.PAPERCUSP_WORKSPACE_ID;
   process.env.PAPERCUSP_WORKSPACE_ID = WS;
   db = await createFreshPgDb('condition-upsert');
   h.sql = db.sql;
   await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
+  // The terminal writer's lazy operation-policy read uses this shared fixture.
+  await db.sql.unsafe(ADV_SESSIONS_CLAIM_MIN_DDL);
   await db.sql.unsafe('ALTER TABLE harness_shared.work_items ADD COLUMN IF NOT EXISTS first_claimed_at timestamptz');
   await db.sql.unsafe(readFileSync(resolve(SQL_DIR, '1219-blueprint-operation-invocations.sql'), 'utf8')).simple();
   await db.sql.unsafe(WORK_ITEM_DEPS_DDL).simple();

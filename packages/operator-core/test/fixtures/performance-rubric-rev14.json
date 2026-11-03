@@ -1,0 +1,259 @@
+{
+  "rubricRef": "papercusp-app-performance",
+  "revision": 14,
+  "sourceScorecard": "EI-27736757841457894",
+  "criteria": [
+    {
+      "key": "wake-orient-latency",
+      "check": {
+        "kind": "probe",
+        "maxAgeMs": 3600000,
+        "probe": {
+          "sql": "WITH service_health AS (SELECT count(*)::float8 n,percentile_disc(0.5) WITHIN GROUP(ORDER BY duration_ms)::float8 p50_ms,percentile_disc(0.95) WITHIN GROUP(ORDER BY duration_ms)::float8 p95_ms,CASE WHEN count(*)>=20 THEN 100*greatest(percentile_disc(0.5) WITHIN GROUP(ORDER BY duration_ms)::float8/3000,percentile_disc(0.95) WITHIN GROUP(ORDER BY duration_ms)::float8/8000) END::float8 budget_pct FROM harness_shared.tool_invocations WHERE workspace_id='papercusp-workspace' AND tool_name='coord:orient' AND invoked_at>now()-interval '24 hours' AND duration_ms>=0), cohorts AS (SELECT tool_name,serving_host,serving_process_id,serving_build_sha,md5(coalesce(args_json::text,'null')) workload_signature,count(*) n,count(*) FILTER(WHERE status='ok') success_n,count(*) FILTER(WHERE status<>'ok') non_success_n,count(*) FILTER(WHERE status='error') error_n,count(*) FILTER(WHERE status='timeout') timeout_n,count(*) FILTER(WHERE status='refused') refused_n,count(*) FILTER(WHERE status='replayed') replay_n,NULL::int cancellation_n,min(invoked_at) window_start,max(invoked_at) window_end,percentile_disc(0.5) WITHIN GROUP(ORDER BY duration_ms) FILTER(WHERE status='ok' AND duration_ms>=0) p50_ms,percentile_disc(0.95) WITHIN GROUP(ORDER BY duration_ms) FILTER(WHERE status='ok' AND duration_ms>=0) p95_ms,count(*) FILTER(WHERE status='ok' AND duration_ms>=0)>=200 tail_sample_floor FROM harness_shared.tool_invocations WHERE workspace_id='papercusp-workspace' AND invoked_at>now()-interval '24 hours' AND tool_name IN ('coord:orient','scheduler:get_next','fleet:assignments','work_items:list','coord:presence','coord:inbox','state:read','dev:pipeline_position') GROUP BY tool_name,serving_host,serving_process_id,serving_build_sha,md5(coalesce(args_json::text,'null'))) SELECT service_health.*,(SELECT jsonb_agg(x) FROM (SELECT * FROM cohorts ORDER BY window_end DESC LIMIT 40) x) build_workload_cohorts FROM service_health",
+          "kind": "sql",
+          "expect": {
+            "op": "lte",
+            "path": "$.rows[0].budget_pct",
+            "value": 100
+          },
+          "maxRows": 50,
+          "schemaRevision": "projected-tool-registry-v1:c6e029400f58e1d0"
+        },
+        "unit": "%",
+        "ratingBands": [
+          {
+            "rating": "near",
+            "expect": {
+              "op": "lte",
+              "value": 150
+            }
+          }
+        ]
+      }
+    },
+    {
+      "key": "claim-next-latency",
+      "check": {
+        "kind": "probe",
+        "maxAgeMs": 3600000,
+        "probe": {
+          "sql": "WITH service_health AS (SELECT count(*)::float8 n,percentile_disc(0.5) WITHIN GROUP(ORDER BY duration_ms)::float8 p50_ms,percentile_disc(0.95) WITHIN GROUP(ORDER BY duration_ms)::float8 p95_ms,CASE WHEN count(*)>=20 THEN 100*greatest(percentile_disc(0.5) WITHIN GROUP(ORDER BY duration_ms)::float8/3000,percentile_disc(0.95) WITHIN GROUP(ORDER BY duration_ms)::float8/8000) END::float8 budget_pct FROM harness_shared.tool_invocations WHERE workspace_id='papercusp-workspace' AND tool_name='scheduler:get_next' AND invoked_at>now()-interval '24 hours' AND duration_ms>=0), cohorts AS (SELECT tool_name,serving_host,serving_process_id,serving_build_sha,md5(coalesce(args_json::text,'null')) workload_signature,count(*) n,count(*) FILTER(WHERE status='ok') success_n,count(*) FILTER(WHERE status<>'ok') non_success_n,count(*) FILTER(WHERE status='error') error_n,count(*) FILTER(WHERE status='timeout') timeout_n,count(*) FILTER(WHERE status='refused') refused_n,count(*) FILTER(WHERE status='replayed') replay_n,NULL::int cancellation_n,min(invoked_at) window_start,max(invoked_at) window_end,percentile_disc(0.5) WITHIN GROUP(ORDER BY duration_ms) FILTER(WHERE status='ok' AND duration_ms>=0) p50_ms,percentile_disc(0.95) WITHIN GROUP(ORDER BY duration_ms) FILTER(WHERE status='ok' AND duration_ms>=0) p95_ms,count(*) FILTER(WHERE status='ok' AND duration_ms>=0)>=200 tail_sample_floor FROM harness_shared.tool_invocations WHERE workspace_id='papercusp-workspace' AND invoked_at>now()-interval '24 hours' AND tool_name IN ('coord:orient','scheduler:get_next','fleet:assignments','work_items:list','coord:presence','coord:inbox','state:read','dev:pipeline_position') GROUP BY tool_name,serving_host,serving_process_id,serving_build_sha,md5(coalesce(args_json::text,'null'))) SELECT service_health.*,(SELECT jsonb_agg(x) FROM (SELECT * FROM cohorts ORDER BY window_end DESC LIMIT 40) x) build_workload_cohorts FROM service_health",
+          "kind": "sql",
+          "expect": {
+            "op": "lte",
+            "path": "$.rows[0].budget_pct",
+            "value": 100
+          },
+          "maxRows": 50,
+          "schemaRevision": "projected-tool-registry-v1:c6e029400f58e1d0"
+        },
+        "unit": "%",
+        "ratingBands": [
+          {
+            "rating": "near",
+            "expect": {
+              "op": "lte",
+              "value": 150
+            }
+          }
+        ]
+      }
+    },
+    {
+      "key": "fleet-assignments-latency",
+      "check": {
+        "kind": "probe",
+        "maxAgeMs": 3600000,
+        "probe": {
+          "sql": "WITH service_health AS (SELECT count(*)::float8 n,percentile_disc(0.5) WITHIN GROUP(ORDER BY duration_ms)::float8 p50_ms,percentile_disc(0.95) WITHIN GROUP(ORDER BY duration_ms)::float8 p95_ms,CASE WHEN count(*)>=20 THEN 100*greatest(percentile_disc(0.5) WITHIN GROUP(ORDER BY duration_ms)::float8/2000,percentile_disc(0.95) WITHIN GROUP(ORDER BY duration_ms)::float8/6000) END::float8 budget_pct FROM harness_shared.tool_invocations WHERE workspace_id='papercusp-workspace' AND tool_name='fleet:assignments' AND invoked_at>now()-interval '24 hours' AND duration_ms>=0), cohorts AS (SELECT tool_name,serving_host,serving_process_id,serving_build_sha,md5(coalesce(args_json::text,'null')) workload_signature,count(*) n,count(*) FILTER(WHERE status='ok') success_n,count(*) FILTER(WHERE status<>'ok') non_success_n,count(*) FILTER(WHERE status='error') error_n,count(*) FILTER(WHERE status='timeout') timeout_n,count(*) FILTER(WHERE status='refused') refused_n,count(*) FILTER(WHERE status='replayed') replay_n,NULL::int cancellation_n,min(invoked_at) window_start,max(invoked_at) window_end,percentile_disc(0.5) WITHIN GROUP(ORDER BY duration_ms) FILTER(WHERE status='ok' AND duration_ms>=0) p50_ms,percentile_disc(0.95) WITHIN GROUP(ORDER BY duration_ms) FILTER(WHERE status='ok' AND duration_ms>=0) p95_ms,count(*) FILTER(WHERE status='ok' AND duration_ms>=0)>=200 tail_sample_floor FROM harness_shared.tool_invocations WHERE workspace_id='papercusp-workspace' AND invoked_at>now()-interval '24 hours' AND tool_name IN ('coord:orient','scheduler:get_next','fleet:assignments','work_items:list','coord:presence','coord:inbox','state:read','dev:pipeline_position') GROUP BY tool_name,serving_host,serving_process_id,serving_build_sha,md5(coalesce(args_json::text,'null'))) SELECT service_health.*,(SELECT jsonb_agg(x) FROM (SELECT * FROM cohorts ORDER BY window_end DESC LIMIT 40) x) build_workload_cohorts FROM service_health",
+          "kind": "sql",
+          "expect": {
+            "op": "lte",
+            "path": "$.rows[0].budget_pct",
+            "value": 100
+          },
+          "maxRows": 50,
+          "schemaRevision": "projected-tool-registry-v1:c6e029400f58e1d0"
+        },
+        "unit": "%",
+        "ratingBands": [
+          {
+            "rating": "near",
+            "expect": {
+              "op": "lte",
+              "value": 150
+            }
+          }
+        ]
+      }
+    },
+    {
+      "key": "work-items-list-latency",
+      "check": {
+        "kind": "probe",
+        "maxAgeMs": 3600000,
+        "probe": {
+          "sql": "WITH service_health AS (SELECT count(*)::float8 n,percentile_disc(0.5) WITHIN GROUP(ORDER BY duration_ms)::float8 p50_ms,percentile_disc(0.95) WITHIN GROUP(ORDER BY duration_ms)::float8 p95_ms,CASE WHEN count(*)>=20 THEN 100*greatest(percentile_disc(0.5) WITHIN GROUP(ORDER BY duration_ms)::float8/1000,percentile_disc(0.95) WITHIN GROUP(ORDER BY duration_ms)::float8/3000) END::float8 budget_pct FROM harness_shared.tool_invocations WHERE workspace_id='papercusp-workspace' AND tool_name='work_items:list' AND invoked_at>now()-interval '24 hours' AND duration_ms>=0), cohorts AS (SELECT tool_name,serving_host,serving_process_id,serving_build_sha,md5(coalesce(args_json::text,'null')) workload_signature,count(*) n,count(*) FILTER(WHERE status='ok') success_n,count(*) FILTER(WHERE status<>'ok') non_success_n,count(*) FILTER(WHERE status='error') error_n,count(*) FILTER(WHERE status='timeout') timeout_n,count(*) FILTER(WHERE status='refused') refused_n,count(*) FILTER(WHERE status='replayed') replay_n,NULL::int cancellation_n,min(invoked_at) window_start,max(invoked_at) window_end,percentile_disc(0.5) WITHIN GROUP(ORDER BY duration_ms) FILTER(WHERE status='ok' AND duration_ms>=0) p50_ms,percentile_disc(0.95) WITHIN GROUP(ORDER BY duration_ms) FILTER(WHERE status='ok' AND duration_ms>=0) p95_ms,count(*) FILTER(WHERE status='ok' AND duration_ms>=0)>=200 tail_sample_floor FROM harness_shared.tool_invocations WHERE workspace_id='papercusp-workspace' AND invoked_at>now()-interval '24 hours' AND tool_name IN ('coord:orient','scheduler:get_next','fleet:assignments','work_items:list','coord:presence','coord:inbox','state:read','dev:pipeline_position') GROUP BY tool_name,serving_host,serving_process_id,serving_build_sha,md5(coalesce(args_json::text,'null'))) SELECT service_health.*,(SELECT jsonb_agg(x) FROM (SELECT * FROM cohorts ORDER BY window_end DESC LIMIT 40) x) build_workload_cohorts FROM service_health",
+          "kind": "sql",
+          "expect": {
+            "op": "lte",
+            "path": "$.rows[0].budget_pct",
+            "value": 100
+          },
+          "maxRows": 50,
+          "schemaRevision": "projected-tool-registry-v1:c6e029400f58e1d0"
+        },
+        "unit": "%",
+        "ratingBands": [
+          {
+            "rating": "near",
+            "expect": {
+              "op": "lte",
+              "value": 150
+            }
+          }
+        ]
+      }
+    },
+    {
+      "key": "coord-read-tail-latency",
+      "check": {
+        "kind": "probe",
+        "maxAgeMs": 3600000,
+        "probe": {
+          "sql": "WITH service_health AS (WITH cohorts AS (SELECT tool_name,count(*) n,percentile_disc(0.95) WITHIN GROUP(ORDER BY duration_ms)::float8 latency_ms FROM harness_shared.tool_invocations WHERE workspace_id='papercusp-workspace' AND invoked_at>now()-interval '24 hours' AND tool_name IN ('coord:presence','coord:inbox') AND duration_ms>=0 GROUP BY tool_name) SELECT coalesce(max(n) FILTER(WHERE tool_name='coord:presence'),0)::float8 cohort_a_n,coalesce(max(n) FILTER(WHERE tool_name='coord:inbox'),0)::float8 cohort_b_n,max(latency_ms) FILTER(WHERE tool_name='coord:presence') cohort_a_ms,max(latency_ms) FILTER(WHERE tool_name='coord:inbox') cohort_b_ms,CASE WHEN count(*)=2 AND min(n)>=20 THEN 100*max(latency_ms/CASE WHEN tool_name='coord:presence' THEN 8000 ELSE 3000 END) END::float8 budget_pct FROM cohorts), cohorts AS (SELECT tool_name,serving_host,serving_process_id,serving_build_sha,md5(coalesce(args_json::text,'null')) workload_signature,count(*) n,count(*) FILTER(WHERE status='ok') success_n,count(*) FILTER(WHERE status<>'ok') non_success_n,count(*) FILTER(WHERE status='error') error_n,count(*) FILTER(WHERE status='timeout') timeout_n,count(*) FILTER(WHERE status='refused') refused_n,count(*) FILTER(WHERE status='replayed') replay_n,NULL::int cancellation_n,min(invoked_at) window_start,max(invoked_at) window_end,percentile_disc(0.5) WITHIN GROUP(ORDER BY duration_ms) FILTER(WHERE status='ok' AND duration_ms>=0) p50_ms,percentile_disc(0.95) WITHIN GROUP(ORDER BY duration_ms) FILTER(WHERE status='ok' AND duration_ms>=0) p95_ms,count(*) FILTER(WHERE status='ok' AND duration_ms>=0)>=200 tail_sample_floor FROM harness_shared.tool_invocations WHERE workspace_id='papercusp-workspace' AND invoked_at>now()-interval '24 hours' AND tool_name IN ('coord:orient','scheduler:get_next','fleet:assignments','work_items:list','coord:presence','coord:inbox','state:read','dev:pipeline_position') GROUP BY tool_name,serving_host,serving_process_id,serving_build_sha,md5(coalesce(args_json::text,'null'))) SELECT service_health.*,(SELECT jsonb_agg(x) FROM (SELECT * FROM cohorts ORDER BY window_end DESC LIMIT 40) x) build_workload_cohorts FROM service_health",
+          "kind": "sql",
+          "expect": {
+            "op": "lte",
+            "path": "$.rows[0].budget_pct",
+            "value": 100
+          },
+          "maxRows": 50,
+          "schemaRevision": "projected-tool-registry-v1:c6e029400f58e1d0"
+        },
+        "unit": "%",
+        "ratingBands": [
+          {
+            "rating": "near",
+            "expect": {
+              "op": "lte",
+              "value": 150
+            }
+          }
+        ]
+      }
+    },
+    {
+      "key": "high-volume-read-latency",
+      "check": {
+        "kind": "probe",
+        "maxAgeMs": 3600000,
+        "probe": {
+          "sql": "WITH service_health AS (WITH cohorts AS (SELECT tool_name,count(*) n,percentile_disc(0.5) WITHIN GROUP(ORDER BY duration_ms)::float8 latency_ms FROM harness_shared.tool_invocations WHERE workspace_id='papercusp-workspace' AND invoked_at>now()-interval '24 hours' AND tool_name IN ('state:read','dev:pipeline_position') AND duration_ms>=0 GROUP BY tool_name) SELECT coalesce(max(n) FILTER(WHERE tool_name='state:read'),0)::float8 cohort_a_n,coalesce(max(n) FILTER(WHERE tool_name='dev:pipeline_position'),0)::float8 cohort_b_n,max(latency_ms) FILTER(WHERE tool_name='state:read') cohort_a_ms,max(latency_ms) FILTER(WHERE tool_name='dev:pipeline_position') cohort_b_ms,CASE WHEN count(*)=2 AND min(n)>=20 THEN 100*max(latency_ms/CASE WHEN tool_name='state:read' THEN 300 ELSE 1000 END) END::float8 budget_pct FROM cohorts), cohorts AS (SELECT tool_name,serving_host,serving_process_id,serving_build_sha,md5(coalesce(args_json::text,'null')) workload_signature,count(*) n,count(*) FILTER(WHERE status='ok') success_n,count(*) FILTER(WHERE status<>'ok') non_success_n,count(*) FILTER(WHERE status='error') error_n,count(*) FILTER(WHERE status='timeout') timeout_n,count(*) FILTER(WHERE status='refused') refused_n,count(*) FILTER(WHERE status='replayed') replay_n,NULL::int cancellation_n,min(invoked_at) window_start,max(invoked_at) window_end,percentile_disc(0.5) WITHIN GROUP(ORDER BY duration_ms) FILTER(WHERE status='ok' AND duration_ms>=0) p50_ms,percentile_disc(0.95) WITHIN GROUP(ORDER BY duration_ms) FILTER(WHERE status='ok' AND duration_ms>=0) p95_ms,count(*) FILTER(WHERE status='ok' AND duration_ms>=0)>=200 tail_sample_floor FROM harness_shared.tool_invocations WHERE workspace_id='papercusp-workspace' AND invoked_at>now()-interval '24 hours' AND tool_name IN ('coord:orient','scheduler:get_next','fleet:assignments','work_items:list','coord:presence','coord:inbox','state:read','dev:pipeline_position') GROUP BY tool_name,serving_host,serving_process_id,serving_build_sha,md5(coalesce(args_json::text,'null'))) SELECT service_health.*,(SELECT jsonb_agg(x) FROM (SELECT * FROM cohorts ORDER BY window_end DESC LIMIT 40) x) build_workload_cohorts FROM service_health",
+          "kind": "sql",
+          "expect": {
+            "op": "lte",
+            "path": "$.rows[0].budget_pct",
+            "value": 100
+          },
+          "maxRows": 50,
+          "schemaRevision": "projected-tool-registry-v1:c6e029400f58e1d0"
+        },
+        "unit": "%",
+        "ratingBands": [
+          {
+            "rating": "near",
+            "expect": {
+              "op": "lte",
+              "value": 200
+            }
+          }
+        ]
+      }
+    },
+    {
+      "key": "wake-path-attribution",
+      "check": {
+        "kind": "probe",
+        "maxAgeMs": 3600000,
+        "probe": {
+          "sql": "SELECT count(*)::int AS n, count(*) FILTER (WHERE metadata_json ? 'handlerPhases')::int AS with_phases, (100.0 * count(*) FILTER (WHERE (metadata_json->'handlerPhases'->>'elapsedMs')::numeric > 0 AND (metadata_json->'handlerPhases'->>'attributedMs')::numeric >= 0.9 * (metadata_json->'handlerPhases'->>'elapsedMs')::numeric) / nullif(count(*), 0))::float8 AS pct_with_phases FROM harness_shared.tool_invocations WHERE workspace_id='papercusp-workspace' AND tool_name = 'coord:orient' AND invoked_at > now() - interval '24 hours'",
+          "kind": "sql",
+          "expect": {
+            "op": "gte",
+            "path": "$.rows[0].pct_with_phases",
+            "value": 90
+          },
+          "maxRows": 50,
+          "schemaRevision": "projected-tool-registry-v1:c6e029400f58e1d0"
+        },
+        "unit": "%",
+        "ratingBands": [
+          {
+            "rating": "near",
+            "expect": {
+              "op": "gte",
+              "value": 50
+            }
+          }
+        ]
+      }
+    },
+    {
+      "key": "pg-statement-load",
+      "check": {
+        "kind": "probe",
+        "maxAgeMs": 3600000,
+        "probe": {
+          "sql": "WITH a AS MATERIALIZED (SELECT coalesce(sum(p.calls),0) c,coalesce(sum(p.total_exec_time),0) t,coalesce(sum(p.wal_bytes),0) w,max(i.stats_reset) reset,max(i.dealloc) dealloc,clock_timestamp() at FROM pg_stat_statements p CROSS JOIN pg_stat_statements_info i WHERE p.toplevel),pause AS MATERIALIZED (SELECT pg_sleep(20),clock_timestamp() after_at FROM a),b AS MATERIALIZED (SELECT z.* FROM pause CROSS JOIN LATERAL (SELECT coalesce(sum(p.calls),0) c,coalesce(sum(p.total_exec_time),0) t,coalesce(sum(p.wal_bytes),0) w,max(i.stats_reset) reset,max(i.dealloc) dealloc,clock_timestamp() at FROM pg_stat_statements p CROSS JOIN pg_stat_statements_info i WHERE p.toplevel AND clock_timestamp() >= pause.after_at) z) SELECT CASE WHEN a.reset=b.reset AND a.dealloc=b.dealloc AND b.c>=a.c AND b.t>=a.t AND b.w>=a.w AND b.at>a.at THEN ((b.t-a.t)/(extract(epoch FROM b.at-a.at)*1000))::float8 END AS cores,CASE WHEN a.reset=b.reset AND a.dealloc=b.dealloc AND b.c>=a.c AND b.t>=a.t AND b.w>=a.w AND b.at>a.at THEN ((b.w-a.w)/extract(epoch FROM b.at-a.at)/1e6)::float8 END AS wal_mb_s,(b.c-a.c)::float8 calls_in_window,extract(epoch FROM b.at-a.at)::float8 window_s,a.reset::text reset_before,b.reset::text reset_after,a.dealloc::text dealloc_before,b.dealloc::text dealloc_after FROM a CROSS JOIN b",
+          "kind": "sql",
+          "expect": {
+            "op": "lte",
+            "path": "$.rows[0].cores",
+            "value": 5
+          },
+          "maxRows": 50,
+          "schemaRevision": "projected-tool-registry-v1:c6e029400f58e1d0"
+        },
+        "unit": "cores",
+        "ratingBands": [
+          {
+            "rating": "near",
+            "expect": {
+              "op": "lte",
+              "value": 7
+            }
+          }
+        ]
+      }
+    },
+    {
+      "key": "operation-outcomes",
+      "check": {
+        "kind": "probe",
+        "maxAgeMs": 3600000,
+        "probe": {
+          "sql": "WITH cohorts AS (SELECT tool_name,count(*) n,count(*) FILTER(WHERE status='ok') success_n,count(*) FILTER(WHERE status<>'ok') non_success_n,count(*) FILTER(WHERE status='error') error_n,count(*) FILTER(WHERE status='timeout') timeout_n,count(*) FILTER(WHERE status='refused') refused_n,count(*) FILTER(WHERE status='replayed') replay_n,NULL::int cancellation_n FROM harness_shared.tool_invocations WHERE workspace_id='papercusp-workspace' AND invoked_at>now()-interval '24 hours' AND tool_name IN ('coord:orient','scheduler:get_next','work_items:list','work_items:get','work_items:claim') GROUP BY tool_name) SELECT jsonb_agg(cohorts) outcomes,CASE WHEN count(*)=5 AND min(n)>=20 THEN max(100.0*non_success_n/n) END non_success_pct,'Cancellation-specific counts are unknown; status writer has no separate cancellation outcome. Non-ok attempts stay in the denominator.' cancellation_tracking FROM cohorts",
+          "kind": "sql",
+          "expect": {
+            "op": "lte",
+            "path": "$.rows[0].non_success_pct",
+            "value": 1
+          },
+          "maxRows": 50,
+          "schemaRevision": "projected-tool-registry-v1:c6e029400f58e1d0"
+        },
+        "unit": "%",
+        "ratingBands": [
+          {
+            "rating": "near",
+            "expect": {
+              "op": "lte",
+              "value": 2
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

@@ -116,6 +116,11 @@ it('suppresses live mid-turn memory, rule and failure-hint delivery for a frozen
     expect(evaluateHookContextSinkMock).not.toHaveBeenCalled();
     expect(takePendingFailureLoopHintMock).not.toHaveBeenCalled();
     expect(codeIntelPushTextMock).not.toHaveBeenCalled();
+    await flushCoverage();
+    expect(coverageEvents()).toContainEqual(expect.objectContaining({
+      outcome: 'suppressed-ambient-policy',
+      workspaceId: 'private',
+    }));
   } finally { setSessionConfinementResolver(undefined); }
 });
 
@@ -153,7 +158,7 @@ it('delivers code intelligence even when the memory query has no signal', async 
   expect(await post({ owner: who, workspace: 'ws-test', harness: 'papercusp', toolCalls: calls }))
     .toEqual({ ok: true, text: 'SNAPSHOT BRIEF' });
   expect(buildMemoryContextBlockMock).not.toHaveBeenCalled();
-  expect(codeIntelPushTextMock).toHaveBeenCalledWith(expect.objectContaining({ owner: who, calls }), 0);
+  expect(codeIntelPushTextMock).toHaveBeenCalledWith(expect.objectContaining({ owner: who, calls }));
 });
 
 it('forwards bounded measured incident attribution without deriving it in the endpoint', async () => {
@@ -163,7 +168,7 @@ it('forwards bounded measured incident attribution without deriving it in the en
     workItems: [{ id: 'WI-42', state: 'open', title: 'target repair', paths: ['target.ts'] }] };
   expect(await post({ owner: who, workspace: 'ws-test', harness: 'papercusp', incidentAttribution,
     tool: 'testing:run', toolInput: { files: ['target.test.ts'] }, })).toEqual({ ok: true, text: 'INCIDENT BRIEF' });
-  expect(codeIntelPushTextMock).toHaveBeenCalledWith(expect.objectContaining({ incidentAttribution }), 0);
+  expect(codeIntelPushTextMock).toHaveBeenCalledWith(expect.objectContaining({ incidentAttribution }));
 });
 
 // WI-6554700010018438: an operator/superuser-scope hook sends harness '' (no
@@ -187,20 +192,20 @@ describe('code-intel push harness resolution', () => {
   it('passes the harness detected from cwd when the hook sends harness empty', async () => {
     await withMarkedCwd('fixture-harness', async (cwd) => {
       await post({ owner: owner(), workspace: 'ws-test', harness: '', cwd, toolCalls: calls });
-      expect(codeIntelPushTextMock).toHaveBeenCalledWith(expect.objectContaining({ harness: 'fixture-harness' }), 0);
+      expect(codeIntelPushTextMock).toHaveBeenCalledWith(expect.objectContaining({ harness: 'fixture-harness' }));
     });
   });
 
   it('keeps a declared harness over the cwd marker', async () => {
     await withMarkedCwd('fixture-harness', async (cwd) => {
       await post({ owner: owner(), workspace: 'ws-test', harness: 'papercusp', cwd, toolCalls: calls });
-      expect(codeIntelPushTextMock).toHaveBeenCalledWith(expect.objectContaining({ harness: 'papercusp' }), 0);
+      expect(codeIntelPushTextMock).toHaveBeenCalledWith(expect.objectContaining({ harness: 'papercusp' }));
     });
   });
 
   it('leaves the push harness undefined when neither harness nor cwd is sent', async () => {
     await post({ owner: owner(), workspace: 'ws-test', harness: '', toolCalls: calls });
-    expect(codeIntelPushTextMock).toHaveBeenCalledWith(expect.objectContaining({ harness: undefined }), 0);
+    expect(codeIntelPushTextMock).toHaveBeenCalledWith(expect.objectContaining({ harness: undefined }));
   });
 });
 
@@ -239,6 +244,7 @@ it('preserves the existing memory budget when the caller declares no native resp
 /** Every coverage event recorded this test, flattened across calls. */
 const coverageEvents = (): Array<Record<string, unknown>> =>
   recordInjectionCoverageMock.mock.calls.flatMap((call) => (call[0] ?? []) as Array<Record<string, unknown>>);
+const flushCoverage = async (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
 
 describe('mid-turn-context — query derivation', () => {
   it("reads a Bash call as its command plus the agent's own description", () => {
@@ -371,6 +377,8 @@ describe('mid-turn-context — the cost properties', () => {
     await post(call);
     await post(call);
     expect(buildMemoryContextBlockMock).toHaveBeenCalledTimes(1);
+    await flushCoverage();
+    expect(coverageEvents().filter((event) => event.outcome === 'suppressed-duplicate-query')).toHaveLength(2);
   });
 
   it('caps recalls per rolling minute so a burst cannot buy an embed each', async () => {
@@ -380,6 +388,8 @@ describe('mid-turn-context — the cost properties', () => {
     }
     // Every query is distinct, so only the rolling ceiling can bound this.
     expect(buildMemoryContextBlockMock.mock.calls.length).toBeLessThanOrEqual(12);
+    await flushCoverage();
+    expect(coverageEvents().filter((event) => event.outcome === 'suppressed-rate-limit')).toHaveLength(28);
   });
 
   it('returns empty without starting recall when the host-wide admission is full', async () => {
@@ -394,6 +404,27 @@ describe('mid-turn-context — the cost properties', () => {
     });
     expect(out).toEqual({ ok: true, text: '' });
     expect(buildMemoryContextBlockMock).not.toHaveBeenCalled();
+    await flushCoverage();
+    expect(coverageEvents()).toContainEqual(expect.objectContaining({
+      outcome: 'suppressed-admission-capacity',
+    }));
+  });
+
+  it('records an unreadable applied identity as a named suppression', async () => {
+    withIdentityBoundedMemoryAdmissionMock.mockResolvedValueOnce({
+      admitted: false,
+      reason: 'identity_unreadable',
+    });
+    const out = await post({
+      owner: owner(),
+      tool: 'Grep',
+      toolInput: { pattern: 'identity admission' },
+    });
+    expect(out).toEqual({ ok: true, text: '' });
+    await flushCoverage();
+    expect(coverageEvents()).toContainEqual(expect.objectContaining({
+      outcome: 'suppressed-identity-unreadable',
+    }));
   });
 
   it('clamps a very long command rather than embedding a pasted heredoc', async () => {
@@ -414,6 +445,10 @@ describe('mid-turn-context — never breaks a turn', () => {
     const out = await post({ owner: owner(), tool: 'Grep', toolInput: { pattern: 'storage policy' } });
     expect(out.ok).toBe(true);
     expect(out.text).toBe('');
+    await flushCoverage();
+    expect(coverageEvents()).toContainEqual(expect.objectContaining({
+      outcome: 'suppressed-handler-error',
+    }));
   });
 
   it('returns empty rather than null when the pipeline finds nothing relevant', async () => {
@@ -437,6 +472,9 @@ describe('mid-turn-context — never breaks a turn', () => {
       new Request('http://localhost/agent-mcp/mid-turn-context', { method: 'POST', body: 'not json' }),
     );
     expect(((await res.json()) as { ok: boolean }).ok).toBe(true);
+    expect(coverageEvents()).toContainEqual(expect.objectContaining({
+      outcome: 'suppressed-invalid-json',
+    }));
   });
 });
 

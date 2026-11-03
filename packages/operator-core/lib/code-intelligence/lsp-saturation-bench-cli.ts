@@ -55,7 +55,7 @@
  */
 import { performance } from 'node:perf_hooks';
 import { readFileSync, writeFileSync } from 'node:fs';
-import { assertReplayOracleRuntimeQualified, freezeCompilerReplayConfig, freezeQualifiedReplayConfig, holdReplayOracleForQualification, materializeReplaySource, runDaemonReplay, type DaemonReplayConfig, type ReplayOracleInput, type ReplayOracleProducerOptions } from './lsp-fleet-replay-runtime';
+import { assertReplayOracleRuntimeQualified, freezeCompilerReplayConfig, freezeQualifiedReplayConfig, holdReplayOracleForQualification, materializeReplaySource, preflightReplayOracleRuntime, runDaemonReplay, type DaemonReplayConfig, type ReplayOracleInput, type ReplayOracleProducerOptions } from './lsp-fleet-replay-runtime';
 import { moduleRepoRoot } from '../module-repo-root';
 import { isCliEntry } from '../util/cli-entry';
 import type { VerifierSourceReceipt } from '../verifier-source';
@@ -238,6 +238,7 @@ export async function runSaturationCli(argv: readonly string[] = process.argv): 
     if (argv[2] === '--freeze-replay-child' && (!process.send || !process.connected))
       throw new Error('replay-oracle-parent-channel-required');
     const input = JSON.parse(readFileSync(argv[3], 'utf8')) as ReplayOracleInput;
+    if (argv[2] === '--freeze-replay-child') await preflightReplayOracleRuntime(input.runId);
     const config = freezeCompilerReplayConfig(input, { onProgress: progress =>
       console.error(JSON.stringify({ event: 'replay-oracle-progress', runId: input.runId, atMs: Date.now(), ...progress })) });
     if (argv[2] === '--freeze-replay-child') await holdReplayOracleForQualification(config, argv[4]);

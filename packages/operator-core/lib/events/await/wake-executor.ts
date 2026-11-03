@@ -2675,9 +2675,11 @@ export async function rehydrateLoopWakeText(
     }
 
     const liveRecheck =
-      `🔄 LIVE RE-CHECK at actual delivery time (EI-10935 / EI-20230529647745311 — this delivery may have been ` +
-      `queued/staged, so the checkpoint/walls text below can be a stale snapshot from when the wake FIRED, not ` +
-      `from now). Freshest carry-note is ${ageStr} old.\n\n` +
+      `🔄 LIVE RE-CHECK at wake handoff time (EI-10935 / EI-20230529647745311 — this read is made before the ` +
+      `queued turn starts. Inbox or deferred-host delivery can wait after this point, so this is NOT an actual ` +
+      `turn-start check. Freshest carry-note was ${ageStr} old at handoff. The UserPromptSubmit turn-start ` +
+      `checkpoint block, when present, supersedes this snapshot; if it is absent, call loop:status before relying on ` +
+      `the queued checkpoint or next action.\n\n` +
       // Delivery deltas need their own sections ahead of the narrative. Otherwise the
       // packer inherits the note's final heading and can spill a changed/failed check
       // together with historical prose while keeping the stale claim visible.
@@ -2689,10 +2691,11 @@ export async function rehydrateLoopWakeText(
       // readAt instant. A newer loop:checkpoint can be written immediately
       // afterward, so the authority claim must not make a recipient trust this
       // snapshot over a later status/checkpoint it actually observes.
-      `TRUST THIS BLOCK AS OF readAt=${deliveryReadAtIso} — it outranks the fire-time snapshot below for state observed at that instant, ` +
-      `but it is NOT a promise that the carry-note stayed unchanged afterward. If you write a checkpoint, receive a newer status, ` +
-      `or otherwise observe progress after readAt, re-read loop:status / loop:checkpoint before acting; do not re-execute an ` +
-      `irreversible action or re-ask the owner about a wall not listed in this snapshot.`;
+      `TRUST THIS BLOCK AS OF readAt=${deliveryReadAtIso} (wake handoff, before actual turn start) — it outranks the ` +
+      `fire-time snapshot for state observed at that instant, but it is NOT a promise that the carry-note stayed unchanged afterward ` +
+      `or proof the queued turn has started. Use the later UserPromptSubmit turn-start checkpoint block when present. ` +
+      `If you write a checkpoint, receive a newer status, or otherwise observe progress after readAt, re-read loop:status / loop:checkpoint ` +
+      `before acting; do not re-execute an irreversible action or re-ask the owner about a wall not listed in this snapshot.`;
 
     // Keep both the live state and a lifecycle supersession warning ahead of the
     // generic fire-time text. The latter is just as important to preserve: an ended

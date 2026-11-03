@@ -12,6 +12,10 @@ status: active
 documents:
   - "packages/operator-core/lib/rubric-staleness-watchdog.ts :: rubricProposalDwellSweep"
   - "packages/operator-core/lib/agent-tools/rubrics/ratify.ts :: ratifyRubricTool"
+  - "packages/operator-core/lib/agent-tools/scorecards/evaluate.ts"
+  - "packages/operator-core/lib/agent-tools/scorecards/emit.ts"
+  - "packages/operator-core/lib/agent-tools/plans/get-spec-evidence.ts"
+  - "packages/operator-core/lib/coord/condition-upsert.ts"
 plans:
   - "agent-first-onboarding-2026-07-03"
   - "rubric-system-and-auto-loop-release-profile-2026-07-15"
@@ -45,7 +49,6 @@ a rubric.
 Discovery: `rubrics:list` / `rubrics:search` show what the system already
 knows how to measure — check before proposing a near-duplicate.
 
-
 ## Diagnostic baselines, readiness and final grading
 
 A diagnostic records what was observed before readiness is complete. It does not certify acceptance. Start with `scorecards:evaluate { rubricRef, purpose: 'diagnostic', subject }`, fill every applicable criterion, then persist with `scorecards:emit` using the same purpose, subject and ratings. A confirmed failure is a valid observation. For an unknown rating, include `unknownReason` and `nextEvidenceAction`; missing proof remains unknown.
@@ -58,21 +61,35 @@ Use `baselineRef` for a later re-grade that preserves its baseline. A diagnostic
 
 `rubrics:trend` admits finalized records under the current rubric identity before limiting its sample. It reports retained samples, examined rows, exclusions and `hasMore`; examined rows include the eligible lookahead used for pagination. Distributions and observation age can summarize multiple subject cohorts, but direction is unknown across different subjects, scopes or observation windows. Inspect the comparison explanation before treating a trend as an improvement.
 
+## Reading criterion evidence and repairing readiness
+
+Use `plans:get-spec-evidence { slug, workItemIds, limit }` for a bounded current-criterion view. Each applicable current clause has a row, including clauses with no bindings. Read `evaluatedAt`, exact spec/rubric identity, evidence plane and receipts, source/test/fixture/environment/rubric fingerprints, per-dimension currentness, coverage and `nextEvidenceAction`. A missing applicable measurement stays unknown. Missing, stale, incompatible, withdrawn/rejected and instrument-unavailable proof have separate reasons; inspect these before asking for final grading. An ad-hoc work item keeps its actual plan association.
+
+The next responsible role follows the gap: an implementer supplies source and recurrence proof, an instrument owner restores a failed probe, and an eligible independent grader records final acceptance. Diagnostic assessment, readiness preflight and final acceptance are separate results. A diagnostic receipt never satisfies the latter two.
+
+## Durable author handoff
+
+An author-only vetting refusal can return an `authorHandoff` obligation in the existing work-item store. Its key includes workspace, harness, subject plan, rubric id, revision, `criteriaHash`, `barSetHash` and action. Retries and process restarts reuse that exact obligation. Inspect `work_items:get { id }` and its `payload.authorHandoff`: `queued` records delivery, `picked-up` records an authorized attempt, `blocked` explains missing authority/delivery/audit, `completed` names the final verdict, and `superseded` preserves a receipt for an obsolete tuple.
+
+The authorized recorder passes `authorHandoffId` to the ordinary `scorecards:emit` vetting request. The emitter checks the current tuple and existing author/successor policy at pickup and settlement. Pending or provisional audit evidence leaves the obligation unresolved; only a passed current independent audit can settle an eligible verdict. An absent author stays blocked until existing recovery/reassignment policy supplies authority. Delivery alone never means pickup or completion.
+
+This recovery path preserves the normal direct acceptance-rubric critique workflow. It creates no new author authority and imposes no extra meta-card prerequisite on ordinary critique.
+
 ## Monitoring the monitor
 
 Scorecards are only useful if they keep arriving, complete:
 
-- **`scorecards:freshness`** — has a COMPLETE scorecard landed for a rubric
+* **`scorecards:freshness`** — has a COMPLETE scorecard landed for a rubric
   since a given time? `fresh` / `partial-only` (silent truncation) / `stale`
   (silent emission gap).
-- **`rubrics:trend`'s staleness signal** — criteria the grader persistently
+* **`rubrics:trend`'s staleness signal** — criteria the grader persistently
   rates `unknown` mean the rubric's model has drifted from reality; it should
   re-enter the propose↔ratify loop.
 
 A stale scorecard is itself a finding — ideation passes treat it as a prompt
 ("why did we stop being able to measure this?").
 
-- **Proposed-rubric dwell watchdog** — a proposal that remains `proposed` past the
+* **Proposed-rubric dwell watchdog** — a proposal that remains `proposed` past the
   default 24-hour review window is surfaced as an advisory. The alert names the
   rubric and points an independent reviewer or owner/su to `rubrics:get` and
   `rubrics:ratify`; it never requires the retired Mug/Queen path and it preserves
@@ -85,7 +102,7 @@ A stale scorecard is itself a finding — ideation passes treat it as a prompt
 above into a typed contract, so a rubric's criteria and a release gate's evidence
 requirements can never silently drift apart:
 
-- **`scorecards:evaluate`** is the ONE typed path into a grade — never construct a
+* **`scorecards:evaluate`** is the ONE typed path into a grade — never construct a
   scorecard from prose. Call it with just `rubricRef` to get the skeleton (every
   criterion's key/title/`instrumentKey`/allowed ratings, all `null`); call it again
   with `ratings` (and/or `instrumentSnapshots`) filled in to get back
@@ -95,15 +112,15 @@ requirements can never silently drift apart:
   `staleSnapshots` / `windowMismatches` / `verdictMismatches` — a criterion whose
   `instrumentKey` doesn't have a matching, fresh, consistent snapshot fails loudly
   here instead of silently grading on stale/absent instrumentation).
-- **`scorecards:emit`** takes that canonical result and writes the actual scorecard
+* **`scorecards:emit`** takes that canonical result and writes the actual scorecard
   (an `improvements:capture`-backed row with a stable `issueId`, e.g. `EI-13372`).
   `changed:false` short-circuits a re-emit that would be identical to the latest
   scorecard on record (the evidence-fingerprint dedup).
-- **`instrumentKey: 'none'`** is a legitimate binding — some criteria (e.g.
+* **`instrumentKey: 'none'`** is a legitimate binding — some criteria (e.g.
   "real usage validates the release") are meant to be graded from reviewed judgment,
   not a single mechanical query; `unknown` is still the honest rating when no such
   review actually happened this pass.
-- **Rate honestly — `unknown` beats invented.** A criterion with no instrument yet,
+* **Rate honestly — `unknown` beats invented.** A criterion with no instrument yet,
   or one you didn't actually check this pass, is `unknown`. A composite gate (below)
   treats `unknown` as a NOT-pass, so this is a real, load-bearing signal, not a
   hedge.
@@ -123,11 +140,11 @@ gate** (pin age + commits-behind vs the candidate).
 
 Two assembled profiles compose these:
 
-- **`evaluatePapercuspReleaseProfile`** (`papercusp-public-release-readiness`) —
+* **`evaluatePapercuspReleaseProfile`** (`papercusp-public-release-readiness`) —
   auto-discovers EVERY active `releaseGating` rubric in the workspace. Broad by
   design; as more per-product rubrics are ratified (voice, chat, mobile, …) this
   profile mixes them all into one monolithic verdict.
-- **`evaluateAutoloopReleaseProfile`** (`papercusp-autoloop-public-release-readiness`)
+* **`evaluateAutoloopReleaseProfile`** (`papercusp-autoloop-public-release-readiness`)
   — a FIXED 7-rubric set scoped to exactly the Mug→Cup→Kettle→Blender product
   (`AUTOLOOP_COMPONENT_RUBRIC_REFS`: `blender-release-readiness` plus the 6
   component rubrics — `mug-pot-coordination-health`, `cup-lifecycle-durability`,

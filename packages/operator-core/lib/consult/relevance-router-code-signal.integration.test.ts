@@ -33,6 +33,7 @@ import {
   DEFAULT_RELEVANCE_FLOOR,
   snapshotCandidateQualifies,
   type ConsultRouteDeps,
+  type ExpertiseRoutingReceipt,
   type RouteResult,
 } from './relevance-router';
 import type { SymbolResolver } from './code-subject-resolution';
@@ -177,10 +178,15 @@ function candidate(r: RouteResult, ownerId: string) {
 describe('R-3 — an identifier-only code question credits the agents who worked on the defining file', () => {
   it('gives the editor and the reader authorship > 0, persists the evidence, and leaves the bystander at 0', async () => {
     const resolver = fixtureResolver();
-    const r = await routeConsult(params(CODE_QUESTION), deps({ resolveCodeSymbols: resolver }));
+    const receipts: ExpertiseRoutingReceipt[] = [];
+    const r = await routeConsult(params(CODE_QUESTION), deps({
+      resolveCodeSymbols: resolver,
+      recordTelemetry: receipt => { receipts.push(receipt); },
+    }));
 
     expect(WORKING_SET_TOOLS).toContain('capability:read');
-    expect(resolver).toHaveBeenCalledWith([IDENT]);
+    expect(receipts).toHaveLength(1);
+    expect(resolver).toHaveBeenCalledWith([IDENT], { correlationId: receipts[0]!.correlationId });
     expect(r.snapshot.codeSubjects).toEqual({
       paths: [], identifiers: [IDENT], resolved: { [IDENT]: [FILE] }, files: [FILE],
       resolver: 'ok', edits: 'measured', reads: 'measured',

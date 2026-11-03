@@ -46,7 +46,13 @@ const fold = (o: {
 const portOf = (c: { ports: { port: string }[] }, port: string) => {
   const hit = c.ports.find((p) => p.port === port);
   if (!hit) throw new Error(`no ${port} entry — ports must always carry every port`);
-  return hit as { port: string; events: number; everObserved: boolean; driftTools: string[] };
+  return hit as {
+    port: string;
+    events: number;
+    everObserved: boolean;
+    driftTools: string[];
+    byOutcome: Record<string, number>;
+  };
 };
 
 describe('exact emitted-context quality', () => {
@@ -172,6 +178,25 @@ describe('foldInjectionCoverage — one port must never mask another', () => {
     // …while the client-level roll-up still sees it.
     expect(c.driftTools).toEqual(['Edit']);
     expect(c.byOutcome['unknown-tool']).toBe(3);
+  });
+
+  it('surfaces branch-specific suppression outcomes without calling them tool drift', () => {
+    const { clients } = fold({
+      clients: ['codex'],
+      windowRows: [{
+        client: 'codex',
+        port: 'mid-turn',
+        outcome: 'suppressed-identity-unreadable',
+        tool: '',
+        n: 2,
+      }],
+      everRows: [{ client: 'codex', port: 'mid-turn' }],
+    });
+    const c = clients[0]!;
+    expect(portOf(c, 'mid-turn').events).toBe(2);
+    expect(portOf(c, 'mid-turn').byOutcome['suppressed-identity-unreadable']).toBe(2);
+    expect(portOf(c, 'mid-turn').driftTools).toEqual([]);
+    expect(c.byOutcome['suppressed-identity-unreadable']).toBe(2);
   });
 
   it('always emits every port, in vocabulary order, even with no rows at all', () => {

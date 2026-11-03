@@ -145,21 +145,21 @@ const VOLATILE_COORDINATION_ARG_KEYS = new Set([
   'beforets',
 ]);
 
-// Agent owner ids are session identities, not durable lane authority. A saved
-// coordination recipe that filters or targets a literal su UUID can silently
-// report an old owner as absent (or address the wrong owner) after a respawn or
-// fleet rotation. Keep this deliberately narrow: ordinary UUIDs in a recipe
-// may be durable domain data, while the `su-` owner prefix is the coordination
-// identity shape that must be resolved from the current live context.
-// coord:send and the other coordination tools accept unique short owner selectors
-// (for example `su-f765ba8b`) as well as full UUID owner ids. A recipe can freeze
-// either form, so keep the full UUID alternative first to avoid truncating it to
-// its first hex segment, then recognize the short 4-64-hex owner-label form.
+// Coordination owner ids are session/process identities, not durable lane
+// authority. A saved recipe that targets a literal su-* owner can silently
+// report an old owner as absent after a respawn; a system:git-sync:<pid>:<run>
+// owner rotates whenever the background worker restarts. Keep the recognizers
+// narrow so ordinary UUIDs and stable git-sync:<installSlug> resource names
+// remain valid recipe data.
 const VOLATILE_COORDINATION_OWNER_ID =
-  /\bsu-(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9a-f]{4,64})\b/i;
+  /\b(?:su-(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9a-f]{4,64})|system:git-sync:\d+:[0-9a-f]{8}(?:-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})?)\b/i;
 
 export function findVolatileCoordinationOwnerId(script: string): string | null {
-  const direct = script.match(VOLATILE_COORDINATION_OWNER_ID)?.[0];
+  // URL-encoded condition keys may encode the colons in system owner values;
+  // decode those separators before testing while retaining encoded quotes as
+  // boundary markers for the second match below.
+  const normalized = script.replace(/%3a/gi, ':');
+  const direct = normalized.match(VOLATILE_COORDINATION_OWNER_ID)?.[0];
   if (direct) return direct;
 
   // Condition keys commonly carry JSON values in URI-encoded form. In that
@@ -168,8 +168,8 @@ export function findVolatileCoordinationOwnerId(script: string): string | null {
   // word-boundary checks above even though the decoded value is a literal
   // coordination owner id. Treat a complete percent escape as a separator
   // while preserving the existing guard against ids embedded in words.
-  const encoded = script.match(
-    /(?:^|[^a-z0-9]|%[0-9a-f]{2})(su-(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9a-f]{4,64}))(?![a-z0-9_])/i,
+  const encoded = normalized.match(
+    /(?:^|[^a-z0-9]|%[0-9a-f]{2})((?:su-(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9a-f]{4,64})|system:git-sync:\d+:[0-9a-f]{8}(?:-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})?))(?![a-z0-9_])/i,
   );
   return encoded?.[1] ?? null;
 }

@@ -42,6 +42,8 @@ vi.mock('../../scorecards', async (importOriginal) => {
 
 import { readScorecardEvidence, readScorecardRecipeHeader } from '../../scorecards';
 import { runInstrument } from '../../rubric-instrument-registry';
+import { retainedProbeProcedure } from '../../continuity-probes';
+import { retainMeasurementProvenance } from '../../measurement-provenance';
 import { BAKED_DOOR_CONSTANTS, CHARS_PER_TOKEN_ESTIMATE, computeTurnDoors } from '../../context-doors';
 import { applyResultDoor, resetResultDoorAggregatesForTests } from '../../result-door';
 
@@ -182,6 +184,28 @@ describe('scorecards:get evidence-first projection', () => {
     const legacy = await getTool.handler({ issueId: scorecard.issueId, criterionKey: 'disk', replay: 'retained-measurement' }, makeDispatchContext());
     if (!('data' in legacy)) throw new Error('Expected a structured replay response');
     expect(legacy.data).toMatchObject({ ok: true, replay: { status: 'unavailable', value: null, recordedValue: 96 } });
+  });
+
+  it('exposes SQL response predicate replay with its limited scope and original transaction clock', async () => {
+    const provenance = retainMeasurementProvenance({
+      procedure: retainedProbeProcedure({ kind: 'sql', sql: 'SELECT n FROM original_counters', maxRows: 50,
+        schemaRevision: 'original-schema', expect: { path: '$.rows[0].n', op: 'eq', value: '9007199254740993' } }),
+      result: { rows: [{ n: '9007199254740993' }] },
+      startedAt: '2026-10-23T00:00:00Z', finishedAt: '2026-10-23T00:00:01Z',
+      transactionAt: '2026-10-23T00:00:00Z', needsTransactionClock: true,
+    });
+    readScorecardEvidenceM.mockResolvedValue({ kind: 'found', scorecard: { ...scorecard, criteria: [{
+      key: 'sql', rating: 'pass', evidence: 'original response', ratedFrom: 'ledger',
+      ledgerResult: { testRunId: 456, value: '9007199254740993', unit: null, provenance },
+    }] } } as never);
+    const response = await getTool.handler({ issueId: scorecard.issueId, criterionKey: 'sql',
+      replay: 'retained-measurement' }, makeDispatchContext());
+    if (!('data' in response)) throw new Error('Expected a structured SQL predicate replay response');
+    expect(response.data).toMatchObject({ ok: true, replay: { testRunId: 456,
+      scope: 'probe-predicate', status: 'reproduced', verdict: 'pass', value: '9007199254740993',
+      transactionAt: '2026-10-23T00:00:00Z' } });
+    expect(resultContract.safeParse(response.data).success).toBe(true);
+    expect(gradingAuditRubricMock).not.toHaveBeenCalled();
   });
 
   it('distinguishes live adequacy freshness checks from creation-time grading audits', () => {

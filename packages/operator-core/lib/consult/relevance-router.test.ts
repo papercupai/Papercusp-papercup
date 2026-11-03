@@ -70,6 +70,37 @@ const ids = (s: SelectedResponder[]) => s.map((x) => x.candidate.ownerId);
 const vias = (s: SelectedResponder[]) => s.map((x) => x.via);
 
 describe('problem-specific expertise qualification', () => {
+  it.each([
+    'Close the critique so plans:start can consume it.',
+    'Save the answer in docs/review/security.md.',
+    'Then activate the existing delivery-plan-2026-11-03.',
+  ])('keeps the security question as the subject before the delivery instruction: %s', instruction => {
+    const primary = 'Could the restored Vault obligations still permit a false security green?';
+    const question = `${primary} Independently critique credential custody and key-loss recovery. ${instruction}`;
+    expect(expertiseSubject(question)).toBeNull();
+    expect(subjectEvidenceQuery(question)).toBe(primary);
+    expect(expertiseSubject('Does plans:start enforce two independent critiques? Then write docs/review.md.'))
+      .toBe('plans:start');
+    expect(expertiseSubject('Does src/vault/custody.ts keep credentials out of model context? Then call plans:start.'))
+      .toBe('src/vault/custody.ts');
+  });
+
+  it('qualifies security expertise instead of a plan operator named only in delivery instructions', async () => {
+    const primary = 'Could the restored Vault obligations still permit a false security green?';
+    const question = `${primary} Close this critique so plans:start can consume it.`;
+    const contracts = [{ name: 'plans:start', description: 'Activate a plan after independent critique.' }];
+    const scorer = vi.fn(async (passage: string, queries: string[]) => queries.map(query => {
+      const security = passage.startsWith('Vault credential custody');
+      return query === primary ? security ? 0.9 : 0.2 : security ? 0.1 : 0.9;
+    }));
+    const scores = await scoreSubjectEvidence(expertiseSubject(question) ?? question,
+      ['Vault credential custody and active-key-loss recovery; plan activation after independent critique',
+        'Plan activation after independent critique by a lifecycle operator'],
+      Date.now() + 4000, { scorer, contracts });
+    expect(scores[0]).toBeGreaterThanOrEqual(SUBJECT_EVIDENCE_MIN_SCORE);
+    expect(scores[1]).toBeLessThan(SUBJECT_EVIDENCE_MIN_SCORE);
+  });
+
   it('does not mistake prose slash pairs for a repository subject', () => {
     const question = 'Distinguish child/source lease actors with a before/after audit and CPU/q8 scoring.';
     expect(extractPathTokens(question)).toEqual([]);

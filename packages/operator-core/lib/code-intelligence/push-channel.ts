@@ -634,7 +634,8 @@ export const snapshotResumeLeg: PushLeg = (input, snapshot) => {
 registerCodeIntelPushLeg('resume', snapshotResumeLeg);
 
 export interface ReadResumeContextDeps {
-  epoch(owner: string): Promise<EpochRow>;
+  epoch(owner: string,
+    onTiming?: (phase: string, outcome: 'running' | 'completed' | 'error', elapsedMs?: number) => void): Promise<EpochRow>;
   signals(query: WorkingSetQuery): Promise<WorkingSetSignals>;
   foreign(owner: string, workspace: string, harness: string,
     onTiming?: (phase: string, elapsedMs: number) => void): Promise<ForeignWorkingSet[]>;
@@ -653,7 +654,7 @@ async function readPushedResumeSubjects(input: PushInput, epoch: number, sql = g
 }
 
 const resumeDefaults: ReadResumeContextDeps = {
-  epoch: owner => readSessionEpoch(owner),
+  epoch: (owner, onTiming) => readSessionEpoch(owner, undefined, onTiming),
   signals: query => readWorkingSetSignals(query, undefined, 75),
   foreign: (owner, workspace, harness, onTiming) => readForeignWorkingSets(owner, workspace, harness, undefined, 75, onTiming),
   pushed: (input, epoch) => readPushedResumeSubjects(input, epoch),
@@ -665,7 +666,14 @@ export async function readPushResumeContext(input: PushInput, deps: ReadResumeCo
   diagnostics?: ResumeReadDiagnostics): Promise<ResumeContext> {
   const harness = input.harness;
   if (!input.owner || !input.workspace || !harness) return { entries: [] };
-  const epoch = await timeResumeReadPhase(diagnostics, 'epoch', () => deps.epoch(input.owner));
+  const epochTiming = diagnostics
+    ? (phase: string, outcome: 'running' | 'completed' | 'error', elapsedMs?: number) => {
+      const key = 'epoch.' + phase;
+      diagnostics.phaseOutcomes[key] = outcome;
+      if (elapsedMs !== undefined) diagnostics.phaseMs[key] = elapsedMs;
+    }
+    : undefined;
+  const epoch = await timeResumeReadPhase(diagnostics, 'epoch', () => deps.epoch(input.owner, epochTiming));
   const foreignTiming = diagnostics
     ? (phase: string, elapsedMs: number) => { diagnostics.phaseMs['foreignWorkingSets.' + phase] = elapsedMs; }
     : undefined;
@@ -848,6 +856,43 @@ export const snapshotNotesLeg: PushLeg = input => {
 };
 registerCodeIntelPushLeg('notes', snapshotNotesLeg);
 
+export interface NotesContextDiagnostics {
+  readId: string;
+  startedAtMs: number;
+  phaseMs: Record<string, number>;
+  phaseOutcomes: Record<string, string>;
+  phaseErrors: Record<string, string>;
+  candidateCount?: number;
+  noteCount?: number;
+  anchorCount?: number;
+}
+
+const NOTES_CONTEXT_LABEL = 'code-intel-notes-context';
+function createNotesContextDiagnostics(): NotesContextDiagnostics {
+  return {
+    readId: randomUUID(), startedAtMs: Date.now(), phaseMs: {},
+    phaseOutcomes: { acquisition: 'pending', factFold: 'pending', anchorStaleness: 'pending' },
+    phaseErrors: {},
+  };
+}
+function logNotesContextDiagnostic(level: 'info' | 'warn', event: string, diagnostics: NotesContextDiagnostics,
+  phase?: string, timeoutMs?: number): void {
+  const line = '[' + NOTES_CONTEXT_LABEL + '] ' + JSON.stringify({
+    event, readId: diagnostics.readId, elapsedMs: Date.now() - diagnostics.startedAtMs,
+    ...(phase ? { phase } : {}), ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+    phaseMs: { ...diagnostics.phaseMs }, phaseOutcomes: { ...diagnostics.phaseOutcomes },
+    ...(Object.keys(diagnostics.phaseErrors).length ? { phaseErrors: { ...diagnostics.phaseErrors } } : {}),
+    ...(diagnostics.candidateCount !== undefined ? { candidateCount: diagnostics.candidateCount } : {}),
+    ...(diagnostics.noteCount !== undefined ? { noteCount: diagnostics.noteCount } : {}),
+    ...(diagnostics.anchorCount !== undefined ? { anchorCount: diagnostics.anchorCount } : {}),
+  });
+  if (level === 'warn') console.warn(line);
+  else console.info(line);
+}
+function notesContextErrorName(error: unknown): string {
+  return error instanceof Error ? error.name : 'UnknownError';
+}
+
 export interface ReadNotesContextDeps {
   /** Live code notes with a `file:` anchor on any of `paths`. */
   fold(input: PushInput, paths: readonly string[]): Promise<AgentFact[]>;
@@ -869,23 +914,113 @@ export const readNoteAnchorStaleness: ReadNotesContextDeps['staleness'] = async 
     { workspaceId: input.workspace, harnessSlug: input.harness ?? null, role: 'su' },
     input.root ? { fileRepoRoot: input.root } : undefined);
 };
-const notesDefaults: ReadNotesContextDeps = {
-  fold: (input, paths) => withWorkspace(input.workspace, tx =>
-    foldCodeNotesForPaths(
-      [{ scope: 'workspace' }, ...(input.harness ? [{ scope: 'harness' as const, scopeRef: input.harness }] : [])],
-      paths, { workspaceId: input.workspace }, tx)),
-  staleness: readNoteAnchorStaleness,
+const foldNotesContext = (input: PushInput, paths: readonly string[], diagnostics?: NotesContextDiagnostics): Promise<AgentFact[]> => {
+  const acquisitionStartedAt = performance.now();
+  let beginAt: number | undefined;
+  let acquisitionLogged = false;
+  if (diagnostics) diagnostics.phaseOutcomes.acquisition = 'running';
+  return withWorkspace(input.workspace, async tx => {
+    const readyAt = performance.now();
+    if (diagnostics) {
+      diagnostics.phaseMs.acquisition = Math.round(readyAt - acquisitionStartedAt);
+      diagnostics.phaseOutcomes.acquisition = 'completed';
+      if (beginAt !== undefined) {
+        diagnostics.phaseMs.acquireToBegin = Math.round(beginAt - acquisitionStartedAt);
+        diagnostics.phaseMs.beginToReady = Math.round(readyAt - beginAt);
+      }
+      acquisitionLogged = true;
+      logNotesContextDiagnostic('info', 'phase-settled', diagnostics, 'acquisition');
+      diagnostics.phaseOutcomes.factFold = 'running';
+    }
+    const foldStartedAt = performance.now();
+    try {
+      const facts = await foldCodeNotesForPaths(
+        [{ scope: 'workspace' }, ...(input.harness ? [{ scope: 'harness' as const, scopeRef: input.harness }] : [])],
+        paths, { workspaceId: input.workspace }, tx);
+      if (diagnostics) {
+        diagnostics.phaseMs.factFold = Math.round(performance.now() - foldStartedAt);
+        diagnostics.phaseOutcomes.factFold = 'completed';
+        diagnostics.candidateCount = facts.length;
+        logNotesContextDiagnostic('info', 'phase-settled', diagnostics, 'factFold');
+      }
+      return facts;
+    } catch (error) {
+      if (diagnostics) {
+        diagnostics.phaseMs.factFold = Math.round(performance.now() - foldStartedAt);
+        diagnostics.phaseOutcomes.factFold = 'error';
+        diagnostics.phaseErrors.factFold = notesContextErrorName(error);
+        logNotesContextDiagnostic('warn', 'phase-error', diagnostics, 'factFold');
+      }
+      throw error;
+    }
+  }, {
+    onAcquisitionPhase: phase => {
+      if (!diagnostics) return;
+      if (phase === 'begin') beginAt = performance.now();
+      else if (beginAt !== undefined) {
+        diagnostics.phaseMs.beginToReady = Math.round(performance.now() - beginAt);
+      }
+    },
+  }).catch(error => {
+    if (diagnostics && !acquisitionLogged) {
+        diagnostics.phaseMs.acquisition = Math.round(performance.now() - acquisitionStartedAt);
+        diagnostics.phaseOutcomes.acquisition = 'error';
+        diagnostics.phaseErrors.acquisition = notesContextErrorName(error);
+        logNotesContextDiagnostic('warn', 'phase-error', diagnostics, 'acquisition');
+    }
+    throw error;
+  });
 };
+const notesDefaults = {
+  fold: (input: PushInput, paths: readonly string[]) => foldNotesContext(input, paths),
+  foldWithDiagnostics: foldNotesContext,
+  staleness: readNoteAnchorStaleness,
+} satisfies ReadNotesContextDeps & { foldWithDiagnostics: typeof foldNotesContext };
 
 /** Fail-closed on staleness: a note is FRESH only when every one of its `file:`
  * anchors re-hashed to its stored digest. Non-file dependencies are not consulted
  * here (they need a cell dispatch the 250ms push wall cannot afford). */
-export async function readPushNotesContext(input: PushInput, paths: readonly string[], deps: ReadNotesContextDeps = notesDefaults): Promise<NotesContext> {
+export async function readPushNotesContext(input: PushInput, paths: readonly string[],
+  deps: ReadNotesContextDeps = notesDefaults, suppliedDiagnostics?: NotesContextDiagnostics): Promise<NotesContext> {
+  const diagnostics = suppliedDiagnostics ?? (deps === notesDefaults ? createNotesContextDiagnostics() : undefined);
   if (!paths.length) return { fresh: [], withheld: [] };
-  const notes = (await deps.fold(input, paths)).filter(fact => isCodeNoteKey(fact.key));
-  if (!notes.length) return { fresh: [], withheld: [] };
+  const folded = diagnostics && deps === notesDefaults
+    ? await notesDefaults.foldWithDiagnostics(input, paths, diagnostics)
+    : await deps.fold(input, paths);
+  const notes = folded.filter(fact => isCodeNoteKey(fact.key));
+  if (diagnostics) diagnostics.noteCount = notes.length;
+  if (!notes.length) {
+    if (diagnostics) {
+      diagnostics.anchorCount = 0;
+      diagnostics.phaseMs.anchorStaleness = 0;
+      diagnostics.phaseOutcomes.anchorStaleness = 'skipped';
+      logNotesContextDiagnostic('info', 'phase-skipped', diagnostics, 'anchorStaleness');
+    }
+    return { fresh: [], withheld: [] };
+  }
   const anchorsOnly = notes.map(fact => ({ ...fact, dependsOn: (fact.dependsOn ?? []).filter(dep => isFactFileAnchor(dep.cell)) }));
-  const marked = await deps.staleness(anchorsOnly, input);
+  if (diagnostics) {
+    diagnostics.anchorCount = anchorsOnly.reduce((count, fact) => count + (fact.dependsOn?.length ?? 0), 0);
+    diagnostics.phaseOutcomes.anchorStaleness = 'running';
+  }
+  const stalenessStartedAt = performance.now();
+  let marked: Array<AgentFact & { depsStale?: FactDependencyStaleness }>;
+  try {
+    marked = await deps.staleness(anchorsOnly, input);
+    if (diagnostics) {
+      diagnostics.phaseMs.anchorStaleness = Math.round(performance.now() - stalenessStartedAt);
+      diagnostics.phaseOutcomes.anchorStaleness = 'completed';
+      logNotesContextDiagnostic('info', 'phase-settled', diagnostics, 'anchorStaleness');
+    }
+  } catch (error) {
+    if (diagnostics) {
+      diagnostics.phaseMs.anchorStaleness = Math.round(performance.now() - stalenessStartedAt);
+      diagnostics.phaseOutcomes.anchorStaleness = 'error';
+      diagnostics.phaseErrors.anchorStaleness = notesContextErrorName(error);
+      logNotesContextDiagnostic('warn', 'phase-error', diagnostics, 'anchorStaleness');
+    }
+    throw error;
+  }
   const fresh: NoteEntry[] = [];
   const withheld: WithheldNote[] = [];
   for (const fact of marked) {
@@ -1142,6 +1277,7 @@ export interface PushChannelDeps {
   incidentContext?(input: PushInput, paths: string[]): Promise<IncidentAttribution>;
   resumeContext?(input: PushInput, diagnostics?: ResumeReadDiagnostics): Promise<ResumeContext>;
   notesContext?(input: PushInput, paths: readonly string[]): Promise<NotesContext>;
+  notesContextWithDiagnostics?(input: PushInput, paths: readonly string[], diagnostics: NotesContextDiagnostics): Promise<NotesContext>;
   interfaceContext?(input: PushInput, snapshot: PushSnapshot): Promise<InterfacePeerContext>;
   /** Code-intel P-011: persist the measured interface context as shadow-coupling evidence. */
   interfaceEvidence?(input: PushInput, context: InterfacePeerContext): Promise<unknown>;
@@ -1495,6 +1631,7 @@ const defaults: PushChannelDeps = {
   interfaceEvidence: recordInterfaceDependencyEvidence,
   resumeContext: (input, diagnostics) => readPushResumeContext(input, undefined, diagnostics),
   notesContext: (input, paths) => readPushNotesContext(input, paths),
+  notesContextWithDiagnostics: (input, paths, diagnostics) => readPushNotesContext(input, paths, notesDefaults, diagnostics),
   toolset: input => readRecipientToolset({ workspace: input.workspace, owner: input.owner }),
 };
 
@@ -1571,12 +1708,29 @@ export async function codeIntelPushText(input: PushInput, deps: PushChannelDeps 
     // P-005: fold code notes and re-hash their file anchors as soon as the notes
     // flag resolves. This overlaps the snapshot and toolset reads; all still share
     // the original gather deadline and the reserved commit window.
-    const notesContext = deps.notesContext && touchedPaths.length
-      ? enabledRead.then(on => on.get('notes')
-        ? withBoundedTimeout(() => deps.notesContext!(input, touchedPaths), {
-          timeoutMs: gatherLeft(), fallback: undefined, label: 'code-intel-notes-context',
-        }).catch(() => ({ value: undefined }))
-        : null).catch(() => null)
+    const useDefaultDiagnostics = deps === defaults && deps.notesContextWithDiagnostics;
+    const notesContext = (useDefaultDiagnostics || deps.notesContext) && touchedPaths.length
+      ? enabledRead.then(on => {
+        if (!on.get('notes')) return null;
+        const diagnostics = createNotesContextDiagnostics();
+        const timeoutMs = gatherLeft();
+        return withBoundedTimeout(() => useDefaultDiagnostics
+          ? deps.notesContextWithDiagnostics!(input, touchedPaths, diagnostics)
+          : deps.notesContext!(input, touchedPaths), {
+          timeoutMs, fallback: undefined, label: NOTES_CONTEXT_LABEL,
+        }).then(settled => {
+          if (settled.reason === 'timeout') {
+            diagnostics.phaseOutcomes.deadline = 'timeout';
+            logNotesContextDiagnostic('warn', 'wait-timeout', diagnostics, 'deadline', timeoutMs);
+          }
+          return settled;
+        }).catch(error => {
+          diagnostics.phaseOutcomes.read = 'error';
+          diagnostics.phaseErrors.read = notesContextErrorName(error);
+          logNotesContextDiagnostic('warn', 'read-error', diagnostics, 'read');
+          return { value: undefined };
+        });
+      }).catch(() => null)
       : null;
     // P-006: started beside the snapshot read so it costs the wall no extra wait.
     const toolsetRead = deps.toolset

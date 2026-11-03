@@ -65,12 +65,40 @@ describe('push ledger cross-worker budget, dedupe and workspace isolation', () =
 
       dbOrgSpies.getOrgPg.mockClear();
       dbOrgSpies.withWorkspace.mockClear();
-      const context = await readPushNotesContext({ ...input, workspace, root }, [path]);
+      const phaseLines: string[] = [];
+      const phasePrefix = '[code-intel-notes-context] ';
+      const infoSpy = vi.spyOn(console, 'info').mockImplementation((...args: unknown[]) => {
+        const line = args[0];
+        if (typeof line === 'string' && line.startsWith(phasePrefix)) phaseLines.push(line);
+      });
+      const context = await readPushNotesContext({ ...input, workspace, root }, [path])
+        .finally(() => infoSpy.mockRestore());
+      type NotesPhaseLog = {
+        event: string;
+        phase?: string;
+        readId: string;
+        phaseMs: Record<string, number>;
+        phaseOutcomes: Record<string, string>;
+        anchorCount?: number;
+      };
+      const timing = phaseLines.map(line => JSON.parse(line.slice(phasePrefix.length)) as NotesPhaseLog)
+        .find(row => row.event === 'phase-settled' && row.phase === 'anchorStaleness')!;
 
       expect(context.fresh).toEqual([{
         key: 'code-note:app-fold', body, paths: [path], scope: 'harness', scopeRef: 'papercusp',
       }]);
       expect(context.withheld).toEqual([]);
+      expect(timing).toBeDefined();
+      expect(timing.readId).toEqual(expect.any(String));
+      expect(timing.phaseOutcomes).toMatchObject({
+        acquisition: 'completed', factFold: 'completed', anchorStaleness: 'completed',
+      });
+      expect(timing.phaseMs).toEqual(expect.objectContaining({
+        acquisition: expect.any(Number), factFold: expect.any(Number), anchorStaleness: expect.any(Number),
+      }));
+      expect(timing.anchorCount).toBe(1);
+      expect(JSON.stringify(timing)).not.toContain(body);
+      expect(timing).not.toHaveProperty('paths');
       expect(dbOrgSpies.withWorkspace).toHaveBeenCalledWith(workspace);
       expect(dbOrgSpies.getOrgPg).not.toHaveBeenCalled();
     } finally {

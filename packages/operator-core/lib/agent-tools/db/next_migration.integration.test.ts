@@ -276,6 +276,9 @@ describe('db:next-migration allocator (§A1)', () => {
     expect(r.path).toMatch(/\.sql\.DRAFT$/);
     expect(r.path?.endsWith('.sql')).toBe(false);
     expect(r.arm_path).toMatch(/\.sql$/);
+    expect(r.path).toMatch(/^libs\/papercusp\/libs\/db\/sql\//);
+    expect(r.arm_path).toMatch(/^libs\/papercusp\/libs\/db\/sql\//);
+    expect(r.path).toBe(`${r.arm_path}.DRAFT`);
     expect(r.arm_command).toBe("npx tsx scripts/next-migration.mjs --arm '" + r.path + "'");
     expect(r.note).toContain(r.arm_command);
   });

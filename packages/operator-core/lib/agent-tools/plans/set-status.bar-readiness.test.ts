@@ -47,6 +47,14 @@ vi.mock('../../plan-items/reconcile-linked-work-items', () => ({
   resyncPlanItemLaneNow: vi.fn(async () => null),
   resyncDependentPlanItemLanesNow: vi.fn(async () => [] as string[]),
 }));
+vi.mock('../../plan-items/convert', async (orig) => ({
+  ...(await orig<typeof import('../../plan-items/convert')>()),
+  findCoverageWorkItems: vi.fn(async () => []),
+}));
+vi.mock('../../plan-items/assignments', async (orig) => ({
+  ...(await orig<typeof import('../../plan-items/assignments')>()),
+  unassignItem: vi.fn(async () => null),
+}));
 
 const cascade = vi.hoisted(() => ({
   read: vi.fn(async () => ({

@@ -182,6 +182,8 @@ import { resolveAgentWorkspaceRoot } from '../capability/base-dir';
 import { trackDetached } from '../../detached-imports';
 import { areAcceptanceLineageRelated, isAcceptanceAuthorIdentity } from '../../acceptance-author-identity';
 import { acceptanceSeatRefusalHint, resolveAcceptanceSeatSuccession } from '../../acceptance-seat-succession';
+import { advanceAuthorVettingHandoff, reserveAuthorVettingHandoff, authorVettingTargetKey,
+  type AuthorVettingTarget } from '../../coord/condition-upsert';
 import { readAndEvaluateAcceptanceBarLifecycle } from '../../acceptance-bar-lifecycle-evaluator';
 import { evidenceCurrentInputSchema } from '../plans/spec-evidence-store';
 import { runtimeCitationRefusal } from '../../acceptance-runtime-citation';
@@ -820,6 +822,9 @@ const scorecardEmitBaseShape = {
       .describe(
         "observation.subject; rubric vetting uses kind:'rubric',ref:rubricId. Acceptance default=subjectPlan; explicit wins.",
       ),
+    authorHandoffId: z.string().min(1).max(200).optional().describe(
+      'Existing exact-identity author obligation returned by an author-only refusal. Pickup and settlement recheck current authority.',
+    ),
     gradingAuditReservation: z
       .object({
         key: z.string().min(1).max(240),
@@ -1808,6 +1813,8 @@ export async function emitScorecard(
     /** Injectable seam for vetting-seat authorization; production uses the
      * fail-closed shared acceptance-seat resolver. */
     resolveAcceptanceSeatSuccession?: typeof resolveAcceptanceSeatSuccession;
+    reserveAuthorVettingHandoff?: typeof reserveAuthorVettingHandoff;
+    advanceAuthorVettingHandoff?: typeof advanceAuthorVettingHandoff;
     /** Test seam for the bounded post-write pending-audit dispatcher. */
     dispatchPendingGradingAudits?: typeof dispatchPendingGradingAudits;
     /** Verify a routed grading-audit fork is still the consult's current answerer. */
@@ -1878,7 +1885,7 @@ export async function emitScorecard(
     // enters the grading/audit/cascade/author-verdict side effects below.
     const forbidden = ['acceptance', 'acceptanceOf', 'vetting', 'terminal',
       'baselineRef', 'fromLedger', 'fromEvaluator', 'pendingDeliveryBarKeys', 'rerunRecipe',
-      'instrumentSnapshots', 'testedSha'].filter(key => (args as Record<string, unknown>)[key] !== undefined);
+      'instrumentSnapshots', 'testedSha', 'authorHandoffId'].filter(key => (args as Record<string, unknown>)[key] !== undefined);
     if (forbidden.length) return { ok: false as const, code: 'diagnostic_operation_invalid',
       error: `Diagnostic baseline cannot perform grading operations: ${forbidden.join(', ')}.` };
     if (!args.subject || !rubric.revision || !rubric.criteriaHash || rubric.status === 'retired' ||
@@ -2065,7 +2072,34 @@ export async function emitScorecard(
   const specTestAdequacyBindingError = validateSpecTestAdequacyBinding(args);
   if (specTestAdequacyBindingError) return { ok: false as const, ...specTestAdequacyBindingError };
   let releaseScorecardEmitMutex: (() => Promise<void>) | undefined;
+  let authorHandoff: Awaited<ReturnType<typeof advanceAuthorVettingHandoff>> | undefined;
+  let handoffTarget: AuthorVettingTarget | undefined;
+  let handoffAuthorize: (() => Promise<boolean>) | undefined;
   let releaseGradingAuditSubjectMutex: (() => Promise<void>) | undefined;
+  const authorizeHandoff = async (target: AuthorVettingTarget, actorId: string, consultId?: string | null) => {
+    const latest = await readRubric(target.rubricId);
+    if (latest.kind !== 'found') return false;
+    const live = latest.rubric;
+    const exact = live.revision != null && live.criteriaHash && live.barSetHash
+      ? { ...target, revision: live.revision, criteriaHash: live.criteriaHash, barSetHash: live.barSetHash,
+        planSlug: live.subjectPlan ?? null, harnessSlug: live.subjectHarnessSlug ?? input.ctxHarness ?? null } : null;
+    if (!exact || authorVettingTargetKey(exact) !== authorVettingTargetKey(target)) return false;
+    const author = live.createdBy ?? live.proposedBy ?? null;
+    if (await (deps.sameAcceptanceAuthor ?? isAcceptanceAuthorIdentity)(author, actorId, { workspaceId: target.workspaceId })) return true;
+    if (consultId) {
+      const critique = await readVettingConsultCritique(getOrgPg().sql, target.workspaceId, consultId, actorId,
+        [target.rubricId, live.subjectPlan].filter((ref): ref is string => !!ref));
+      if (critique.routedVettingCritic === actorId) return true;
+    }
+    return (await (deps.resolveAcceptanceSeatSuccession ?? resolveAcceptanceSeatSuccession)({
+      authorId: author, callerId: actorId, subjectPlan: live.subjectPlan ?? null, workspaceId: target.workspaceId,
+      harness: input.ctxHarness ?? live.subjectHarnessSlug ?? null,
+      resolveAuthorSessionState: deps.resolveAuthorSessionState ?? defaultResolveAuthorSessionState,
+    })).eligible;
+  };
+  if (args.authorHandoffId && !args.vettingConsult && !args.vettingWorkItem) return {
+    ok: false as const, code: 'author_handoff_vetting_required', error: 'authorHandoffId requires ordinary vetting linkage.',
+  };
   try {
     // Bind the card to the Scout host generation that was current before this
     // emit started resolving instrument snapshots and collecting evidence. The
@@ -2865,6 +2899,11 @@ export async function emitScorecard(
       const vettedRubricAuthor = vettedRubric.createdBy ?? vettedRubric.proposedBy ?? null;
       const sameVettedRubricAuthor = deps.sameAcceptanceAuthor ?? isAcceptanceAuthorIdentity;
       const vettingWorkspace = vettedRubric.workspaceId || input.workspaceId || activeWorkspaceId();
+      const handoffIdentity = vettedRubric.revision != null && vettedRubric.criteriaHash && vettedRubric.barSetHash
+        ? { workspaceId: vettingWorkspace, harnessSlug: vettedRubric.subjectHarnessSlug ?? input.ctxHarness ?? null,
+          planSlug: vettedRubric.subjectPlan ?? null, rubricId: vettedRubric.rubricId, revision: vettedRubric.revision,
+          criteriaHash: vettedRubric.criteriaHash, barSetHash: vettedRubric.barSetHash, action: 'record-vetting' as const }
+        : undefined;
       const vettingAuthorIdentity = await sameVettedRubricAuthor(vettedRubricAuthor, input.createdBy, {
         workspaceId: vettingWorkspace,
       });
@@ -2895,8 +2934,29 @@ export async function emitScorecard(
           resolveAuthorSessionState,
         });
         if (!seat.eligible) {
+          // Keep the ordinary refusal. The durable request is a recovery route, never an approval.
+          const obligation = !input.previewOnly && handoffIdentity
+            ? await (deps.reserveAuthorVettingHandoff ?? reserveAuthorVettingHandoff)(handoffIdentity, {
+              authorId: vettedRubricAuthor, requestedBy: input.createdBy,
+              ...(deps.dispatchTool && vettedRubricAuthor ? { deliver: async (id: string) => {
+                const delivery = unwrapSpecTestAdequacyReplay(await deps.dispatchTool!('coord:send', {
+                  to: [vettedRubricAuthor], expects: 'action', wake: 'required',
+                  summary: `Exact-identity author vetting obligation ${id}`,
+                  body: [{ text: `Author-only scorecards:emit was refused. Review obligation ${id} for ` +
+                    `${JSON.stringify(handoffIdentity)}. An authorized recorder may retry ordinary vetting with authorHandoffId:'${id}'. ` +
+                    'The obligation does not replace independent critique or widen author-seat authority.',
+                    forYouBecause: { relation: 'owns', ref: vettedRubric.rubricId } }],
+                }));
+                if (!delivery || typeof delivery !== 'object' || (delivery as { ok?: boolean }).ok !== true) {
+                  throw new Error('author handoff delivery was not confirmed by coord:send');
+                }
+                return delivery;
+              } } : {}),
+            }) : undefined;
           return {
             ok: false as const,
+            ...(obligation ? { authorHandoff: obligation, nextAction: `Read work_items:get ${obligation.id}; ` +
+              'an authorized recorder retries ordinary vetting with authorHandoffId.', responsibleRole: 'rubric-author' } : {}),
             error:
               `vetting must be emitted by the vetted rubric's author ('${vettedRubricAuthor ?? 'unknown'}'), ` +
               `not '${input.createdBy}'` +
@@ -2907,6 +2967,17 @@ export async function emitScorecard(
           };
         }
         vettingSeatSuccession = seat.succession;
+      }
+      if (args.authorHandoffId && !input.previewOnly) {
+        if (!handoffIdentity) return { ok: false as const, code: 'author_handoff_identity_unmeasured',
+          error: 'Author handoff requires rubric id, revision, criteriaHash and barSetHash.' };
+        handoffTarget = handoffIdentity;
+        handoffAuthorize = () => authorizeHandoff(handoffIdentity, input.createdBy, args.vettingConsult);
+        authorHandoff = await (deps.advanceAuthorVettingHandoff ?? advanceAuthorVettingHandoff)({
+          id: args.authorHandoffId, target: handoffTarget, actorId: input.createdBy, phase: 'pickup', authorize: handoffAuthorize,
+        });
+        if (!authorHandoff.ok) return { ok: false as const, code: 'author_handoff_pickup_refused',
+          error: 'The author obligation is obsolete or current authority refused pickup.', authorHandoff };
       }
       if (args.vettingWorkItem) {
         // Mirror of the consult predicate below, clause for clause: the consult path
@@ -3105,6 +3176,7 @@ export async function emitScorecard(
       rubricRevision?: number;
       criteriaHash?: string;
       dispatchReservation?: { key: string; reservedAt: string };
+      authorHandoff?: { id: string; target: AuthorVettingTarget; recorderId: string; consultId?: string | null };
     } | null = null;
     if (args.rubricRef === GRADING_INTEGRITY_RUBRIC_REF) {
       const auditVerdict = auditVerdictFromRatings(ratings);
@@ -3129,6 +3201,9 @@ export async function emitScorecard(
         }, input.phases, scorecardMutexWaitTimeoutMs);
       }
       const graded = await getIssue(args.subject.ref);
+      const handoffLink = graded?.payload && typeof graded.payload === 'object'
+        ? (graded.payload as { authorHandoff?: { id?: string; target?: AuthorVettingTarget; recorderId?: string; consultId?: string | null } }).authorHandoff
+        : undefined;
       const gradedRawObservation =
         graded?.payload && typeof graded.payload === 'object' && !Array.isArray(graded.payload)
           ? (graded.payload as { observation?: unknown }).observation
@@ -3448,6 +3523,10 @@ export async function emitScorecard(
         subjectIssueId: args.subject.ref,
         auditor: input.createdBy,
         verdict: auditVerdict,
+        ...(handoffLink?.id && handoffLink.target && typeof handoffLink.recorderId === 'string' && handoffLink.recorderId === graded?.createdBy &&
+          handoffLink.target.rubricId === gradedObservation.subject?.ref && gradedObservation.vetting
+          ? { authorHandoff: { id: handoffLink.id, target: handoffLink.target,
+            recorderId: handoffLink.recorderId, consultId: handoffLink.consultId } } : {}),
         ...(rubric.revision != null ? { rubricRevision: rubric.revision } : {}),
         ...(rubric.criteriaHash ? { criteriaHash: rubric.criteriaHash } : {}),
         // Carry a known lease epoch into the settle compare-and-set even after its active
@@ -4130,6 +4209,9 @@ export async function emitScorecard(
       createdBy: input.createdBy,
       filedByRole: 'su',
       payloadExtra: {
+        ...(args.authorHandoffId && handoffTarget ? { authorHandoff: {
+          id: args.authorHandoffId, target: handoffTarget, recorderId: input.createdBy, consultId: args.vettingConsult ?? null,
+        } } : {}),
         observation: {
           rubricRef: args.rubricRef,
           ...(ledgerFillSummary ? { ledgerFilled: true } : {}),
@@ -4163,6 +4245,9 @@ export async function emitScorecard(
       // Re-read at its actual INSERT boundary so a host restart during that prep
       // refuses before each create attempt, including contention retries.
       beforeIssueCreate: async () => {
+        if (handoffAuthorize && !(await handoffAuthorize())) {
+          throw new ObservationEvidenceError('Author handoff identity or authority changed before persistence; no verdict was filed.');
+        }
         const persistenceGeneration = await readRunningGeneration().catch(() => null);
         const evidenceHostStartedAt = evidenceGeneration?.hostStartedAt;
         const persistenceHostStartedAt = persistenceGeneration?.hostStartedAt;
@@ -4189,6 +4274,15 @@ export async function emitScorecard(
     if (releaseScorecardEmitMutex) {
       await releaseScorecardEmitMutex();
       releaseScorecardEmitMutex = undefined;
+    }
+    if (args.authorHandoffId && handoffTarget && handoffAuthorize && result.issue?.id) {
+      authorHandoff = await (deps.advanceAuthorVettingHandoff ?? advanceAuthorVettingHandoff)({
+        id: args.authorHandoffId, target: handoffTarget, actorId: input.createdBy,
+        phase: provisional || gradingAudit ? 'blocked' : 'settle',
+        ...(provisional ? { reason: 'provisional-verdict-not-final' }
+          : gradingAudit ? { reason: 'awaiting-independent-audit' } : {}),
+        authorize: handoffAuthorize, verdictRef: result.issue.id,
+      });
     }
     if (result.created) {
       // Push-on-write (push-audit 2026-07-26): the Verify stage's scorecard
@@ -4222,6 +4316,14 @@ export async function emitScorecard(
         releaseGradingAuditSubjectMutex = undefined;
       }
       if (auditSettlement.ok) {
+        if (auditContext.authorHandoff && auditContext.verdict === 'passed') {
+          const link = auditContext.authorHandoff;
+          authorHandoff = await (deps.advanceAuthorVettingHandoff ?? advanceAuthorVettingHandoff)({
+            id: link.id, target: link.target, actorId: link.recorderId, phase: 'settle',
+            authorize: () => authorizeHandoff(link.target, link.recorderId, link.consultId),
+            verdictRef: auditContext.subjectIssueId, reason: `independent-audit:${result.issue.id}`,
+          });
+        }
         try {
           await (deps.closeSourceAuditConsults ?? closeSourceAuditConsults)(
             input.workspaceId || activeWorkspaceId(),
@@ -4323,6 +4425,7 @@ export async function emitScorecard(
       created: result.created,
       issueId: result.issue?.id ?? null,
       evidenceFingerprint,
+      ...(authorHandoff ? { authorHandoff } : {}),
       ...(checkLedger ? { checkLedger } : {}),
       ...(ledgerFillSummary ? { ledgerFill: ledgerFillSummary } : {}),
       ...(gradedGeneration
@@ -4426,6 +4529,12 @@ export async function emitScorecard(
     throw error;
   } finally {
     // Covers every refusal/exception between the final dedup read and capture,
+    if (args.authorHandoffId && handoffTarget && handoffAuthorize && authorHandoff?.state === 'picked-up') {
+      await (deps.advanceAuthorVettingHandoff ?? advanceAuthorVettingHandoff)({
+        id: args.authorHandoffId, target: handoffTarget, actorId: input.createdBy, phase: 'blocked',
+        authorize: handoffAuthorize, reason: 'ordinary-vetting-did-not-produce-an-authorized-final-verdict',
+      });
+    }
     // including a failed deterministic check or a capture that throws.
     if (releaseScorecardEmitMutex) {
       await releaseScorecardEmitMutex().catch(() => {});

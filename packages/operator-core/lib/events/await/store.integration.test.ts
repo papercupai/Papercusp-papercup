@@ -22,6 +22,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { getTestPg, markManagedTestDatabase } from '@papercusp/test-config/pg';
 import type { GitPipelineSnapshot } from '../../git-pipeline-stats';
+import { LogicalGateConflictError } from './types';
 
 const hb = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
 vi.mock('@papercusp/db-org', async (orig) => {
@@ -1382,12 +1383,19 @@ describe('await-event store (PG)', () => {
     ]);
     expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
     expect(results.filter((result) => result.status === 'rejected')).toHaveLength(1);
+    const loser = results.find((result) => result.status === 'rejected');
     const active = await rootSql`
       SELECT event_key FROM harness_shared.event_awaits
        WHERE logical_gate_key = 'logical-concurrent'
          AND policy = 'announce' AND superseded_at IS NULL AND cancelled_at IS NULL AND fired_at IS NULL
     `;
     expect(active).toHaveLength(1);
+    expect(loser?.status).toBe('rejected');
+    if (loser?.status === 'rejected') {
+      expect(loser.reason).toBeInstanceOf(LogicalGateConflictError);
+      expect(loser.reason).toMatchObject({ code: 'logical_gate_conflict', logicalGateKey: 'logical-concurrent' });
+      expect(loser.reason.existingEventKey).toBe(active[0]!.event_key);
+    }
   });
 
   // ── EI-8998: predicate/payload watches ───────────────────────────────────

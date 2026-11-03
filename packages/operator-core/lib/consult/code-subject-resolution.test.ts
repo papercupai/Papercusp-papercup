@@ -114,15 +114,19 @@ describe('gitGrepSymbolResolver', () => {
 
   it('attributes bounded resolver observations to the serving operator port and build', async () => {
     const observe = vi.spyOn(fallbackObservations, 'observeFallback').mockReturnValue(true);
+    const correlationId = '123e4567-e89b-12d3-a456-426614174000';
     vi.stubEnv('PAPERCUSP_HONO_PORT', '3170');
     vi.stubEnv('PAPERCUSP_BUILD_SHA', 'abcdef0123456789abcdef0123456789abcdef01');
     try {
       const resolve = gitGrepSymbolResolver({ cwd: repo });
-      await resolve(['routeThing']);
+      await resolve(['routeThing'], { correlationId });
       expect(observe).toHaveBeenCalledWith(
         'bounded-operation',
         { eligible: 1, applied: 1, reason: 'applied', scope: 'consult-symbol-resolution' },
-        expect.objectContaining({ processTag: 'consult-symbol-resolution:port-3170:build-abcdef012345' }),
+        expect.objectContaining({
+          processTag: 'consult-symbol-resolution:port-3170:build-abcdef012345',
+          correlationId,
+        }),
       );
     } finally {
       observe.mockRestore();
@@ -176,16 +180,27 @@ describe('gitGrepSymbolResolver', () => {
     // stand-in, and first prove the executable is runnable (not a spawn error).
     const bin = mkdtempSync(join(tmpdir(), 'code-subject-timeout-'));
     const git = join(bin, 'git');
+    const observe = vi.spyOn(fallbackObservations, 'observeFallback').mockReturnValue(true);
+    const correlationId = '123e4567-e89b-12d3-a456-426614174000';
     writeFileSync(git, `#!${process.execPath}\nif (process.argv.includes('--ready')) process.stdout.write('ready'); else setInterval(() => {}, 1_000);\n`);
     chmodSync(git, 0o755);
     try {
       expect(execFileSync(git, ['--ready'], { encoding: 'utf8', timeout: 5_000 })).toBe('ready');
       vi.stubEnv('PATH', `${bin}${delimiter}${process.env.PATH ?? ''}`);
       const resolve = gitGrepSymbolResolver({ cwd: repo, timeoutMs: 1 });
-      const subjects = await resolveQuestionCodeSubjects('where is `routeThing` defined?', { resolveSymbol: resolve });
+      const subjects = await resolveQuestionCodeSubjects('where is `routeThing` defined?', {
+        resolveSymbol: resolve,
+        correlationId,
+      });
       expect(subjects.resolver).toBe('unavailable');
+      expect(observe).toHaveBeenCalledWith(
+        'bounded-operation',
+        expect.objectContaining({ eligible: 1, applied: 0, scope: 'consult-symbol-resolution' }),
+        expect.objectContaining({ correlationId }),
+      );
     } finally {
       vi.unstubAllEnvs();
+      observe.mockRestore();
       rmSync(bin, { recursive: true, force: true });
     }
   });

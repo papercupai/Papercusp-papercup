@@ -812,6 +812,24 @@ describe('selectSilentlyStoppedRoles (EI-19281872822982156)', () => {
     expect(selectSilentlyStoppedRoles(rows, 6, { now: NOW, silentStopMs: 24 * HOUR_MS }).map((r) => r.role)).toEqual(['kettle']);
   });
 
+  it('the non-dispatched in-process sweep arm-state sentinel is not treated as a fired autoloop role', () => {
+    // `in-process:sweep` is the target_role on per-check arm-state rows; it is never fired by
+    // the routine executor. A stale autoloop_state row under that sentinel cannot measure timer liveness.
+    expect(
+      selectSilentlyStoppedRoles([row({ role: 'in-process:sweep', consecutive_errors: 1, routine_active: null })], 6, {
+        now: NOW,
+        silentStopMs: 24 * HOUR_MS,
+      }),
+    ).toEqual([]);
+    expect(
+      selectChronicFailures(
+        [row({ role: 'in-process:sweep', consecutive_errors: 9, routine_active: null, last_fired_at: new Date(NOW - HOUR_MS).toISOString() })],
+        6,
+        { now: NOW, staleMs: 6 * HOUR_MS },
+      ),
+    ).toEqual([]);
+  });
+
   it('null last_fired_at never matches (nothing to measure a silence from)', () => {
     const rows = [row({ last_fired_at: null })];
     expect(selectSilentlyStoppedRoles(rows, 6, { now: NOW, silentStopMs: 24 * HOUR_MS })).toEqual([]);

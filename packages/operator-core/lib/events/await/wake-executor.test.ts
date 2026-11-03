@@ -2694,7 +2694,7 @@ describe('executeWake — queued loop-fire lifecycle gate (EI-21157954408185498)
   });
 });
 
-describe('rehydrateLoopWakeText (EI-10935: delivery-time carry-note re-check)', () => {
+describe('rehydrateLoopWakeText (EI-10935: wake-handoff carry-note re-check)', () => {
   const STALE_TEXT =
     'Loop fired.\n\n⛔ OPEN WALLS — owner-gated / pending decisions:\n  • LIVE entity re-link backfill — irreversible, awaiting go/no-go';
 
@@ -2727,6 +2727,9 @@ describe('rehydrateLoopWakeText (EI-10935: delivery-time carry-note re-check)', 
     expect(out).toContain('candidate 29e97a6761 is current');
     expect(out).toMatch(/none open — any wall shown OPEN above has been CLEARED since/);
     expect(out).toMatch(/TRUST THIS BLOCK/);
+    expect(out).toContain('wake handoff time');
+    expect(out).toContain('NOT an actual turn-start check');
+    expect(out).toContain('UserPromptSubmit turn-start checkpoint block');
     // The delivery-time block leads the fire-time snapshot so the injection door's
     // head-keep behavior cannot spill the only state that was read at delivery.
     expect(out.indexOf('LIVE RE-CHECK')).toBeLessThan(out.indexOf(STALE_TEXT));

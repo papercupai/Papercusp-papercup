@@ -1076,7 +1076,7 @@ export async function consultDeclineCore(
     await tx`
       UPDATE harness_shared.consult_state
          SET state = 'declined',
-             outcome = ${tx.json({
+             outcome = COALESCE(outcome, '{}'::jsonb) || ${tx.json({
                reason,
                ...(declineAnswerEvents.length > 0
                  ? {
@@ -1084,10 +1084,7 @@ export async function consultDeclineCore(
                      answered_by: [...new Set(declineAnswerEvents.map((e) => e.ownerId))],
                    }
                  : {}),
-             } as never)}::jsonb
-                       || CASE WHEN (outcome -> 'reconciliation') IS NOT NULL
-                               THEN jsonb_build_object('reconciliation', outcome -> 'reconciliation')
-                               ELSE '{}'::jsonb END,
+             } as never)}::jsonb,
              closed_at = ${now}::timestamptz,
              updated_at = ${now}::timestamptz
        WHERE workspace_id = ${req.workspaceId} AND conversation_id = ${req.conversationId}

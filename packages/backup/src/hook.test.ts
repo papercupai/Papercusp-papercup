@@ -36,6 +36,7 @@ const h = vi.hoisted(() => ({
   stdinWrites: [] as string[],
   ackWrites: [] as string[],
   writeStreamPaths: [] as string[],
+  statCalls: [] as string[],
   renameCalls: [] as Array<{ from: string; to: string }>,
   unlinkCalls: [] as string[],
   logLines: [] as string[],
@@ -56,6 +57,8 @@ const h = vi.hoisted(() => ({
   pendingGuard: null as EventEmitter | null,
   pendingGuardReady: null as EventEmitter | null,
   pendingGuardAck: null as EventEmitter | null,
+  holdOutputOpen: false,
+  pendingOutputStream: null as EventEmitter | null,
 }));
 
 // Fake child: EventEmitter-backed stdout/stderr/stdin (so the real code's
@@ -119,10 +122,28 @@ vi.mock('node:child_process', () => ({
 }));
 
 vi.mock('node:fs', () => ({
-  // out stream: never errors, supports end()/destroyed.
+  // Output stream: normally closes asynchronously after end(); one test holds
+  // close to prove the dump is not inspected or installed while a writer lives.
   createWriteStream: vi.fn((path: string) => {
     h.writeStreamPaths.push(String(path));
-    return { on: vi.fn(), end: vi.fn(), destroyed: false };
+    const stream = new EventEmitter() as EventEmitter & Record<string, unknown>;
+    stream.destroyed = false;
+    stream.closed = false;
+    stream.writableEnded = false;
+    stream.end = vi.fn(() => {
+      stream.writableEnded = true;
+      h.pendingOutputStream = stream;
+      if (!h.holdOutputOpen) {
+        queueMicrotask(() => {
+          stream.destroyed = true;
+          stream.closed = true;
+          stream.emit('finish');
+          stream.emit('close');
+        });
+      }
+      return stream;
+    });
+    return stream;
   }),
 }));
 
@@ -134,6 +155,7 @@ vi.mock('node:fs/promises', () => ({
   // different sizes, and the reserve test only means something if they can
   // differ here too.
   stat: vi.fn(async (p: string) => {
+    h.statCalls.push(String(p));
     if (String(p).endsWith('.tmp')) return { size: h.dumpSize };
     if (h.previousDumpSize === null) {
       throw Object.assign(new Error('ENOENT: no such file'), { code: 'ENOENT' });
@@ -226,6 +248,7 @@ beforeEach(() => {
   h.stdinWrites = [];
   h.ackWrites = [];
   h.writeStreamPaths = [];
+  h.statCalls = [];
   h.renameCalls = [];
   h.unlinkCalls = [];
   h.logLines = [];
@@ -241,6 +264,8 @@ beforeEach(() => {
   h.pendingGuard = null;
   h.pendingGuardReady = null;
   h.pendingGuardAck = null;
+  h.holdOutputOpen = false;
+  h.pendingOutputStream = null;
 });
 afterEach(() => vi.clearAllMocks());
 
@@ -704,6 +729,92 @@ describe('runPreSnapshotHook outcome logging', () => {
     expect(h.renameCalls[0].to).toContain('pg-embedded.sql.gz');
     expect(h.unlinkCalls).not.toContain('/work/ws-1/db-dumps/pg-embedded.sql.gz');
     expect(h.logLines.join('')).toMatch(/ok \(16384 bytes\)/);
+  });
+
+  it('waits for the temp-file writer to close before statting or installing the dump', async () => {
+    h.holdOutputOpen = true;
+    const pending = runPreSnapshotHook(ctx);
+    for (let i = 0; i < 10 && !h.pendingOutputStream; i += 1) {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+
+    try {
+      expect(h.pendingOutputStream).not.toBeNull();
+      const outputPath = h.writeStreamPaths[0];
+      expect(h.statCalls.some((path) => path.endsWith('.tmp'))).toBe(false);
+      expect(h.renameCalls).toHaveLength(0);
+      // One pre-write cleanup is expected; no second unlink may race the open writer.
+      expect(h.unlinkCalls.filter((path) => path === outputPath)).toHaveLength(1);
+
+      h.pendingOutputStream!.emit('finish');
+      h.pendingOutputStream!.emit('close');
+      await expect(pending).resolves.toMatchObject({ ok: true, bytes: 16_384 });
+      expect(h.statCalls.some((path) => path.endsWith('.tmp'))).toBe(true);
+      expect(h.renameCalls).toHaveLength(1);
+      expect(h.unlinkCalls.filter((path) => path === outputPath)).toHaveLength(1);
+    } finally {
+      // Keep a failed assertion from leaving the intentionally held write open
+      // and contaminating later hook tests.
+      const output = h.pendingOutputStream;
+      if (output) {
+        output.emit('close');
+        await pending;
+      }
+    }
+  });
+
+  it('does not install a dump when the output writer fails before close', async () => {
+    h.holdOutputOpen = true;
+    const pending = runPreSnapshotHook(ctx);
+    for (let i = 0; i < 10 && !h.pendingOutputStream; i += 1) {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+    const output = h.pendingOutputStream;
+
+    try {
+      expect(output).not.toBeNull();
+      output!.emit('error', new Error('disk write failed'));
+      expect(h.statCalls.some((path) => path.endsWith('.tmp'))).toBe(false);
+      expect(h.renameCalls).toHaveLength(0);
+
+      output!.emit('close');
+      await expect(pending).resolves.toMatchObject({
+        ok: false,
+        error: expect.stringContaining('output stream failed: disk write failed'),
+      });
+      expect(h.statCalls.some((path) => path.endsWith('.tmp'))).toBe(false);
+      expect(h.renameCalls).toHaveLength(0);
+    } finally {
+      if (output) {
+        output.emit('close');
+        await pending;
+      }
+    }
+  });
+
+  it('rejects an output stream that closes before it finishes', async () => {
+    h.holdOutputOpen = true;
+    const pending = runPreSnapshotHook(ctx);
+    for (let i = 0; i < 10 && !h.pendingOutputStream; i += 1) {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+    const output = h.pendingOutputStream;
+
+    try {
+      expect(output).not.toBeNull();
+      output!.emit('close');
+      await expect(pending).resolves.toMatchObject({
+        ok: false,
+        error: expect.stringContaining('output stream closed before finish'),
+      });
+      expect(h.statCalls.some((path) => path.endsWith('.tmp'))).toBe(false);
+      expect(h.renameCalls).toHaveLength(0);
+    } finally {
+      if (output) {
+        output.emit('close');
+        await pending;
+      }
+    }
   });
 
   it('does NOT rename when pg_dump fails even if gzip closes cleanly', async () => {

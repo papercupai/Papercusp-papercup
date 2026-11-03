@@ -109,6 +109,7 @@ import { recentWatchdogFires, claimWatchdogFire } from '../../pot/watchdog';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { SANDBOX_HARNESS_SLUG } from '../../red-queen/types';
 import { gymBudgetFloorUsd, isEligibleAutoloop } from '../../gym/autoloop-tick';
+import { IN_PROCESS_SWEEP_TARGET_ROLE } from '../../automation/routine-classification';
 
 /** Breach threshold (env-overridable; <=0 disables the sweep). */
 export function chronicErrorThreshold(): number {
@@ -144,9 +145,10 @@ export interface AutoloopStateRow {
   consecutive_errors: number;
   last_status: string | null;
   /** The matching `harness_shared.routines.active` for this (workspace, role) — from a LEFT
-   *  JOIN, so `null` means no matching routine row exists (a fixed system role, not a
-   *  loop:arm-materialized routine). `false` is the ONLY value that suppresses escalation —
-   *  the routine engine itself has already resolved this condition (auto-paused). */
+   *  JOIN, so `null` means no matching routine row exists (usually a fixed system role, not a
+   *  loop:arm-materialized routine). Non-dispatched target-role sentinels need an explicit
+   *  exclusion; no same-name row does not prove they fire. `false` means the routine engine
+   *  itself has already resolved this condition (auto-paused). */
   routine_active: boolean | null;
   /** When this autoloop row last FIRED. A streak whose last fire is older than
    *  `staleWindowMs()` is a frozen watermark (EI-6765) — the row stopped firing
@@ -202,7 +204,8 @@ export function isStaleWatermark(
  *  up by the vaccination harness itself; never a real chronic failure). `routine_target_owner_id`
  *  null (a fixed system role — director/gym-cycle/overwatch/scout-cycle, the sweep's intended
  *  scope), `routine_active: null`, and absent `last_fired_at` are NOT excluded — fail-open, never
- *  silently suppress an unknown state. */
+ *  silently suppress an unknown state. The non-dispatched `in-process:sweep` arm-state sentinel
+ *  is explicitly excluded because it has no routine fire clock. */
 export function selectChronicFailures(
   rows: readonly AutoloopStateRow[],
   threshold: number,
@@ -217,6 +220,7 @@ export function selectChronicFailures(
         r.consecutive_errors >= threshold &&
         !isRedQueenDrillRow(r) &&
         !isLoopArmOwnerLoop(r) &&
+        r.role !== IN_PROCESS_SWEEP_TARGET_ROLE &&
         r.routine_active !== false &&
         !isStaleWatermark(r, now, staleMs),
     )
@@ -560,7 +564,8 @@ function chronicSweepWillEscalate(
  *  dead-owner escalation); (d) an already explicitly-paused routine
  *  (`routine_active: false` — the stale-paused-routines alarm's job, not this
  *  one); or (e) a `gym-cycle` row without a matching currently eligible gym
- *  autoloop config. A legitimate no-eligible tick advances the scheduled
+ *  autoloop config; or (f) the non-dispatched `in-process:sweep` arm-state
+ *  sentinel, which has no routine fire clock. A legitimate no-eligible tick advances the scheduled
  *  routine heartbeat without advancing this per-harness fire watermark.
  *  `null`/absent `last_fired_at` never matches (nothing to measure a
  *  silence FROM), and `routine_active: null` (no matching routines row — a
@@ -582,6 +587,7 @@ export function selectSilentlyStoppedRoles(
         !chronicSweepWillEscalate(r, threshold, now, chronicStaleMs) &&
         !isRedQueenDrillRow(r) &&
         !isLoopArmOwnerLoop(r) &&
+        r.role !== IN_PROCESS_SWEEP_TARGET_ROLE &&
         r.routine_active !== false &&
         (r.role !== 'gym-cycle' || r.gym_cycle_eligible === true) &&
         isStaleWatermark(r, now, silentStopMs),

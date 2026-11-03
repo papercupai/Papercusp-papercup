@@ -402,16 +402,18 @@ export async function continueCascadeDispatchCore(
     if (result.answeringOwnerId && await isCurrent()) await onAnsweringOwner(result.answeringOwnerId);
     // A refusal has no answering session. Make it due now so the maintained
     // expiry path advances/settles it and emits the requester event, rather
-    // than waiting a whole new TTL for a responder that cannot arrive.
+    // than waiting a whole new TTL for a responder that cannot arrive. A
+    // provider can reject its first turn AFTER kickoff refreshed that TTL:
+    // compare with our latest write, while preserving a concurrent reply.
     await sql`
       UPDATE harness_shared.consult_state
          SET routing = (CASE WHEN ${result.woke === 0 && !result.answeringOwnerId}::boolean
+                 AND expires_at IS NOT DISTINCT FROM ${expectedKickoffExpiry}::timestamptz
                THEN (routing - 'cascadeDispatch') #- ARRAY['selection', 'selected', ${String(row.cascade_cursor)}, 'answeringOwnerId']
                ELSE routing - 'cascadeDispatch' END) || ${sql.json(result.targetCapacityUnavailable
                  ? { targetCapacityUnavailable: result.targetCapacityUnavailable } : {})}::jsonb,
              expires_at = CASE WHEN ${result.woke === 0 && !result.answeringOwnerId}::boolean
-                 AND ${!kickoffExpiryRefreshed}::boolean
-                 AND expires_at IS NOT DISTINCT FROM ${row.expires_at}::timestamptz
+                 AND expires_at IS NOT DISTINCT FROM ${expectedKickoffExpiry}::timestamptz
                THEN ${now().toISOString()}::timestamptz - interval '1 millisecond' ELSE expires_at END
        WHERE workspace_id = ${workspaceId} AND conversation_id = ${conversationId}
          AND cascade_cursor = ${row.cascade_cursor} AND closed_at IS NULL
@@ -881,7 +883,7 @@ export async function advanceCascade(
             next: { ownerId: first.ownerId, via: first.via }, woke: 0, pending: true,
             ...(sel.refill ? {} : { refilled: true }) };
           if (woke === 0 && !r.answeringOwnerId) {
-            const result = await skipUndispatched(first.ownerId, cursorIdx, updatedSnap, expiresAt, r.targetCapacityUnavailable);
+            const result = await skipUndispatched(first.ownerId, cursorIdx, updatedSnap, expectedKickoffExpiry, r.targetCapacityUnavailable);
             return { ...result, ...(sel.refill ? {} : { refilled: true }) };
           }
         }
@@ -1023,7 +1025,7 @@ export async function advanceCascade(
     if (r.pending) return { advanced: true, exhausted: false, raced: false,
       next: { ownerId: next.ownerId, via: next.via }, woke: 0, pending: true };
     if (woke === 0 && !r.answeringOwnerId) {
-      return skipUndispatched(next.ownerId, nextIdx, params.routing, expiresAt, r.targetCapacityUnavailable);
+      return skipUndispatched(next.ownerId, nextIdx, params.routing, expectedKickoffExpiry, r.targetCapacityUnavailable);
     }
   }
   return { advanced: true, exhausted: false, raced: false, next: { ownerId: next.ownerId, via: next.via }, woke };

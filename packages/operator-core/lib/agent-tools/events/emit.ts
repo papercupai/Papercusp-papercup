@@ -13,11 +13,13 @@
 
 import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
+import { InvalidInputError } from '@papercusp/tooldef';
 import { deriveAgentRole, resolveAgentIdentity } from '../coordination/identity';
 import { emitAwaitedEvent } from '../../events/await/engine';
 import { sendMessage } from '../coordination/messages';
 import { resolveWorkspaceHiveScope } from '../coordination/federation-scope';
 import { registerAnnouncement, countActiveAwaitsByPrefixes, findNearMissKeys, type NearMissKey } from '../../events/await/store';
+import { LogicalGateConflictError } from '../../events/await/types';
 import { buildAnnouncedKey, defaultAnnounceScope, type AnnounceScopeKind } from '../../events/await/announce-key';
 import { getPresence } from '../coordination/presence';
 import { softText, clampText, LIMITS } from '../limits';
@@ -185,6 +187,13 @@ export default defineTool({
         logicalGateKey: args.logical_gate?.trim() || null,
         expiresSec: args.expiresSec ?? null,
         boundTo,
+      }).catch((error: unknown) => {
+        if (error instanceof LogicalGateConflictError) {
+          throw new InvalidInputError(
+            `events:emit — ${error.message}. Reuse the existing event key or choose a different logical_gate.`,
+          );
+        }
+        throw error;
       });
       // Best-effort "who is already armed on this key" — the leader's readiness read.
       let liveAwaiters: number | undefined;

@@ -230,29 +230,40 @@ export interface ReplayOracleProducerOptions {
   readonly witnessDirectory: string;
   readonly timeoutMs: number;
 }
-/** Child-side handoff: keep the actual compiler/freezer alive until the independent
- * parent has inspected kernel identity, argv, loaded bytes and mapped inodes. */
-export async function holdReplayOracleForQualification(config: DaemonReplayConfig, candidatePath: string): Promise<void> {
+async function awaitReplayOracleParent(request: {
+  kind: string; runId: string; candidatePath?: string; sha256?: string;
+}, releaseKind: string): Promise<void> {
   if (!process.send || !process.connected) throw new Error('replay-oracle-parent-channel-required');
-  const bytes = JSON.stringify(config, null, 2);
-  const sha256 = replayHash(bytes);
-  writeFileSync(candidatePath, bytes, { flag: 'wx' });
   await new Promise<void>((accept, reject) => {
     const cleanup = () => { process.off('message', release); process.off('disconnect', disconnected); };
     const disconnected = () => { cleanup(); reject(new Error('replay-oracle-parent-disconnected')); };
     const release = (message: unknown) => {
       const row = message as { kind?: string; runId?: string; sha256?: string } | null;
-      if (row?.kind !== 'replay-oracle-release' || row.runId !== config.runId || row.sha256 !== sha256) {
+      if (row?.kind !== releaseKind || row.runId !== request.runId || row.sha256 !== request.sha256) {
         cleanup(); reject(new Error('replay-oracle-invalid-parent-release')); return;
       }
       cleanup(); accept();
     };
     process.on('message', release);
     process.once('disconnect', disconnected);
-    process.send!({ kind: 'replay-oracle-frozen', runId: config.runId, candidatePath, sha256 }, error => {
+    process.send!(request, error => {
       if (error) { cleanup(); reject(error); }
     });
   });
+}
+/** Check the loaded startup/native closure before doing repository-sized compiler
+ * work. This is only a preflight; the completed compiler still qualifies below. */
+export async function preflightReplayOracleRuntime(runId: string): Promise<void> {
+  await awaitReplayOracleParent({ kind: 'replay-oracle-preflight', runId }, 'replay-oracle-preflight-release');
+}
+/** Child-side handoff: keep the actual compiler/freezer alive until the independent
+ * parent has inspected kernel identity, argv, loaded bytes and mapped inodes. */
+export async function holdReplayOracleForQualification(config: DaemonReplayConfig, candidatePath: string): Promise<void> {
+  const bytes = JSON.stringify(config, null, 2);
+  const sha256 = replayHash(bytes);
+  writeFileSync(candidatePath, bytes, { flag: 'wx' });
+  await awaitReplayOracleParent({ kind: 'replay-oracle-frozen', runId: config.runId, candidatePath, sha256 },
+    'replay-oracle-release');
   process.disconnect();
 }
 /** Parent-side producer. Nothing is published until a predeclared child closure
@@ -311,16 +322,41 @@ export async function freezeQualifiedReplayConfig(inputPath: string, outputPath:
     childProcess.stderr!.on('data', chunk => appendFileSync(join(directory, 'stderr.log'), chunk));
     const childClosed = closed = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(accept =>
       childProcess.once('close', (code, signal) => accept({ code, signal })));
-    progress('waiting-for-candidate');
+    progress('waiting-for-preflight');
     let failed: ((error: Error) => void) | undefined;
     const failure = new Promise<never>((_accept, reject) => { failed = reject;
       timer = setTimeout(() => reject(new Error('replay-oracle-producer-timeout')), options.timeoutMs); });
     childProcess.once('error', error => failed?.(error));
     const candidate = new Promise<{ sha256: string; config: DaemonReplayConfig }>((accept, reject) => {
+      let preflightQualified = false;
       childProcess.once('exit', (code, signal) => reject(new Error(`replay-oracle-child-exited:${code}:${signal}:${stderrCollector.peek()}`)));
-      childProcess.once('message', message => {
+      childProcess.on('message', message => {
         try {
           const row = message as { kind?: string; runId?: string; candidatePath?: string; sha256?: string };
+          if (!preflightQualified) {
+            if (row?.kind !== 'replay-oracle-preflight' || row.runId !== input.runId ||
+                !childProcess.pid || !childProcess.connected || childProcess.exitCode !== null || childProcess.signalCode !== null)
+              throw new Error('replay-oracle-preflight-required');
+            progress('qualifying-preflight');
+            const bootstrap = replayProcessIdentity(childProcess.pid, deps.processReader ?? replayProcessReader, witness);
+            const runtime = bootstrap.loadedModules;
+            const problems = [...bootstrap.unknown];
+            if (!bootstrap.executable || witness.files[bootstrap.executable.path] !== bootstrap.executable.sha256)
+              problems.push('unfrozen-oracle-executable');
+            if (runtime === 'unmeasured') problems.push('unmeasured-oracle-runtime');
+            else {
+              problems.push(...runtime.unknown);
+              if (runtime.receipts[0]?.entry !== launch.entry) problems.push('unmatched-oracle-freezer-entry');
+            }
+            writeFileSync(join(directory, 'preflight.json'), JSON.stringify({ process: bootstrap, problems }), { flag: 'wx' });
+            if (problems.length) throw new Error(`replay-oracle-preflight-refused:${[...new Set(problems)].join(';')}`);
+            preflightQualified = true;
+            progress('waiting-for-candidate');
+            childProcess.send({ kind: 'replay-oracle-preflight-release', runId: input.runId }, error => {
+              if (error) reject(error);
+            });
+            return;
+          }
           if (row?.kind !== 'replay-oracle-frozen' || row.runId !== input.runId || row.candidatePath !== candidatePath ||
               !childProcess.pid || !childProcess.connected || childProcess.exitCode !== null || childProcess.signalCode !== null)
             throw new Error('replay-oracle-invalid-child-handoff');

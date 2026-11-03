@@ -276,6 +276,50 @@ describe('shared adequacy-card binding evidence', () => {
     expect(result.ratings.traceability.evidence).toContain('"path":"src/tool.ts"');
   });
 
+  it('preserves dimensions when a measurement-pin path is used as both test and fixture', () => {
+    const sharedPath = 'src/shared.test.ts';
+    const row = evidence({
+      id: 38802,
+      evidenceKind: 'test',
+      evidenceRef: sharedPath,
+      testRunId: 38802,
+    });
+    row.details.measurementPin = {
+      schemaVersion: 1,
+      repos: [{ repo: '.', head: 'a'.repeat(40), gitlink: null }],
+      files: [
+        {
+          path: sharedPath,
+          dimension: 'test',
+          sha256: 'c'.repeat(64),
+          gitBlob: 'd'.repeat(40),
+          repo: '.',
+          headBlob: 'd'.repeat(40),
+          clean: true,
+        },
+        {
+          path: sharedPath,
+          dimension: 'fixture',
+          sha256: 'e'.repeat(64),
+          gitBlob: 'f'.repeat(40),
+          repo: '.',
+          headBlob: 'f'.repeat(40),
+          clean: true,
+        },
+      ],
+    };
+
+    const result = evaluateSpecTestAdequacy({
+      clause: clause(),
+      evidence: [row],
+      classRef: 'plan-class-feature-ship',
+    });
+    const traceability = result.ratings.traceability.evidence;
+
+    expect(traceability).toContain(`"path":"${sharedPath}","dimension":"test"`);
+    expect(traceability).toContain(`"path":"${sharedPath}","dimension":"fixture"`);
+  });
+
   it('renders one shared-binding entry per immutable binding id when projections differ', () => {
     const first = evidence({ id: 39099, evidenceRef: 'surface:shared-first' });
     const second = successfulTestBinding('shared-binding.integration.test.ts', {
@@ -2322,7 +2366,7 @@ describe('spec-test-adequacy per-clause evaluator', () => {
     const correctLayerEvidence = result.ratings['correct-layer'].evidence;
 
     expect(correctLayerEvidence).toContain(
-      'Probe plans:get-specs with args={"harness":"papercusp","slug":"reconnect-plan","specIds":["SPEC-003-01"]}; inspect specs[0].requiredTestLayers.',
+      'Probe plans:get-specs with args={"harness":"papercusp","slug":"reconnect-plan","specIds":["SPEC-003-01"]}; inspect specs[0].behaviorClass, specs[0].requiredTestLayers.',
     );
     expect(correctLayerEvidence).toContain('expected ["integration"]');
     expect(correctLayerEvidence).not.toContain('Probe plans:get-spec-evidence');
@@ -2395,6 +2439,32 @@ describe('spec-test-adequacy per-clause evaluator', () => {
     });
     expect(result.requiredProofFloor).toBe('none');
     expect(result.ratings['plan-class-risk-floor'].rating).toBe('not-applicable');
+  });
+
+  it('makes a non-automated risk-floor N/A basis reproducible from the clause declaration', () => {
+    const nonAutomated = clause({ behaviorClass: 'non-automated', requiredTestLayers: [] });
+    const result = evaluateSpecTestAdequacy({
+      clause: nonAutomated,
+      evidence: [],
+      classRef: 'plan-class-bugfix',
+    });
+
+    expect(result.requiredProofFloor).toBe('none');
+    const rating = result.ratings['plan-class-risk-floor'];
+    expect(rating.rating).toBe('not-applicable');
+    expect(rating.evidence).toContain('Probe plans:get-specs with args=');
+    expect(rating.evidence).toContain('specs[0].behaviorClass');
+    expect(rating.evidence).toContain('specs[0].requiredTestLayers');
+    expect(rating.evidence).not.toContain('plans:get-spec-evidence');
+
+    const negativeControl = clause({ behaviorClass: 'happy-path', requiredTestLayers: [] });
+    const controlResult = evaluateSpecTestAdequacy({
+      clause: negativeControl,
+      evidence: [],
+      classRef: 'plan-class-bugfix',
+    });
+    expect(controlResult.requiredProofFloor).toBe('l4');
+    expect(controlResult.ratings['plan-class-risk-floor'].rating).not.toBe('not-applicable');
   });
 
   it('accepts exact targeted mutation proof and only a justified current approved L4 waiver', () => {

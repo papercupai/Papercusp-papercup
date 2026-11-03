@@ -11,18 +11,22 @@
  *     through the real postgres-js driver (the double-encode bug a PG mock cannot catch).
  *
  * Follows the org-fixture mock pattern (test/_org-test-db.ts): runtime modules route
- * through `getOrgPg().sql`; we point that at the fixture's admin (RLS-bypass) client and
- * mock the workspace resolver.
+ * through the fixture's admin (read/assertion) and app (RLS-scoped write) clients and mock
+ * the workspace resolver.
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { vi } from 'vitest';
 import type { OrgTestDb } from '../test/_org-test-db';
 
-const h = vi.hoisted(() => ({ sql: null as unknown, ws: 'ws-rate-limit-test' }));
+const h = vi.hoisted(() => ({ sql: null as unknown, appSql: null as unknown, ws: 'ws-rate-limit-test' }));
 
 vi.mock('@papercusp/db-org', async (importOriginal) => {
   const actual = await importOriginal<Record<string, unknown>>();
-  return { ...actual, getOrgPg: () => ({ sql: h.sql }) };
+  return {
+    ...actual,
+    getOrgPg: () => ({ sql: h.sql }),
+    getOrgPgApp: () => ({ sql: h.appSql }),
+  };
 });
 vi.mock('./workspace-registry', () => ({ activeWorkspaceId: () => h.ws }));
 
@@ -46,6 +50,7 @@ describe('rate-limit layer (real PG)', () => {
   beforeAll(async () => {
     db = await createOrgTestDb();
     h.sql = db.adminSql;
+    h.appSql = db.appSql;
   }, 120_000);
 
   afterAll(async () => {
@@ -104,6 +109,115 @@ describe('rate-limit layer (real PG)', () => {
     expect(self).toBeDefined();
     expect(self!.usagePct).toBeNull(); // graceful fallback — never a fabricated percentage
   });
+
+  it('keeps a blocked usage sample off the shared admin pool', async () => {
+    const previousWorkspace = h.ws;
+    const ws = `${previousWorkspace}-contention`;
+    const harnessSlug = 'rate-limit-lock-test';
+    const seedRunId = `seed-${Date.now()}`;
+    const blockedRunId = `blocked-${Date.now()}`;
+    h.ws = ws;
+
+    let signalLocked!: () => void;
+    const locked = new Promise<void>((resolve) => { signalLocked = resolve; });
+    let releaseLock!: () => void;
+    const lockReleased = new Promise<void>((resolve) => { releaseLock = resolve; });
+    let holderPid = 0;
+    let holder: Promise<unknown> | undefined;
+    let sampleWrite: Promise<void> | undefined;
+    let unrelatedWrite: Promise<unknown> | undefined;
+
+    try {
+      await recordUsageSample({
+        bucketKey: 'anthropic:sonnet', provider: 'anthropic', modelClass: 'sonnet', source: 'jsonl',
+        costUsd: 0.01, harnessSlug, runId: seedRunId,
+      });
+      const totals = await db.adminSql`
+        SELECT workspace_id
+          FROM harness_shared.agent_usage_harness_spend_totals
+         WHERE workspace_id = ${ws} AND harness_slug = ${harnessSlug}
+      `;
+      expect(totals).toHaveLength(1);
+
+      holder = db.adminSql.begin(async (tx) => {
+        const [pid] = await tx`SELECT pg_backend_pid() AS pid`;
+        holderPid = Number(pid.pid);
+        await tx`
+          SELECT total_cost_usd
+            FROM harness_shared.agent_usage_harness_spend_totals
+           WHERE workspace_id = ${ws} AND harness_slug = ${harnessSlug}
+           FOR UPDATE
+        `;
+        signalLocked();
+        await lockReleased;
+      });
+      await locked;
+
+      sampleWrite = recordUsageSample({
+        bucketKey: 'anthropic:sonnet', provider: 'anthropic', modelClass: 'sonnet', source: 'jsonl',
+        costUsd: 0.02, harnessSlug, runId: blockedRunId,
+      });
+
+      let waiter: { wait_event_type: string | null; wait_event: string | null; blocking_pids: number[] } | undefined;
+      const waitDeadline = Date.now() + 1_200;
+      while (!waiter && Date.now() < waitDeadline) {
+        const rows = await db.adminSql<{ wait_event_type: string | null; wait_event: string | null; blocking_pids: number[] }[]>`
+          SELECT a.wait_event_type, a.wait_event, pg_blocking_pids(a.pid) AS blocking_pids
+            FROM pg_stat_activity a
+           WHERE a.datname = current_database()
+             AND a.pid <> pg_backend_pid()
+             AND a.state = 'active'
+             AND a.query ILIKE '%agent_usage_samples%'
+             AND ${holderPid} = ANY(pg_blocking_pids(a.pid))
+           LIMIT 1
+        `;
+        waiter = rows[0];
+        if (!waiter) await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      expect(waiter).toBeDefined();
+      expect(waiter!.wait_event_type).toBe('Lock');
+      expect(waiter!.wait_event).toBe('transactionid');
+      expect(waiter!.blocking_pids).toContain(holderPid);
+
+      unrelatedWrite = Promise.resolve(db.adminSql`
+        INSERT INTO harness_shared.operator_rate_limit_config (workspace_id, payload, updated_at)
+        VALUES (${`${ws}-admin-write`}, '{}'::jsonb, ${Date.now()})
+        ON CONFLICT (workspace_id) DO UPDATE SET updated_at = EXCLUDED.updated_at
+      `);
+      const adminWriteFinished = await new Promise<boolean>((resolve) => {
+        const timer = setTimeout(() => resolve(false), 1_000);
+        unrelatedWrite!.then(
+          () => { clearTimeout(timer); resolve(true); },
+          () => { clearTimeout(timer); resolve(false); },
+        );
+      });
+      expect(adminWriteFinished).toBe(true);
+
+      const sampleSettled = await new Promise<boolean>((resolve) => {
+        const timer = setTimeout(() => resolve(false), 5_000);
+        sampleWrite!.then(
+          () => { clearTimeout(timer); resolve(true); },
+          () => { clearTimeout(timer); resolve(false); },
+        );
+      });
+      expect(sampleSettled).toBe(true);
+      releaseLock();
+      await holder;
+
+      const persisted = await db.adminSql`
+        SELECT id
+          FROM harness_shared.agent_usage_samples
+         WHERE workspace_id = ${ws} AND run_id = ${blockedRunId}
+      `;
+      expect(persisted).toHaveLength(0);
+    } finally {
+      releaseLock();
+      await holder?.catch(() => {});
+      await sampleWrite?.catch(() => {});
+      await unrelatedWrite?.catch(() => {});
+      h.ws = previousWorkspace;
+    }
+  }, 15_000);
 
   // --- cross-backend-cost-capture P-006/verify: the Overview $spend rollup reflects ALL
   //     three CLIs, and codex (tokens-only) cost is estimated + labeled. -------------------

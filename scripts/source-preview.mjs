@@ -2488,11 +2488,18 @@ export async function runVerifierCommand({ repo, ref, receiptPath, inputs = [], 
   const sourceCommit = resolveCommit(sourceRepo, ref);
   const explicitGeneration = Boolean(env.PAPERCUSP_DEPENDENCY_GENERATION_ROOT);
   const donor = explicitGeneration ? sourceRepo : committedWorkRootDependencyDonor(sourceRepo);
-  if (explicitGeneration) {
-    const helper = join(sourceRepo, 'papercusp-desktop/bin/lib/pinned-deps.sh');
-    if (!existsSync(helper) || !/^\s*preflight-generation\s*\)/m.test(readFileSync(helper, 'utf8')))
+  const donorOnRootDevice = process.platform === 'linux' &&
+    (await fs.stat(donor)).dev === (await fs.stat('/')).dev;
+  const helper = join(sourceRepo, 'papercusp-desktop/bin/lib/pinned-deps.sh');
+  const helperSource = existsSync(helper) ? readFileSync(helper, 'utf8') : '';
+  const snapshotSelection = selectVerifierDependencySnapshot(donorOnRootDevice ? 'copy' : 'hardlink',
+    /^\s*snapshot-generation-locked\s*\)/m.test(helperSource), explicitGeneration);
+  // Automatic cross-device selection consumes the same immutable closure as an
+  // explicit generation. Refuse missing custody before allocating source, too.
+  if (snapshotSelection.command === 'snapshot-generation-locked') {
+    if (!/^\s*preflight-generation\s*\)/m.test(helperSource))
       throw new PreviewError('selected source does not support immutable verifier generations', 2);
-    const check = spawnSync('bash', [helper, 'preflight-generation', sourceRepo, sourceRepo],
+    const check = spawnSync('bash', [helper, 'preflight-generation', donor, sourceRepo],
       { env: verifierDependencyEnv(env), encoding: 'utf8', timeout: 120_000, maxBuffer: 1024 * 1024 });
     if (check.error || check.status !== 0)
       throw new PreviewError('verifier generation preflight failed: ' + (check.error?.message || check.stderr || check.status), 2);
@@ -2501,7 +2508,7 @@ export async function runVerifierCommand({ repo, ref, receiptPath, inputs = [], 
   // must use the admitted data scratch instead; pinned-deps already supports
   // independent cross-device copies and checks their headroom before copying.
   let scratch = join(donor, '.papercusp', 'scratch');
-  if (process.platform === 'linux' && (await fs.stat(donor)).dev === (await fs.stat('/')).dev) {
+  if (donorOnRootDevice) {
     const data = await fs.realpath('/mnt/data');
     const dataDevice = (await fs.stat(data)).dev;
     if (dataDevice === (await fs.stat('/')).dev)

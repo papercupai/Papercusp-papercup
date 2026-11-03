@@ -70,7 +70,7 @@ const { createOrgTestDb } = await import('../../../test/_org-test-db');
 const { activeWorkspaceId } = await import('../../workspace-registry');
 const { _resetHarnessAdminUrlCacheForTests } = await import('../../embedded-pg-discovery');
 const { recordRubricCheckResults, rubricCheckLedgerPath } = await import('../../check-results-ledger');
-const { SQL_PROBE_TOOL, continuityProbeRevision } = await import('../../continuity-probes');
+const { SQL_PROBE_TOOL, continuityProbeRevision, retainedProbeProcedure } = await import('../../continuity-probes');
 const { asStructuredObservation } = await import('../../harness/improvements/observation-types');
 const { retainMeasurementProvenance } = await import('../../measurement-provenance');
 const { readScorecardEvidence } = await import('../../scorecards');
@@ -215,8 +215,9 @@ beforeAll(async () => {
   );
   const queryCost = row('query-cost', 'probe', 62.38, 'ms', 'fail', '2026-10-13T01:30:00.000Z', { op: 'lte', value: 50 });
   queryCost.check.provenance = retainMeasurementProvenance({
-    procedure: { kind: 'sql', sql: QUERY_SQL, schemaRevision: continuityProbeRevision(SQL_PROBE_TOOL),
-      expect: { path: '$.rows[0].mean_ms', op: 'lte', value: 50 } },
+    procedure: retainedProbeProcedure({ kind: 'sql', sql: QUERY_SQL, maxRows: 50,
+      schemaRevision: continuityProbeRevision(SQL_PROBE_TOOL)!,
+      expect: { path: '$.rows[0].mean_ms', op: 'lte', value: 50 } }),
     result: { rows: [{ mean_ms: 62.38 }] },
     startedAt: '2026-10-13T01:29:59.000Z', finishedAt: '2026-10-13T01:30:00.000Z',
     transactionAt: '2026-10-13T01:29:59.100Z', needsTransactionClock: true,
@@ -357,6 +358,14 @@ describe('R-7 — scorecards:emit { fromLedger: true } rates executable criteria
     expect(historical.data).toMatchObject({ ok: true, replay: { mode: 'historical', status: 'reproduced',
       criterionKey: 'disk-latest', testRunId: ids.diskNewer, value: 42,
       window: { startedAt: '2026-10-13T01:30:00.000Z', finishedAt: '2026-10-13T01:30:00.000Z' } } });
+    const sqlHistorical = await getScorecard.handler({ issueId: issueId as string, criterionKey: 'query-cost', replay: 'retained-measurement' }, {
+      ...REPLAY_JUDGE, workspaceId, principal: { ...REPLAY_JUDGE.principal, workspaceId: workspaceId ?? activeWorkspaceId() },
+      log: vi.fn(), metadata: vi.fn(),
+    } as never);
+    if (!('data' in sqlHistorical)) throw new Error('Expected a structured SQL predicate replay response');
+    expect(sqlHistorical.data).toMatchObject({ ok: true, replay: { mode: 'historical', scope: 'probe-predicate',
+      status: 'reproduced', criterionKey: 'query-cost', testRunId: ids.queryCost, value: 62.38, verdict: 'fail',
+      transactionAt: '2026-10-13T01:29:59.100Z' } });
     const evidence = evidenceRead.scorecard.criteria.find((entry) => entry.key === 'query-cost')!.evidence;
     expect(evidence).toBe(ratings['query-cost']!.evidence);
     const retained = JSON.parse(evidence.split('; retained procedure ')[1]!.split('\n')[0]!);

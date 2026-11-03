@@ -116,7 +116,7 @@ describe('capability packets through the pinned secret-scanned packer', () => {
       const built = await buildCapabilityPacket({ ...f.input, unit }, deps);
       expect(built.status, JSON.stringify(built)).toBe('ready');
       if (built.status !== 'ready') throw new Error(built.reason);
-      expect(built.packet.graph?.status).toBe('measured');
+      expect(built.packet.graph?.status, JSON.stringify(built.packet.graph)).toBe('measured');
       packets.push(built.packet);
     }
     const manifest = { ...getPilotCapabilityManifest(), revision: f.input.manifestRevision, units: packets.map(p => p.unit) };

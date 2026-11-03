@@ -1016,6 +1016,32 @@ describe('scorecards:emit grading audit path (P-013)', () => {
     expect(recordGradingAudit).toHaveBeenCalledWith('EI-CARD', expect.objectContaining({ verdict: 'failed' }));
   });
 
+  it.each([true, false])('settles an author obligation after a passed audit only with current recorder authority=%s', async authorized => {
+    const target = { workspaceId: 'ws', harnessSlug: 'papercusp', planSlug: null, rubricId: 'ar-handoff-audit',
+      revision: 1, criteriaHash: 'rubric-hash-v1', barSetHash: 'bars-one', action: 'record-vetting' as const };
+    getRubric.mockImplementation(async (id: string) => id === target.rubricId
+      ? { ...mkRubric(id, 'acceptance'), barSetHash: target.barSetHash,
+        createdBy: authorized ? 'su-rubric-author' : 'su-replacement-author', proposedBy: 'su-replacement-author' }
+      : mkRubric(id, 'standard'));
+    getIssue.mockResolvedValue({ ...GRADED_CARD, createdBy: 'su-rubric-author', payload: {
+      authorHandoff: { id: 'WI-author-obligation', target, recorderId: 'su-rubric-author' },
+      observation: { ...GRADED_CARD.payload.observation,
+        subject: { kind: 'rubric', ref: target.rubricId },
+        vetting: { workItemId: 'WI-review', rubricRevision: 1, criteriaHash: target.criteriaHash, critics: ['su-critic'] },
+      },
+    } });
+    const advance = vi.fn(async (input: { authorize: () => Promise<boolean> }) => ({
+      ok: await input.authorize(), state: authorized ? 'completed' as const : 'blocked' as const,
+    }));
+    const res = await emitScorecard(auditArgs, { createdBy: 'su-auditor', ctxHarness: 'papercusp' }, {
+      advanceAuthorVettingHandoff: advance as never,
+      resolveAcceptanceSeatSuccession: async () => ({ eligible: false, reason: 'author_still_reachable', authorSessionState: 'live' }),
+    });
+    expect(res).toMatchObject({ ok: true, authorHandoff: { ok: authorized, state: authorized ? 'completed' : 'blocked' } });
+    expect(advance).toHaveBeenCalledWith(expect.objectContaining({ phase: 'settle', actorId: 'su-rubric-author',
+      verdictRef: 'EI-CARD', reason: 'independent-audit:EI-AUDIT-1' }));
+  });
+
   it.each([[true, false], [true, true], [false, false]])('an identical retry finishes only the existing audit settlement (success=%s, cleanupFails=%s)', async (success, cleanupFails) => {
     getIssue.mockResolvedValue(gradedCardWithReservation());
     recordGradingAudit.mockRejectedValueOnce(new Error('connection closed after audit insert'));

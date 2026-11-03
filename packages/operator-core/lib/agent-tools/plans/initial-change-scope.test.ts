@@ -26,4 +26,12 @@ describe('initial implementation scope', () => {
     unresolved.change = { ...change, unknowns: 'Inspect the recovery call sites before modifying this function' };
     expect(initialChangeScopeProblems({ content: content(), verificationProfile: 'code', anchors: { 'P-001': [unresolved] } })).toEqual([]);
   });
+  it('preserves intended change metadata when validating canonical anchors', async () => {
+    const anchors = await resolvePlanItemAnchors([{ path: 'future.ts', change: { ...change, action: 'create' } }],
+      { root: '/unavailable', snapshot: null });
+    const before = structuredClone(anchors);
+    expect(initialChangeScopeProblems({ content: content(), anchors: { 'P-001': anchors } })).toEqual([]);
+    expect(anchors).toEqual(before);
+    expect(anchors[0].change).toEqual({ ...change, action: 'create' });
+  });
 });

@@ -33,9 +33,9 @@
  *   outcome='no-recall'    it ran; nothing relevant         (healthy quiet)
  *   outcome='recalled'     it ran and returned context      (working)
  *
- * Only 'unknown-tool' is actionable, and before this it was invisible — which
- * is exactly how codex and omp stayed structurally zeroed on the mid-turn port
- * without anything reporting a fault (D-005 §1).
+ * 'unknown-tool' remains actionable vocabulary drift. Reason-tagged
+ * 'suppressed-*' rows distinguish fail-soft skips; duplicate and rate limits
+ * are expected controls, while policy/admission failures need their own context.
  *
  * ── FAIL-SILENT, LIKE EVERY OTHER TELEMETRY WRITE ON THIS PATH ──
  * This runs inside a hook-serving request whose whole contract is that it must
@@ -172,7 +172,27 @@ export type InjectionDeliveryOutcome =
   /** Reached the endpoint; a KNOWN tool carried no query signal. Expected. */
   | 'no-signal'
   /** Reached the endpoint; the tool is absent from the shared vocabulary. */
-  | 'unknown-tool';
+  | 'unknown-tool'
+  /** Malformed JSON was fail-soft rejected before caller fields were readable. */
+  | 'suppressed-invalid-json'
+  /** Ambient-context policy denied or could not resolve this session. */
+  | 'suppressed-ambient-policy'
+  /** The process-local query guard skipped an identical consecutive query. */
+  | 'suppressed-duplicate-query'
+  /** The process-local rolling ceiling skipped this query. */
+  | 'suppressed-rate-limit'
+  /** Applied identity recall bounds could not be read. */
+  | 'suppressed-identity-unreadable'
+  /** The shared admission resource was unavailable. */
+  | 'suppressed-admission-unavailable'
+  /** The shared admission resource had reached capacity. */
+  | 'suppressed-admission-capacity'
+  /** This worker already had an optional memory recall in flight. */
+  | 'suppressed-admission-local-in-flight'
+  /** An admission reason was not recognized by this caller. */
+  | 'suppressed-admission-other'
+  /** An unexpected handler error returned the contract's empty context block. */
+  | 'suppressed-handler-error';
 
 export interface InjectionDeliveryEvent {
   port: InjectionPort;
@@ -302,7 +322,7 @@ export interface PortInjectionCoverage {
   port: InjectionPort;
   /** Coverage events recorded for this port in the window. */
   events: number;
-  byOutcome: Record<InjectionDeliveryOutcome, number>;
+  byOutcome: Record<string, number>;
   /** Tool names behind `unknown-tool` on this port — the actionable drift. */
   driftTools: string[];
   /**
@@ -321,7 +341,7 @@ export interface ClientInjectionCoverage {
   sessions: number;
   /** Coverage events recorded in the window, ACROSS ALL PORTS. */
   events: number;
-  byOutcome: Record<InjectionDeliveryOutcome, number>;
+  byOutcome: Record<string, number>;
   /** Tool names behind `unknown-tool` — the actionable drift, named. */
   driftTools: string[];
   /**
@@ -361,7 +381,7 @@ export interface InjectionDeliveryCoverageReading {
   totalEvents: number;
 }
 
-const ZERO_OUTCOMES = (): Record<InjectionDeliveryOutcome, number> => ({
+const ZERO_OUTCOMES = (): Record<string, number> => ({
   recalled: 0, 'no-recall': 0, 'no-signal': 0, 'unknown-tool': 0,
 });
 
@@ -455,14 +475,14 @@ export function foldInjectionCoverage(input: {
         if (r.client !== client || r.port !== port) continue;
         const n = Number(r.n) || 0;
         events += n;
-        if (r.outcome in byOutcome) byOutcome[r.outcome as InjectionDeliveryOutcome] += n;
+        byOutcome[r.outcome] = (byOutcome[r.outcome] ?? 0) + n;
         if (r.outcome === 'unknown-tool' && r.tool) driftTools.push(r.tool);
       }
       // Roll the port up into the client totals, so the two views cannot drift
       // apart the way two independently-computed sums would.
       clientEvents += events;
-      for (const k of Object.keys(byOutcome) as InjectionDeliveryOutcome[]) {
-        clientOutcomes[k] += byOutcome[k];
+      for (const [outcome, count] of Object.entries(byOutcome)) {
+        clientOutcomes[outcome] = (clientOutcomes[outcome] ?? 0) + count;
       }
       clientDrift.push(...driftTools);
       return {

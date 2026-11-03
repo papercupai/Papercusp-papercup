@@ -154,9 +154,35 @@ export async function runAdmissionReviews(
          OR (payload #>> '{_admissionReviewReceipt,requestId}') IS DISTINCT FROM
            payload #>> '{_admissionReviewRequest,requestId}')
        AND (${options.targetItemIds === undefined} OR feature_id = ANY(${[...(options.targetItemIds ?? [])]}::text[]))
-     ORDER BY feature_id LIMIT 20`;
+     ORDER BY
+       CASE WHEN payload->>'_admissionReviewLastAttemptAtMs' ~ '^[0-9]{1,15}$'
+         THEN (payload->>'_admissionReviewLastAttemptAtMs')::numeric
+         ELSE NULL
+       END ASC NULLS FIRST,
+       feature_id
+     LIMIT 20`;
   const guardRefusals: AdmissionMergeGuardRefusal[] = [];
   for (const row of rows) {
+    // Record an attempt before authority checks so a repeatedly refused request
+    // cannot pin the fixed-size page. This scheduling marker is not part of the
+    // signed request and does not create or imply an admission-review receipt.
+    const attempted = await sql<{ feature_id: string }[]>`
+      UPDATE harness_shared.work_items SET payload = jsonb_set(
+        COALESCE(payload, '{}'::jsonb), '{_admissionReviewLastAttemptAtMs}',
+        to_jsonb((extract(epoch FROM clock_timestamp()) * 1000)::bigint), true)
+       WHERE workspace_id = ${options.workspaceId} AND harness_slug = ${options.harnessSlug}
+         AND feature_id = ${row.feature_id}
+         AND admission IN ('pending', 'unreviewed')
+         AND payload->'_admissionReviewRequest' = ${sql.typed(JSON.stringify(row.request), 25)}::jsonb
+         AND (jsonb_typeof(payload->'_admissionReviewRequest') IS DISTINCT FROM 'object'
+           OR payload #>> '{_admissionReviewRequest,requestId}' IS NULL
+           OR (payload #>> '{_admissionReviewReceipt,requestId}') IS DISTINCT FROM
+             payload #>> '{_admissionReviewRequest,requestId}')
+       RETURNING feature_id`;
+    // The request, receipt, or admission changed after selection. Never judge
+    // the stale snapshot; it will be reconsidered from the current queue state.
+    if (attempted.length !== 1) continue;
+
     const scope = { workspaceId: options.workspaceId, harnessSlug: options.harnessSlug, workItemId: row.feature_id };
     const refuse = (detail: string) => guardRefusals.push({
       itemId: scope.workItemId, canonicalId: null, reason: 'review-gated', detail,

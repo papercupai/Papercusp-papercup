@@ -5881,6 +5881,34 @@ describe('work_items:checkpoint — launched-but-unread run lint (EI-19455262557
     expect(result).not.toHaveProperty('unreadRunLint');
   });
 
+  it('does not flag a refused verifier preflight as a launched native run', async () => {
+    const body = [
+      'validateVerifierInputs refused the dirty mandatory scripts/run-operator-e2e-isolated.sh input.',
+      'No expensive native run launched after that refusal, with preflight logs already read at /tmp/bash-3c04c152-760.log and /tmp/bash-ca941d81-319.log.',
+    ].join('\n');
+    getWorkItem.mockResolvedValue({ id: 'WI-UNREAD-NEGATED-NATIVE-PREFLIGHT', harness: 'papercup' });
+    setWorkItemCheckpointWithPrior.mockResolvedValue({ stored: body, priorLength: 0 });
+    getWorkItemCheckpoint.mockResolvedValue(body);
+
+    const result = await one({ id: 'WI-UNREAD-NEGATED-NATIVE-PREFLIGHT', checkpoint: body });
+
+    expect(result.ok).toBe(true);
+    expect(result).not.toHaveProperty('unreadRunLint');
+  });
+
+  it('does not flag a negated native verification inventory as a launched run', async () => {
+    const body =
+      'No tests, typechecks, cargo, native runtime or install readers launched, with the terminal hash check identified by bash_id:hashcheck001 and its output already read.';
+    getWorkItem.mockResolvedValue({ id: 'WI-UNREAD-NEGATED-NATIVE-INVENTORY', harness: 'papercup' });
+    setWorkItemCheckpointWithPrior.mockResolvedValue({ stored: body, priorLength: 0 });
+    getWorkItemCheckpoint.mockResolvedValue(body);
+
+    const result = await one({ id: 'WI-UNREAD-NEGATED-NATIVE-INVENTORY', checkpoint: body });
+
+    expect(result.ok).toBe(true);
+    expect(result).not.toHaveProperty('unreadRunLint');
+  });
+
   it('ignores an unrelated in-flight compound even when the checkpoint also names a log', async () => {
     const body = [
       'Next: restore the in-flight store rebinding after refreshing the type definitions.',

@@ -595,13 +595,17 @@ function nativeSourcePopulationSql(sql: Sql, params: ConsultRouteParams) {
 /** Name the problem's primary tool/path, independently of generic decision words.
  * A crossencoder can recognise a paraphrase without an exact identifier mention. */
 export function expertiseSubject(question: string): string | null {
+  // Delivery instructions after the primary question can name unrelated tools,
+  // report paths or plans. Use the same question boundary as evidence scoring
+  // so those instructions cannot replace the expertise being requested.
+  const primary = subjectEvidenceQuery(question) ?? question;
   // Do not treat key:boolean/null options such as `acknowledgeExisting:true`
-  // as tool names when scanning the full question for a primary action.
-  const tool = question.match(/\b[a-z][a-z0-9_-]*:(?!true\b|false\b|null\b|undefined\b)[a-z][a-z0-9_-]*\b/i)?.[0];
-  const path = extractPathTokens(question, 1)[0] ?? null;
+  // as tool names when scanning the primary question for an action.
+  const tool = primary.match(/\b[a-z][a-z0-9_-]*:(?!true\b|false\b|null\b|undefined\b)[a-z][a-z0-9_-]*\b/i)?.[0];
+  const path = extractPathTokens(primary, 1)[0] ?? null;
   // Dated plan/campaign refs are exact historical subjects when the question
   // explicitly frames one as existing work. Bare date slugs remain ordinary prose.
-  const plan = question.match(/\b(?:existing|plan|campaign)\s+([a-z][a-z0-9-]*-\d{4}-\d{2}-\d{2})\b/i)?.[1] ?? null;
+  const plan = primary.match(/\b(?:existing|plan|campaign)\s+([a-z][a-z0-9-]*-\d{4}-\d{2}-\d{2})\b/i)?.[1] ?? null;
   return tool ?? path ?? plan;
 }
 
@@ -1073,7 +1077,7 @@ export async function routeConsult(params: ConsultRouteParams, deps: ConsultRout
     }
   };
   try {
-    const result = await routeConsultCore(params, { ...deps, measure });
+    const result = await routeConsultCore(params, { ...deps, measure }, receipt.correlationId);
     receipt.verdict = result.verdict;
     receipt.outcome = result.snapshot.degraded || Object.values(receipt.stages).some(s => s.outcome === 'threw')
       ? 'degraded' : 'returned';
@@ -1098,6 +1102,7 @@ export async function routeConsult(params: ConsultRouteParams, deps: ConsultRout
 async function routeConsultCore(
   params: ConsultRouteParams,
   deps: ConsultRouteDeps,
+  correlationId: string,
 ): Promise<RouteResult> {
   const measure: NonNullable<ConsultRouteDeps['measure']> = deps.measure ?? ((_stage, work) => work());
   // `now` stamps the snapshot. It is deliberately NOT read by any scoring path
@@ -1464,6 +1469,7 @@ async function routeConsultCore(
   //     non-code question resolves to nothing and runs no extra query (R-4).
   const codeSubjects = await resolveQuestionCodeSubjects(params.question, {
     resolveSymbol: deps.resolveCodeSymbols === undefined ? productionSymbolResolver() : deps.resolveCodeSymbols,
+    correlationId,
   });
   let familiarity: CodeFamiliarityMeasurement | null = null;
   if (hasCodeSubjects(codeSubjects)) {

@@ -1290,9 +1290,11 @@ function clauseDeclarationProbe(clause: SpecClauseRevision, harness?: string): s
     specIds: [clause.specId],
   });
   return (
-    `Probe plans:get-specs with args=${args}; inspect specs[0].requiredTestLayers. ` +
+    `Probe plans:get-specs with args=${args}; inspect specs[0].behaviorClass, ` +
+    `specs[0].requiredTestLayers. ` +
     `Also inspect specs[0].requiredEvidence. ` +
-    `This reads the canonical declared test-layer requirement for ${clauseIdentity(clause)} ` +
+    `This reads the canonical declared behavior class for ${clauseIdentity(clause)} ` +
+    `(expected ${JSON.stringify(clause.behaviorClass)}) and test-layer requirement ` +
     `(expected ${JSON.stringify(clause.requiredTestLayers)}) and evidence requirements ` +
     `(expected ${JSON.stringify(clause.requiredEvidence)}).`
   );
@@ -1368,9 +1370,10 @@ function bindingDescription(row: SpecEvidenceForAdequacy): string {
         repos: measurementPin.repos.map(({ repo, rootHarnessSlug, head, gitlink }) => ({
           repo, ...(rootHarnessSlug ? { rootHarnessSlug } : {}), head, gitlink,
         })),
-        files: measurementPin.files.map(({ path, repo, rootHarnessSlug }) => ({
+        files: measurementPin.files.map(({ path, repo, rootHarnessSlug, dimension }) => ({
           repositoryPath: repo,
           path: repo !== '.' && path.startsWith(`${repo}/`) ? path.slice(repo.length + 1) : path,
+          dimension,
           ...(rootHarnessSlug ? { rootHarnessSlug } : {}),
         })),
       })}`
@@ -2372,7 +2375,7 @@ function riskFloorRating(
       : `Clause ${clauseIdentity(clause)} is non-automated and declares no required test layer.`;
     return {
       floor,
-      rating: { rating: 'not-applicable', evidence: `${why} ${clauseProbe(clause, harness)}` },
+      rating: { rating: 'not-applicable', evidence: `${why} ${clauseDeclarationProbe(clause, harness)}` },
     };
   }
   const detailRows = evidence.map((row) => ({ row, details: detailsOf(row) }));

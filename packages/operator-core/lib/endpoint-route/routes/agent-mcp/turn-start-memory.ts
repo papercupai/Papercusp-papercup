@@ -86,6 +86,79 @@ export function turnStartRespondBy(arrivedAt: number, wallMs: unknown): number |
   return arrivedAt + wallMs - Math.min(RESPONSE_MARGIN_MS, Math.floor(wallMs / 4));
 }
 
+const TURN_START_LOOP_CHECKPOINT_WALL_MS = 900;
+const TURN_START_LOOP_CHECKPOINT_MAX_CHARS = 2_200;
+
+/** Re-read the active loop checkpoint when a queued loop-fire prompt actually starts. */
+async function buildTurnStartLoopCheckpointBlock(ownerId: string): Promise<string> {
+  const failed =
+    `⚠ TURN-START LOOP CHECKPOINT RE-CHECK FAILED for owner ${ownerId}. The queued wake snapshot has no ` +
+    `turn-start freshness proof; call loop:status before following its next action.`;
+  try {
+    const { withBoundedTimeout } = await import('../../../bounded-timeout');
+    const result = await withBoundedTimeout(
+      (async () => {
+        const { getLoopStatus } = await import('../../../harness/routines/loop');
+        const status = await getLoopStatus(ownerId);
+        if (!status?.active) {
+          return (
+            `⚠ STALE LOOP WAKE AT TURN START: loop:status found no active loop for owner ${ownerId}. ` +
+            `Do not continue from the queued checkpoint until the loop state is reconciled.`
+          );
+        }
+        const harness = status.harnessSlug?.trim();
+        if (!harness) return failed;
+
+        const { getLoopCarryNoteWithMeta, shortCarryHash } = await import('../../../carry-note');
+        const meta = await getLoopCarryNoteWithMeta({ ownerId, harness });
+        const readAtMs = Date.now();
+        const readAt = new Date(readAtMs).toISOString();
+        if (meta.readFailed) {
+          return (
+            `⚠ TURN-START LOOP CHECKPOINT RE-CHECK FAILED for owner ${ownerId}, harness ${harness} ` +
+            `(readAt=${readAt}); the queued wake snapshot may be stale. Call loop:status before acting.`
+          );
+        }
+        if (!meta.note) {
+          return (
+            `⚠ TURN-START LOOP CHECKPOINT was empty for active loop owner ${ownerId}, harness ${harness} ` +
+            `(readAt=${readAt}). This does not validate the queued snapshot; confirm loop:status before acting ` +
+            `or writing a replacement checkpoint.`
+          );
+        }
+
+        const { clipLoopCheckpointForWake } = await import('../../../harness/routines/loop-fire');
+        const clipped = clipLoopCheckpointForWake(meta.note, TURN_START_LOOP_CHECKPOINT_MAX_CHARS);
+        const contentHash = shortCarryHash(meta.note);
+        const writtenAtMs = meta.updatedAtMs;
+        if (typeof writtenAtMs !== 'number' || !Number.isFinite(writtenAtMs) || writtenAtMs <= 0 || writtenAtMs > readAtMs) {
+          return (
+            `⚠ UNPROVEN TURN-START LOOP CHECKPOINT for owner ${ownerId}, harness ${harness}: ` +
+            `readAt=${readAt}, contentHash=${contentHash}, but no valid committed write time was available. ` +
+            `Do not treat it or the queued snapshot as current until loop:status verifies it.\n\n${clipped}`
+          );
+        }
+        const writtenAt = new Date(writtenAtMs).toISOString();
+        return (
+          `🔄 TURN-START LOOP CHECKPOINT RE-CHECK (owner=${ownerId}, harness=${harness}, ` +
+          `readAt=${readAt}, writtenAt=${writtenAt}, contentHash=${contentHash}). This was re-read by the actual ` +
+          `UserPromptSubmit consumer as the queued loop-fire turn began. It supersedes any earlier wake-handoff ` +
+          `checkpoint snapshot, but only as of readAt; verify again after later progress or if the queued wake's ` +
+          `loop lineage differs.\n\n${clipped}`
+        );
+      })(),
+      {
+        fallback: null,
+        timeoutMs: TURN_START_LOOP_CHECKPOINT_WALL_MS,
+        label: 'turn-start:loop-checkpoint',
+      },
+    );
+    return result.value ?? `${failed} The bounded turn-start read did not finish in ${TURN_START_LOOP_CHECKPOINT_WALL_MS}ms.`;
+  } catch {
+    return failed;
+  }
+}
+
 /*
  * NO LENGTH FLOOR HERE — deliberately (context-injection-audit-2026-07-28 P-035
  * / F-E). A `MIN_PROMPT_CHARS = 40` gate used to skip recall for any prompt
@@ -311,6 +384,15 @@ const turnStartMemory = defineTool({
           }
         })();
       };
+
+      // A wake can be handed to the inbox or host queue long before the client
+      // consumes it. Re-read only loop-fire prompts here, at UserPromptSubmit,
+      // so the context includes a checkpoint from the actual turn-start boundary.
+      const loopCheckpointPromise: Promise<string> = markerOutcomePromise
+        ? markerOutcomePromise.then((outcome) =>
+            outcome.loopFire === true ? buildTurnStartLoopCheckpointBlock(owner) : '',
+          )
+        : Promise.resolve('');
 
       const controlPromise = (async (): Promise<ControlDelivery> => {
         try {
@@ -864,6 +946,7 @@ const turnStartMemory = defineTool({
         string | MissedDeadline,
         string | MissedDeadline,
         PackageSinkDelivery | MissedDeadline,
+        string | MissedDeadline,
       ];
       try {
         settled = await Promise.all([
@@ -872,6 +955,7 @@ const turnStartMemory = defineTool({
           byDeadline(memoryPromise),
           byDeadline(personalPromise),
           byDeadline(packagePromise),
+          byDeadline(loopCheckpointPromise),
         ]);
       } finally {
         clearTimeout(deadlineTimer);
@@ -890,6 +974,7 @@ const turnStartMemory = defineTool({
       const memory = ready('memory', settled[2], '');
       const personal = ready('personal', settled[3], '');
       const packages = ready<PackageSinkDelivery>('packages', settled[4], { classes: [], receipt: null });
+      const loopCheckpoint = ready('loop-checkpoint', settled[5], '');
       if (omitted.length > 0) {
         console.warn(
           `[turn-start] response deadline: omitted ${omitted.join(',')} ` +
@@ -952,7 +1037,7 @@ const turnStartMemory = defineTool({
       await markerOutcomePromise;
       return Response.json({
         ok: true,
-        text: [control.text, orientationBlock, memory, personal].filter(Boolean).join('\n\n'),
+        text: [control.text, loopCheckpoint, orientationBlock, memory, personal].filter(Boolean).join('\n\n'),
         ...(deliveryToken ? { deliveryToken } : {}),
         ...(turnStartRequestId ? {
           turnStartOutcome: {

@@ -216,14 +216,66 @@ export async function readWorkingSetSignals(query: WorkingSetQuery, sql: SqlLike
 
 export interface EpochRow { epoch: number; bumpedAt: Date | null }
 
-export async function readSessionEpoch(owner: string, sql: SqlLike = getOrgPg().sql as unknown as SqlLike): Promise<EpochRow> {
-  return sql.begin(async (tx: any) => {
-    await tx`SELECT set_config('statement_timeout', '75ms', true)`;
-    const rows: { epoch: number; bumped_at: Date | string | null }[] = await tx`
-      SELECT epoch, bumped_at FROM harness_shared.memory_session_epochs WHERE session_id = ${owner}`;
+export async function readSessionEpoch(owner: string, sql: SqlLike = getOrgPg().sql as unknown as SqlLike,
+  onTiming?: (phase: string, outcome: 'running' | 'completed' | 'error', elapsedMs?: number) => void): Promise<EpochRow> {
+  const timed = async <T>(phase: string, work: () => Promise<T>): Promise<T> => {
+    if (!onTiming) return work();
+    const started = Date.now();
+    onTiming(phase, 'running');
+    try {
+      const value = await work();
+      onTiming(phase, 'completed', Date.now() - started);
+      return value;
+    } catch (error) {
+      onTiming(phase, 'error', Date.now() - started);
+      throw error;
+    }
+  };
+  const read = async (tx: any): Promise<EpochRow> => {
+    await timed('setTimeout', () => tx`SELECT set_config('statement_timeout', '75ms', true)`);
+    const rows: { epoch: number; bumped_at: Date | string | null }[] = await timed('select', () => tx`
+      SELECT epoch, bumped_at FROM harness_shared.memory_session_epochs WHERE session_id = ${owner}`);
     const row = rows[0];
     return { epoch: Number(row?.epoch ?? 0), bumpedAt: row?.bumped_at ? new Date(row.bumped_at) : null };
-  });
+  };
+
+  // Keep the normal sql.begin path unchanged unless the caller requests detailed
+  // timings. Resume diagnostics use reserve + explicit BEGIN so pool acquisition
+  // and transaction start can be distinguished on the same readId.
+  if (onTiming && sql.reserve) {
+    const conn = await timed('poolAcquire', () => sql.reserve!());
+    const transactionStarted = Date.now();
+    let transactionOpen = false;
+    onTiming('transactionTotal', 'running');
+    try {
+      await timed('begin', () => conn`BEGIN`);
+      transactionOpen = true;
+      const result = await read(conn);
+      await timed('commit', () => conn`COMMIT`);
+      transactionOpen = false;
+      onTiming('transactionTotal', 'completed', Date.now() - transactionStarted);
+      return result;
+    } catch (error) {
+      onTiming('transactionTotal', 'error', Date.now() - transactionStarted);
+      if (transactionOpen) {
+        try {
+          await conn`ROLLBACK`;
+        } catch (rollbackError) {
+          throw new AggregateError([error, rollbackError], 'Session epoch read and rollback failed');
+        }
+      }
+      throw error;
+    } finally {
+      conn.release();
+    }
+  }
+
+  const beginStarted = Date.now();
+  if (onTiming) onTiming('beginCallbackEntry', 'running');
+  return timed('transactionTotal', () => sql.begin(async (tx: any) => {
+    if (onTiming) onTiming('beginCallbackEntry', 'completed', Date.now() - beginStarted);
+    return read(tx);
+  }));
 }
 
 /** The epoch to derive and its ledger window. `current` = the epoch the owner is

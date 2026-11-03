@@ -42,6 +42,8 @@ const readVettingConsultCritique = vi.fn();
 const readVettingWorkItemCritique = vi.fn();
 const sameAcceptanceAuthor = vi.fn();
 const lineageRelated = vi.fn();
+const reserveAuthorHandoff = vi.fn();
+const advanceAuthorHandoff = vi.fn();
 
 /** The critique verdict shape readVettingConsultCritique returns. */
 const critique = (over: Record<string, unknown> = {}) => ({
@@ -116,6 +118,11 @@ vi.mock('../../sync-sse', () => ({ notifySyncInvalidate: () => {} }));
 // Vetting tests own stamp/refusal behavior, not the post-write wake bridge. Keep a
 // created scorecard from reaching the real PG-backed await latch through stub sql.
 vi.mock('../../scorecard-emitted-events', () => ({ emitScorecardEmitted: async () => {} }));
+vi.mock('../../coord/condition-upsert', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../../coord/condition-upsert')>();
+  return { ...real, reserveAuthorVettingHandoff: (...args: unknown[]) => reserveAuthorHandoff(...args),
+    advanceAuthorVettingHandoff: (...args: unknown[]) => advanceAuthorHandoff(...args) };
+});
 
 import { emitScorecard } from './emit';
 import { scorecardEvidenceFingerprint } from '../../scorecards';
@@ -214,6 +221,73 @@ beforeEach(() => {
   });
   sameAcceptanceAuthor.mockReset().mockImplementation(async (author: unknown, candidate: unknown) => author === candidate);
   lineageRelated.mockReset().mockImplementation(async (author: unknown, candidate: unknown) => author === candidate);
+  reserveAuthorHandoff.mockReset().mockResolvedValue({ id: 'WI-author-obligation', state: 'queued', created: true });
+  advanceAuthorHandoff.mockReset().mockImplementation(async ({ phase, authorize }: {
+    phase: string; authorize: () => Promise<boolean>;
+  }) => ({ ok: phase !== 'blocked' && await authorize(), state: phase === 'pickup' ? 'picked-up' : phase === 'settle' ? 'completed' : 'blocked' }));
+});
+
+describe('author-only refusal handoff uses ordinary vetting policy', () => {
+  const exactSubject = () => {
+    const subject = { ...ACCEPTANCE_RUBRIC, revision: 7, criteriaHash: 'criteria-seven', barSetHash: 'bars-seven' };
+    readRubric.mockImplementation(async (id: string) => ({ kind: 'found',
+      rubric: id === subject.rubricId ? subject : META_RUBRIC }));
+    getRubricEvidenceIdentity.mockResolvedValue({ revision: 7, criteriaHash: 'criteria-seven', meaningRevision: null });
+    return subject;
+  };
+
+  it('attaches one exact-identity canonical obligation to an ordinary author-only refusal', async () => {
+    exactSubject();
+    const res = await emitScorecard(vettingArgs() as never, { ...EMIT_INPUT, createdBy: 'su-non-author' }, {
+      resolveAcceptanceSeatSuccession: async () => ({ eligible: false, reason: 'author_still_reachable', authorSessionState: 'live' }),
+    });
+    expect(res).toMatchObject({ ok: false, authorHandoff: { id: 'WI-author-obligation', state: 'queued' },
+      responsibleRole: 'rubric-author' });
+    expect(reserveAuthorHandoff).toHaveBeenCalledWith(expect.objectContaining({ rubricId: 'ar-some-plan',
+      revision: 7, criteriaHash: 'criteria-seven', barSetHash: 'bars-seven', action: 'record-vetting' }),
+    expect.objectContaining({ authorId: 'su-author', requestedBy: 'su-non-author' }));
+    expect(captureImprovement).not.toHaveBeenCalled();
+  });
+
+  it('records authorized pickup and leaves an unaudited verdict unresolved without replacing critique', async () => {
+    exactSubject();
+    captureImprovement.mockImplementation(async (opts: { beforeIssueCreate: () => Promise<void> }) => {
+      await opts.beforeIssueCreate();
+      return { created: true, issue: { id: 'EI-author-final' } };
+    });
+    const res = await emitScorecard(vettingArgs({ authorHandoffId: 'WI-author-obligation' }) as never, EMIT_INPUT);
+    expect(res).toMatchObject({ ok: true, issueId: 'EI-author-final', authorHandoff: { state: 'blocked' } });
+    expect(advanceAuthorHandoff.mock.calls.map(([arg]) => arg.phase)).toEqual(['pickup', 'blocked']);
+    expect(advanceAuthorHandoff.mock.calls[1][0]).toMatchObject({ verdictRef: 'EI-author-final', actorId: 'su-author',
+      reason: 'awaiting-independent-audit' });
+    expect(readVettingConsultCritique).toHaveBeenCalled();
+  });
+
+  it('refuses a changed author seat at the persistence boundary and leaves a blocked receipt', async () => {
+    exactSubject();
+    sameAcceptanceAuthor.mockResolvedValueOnce(true).mockResolvedValueOnce(true).mockResolvedValue(false);
+    let persisted = false;
+    captureImprovement.mockImplementation(async (opts: { beforeIssueCreate: () => Promise<void> }) => {
+      await opts.beforeIssueCreate();
+      persisted = true;
+      return { created: true, issue: { id: 'EI-must-not-exist' } };
+    });
+    const res = await emitScorecard(vettingArgs({ authorHandoffId: 'WI-author-obligation' }) as never, EMIT_INPUT, {
+      resolveAcceptanceSeatSuccession: async () => ({ eligible: false, reason: 'author_still_reachable', authorSessionState: 'live' }),
+    });
+    expect(res.ok).toBe(false);
+    expect(persisted).toBe(false);
+    expect(advanceAuthorHandoff.mock.calls.at(-1)?.[0]).toMatchObject({ phase: 'blocked' });
+  });
+
+  it('keeps preview read-only when it encounters an author-only refusal', async () => {
+    exactSubject();
+    await emitScorecard(vettingArgs() as never, { ...EMIT_INPUT, createdBy: 'su-non-author', previewOnly: true }, {
+      resolveAcceptanceSeatSuccession: async () => ({ eligible: false, reason: 'author_still_reachable', authorSessionState: 'live' }),
+    });
+    expect(reserveAuthorHandoff).not.toHaveBeenCalled();
+    expect(advanceAuthorHandoff).not.toHaveBeenCalled();
+  });
 });
 
 describe('scorecards:emit vetting stamp (P-004)', () => {

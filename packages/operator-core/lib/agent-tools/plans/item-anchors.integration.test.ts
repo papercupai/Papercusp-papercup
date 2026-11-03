@@ -17,6 +17,10 @@ import { deriveIndexFromContent } from './derive-index';
 import { hashPlanContent } from './content-hash';
 import { writePlanLineNodes, readPlanLineNodes } from './plan-line-graph';
 import { writePlanIndexRows } from './plan-index-rows';
+import { checkPlanStartable } from './plan-start-gate';
+import * as lifecycle from '../../acceptance-bar-lifecycle-evaluator';
+import * as admission from './plan-admission-gate';
+import { resolvePlanItemAnchors } from '../../plan-items/anchors';
 
 it('round-trips intended changes through add, unrelated plan rewrites and target updates', async () => {
   const change = { action: 'modify', summary: 'Persist recovery state', reason: 'Avoid lost work' };
@@ -52,7 +56,7 @@ const declarationDigest = createHash('sha256').update('export function linked() 
 const ctx = () => ({ signal: new AbortController().signal, role: 'su', workspaceId: WS,
   log: () => {}, progress: () => {}, metadata: () => {},
   principal: { kind: 'agent', slug: 'agent-anchor-test', workspaceId: WS } }) as never;
-function body() { return `---\ntitle: Anchor fixture\nslug: ${SLUG}\nstatus: active\ncreated: 2026-10-22\nupdated: 2026-10-22\n---\n# Anchor fixture\n\n## Now\n\n**State:** Fixture.\n\n**Next:** Check links.\n\n## Phase 1 — Work\n\n- **P-001** \`todo\` Existing item\n\n## Decisions\n`; }
+function body() { return `---\ntitle: Anchor fixture\nslug: ${SLUG}\nstatus: draft\ncreated: 2026-10-22\nupdated: 2026-10-22\n---\n# Anchor fixture\n\n## Now\n\n**State:** Fixture.\n\n**Next:** Check links.\n\n## Phase 1 — Work\n\n- **P-001** \`todo\` Existing item\n\n## Decisions\n`; }
 function data(result: unknown): any {
   const envelope = result as { data?: unknown; content?: { type: string; text?: string }[] };
   if (envelope.data !== undefined) return envelope.data;
@@ -124,6 +128,138 @@ afterAll(async () => {
 });
 
 describe('plan item anchors through the real plan tools', () => {
+  const change = { action: 'modify' as const, summary: 'Persist recovery state', reason: 'Prevent lost work' };
+  async function executable(status = 'active', suffix = '') {
+    const before = await readPlanLineNodes(fx.admin, { workspaceId: WS, harnessSlug: HARNESS, slug: SLUG });
+    // The writer's preimage is canonical nodes with durable featureId, never
+    // a parsed index or an empty array for an already materialized plan.
+    expect(before.map(item => item.id)).toEqual(['P-001']);
+    expect(before.every(item => Boolean(item.featureId))).toBe(true);
+    const content = body().replace('status: draft', `status: ${status}`).replace('Existing item', `Existing item${suffix}`);
+    const index = deriveIndexFromContent(content);
+    await fx.admin`UPDATE harness_shared.harness_plans SET content=${content}, content_hash=${hashPlanContent(content)},
+      status=${status}, verification_profile='coding', op_status=NULL
+      WHERE workspace_id=${WS} AND harness_slug=${HARNESS} AND plan_slug=${SLUG}`;
+    await fx.admin.begin(async tx => {
+      await writePlanLineNodes(tx as never, { workspaceId: WS, harnessSlug: HARNESS, slug: SLUG }, before, index.items);
+      await writePlanIndexRows(tx as never, { workspaceId: WS, harnessSlug: HARNESS, planSlug: SLUG }, index);
+    });
+  }
+  async function storeAnchors(inputs: Parameters<typeof resolvePlanItemAnchors>[0]) {
+    const anchors = await resolvePlanItemAnchors(inputs, { root: fixture.root, snapshot: fixture.snapshot, budgetMs: 5000 });
+    await fx.admin.begin(tx => anchorStore.writePlanItemAnchors(tx, {
+      workspaceId: WS, harnessSlug: HARNESS, planSlug: SLUG }, { itemId: 'P-001', anchors }, 'agent-anchor-test'));
+  }
+  async function snapshot() {
+    return {
+      plans: [...await fx.admin`SELECT content, content_hash, version, status, op_status FROM harness_shared.harness_plans
+        WHERE workspace_id=${WS} AND harness_slug=${HARNESS} AND plan_slug=${SLUG}`],
+      anchors: await anchorStore.readPlanItemAnchors({ workspaceId: WS, harnessSlug: HARNESS, planSlug: SLUG }),
+      items: [...await fx.admin`SELECT * FROM harness_shared.work_items WHERE workspace_id=${WS} AND harness_slug=${HARNESS} ORDER BY feature_id`],
+      lines: await readPlanLineNodes(fx.admin, { workspaceId: WS, harnessSlug: HARNESS, slug: SLUG }),
+    };
+  }
+  async function start() {
+    // Keep the production start gate, input decision and anchor persistence.
+    // These unrelated acceptance/governance decisions are outside this fixture.
+    const a = vi.spyOn(lifecycle, 'readAndEvaluateAcceptanceBarLifecycle').mockResolvedValue({ satisfied: true, codes: [] } as never);
+    const b = vi.spyOn(admission, 'checkPlanAdmission').mockResolvedValue({ admitted: true } as never);
+    try { return await checkPlanStartable(SLUG, { workspaceId: WS, harnessSlug: HARNESS }); }
+    finally { a.mockRestore(); b.mockRestore(); }
+  }
+  it('refuses absent initial scope at the real start boundary without mutation', async () => {
+    await executable('ready');
+    const before = await snapshot();
+    expect(await start()).toMatchObject({ ok: false, refusal: { code: 'initial_change_scope_missing' } });
+    expect(await snapshot()).toEqual(before);
+  });
+  it('refuses incomplete target action intended change or rationale at the real start boundary without mutation', async () => {
+    await executable('ready');
+    for (const field of ['target', 'action', 'summary', 'reason']) {
+      await storeAnchors([{ path: 'code.ts', change }]);
+      const value = field === 'target' ? { ...change } : { ...change, [field]: '' };
+      if (field === 'target') await fx.admin`UPDATE harness_shared.plan_item_anchors SET requested='', path=NULL, symbol_name=NULL
+        WHERE workspace_id=${WS} AND harness_slug=${HARNESS}`;
+      else await fx.admin`UPDATE harness_shared.plan_item_anchors SET change_intent=${JSON.stringify(value)}::text::jsonb
+        WHERE workspace_id=${WS} AND harness_slug=${HARNESS}`;
+      const before = await snapshot();
+      expect(await start(), field).toMatchObject({ ok: false, refusal: { code: 'initial_change_scope_missing' } });
+      expect(await snapshot(), field).toEqual(before);
+    }
+  });
+  it('accepts valid scope and non-code planned-create and investigation controls at the real start boundary', async () => {
+    await executable('ready');
+    for (const anchors of [[{ path: 'code.ts', change }],
+      [{ path: 'future.ts', change: { ...change, action: 'create' as const } }],
+      [{ symbol: 'unknown', change: { ...change, action: 'investigate' as const } }]]) {
+      await storeAnchors(anchors);
+      expect(await start()).toMatchObject({ ok: true });
+    }
+    await executable('ready', ' deliverable: doc');
+    await storeAnchors([]);
+    expect(await start()).toMatchObject({ ok: true });
+  });
+  it('refuses an active-plan coding item addition with absent or incomplete initial scope before mutation', async () => {
+    await executable();
+    for (const anchors of [undefined, [], [{ path: 'code.ts' }]]) {
+      const before = await snapshot();
+      const result = data(await add({ anchors }));
+      expect(result.results[0]).toMatchObject({ ok: false, error: 'initial_change_scope_missing' });
+      expect(await snapshot()).toEqual(before);
+    }
+    // Malformed supplied fields are rejected by the real public tool schema
+    // before its handler; missing optional metadata reaches the scope gate above.
+    for (const field of ['action', 'summary', 'reason']) {
+      const before = await snapshot();
+      expect(addTool.args.safeParse({ slug: SLUG, harness: HARNESS, phase: 'Phase 1 — Work', text: 'Added item',
+        anchors: [{ path: 'code.ts', change: { ...change, [field]: '' } }] }).success).toBe(false);
+      expect(await snapshot()).toEqual(before);
+    }
+  });
+  it('refuses an active-plan edit that removes or invalidates executable initial scope before mutation', async () => {
+    await executable();
+    await storeAnchors([{ path: 'code.ts', change }]);
+    for (const anchors of [[], [{ path: 'code.ts' }]]) {
+      const before = await snapshot();
+      expect(data(await editTool.handler({ slug: SLUG, harness: HARNESS, itemId: 'P-001', anchors } as never, ctx())))
+        .toMatchObject({ ok: false, code: 'initial_change_scope_missing' });
+      expect(await snapshot()).toEqual(before);
+    }
+    for (const field of ['action', 'summary', 'reason']) {
+      const before = await snapshot();
+      expect(editTool.args.safeParse({ slug: SLUG, harness: HARNESS, itemId: 'P-001',
+        anchors: [{ path: 'code.ts', change: { ...change, [field]: '' } }] }).success).toBe(false);
+      expect(await snapshot()).toEqual(before);
+    }
+  });
+  it('admits active-plan scoped additions and complete scope evolution with non-code controls', async () => {
+    await executable(); // P-001 deliberately retains unrelated legacy missing scope.
+    const beforeLegacy = (await snapshot()).lines.find(item => item.id === 'P-001');
+    for (const anchors of [[{ path: 'code.ts', change }],
+      [{ path: 'future.ts', change: { ...change, action: 'create' } }],
+      [{ symbol: 'unknown', change: { ...change, action: 'investigate' } }]]) {
+      const result = data(await add({ anchors })).results[0];
+      expect(result.ok, JSON.stringify(result)).toBe(true);
+      const edited = data(await editTool.handler({ slug: SLUG, harness: HARNESS, itemId: result.itemId,
+        anchors: [{ path: 'code.ts', change: { ...change, summary: 'Revised complete scope' } }] } as never, ctx()));
+      expect(edited.ok, JSON.stringify(edited)).toBe(true);
+    }
+    expect(data(await add({ deliverable: 'doc' })).results[0].ok).toBe(true);
+    expect((await snapshot()).lines.find(item => item.id === 'P-001')).toEqual(beforeLegacy);
+  });
+  it('preserves unrelated accepted anchors across concurrent plan rewrites', async () => {
+    await storeAnchors([{ path: 'code.ts', change }]);
+    const first = (await snapshot()).anchors['P-001'];
+    const results = await Promise.all([
+      add({ anchors: [{ path: 'future.ts', change: { ...change, action: 'create' } }] }),
+      add({ text: 'Independent item', anchors: [{ symbol: 'linked', change }] }),
+    ]);
+    const added = results.map(result => data(result).results[0]);
+    expect(added.every(result => result.ok), JSON.stringify(added)).toBe(true);
+    const after = (await snapshot()).anchors;
+    expect(after['P-001']).toEqual(first);
+    expect(added.map(result => after[result.itemId][0].change)).toEqual([{ ...change, action: 'create' }, change]);
+  });
   it('preserves legacy item IDs and dependencies through an anchor-only edit without graph rows', async () => {
     const legacy = body().replace('\n## Decisions\n', '\n- **P-002** `blocked` Dependent item blocked-by: P-001\n\n## Decisions\n');
     const index = deriveIndexFromContent(legacy);

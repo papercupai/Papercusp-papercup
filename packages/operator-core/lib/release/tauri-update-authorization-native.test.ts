@@ -6,6 +6,9 @@ import { join, resolve } from 'node:path';
 import { expect, it } from 'vitest';
 import { encodeTauriUpdateAuthorization, type TauriUpdateAuthorization } from '../../../../libs/generic/tauri-release-kit/src/signature.mjs';
 
+const archiveDependencies = ['tar="=0.4.46"', 'flate2="=1.1.9"',
+  'plist={version="=1.10.0",features=["enable_unstable_features_that_may_break_with_minor_version_bumps"]}'];
+
 // Compile the actual portable native consumer, avoiding a dependency on a running
 // desktop/WebKit. This maintained Vitest test owns the Cargo harness and fixtures.
 it('native consumer verifies real dual signatures, actual bytes, identities and current trust', () => {
@@ -135,6 +138,7 @@ it('native consumer verifies real dual signatures, actual bytes, identities and 
       'base64="=0.22.1"', 'minisign-verify="=0.2.5"', 'sha2="=0.10.9"',
       'serde={version="1",features=["derive"]}', 'serde_json="1"', 'libc="0.2"',
       'object={version="=0.37.3",default-features=false,features=["read","std"]}',
+      ...archiveDependencies,
     ].join('\n'));
     writeFileSync(join(root, 'driver.rs'), `
 #[path = ${JSON.stringify(source)}] mod update_authorization;
@@ -167,7 +171,7 @@ it('native consumer verifies real dual signatures, actual bytes, identities and 
 `);
     const result = spawnSync('cargo', ['test', '--offline', '--manifest-path', join(root, 'Cargo.toml'), '--', '--nocapture'],
       { encoding: 'utf8', timeout: 120_000, env: { ...process.env, CARGO_TARGET_DIR: join(root, 'target') } });
-    expect(result.status, String(result.error || result.stderr || result.stdout)).toBe(0);
+    expect(result.status, [result.error?.message, result.stderr, result.stdout].filter(Boolean).join('\n')).toBe(0);
     expect(result.stdout).toContain('0 failed; 0 ignored');
     if (process.platform !== 'win32') {
       expect(result.stdout).toContain('protected_policy_reloads_current_revocation_and_floors ... ok');
@@ -235,6 +239,7 @@ fn main(){ std::hint::black_box(&INPUTS); ${options.duplicate ? 'std::hint::blac
       'base64="=0.22.1"', 'minisign-verify="=0.2.5"', 'sha2="=0.10.9"',
       'serde={version="1",features=["derive"]}', 'serde_json="1"', 'libc="0.2"',
       'object={version="=0.37.3",default-features=false,features=["read","std"]}',
+      ...archiveDependencies,
     ].join('\n'));
     writeFileSync(join(root, 'driver.rs'), `
 #[path = ${JSON.stringify(source)}] mod update_authorization;
@@ -274,13 +279,287 @@ fn main(){ std::hint::black_box(&INPUTS); ${options.duplicate ? 'std::hint::blac
 `);
     const result = spawnSync('cargo', ['test', '--offline', '--manifest-path', join(root, 'Cargo.toml'), 'actual_compiled_image_and_negative_containers', '--', '--nocapture'],
       { encoding: 'utf8', timeout: 120_000, env: { ...process.env, CARGO_TARGET_DIR: join(root, 'target') } });
-    expect(result.status, String(result.error || result.stderr || result.stdout)).toBe(0);
+    expect(result.status, [result.error?.message, result.stderr, result.stdout].filter(Boolean).join('\n')).toBe(0);
     expect(result.stdout).toContain('native-extraction: actual compiled image and exact bytes');
     for (const [name] of variants) expect(result.stdout).toContain(`native-extraction-refused: ${JSON.stringify(name)}`);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
 }, 240_000);
+
+it('selects universal Mach-O and Mac archive inputs by installed executable identity with bounded paths', () => {
+  const root = mkdtempSync(join(tmpdir(), 'tauri-update-universal-'));
+  try {
+    const source = resolve(__dirname, '../../../../papercusp-desktop/src-tauri/src/update_authorization.rs');
+    writeFileSync(join(root, 'Cargo.toml'), [
+      '[package]', 'name="update-universal-native-regression"', 'version="0.0.0"', 'edition="2021"',
+      '[workspace]', '[lib]', 'path="driver.rs"', '[dependencies]',
+      'base64="=0.22.1"', 'minisign-verify="=0.2.5"', 'sha2="=0.10.9"',
+      'serde={version="1",features=["derive"]}', 'serde_json="1"', 'libc="0.2"',
+      'object={version="=0.37.3",default-features=false,features=["read","write","std"]}',
+      ...archiveDependencies,
+    ].join('\n'));
+    writeFileSync(join(root, 'driver.rs'), `
+#[path = ${JSON.stringify(source)}] mod update_authorization;
+#[cfg(test)] mod tests {
+    use super::update_authorization::{extract_binary_inputs, extract_macos_archive_inputs};
+    use object::{macho, Architecture, BinaryFormat, Endianness, SectionKind};
+    use object::write::Object;
+    use sha2::{Digest, Sha256};
+    fn thin(arch:Architecture, platform:&str, field:&str, value:serde_json::Value)->Vec<u8> {
+        let mut inputs=serde_json::json!({"schema":"tauri-update-inputs-v2",
+            "policy":"{\\"target\\":\\"local\\"}","configuration":"{}",
+            "sourceRevision":"d".repeat(40),"version":"1.2.3","product":"gui",
+            "platform":platform,"authorIds":["author","coauthor"]});
+        inputs[field]=value;
+        // Match the producer's canonical struct order, not a JSON map's order.
+        let ordered=format!("{{\\"schema\\":{},\\"policy\\":{},\\"configuration\\":{},\\"sourceRevision\\":{},\\"version\\":{},\\"product\\":{},\\"platform\\":{},\\"authorIds\\":{}}}",
+            inputs["schema"],inputs["policy"],inputs["configuration"],inputs["sourceRevision"],
+            inputs["version"],inputs["product"],inputs["platform"],inputs["authorIds"]);
+        let mut object=Object::new(BinaryFormat::MachO,arch,Endianness::Little);
+        let section=object.add_section(b"__DATA".to_vec(),b"__pcupd".to_vec(),SectionKind::ReadOnlyData);
+        object.append_section_data(section,ordered.as_bytes(),1);
+        let mut bytes=object.write().unwrap();
+        // The writer emits MH_OBJECT. This is a parser fixture marked
+        // MH_EXECUTE, never an executed or signed Mac product.
+        bytes[12..16].copy_from_slice(&macho::MH_EXECUTE.to_le_bytes());
+        bytes
+    }
+    fn image(arch:Architecture, platform:&str)->Vec<u8> { thin(arch,platform,"product","gui".into()) }
+    fn fat(slices:&[(u32,u32,Vec<u8>)],wide:bool)->Vec<u8> {
+        let width=if wide {32}else{20};
+        let mut out=vec![0u8;8+width*slices.len()];
+        out[..4].copy_from_slice(&(if wide {macho::FAT_MAGIC_64}else{macho::FAT_MAGIC}).to_be_bytes());
+        out[4..8].copy_from_slice(&(slices.len() as u32).to_be_bytes());
+        for (i,(cpu,subtype,bytes)) in slices.iter().enumerate() {
+            let offset=(out.len()+7)&!7;
+            out.resize(offset,0);
+            out.extend_from_slice(bytes);
+            let p=8+i*width;
+            out[p..p+4].copy_from_slice(&cpu.to_be_bytes());
+            out[p+4..p+8].copy_from_slice(&subtype.to_be_bytes());
+            if wide {
+                out[p+8..p+16].copy_from_slice(&(offset as u64).to_be_bytes());
+                out[p+16..p+24].copy_from_slice(&(bytes.len() as u64).to_be_bytes());
+                out[p+24..p+28].copy_from_slice(&3u32.to_be_bytes());
+            } else {
+                out[p+8..p+12].copy_from_slice(&(offset as u32).to_be_bytes());
+                out[p+12..p+16].copy_from_slice(&(bytes.len() as u32).to_be_bytes());
+                out[p+16..p+20].copy_from_slice(&3u32.to_be_bytes());
+            }
+        }
+        out
+    }
+    #[test] fn candidate_universal_target_and_all_slice_identity() {
+        let x=(macho::CPU_TYPE_X86_64,macho::CPU_SUBTYPE_X86_64_ALL,image(Architecture::X86_64,"darwin-x86_64"));
+        let a=(macho::CPU_TYPE_ARM64,macho::CPU_SUBTYPE_ARM64_ALL,image(Architecture::Aarch64,"darwin-aarch64"));
+        for wide in [false,true] {
+            let bytes=fat(&[x.clone(),a.clone()],wide);
+            for platform in ["darwin-x86_64","darwin-aarch64"] {
+                let inputs=extract_binary_inputs(&bytes,platform).unwrap();
+                let c=inputs.candidate(&bytes);
+                assert_eq!(c.platform,platform);
+                assert_eq!(c.author_ids,["author","coauthor"]);
+                assert_eq!(Sha256::digest(c.artifact),Sha256::digest(&bytes));
+            }
+            for platform in ["linux-x86_64","windows-x86_64","darwin-universal","unknown"] {
+                assert!(extract_binary_inputs(&bytes,platform).is_err());
+            }
+            let refuse=|parts:Vec<(u32,u32,Vec<u8>)>| {
+                assert!(extract_binary_inputs(&fat(&parts,wide),"darwin-x86_64").is_err());
+            };
+            refuse(vec![]);
+            refuse(vec![a.clone()]);
+            refuse(vec![x.clone(),x.clone()]);
+            refuse(vec![x.clone(),a.clone(),a.clone()]);
+            refuse(vec![x.clone(),(123,0,a.2.clone())]);
+            refuse(vec![x.clone(),(a.0,1,a.2.clone())]);
+            refuse(vec![x.clone(),(a.0,a.1,x.2.clone())]);
+            refuse(vec![x.clone(),(a.0,a.1,bytes.clone())]);
+            for (field,value) in [("sourceRevision","e".repeat(40).into()),("product","other".into()),
+                ("version","2.0.0".into()),("authorIds",serde_json::json!(["author"]))] {
+                refuse(vec![x.clone(),(a.0,a.1,thin(Architecture::Aarch64,"darwin-aarch64",field,value))]);
+            }
+            let different_policy=thin(Architecture::Aarch64,"darwin-aarch64","policy","{\\"target\\":\\"arm\\"}".into());
+            assert!(extract_binary_inputs(&fat(&[x.clone(),(a.0,a.1,different_policy)],wide),"darwin-x86_64").is_ok());
+            for (position,encoded) in if wide {
+                vec![(16,0u64.to_be_bytes().to_vec()),(16,u64::MAX.to_be_bytes().to_vec()),
+                    (24,u64::MAX.to_be_bytes().to_vec()),(32,64u32.to_be_bytes().to_vec()),
+                    (32,30u32.to_be_bytes().to_vec()),(48,bytes[16..24].to_vec())]
+            } else {
+                vec![(16,0u32.to_be_bytes().to_vec()),(16,u32::MAX.to_be_bytes().to_vec()),
+                    (20,u32::MAX.to_be_bytes().to_vec()),(24,64u32.to_be_bytes().to_vec()),
+                    (24,30u32.to_be_bytes().to_vec()),(36,bytes[16..20].to_vec())]
+            } {
+                let mut bad=bytes.clone(); bad[position..position+encoded.len()].copy_from_slice(&encoded);
+                assert!(extract_binary_inputs(&bad,"darwin-x86_64").is_err(),"invalid range at {}",position);
+            }
+            for n in [0,4,7,8,bytes.len()-1] {
+                assert!(extract_binary_inputs(&bytes[..n],"darwin-x86_64").is_err());
+            }
+        }
+        println!("native-universal: both table widths, both targets, full artifact and all-slice refusal");
+    }
+
+    fn bundle_info(executable:&str, identifier:&str, version:&str, binary:bool)->Vec<u8> {
+        let mut dict=plist::Dictionary::new();
+        dict.insert("CFBundleExecutable".into(),executable.into());
+        dict.insert("CFBundleIdentifier".into(),identifier.into());
+        dict.insert("CFBundleShortVersionString".into(),version.into());
+        dict.insert("UnrelatedAppSetting".into(),true.into());
+        let mut bytes=Vec::new();
+        if binary { plist::Value::Dictionary(dict).to_writer_binary(&mut bytes).unwrap(); }
+        else { plist::Value::Dictionary(dict).to_writer_xml(&mut bytes).unwrap(); }
+        bytes
+    }
+    fn gzip(bytes:&[u8])->Vec<u8> {
+        use std::io::Write;
+        let mut encoder=flate2::write::GzEncoder::new(Vec::new(),flate2::Compression::fast());
+        encoder.write_all(bytes).unwrap(); encoder.finish().unwrap()
+    }
+    // Raw headers permit deliberately hostile paths that tar::Builder's normal
+    // append_data rejects. Nothing from these parser fixtures is unpacked/run.
+    fn archive(entries:Vec<(&str,u8,u32,Vec<u8>,&str)>)->Vec<u8> {
+        let mut builder=tar::Builder::new(Vec::new());
+        for (path,kind,mode,bytes,link) in entries {
+            let mut h=tar::Header::new_gnu();
+            h.set_entry_type(tar::EntryType::new(kind)); h.set_mode(mode); h.set_size(bytes.len() as u64);
+            if !link.is_empty() { h.set_link_name(link).unwrap(); }
+            if path.len() <= 100 {
+                h.as_mut_bytes()[..100].fill(0);
+                h.as_mut_bytes()[..path.len()].copy_from_slice(path.as_bytes()); h.set_cksum();
+                builder.append(&h,bytes.as_slice()).unwrap();
+            } else { builder.append_data(&mut h,path,bytes.as_slice()).unwrap(); }
+        }
+        gzip(&builder.into_inner().unwrap())
+    }
+    fn bundle(main:Vec<u8>, info:Vec<u8>, mut extra:Vec<(&str,u8,u32,Vec<u8>,&str)>)->Vec<u8> {
+        let mut entries=vec![("GUI.app/Contents/MacOS/Main",b'0',0o755,main,""),
+            ("GUI.app/Contents/Info.plist",b'0',0o644,info,"")];
+        entries.append(&mut extra); archive(entries)
+    }
+    fn x86()->Vec<u8> { image(Architecture::X86_64,"darwin-x86_64") }
+    #[test] fn candidate_mac_bundle_main_and_archive_binding() {
+        let a=image(Architecture::Aarch64,"darwin-aarch64");
+        let universal=fat(&[(macho::CPU_TYPE_X86_64,macho::CPU_SUBTYPE_X86_64_ALL,x86()),
+            (macho::CPU_TYPE_ARM64,macho::CPU_SUBTYPE_ARM64_ALL,a)],false);
+        let long_path=format!("GUI.app/Contents/Resources/{}/asset.txt","r".repeat(120));
+        for binary_plist in [false,true] {
+            let bytes=bundle(universal.clone(),bundle_info("Main","gui","1.2.3",binary_plist),vec![
+                // A reviewed-looking decoy is never selected by marker scanning.
+                ("GUI.app/Contents/MacOS/Decoy",b'0',0o755,thin(Architecture::X86_64,"darwin-x86_64","product","decoy".into()),""),
+                (&long_path,b'0',0o644,b"long resource".to_vec(),""),
+                ("GUI.app/Contents/Frameworks/F/Versions/Current",b'2',0o777,vec![],"A"),
+                ("GUI.app/Contents/Frameworks/F/F",b'2',0o777,vec![],"Versions/Current/F")]);
+            for platform in ["darwin-x86_64","darwin-aarch64"] {
+                let inputs=extract_macos_archive_inputs(&bytes,platform).unwrap();
+                let c=inputs.candidate(&bytes);
+                assert_eq!(c.product,"gui"); assert_eq!(c.version,"1.2.3");
+                assert_eq!(c.platform,platform); assert_eq!(c.author_ids,["author","coauthor"]);
+                assert_eq!(Sha256::digest(c.artifact),Sha256::digest(&bytes));
+                assert_ne!(Sha256::digest(c.artifact),Sha256::digest(&universal));
+            }
+        }
+        // Executable before/after plist and omitted/explicit directories behave
+        // like updater's one-component stripping, not a search for an app name.
+        let bytes=archive(vec![("Other Name.app",b'5',0o755,vec![],""),
+            ("Other Name.app/Contents/Info.plist",b'0',0o644,bundle_info("Main","gui","1.2.3",false),""),
+            ("Other Name.app/Contents",b'5',0o755,vec![],""),
+            ("Other Name.app/Contents/MacOS/Main",b'0',0o755,x86(),"")]);
+        assert!(extract_macos_archive_inputs(&bytes,"darwin-x86_64").is_ok());
+        println!("native-mac-archive: XML/binary plist, GNU long path, thin/universal, full archive binding");
+    }
+    #[test] fn candidate_mac_bundle_refuses_identity_and_namespace_ambiguity() {
+        let good=bundle_info("Main","gui","1.2.3",false);
+        let xml=String::from_utf8(good.clone()).unwrap();
+        // These otherwise valid plists preserve every required identity field.
+        // Without the duplicate/depth/event guards each would be accepted.
+        let duplicate=xml.replace("</dict>","<key>CFBundleExecutable</key><string>Main</string></dict>").into_bytes();
+        let deep=xml.replace("</dict>",&format!("<key>Ignored</key>{}<string>x</string>{}</dict>",
+            "<array>".repeat(40),"</array>".repeat(40))).into_bytes();
+        let mut amplified=plist::Value::from_reader(std::io::Cursor::new(&good)).unwrap();
+        amplified.as_dictionary_mut().unwrap().insert("Ignored".into(),
+            plist::Value::Array(vec![plist::Value::Boolean(true);16_384]));
+        let mut many_events=Vec::new(); amplified.to_writer_binary(&mut many_events).unwrap();
+        assert!(many_events.len() <= 65_536);
+        let refuses=|bytes:Vec<u8>| assert!(extract_macos_archive_inputs(&bytes,"darwin-x86_64").is_err());
+        for info in [bundle_info("Missing","gui","1.2.3",false),bundle_info("Main","other","1.2.3",true),
+            bundle_info("Main","gui","2.0.0",false),bundle_info("../Main","gui","1.2.3",false),
+            bundle_info("/Main","gui","1.2.3",false),b"invalid plist".to_vec(),
+            duplicate, deep, many_events,
+            vec![b'x';65_537]] { refuses(bundle(x86(),info,vec![])); }
+        for path in ["Other.app/Contents/extra","GUI.app/Contents/MacOS/main","GUI.app/contents/resource",
+            "GUI.app/Contents/Info.plist","GUI.app/Contents/MacOS/Main/child","GUI.app/Contents/MacOS",
+            "GUI.app/../escape","/GUI.app/escape","GUI.app//escape","GUI.app/./escape",
+            "GUI.app/Contents/Resources/café","GUI.app/Contents/a:b","GUI.app/Contents/a\\\\b"] {
+            refuses(bundle(x86(),good.clone(),vec![(path,b'0',0o644,vec![],"")]));
+        }
+        for (path,kind,mode,link) in [("GUI.app/Contents/MacOS",b'2',0o777,"Other"),
+            ("GUI.app/Contents/Info.plist",b'2',0o777,"Other"),
+            ("GUI.app/Contents/link",b'2',0o777,"../../outside"),
+            ("GUI.app/Contents/link",b'2',0o777,"/outside"),
+            ("GUI.app/Contents/hard",b'1',0o644,"GUI.app/Contents/MacOS/Main"),
+            ("GUI.app/Contents/device",b'3',0o644,""),("GUI.app/Contents/fifo",b'6',0o644,""),
+            ("GUI.app/Contents/sparse",b'S',0o644,""),("GUI.app/Contents/pax",b'x',0o644,""),
+            ("GUI.app/Contents/global",b'g',0o644,""),("GUI.app/Contents/setuid",b'0',0o4755,"")] {
+            refuses(bundle(x86(),good.clone(),vec![(path,kind,mode,vec![],link)]));
+        }
+        for kind in [b'0',b'2'] {
+            refuses(archive(vec![("GUI.app/Contents/Info.plist",b'0',0o644,good.clone(),""),
+                ("GUI.app/Contents/MacOS/Main",kind,0o644,if kind==b'0' {x86()}else{vec![]},"Decoy")]));
+        }
+        refuses(archive(vec![("GUI.app/Contents/Info.plist",b'2',0o777,vec![],"Other.plist"),
+            ("GUI.app/Contents/Other.plist",b'0',0o644,good.clone(),""),
+            ("GUI.app/Contents/MacOS/Main",b'0',0o755,x86(),"")]));
+        // A symlink ancestor before its child also refuses (opposite tar order).
+        refuses(archive(vec![("GUI.app/Contents/MacOS",b'2',0o777,vec![],"Other"),
+            ("GUI.app/Contents/MacOS/Main",b'0',0o755,x86(),""),
+            ("GUI.app/Contents/Info.plist",b'0',0o644,good.clone(),"")]));
+        let empty_authors=thin(Architecture::X86_64,"darwin-x86_64","authorIds",serde_json::json!([]));
+        refuses(bundle(empty_authors,good.clone(),vec![]));
+        let bytes=bundle(x86(),good,vec![]);
+        for platform in ["linux-x86_64","windows-x86_64","darwin-universal"] {
+            assert!(extract_macos_archive_inputs(&bytes,platform).is_err());
+        }
+        println!("native-mac-refusal: plist identity, aliases, traversal, links, types and unattributed inputs");
+    }
+    #[test] fn candidate_mac_archive_bounds_and_gzip_integrity() {
+        use std::io::Read;
+        let good=bundle(x86(),bundle_info("Main","gui","1.2.3",false),vec![]);
+        let refuses=|bytes:Vec<u8>| assert!(extract_macos_archive_inputs(&bytes,"darwin-x86_64").is_err());
+        for n in [0,1,10,good.len()-1,good.len()-8] { refuses(good[..n].to_vec()); }
+        let mut bad=good.clone(); let n=bad.len(); bad[n-8]^=1; refuses(bad);
+        let mut appended=good.clone(); appended.extend(&good); refuses(appended);
+        let mut appended=good.clone(); appended.push(0); refuses(appended);
+        let mut raw=Vec::new(); flate2::read::GzDecoder::new(good.as_slice()).read_to_end(&mut raw).unwrap();
+        let mut h=tar::Header::new_gnu(); h.set_path("GUI.app/Contents/huge").unwrap();
+        h.set_mode(0o644); h.set_size(512*1024*1024+1); h.set_cksum();
+        raw[..512].copy_from_slice(h.as_bytes()); refuses(gzip(&raw));
+        let mut h=tar::Header::new_gnu(); h.set_path("././@LongLink").unwrap();
+        h.set_mode(0o644); h.set_entry_type(tar::EntryType::GNULongName); h.set_size(4097); h.set_cksum();
+        raw[..512].copy_from_slice(h.as_bytes()); refuses(gzip(&raw));
+        let mut builder=tar::Builder::new(Vec::new());
+        for i in 0..65_537 {
+            let mut h=tar::Header::new_gnu(); h.set_size(0); h.set_mode(0o644);
+            builder.append_data(&mut h,format!("GUI.app/Contents/Resources/{i}"),&[][..]).unwrap();
+        }
+        refuses(gzip(&builder.into_inner().unwrap()));
+        println!("native-mac-bounds: entry/metadata size, count, truncation, CRC and trailing members");
+    }
+}
+`);
+    const result = spawnSync('cargo', ['test', '--offline', '--manifest-path', join(root, 'Cargo.toml'), 'candidate_', '--', '--nocapture'],
+      { encoding: 'utf8', timeout: 120_000, env: { ...process.env, CARGO_TARGET_DIR: join(root, 'target') } });
+    expect(result.status, [result.error?.message, result.stderr, result.stdout].filter(Boolean).join('\n')).toBe(0);
+    expect(result.stdout).toContain('native-universal: both table widths, both targets, full artifact and all-slice refusal');
+    expect(result.stdout).toContain('native-mac-archive: XML/binary plist, GNU long path, thin/universal, full archive binding');
+    expect(result.stdout).toContain('native-mac-refusal: plist identity, aliases, traversal, links, types and unattributed inputs');
+    expect(result.stdout).toContain('native-mac-bounds: entry/metadata size, count, truncation, CRC and trailing members');
+    expect(result.stdout).toContain('native-mac-inflation: bound includes padding after tar end');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}, 180_000);
 
 it('producer binds effective Tauri overlays and actual generated ACL bytes in retained native sections', () => {
   const root = mkdtempSync(join(tmpdir(), 'tauri-update-producer-'));
@@ -309,6 +588,7 @@ it('producer binds effective Tauri overlays and actual generated ACL bytes in re
       'tauri-build="=2.6.3"', ...shared, '[dependencies]', ...shared,
       'base64="=0.22.1"', 'minisign-verify="=0.2.5"', 'sha2="=0.10.9"', 'libc="0.2"',
       'object={version="=0.37.3",default-features=false,features=["read","std"]}',
+      ...archiveDependencies,
     ].join('\n'));
     writeFileSync(join(root, 'build.rs'), `
 #[path=${JSON.stringify(producer)}] mod update_build_inputs;
@@ -423,7 +703,7 @@ include!(concat!(env!("OUT_DIR"),"/update-build-inputs.rs"));
           security: { csp: null }, windows: [{ label: 'main', title: 'runtime' }],
         } }), GIT_AUTHOR_NAME: 'not-an-authenticated-principal' },
     });
-    expect(result.status, String(result.error || result.stderr || result.stdout)).toBe(0);
+    expect(result.status, [result.error?.message, result.stderr, result.stdout].filter(Boolean).join('\n')).toBe(0);
     expect(result.stdout).toContain('producer-proof: real Tauri ACLs');
   } finally {
     rmSync(root, { recursive: true, force: true });

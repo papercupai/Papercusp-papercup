@@ -55,6 +55,10 @@ const {
   isLoopFirePromptMock,
   isLoopTurnStartCandidateMock,
   recordLoopTurnStartMock,
+  getLoopStatusMock,
+  getLoopCarryNoteWithMetaMock,
+  shortCarryHashMock,
+  clipLoopCheckpointForWakeMock,
 } = vi.hoisted(() => ({
   buildMemoryContextBlockMock: vi.fn(),
   preparePendingControlTransitionMock: vi.fn(),
@@ -79,6 +83,10 @@ const {
   isLoopFirePromptMock: vi.fn(),
   isLoopTurnStartCandidateMock: vi.fn(),
   recordLoopTurnStartMock: vi.fn(),
+  getLoopStatusMock: vi.fn(),
+  getLoopCarryNoteWithMetaMock: vi.fn(),
+  shortCarryHashMock: vi.fn(),
+  clipLoopCheckpointForWakeMock: vi.fn(),
 }));
 
 // Same relative specifiers the source's dynamic imports use (this test is
@@ -92,6 +100,12 @@ vi.mock('../../../harness/routines/loop-turn-start-stamp', () => ({
   isLoopTurnStartCandidate: isLoopTurnStartCandidateMock,
   recordLoopTurnStart: recordLoopTurnStartMock,
 }));
+vi.mock('../../../harness/routines/loop', () => ({ getLoopStatus: getLoopStatusMock }));
+vi.mock('../../../carry-note', () => ({
+  getLoopCarryNoteWithMeta: getLoopCarryNoteWithMetaMock,
+  shortCarryHash: shortCarryHashMock,
+}));
+vi.mock('../../../harness/routines/loop-fire', () => ({ clipLoopCheckpointForWake: clipLoopCheckpointForWakeMock }));
 vi.mock('../../../auth', () => ({ getSessionUserOrDefault: async () => ({ id: 'u-1' }) }));
 vi.mock('../../../agent-tools/coordination/control-anchor', () => ({
   preparePendingControlTransition: preparePendingControlTransitionMock,
@@ -248,6 +262,10 @@ beforeEach(() => {
   isLoopFirePromptMock.mockReset().mockReturnValue(false);
   isLoopTurnStartCandidateMock.mockReset().mockImplementation(() => isLoopFirePromptMock());
   recordLoopTurnStartMock.mockReset().mockResolvedValue(false);
+  getLoopStatusMock.mockReset().mockResolvedValue(null);
+  getLoopCarryNoteWithMetaMock.mockReset().mockResolvedValue({ note: null, updatedAtMs: null, readFailed: false });
+  shortCarryHashMock.mockReset().mockReturnValue('abcdef012345');
+  clipLoopCheckpointForWakeMock.mockReset().mockImplementation((note: string) => note);
 });
 afterEach(() => resetReadCursorStore());
 
@@ -557,6 +575,48 @@ describe('turn-start per-request outcome receipt', () => {
     expect(out.turnStartOutcome).toMatchObject({
       loopFire: false, loopMarkerAppend: 'not-applicable',
     });
+  });
+});
+
+describe('loop-fire turn-start checkpoint freshness', () => {
+  it('re-reads and supersedes the queued handoff snapshot at actual prompt start', async () => {
+    isLoopFirePromptMock.mockReturnValue(true);
+    isLoopTurnStartCandidateMock.mockReturnValue(true);
+    getLoopStatusMock.mockResolvedValue({ active: true, harnessSlug: 'papercusp' });
+    const currentCheckpoint = '## Did\nHandoff was queued before this update.\n\n## Next action\nContinue from the refreshed state.';
+    getLoopCarryNoteWithMetaMock.mockResolvedValue({
+      note: currentCheckpoint,
+      updatedAtMs: Date.parse('2026-11-03T05:00:00.000Z'),
+      readFailed: false,
+    });
+    shortCarryHashMock.mockReturnValue('0123456789ab');
+
+    const out = await post({
+      owner: 'su-loop-turn-start',
+      workspace: 'ws-test',
+      harness: 'papercusp',
+      prompt: 'queued loop-fire prompt with an older handoff snapshot',
+      wallMs: 5_000,
+    });
+
+    expect(getLoopStatusMock).toHaveBeenCalledWith('su-loop-turn-start');
+    expect(getLoopCarryNoteWithMetaMock).toHaveBeenCalledWith({
+      ownerId: 'su-loop-turn-start', harness: 'papercusp',
+    });
+    expect(out.text).toContain('TURN-START LOOP CHECKPOINT RE-CHECK');
+    expect(out.text).toContain('actual UserPromptSubmit consumer');
+    expect(out.text).toContain('supersedes any earlier wake-handoff checkpoint snapshot');
+    expect(out.text).toContain('writtenAt=2026-11-03T05:00:00.000Z');
+    expect(out.text).toContain('contentHash=0123456789ab');
+    expect(out.text).toContain('Continue from the refreshed state.');
+  });
+
+  it('does not read loop state for an ordinary prompt', async () => {
+    const out = await post({ owner: 'su-ordinary', prompt: 'a normal user request' });
+
+    expect(out.text).not.toContain('TURN-START LOOP CHECKPOINT');
+    expect(getLoopStatusMock).not.toHaveBeenCalled();
+    expect(getLoopCarryNoteWithMetaMock).not.toHaveBeenCalled();
   });
 });
 

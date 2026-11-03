@@ -210,7 +210,8 @@ export default defineTool({
           && !parsePlan(evaluated.newBody).items.some(item => item.id === args.itemId)) {
           return { newBody: null, value: { ok: false as const, code: 'anchor_item_not_found' as const, itemId: args.itemId! } };
         }
-        return evaluated;
+        return { ...evaluated, ...(anchors !== undefined
+          ? { anchorWrites: [{ itemId: args.itemId!, anchors }] } : {}) };
       },
     );
 

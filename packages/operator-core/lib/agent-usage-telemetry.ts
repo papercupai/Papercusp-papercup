@@ -14,7 +14,8 @@
  * fabricated number — the surface shows throughput + $spend there instead.
  */
 import { PRICE_TABLE_VERSION, USAGE_LEDGER_PRICING, costFromTokens } from '@papercusp/model-pricing';
-import { getOrgPg } from '@papercusp/db-org';
+import { getOrgPg, getOrgPgApp } from '@papercusp/db-org';
+import { boundedOrgTxn } from './pg-bounded-txn';
 import { activeWorkspaceId } from './workspace-registry';
 import { isModelRequestId } from './observability/tracing';
 
@@ -109,7 +110,7 @@ export async function recordUsageSample(sample: UsageSample): Promise<void> {
         !/^[a-f0-9]{64}$/.test(request.manifestSha256) || !text(request.assignmentId) ||
         !request.assignmentId.startsWith('bench-assignment:') || !['openai', 'anthropic'].includes(sample.provider) ||
         sample.costUsd !== undefined && (!Number.isFinite(sample.costUsd) || sample.costUsd < 0))) return;
-    const { sql } = getOrgPg();
+    const { sql: appSql } = getOrgPgApp();
     const ws = activeWorkspaceId();
     // Cost honesty (cross-backend-cost-capture D-005): provider-reported cost wins;
     // a tokens-only sample with a known model is priced at list price and LABELED
@@ -141,8 +142,10 @@ export async function recordUsageSample(sample: UsageSample): Promise<void> {
       providerResponseId: request.providerResponseId, manifestSha256: request.manifestSha256,
       assignmentId: request.assignmentId, providerResponseIdSource: 'authenticated-gateway-provider-response' }
       : costBound ? { costBound } : null;
-    await sql`
-      INSERT INTO ${sql(TABLE)}
+    await boundedOrgTxn(async (tx) => {
+      await tx`SELECT set_config('app.workspace_id', ${ws}, true)`;
+      await tx`
+      INSERT INTO ${tx(TABLE)}
         (workspace_id, ts, bucket_key, provider, model_class, source,
          input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd,
          model, cost_source, harness_slug, run_id, role,
@@ -156,9 +159,18 @@ export async function recordUsageSample(sample: UsageSample): Promise<void> {
         ${sample.sessionId ?? null},
         (SELECT harness_shared.goal_id_for_usage_session(${ws}, ${sample.sessionId ?? null})),
         ${sample.toolName ?? null}, ${sample.turnTrigger ?? null}, ${sample.accountId ?? null}, ${priceTableVersion},
-        ${usageProvenance ? sql.json(usageProvenance) : null}::jsonb
+        ${usageProvenance ? tx.json(usageProvenance) : null}::jsonb
       )
-    `;
+      `;
+    }, {
+      client: appSql,
+      acquirePool: 'org-app',
+      acquireTimeoutMs: 1_000,
+      acquireRetries: 0,
+      lockTimeoutMs: 1_500,
+      statementTimeoutMs: 2_500,
+      phase: 'agent-usage-telemetry:record-sample',
+    });
   } catch {
     /* telemetry is best-effort; never throw into the agent path */
   }

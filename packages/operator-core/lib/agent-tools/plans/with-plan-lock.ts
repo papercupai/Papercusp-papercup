@@ -33,6 +33,8 @@ import {
   type ActivationAuditEditNotice,
 } from '../../plan-audits';
 import { hashPlanContent } from './content-hash';
+import { initialChangeScopeProblems } from './initial-change-scope';
+import { readPlanItemAnchors, type PlanAnchorWrite } from '../../plan-items/anchor-store';
 import { preservePlanExecutionProgress } from './plan-execution-authority';
 import {
   declaredDeliverablesChanged,
@@ -470,7 +472,8 @@ export interface RefusedResult {
     | ReturnType<typeof invalidPlanDependenciesValue>
     | ReturnType<typeof childSeedTemplateRefusalValue>
     | ReturnType<typeof activationGateRefusalValue>
-    | VerificationLoweringRefusal;
+    | VerificationLoweringRefusal
+    | { ok: false; code: 'initial_change_scope_missing'; message: string; problems: string[] };
   filePath: string;
   version: number;
   scope: { workspaceId: string; harnessSlug: string };
@@ -512,6 +515,8 @@ export async function withPlanLock<T>(
     outputSchema?: OutputSchemaPatch;
     /** P-004: the plan's structured Now note (plans:set-now). Not a content write. */
     nowNote?: PlanNowNote;
+    /** Proposed anchor replacements, validated with the candidate body before writes. */
+    anchorWrites?: PlanAnchorWrite[];
   }>,
 ): Promise<WithPlanLockResult<T>> {
   if (typeof opts.slug !== 'string' || !VALID_PLAN_SLUG.test(opts.slug)) {
@@ -648,6 +653,28 @@ export async function withPlanLock<T>(
     if (newBody !== null) {
       const candidate = parsePlan(newBody, { filePath });
       const priorCandidate = cur ? parsePlan(cur.content, { filePath }) : null;
+      // Once execution is possible, a changed item must retain complete initial
+      // scope. Validate the candidate and its proposed anchors under this same
+      // transaction lock. Unchanged legacy items do not acquire new obligations.
+      if (candidate.frontmatter.status === 'active' || ['started', 'paused'].includes(cur?.op_status ?? '')) {
+        const prior = new Map(priorCandidate?.items.map(item => [item.id, item]));
+        const changed = new Set(candidate.items.filter(item => {
+          const before = prior.get(item.id);
+          return !before || before.text !== item.text || before.deliverable !== item.deliverable ||
+            before.storedStatus !== item.storedStatus;
+        }).map(item => item.id));
+        for (const write of mutation.anchorWrites ?? []) changed.add(write.itemId);
+        if (changed.size) {
+          const anchors = await readPlanItemAnchors({ workspaceId, harnessSlug, planSlug: slug }, tx as unknown as TransactionSql);
+          for (const write of mutation.anchorWrites ?? []) anchors[write.itemId] = write.anchors;
+          const problems = initialChangeScopeProblems({ content: newBody,
+            verificationProfile: cur?.verification_profile, anchors, itemIds: changed });
+          if (problems.length) return { kind: 'refused',
+            value: { ok: false, code: 'initial_change_scope_missing',
+              message: 'Executable coding changes require source targets, action, intended change and rationale.', problems },
+            filePath, version: curVersion, scope: { workspaceId, harnessSlug } } satisfies RefusedResult;
+        }
+      }
       if (nowNote === undefined) {
         contentNowNote = noteFromContentWrite({
           existing: cur ? parseNowNote(cur.now_note) : null,

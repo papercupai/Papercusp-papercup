@@ -1,0 +1,25 @@
+const installSlug = inputs.installSlug;
+const resource = inputs.resource;
+if (typeof installSlug !== 'string' || !installSlug.trim() || installSlug.length > 120 ||
+    typeof resource !== 'string' || resource !== 'git-sync:' + installSlug) {
+  throw new Error('Explicit installSlug and matching git-sync:<installSlug> resource are required');
+}
+const lockRead = await tools.locks.list({ resource });
+if (!Array.isArray(lockRead.resources) || !Array.isArray(lockRead.holders)) {
+  throw new Error('Structured named-resource lock evidence unavailable');
+}
+const registered = lockRead.resources.find(row => row.resource === resource);
+const holders = lockRead.holders.filter(holder => holder.resource === resource);
+return {
+  request: { installSlug, resource },
+  registered: Boolean(registered),
+  draining: lockRead.draining ?? null,
+  scopeComplete: lockRead.registryCount?.truncatedByLimit === false,
+  holderCount: holders.length,
+  holders: holders.slice(0, 20).map(holder => ({
+    owner: holder.owner,
+    mode: holder.mode,
+    status: holder.status,
+    expiresAt: holder.expires_ts ?? null,
+  })),
+};

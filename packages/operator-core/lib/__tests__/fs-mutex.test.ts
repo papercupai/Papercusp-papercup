@@ -838,7 +838,7 @@ describe('withFsMutex', () => {
       readFile: async (path: string, encoding: 'utf8') => {
         if (path === join(lockDir, 'owner.json')) {
           ownerReads += 1;
-          if (ownerReads === 1) await new Promise((resolve) => setTimeout(resolve, 35));
+          if (ownerReads === 1) await new Promise((resolve) => setTimeout(resolve, 1_050));
         }
         return readFile(path, encoding);
       },
@@ -846,7 +846,9 @@ describe('withFsMutex', () => {
     const startedAt = performance.now();
     try {
       await expect(withFsMutex('slow-reclaim', async () => 'must not acquire', {
-        timeoutMs: 5,
+        // Leave room for lock-root setup and FIFO ticket scanning before the
+        // injected slow writer-owner read starts; a 5ms budget can expire first.
+        timeoutMs: 1_000,
         retryMs: 1,
         io,
         onTimedOut: (info) => { timeoutInfo = info; },
@@ -856,13 +858,13 @@ describe('withFsMutex', () => {
       });
 
       expect(ownerReads).toBe(1);
-      expect(performance.now() - startedAt).toBeLessThan(200);
-      expect(timeoutInfo?.waitedMs).toBeGreaterThanOrEqual(30);
+      expect(performance.now() - startedAt).toBeLessThan(2_000);
+      expect(timeoutInfo?.waitedMs).toBeGreaterThanOrEqual(1_000);
       expect(timeoutInfo?.admissionSubphaseTimingsMs).toEqual(expect.objectContaining({
         'abandoned-lock-reclaim': expect.any(Number),
         'abandoned-lock.owner-read': expect.any(Number),
       }));
-      expect(timeoutInfo?.admissionSubphaseTimingsMs?.['abandoned-lock.owner-read']).toBeGreaterThanOrEqual(20);
+      expect(timeoutInfo?.admissionSubphaseTimingsMs?.['abandoned-lock.owner-read']).toBeGreaterThanOrEqual(900);
       expect((await lstat(lockDir)).isDirectory()).toBe(true);
     } finally {
       if (previousLockDir === undefined) delete process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR;

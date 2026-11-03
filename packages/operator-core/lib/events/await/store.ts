@@ -32,6 +32,7 @@ import { isPattern, keyMatchesPattern, payloadMatchesFilter, patternLiteralPrefi
 import {
   ACCEPTED_PSU_HOST_DELIVERY_PREFIXES,
   isAcceptedPsuHostDelivery,
+  LogicalGateConflictError,
   WAKE_TURN_CHANNELS,
 } from './types';
 import { turnProofColumnsReady } from './turn-proof-schema';
@@ -3730,9 +3731,7 @@ export async function registerAnnouncement(input: {
          LIMIT 1
       `;
       if (conflicts.length > 0) {
-        throw new Error(
-          `logical gate '${logicalGateKey}' is already announced on event key '${conflicts[0].event_key}'`,
-        );
+        throw new LogicalGateConflictError(logicalGateKey, conflicts[0].event_key);
       }
     }
     await tx`SELECT pg_advisory_xact_lock(hashtextextended(${'event-announce:' + input.eventKey}, 0))`;

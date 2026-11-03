@@ -459,7 +459,8 @@ async function addItemOne(it: NewItem, ctx: UnifiedToolContext): Promise<BulkIte
           { ...lockedScope, planSlug: it.slug }, { itemId: value.itemId, anchors }, resolveAgentIdentity(ctx).ownerId);
       },
     },
-    async (current, meta): Promise<{ newBody: string | null; value: AddItemValue }> => {
+    async (current, meta): Promise<{ newBody: string | null; value: AddItemValue;
+      anchorWrites?: import('../../plan-items/anchor-store').PlanAnchorWrite[] }> => {
       if (current === null) {
         return { newBody: null, value: { ok: false, code: 'not_found' } };
       }
@@ -500,6 +501,7 @@ async function addItemOne(it: NewItem, ctx: UnifiedToolContext): Promise<BulkIte
       return {
         newBody: final,
         value: { ok: true, itemId, createdPhase, slug: it.slug },
+        anchorWrites: [{ itemId, anchors: anchors ?? [] }],
       };
     },
   );

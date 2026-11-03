@@ -250,6 +250,30 @@ describe('recipe recommendation authority (P-008)', () => {
     });
   });
 
+  it('fails closed for rotating system git-sync process owners', async () => {
+    const fullOwnerId = 'system:git-sync:3534749:60afb6c3-6aab-4d66-a071-850064d2a0f3';
+    const shortRunOwnerId = 'system:git-sync:36733:fa04ed74';
+    const staleOwnerScript = 'await tools.locks.queue({ owner: ' + JSON.stringify(fullOwnerId) + ' });';
+
+    expect(findVolatileCoordinationOwnerId(staleOwnerScript)).toBe(fullOwnerId);
+    expect(findVolatileCoordinationOwnerId(
+      "const encoded = '%22system%3Agit-sync%3A36733%3Afa04ed74%22';",
+    )).toBe(shortRunOwnerId);
+    expect(findVolatileCoordinationOwnerId("const resource = 'git-sync:papercusp';")).toBeNull();
+    await expect(deriveRecipeAuthority(staleOwnerScript)).resolves.toMatchObject({
+      unresolved: true,
+      unresolvedCause: {
+        kind: 'volatile-coordination-owner-id',
+        ownerId: fullOwnerId,
+      },
+    });
+    await expect(buildRecipeAuthorityRecommendation({
+      script: staleOwnerScript,
+      updatedAt: '2026-08-22T00:00:00.000Z',
+      context: { harness: 'papercusp' },
+    })).resolves.toBeNull();
+  });
+
   it('fails closed when a coordination owner id is inside a URI-encoded condition key', async () => {
     const encodedConditionKeyScript = `
       const key = 'alarm:codex-rollout-provider:%5B%22papercusp-workspace%22%2C%2240336%22%2C%22su-e5f812b6-2f01-4cb8-8d23-3299e65fc494%22%5D';

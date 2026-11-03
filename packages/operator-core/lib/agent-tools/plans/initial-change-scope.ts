@@ -5,16 +5,21 @@ import { anchorChangeSchema, type PlanItemAnchor } from '../../plan-items/anchor
 
 export function initialChangeScopeProblems(input: {
   content: string; verificationProfile?: string | null; anchors: Record<string, PlanItemAnchor[]>;
+  itemIds?: ReadonlySet<string>;
 }): string[] {
   const plan = parsePlan(input.content);
   const problems: string[] = [];
   for (const item of plan.items) {
+    if (input.itemIds && !input.itemIds.has(item.id)) continue;
     if (item.storedStatus === 'done' || item.storedStatus === 'dropped') continue;
     if (!resolveVerification({ verificationProfile: input.verificationProfile, planType: plan.frontmatter.type },
       { deliverable: item.deliverable }).codeDeliverable) continue;
     const anchors = input.anchors[item.id] ?? [];
     if (!anchors.length) { problems.push(`${item.id}: declare initial source targets or an investigation target.`); continue; }
     for (const anchor of anchors) {
+      if (!anchor.requested?.trim() || !(anchor.path?.trim() || anchor.symbolName?.trim())) {
+        problems.push(`${item.id}: declare a source path or symbol target.`); continue;
+      }
       const change = anchorChangeSchema.safeParse(anchor.change);
       if (!change.success) { problems.push(`${item.id}: ${anchor.requested} needs an action, intended change and reason.`); continue; }
       if (anchor.resolution === 'unknown' && !['create', 'investigate'].includes(change.data.action) && !change.data.unknowns)

@@ -24,7 +24,10 @@ vi.mock('./with-plan-lock', async importOriginal => ({
     Promise<{ newBody: string | null; value: { ok: boolean } }>) => {
     const result = await mutate(fixture.body, { verificationProfile: fixture.profile });
     if (result.newBody !== null && result.value.ok) {
-      await options.inTransaction?.({} as never, result.newBody, scope, result.value);
+      // The resync binding queries linked work items in the same transaction.
+      // This unit fixture has no linked work items; real persistence is covered
+      // by item-anchors.integration.test.ts.
+      await options.inTransaction?.((async () => []) as never, result.newBody, scope, result.value);
       fixture.body = result.newBody;
     }
     return { kind: 'ok', value: result.value, filePath: 'plan://unit/' + options.slug, version: 2 };

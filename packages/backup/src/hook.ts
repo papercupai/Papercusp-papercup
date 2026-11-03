@@ -761,6 +761,16 @@ async function dumpPg(opts: {
     }) as ChildProcessByStdio<null, Readable, Readable>;
     const gz = spawn('gzip', gzipArgs(), { stdio: ['pipe', 'pipe', 'pipe'] });
     const out = createWriteStream(tmp);
+    // Child `close` stops the producers, but the file writer may still have
+    // buffered gzip bytes to flush. Keep the temp path unaccepted until the
+    // writer itself closes, so stat/rename/unlink cannot race a trailing write.
+    const outputClosed = new Promise<void>((resolve) => {
+      if (out.closed) resolve();
+      else out.once('close', () => resolve());
+    });
+    let outputFinished = false;
+    let outputError: string | undefined;
+    out.once('finish', () => { outputFinished = true; });
 
     dump.stdout.pipe(gz.stdin);
     gz.stdout.pipe(out);
@@ -833,13 +843,19 @@ async function dumpPg(opts: {
       // any late lock through WorkspaceBackup's finally path instead of
       // resolving while the acquisition is still in flight.
       if (guardReadyTask) await guardReadyTask.catch(() => {});
-      if (!out.destroyed) out.end();
+      if (!out.destroyed && !out.writableEnded) out.end();
+      await outputClosed;
+      if (!outputFinished && !outputError) {
+        outputError = 'output stream closed before finish';
+        stderr += `${outputError}\n`;
+      }
+      const outputOk = ok && outputFinished && !outputError;
       let result: PreSnapshotHookResult;
-      if (ok && guardSkipReason) {
+      if (outputOk && guardSkipReason) {
         await unlink(tmp).catch(() => {});
         await opts.log(`pg ${opts.host}:${opts.port} SKIP (${guardSkipReason})`);
         result = { ok: true, skipped: guardSkipReason };
-      } else if (ok) {
+      } else if (outputOk) {
         try {
           const s = await stat(tmp);
           if (s.size >= MIN_RESTORABLE_DUMP_BYTES) {
@@ -887,7 +903,8 @@ async function dumpPg(opts: {
     // stream 'error' crashes the operator just like an unhandled child
     // spawn error, so route it through finalize(false) too.
     out.on('error', (e) => {
-      stderr += `output stream failed: ${e.message}\n`;
+      outputError ??= `output stream failed: ${e.message}`;
+      stderr += `${outputError}\n`;
       killDumpTree();
       try { gz.kill('SIGKILL'); } catch { /* already gone */ }
       void finalize(false);

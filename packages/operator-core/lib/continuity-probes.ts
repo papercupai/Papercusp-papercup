@@ -9,6 +9,8 @@
  * registered `state:read` door.
  */
 import { Buffer } from 'node:buffer';
+import { createHash } from 'node:crypto';
+import { canonicalJson } from '@papercusp/hash-chain';
 import { z } from 'zod';
 import { listAllProjectedTools, projectedToolRegistryRevision, type ProjectedTool } from '@papercusp/agent-mcp';
 import { decode } from '@papercusp/result-encoding';
@@ -16,7 +18,7 @@ import { checkAgainstJsonSchema } from './json-schema-validation';
 import { classifyProjectionBody, parseProjection } from './result-projection';
 import { redactSensitiveText, redactSensitiveValue } from './sensitive-text';
 import { fitMeasurementProvenance, retainMeasurementProvenance } from './measurement-provenance';
-import type { RecordedMeasurementProvenance } from '@papercusp/test-config/execution-details';
+import { parseRecordedMeasurementProvenance, type RecordedMeasurementProvenance } from '@papercusp/test-config/execution-details';
 import { getCellUnchecked } from './cell-registry';
 import { withBoundedTimeout } from './bounded-timeout';
 import { mapWithConcurrency } from './gym/concurrency';
@@ -703,6 +705,80 @@ function observedScalar(value: unknown): unknown {
   return undefined;
 }
 
+/** Pin the local predicate evaluator separately from the original tool contract.
+ * Historical response evaluation never resolves or dispatches that tool again. */
+export function retainedProbeProcedure(probe: ContinuityProbe) {
+  return { ...continuityProbeShapeSchema.parse(probe), replayDependencySha256: createHash('sha256')
+    .update(canonicalJson({ version: 1, helpers: [predicatePath, valueAtPredicatePath,
+      evaluateContinuityPredicate, observedScalar].map(fn => fn.toString()) })).digest('hex') };
+}
+
+type ReplayScalar = number | string | boolean | null;
+export interface RetainedProbeReplay {
+  mode: 'historical';
+  scope: 'probe-predicate';
+  status: 'reproduced' | 'mismatch' | 'unavailable';
+  value: ReplayScalar;
+  recordedValue: ReplayScalar;
+  unit: string | null;
+  reason: string;
+  verdict?: 'pass' | 'fail';
+  transactionAt?: string;
+  window?: { startedAt: string; finishedAt: string };
+}
+
+/** Evaluate only the original retained scalar response against its typed predicate.
+ * This does not reconstruct SQL source rows or recompute the query that returned
+ * the scalar. Missing paths and object shapes cannot be inferred from flat leaves.
+ * A command descriptor is delegated to the registered command parser instead. */
+export function replayRetainedProbe(input: {
+  value: ReplayScalar; unit: string | null; provenance?: RecordedMeasurementProvenance;
+}): RetainedProbeReplay | null {
+  const base = { mode: 'historical' as const, scope: 'probe-predicate' as const,
+    value: null, recordedValue: input.value, unit: input.unit };
+  const unavailable = (reason: string): RetainedProbeReplay => ({ ...base, status: 'unavailable', reason });
+  let descriptor: Record<string, unknown>;
+  try { descriptor = JSON.parse(input.provenance?.procedure.snapshot ?? 'null'); }
+  catch { return unavailable('Original procedure is invalid.'); }
+  if (descriptor?.kind === 'command') return null;
+  const p = parseRecordedMeasurementProvenance(input.provenance);
+  if (!p || !descriptor || !['sql', 'tool', 'state-cell'].includes(String(descriptor.kind))) {
+    return unavailable('Original typed probe provenance is missing or invalid.');
+  }
+  if (p.truncated || p.redacted || p.gaps.length) return unavailable('Original inputs have retention gaps; exact predicate replay is unavailable.');
+  const { replayDependencySha256: _identity, ...probe } = descriptor;
+  const shape = continuityProbeShapeSchema.safeParse(probe);
+  if (!shape.success || shape.data.schemaRevision === LIVE_SCHEMA_REVISION) return unavailable('Original typed probe descriptor is invalid.');
+  const encoded = canonicalJson(retainedProbeProcedure(shape.data));
+  if (p.procedure.snapshot !== encoded || p.procedure.sha256 !== createHash('sha256').update(encoded).digest('hex')) {
+    return unavailable('Original descriptor or registered predicate evaluator identity differs.');
+  }
+  const started = Date.parse(p.startedAt), finished = Date.parse(p.finishedAt);
+  if (!Number.isFinite(started) || !Number.isFinite(finished) || finished < started ||
+      (shape.data.kind === 'sql' && (!p.transactionAt || !Number.isFinite(Date.parse(p.transactionAt))))) {
+    return unavailable('Original measurement window or SQL transaction clock is unavailable.');
+  }
+  const diagnostics = new Map(p.diagnostics.map(entry => [entry.path, entry.value]));
+  if (diagnostics.size !== p.diagnostics.length) return unavailable('Duplicate diagnostic paths make the original input ambiguous.');
+  if (['$["_partial"]', '$["partial"]', '$["truncated"]', '$["_projection"]["truncated"]']
+      .some(path => diagnostics.get(path) === true) || diagnostics.get('$["complete"]') === false) {
+    return unavailable('The original response was partial.');
+  }
+  const parts = predicatePath(shape.data.expect.path);
+  if (!parts) return unavailable('Original predicate path is invalid.');
+  const path = '$' + parts.map(part => `[${JSON.stringify(String(part))}]`).join('');
+  if (!diagnostics.has(path) || [...diagnostics.keys()].some(key => key.startsWith(path + '['))) {
+    return unavailable('The original scalar input is absent or has an ambiguous object shape; missing is not null.');
+  }
+  const value = diagnostics.get(path)!;
+  const verdict = evaluateContinuityPredicate({ ...shape.data.expect, path: '$' }, value);
+  return { ...base, value, status: Object.is(value, input.value) ? 'reproduced' : 'mismatch',
+    verdict: verdict.matches ? 'pass' : 'fail',
+    window: { startedAt: p.startedAt, finishedAt: p.finishedAt },
+    ...(p.transactionAt ? { transactionAt: p.transactionAt } : {}),
+    reason: 'Re-evaluated the original retained response scalar and predicate only; no query, tool or current measurement ran. Underlying SQL rows and query calculations are not reconstructed.' };
+}
+
 function continuityProbeTimeoutLabel(probe: ContinuityProbe, name: string): string {
   if (probe.kind !== 'state-cell') return 'continuity-probe:' + name;
   return 'continuity-probe:' + name + ':' + probe.cell + ':subject=' + (probe.as !== undefined);
@@ -868,7 +944,7 @@ async function runOne(
     executed: true,
     ...(observed !== undefined ? { observed } : {}),
     ...(ctx.retainMeasurement ? { provenance: retainMeasurementProvenance({
-      procedure: probe, result: decoded, startedAt, finishedAt,
+      procedure: retainedProbeProcedure(probe), result: decoded, startedAt, finishedAt,
       ...(transactionAt ? { transactionAt } : {}), needsTransactionClock: probe.kind === 'sql',
     }) } : {}),
   };

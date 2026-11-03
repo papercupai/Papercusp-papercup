@@ -1,12 +1,17 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createHash } from 'node:crypto';
+import { canonicalJson } from '@papercusp/hash-chain';
 import { z } from 'zod';
 import { encode } from '@papercusp/result-encoding';
 
 const catalog = vi.hoisted(() => [] as Array<Record<string, any>>);
 const cells = vi.hoisted(() => new Map<string, Record<string, any>>());
 
-vi.mock('@papercusp/agent-mcp', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('@papercusp/agent-mcp')>()),
+// The host facade imports rubric modules itself. Mocking it after importOriginal
+// lets those modules retain the real registry during that cycle. Mock the
+// generic registry before either consumer is initialized instead.
+vi.mock('@papercusp/tooldef', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/tooldef')>()),
   listAllProjectedTools: () => catalog,
   projectedToolRegistryRevision: (tools: Array<Record<string, any>>) =>
     // Keep the synthetic revision bounded independently of the tool name so the
@@ -31,6 +36,7 @@ import {
   decodeContinuityProbe,
   encodeContinuityProbe,
   runContinuityProbeBatch,
+  replayRetainedProbe,
   validateContinuityProbe,
   type ContinuityProbe,
   type ContinuityProbeSource,
@@ -262,6 +268,96 @@ describe('original rubric measurement execution', () => {
       provenance: { transactionAt: '2026-10-23T00:00:00.000Z' } });
     expect(batch.results[0]?.provenance?.procedure.snapshot).toContain('9007199254740993::bigint');
     expect(batch.results[0]?.provenance?.diagnostics.some(d => d.path.includes(clock))).toBe(false);
+  });
+});
+
+describe('historical retained probe predicate replay', () => {
+  const measuredAt = '2026-10-23T00:00:01.000Z';
+  async function capture(value: unknown, expectOverride: Record<string, unknown> = {}) {
+    const dispatch = vi.fn(async () => ({ data: { rows: [{ n: value,
+      __papercusp_measurement_transaction_at_v1: '2026-10-23T00:00:00Z' }], rowCount: 1 } }));
+    const probe = { kind: 'sql' as const, sql: 'SELECT n FROM historical_counters',
+      maxRows: 50,
+      schemaRevision: continuityProbeRevision('dev:pg_query')!,
+      expect: { path: '$.rows[0].n', op: 'eq' as const, value: value as number, ...expectOverride } };
+    if (probe.expect.op === ('exists' as string)) delete (probe.expect as { value?: unknown }).value;
+    const batch = await runContinuityProbeBatch([source(probe)], {
+      retainMeasurement: true, now: () => Date.parse(measuredAt), dispatchTool: dispatch,
+    });
+    const result = batch.results[0]!;
+    return { input: { value: (result.observed ?? null) as number | string | boolean | null,
+      unit: null, provenance: result.provenance }, dispatch };
+  }
+
+  it.each([62.38, '9007199254740993', false, null])('re-evaluates original SQL response scalar %s without running the query', async value => {
+    const { input, dispatch } = await capture(value);
+    // A historical predicate needs the original descriptor, not today's tool registry.
+    catalog.length = 0;
+    expect(replayRetainedProbe(input)).toMatchObject({ mode: 'historical', scope: 'probe-predicate',
+      status: 'reproduced', value, recordedValue: value, verdict: 'pass',
+      transactionAt: '2026-10-23T00:00:00.000Z', window: { startedAt: measuredAt, finishedAt: measuredAt } });
+    expect(dispatch).toHaveBeenCalledTimes(1);
+  });
+
+  it('reproduces a failing original predicate and distinguishes a changed ledger value', async () => {
+    const { input } = await capture(62.38, { op: 'lte', value: 50 });
+    expect(replayRetainedProbe(input)).toMatchObject({ status: 'reproduced', value: 62.38, verdict: 'fail' });
+    expect(replayRetainedProbe({ ...input, value: 40 })).toMatchObject({
+      status: 'mismatch', value: 62.38, recordedValue: 40, verdict: 'fail',
+    });
+  });
+
+  it('also replays retained tool and state-cell predicates through the same pure evaluator', async () => {
+    for (const probe of [readProbe(), { kind: 'state-cell' as const, cell: 'gate.test',
+      schemaRevision: continuityProbeRevision('state:read')!, expect: { path: '$.state', op: 'eq' as const, value: 'green' } }]) {
+      if (probe.kind === 'state-cell') cells.set('gate.test', { changeSignal: { kind: 'poll' } });
+      const dispatch = vi.fn(async () => ({ data: { state: 'green' } }));
+      const batch = await runContinuityProbeBatch([source(probe)], {
+        retainMeasurement: true, now: () => Date.parse(measuredAt), dispatchTool: dispatch,
+      });
+      expect(replayRetainedProbe({ value: 'green', unit: null, provenance: batch.results[0]!.provenance }))
+        .toMatchObject({ status: 'reproduced', value: 'green', verdict: 'pass' });
+      expect(dispatch).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  it('refuses missing or non-scalar original inputs instead of guessing object shape or null', async () => {
+    for (const value of [undefined, { count: 3 }, []]) {
+      const { input } = await capture(value, { op: 'exists', value: undefined });
+      expect(replayRetainedProbe(input)).toMatchObject({ status: 'unavailable', value: null });
+    }
+  });
+
+  it('refuses legacy or changed evaluator identity even when the descriptor is rehashed', async () => {
+    const { input } = await capture(7);
+    for (const identity of [undefined, '0'.repeat(64)]) {
+      const provenance = structuredClone(input.provenance!);
+      const descriptor = JSON.parse(provenance.procedure.snapshot);
+      if (identity === undefined) delete descriptor.replayDependencySha256;
+      else descriptor.replayDependencySha256 = identity;
+      provenance.procedure.snapshot = canonicalJson(descriptor);
+      provenance.procedure.sha256 = createHash('sha256').update(provenance.procedure.snapshot).digest('hex');
+      expect(replayRetainedProbe({ ...input, provenance })).toMatchObject({ status: 'unavailable' });
+    }
+  });
+
+  it('refuses digest, clock, retention and duplicate-path ambiguity', async () => {
+    const { input } = await capture(7);
+    const modifications = [
+      (p: NonNullable<typeof input.provenance>) => { p.procedure.sha256 = '0'.repeat(64); },
+      (p: NonNullable<typeof input.provenance>) => { delete p.transactionAt; },
+      (p: NonNullable<typeof input.provenance>) => { p.finishedAt = '2026-10-22T00:00:00Z'; },
+      (p: NonNullable<typeof input.provenance>) => { p.redacted = true; p.gaps = ['redacted']; },
+      (p: NonNullable<typeof input.provenance>) => { p.truncated = true; p.gaps = ['diagnostics-truncated']; },
+      (p: NonNullable<typeof input.provenance>) => { p.diagnostics.push({ ...p.diagnostics[0]! }); },
+      (p: NonNullable<typeof input.provenance>) => { p.diagnostics.push({ path: '$["_partial"]', value: true }); },
+      (p: NonNullable<typeof input.provenance>) => { p.diagnostics = p.diagnostics.filter(d => d.path !== '$["rows"]["0"]["n"]'); },
+    ];
+    for (const modify of modifications) {
+      const provenance = structuredClone(input.provenance!);
+      modify(provenance);
+      expect(replayRetainedProbe({ ...input, provenance })).toMatchObject({ status: 'unavailable', value: null });
+    }
   });
 });
 

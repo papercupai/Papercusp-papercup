@@ -55,6 +55,16 @@ export interface LifecycleBinding {
   ref: string;
 }
 
+/** A declaration tried to reuse an active logical-gate identity on another key. */
+export class LogicalGateConflictError extends Error {
+  readonly code = 'logical_gate_conflict' as const;
+  override readonly name = 'LogicalGateConflictError';
+
+  constructor(readonly logicalGateKey: string, readonly existingEventKey: string) {
+    super(`logical gate '${logicalGateKey}' is already announced on event key '${existingEventKey}'`);
+  }
+}
+
 /**
  * The fallback timeout-wake window: the default deadline for a one-shot wake
  * await when the caller names none (await-timeout-fallback-defaults-2026-07-03).

@@ -128,6 +128,8 @@ import { getPresence } from '../coordination/presence';
 import { buildAnnouncedKey, defaultAnnounceScope, announcementVisibleTo, normalizeEventKey } from '../../events/await/announce-key';
 import { emitAwaitedEvent } from '../../events/await/engine';
 import { registerAnnouncement, registerAwait, findAnnouncementsForKey, findNearMissKeys } from '../../events/await/store';
+import { LogicalGateConflictError } from '../../events/await/types';
+import { InvalidInputError } from '@papercusp/tooldef';
 // Namespace view of the SAME mocked module — the coverage guard at the bottom of
 // this file checks its key set against production's import list.
 import * as storeMock from '../../events/await/store';
@@ -235,6 +237,30 @@ describe('events:emit { announce: true }', () => {
       logicalGateKey: 'release-route',
     }));
     expect(out.logical_gate).toBe('release-route');
+  });
+  it('maps a duplicate logical-gate conflict to invalid_input and preserves other store errors', async () => {
+    const existingKey = 'global:existing-release-route';
+    vi.mocked(registerAnnouncement).mockRejectedValueOnce(
+      new LogicalGateConflictError('release-route', existingKey),
+    );
+
+    const conflict = await emitHandler({
+      event: 'new-release-route',
+      announce: true,
+      announceScope: 'global',
+      logical_gate: 'release-route',
+    }, {}).then(() => null, (error: unknown) => error);
+    expect(conflict).toBeInstanceOf(InvalidInputError);
+    expect((conflict as Error).message).toContain(existingKey);
+
+    const databaseError = new Error('database offline');
+    vi.mocked(registerAnnouncement).mockRejectedValueOnce(databaseError);
+    await expect(emitHandler({
+      event: 'another-release-route',
+      announce: true,
+      announceScope: 'global',
+      logical_gate: 'another-route',
+    }, {})).rejects.toBe(databaseError);
   });
   it('rejects a logical gate identity on a fire rather than a declaration', async () => {
     await expect(emitHandler({ event: 'deployed', logical_gate: 'release-route' }, {})).rejects.toThrow(/logical_gate.*announce:true/);

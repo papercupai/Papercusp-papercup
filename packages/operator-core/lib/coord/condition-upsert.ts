@@ -46,6 +46,7 @@ import { claimConditionKey, findConditionKeyHolder, releaseStaleConditionKeys } 
 import { linkWorkItemToCondition } from './condition-object';
 import { ANY_FAMILY_TERMINAL_STATES } from '../work-item-dispatch-states';
 import { neutralizeToolCallTags, sanitizePersistedText } from '../text-safety';
+import { coerceJson } from '../pg-jsonb';
 
 /** Lifecycle actor for the lost-race stand-down close (see CONDITION_BRIDGE_ACTOR
  *  for why an anonymous terminal transition is refused by the completion gate). */
@@ -60,6 +61,133 @@ export const CONDITION_UPSERT_MARKER = '_conditionUpsert';
 export async function withConditionReplayLock<T>(workspaceId: string, key: string, run: () => Promise<T>): Promise<T> {
   const identity = createHash('sha256').update(JSON.stringify([workspaceId, key])).digest('hex');
   return withFsMutex(`condition-replay-${identity}`, run, { timeoutMs: 45_000 });
+}
+
+/** Author handoffs reuse the condition/work-item store; receipts never grant vetting. */
+export interface AuthorVettingTarget {
+  workspaceId: string;
+  harnessSlug: string | null;
+  planSlug: string | null;
+  rubricId: string;
+  revision: number;
+  criteriaHash: string;
+  barSetHash: string;
+  action: 'record-vetting';
+}
+export type AuthorHandoffState = 'queued' | 'picked-up' | 'blocked' | 'completed' | 'superseded';
+export interface AuthorHandoffReceipt {
+  key: string;
+  target: AuthorVettingTarget;
+  authorId: string | null;
+  state: AuthorHandoffState;
+  receipts: Array<{ state: AuthorHandoffState; at: string; actorId: string; reason?: string; verdictRef?: string }>;
+  delivery?: unknown;
+}
+
+export function authorVettingTargetKey(target: AuthorVettingTarget): string {
+  if (!target.workspaceId.trim() || !target.rubricId.trim() || !Number.isInteger(target.revision) ||
+      target.revision < 1 || !target.criteriaHash.trim() || !target.barSetHash.trim() || target.action !== 'record-vetting') {
+    throw new Error('author handoff requires the complete current rubric identity and action');
+  }
+  return `acceptance-author:${createHash('sha256').update(JSON.stringify([
+    target.workspaceId, target.harnessSlug, target.planSlug, target.rubricId, target.revision,
+    target.criteriaHash, target.barSetHash, target.action,
+  ])).digest('hex')}`;
+}
+
+async function writeAuthorHandoff(id: string, receipt: AuthorHandoffReceipt) {
+  const sql = getOrgPg().sql;
+  const rows = await sql<{ feature_id: string }[]>`
+    UPDATE harness_shared.work_items
+       SET payload = jsonb_set(COALESCE(payload, '{}'::jsonb), '{authorHandoff}', ${JSON.stringify(receipt)}::text::jsonb),
+           updated_ts = (extract(epoch FROM clock_timestamp()) * 1000)::bigint
+     WHERE workspace_id = ${receipt.target.workspaceId} AND feature_id = ${id}
+       AND payload -> 'authorHandoff' ->> 'key' = ${receipt.key}
+     RETURNING feature_id`;
+  if (!rows.length) throw new Error('author handoff receipt disappeared before persistence');
+}
+
+/** Replays, including completed requests and process restarts, adopt the same row. */
+export async function reserveAuthorVettingHandoff(
+  target: AuthorVettingTarget,
+  input: { authorId: string | null; requestedBy: string; deliver?: (id: string) => Promise<unknown> },
+) {
+  const key = authorVettingTargetKey(target);
+  return withConditionReplayLock(target.workspaceId, key, async () => {
+    const sql = getOrgPg().sql;
+    const rows = await sql<{ feature_id: string; receipt: AuthorHandoffReceipt }[]>`
+      SELECT feature_id, payload -> 'authorHandoff' AS receipt FROM harness_shared.work_items
+       WHERE workspace_id = ${target.workspaceId} AND payload -> 'authorHandoff' ->> 'key' = ${key}
+       ORDER BY created_ts ASC LIMIT 1`;
+    const existing = coerceJson<AuthorHandoffReceipt>(rows[0]?.receipt);
+    if (rows[0] && existing) return { id: rows[0].feature_id, ...existing, created: false };
+    const receipt: AuthorHandoffReceipt = { key, target, authorId: input.authorId, state: 'blocked', receipts: [
+      { state: 'blocked', at: new Date().toISOString(), actorId: input.requestedBy,
+        reason: input.authorId ? 'delivery-not-yet-recorded' : 'author-of-record-unavailable' },
+    ] };
+    const reserved = await upsertConditionWorkItem(key, {
+      kind: 'task', workspaceId: target.workspaceId, harness: target.harnessSlug ?? undefined,
+      createdBy: input.requestedBy,
+      title: `Author vetting handoff — ${target.rubricId}@${target.revision}`,
+      summary: `Record an authorized vetting verdict for the exact identity ${JSON.stringify(target)}. ` +
+        'Delivery is not pickup. Preserve ordinary critique and author-seat policy; pass authorHandoffId on scorecards:emit.',
+      payload: { authorHandoff: receipt },
+    });
+    if (!reserved.id) throw new Error('author handoff reservation returned no work-item');
+    if (input.authorId && input.deliver) {
+      try {
+        receipt.delivery = await input.deliver(reserved.id);
+        receipt.state = 'queued';
+        receipt.receipts.push({ state: 'queued', at: new Date().toISOString(), actorId: input.requestedBy,
+          reason: 'delivery-recorded-pickup-unconfirmed' });
+      } catch (error) {
+        receipt.receipts.push({ state: 'blocked', at: new Date().toISOString(), actorId: input.requestedBy,
+          reason: `delivery-failed: ${String(error)}` });
+      }
+      await writeAuthorHandoff(reserved.id, receipt);
+    }
+    return { id: reserved.id, ...receipt, created: reserved.created };
+  });
+}
+
+/** Fresh policy reads are required at pickup and settlement; mismatched tuples never settle. */
+export async function advanceAuthorVettingHandoff(input: {
+  id: string; target: AuthorVettingTarget; actorId: string; phase: 'pickup' | 'settle' | 'blocked';
+  authorize: () => Promise<boolean>; verdictRef?: string; reason?: string;
+}) {
+  const key = authorVettingTargetKey(input.target);
+  return withConditionReplayLock(input.target.workspaceId, `author-handoff:${input.id}`, async () => {
+    const sql = getOrgPg().sql;
+    const rows = await sql<{ receipt: AuthorHandoffReceipt }[]>`
+      SELECT payload -> 'authorHandoff' AS receipt FROM harness_shared.work_items
+       WHERE workspace_id = ${input.target.workspaceId} AND feature_id = ${input.id}
+         AND payload -> 'authorHandoff' IS NOT NULL LIMIT 1`;
+    const receipt = coerceJson<AuthorHandoffReceipt>(rows[0]?.receipt);
+    if (!receipt) return { ok: false as const, state: 'blocked' as const, reason: 'handoff-not-found' };
+    if (receipt.state === 'completed' || receipt.state === 'superseded') {
+      return { ok: receipt.state === 'completed' && receipt.key === key && receipt.receipts.some(row =>
+        row.verdictRef === input.verdictRef && row.actorId === input.actorId), id: input.id, ...receipt };
+    }
+    let state: AuthorHandoffState;
+    let reason = input.reason;
+    if (receipt.key !== key) { state = 'superseded'; reason = 'rubric-identity-changed'; }
+    else if (input.phase === 'blocked' || !(await input.authorize())) {
+      state = 'blocked'; reason ??= 'current-authority-refused';
+    } else if (input.phase === 'settle' && (!input.verdictRef || (receipt.state !== 'picked-up' && !(
+      receipt.state === 'blocked' && receipt.receipts.at(-1)?.reason === 'awaiting-independent-audit' &&
+      receipt.receipts.some(row => row.state === 'picked-up' && row.actorId === input.actorId)
+    )))) {
+      state = 'blocked'; reason = 'authorized-pickup-and-final-verdict-required';
+    } else state = input.phase === 'pickup' ? 'picked-up' : 'completed';
+    receipt.state = state;
+    receipt.receipts.push({ state, at: new Date().toISOString(), actorId: input.actorId,
+      ...(reason ? { reason } : {}), ...(state === 'completed' ? { verdictRef: input.verdictRef } : {}) });
+    await writeAuthorHandoff(input.id, receipt);
+    if (state === 'completed') await setWorkItemState(input.id, 'done', {
+      harness: receipt.target.harnessSlug ?? undefined, by: input.actorId, completionRef: input.verdictRef,
+    });
+    return { ok: state === 'picked-up' || state === 'completed', id: input.id, ...receipt };
+  });
 }
 
 /**

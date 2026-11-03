@@ -40,7 +40,10 @@ vi.mock('@papercusp/db-org', async (orig) => {
 });
 // Exercise the actual routine action against this file's disposable PG; registering it
 // must not start the host's routine engine or announce fixtures to live agents.
-vi.mock('./harness/routines/system-actions', () => ({ registerSystemAction: vi.fn() }));
+vi.mock('./harness/routines/system-actions', async (orig) => ({
+  ...await orig<typeof import('./harness/routines/system-actions')>(),
+  registerSystemAction: vi.fn(),
+}));
 vi.mock('./work-items-events', () => ({ emitWorkItemClaimableEvent: vi.fn() }));
 vi.mock('./work-scope-policy', async (orig) => {
   const actual = await orig<typeof import('./work-scope-policy')>();

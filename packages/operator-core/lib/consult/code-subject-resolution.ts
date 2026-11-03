@@ -25,7 +25,10 @@ import { withBoundedTimeout } from '../bounded-timeout';
 import { extractPathTokens } from './relevance-router';
 
 /** identifier → defining files (repo-relative). A missing key = unresolved. */
-export type SymbolResolver = (identifiers: readonly string[]) => Promise<Map<string, string[]>>;
+export type SymbolResolver = (
+  identifiers: readonly string[],
+  context?: { correlationId?: string },
+) => Promise<Map<string, string[]>>;
 
 export interface CodeSubjects {
   /** Literal paths named in the question. */
@@ -55,6 +58,7 @@ function resolverObservationProcessTag(env: NodeJS.ProcessEnv): string {
 }
 
 const IDENTIFIER_SHAPE = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
+const CORRELATION_ID_SHAPE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 /** lowerCamel with at least one hump (routeConsult), or PascalCase with two (BlendWeights). */
 const CAMEL_TOKEN = /(?<![\w$.:/-])(?:[a-z_$][a-z0-9_$]*[A-Z][A-Za-z0-9_$]*|[A-Z][a-z0-9]+(?:[A-Z][a-z0-9]*)+)(?![\w$:/-])/g;
 /** `snake_case` or other identifiers count only when code-quoted. */
@@ -79,7 +83,7 @@ export function extractIdentifierTokens(question: string, cap = CODE_SUBJECT_MAX
 
 export async function resolveQuestionCodeSubjects(
   question: string,
-  deps: { resolveSymbol?: SymbolResolver | null },
+  deps: { resolveSymbol?: SymbolResolver | null; correlationId?: string },
 ): Promise<CodeSubjects> {
   const paths = extractPathTokens(question);
   const identifiers = extractIdentifierTokens(question);
@@ -87,7 +91,9 @@ export async function resolveQuestionCodeSubjects(
   let resolver: CodeSubjects['resolver'] = 'skipped';
   if (identifiers.length > 0 && deps.resolveSymbol) {
     try {
-      const byIdentifier = await deps.resolveSymbol(identifiers);
+      const byIdentifier = deps.correlationId
+        ? await deps.resolveSymbol(identifiers, { correlationId: deps.correlationId })
+        : await deps.resolveSymbol(identifiers);
       for (const identifier of identifiers) {
         const files = [...new Set(byIdentifier.get(identifier) ?? [])].slice(0, CODE_SUBJECT_MAX_FILES_PER_IDENTIFIER);
         if (files.length > 0) resolved[identifier] = files;
@@ -229,7 +235,7 @@ export function gitGrepSymbolResolver(opts: {
 }): SymbolResolver {
   const timeoutMs = opts.timeoutMs ?? CODE_SUBJECT_RESOLVER_TIMEOUT_MS;
   const cap = opts.maxFilesPerIdentifier ?? CODE_SUBJECT_MAX_FILES_PER_IDENTIFIER;
-  return async (identifiers) => {
+  return async (identifiers, context) => {
     const wanted = [...new Set(identifiers.filter((id) => IDENTIFIER_SHAPE.test(id)))];
     if (wanted.length === 0) return new Map();
     const deadline = performance.now() + timeoutMs;
@@ -278,6 +284,9 @@ export function gitGrepSymbolResolver(opts: {
       timeoutMs,
       fallback: null,
       label: 'consult-symbol-resolution',
+      ...(context?.correlationId && CORRELATION_ID_SHAPE.test(context.correlationId)
+        ? { correlationId: context.correlationId }
+        : {}),
       processTag: resolverObservationProcessTag(process.env),
       warn: false,
     });
