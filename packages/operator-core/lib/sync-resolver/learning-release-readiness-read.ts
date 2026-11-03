@@ -301,7 +301,7 @@ async function readRubricInfo(): Promise<ReleaseReadinessRubricInfo | null> {
       const why = scorecardAdmissionExclusion(s);
       if (why === 'provisional') excluded.provisional += 1;
       else if (why === 'grading-audit-pending') excluded.gradingAuditPending += 1;
-      else admissible.push(s);
+      else if (why === null) admissible.push(s);
     }
 
     let newest: (typeof page.rows)[number] | null = null;

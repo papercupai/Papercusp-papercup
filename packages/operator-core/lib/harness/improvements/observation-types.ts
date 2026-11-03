@@ -521,6 +521,9 @@ export interface StructuredObservation {
    * `ratings` must be present + each rating backed by evidence.
    */
   rubricRef?: string;
+  /** A diagnostic is immutable working evidence and never a gate verdict. */
+  purpose?: 'diagnostic' | 'grading';
+  barSetHash?: string | null;
   /** The graded rubric's plan-row revision at emit time; absent on historical cards. */
   rubricRevision?: number;
   /** Acceptance-BAR meaning epoch at emit time; absent on legacy or non-BAR cards. */
@@ -962,12 +965,14 @@ export interface ScorecardGradingAuditCurrentness {
  * buckets makes the exclusion figures sum past the number actually excluded — the
  * invisible-arithmetic failure those counts exist to prevent.
  */
-export type ScorecardAdmissionExclusion = 'provisional' | 'grading-audit-pending';
+export type ScorecardAdmissionExclusion = 'diagnostic' | 'provisional' | 'grading-audit-pending';
 
 export function scorecardAdmissionExclusion(row: {
+  purpose?: 'diagnostic' | 'grading';
   provisional?: ScorecardProvisional;
   gradingAudit?: ScorecardGradingAudit;
 }): ScorecardAdmissionExclusion | null {
+  if (row.purpose === 'diagnostic') return 'diagnostic';
   if (row.provisional) return 'provisional';
   if (row.gradingAudit?.state === 'pending') return 'grading-audit-pending';
   return null;
@@ -1382,6 +1387,8 @@ export function asStructuredObservation(v: unknown): StructuredObservation | und
   if (typeof o.sourceHive === 'string' && o.sourceHive.trim()) out.sourceHive = o.sourceHive;
   if (typeof o.targetHive === 'string' && o.targetHive.trim()) out.targetHive = o.targetHive;
   if (typeof o.rubricRef === 'string' && o.rubricRef.trim()) out.rubricRef = o.rubricRef;
+  if (o.purpose === 'diagnostic' || o.purpose === 'grading') out.purpose = o.purpose;
+  if (o.barSetHash === null || (typeof o.barSetHash === 'string' && o.barSetHash.trim())) out.barSetHash = o.barSetHash;
   if (o.ledgerFilled === true) out.ledgerFilled = true;
   if (typeof o.rubricRevision === 'number' && Number.isFinite(o.rubricRevision)) {
     out.rubricRevision = o.rubricRevision;

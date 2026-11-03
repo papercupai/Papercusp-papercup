@@ -88,7 +88,7 @@ import {
 } from '../../scorecards';
 import { revParseAsync } from '../../release/judged-sha-containment';
 import { scorecardEvaluateArgs, scorecardInstrumentSnapshotSchema, scorecardRatingEntrySchema,
-  pendingDeliveryReviewRefusal } from './evaluate';
+  pendingDeliveryReviewRefusal, evaluateScorecard } from './evaluate';
 import { scorecardRepairArgs } from './repair';
 import {
   CLIPPED_SCORECARD_TEXT_CODE,
@@ -716,6 +716,9 @@ const specTestAdequacyRerunRecipeSchema = z
 
 const scorecardEmitBaseShape = {
     rubricRef: z.string().min(1).max(120),
+    purpose: scorecardEvaluateArgs.shape.purpose,
+    barSetHash: z.string().regex(/^[a-f0-9]{64}$/).nullable().optional()
+      .describe('Reviewed BAR set digest. Diagnostics retain and re-check this exact identity.'),
     pendingDeliveryBarKeys: scorecardEvaluateArgs.shape.pendingDeliveryBarKeys,
     gradingLaunch: scorecardRepairArgs.shape.gradingLaunch.describe(
       'Audit launch pin: codex/gpt-6.1-sol/xhigh, account auto; same strict profile as repair. Author/authority unchanged.',
@@ -1864,10 +1867,64 @@ export async function emitScorecard(
   }
   if ((args.rubricRevision !== undefined && args.rubricRevision !== (rubric.revision ?? null)) ||
       (args.criteriaHash !== undefined && args.criteriaHash !== (rubric.criteriaHash ?? null)) ||
+      (args.barSetHash !== undefined && args.barSetHash !== (rubric.barSetHash ?? null)) ||
       (args.rubricMeaningRevision !== undefined &&
         args.rubricMeaningRevision !== (rubric.barContract?.meaningRevision ?? null))) {
     return { ok: false as const, code: 'scorecard_rubric_identity_mismatch',
       error: 'The reviewed rubric revision, criterion fingerprint, or meaning epoch changed; re-review before filing.' };
+  }
+  if (args.purpose === 'diagnostic') {
+    // A diagnostic is a separate purpose in the SAME observation ledger. It never
+    // enters the grading/audit/cascade/author-verdict side effects below.
+    const forbidden = ['acceptance', 'acceptanceOf', 'vetting', 'terminal', 'supersedes',
+      'baselineRef', 'fromLedger', 'fromEvaluator', 'pendingDeliveryBarKeys', 'rerunRecipe',
+      'instrumentSnapshots', 'testedSha'].filter(key => (args as Record<string, unknown>)[key] !== undefined);
+    if (forbidden.length) return { ok: false as const, code: 'diagnostic_operation_invalid',
+      error: `Diagnostic baseline cannot perform grading operations: ${forbidden.join(', ')}.` };
+    if (!args.subject || !rubric.revision || !rubric.criteriaHash || rubric.status === 'retired' ||
+        (rubric.barContract?.adoptionEpoch != null && !rubric.barSetHash)) {
+      return { ok: false as const, code: 'diagnostic_identity_required',
+        error: 'Diagnostic emission requires an exact subject and a current rubric revision/criteriaHash, plus barSetHash for an adopted BAR.' };
+    }
+    const evaluated = await evaluateScorecard({ rubricRef: args.rubricRef, purpose: 'diagnostic',
+      subject: args.subject, ratings: args.ratings }, { id: input.createdBy, workspaceId: input.workspaceId });
+    if (!evaluated.ok || !('canonicalRatings' in evaluated) || !evaluated.canonicalRatings) return evaluated;
+    const identity = { rubricRevision: rubric.revision, criteriaHash: rubric.criteriaHash,
+      barSetHash: rubric.barSetHash ?? null };
+    if (evaluated.rubricRevision !== identity.rubricRevision || evaluated.criteriaHash !== identity.criteriaHash ||
+        !('barSetHash' in evaluated) || evaluated.barSetHash !== identity.barSetHash) {
+      return { ok: false as const, code: 'scorecard_rubric_identity_mismatch',
+        error: 'The rubric changed while the diagnostic was being evaluated; re-read its exact identity.' };
+    }
+    const ratings = evaluated.canonicalRatings;
+    const sourceHive = args.sourceHive ?? input.ctxHarness;
+    const diagnostic = { purpose: 'diagnostic' as const, rubricRef: rubric.rubricId, ...identity,
+      ...(rubric.barContract?.meaningRevision != null ? { rubricMeaningRevision: rubric.barContract.meaningRevision } : {}),
+      subject: args.subject, ...(sourceHive ? { sourceHive } : {}),
+      ...(args.targetHive ? { targetHive: args.targetHive } : {}), ratings };
+    const evidenceFingerprint = createHash('sha256').update(JSON.stringify(diagnostic)).digest('hex');
+    const response = { purpose: 'diagnostic' as const, acceptanceEligible: false, ...identity,
+      evidenceFingerprint, canonicalRatings: ratings, nextAction: evaluated.nextAction };
+    if (input.previewOnly) return { ok: true as const, previewOnly: true as const, ...response };
+    const prior = await listScorecards({ rubricRef: rubric.rubricId, subjectRef: args.subject.ref,
+      subjectKind: args.subject.kind, sourceHive, includeDiagnostics: true, limit: 100 });
+    const identical = prior.find(card => card.purpose === 'diagnostic' && card.evidenceFingerprint === evidenceFingerprint);
+    if (identical && !args.force) return { ok: true as const, created: false, issueId: identical.issueId, ...response };
+    const saved = await captureImprovement({
+      title: args.title ?? `Diagnostic baseline: ${rubric.title}`, body: args.body,
+      kind: 'change', lane: 'observation', initialState: 'done', createdBy: input.createdBy,
+      filedByRole: 'su', payloadExtra: { observation: { ...diagnostic, evidenceFingerprint } },
+      beforeIssueCreate: async () => {
+        const fresh = await readRubric(args.rubricRef);
+        if (fresh.kind !== 'found' || fresh.rubric.status === 'retired' ||
+            fresh.rubric.revision !== identity.rubricRevision || fresh.rubric.criteriaHash !== identity.criteriaHash ||
+            (fresh.rubric.barSetHash ?? null) !== identity.barSetHash) {
+          throw new Error('scorecard_rubric_identity_mismatch: diagnostic rubric changed before persistence');
+        }
+      },
+    });
+    if (!saved.ok) return { ok: false as const, error: 'The diagnostic observation was not persisted.' };
+    return { ok: true as const, created: saved.created, issueId: saved.issue?.id ?? null, ...response };
   }
   // CRM grades the task that PRODUCED the call/email, never its reviewer task.
   // Enforce this at the canonical writer too: an app-side parse gate alone can

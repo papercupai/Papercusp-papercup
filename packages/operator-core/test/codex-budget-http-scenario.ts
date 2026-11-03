@@ -4,8 +4,6 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { parse as parseToml } from '@iarna/toml';
-import { getPresence, setCompactionLimit, writePresence } from '../lib/agent-tools/coordination/presence';
-import { suWrapperExtraArgs } from '../../../apps/operator/scripts/psu-launcher.mjs';
 
 type Options = { workspace: string; base: string; headers: Record<string, string>; evidenceDir: string };
 
@@ -31,6 +29,12 @@ export async function prepareCodexBudgetScenario(workspace: string) {
 export async function measureCodexBudgetScenario(o: Options) {
   assert.match(o.workspace, /^test-runtime-/);
   await prepareCodexBudgetScenario(o.workspace);
+  // Credential preparation is filesystem-only. Load production state only
+  // after the measurement has established its private runtime boundary.
+  const [{ getPresence, setCompactionLimit, writePresence }, { suWrapperExtraArgs }] = await Promise.all([
+    import('../lib/agent-tools/coordination/presence'),
+    import('../../../apps/operator/scripts/psu-launcher.mjs'),
+  ]);
   const cases = [
     { name: 'stale-argv', current: 225_000, argv: ['psu', '--compaction-limit=250000'], expected: 225_000 },
     { name: 'absent-argv', current: 225_000, argv: ['psu'], expected: 225_000 },

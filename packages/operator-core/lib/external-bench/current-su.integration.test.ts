@@ -8,6 +8,7 @@ import { hostname, tmpdir } from 'node:os';
 import http from 'node:http';
 import { join } from 'node:path';
 import { getTestPg, markManagedTestDatabase } from '@papercusp/test-config/pg';
+import { PgPresenceStore, ensureCoordPresenceTable } from '@papercusp/coordination/presence';
 import { currentBenchObservationReader, currentBenchIdentityFromObservation, liveCurrentBenchObservationReaderPorts,
   currentSuBenchHarnessDriver, liveCurrentSuBenchPorts, readCurrentBenchCompletion, type CurrentSuBenchOptions,
   liveCurrentBenchNativeCostReader, currentBenchLaunchRequest, currentBenchNativeSessionCostDelta,
@@ -167,6 +168,7 @@ beforeAll(async () => {
       identity_activation_event_id text, identity_owner_id text, identity_principal_id text,
       identity_specification_revision text, identity_state_revision text);
     CREATE VIEW harness_shared.agent_usage_samples_identity_attribution AS SELECT * FROM harness_shared.agent_usage_samples;`);
+  await ensureCoordPresenceTable(sql as never);
   await sql.unsafe('ALTER TABLE harness_shared.agent_usage_samples ADD COLUMN harness_slug text, ADD COLUMN run_id text, ADD COLUMN input_tokens bigint, ADD COLUMN output_tokens bigint');
   // Use the maintained benchmark persistence schema and real emission entry
   // point for grade-reader tests, rather than a hand-shaped grade receipt.
@@ -205,7 +207,7 @@ beforeEach(async () => {
   await sql`TRUNCATE agent_lock_waiters, agent_file_locks`;
   await sql`TRUNCATE harness_shared.bench_runs CASCADE`;
   await sql`TRUNCATE harness_shared.coord_event_log, harness_shared.carry_notes, harness_shared.event_key_fires, harness_shared.benchmark_prereg, harness_shared.benchmark_run_result, harness_shared.benchmark_rollout, harness_shared.work_items,
-    harness_shared.task_ledger, harness_shared.adv_sessions, harness_shared.runtime_vintage,
+    harness_shared.task_ledger, harness_shared.adv_sessions, harness_shared.runtime_vintage, harness_shared.coord_presence,
     harness_shared.interactive_usage_files, harness_shared.agent_usage_samples, harness_shared.tool_invocations,
     harness_shared.learning_governor_loops, harness_shared.learning_spend_events, harness_shared.learning_spend_reservations`;
   repoRoot = mkdtempSync(join(tmpdir(), 'current-bench-protocol-')); roots.push(repoRoot);
@@ -2701,6 +2703,41 @@ async function hostFixture() {
 }
 
 describe('host-backed benchmark observation with private physical IO', () => {
+  it.each(['codex', 'claude'] as const)('reads the host-written %s compaction threshold and provenance through the exact native binding', async agent => {
+    const ownerId = `su-threshold-${randomUUID()}`, nativeSessionId = randomUUID();
+    const task: CurrentBenchTask = { taskId: `threshold-${randomUUID()}`, workspaceId, state: 'running', exitCode: null,
+      sessionId: nativeSessionId, detail: { coordOwnerId: ownerId } };
+    await sql`INSERT INTO harness_shared.adv_sessions (workspace_id, coord_owner_id, session_id, agent)
+      VALUES (${workspaceId}, ${ownerId}, ${nativeSessionId}, ${agent})`;
+    await sql`INSERT INTO harness_shared.task_ledger (task_id, workspace_id, session_id, detail)
+      VALUES (${task.taskId}, ${workspaceId}, ${nativeSessionId}, ${sql.json(task.detail as { coordOwnerId: string })})`;
+    const io = liveCurrentBenchObservationReaderPorts({ ...scope(), runtimeWorkspaceId: workspaceId,
+      workerUnit: 'unused-worker', gatewayUnit: 'unused-gateway', gatewayBaseUrl: 'http://127.0.0.1:1' });
+    expect(await io.readBinding(task)).not.toHaveProperty('compactionLimit');
+    await sql`INSERT INTO harness_shared.coord_presence (owner_id, workspace_id) VALUES (${ownerId}, ${workspaceId})`;
+    const presence = new PgPresenceStore({ getSql: () => sql as never, ensureSchema: async () => {} });
+    await presence.setCompactionLimit(ownerId, 20_000, { explicit: true });
+    expect(await io.readBinding(task)).toMatchObject({ ownerId, nativeSessionId,
+      compactionLimit: 20_000, compactionLimitExplicit: true });
+    // Exercise the actual writer's precedence guard; a derived repair cannot
+    // silently replace an explicit threshold while retaining its provenance.
+    await presence.setCompactionLimit(ownerId, 25_000);
+    expect(await io.readBinding(task)).toMatchObject({ compactionLimit: 20_000, compactionLimitExplicit: true });
+    await presence.setCompactionLimit(ownerId, 25_000, { explicit: false });
+    expect(await io.readBinding(task)).toMatchObject({ compactionLimit: 25_000, compactionLimitExplicit: false });
+    await sql`UPDATE harness_shared.coord_presence SET workspace_id = 'foreign-threshold' WHERE owner_id = ${ownerId}`;
+    expect(await io.readBinding(task)).not.toHaveProperty('compactionLimit');
+    await sql`UPDATE harness_shared.coord_presence SET workspace_id = ${workspaceId} WHERE owner_id = ${ownerId}`;
+    const successorId = randomUUID(), successor = { ...task, taskId: `${task.taskId}-successor`, sessionId: successorId };
+    await sql`INSERT INTO harness_shared.adv_sessions (workspace_id, coord_owner_id, session_id, agent, started_at)
+      VALUES (${workspaceId}, ${ownerId}, ${successorId}, ${agent}, now() + interval '1 second')`;
+    await sql`INSERT INTO harness_shared.task_ledger (task_id, workspace_id, session_id, detail)
+      VALUES (${successor.taskId}, ${workspaceId}, ${successorId}, ${sql.json(task.detail as { coordOwnerId: string })})`;
+    await presence.setCompactionLimit(ownerId, 30_000, { explicit: true });
+    expect(await io.readBinding(successor)).toMatchObject({ nativeSessionId: successorId,
+      compactionLimit: 30_000, compactionLimitExplicit: true });
+    expect(await io.readBinding(task)).not.toHaveProperty('compactionLimit');
+  });
   it.each(['codex', 'claude'] as const)('reads the exact %s enrollment from a PostgreSQL bigint without accepting unsafe keys', async agent => {
     const ownerId = `su-private-${randomUUID()}`, nativeSessionId = randomUUID();
     const task: CurrentBenchTask = { taskId: `binding-${randomUUID()}`, workspaceId, state: 'running', exitCode: null,

@@ -303,6 +303,12 @@ export function runNpmWithHeartbeat({ phase, args, cwd, env, spawnCommand, heart
     now?: (() => number) | undefined;
     attribution?: null | undefined;
 }): Promise<any>;
+/** Refuse an unusable source archive before resolving, draining readers or reifying. */
+export function assertPatchPostimageGitSource({ repoRoot, npmArgs, env }: {
+    repoRoot: any;
+    npmArgs: any;
+    env?: NodeJS.ProcessEnv | undefined;
+}): void;
 /** Apply resolver output only while the source snapshot is current. */
 export function applyResolvedManifestFiles({ repoRoot, snapshot, files, outputPaths, }: {
     repoRoot: any;

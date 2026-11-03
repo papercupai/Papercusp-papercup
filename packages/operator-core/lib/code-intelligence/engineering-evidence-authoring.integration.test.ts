@@ -22,9 +22,10 @@ describe('native engineering evidence authoring and reconciliation', () => {
       (workspace_id,harness_slug,file_path,framework,status,source,commit_sha,worktree_dirty,finished_at)
       VALUES (${scope.workspaceId},${scope.harness},'unrelated.integration.test.ts','vitest','pass','local',${'c'.repeat(40)},false,now())`;
     const deps = { ...defaultAutobindDeps(), loadTargets: async () => [target] };
-    const result = await runSpecEvidenceAutobind(scope.workspaceId, deps);
+    const reconciliation = runSpecEvidenceAutobind(scope.workspaceId, deps);
+    await expect(reconciliation).resolves.toMatchObject({ decisions: { retract: 1 } });
+    const result = await reconciliation;
     expect(result.outcomes.filter(outcome => outcome.kind === 'refused')).toEqual([]);
-    expect(result.decisions.retract).toBe(1);
     const [binding] = await db`SELECT retracted_at,retracted_by,retraction_reason
       FROM harness_shared.spec_evidence_bindings WHERE id=${bindingId}`;
     expect(binding?.retracted_at).not.toBeNull();

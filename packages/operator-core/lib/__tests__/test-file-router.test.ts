@@ -7,6 +7,7 @@ import { PassThrough } from 'node:stream';
 import { tmpdir } from 'node:os';
 import { basename, join, relative, resolve } from 'node:path';
 import { transformSync } from 'esbuild';
+import { mockImplementationTyped } from '../testing/typed-mock';
 
 it('records a real node:test child when the focused router starts without a TS loader', () => {
   const router = new URL('../../../../scripts/test-files.mjs', import.meta.url).href;
@@ -3774,9 +3775,10 @@ describe('governed admission refusal terminal marker (EI-21984099786606751)', ()
     });
     const events: string[] = [];
     const forwarders = new Map<string, Function>();
-    const once = vi.spyOn(process, 'once').mockImplementation(((signal: string, handler: Function) => {
+    const once = vi.spyOn(process, 'once');
+    mockImplementationTyped(once, (signal, handler) => {
       forwarders.set(signal, handler); return process;
-    }) as any);
+    });
     const signalSelf = vi.spyOn(process, 'kill').mockReturnValue(true);
     const reader = vi.fn(() => {
       events.push('read-child');

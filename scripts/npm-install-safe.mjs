@@ -1530,6 +1530,36 @@ function isPackageLockOnlyInstall(npmArgs, env) {
     );
 }
 
+/** Refuse an unusable source archive before resolving, draining readers or reifying. */
+export function assertPatchPostimageGitSource({ repoRoot, npmArgs, env = process.env }) {
+  if (isPackageLockOnlyInstall(npmArgs, env)) return;
+  for (const option of ["ignore-scripts", "dry-run"]) {
+    const configured = ["true", "1", "yes"].includes(
+      String(npmConfigValue(env, option.replaceAll("-", "_")) ?? "").toLowerCase(),
+    );
+    if (npmBooleanArg(npmArgs, "--" + option) ?? configured) return;
+  }
+  const manifestPath = join(repoRoot, "package.json");
+  if (!existsSync(manifestPath)) return;
+  const postinstall = JSON.parse(readFileSync(manifestPath, "utf8")).scripts?.postinstall;
+  if (typeof postinstall !== "string" ||
+      !postinstall.includes("scripts/check-installed-patch-postimages.mjs")) return;
+
+  const gitOptions = { cwd: repoRoot, encoding: "utf8", timeout: 5000,
+    stdio: ["ignore", "pipe", "pipe"] };
+  const root = spawnSync("git", ["rev-parse", "--show-toplevel"], gitOptions);
+  const head = root.status === 0 && root.stdout.trim() === realpathSync(repoRoot)
+    ? spawnSync("git", ["rev-parse", "--verify", "HEAD^{commit}"], gitOptions)
+    : null;
+  if (head?.status === 0) return;
+  throw new Error(
+    "NPM_INSTALL_SAFE_GIT_SOURCE_REQUIRED: postinstall verifies committed patch postimages " +
+      "and requires this repository's own Git HEAD. A source-only archive cannot run this lifecycle. " +
+      "Use scripts/source-preview.mjs verifier-prepare --git-checkout in a supported temporary " +
+      "directory before installing dependencies (root=" + repoRoot + ").",
+  );
+}
+
 function isLocalOrRemotePackageSpec(spec) {
   const unsupportedTarget =
     /^(?:file:|git(?:\+|:)|github:|gitlab:|bitbucket:|https?:|ssh:|\.{1,2}[\\/]|[A-Za-z]:[\\/]|[\\/]{1,2})/i;
@@ -2363,6 +2393,7 @@ export async function main(argv = process.argv.slice(2)) {
 
   const { repoRoot } = parsed;
   const npmArgs = developmentInstallArgs(repoRoot, parsed.npmArgs);
+  assertPatchPostimageGitSource({ repoRoot, npmArgs });
   const lockName = repoLockName(repoRoot);
   const npmEnv = {
     ...npmChildEnv({

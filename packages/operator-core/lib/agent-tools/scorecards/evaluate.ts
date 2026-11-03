@@ -98,6 +98,9 @@ export const scorecardTestedShaSchema = z
 export const scorecardEvaluateArgs = z
   .object({
     rubricRef: z.string().min(1).max(120),
+    purpose: z.enum(['diagnostic', 'grading']).optional().describe(
+      'diagnostic records an explicitly non-accepting baseline before readiness; omitted/grading retains normal acceptance and instrument gates.',
+    ),
     eligibilityOnly: z.boolean().optional().describe(
       'Resolve only your grader identity and the current rubric identity, independently of acceptance BAR readiness. Supply rubricRef only; grading and history inputs are refused. ok:true is not grading clearance: inspect graderEligibility.canEmitGrading.',
     ),
@@ -308,6 +311,7 @@ export async function evaluateScorecard(
     rubricRevision: rubric.revision ?? null,
     criteriaHash: rubric.criteriaHash ?? null,
     rubricMeaningRevision: rubric.barContract?.meaningRevision ?? null,
+    ...(args.purpose === 'diagnostic' ? { barSetHash: rubric.barSetHash ?? null } : {}),
   };
   if (args.eligibilityOnly) {
     return {
@@ -327,7 +331,7 @@ export async function evaluateScorecard(
   // snapshot is stale or incomplete; returning an apparently gradeable
   // skeleton in that state makes a grader spend the full pass only to have the
   // terminal emit refuse the same payload.
-  if (rubric.kind === 'acceptance' && rubric.barContract?.adoptionEpoch != null && rubric.subjectPlan) {
+  if (args.purpose !== 'diagnostic' && rubric.kind === 'acceptance' && rubric.barContract?.adoptionEpoch != null && rubric.subjectPlan) {
     // Same harness scope as scorecards:emit: a plan slug is unique per harness, not per
     // workspace (WI-10005160).
     const lifecycle = await readAndEvaluateAcceptanceBarLifecycle(rubric.subjectPlan, 'pre-grading', {
@@ -363,7 +367,8 @@ export async function evaluateScorecard(
     ...(args.pendingDeliveryBarKeys?.includes(criterion.barKey ?? '') ? { pendingDelivery: true, requiredRating: 'unknown' } : {}),
   }));
   const latest = (
-    await listScorecards({ rubricRef: args.rubricRef, sourceHive: args.sourceHive, limit: 1 })
+    await listScorecards({ rubricRef: args.rubricRef, sourceHive: args.sourceHive,
+      ...(args.subject ? { subjectRef: args.subject.ref, subjectKind: args.subject.kind } : {}), limit: 1 })
   )[0];
 
   // An empty ratings object is the natural discovery request for callers that
@@ -374,6 +379,10 @@ export async function evaluateScorecard(
     return {
       ok: true as const,
       ...rubricIdentity,
+      ...(args.purpose === 'diagnostic' ? {
+        purpose: 'diagnostic' as const, acceptanceEligible: false,
+        nextAction: { role: 'implementer', action: 'Gather or repair criterion evidence, then request ordinary readiness before independent grading.' },
+      } : {}),
       graderEligibility,
       rubric: {
         rubricRef: rubric.rubricId,
@@ -394,6 +403,20 @@ export async function evaluateScorecard(
     validateObservationRatings(observation);
     validateScorecardCompleteness(observation, rubric.criteria.map((criterion) => criterion.key));
     validateScorecardRatingValues(observation, rubric);
+    if (args.purpose === 'diagnostic') {
+      for (const [key, entry] of Object.entries(ratings)) {
+        if (entry.rating.toLowerCase() === 'unknown' && (!entry.unknownReason || !entry.nextEvidenceAction)) {
+          return { ok: false as const, code: 'diagnostic_unknown_reason_required',
+            error: `Diagnostic unknown '${key}' requires unknownReason and nextEvidenceAction.` };
+        }
+      }
+      return {
+        ok: true as const, purpose: 'diagnostic' as const, acceptanceEligible: false,
+        rubricRef: rubric.rubricId, ...rubricIdentity, subject: args.subject ?? null,
+        graderEligibility, skeleton, canonicalRatings: ratings,
+        nextAction: { role: 'implementer', action: 'Gather or repair criterion evidence, then request ordinary readiness before independent grading.' },
+      };
+    }
     // Poor-rating disposition preflight (owner-directed 2026-08-31): teach the
     // grader BEFORE the terminal emit that a poor rating must route somewhere.
     validateScorecardPoorRatingDisposition(observation, rubric);

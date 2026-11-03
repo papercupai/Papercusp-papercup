@@ -21,6 +21,15 @@ describe('parseProjection', () => {
     expect(parseProjection({})).toMatchObject({ ok: false, error: expect.stringContaining('at least one') });
   });
 
+  it('explains how to recover from an empty pipe without weakening fail-closed validation', () => {
+    expect(parseProjection({ pipe: [] })).toEqual({
+      ok: false,
+      error:
+        'projection.pipe must be a non-empty array of stages; provide one or omit `pipe` ' +
+        '(or omit `projection` if no selector remains).',
+    });
+  });
+
   // `projection` is reserved at the dispatch layer and therefore absent from every
   // tool's advertised inputSchema. A client that types its args from that schema
   // (Claude Code) has no type for it and sends a STRING — so refusing strings made

@@ -687,7 +687,7 @@ async function reclaimAbandonedLock(
  * Fail-open: no ordering information ⇒ the caller falls back to racing for the
  * lock directly, so a broken/unreadable queue can never deadlock acquisition.
  */
-const TICKET_HEAD_CACHE_TTL_MS = 100;
+const TICKET_HEAD_CACHE_TTL_FLOOR_MS = 100;
 const TICKET_HEAD_CACHE_MAX_ENTRIES = 256;
 const ticketHeadCache = new Map();
 const ticketHeadScans = new Map();
@@ -740,9 +740,10 @@ async function scanOldestTicketDir(ticketsDir, staleMs, io, measureSubphase) {
   return null;
 }
 
-async function oldestTicketDir(ticketsDir, staleMs, io = {}, measureSubphase, observeHead = () => {}) {
+async function oldestTicketDir(ticketsDir, staleMs, retryMs, io = {}, measureSubphase, observeHead = () => {}) {
+  const cacheTtlMs = Math.max(TICKET_HEAD_CACHE_TTL_FLOOR_MS, retryMs * 2);
   const cached = ticketHeadCache.get(ticketsDir);
-  if (cached && Date.now() < cached.expiresAtMs) {
+  if (cached && Number.isFinite(cached.cachedAtMs) && Date.now() - cached.cachedAtMs < cacheTtlMs) {
     const currentStamp = await ticketDirectoryStamp(ticketsDir);
     if (currentStamp && currentStamp === cached.queueStamp) {
       try {
@@ -779,7 +780,7 @@ async function oldestTicketDir(ticketsDir, staleMs, io = {}, measureSubphase, ob
       ticketDir: head.ticketDir,
       owner: head.owner,
       queueStamp: head.queueStamp,
-      expiresAtMs: Date.now() + TICKET_HEAD_CACHE_TTL_MS,
+      cachedAtMs: Date.now(),
     });
     if (ticketHeadCache.size > TICKET_HEAD_CACHE_MAX_ENTRIES) {
       const oldestKey = ticketHeadCache.keys().next().value;
@@ -1078,7 +1079,7 @@ export async function withFsMutex(name, fn, opts = {}) {
       if (ticketRegistered) {
         const oldest = await measureAdmissionSubphase(
           "ticket-scan",
-          () => oldestTicketDir(ticketsDir, staleMs, io, measureAdmissionSubphase, (ticketDir, rawOwner) => {
+          () => oldestTicketDir(ticketsDir, staleMs, retryMs, io, measureAdmissionSubphase, (ticketDir, rawOwner) => {
             if (ticketDir !== myTicketDir) lastObservedQueueHead = ticketDir + "; owner: " + rawOwner;
           }),
         );
@@ -1199,7 +1200,7 @@ export async function withFsMutex(name, fn, opts = {}) {
     await writeFileIo(nextOwnerPath, `${JSON.stringify(runningOwner, null, 2)}\n`);
     await rename(nextOwnerPath, join(lockDir, "owner.json"));
     return await fn({
-      hasWaiters: async () => (await oldestTicketDir(ticketsDir, staleMs, io)) != null,
+      hasWaiters: async () => (await oldestTicketDir(ticketsDir, staleMs, retryMs, io)) != null,
     });
   } finally {
     await rm(lockDir, { recursive: true, force: true });

@@ -1538,13 +1538,16 @@ describe('withFsMutex fairness (FIFO ticket queue)', () => {
     const name = 'ticket-head-cache';
     let releaseHolder!: () => void;
     let markHolderEntered!: () => void;
+    let markSecondWaitingNotice!: () => void;
     const holderEntered = new Promise<void>((resolve) => { markHolderEntered = resolve; });
     const holderGate = new Promise<void>((resolve) => { releaseHolder = resolve; });
+    const secondWaitingNotice = new Promise<void>((resolve) => { markSecondWaitingNotice = resolve; });
+    let waitingNotices = 0;
     const holder = withFsMutex(name, async () => {
       markHolderEntered();
       await holderGate;
       return 'holder';
-    }, { timeoutMs: 1_000, retryMs: 1 });
+    }, { timeoutMs: 1_000, retryMs: 250 });
     let waiter: Promise<string> | undefined;
     try {
       await holderEntered;
@@ -1558,17 +1561,23 @@ describe('withFsMutex fairness (FIFO ticket queue)', () => {
       };
       waiter = withFsMutex(name, async () => 'waiter', {
         timeoutMs: 1_000,
-        retryMs: 1,
+        retryMs: 250,
         staleMs: 10_000,
         io,
+        waitingNoticeIntervalMs: 250,
+        onWaiting: () => {
+          waitingNotices += 1;
+          if (waitingNotices === 2) markSecondWaitingNotice();
+        },
       });
       const deadline = Date.now() + 1_000;
       while (queueReads === 0 && Date.now() < deadline) {
         await new Promise((resolve) => setTimeout(resolve, 1));
       }
       expect(queueReads).toBeGreaterThan(0);
-      await new Promise((resolve) => setTimeout(resolve, 20));
-      expect(queueReads).toBeLessThanOrEqual(2);
+      const readsBeforeNextPoll = queueReads;
+      await secondWaitingNotice;
+      expect(queueReads).toBe(readsBeforeNextPoll);
 
       releaseHolder();
       await expect(waiter).resolves.toBe('waiter');

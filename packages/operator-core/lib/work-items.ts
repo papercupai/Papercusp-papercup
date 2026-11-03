@@ -150,6 +150,7 @@ import {
   type ExternalBlockerRecord,
 } from './external-blockers';
 import { pgTimestampToIso, pgTimestampToIsoOrNull } from './pg-timestamp';
+import { createHash } from 'node:crypto';
 import { clearGoalClaimedIfMatches, noteGoalClaimed, readAgentStateStamp } from './agent-state-stamp';
 import { isTransportOnlyIdentity } from './agent-tools/coordination/identity';
 import { AUTO_CLOSE_DEFAULT_MIN_TICKS, AUTO_CLOSE_ELIGIBLE_SOURCES } from './harness/improvements/auto-close-sources';
@@ -11083,15 +11084,22 @@ export async function commentWorkItem(
      * text is posted; omit for system-templated comments.
      */
     writerOwnerId?: string | null;
+    /** Retry identity for system-templated text; incompatible with sealed agent prose. */
+    idempotencyKey?: string;
   } = {},
 ): Promise<ThreadPostRow | null> {
   const wi = await getWorkItem(id, opts.harness);
   if (!wi) return null;
   const workspaceId = opts.workspaceId?.trim() && opts.workspaceId.trim() !== '*' ? opts.workspaceId.trim() : undefined;
   const harness = opts.harness ?? wi.harness;
+  const commentKey = opts.idempotencyKey?.trim();
+  if (commentKey !== undefined && (!commentKey || opts.writerOwnerId?.trim())) {
+    throw new Error('comment_idempotency_requires_system_text');
+  }
   // issue-family: commentIssue already creates the thread + fires the issue_commented fan-out.
   if (wi.family === 'issue') {
-    return commentIssue(id, body, authorId, { workspaceId, harness, writerOwnerId: opts.writerOwnerId });
+    return commentIssue(id, body, authorId, { workspaceId, harness, writerOwnerId: opts.writerOwnerId,
+      idempotencyKey: commentKey });
   }
   // feature-family: thread on the feature ObjectRef + fan out to the work-item's subscribers.
   const ref = workItemObjectRef(wi);
@@ -11099,6 +11107,7 @@ export async function commentWorkItem(
   // (post row + post_count bump commit together) + BOUNDED (SET LOCAL
   // statement_timeout) so a stalled admin-pool query fails fast + typed rather
   // than hanging the MCP call. Mirrors commentIssue. See pg-bounded-txn.ts.
+  let replayed = false;
   const post = await boundedOrgTxn(async (tx) => {
     const txThreads = new PgThreadStore({
       ...coordOpts,
@@ -11123,7 +11132,29 @@ export async function commentWorkItem(
       created_ts: wi.createdAt,
       harness_slug: harness ?? undefined,
     });
-    return txThreads.addPost({ thread_id: thread.thread_id, author_id: authorId, body: stored?.text ?? body, created_ts: nowIso() });
+    const ws = workspaceId ?? activeWorkspaceId();
+    const postKey = commentKey ? `work-item-comment:${createHash('sha256')
+      .update(JSON.stringify([ws, thread.thread_id, commentKey])).digest('hex')}` : undefined;
+    if (postKey) {
+      // Lock an existing row before reading posts: concurrent retries must see
+      // the first transaction's committed post, including after response loss.
+      await tx`SELECT thread_id FROM harness_shared.coord_threads
+        WHERE workspace_id = ${ws} AND thread_id = ${thread.thread_id} FOR UPDATE`;
+      const [prior] = await tx<{ id: number; body: string; author_id: string | null; created_at: unknown }[]>`
+        SELECT id, body, author_id, created_at FROM harness_shared.coord_thread_posts
+        WHERE workspace_id = ${ws} AND thread_id = ${thread.thread_id} AND post_msg_id = ${postKey}
+        ORDER BY id LIMIT 1`;
+      if (prior) {
+        if (prior.body !== body || prior.author_id !== (authorId ?? null)) throw new Error('comment_idempotency_conflict');
+        replayed = true;
+        return { id: Number(prior.id), thread_id: thread.thread_id, author_id: prior.author_id,
+          body: prior.body, created_ts: tsIso(prior.created_at) };
+      }
+    }
+    const added = await txThreads.addPost({ thread_id: thread.thread_id, author_id: authorId, body: stored?.text ?? body, created_ts: nowIso() });
+    if (postKey) await tx`UPDATE harness_shared.coord_thread_posts SET post_msg_id = ${postKey}
+      WHERE workspace_id = ${ws} AND id = ${added.id}`;
+    return added;
   });
   const ev: InjectEvent = {
     from: authorId ?? 'substrate',
@@ -11131,7 +11162,7 @@ export async function commentWorkItem(
     summary: `work_item ${id} — new comment${authorId ? ` from ${authorId}` : ''}`,
     notify_kind: 'work_item_commented',
   };
-  await fanoutForObject(ref, ev, { excludeId: authorId });
+  if (!replayed) await fanoutForObject(ref, ev, { excludeId: authorId });
   return post;
 }
 

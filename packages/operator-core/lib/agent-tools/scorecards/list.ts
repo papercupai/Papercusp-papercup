@@ -158,6 +158,9 @@ export default defineTool({
       .describe(
         'also return SYNTHESIZED floor scorecards (turn-end backstop + scheduled-pulse). Default false — agent-emission reads exclude floors; pass true to verify the data layer itself (e.g. is the pulse filing while overwatch is paused?)',
       ),
+    includeDiagnostics: z.boolean().optional().describe(
+      'Explicit baseline history: include diagnostic records with their purpose. Diagnostics are excluded before the default page limit and never satisfy a gate.',
+    ),
     includeSuperseded: z
       .boolean()
       .optional()
@@ -205,6 +208,7 @@ export default defineTool({
           since: args.since,
           limit: args.limit,
           includeSynthesized: args.includeSynthesized,
+          includeDiagnostics: args.includeDiagnostics,
           includeSuperseded: args.includeSuperseded,
           includeRetracted: args.includeRetracted,
           provisionalOnly: args.provisional,

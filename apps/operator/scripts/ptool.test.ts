@@ -1445,6 +1445,18 @@ describe('ptool call deadlines', () => {
     expect(timeoutForTool('logs:read')).toBeGreaterThan(PTOOL_CALL_TOOL_TIMEOUT_MS);
   });
 
+  it('keeps rubrics:amend alive beyond the transport receipt deadline on both routes', () => {
+    const direct = timeoutForTool('rubrics:amend');
+    const deferred = timeoutForTool('tools:invoke', {
+      name: 'rubrics:amend',
+      args: {},
+    });
+
+    expect(direct).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+    expect(deferred).toBe(direct);
+    expect(direct).toBeGreaterThan(55_000);
+  });
+
   it('lets coord:feed reach the MCP transport ceiling on direct and deferred routes', () => {
     const args = { owner: 'su-example', since: '2026-10-08T13:33:58Z', limit: 20 };
     const direct = timeoutForTool('coord:feed', args);

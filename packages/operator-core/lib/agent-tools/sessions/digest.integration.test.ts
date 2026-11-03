@@ -9,7 +9,10 @@ import { readFileSync } from 'node:fs';
 import { afterAll, beforeAll, describe, expect, inject, it, vi } from 'vitest';
 import type postgres from 'postgres';
 import type { RecordedRuntimeEnvironment } from '@papercusp/test-config/execution-details';
+import { HISTORICAL_STOP_OPENING } from '../../search/session-end-reason';
+import { restrictedTurnSql } from '../../personal-vault/transcript-exclusion';
 import { applyDisclosureLedgerForTest, createFreshPgDb, type FreshPgDb } from '../../../test/_pg-helpers';
+import { encodeSessionCursor, sessionCursorQueryFingerprint } from './cursor';
 
 vi.mock('./_shared', async (importOriginal) => ({
   ...(await importOriginal<object>()),
@@ -116,20 +119,26 @@ async function callDigest(args: Record<string, unknown> = {}): Promise<{ count: 
       handler: (
         args: unknown,
         ctx: unknown,
-      ) => Promise<{ data: { count: number; total: number; digests: Digest[] } }>;
+      ) => Promise<{ data: { count: number; total: number; digests: Digest[];
+        coverage?: { snapshotAt?: string; until?: string } } }>;
     }
   ).handler({ limit: 30, ...args }, { workspaceId: WORKSPACE, tx: sql });
   if (typeof args.session === 'string' && result.data.digests.length === 0) {
     // Keep the row and cutoff evidence when a selective read unexpectedly
     // disappears; an undefined-row assertion alone cannot distinguish them.
     const rows = await sql`
-      SELECT workspace_id, source_kind, turn_idx, ts::text, ingested_at::text,
+      SELECT workspace_id, source_kind, turn_idx, speaker, left(text, 120) AS excerpt,
+             ts::text, ingested_at::text,
+             ingested_at <= ${result.data.coverage?.snapshotAt ?? null}::text::timestamptz AS snapshot_visible,
+             COALESCE(ts, ingested_at) <= ${result.data.coverage?.until ?? null}::text::timestamptz AS window_visible,
+             left(text, 700) ~* ${HISTORICAL_STOP_OPENING.source} AS provider_candidate,
+             NOT ${restrictedTurnSql(sql, 'session_turns', []) as never} AS disclosure_visible,
              clock_timestamp()::text AS observed_at
         FROM harness_shared.session_turns
        WHERE session_id = ${args.session}
-       ORDER BY turn_idx LIMIT 4
+       ORDER BY (speaker = 'assistant') DESC, turn_idx DESC LIMIT 6
     `;
-    console.error('SESSION_DIGEST_EMPTY_DIAGNOSTIC', JSON.stringify({ args, result: result.data, rows }));
+    process.stderr.write('SESSION_DIGEST_EMPTY_DIAGNOSTIC ' + JSON.stringify({ args, result: result.data, rows }) + '\n');
   }
   return result.data;
 }
@@ -183,6 +192,33 @@ async function legacyRows(): Promise<LegacyRow[]> {
 }
 
 describe('sessions:digest narrow CTE + primary-key text join (WI-6843)', () => {
+  it('preserves microseconds in frozen transcript and ingestion cutoffs', async () => {
+    // Literal SQL timestamps keep the fixture independent of the driver's
+    // Date serializer. Each boundary has a row just inside and just outside.
+    await sql`INSERT INTO harness_shared.session_turns
+      (workspace_id, source_kind, session_id, turn_idx, ts, ingested_at, speaker, text)
+      VALUES (${WORKSPACE}, 'codex', 'precision-stop', 0, '2026-05-01T00:00Z', '2026-05-01T00:00Z', 'user', 'Recover interrupted work'),
+        (${WORKSPACE}, 'codex', 'precision-stop', 1, '2026-05-01T00:01Z', '2026-05-01T00:02:00.123900Z', 'assistant', 'API Error: 429 Too many requests'),
+        (${WORKSPACE}, 'codex', 'precision-stop', 2, '2026-05-01T00:02:00.123900Z', '2026-05-01T00:01Z', 'assistant', 'API Error: 429 Too many requests'),
+        (${WORKSPACE}, 'codex', 'precision-stop', 3, '2026-05-01T00:01:30Z', '2026-05-01T00:02:00.124001Z', 'assistant', 'API Error: 429 Too many requests'),
+        (${WORKSPACE}, 'codex', 'precision-stop', 4, '2026-05-01T00:02:00.124001Z', '2026-05-01T00:01Z', 'assistant', 'API Error: 429 Too many requests')`;
+    try {
+      const filters = { session: 'precision-stop', stopKinds: ['rate_limit'] };
+      const cutoff = '2026-05-01T00:02:00.123999Z';
+      const cursor = encodeSessionCursor('sessions:digest', 0,
+        sessionCursorQueryFingerprint({ ...filters, owner: null }, { workspaceId: WORKSPACE }),
+        { until: cutoff, snapshotAt: cutoff });
+      const result = await callDigest({ ...filters, cursor });
+      expect(result.digests).toHaveLength(2);
+      expect(result.digests).toEqual(expect.arrayContaining([
+        expect.objectContaining({ stopRef: 'session_turn:codex:precision-stop:1' }),
+        expect.objectContaining({ stopRef: 'session_turn:codex:precision-stop:2' }),
+      ]));
+    } finally {
+      await sql`DELETE FROM harness_shared.session_turns WHERE session_id = 'precision-stop'`;
+    }
+  });
+
   it('returns multiple incidents in one session once, with their own prior task and checkpoint', async () => {
     await sql`INSERT INTO harness_shared.session_turns
       (workspace_id, source_kind, session_id, turn_idx, ts, speaker, text)

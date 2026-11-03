@@ -23,6 +23,7 @@ import {
 } from '@papercusp/agent-mcp';
 import { PAYLOAD_TIER_HARD_CEILING_CHARS, PAYLOAD_TIER_RATCHET_CHARS } from '@papercusp/tooldef';
 import type { Rubric } from '../../rubrics';
+import { asStructuredObservation, scorecardAdmissionExclusion } from '../../harness/improvements/observation-types';
 import { scorecardEvidenceFingerprint, type ScorecardRow } from '../../scorecards';
 import { SPEC_TEST_ADEQUACY_EVALUATOR_REVISION } from '../plans/spec-test-adequacy';
 import {
@@ -311,6 +312,69 @@ beforeEach(() => {
   listM.mockResolvedValue([]);
   mockResolvedTyped(captureM, { ok: true, created: true, issue: ISSUE_BASE, possibleDuplicates: [] });
   getIssueM.mockResolvedValue(null);
+});
+
+describe('diagnostic scorecard baseline', () => {
+  const subject = { kind: 'work-item' as const, ref: 'WI-123',
+    windowStart: '2026-11-02T00:00:00Z', windowEnd: '2026-11-03T00:00:00Z' };
+  const rubric = { ...BAR_ACCEPTANCE_RUBRIC, revision: 7,
+    criteriaHash: 'a'.repeat(64), barSetHash: 'b'.repeat(64) };
+
+  beforeEach(() => {
+    getRubricM.mockResolvedValue(rubric);
+    readAndEvaluateAcceptanceBarLifecycleM.mockResolvedValue({ satisfied: false, message: 'proof missing' });
+  });
+
+  it('persists a confirmed failure despite missing acceptance proof without a grading transition', async () => {
+    const ratings = { ...RATINGS, 'crit-a': { rating: 'fail', evidence: 'The measured criterion failed.' } };
+    const result = await emitScorecard(scorecardEmitArgs.parse({ rubricRef: rubric.rubricId,
+      purpose: 'diagnostic', subject, ratings }), { createdBy: 'su-implementer' });
+    expect(result).toMatchObject({ ok: true, created: true, purpose: 'diagnostic',
+      acceptanceEligible: false, rubricRevision: 7, criteriaHash: rubric.criteriaHash, barSetHash: rubric.barSetHash });
+    expect(captureM).toHaveBeenCalledOnce();
+    const observation = captureM.mock.calls[0][0].payloadExtra?.observation;
+    expect(observation).toMatchObject({ purpose: 'diagnostic', rubricRef: rubric.rubricId,
+      rubricRevision: 7, criteriaHash: rubric.criteriaHash, barSetHash: rubric.barSetHash, subject, ratings });
+    expect(observation).not.toHaveProperty('acceptance');
+    expect(observation).not.toHaveProperty('gradingAudit');
+    expect(observation).not.toHaveProperty('vetting');
+    const readBack = asStructuredObservation(observation);
+    expect(readBack).toMatchObject({ purpose: 'diagnostic', barSetHash: rubric.barSetHash, subject, ratings });
+    expect(scorecardAdmissionExclusion(readBack!)).toBe('diagnostic');
+    expect(readAndEvaluateAcceptanceBarLifecycleM).not.toHaveBeenCalled();
+  });
+
+  it('retains an unavailable instrument reason and next evidence action', async () => {
+    const ratings = { ...RATINGS, 'crit-a': { rating: 'unknown', evidence: 'The probe could not run.',
+      unknownReason: 'instrument-unavailable' as const, nextEvidenceAction: 'Restore the registered probe and run it.' } };
+    await expect(emitScorecard({ rubricRef: rubric.rubricId, purpose: 'diagnostic', subject, ratings },
+      { createdBy: 'su-implementer' })).resolves.toMatchObject({ ok: true, canonicalRatings: ratings });
+    expect(captureM.mock.calls[0][0]).toMatchObject({ payloadExtra: { observation: { ratings } } });
+  });
+
+  it('refuses an unexplained diagnostic unknown before writing', async () => {
+    await expect(emitScorecard({ rubricRef: rubric.rubricId, purpose: 'diagnostic', subject,
+      ratings: { ...RATINGS, 'crit-a': { rating: 'unknown', evidence: 'No measurement yet.' } } },
+      { createdBy: 'su-implementer' })).resolves.toMatchObject({ ok: false, code: 'diagnostic_unknown_reason_required' });
+    expect(captureM).not.toHaveBeenCalled();
+  });
+
+  it.each(['acceptance', 'vetting', 'supersedes', 'baselineRef', 'testedSha'])(
+    'refuses diagnostic grading side effects: %s', async field => {
+      const value = field === 'acceptance' ? { verdict: 'accept', reasoning: 'pretend settled' }
+        : field === 'vetting' ? { workItemId: 'WI-123' } : 'EI-123';
+      const result = await emitScorecard({ rubricRef: rubric.rubricId, purpose: 'diagnostic', subject,
+        ratings: RATINGS, [field]: value } as Parameters<typeof emitScorecard>[0], { createdBy: 'su-implementer' });
+      expect(result).toMatchObject({ ok: false, code: 'diagnostic_operation_invalid' });
+      expect(captureM).not.toHaveBeenCalled();
+    });
+
+  it('refuses an obsolete BAR digest before writing', async () => {
+    await expect(emitScorecard({ rubricRef: rubric.rubricId, purpose: 'diagnostic', subject,
+      ratings: RATINGS, barSetHash: 'c'.repeat(64) }, { createdBy: 'su-implementer' }))
+      .resolves.toMatchObject({ ok: false, code: 'scorecard_rubric_identity_mismatch' });
+    expect(captureM).not.toHaveBeenCalled();
+  });
 });
 
 describe('emitScorecard', () => {
@@ -1956,6 +2020,40 @@ describe('evaluateScorecard', () => {
       expectedApplicable: true,
     });
     expect(listM).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['readiness-missing', 'bar_snapshot_proof_missing', 'Bind the missing criterion proof.'],
+    ['readiness-stale', 'bar_snapshot_proof_stale', 'Re-run and bind proof for the current source.'],
+    ['readiness-incompatible', 'bar_snapshot_rubric_revision_mismatch', 'Read the current rubric and re-grade its exact identity.'],
+    ['readiness-instrument-unavailable', 'bar_snapshot_proof_uncertain', 'Restore the failed instrument and measure again.'],
+    ['diagnostic-not-readiness', 'bar_snapshot_grading_missing', 'Obtain independent final grading; a diagnostic is a baseline.'],
+  ])('ordinary readiness preserves the measured refusal: %s', async (_scenario, code, action) => {
+    getRubricM.mockResolvedValue(BAR_ACCEPTANCE_RUBRIC);
+    const lifecycle = {
+      phase: 'pre-grading', satisfied: false, codes: [code],
+      blockingBars: [{ barKey: 'R-1', codes: [code] }],
+      nextRepair: { action, responsibleRole: 'independent-grader' },
+      message: `R-1 is unresolved: ${code}; ${action}`,
+    };
+    readAndEvaluateAcceptanceBarLifecycleM.mockResolvedValue(lifecycle);
+    const projected = lookupByMcpName('scorecards:evaluate');
+    expect(projected).toBeDefined();
+    const result = await dispatchProjectedTool(projected!, 'scorecards:evaluate', {
+      rubricRef: 'acceptance-rubric',
+    }, {
+      log: vi.fn(), signal: new AbortController().signal, progress: vi.fn(), emit: vi.fn(),
+      workspaceId: 'ws', runId: 'ordinary-readiness-regression', isSuperuser: true,
+      uiClientId: 'su-independent', role: 'su',
+      gateBypass: { role: true, capability: true, quota: true },
+      transport: 'mcp', requestedFormat: 'json', tx: {},
+    }, {});
+    expect(result.ok, JSON.stringify(result)).toBe(true);
+    expect(readJsonResult(result.result!)).toMatchObject({
+      ok: false, code: 'acceptance_bar_contract_not_ready', lifecycle,
+    });
+    expect(listM).not.toHaveBeenCalled();
+    expect(captureM).not.toHaveBeenCalled();
   });
 
   // WI-10005160: a plan slug is unique per harness, not per workspace, so the BAR read must be

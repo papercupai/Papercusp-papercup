@@ -2387,6 +2387,47 @@ describe('P-006 reopen clears terminal stamps into payload.reopenHistory', () =>
   });
 });
 
+describe('idempotent system comments retain approval anchors', () => {
+  it.each(['feature', 'bug'] as const)('replays a %s post after a lost response, including concurrent retries', async kind => {
+    const item = await wi.createWorkItem({ kind, title: 'approval anchor', harness: 'papercup', createdBy: 'agA' });
+    const options = { harness: 'papercup', idempotencyKey: 'review-receipt-1' };
+    fh.spy.mockClear();
+    const initial = await Promise.all(Array.from({ length: 4 }, () =>
+      wi.commentWorkItem(item.id, '{"approval":"locked"}', 'agB', options)));
+    const first = initial[0];
+    expect(initial).toEqual(Array(4).fill(first));
+    expect(fanoutCalls()).toHaveLength(1);
+    fh.spy.mockClear();
+    const retries = await Promise.all(Array.from({ length: 4 }, () =>
+      wi.commentWorkItem(item.id, '{"approval":"locked"}', 'agB', options)));
+    expect(retries).toEqual(Array(4).fill(first));
+    expect(fanoutCalls()).toHaveLength(0);
+    const posts = await db.sql`SELECT id FROM harness_shared.coord_thread_posts`;
+    const threads = await db.sql`SELECT post_count FROM harness_shared.coord_threads`;
+    expect(posts).toHaveLength(1);
+    expect(threads).toEqual([{ post_count: 1 }]);
+    // A distinct request is still a distinct comment, even with identical text.
+    const next = await wi.commentWorkItem(item.id, '{"approval":"locked"}', 'agB', {
+      ...options, idempotencyKey: 'review-receipt-2',
+    });
+    expect(next!.id).not.toBe(first!.id);
+  });
+
+  it.each(['feature', 'bug'] as const)('refuses changed content or author under the same %s comment key', async kind => {
+    const item = await wi.createWorkItem({ kind, title: 'immutable anchor', harness: 'papercup', createdBy: 'agA' });
+    const options = { harness: 'papercup', idempotencyKey: 'review-receipt-1' };
+    await wi.commentWorkItem(item.id, 'original', 'agB', options);
+    await expect(wi.commentWorkItem(item.id, 'changed', 'agB', options)).rejects.toThrow('comment_idempotency_conflict');
+    await expect(wi.commentWorkItem(item.id, 'original', 'agC', options)).rejects.toThrow('comment_idempotency_conflict');
+    await expect(wi.commentWorkItem(item.id, 'original', 'agB', { ...options, idempotencyKey: ' ' }))
+      .rejects.toThrow('comment_idempotency_requires_system_text');
+    await expect(wi.commentWorkItem(item.id, 'original', 'agB', { ...options, writerOwnerId: 'agB' }))
+      .rejects.toThrow('comment_idempotency_requires_system_text');
+    const posts = await db.sql`SELECT body, author_id FROM harness_shared.coord_thread_posts`;
+    expect(posts).toEqual([{ body: 'original', author_id: 'agB' }]);
+  });
+});
+
 describe('comment (Threadable) path — work_item[kind=bug] commentIssue', () => {
   it('creates a thread post + fires issue_commented excluding the commenter', async () => {
     const bug = await wi.createWorkItem({ kind: 'bug', title: 'needs detail', harness: 'papercup', createdBy: 'agA' });

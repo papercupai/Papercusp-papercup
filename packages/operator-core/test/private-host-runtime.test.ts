@@ -232,7 +232,18 @@ it.each(['matched', 'wrong-digest', 'wrong-size', 'unrelated'] as const)(
       byteLength: control === 'wrong-size' ? byteLength - 1 : byteLength,
     }] });
     const started = Date.now();
-    expect(execFileSync(process.execPath, [bundle], { cwd: root, env, encoding: 'utf8', timeout: 15_000 })).toBe('loaded\n');
+    try {
+      expect(execFileSync(process.execPath, [bundle], { cwd: root, env, encoding: 'utf8', timeout: 15_000 })).toBe('loaded\n');
+    } catch (error) {
+      const failure = error as Error & { code?: string; status?: number; signal?: string; stdout?: string; stderr?: string };
+      writeFileSync(join(root, 'launch-failure.json'), JSON.stringify({
+        elapsedMs: Date.now() - started, executable: process.execPath,
+        nodeOptionsSha256: createHash('sha256').update(env.NODE_OPTIONS ?? '').digest('hex'),
+        code: failure.code, status: failure.status,
+        signal: failure.signal, stdout: String(failure.stdout ?? ''), stderr: String(failure.stderr ?? ''),
+      }));
+      throw error;
+    }
     const trace = readNativeProcessTraceArtifacts(traceOut, started, Date.now());
     expect(trace.population.complete).toBe(true);
     const retained = trace.rows.find(({ row }) => row.event === 'module-load-return')!.row.source;
@@ -356,14 +367,20 @@ it('observes real private-host exit before dependent cleanup and ignores diagnos
 });
 
 it.skipIf(process.platform !== 'linux')('rejects a real native crash after dependent cleanup and retains its exit evidence', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'private-native-crash-')); dirs.push(root);
   const child = spawn('bash', ['-c', 'ulimit -c 0; exec "$@"', 'private-native-crash', process.execPath, '-e',
     "process.on('SIGTERM',()=>process.kill(process.pid,'SIGSEGV'));process.stdout.write('ready\\n');setInterval(()=>{},1000)"],
   { env: privateBundleRuntimeEnv(process.env), stdio: ['ignore', 'pipe', 'pipe'] });
   const closed = once(child, 'close');
+  const observations: PrivateHostStopObservation[] = [];
+  const stderr: Buffer[] = [];
+  child.stderr!.on('data', chunk => stderr.push(Buffer.from(chunk)));
   let dependentCleaned = false;
   try {
-    await once(child.stdout!, 'data');
-    await expect(stopPrivateOperatorHost(child, async () => { dependentCleaned = true; }, 2000))
+    const [ready] = await once(child.stdout!, 'data');
+    expect(String(ready)).toBe('ready\n');
+    await expect(stopPrivateOperatorHost(child, async () => { dependentCleaned = true; }, 2000,
+      observation => observations.push(observation)))
       .rejects.toMatchObject({
         message: 'Private host crashed during teardown: SIGSEGV',
         privateHostStop: {
@@ -383,6 +400,10 @@ it.skipIf(process.platform !== 'linux')('rejects a real native crash after depen
   } finally {
     if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
     await closed;
+    writeFileSync(join(root, 'termination.json'), JSON.stringify({
+      exitCode: child.exitCode, signalCode: child.signalCode, dependentCleaned,
+      observations, stderr: Buffer.concat(stderr).toString('utf8'),
+    }));
   }
 });
 
@@ -464,6 +485,9 @@ it.skipIf(process.platform !== 'linux').each(['graceful', 'forced', 'foreign PGD
 });
 
 it.skipIf(process.platform !== 'linux')('distinguishes a real stopped child and observes forced exit before declaring cleanup complete', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'private-stopped-child-'));
+  dirs.push(root);
+  const observations: PrivateHostStopObservation[] = [];
   const child = spawn(process.execPath, ['-e',
     "process.stdout.write('ready\\n');setInterval(()=>{},1000)"],
   { env: privateBundleRuntimeEnv(process.env), stdio: ['ignore', 'pipe', 'pipe'] });
@@ -475,7 +499,6 @@ it.skipIf(process.platform !== 'linux')('distinguishes a real stopped child and 
       const stat = readFileSync(`/proc/${child.pid}/stat`, 'utf8');
       expect(stat.slice(stat.lastIndexOf(')') + 1).trim().split(/\s+/)[0]).toBe('T');
     });
-    const observations: PrivateHostStopObservation[] = [];
     await stopPrivateOperatorHost(child, undefined, 200, observation => observations.push(observation));
     const start = observations.find(o => o.phase === 'start');
     expect(start?.kernelProcess).toMatchObject({ status: 'present', state: 'T', startTicks: expect.stringMatching(/^\d+$/) });
@@ -495,6 +518,9 @@ it.skipIf(process.platform !== 'linux')('distinguishes a real stopped child and 
   } finally {
     if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
     await closed;
+    writeFileSync(join(root, 'termination.json'), JSON.stringify({
+      pid: child.pid, exitCode: child.exitCode, signalCode: child.signalCode, observations,
+    }));
   }
 }, 10_000);
 
@@ -571,6 +597,41 @@ function privateBudgetEnvironment() {
   vi.stubEnv('PAPERCUSP_DBOS_ENABLE', '0');
   return home;
 }
+
+it('loads production state only after budget measurement establishes private isolation', async () => {
+  const home = privateBudgetEnvironment();
+  const loaded = vi.fn();
+  const blocked = vi.fn(() => { throw new Error('production state import blocked'); });
+  vi.resetModules();
+  vi.doMock('../lib/agent-tools/coordination/presence', () => {
+    loaded('presence');
+    return { getPresence: blocked, setCompactionLimit: blocked, writePresence: blocked };
+  });
+  vi.doMock('../../../apps/operator/scripts/psu-launcher.mjs', () => {
+    loaded('launcher');
+    return { suWrapperExtraArgs: blocked };
+  });
+  try {
+    const scenario = await import('./codex-budget-http-scenario');
+    await scenario.prepareCodexBudgetScenario('test-runtime-budget-auth');
+    expect(loaded).not.toHaveBeenCalled();
+    rmSync(join(home, '.codex', 'auth.json'));
+    const options = { workspace: 'test-runtime-budget-auth', base: 'http://127.0.0.1:1',
+      headers: {}, evidenceDir: home };
+    vi.stubEnv('PC_ISOLATED_RUNTIME_PROOF', undefined);
+    await expect(scenario.measureCodexBudgetScenario(options)).rejects.toThrow();
+    expect(loaded).not.toHaveBeenCalled();
+    expect(existsSync(join(home, '.codex', 'auth.json'))).toBe(false);
+    vi.stubEnv('PC_ISOLATED_RUNTIME_PROOF', '1');
+    await expect(scenario.measureCodexBudgetScenario(options)).rejects.toThrow('production state import blocked');
+    expect(loaded.mock.calls.flat()).toEqual(expect.arrayContaining(['presence', 'launcher']));
+    expect(blocked).toHaveBeenCalled();
+  } finally {
+    vi.doUnmock('../lib/agent-tools/coordination/presence');
+    vi.doUnmock('../../../apps/operator/scripts/psu-launcher.mjs');
+    vi.resetModules();
+  }
+});
 
 it('prepares a disposable native login for the budget bootstrap without changing the account route', async () => {
   const home = privateBudgetEnvironment();

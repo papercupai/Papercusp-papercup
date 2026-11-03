@@ -1573,6 +1573,9 @@ export interface CurrentBenchIdentity {
   accountId?: string;
   nativeSessionId?: string;
   providerResponseId?: string;
+  /** Read from the host presence store, independently of launch arguments. */
+  compactionLimit?: number;
+  compactionLimitExplicit?: boolean;
 }
 /** Loaded-runtime receipts come from the execution host, never current HEAD or
  * requested launch options. The native transcript and gateway row are private
@@ -1584,6 +1587,8 @@ export interface CurrentBenchIdentityObservation {
     codexHome?: string;
     claudeConfigDir?: string;
     runtimeRevision: string; sourceRevision: string; evidenceRef: string;
+    compactionLimit?: number;
+    compactionLimitExplicit?: boolean;
   };
   nativeTranscript: string;
   gateway: { processRef: string; timeline: GatewayRequestTimeline };
@@ -1594,7 +1599,8 @@ export interface CurrentBenchIdentityObservation {
  * never complete all-attempt usage or a historical runtime census. */
 export interface CurrentBenchObservationReaderPorts {
   readBinding(task: CurrentBenchTask): Promise<{ ownerId: string; nativeSessionId: string;
-    agent?: 'codex' | 'claude'; codexHome?: string; claudeConfigDir?: string } | null>;
+    agent?: 'codex' | 'claude'; codexHome?: string; claudeConfigDir?: string;
+    compactionLimit?: number; compactionLimitExplicit?: boolean } | null>;
   readRuntimes(): Promise<RuntimeVintageRow[]>;
   measureRuntimes(rows: RuntimeVintageRow[], units: string[]): string | null;
   readTranscript(nativeSessionId: string, home: string, agent?: 'codex' | 'claude'): Promise<string | null>;
@@ -1683,6 +1689,8 @@ export function currentBenchObservationReader(
             nativeSessionId: binding.nativeSessionId, agent,
             ...(agent === 'claude' ? { claudeConfigDir: home } : { codexHome: home }),
             runtimeRevision, sourceRevision: worker.treeSha,
+            ...(binding.compactionLimit !== undefined ? { compactionLimit: binding.compactionLimit,
+              compactionLimitExplicit: binding.compactionLimitExplicit } : {}),
             evidenceRef: `runtime-vintage:${worker.unit}:${worker.host}:${worker.extra.kernelProcessIdentity}:${environment}` },
           nativeTranscript, gateway: { processRef: `gateway:${report.process.identity}`, timeline },
         };
@@ -1711,10 +1719,19 @@ export function liveCurrentBenchObservationReaderPorts(
       const { resolveDb } = await import('./reproducibility/db');
       const { codexHomeForSessionKey, sessionClaudeConfigDir } = await import('@papercusp/orchestrator/session-launch-dirs');
       const { sql } = resolveDb(scope);
-      const rows = await sql<{ id: number | string; agent: string; coord_owner_id: string; session_id: string }[]>`
-        SELECT a.id, a.agent, a.coord_owner_id, a.session_id FROM harness_shared.adv_sessions a
+      const rows = await sql<{ id: number | string; agent: string; coord_owner_id: string; session_id: string;
+        compaction_limit: number | null; compaction_limit_explicit: boolean | null }[]>`
+        SELECT a.id, a.agent, a.coord_owner_id, a.session_id, p.compaction_limit, p.compaction_limit_explicit
+        FROM harness_shared.adv_sessions a
         JOIN harness_shared.task_ledger t ON t.workspace_id = a.workspace_id
           AND t.session_id = a.session_id AND t.detail->>'coordOwnerId' = a.coord_owner_id
+        LEFT JOIN harness_shared.coord_presence p ON p.owner_id = a.coord_owner_id AND p.workspace_id = a.workspace_id
+          -- Presence is owner-keyed across carry-respawns. Use the same current
+          -- native-session ordering as PgPresenceStore's context-estimate fence;
+          -- a successor's threshold cannot certify a predecessor's execution.
+          AND a.id = (SELECT current.id FROM harness_shared.adv_sessions current
+            WHERE current.coord_owner_id = a.coord_owner_id AND (current.session_id IS NOT NULL OR current.agent = 'codex')
+            ORDER BY current.started_at DESC, current.id DESC LIMIT 1)
         WHERE t.task_id = ${task.taskId} AND t.workspace_id = ${scope.workspaceId}
           AND a.agent IN ('codex', 'claude') AND a.coord_owner_id = ${String(task.detail.coordOwnerId)}
           AND a.session_id = ${task.sessionId ?? null}
@@ -1727,7 +1744,11 @@ export function liveCurrentBenchObservationReaderPorts(
       const sessionKey = typeof row.id === 'string' && /^[1-9]\d*$/.test(row.id) ? Number(row.id) : row.id;
       if (typeof sessionKey !== 'number' || !Number.isSafeInteger(sessionKey) || sessionKey < 1 || !row.coord_owner_id ||
           row.coord_owner_id !== task.detail.coordOwnerId || row.session_id !== task.sessionId) return null;
-      const common = { ownerId: row.coord_owner_id, nativeSessionId: row.session_id };
+      if (row.compaction_limit != null && (!Number.isSafeInteger(row.compaction_limit) || row.compaction_limit <= 0 ||
+          typeof row.compaction_limit_explicit !== 'boolean')) return null;
+      const common = { ownerId: row.coord_owner_id, nativeSessionId: row.session_id,
+        ...(row.compaction_limit != null ? { compactionLimit: row.compaction_limit,
+          compactionLimitExplicit: row.compaction_limit_explicit! } : {}) };
       if (row.agent === 'claude') return { ...common, agent: 'claude', claudeConfigDir: sessionClaudeConfigDir(row.coord_owner_id) };
       return row.agent === 'codex' ? { ...common, codexHome: codexHomeForSessionKey(sessionKey) } : null;
     },
@@ -1797,6 +1818,9 @@ export function currentBenchIdentityFromObservation(
   const correlation = row.nativeCorrelation;
   const agent = worker.agent ?? 'codex';
   const revision = (value: string) => /^[a-f0-9]{40}$|^[a-f0-9]{64}$/.test(value);
+  if (worker.compactionLimit !== undefined && (!Number.isSafeInteger(worker.compactionLimit) || worker.compactionLimit <= 0 ||
+      typeof worker.compactionLimitExplicit !== 'boolean') ||
+      worker.compactionLimit === undefined && worker.compactionLimitExplicit !== undefined) return null;
   if (task.taskId !== worker.taskId || task.workspaceId !== worker.workspaceId || !worker.ownerId ||
       !worker.nativeSessionId || !worker.evidenceRef || !gateway.processRef ||
       !revision(worker.runtimeRevision) || !revision(worker.sourceRevision) ||
@@ -1860,8 +1884,12 @@ export function currentBenchIdentityFromObservation(
     effortSource: provider.effort ? 'provider-response' : 'forwarded-request',
     clientVersion: `${agent}/${version}`, promptHash, toolsHash, ...(promptTemplateHash ? { promptTemplateHash } : {}), accountId: provider.accountId,
     nativeSessionId: worker.nativeSessionId, providerResponseId: provider.responseId,
+    ...(worker.compactionLimit !== undefined ? { compactionLimit: worker.compactionLimit,
+      compactionLimitExplicit: worker.compactionLimitExplicit } : {}),
     observedAt: new Date(row.finalizedAt).toISOString(),
-    evidenceRefs: [worker.evidenceRef, `${gateway.processRef}#request:${row.requestId}`, nativeRef, `provider:${provider.responseId}`],
+    evidenceRefs: [worker.evidenceRef, `${gateway.processRef}#request:${row.requestId}`, nativeRef, `provider:${provider.responseId}`,
+      ...(worker.compactionLimit !== undefined
+        ? [`coord-presence:${worker.ownerId}#compaction-limit:${worker.compactionLimit}:explicit:${worker.compactionLimitExplicit}`] : [])],
   };
 }
 export interface CurrentSuBenchOptions extends LiveBenchHarnessOpts {
@@ -2155,7 +2183,9 @@ function currentBenchHarnessDriver(lifecycle: BenchHarnessOps, ports: CurrentSuB
         const frozenArm = frozen.arms.find(arm => arm.id === opts.armId)!;
         const { promptHashMode = 'exact-request-v1', proximus: hostReference, ...runtimePins } = frozenArm.runtime;
         if (hostReference) throw new Error('Proximus requires its host reference driver, not the native CLI driver.');
-        const expectedIdentity = { ...runtimePins, effort: frozenArm.effort };
+        const compactionLimit = currentBenchCompactionLimit(frozenArm);
+        const expectedIdentity = { ...runtimePins, effort: frozenArm.effort,
+          ...(compactionLimit !== undefined ? { compactionLimit, compactionLimitExplicit: true } : {}) };
         const protocol = await ports.verifyPreregistration();
         record.preregistration = protocol;
         if (protocol.preregHash !== opts.preregistration.preregHash || !protocol.gitCommitSha?.trim() || !protocol.receiptRef?.trim()) {

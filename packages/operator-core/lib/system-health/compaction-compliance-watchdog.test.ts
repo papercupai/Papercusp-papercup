@@ -16,6 +16,9 @@ import { tmpdir } from 'node:os';
 import { hostname } from 'node:os';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { join } from 'node:path';
+import { createHash } from 'node:crypto';
+import type { FrozenCarryBoundary } from '../capability-envelope/session-confinement';
+import type { RespawnLaunchSpec } from '../carry-respawn';
 import type { ResolveResumeResult } from '../agent-launch-core';
 import type { CompactionForceSuccessorInput, CompactionForceSuccessorResult } from './compaction-force-successor';
 
@@ -47,7 +50,9 @@ const {
   codexProvenanceMock,
   runFlushGateMock,
   resolveResumeTargetMock,
+  sessionCarryPolicyMock,
 } = vi.hoisted(() => ({
+  sessionCarryPolicyMock: vi.fn(async (_input: { ownerId: string; workspaceId?: string }) => undefined as FrozenCarryBoundary | undefined),
   clearEstimateMock: vi.fn(async () => {}),
   // EI-21595542328480968: where a codex reading came from. Default null = "not codex /
   // no rollout", which keeps every pre-existing test on the trusted path.
@@ -108,7 +113,7 @@ const {
   injectMock: vi.fn(async (_sock: string, _payload: unknown) => true),
   findTranscriptMock: vi.fn(async () => '/tmp/live-session.jsonl' as string | null),
   newestTranscriptMock: vi.fn((_ownerId: string) => null as string | null),
-  buildOwnerRespawnMock: vi.fn(async () => ({
+  buildOwnerRespawnMock: vi.fn(async (): Promise<RespawnLaunchSpec | null> => ({
     systemPromptAddendum: 'deterministic carry',
     firstPrompt: null as string | null,
     budgetChars: 32_000,
@@ -190,6 +195,9 @@ vi.mock('../claude-sessions', () => ({
 }));
 vi.mock('../carry-respawn', () => ({
   buildOwnerRespawnLaunchSpec: buildOwnerRespawnMock,
+}));
+vi.mock('../capability-envelope/session-confinement-port', () => ({
+  sessionCarryPolicy: sessionCarryPolicyMock,
 }));
 vi.mock('../search/self-session', () => ({
   resolveSelfSession: resolveSelfSessionMock,
@@ -365,6 +373,7 @@ function fakeSql(opts: {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  sessionCarryPolicyMock.mockReset().mockResolvedValue(undefined);
   observedSqlQueries.length = 0;
   estimateMock.mockResolvedValue(null);
   observedPromptFloorMock.mockReturnValue(null);
@@ -1361,6 +1370,74 @@ describe('deterministic carry-respawn cutover (P-018)', () => {
       compaction_limit: 158_000,
     },
   ];
+
+  it.each((['soft', 'force'] as const).flatMap(rung =>
+    (['on', 'off'] as const).map(mode => ({ rung, mode }))))(
+    'confines frozen assignment $rung carry $mode before ambient preflush', async ({ rung, mode }) => {
+    const initialPrompt = 'Host-pinned task and frozen context';
+    const digest = createHash('sha256').update(initialPrompt).digest('hex');
+    sessionCarryPolicyMock.mockResolvedValue({ mode, initialPrompt, initialPromptSha256: digest });
+    const spec = { firstPrompt: initialPrompt, systemPromptAddendum: '', budgetChars: 0,
+      openOwnerQuestion: { crossesOpenOwnerMessage: false },
+      frozenAssignmentCarry: { mode, initialPromptSha256: digest, firstPromptSha256: digest, noteSha256: null },
+    };
+    buildOwnerRespawnMock.mockResolvedValue(spec);
+    estimateMock.mockResolvedValue(rung === 'soft' ? 170_000 : 200_000);
+    getFlagMock.mockImplementation(async key => rung === 'soft' || key !== 'papercusp-gateway-maintenance-carry');
+    findLiveHostMock.mockReturnValue({ sock: '/tmp/hot.sock', caps: ['carry-respawn'] });
+    hostSupportsMock.mockReturnValue(true);
+    const out = await checkCompactionCompliance(fakeSql({ seeded }));
+    expect(rung === 'soft' ? out.carryRespawned : out.forceCompacted).toEqual(['hot']);
+    expect(sessionCarryPolicyMock).toHaveBeenCalledWith({ ownerId: 'hot', workspaceId: 'ws-1' });
+    expect(runFlushGateMock).not.toHaveBeenCalled();
+    expect(injectMock).toHaveBeenCalledWith('/tmp/hot.sock', expect.objectContaining({
+      mode: 'carry-respawn', data: initialPrompt, systemPromptAddendum: '', ownerId: 'hot',
+    }));
+  });
+
+  it.each(['soft', 'force'] as const)('refuses unreadable frozen policy before %s carry fallbacks', async rung => {
+    sessionCarryPolicyMock.mockRejectedValue(new Error('policy unavailable'));
+    estimateMock.mockResolvedValue(rung === 'soft' ? 170_000 : 200_000);
+    getFlagMock.mockImplementation(async key => rung === 'soft' || key !== 'papercusp-gateway-maintenance-carry');
+    const out = await checkCompactionCompliance(fakeSql({ seeded }));
+    expect(out.carryRespawned).toEqual([]);
+    expect(out.forceCompacted).toEqual([]);
+    expect(findLiveHostMock).not.toHaveBeenCalled();
+    expect(resolveResumeTargetMock).not.toHaveBeenCalled();
+    expect(runFlushGateMock).not.toHaveBeenCalled();
+    expect(buildOwnerRespawnMock).not.toHaveBeenCalled();
+    expect(injectMock).not.toHaveBeenCalled();
+  });
+
+  it('does not launch a hostless frozen assignment successor outside its metered boundary', async () => {
+    const initialPrompt = 'Host-pinned task';
+    sessionCarryPolicyMock.mockResolvedValue({ mode: 'on', initialPrompt,
+      initialPromptSha256: createHash('sha256').update(initialPrompt).digest('hex') });
+    estimateMock.mockResolvedValue(200_000);
+    const dispatchForceSuccessor = vi.fn();
+    const out = await checkCompactionCompliance(fakeSql({ seeded }), { dispatchForceSuccessor });
+    expect(out.forceCompacted).toEqual([]);
+    expect(resolveResumeTargetMock).not.toHaveBeenCalled();
+    expect(dispatchForceSuccessor).not.toHaveBeenCalled();
+    expect(runFlushGateMock).not.toHaveBeenCalled();
+    expect(injectMock).not.toHaveBeenCalled();
+  });
+
+  it.each(['soft', 'force'] as const)('refuses changed frozen %s carry instead of injecting ambient bytes', async rung => {
+    const initialPrompt = 'Host-pinned task';
+    sessionCarryPolicyMock.mockResolvedValue({ mode: 'on', initialPrompt,
+      initialPromptSha256: createHash('sha256').update(initialPrompt).digest('hex') });
+    estimateMock.mockResolvedValue(rung === 'soft' ? 170_000 : 200_000);
+    getFlagMock.mockImplementation(async key => rung === 'soft' || key !== 'papercusp-gateway-maintenance-carry');
+    findLiveHostMock.mockReturnValue({ sock: '/tmp/hot.sock', caps: ['carry-respawn'] });
+    hostSupportsMock.mockReturnValue(true);
+    const out = await checkCompactionCompliance(fakeSql({ seeded }));
+    expect(buildOwnerRespawnMock).toHaveBeenCalled();
+    expect(out.carryRespawned).toEqual([]);
+    expect(out.forceCompacted).toEqual([]);
+    expect(runFlushGateMock).not.toHaveBeenCalled();
+    expect(injectMock).not.toHaveBeenCalled();
+  });
 
   it('queues a deterministic successor at the soft threshold on a capable Claude host', async () => {
     estimateMock.mockResolvedValue(170_000);

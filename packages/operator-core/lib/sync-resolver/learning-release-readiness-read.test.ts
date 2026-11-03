@@ -14,7 +14,10 @@ vi.mock('../scout/success-metrics', () => ({
   buildProgramSuccessReport: (...a: unknown[]) => buildProgramSuccessReport(...a),
 }));
 const getRubric = vi.fn();
-vi.mock('../rubrics', () => ({
+vi.mock('../rubrics', async (original) => ({
+  // Preserve exports unrelated to this reader so added rubric APIs cannot
+  // prevent collection before the real admission policy is exercised.
+  ...(await original<typeof import('../rubrics')>()),
   getRubric: (...a: unknown[]) => getRubric(...a),
 }));
 const listScorecardPage = vi.fn();
@@ -94,6 +97,17 @@ describe('readReleaseReadiness', () => {
     expect(snap.errors).toBeUndefined();
     expect(getRubric).toHaveBeenCalledWith(RELEASE_READINESS_RUBRIC_ID);
     expect(listScorecardPage).toHaveBeenCalledWith({ rubricRef: RELEASE_READINESS_RUBRIC_ID, limit: 100 });
+  });
+
+  it('a newer diagnostic cannot hide the latest finalized failure', async () => {
+    listScorecardPage.mockResolvedValue({ rows: [
+      { purpose: 'diagnostic', createdAt: '2026-07-13T02:00:00.000Z', score10: 10 },
+      { createdAt: '2026-07-13T01:00:00.000Z', score10: 0, gradingAudit: { state: 'passed' } },
+    ], hasMore: false });
+    const snap = await readReleaseReadiness();
+    expect(snap.rubric).toMatchObject({
+      scorecardCount: 1, latestScorecardAt: '2026-07-13T01:00:00.000Z', latestScore10: 0,
+    });
   });
 
   it('a broken ledger read does not blank the rubric line (fail-soft per leg)', async () => {

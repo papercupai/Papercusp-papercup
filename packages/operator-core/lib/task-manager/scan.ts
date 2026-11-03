@@ -96,12 +96,22 @@ export interface ScanOptions {
 export interface AsyncCgroupFs {
   readFile(path: string): Promise<string | null>;
   readDir(path: string): Promise<string[]>;
+  /** Directory-entry metadata avoids a separate stat for every cgroup control file. */
+  readDirEntries?(path: string): Promise<Array<{ name: string; isDirectory: boolean; isSymbolicLink: boolean }>>;
   isDir(path: string): Promise<boolean>;
 }
 
 const nodeAsyncCgroupFs: AsyncCgroupFs = {
   readFile: (path) => readFile(path, 'utf8').catch(() => null),
   readDir: (path) => readdir(path).catch(() => []),
+  readDirEntries: (path) =>
+    readdir(path, { withFileTypes: true })
+      .then((entries) => entries.map((entry) => ({
+        name: entry.name,
+        isDirectory: entry.isDirectory(),
+        isSymbolicLink: entry.isSymbolicLink(),
+      })))
+      .catch(() => []),
   isDir: (path) => stat(path).then((s) => s.isDirectory(), () => false),
 };
 
@@ -199,15 +209,32 @@ async function scanProcessesAsyncComplete(
       const dirExists = await source.isDir(dir);
       if (dir === owned) progress.ownedRootExists = dirExists;
       if (!dirExists) return { dir, depth, children: [] as string[] };
-      const [names, content] = await Promise.all([source.readDir(dir), file(`${dir}/cgroup.procs`)]);
-      directories.set(dir, names);
+      const [entries, content] = await Promise.all([
+        source.readDirEntries
+          ? source.readDirEntries(dir)
+          : source.readDir(dir).then((names) => names.map((name) => ({
+              name,
+              isDirectory: false,
+              // Legacy test readers expose names only; stat those candidates to
+              // preserve their previous behavior, including symlinked dirs.
+              isSymbolicLink: true,
+            }))),
+        file(`${dir}/cgroup.procs`),
+      ]);
       for (const pid of parseCgroupProcs(content ?? '')) pids.add(pid);
-      if (depth >= 32) return { dir, depth, children: [] as string[] };
-      const children = await mapWithConcurrency(names, 16, async (name) => {
+      if (depth >= 32) {
+        directories.set(dir, []);
+        return { dir, depth, children: [] as string[] };
+      }
+      const directoryNames = entries.filter((entry) => entry.isDirectory).map((entry) => entry.name);
+      const symlinkNames = entries.filter((entry) => entry.isSymbolicLink).map((entry) => entry.name);
+      const symlinkDirectories = await mapWithConcurrency(symlinkNames, 16, async (name) => {
         const child = `${dir}/${name}`;
-        return (await source.isDir(child)) ? child : null;
+        return (await source.isDir(child)) ? name : null;
       });
-      return { dir, depth, children: children.filter((x): x is string => x !== null) };
+      const children = [...directoryNames, ...symlinkDirectories.filter((x): x is string => x !== null)];
+      directories.set(dir, children);
+      return { dir, depth, children: children.map((name) => `${dir}/${name}`) };
     });
     for (const node of nodes) {
       for (const child of node.children) pending.push({ dir: child, depth: node.depth + 1 });

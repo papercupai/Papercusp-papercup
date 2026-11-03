@@ -232,7 +232,12 @@ export function parseProjection(rawInput: unknown): ProjectionParseResult {
 
   if (raw.pipe !== undefined) {
     if (!Array.isArray(raw.pipe) || raw.pipe.length === 0) {
-      return { ok: false, error: 'projection.pipe must be a non-empty array of stages' };
+      return {
+        ok: false,
+        error:
+          'projection.pipe must be a non-empty array of stages; provide one or omit `pipe` ' +
+          '(or omit `projection` if no selector remains).',
+      };
     }
     if (raw.pipe.length > MAX_PIPELINE_STAGES) {
       return {

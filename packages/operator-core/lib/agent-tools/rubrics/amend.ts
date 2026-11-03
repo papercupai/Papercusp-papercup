@@ -294,11 +294,15 @@ async function postPreviewApproval(
   target: { workItemId: string; harness?: string },
   approval: unknown,
   identity: ReturnType<typeof resolveAgentIdentity>,
+  idempotencyKey: string,
 ): Promise<{ ref: string } | { ok: false; code: string; error: string; next: string }> {
   const { commentWorkItem } = await import('../../work-items');
   const post = await commentWorkItem(target.workItemId, JSON.stringify(approval), identity.ownerId, {
     ...(identity.workspaceId ? { workspaceId: identity.workspaceId } : {}),
     ...(target.harness ? { harness: target.harness } : {}),
+    // The post may commit before this worker can publish its review receipt.
+    // A reclaimed receipt must resume that immutable anchor, never post again.
+    idempotencyKey,
   });
   if (!post) {
     return {
@@ -788,7 +792,7 @@ export default defineTool({
         let previewPostRef = args.reviewPreviewPost;
         if (!previewPostRef && args.requestReview) {
           reportPhase('preview-post-approval');
-          const posted = await postPreviewApproval(args.requestReview, preview.approval, identity);
+          const posted = await postPreviewApproval(args.requestReview, preview.approval, identity, receiptKey);
           if (!('ref' in posted)) return { ...posted, dryRun: true, preview };
           previewPostRef = posted.ref;
         }

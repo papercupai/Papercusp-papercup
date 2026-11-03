@@ -20,6 +20,7 @@ import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import {
+  assertPatchPostimageGitSource,
   cacheVerifyArgs,
   dependencySelectionArgs,
   installLockWaitReporter,
@@ -64,6 +65,66 @@ const NPM_FIXTURE_CONFIG_RESET = Object.fromEntries(
     ["NPM_CONFIG_" + name.toUpperCase(), undefined],
   ]),
 );
+
+test("Git-dependent postinstall refuses an archive before any npm or dependency mutation", (t) => {
+  const root = mkdtempSync(join(tmpdir(), "install-safe-archive-preflight-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const bin = join(root, "bin");
+  const repoRoot = join(root, "repo");
+  const trace = join(root, "npm-called");
+  mkdirSync(bin);
+  mkdirSync(repoRoot);
+  writeFileSync(join(repoRoot, "package.json"), JSON.stringify({
+    name: "archive-preflight", version: "1.0.0", private: true,
+    scripts: { postinstall: "node scripts/check-installed-patch-postimages.mjs" },
+  }));
+  const lock = '{"lockfileVersion":3,"packages":{}}\n';
+  writeFileSync(join(repoRoot, "package-lock.json"), lock);
+  writeFileSync(join(bin, "npm"), "#!/bin/sh\nprintf called > \"$NPM_ARCHIVE_PREFLIGHT_TRACE\"\nexit 99\n");
+  chmodSync(join(bin, "npm"), 0o755);
+  const result = spawnSync(process.execPath, [
+    fileURLToPath(new URL("./npm-install-safe.mjs", import.meta.url)),
+    "--repo-root", repoRoot, "ci", "--ignore-scripts=false", "--dry-run=false",
+  ], {
+    encoding: "utf8", timeout: 10000,
+    env: { ...process.env, ...NPM_FIXTURE_CONFIG_RESET,
+      PATH: bin + delimiter + (process.env.PATH ?? ""),
+      NPM_ARCHIVE_PREFLIGHT_TRACE: trace, PAPERCUSP_INSTALL_MUTEX_HELD: "",
+    },
+  });
+  assert.equal(result.status, 1, result.stderr);
+  assert.match(result.stderr, /NPM_INSTALL_SAFE_GIT_SOURCE_REQUIRED/);
+  assert.match(result.stderr, /verifier-prepare --git-checkout/);
+  assert.equal(existsSync(trace), false, "even npm cache verification must not start");
+  assert.equal(existsSync(join(repoRoot, "node_modules")), false);
+  assert.equal(readFileSync(join(repoRoot, "package-lock.json"), "utf8"), lock);
+});
+
+test("patch lifecycle preflight accepts a real checkout and scopes archive refusals", (t) => {
+  const repoRoot = mkdtempSync(join(tmpdir(), "install-safe-git-source-"));
+  t.after(() => rmSync(repoRoot, { recursive: true, force: true }));
+  writeFileSync(join(repoRoot, "package.json"), JSON.stringify({
+    scripts: { postinstall: "node scripts/check-installed-patch-postimages.mjs" },
+  }));
+  const options = { repoRoot, npmArgs: ["ci"], env: {} };
+  assert.throws(() => assertPatchPostimageGitSource(options), /GIT_SOURCE_REQUIRED/);
+  mkdirSync(join(repoRoot, ".git"));
+  assert.throws(() => assertPatchPostimageGitSource(options), /GIT_SOURCE_REQUIRED/);
+  assert.doesNotThrow(() => assertPatchPostimageGitSource({
+    ...options, repoRoot: dirname(fileURLToPath(new URL("../package.json", import.meta.url))),
+  }));
+  for (const npmArgs of [["ci", "--ignore-scripts"], ["ci", "--package-lock-only"], ["ci", "--dry-run"]]) {
+    assert.doesNotThrow(() => assertPatchPostimageGitSource({ ...options, npmArgs }));
+  }
+  assert.doesNotThrow(() => assertPatchPostimageGitSource({
+    ...options, env: { npm_config_ignore_scripts: "true" },
+  }));
+  assert.throws(() => assertPatchPostimageGitSource({
+    ...options, npmArgs: ["ci", "--ignore-scripts=false"], env: { npm_config_ignore_scripts: "true" },
+  }), /GIT_SOURCE_REQUIRED/);
+  writeFileSync(join(repoRoot, "package.json"), JSON.stringify({ scripts: { postinstall: "node custom.mjs" } }));
+  assert.doesNotThrow(() => assertPatchPostimageGitSource(options));
+});
 
 function createManifestResolutionFixture({
   staleDuringResolve = false,

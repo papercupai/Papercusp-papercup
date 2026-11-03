@@ -339,7 +339,7 @@ import { detectEphemeralDeliverableReferences, renderEphemeralDeliverableWarning
 import {
   discoverSiblingTypecheckGates,
   gateCoveringFile,
-  lastCommitTimes,
+  lastCommitTimesAsync,
 } from '../../../../../scripts/lib/tsc-baseline-gate.mjs';
 import {
   isPlaneGapItem,
@@ -2027,8 +2027,8 @@ export interface CompletionPathVintageProbe {
   repoRoot?: string | null;
   /** Epoch seconds, an ISO timestamp, or a Date; null/undefined means unobservable. */
   lastCommitAt?: (path: string) => number | string | Date | null | undefined;
-  /** Injectable batch history read; production uses the argv-safe git helper. */
-  lastCommitTimes?: (repoRoot: string, paths: Iterable<string>) => Map<string, number | null>;
+  /** Injectable asynchronous batch history read; production uses the argv-safe Git helper. */
+  lastCommitTimesAsync?: (repoRoot: string, paths: Iterable<string>) => Promise<Map<string, number | null>>;
 }
 
 export interface CompletionPathVintageHit {
@@ -2512,14 +2512,22 @@ function epochSeconds(value: unknown): number | undefined {
  * WARN-ONLY, fail-open advisory: unknown roots, malformed dates, unresolvable git
  * history, and paths that cannot be tied to the completion all return no finding.
  *
- * The default history read reuses the existing argv-safe lastCommitTimes helper.
- * Tests inject the per-path read so the predicate remains pure and never touches git.
+ * The pure decision seam accepts injected timestamps; production uses the asynchronous
+ * history reader below so Git never blocks the operator event loop.
  */
-export function preExistingChangedPathsInCompletion(
+interface CompletionPathVintageContext {
+  createdAtSec: number;
+  claimedPaths: string[];
+  repoRoot: string;
+  byRepository: Map<string, Array<{ originalPath: string; repositoryPath: string }>>;
+}
+
+/** Normalize claimed target paths and group them by the repository that owns their history. */
+function completionPathVintageContext(
   item: { createdAt?: unknown; payload?: unknown },
   completion: unknown,
-  probe: CompletionPathVintageProbe = {},
-): { createdAt: string; paths: CompletionPathVintageHit[] } | undefined {
+  probe: CompletionPathVintageProbe,
+): CompletionPathVintageContext | undefined {
   const createdAtSec = epochSeconds(item.createdAt);
   if (createdAtSec === undefined) return undefined;
   const payload =
@@ -2541,46 +2549,73 @@ export function preExistingChangedPathsInCompletion(
 
   const repoRoot = 'repoRoot' in probe ? probe.repoRoot : completionRoot();
   if (!repoRoot) return undefined;
-  let fallbackTimes: Map<string, number | null> | undefined;
-  if (!probe.lastCommitAt) {
-    fallbackTimes = new Map();
-    const history = probe.lastCommitTimes ?? lastCommitTimes;
-    const byRepository = new Map<string, Array<{ originalPath: string; repositoryPath: string }>>();
-    for (const path of claimedPaths) {
-      const resolved = completionHistoryPath(repoRoot, path);
-      if (!resolved) continue;
-      const paths = byRepository.get(resolved.repoRoot) ?? [];
-      paths.push({ originalPath: path, repositoryPath: resolved.path });
-      byRepository.set(resolved.repoRoot, paths);
-    }
-    for (const [historyRoot, paths] of byRepository) {
-      try {
-        const times = history(
-          historyRoot,
-          paths.map((entry) => entry.repositoryPath),
-        );
-        for (const entry of paths) {
-          fallbackTimes.set(entry.originalPath, times.get(entry.repositoryPath) ?? null);
-        }
-      } catch {
-        // History is advisory: an unavailable repository must not fail completion.
-      }
-    }
-  }
-
-  const hits: CompletionPathVintageHit[] = [];
+  const byRepository = new Map<string, Array<{ originalPath: string; repositoryPath: string }>>();
   for (const path of claimedPaths) {
+    const resolved = completionHistoryPath(repoRoot, path);
+    if (!resolved) continue;
+    const paths = byRepository.get(resolved.repoRoot) ?? [];
+    paths.push({ originalPath: path, repositoryPath: resolved.path });
+    byRepository.set(resolved.repoRoot, paths);
+  }
+  return { createdAtSec, claimedPaths, repoRoot, byRepository };
+}
+
+function completionPathVintageResult(
+  context: CompletionPathVintageContext,
+  lastCommitAt: (path: string) => number | string | Date | null | undefined,
+): { createdAt: string; paths: CompletionPathVintageHit[] } | undefined {
+  const hits: CompletionPathVintageHit[] = [];
+  for (const path of context.claimedPaths) {
     let raw: number | string | Date | null | undefined;
     try {
-      raw = probe.lastCommitAt ? probe.lastCommitAt(path) : fallbackTimes?.get(path);
+      raw = lastCommitAt(path);
     } catch {
       continue;
     }
     const commitSec = epochSeconds(raw);
-    if (commitSec === undefined || commitSec >= createdAtSec) continue;
+    if (commitSec === undefined || commitSec >= context.createdAtSec) continue;
     hits.push({ path, lastCommitAt: new Date(commitSec * 1000).toISOString() });
   }
-  return hits.length > 0 ? { createdAt: new Date(createdAtSec * 1000).toISOString(), paths: hits } : undefined;
+  return hits.length > 0
+    ? { createdAt: new Date(context.createdAtSec * 1000).toISOString(), paths: hits }
+    : undefined;
+}
+
+export function preExistingChangedPathsInCompletion(
+  item: { createdAt?: unknown; payload?: unknown },
+  completion: unknown,
+  probe: CompletionPathVintageProbe = {},
+): { createdAt: string; paths: CompletionPathVintageHit[] } | undefined {
+  const context = completionPathVintageContext(item, completion, probe);
+  if (!context || !probe.lastCommitAt) return undefined;
+  return completionPathVintageResult(context, probe.lastCommitAt);
+}
+
+export async function preExistingChangedPathsInCompletionAsync(
+  item: { createdAt?: unknown; payload?: unknown },
+  completion: unknown,
+  probe: CompletionPathVintageProbe = {},
+): Promise<{ createdAt: string; paths: CompletionPathVintageHit[] } | undefined> {
+  const context = completionPathVintageContext(item, completion, probe);
+  if (!context) return undefined;
+  if (probe.lastCommitAt) return completionPathVintageResult(context, probe.lastCommitAt);
+
+  const history = probe.lastCommitTimesAsync ?? lastCommitTimesAsync;
+  const fallbackTimes = new Map<string, number | null>();
+  for (const [historyRoot, paths] of context.byRepository) {
+    try {
+      const times = await history(
+        historyRoot,
+        paths.map((entry) => entry.repositoryPath),
+      );
+      for (const entry of paths) {
+        fallbackTimes.set(entry.originalPath, times.get(entry.repositoryPath) ?? null);
+      }
+    } catch {
+      // History is advisory: an unavailable repository must not fail completion.
+    }
+  }
+  return completionPathVintageResult(context, (path) => fallbackTimes.get(path));
 }
 
 const PRESCRIBED_GUARD_RE =
@@ -6037,7 +6072,7 @@ async function completeOneTracked(
   // EI-20288629053504794: a positive path claim is not evidence that this item touched
   // the path. Surface target files whose last commit predates the item, but never block
   // or accuse when git history cannot be observed.
-  const preExistingPaths = preExistingChangedPathsInCompletion(existing, it.completion);
+  const preExistingPaths = await preExistingChangedPathsInCompletionAsync(existing, it.completion);
   const preExistingPathsWarning = preExistingPaths
     ? 'completion for ' +
       it.id +

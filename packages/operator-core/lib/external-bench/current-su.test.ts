@@ -1482,6 +1482,22 @@ function observedClaudeFixture() {
 }
 
 describe('exact native benchmark identity observation', () => {
+  it.each([true, false])('records the observed compaction threshold with explicit provenance %s', explicit => {
+    const { task, observation } = observedFixture();
+    Object.assign(observation.worker, { compactionLimit: 20_000, compactionLimitExplicit: explicit });
+    const measured = currentBenchIdentityFromObservation(task, observation);
+    expect(measured).toMatchObject({ compactionLimit: 20_000, compactionLimitExplicit: explicit });
+    expect(measured?.evidenceRefs).toContain(`coord-presence:su-exact#compaction-limit:20000:explicit:${explicit}`);
+  });
+  it.each([
+    { compactionLimit: 0, compactionLimitExplicit: true },
+    { compactionLimit: Number.NaN, compactionLimitExplicit: true },
+    { compactionLimit: 20_000 }, { compactionLimitExplicit: true },
+  ])('refuses malformed observed compaction provenance %j', fields => {
+    const { task, observation } = observedFixture();
+    Object.assign(observation.worker, fields);
+    expect(currentBenchIdentityFromObservation(task, observation)).toBeNull();
+  });
   it('joins Claude native version/session/message with the measured Anthropic response without inventing Codex turn metadata', () => {
     const { task, observation } = observedClaudeFixture();
     // The current telemetry writer marks this Codex-only format invalid on
@@ -1584,6 +1600,25 @@ function hostObservationFixture() {
   return { task, rows, report, ports, opts };
 }
 describe('host-backed benchmark observation reader', () => {
+  it('reads the compaction threshold from the stable host binding independently of launch options', async () => {
+    const f = hostObservationFixture(), binding = (await f.ports.readBinding(f.task))!;
+    Object.assign(binding, { compactionLimit: 20_000, compactionLimitExplicit: true });
+    f.ports.readBinding = vi.fn(async () => binding);
+    const observation = await currentBenchObservationReader(f.opts, f.ports)(f.task);
+    expect(currentBenchIdentityFromObservation(f.task, observation!)).toMatchObject({
+      compactionLimit: 20_000, compactionLimitExplicit: true });
+  });
+  it.each(['value', 'provenance'])('refuses a compaction %s change during observation', async changed => {
+    const f = hostObservationFixture(), binding = (await f.ports.readBinding(f.task))!;
+    Object.assign(binding, { compactionLimit: 20_000, compactionLimitExplicit: true });
+    f.ports.readBinding = vi.fn(async () => binding);
+    vi.mocked(f.ports.readGateway).mockImplementationOnce(async () => {
+      if (changed === 'value') binding.compactionLimit = 25_000;
+      else binding.compactionLimitExplicit = false;
+      return f.report;
+    });
+    expect(await currentBenchObservationReader(f.opts, f.ports)(f.task)).toBeNull();
+  });
   function claudeHostFixture() {
     const f = hostObservationFixture(), { observation } = observedClaudeFixture();
     f.ports.readBinding = vi.fn(async () => ({ agent: 'claude' as const,
@@ -2076,6 +2111,24 @@ describe('current native benchmark execution', () => {
     protocol.arms[0].control.compactionLimit = Number.MAX_SAFE_INTEGER;
     expect(() => currentBenchLaunchRequest(opts, handle, 'issue')).toThrow(/native host clamp/);
   });
+  it.each(['matched', 'missing', 'changed', 'derived'] as const)(
+    'compares the frozen compaction threshold with %s host evidence', async state => {
+      const opts = structuredClone(options);
+      const protocol = opts.preregistration.config as unknown as ReturnType<typeof currentProtocolFixture>;
+      protocol.arms[0].control = { topology: 'solo', solverGroup: 'solver', solverToolsHash: 'f'.repeat(64),
+        capabilities: allCapabilities('off'), compactionLimit: 20_000 };
+      protocol.arms[1].control = { topology: 'stock-native-reference', solverGroup: 'stock',
+        solverToolsHash: 'f'.repeat(64), capabilities: allCapabilities('off') };
+      const f = fixture(opts);
+      f.ports.verifyGenerationBudget = () => ({ frozenBudget: protocol.arms[0].generationBudget, topology: 'solo',
+        capabilityControl: currentBenchSoloCapabilityControl(protocol.arms[0]) });
+      vi.mocked(f.ports.readIdentity).mockResolvedValue({ ...identity, ...(state === 'missing' ? {} : {
+        compactionLimit: state === 'changed' ? 25_000 : 20_000, compactionLimitExplicit: state !== 'derived' }) });
+      const result = await f.run();
+      expect(result.telemetry.stopReason).toBe(state === 'matched' ? 'done' : 'error');
+      if (state !== 'matched') expect(result.telemetry.generationError).toMatch(/compactionLimit/);
+      expect(f.ports.killTask).toHaveBeenCalledWith('task-own');
+    });
   it.each(['sourceRevision', 'runtimeRevision', 'clientVersion', 'promptHash', 'toolsHash', 'effort'] as const)(
     'rejects observed %s drift from the frozen arm and retains cleanup/cost evidence', async field => {
       const f = fixture();

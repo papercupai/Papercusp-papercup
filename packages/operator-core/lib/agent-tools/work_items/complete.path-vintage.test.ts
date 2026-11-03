@@ -5,17 +5,52 @@
  * injected so both directions (fires and stays silent) are falsifiable without
  * spawning git or depending on the shared checkout.
  */
-import { describe, expect, it } from 'vitest';
+import { execFile } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import * as nodePath from 'node:path';
+import { describe, expect, it } from 'vitest';
 
-import { preExistingChangedPathsInCompletion } from './complete';
+import { lastCommitTimesAsync } from '../../../../../scripts/lib/tsc-baseline-gate.mjs';
+import { preExistingChangedPathsInCompletion, preExistingChangedPathsInCompletionAsync } from './complete';
 
 const ROOT = '/repo';
 const CREATED = '2026-08-12T22:39:04.318Z';
 const BEFORE = '2026-08-12T01:21:00.000Z';
 const AFTER = '2026-08-13T01:21:00.000Z';
+
+function runFileAsync(file: string, args: string[], cwd?: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const child = execFile(file, args, { cwd, encoding: 'utf8' }, (error, stdout) => {
+      if (error) reject(error);
+      else resolve(String(stdout));
+    });
+    child?.stdin?.end();
+  });
+}
+
+describe('lastCommitTimesAsync', () => {
+  it('reads commit timestamps asynchronously and leaves unknown paths unknown', async () => {
+    const root = mkdtempSync(nodePath.join(tmpdir(), 'completion-vintage-git-'));
+    try {
+      await runFileAsync('git', ['init', '--quiet', root]);
+      writeFileSync(nodePath.join(root, 'tracked.ts'), 'export const value = 1;\n');
+      await runFileAsync('git', ['-C', root, 'add', '--', 'tracked.ts']);
+      await runFileAsync('git', [
+        '-C', root,
+        '-c', 'user.name=Papercusp test',
+        '-c', 'user.email=papercusp-test@example.invalid',
+        'commit', '--quiet', '-m', 'fixture',
+      ]);
+
+      const times = await lastCommitTimesAsync(root, ['tracked.ts', 'missing.ts']);
+      expect(times.get('tracked.ts')).toBeGreaterThan(0);
+      expect(times.get('missing.ts')).toBeNull();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
 
 const item = {
   createdAt: CREATED,
@@ -23,6 +58,37 @@ const item = {
 };
 
 describe('preExistingChangedPathsInCompletion', () => {
+  it('yields while the asynchronous history lookup is pending', async () => {
+    let resolveHistory!: (times: Map<string, number | null>) => void;
+    let historyStarted = false;
+    let historyCompleted = false;
+    const history = new Promise<Map<string, number | null>>((resolve) => {
+      resolveHistory = resolve;
+    });
+    const resultPromise = preExistingChangedPathsInCompletionAsync(
+      item,
+      { summary: 'updated the old target', filesChanged: ['packages/old.ts'] },
+      {
+        repoRoot: nodePath.resolve(__dirname, '../../../../..'),
+        lastCommitTimesAsync: async () => {
+          historyStarted = true;
+          const times = await history;
+          historyCompleted = true;
+          return times;
+        },
+      },
+    );
+
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(historyStarted).toBe(true);
+    expect(historyCompleted).toBe(false);
+    resolveHistory(new Map([['packages/old.ts', Date.parse(BEFORE) / 1000]]));
+    const result = await resultPromise;
+
+    expect(historyCompleted).toBe(true);
+    expect(result?.paths).toEqual([{ path: 'packages/old.ts', lastCommitAt: BEFORE }]);
+  });
+
   it('fires for a claimed target whose last commit predates item creation', () => {
     const result = preExistingChangedPathsInCompletion(
       item,
@@ -318,7 +384,7 @@ describe('preExistingChangedPathsInCompletion', () => {
     ).toBeUndefined();
   });
 
-  it('reads a submodule path from the submodule repository, not the superproject', () => {
+  it('reads a submodule path from the submodule repository, not the superproject', async () => {
     const root = mkdtempSync(nodePath.join(tmpdir(), 'completion-vintage-'));
     const submodule = nodePath.join(root, 'libs', 'testing-shell');
     try {
@@ -328,12 +394,12 @@ describe('preExistingChangedPathsInCompletion', () => {
       writeFileSync(nodePath.join(submodule, '.git'), 'gitdir: ../../.git/modules/testing-shell\n');
 
       const calls: Array<{ repoRoot: string; paths: string[] }> = [];
-      const result = preExistingChangedPathsInCompletion(
+      const result = await preExistingChangedPathsInCompletionAsync(
         { createdAt: CREATED, payload: { paths: ['libs/testing-shell/package.json'] } },
         { filesChanged: ['libs/testing-shell/package.json'] },
         {
           repoRoot: root,
-          lastCommitTimes: (repoRoot, paths) => {
+          lastCommitTimesAsync: async (repoRoot, paths) => {
             calls.push({ repoRoot, paths: [...paths] });
             return new Map([['package.json', Date.parse(BEFORE) / 1000]]);
           },
@@ -364,7 +430,7 @@ describe('complete.ts wiring', () => {
   const source = readFileSync(nodePath.join(__dirname, 'complete.ts'), 'utf8');
 
   it('computes the detector from the fetched item and raw completion', () => {
-    expect(source).toMatch(/preExistingChangedPathsInCompletion\(\s*existing,\s*it\.completion\s*\)/);
+    expect(source).toMatch(/await\s+preExistingChangedPathsInCompletionAsync\(\s*existing,\s*it\.completion\s*\)/);
   });
 
   it('returns the warning so a result-door truncation cannot hide the finding', () => {

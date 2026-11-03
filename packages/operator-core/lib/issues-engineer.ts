@@ -87,6 +87,7 @@ import {
   type WorkItemCompletionAuthority,
 } from './work-item-completion-authority';
 import { pgTimestampToIso, pgTimestampToIsoOrNull } from './pg-timestamp';
+import { createHash } from 'node:crypto';
 import { clearGoalClaimedIfMatches } from './agent-state-stamp';
 import { DEFAULT_SIGNAL_ORIGIN, deriveReporterProvenance, type SignalOrigin } from './harness/improvements/provenance';
 import { createBlockingEdgeReader, ISSUE_TERMINAL_STATUSES } from './work-item-blocking';
@@ -4491,10 +4492,14 @@ export async function commentIssue(
   body: string,
   authorId?: string,
   /** `writerOwnerId`: see commentWorkItem — the agent whose own text `body` is (P-012 / D-006). */
-  opts: { workspaceId?: string; harness?: string | null; writerOwnerId?: string | null } = {},
+  opts: { workspaceId?: string; harness?: string | null; writerOwnerId?: string | null; idempotencyKey?: string } = {},
 ): Promise<ThreadPostRow | null> {
   const issue = await getIssue(id);
   if (!issue) return null;
+  const commentKey = opts.idempotencyKey?.trim();
+  if (commentKey !== undefined && (!commentKey || opts.writerOwnerId?.trim())) {
+    throw new Error('comment_idempotency_requires_system_text');
+  }
   const created = nowIso();
   // The durable write (get-or-create thread + add post) runs in ONE bounded txn
   // (pg-bounded-txn): ATOMIC so the post row + the coord_threads post_count bump
@@ -4502,6 +4507,7 @@ export async function commentIssue(
   // SET LOCAL statement_timeout so a stalled query fails fast + typed instead of
   // hanging the MCP call indefinitely (the admin pool has no default
   // statement_timeout). A tx-bound PgThreadStore reuses the exact tested store SQL.
+  let replayed = false;
   const post = await boundedOrgTxn(async (tx) => {
     const txThreads = new PgThreadStore({
       ...coordOpts,
@@ -4525,11 +4531,31 @@ export async function commentIssue(
       created_ts: issue.createdAt,
       harness_slug: opts.harness ?? undefined,
     });
-    return txThreads.addPost({ thread_id: thread.thread_id, author_id: authorId, body: stored?.text ?? body, created_ts: created });
+    const ws = opts.workspaceId?.trim() || coordScopeWorkspace();
+    const postKey = commentKey ? `work-item-comment:${createHash('sha256')
+      .update(JSON.stringify([ws, thread.thread_id, commentKey])).digest('hex')}` : undefined;
+    if (postKey) {
+      await tx`SELECT thread_id FROM harness_shared.coord_threads
+        WHERE workspace_id = ${ws} AND thread_id = ${thread.thread_id} FOR UPDATE`;
+      const [prior] = await tx<{ id: number; body: string; author_id: string | null; created_at: unknown }[]>`
+        SELECT id, body, author_id, created_at FROM harness_shared.coord_thread_posts
+        WHERE workspace_id = ${ws} AND thread_id = ${thread.thread_id} AND post_msg_id = ${postKey}
+        ORDER BY id LIMIT 1`;
+      if (prior) {
+        if (prior.body !== body || prior.author_id !== (authorId ?? null)) throw new Error('comment_idempotency_conflict');
+        replayed = true;
+        return { id: Number(prior.id), thread_id: thread.thread_id, author_id: prior.author_id,
+          body: prior.body, created_ts: tsIso(prior.created_at) };
+      }
+    }
+    const added = await txThreads.addPost({ thread_id: thread.thread_id, author_id: authorId, body: stored?.text ?? body, created_ts: created });
+    if (postKey) await tx`UPDATE harness_shared.coord_thread_posts SET post_msg_id = ${postKey}
+      WHERE workspace_id = ${ws} AND id = ${added.id}`;
+    return added;
   });
   // Fan-out is best-effort + deadline-bounded (fanoutForObject) — it runs AFTER the
   // durable write commits and can never hang or roll back the caller's comment.
-  await deliver(
+  if (!replayed) await deliver(
     issue,
     'commented',
     `issue ${id} — new comment${authorId ? ` from ${authorId}` : ''}`,

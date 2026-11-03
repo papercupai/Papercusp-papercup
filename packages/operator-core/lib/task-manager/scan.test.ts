@@ -81,16 +81,30 @@ describe('scanProcessesAsync — inventory IO', () => {
       readDir: () => { syncReads++; throw new Error('sync directory read'); },
       isDir: () => { syncReads++; throw new Error('sync stat'); },
     };
+    const directoryChecks: string[] = [];
     const asyncFs = {
       readFile: async (path: string) => fs.readFile(path),
       readDir: async (path: string) => fs.readDir(path),
-      isDir: async (path: string) => fs.isDir(path),
+      readDirEntries: async (path: string) => [
+        ...fs.readDir(path).map((name) => {
+          const isSymbolicLink = path === `${ROOT}${MGR}` && name === 'app.slice';
+          return { name, isDirectory: !isSymbolicLink, isSymbolicLink };
+        }),
+        { name: 'cgroup.controllers', isDirectory: false, isSymbolicLink: false },
+        { name: 'cgroup.events', isDirectory: false, isSymbolicLink: false },
+      ],
+      isDir: async (path: string) => {
+        directoryChecks.push(path);
+        return fs.isDir(path);
+      },
     };
     const opts = { selfPid: 999, foreignSignature: /repo/, cgroupRoot: ROOT };
     const expected = scanProcesses({ ...opts, fs });
     const actual = await scanProcessesAsync({ ...opts, fs: forbidden, asyncFs });
     expect(actual).toEqual(expected);
     expect(syncReads).toBe(0);
+    expect(directoryChecks).toContain(`${ROOT}${MGR}/app.slice`);
+    expect(directoryChecks.some((path) => /\/cgroup\.(controllers|events)$/.test(path))).toBe(false);
     expect(actual.processes.find((p) => p.pid === 601)?.exemptReason).toBe('human-terminal');
   });
 

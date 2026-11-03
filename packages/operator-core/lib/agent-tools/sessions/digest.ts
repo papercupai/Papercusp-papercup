@@ -230,8 +230,9 @@ export default defineTool({
       return { data: { ok: false, error: 'invalid_cursor', message: 'Window differs from the cursor snapshot.' } };
     }
     const since = cursor.bounds.since ?? sinceNorm.iso;
-    // Use the database clock at its native precision. A JS millisecond cutoff
-    // can precede a row inserted moments before this call within that same ms.
+    // Keep the database clock's microseconds. Bind timestamp strings through
+    // text below: postgres.js serializes a timestamptz parameter through Date,
+    // truncating it to milliseconds and hiding rows ingested within that ms.
     const snapshotAt = cursor.bounds.snapshotAt ?? (await tx<{ snapshot_at: string }[]>`
       SELECT to_json(clock_timestamp()) #>> '{}' AS snapshot_at`)[0]!.snapshot_at;
     const until = cursor.bounds.until ?? untilNorm.iso ?? snapshotAt;
@@ -259,8 +260,8 @@ export default defineTool({
            AND (${sourceKind ?? null}::text IS NULL OR source_kind = ${sourceKind ?? null})
            AND (${args.cwd_contains ?? null}::text IS NULL OR cwd ILIKE '%' || ${args.cwd_contains ?? null} || '%')
            AND (${since ?? null}::timestamptz IS NULL OR COALESCE(ts, ingested_at) >= ${since ?? null}::timestamptz)
-           AND COALESCE(ts, ingested_at) <= ${until}::timestamptz
-           AND ingested_at <= ${snapshotAt}::timestamptz
+           AND COALESCE(ts, ingested_at) <= ${until}::text::timestamptz
+           AND ingested_at <= ${snapshotAt}::text::timestamptz
            -- D-006 reader rule (WI-10005570): another agent's disclosure-window turns never reach a digest.
            AND NOT ${restrictedTurnSql(tx as unknown as Parameters<typeof restrictedTurnSql>[0], 'session_turns', [readerOwnerOf(ctx)]) as never}
       ),
@@ -370,8 +371,8 @@ export default defineTool({
                WHERE t.source_kind = a.source_kind AND t.session_id = a.session_id
                  AND (t.workspace_id = ${workspaceId} OR t.workspace_id = 'default')
                  AND t.speaker = 'user'
-                 AND COALESCE(t.ts, t.ingested_at) <= ${until}::timestamptz
-                 AND t.ingested_at <= ${snapshotAt}::timestamptz
+                 AND COALESCE(t.ts, t.ingested_at) <= ${until}::text::timestamptz
+                 AND t.ingested_at <= ${snapshotAt}::text::timestamptz
                  AND (a.stop_turn_idx IS NULL OR t.turn_idx < a.stop_turn_idx)
                  AND NOT ${restrictedTurnSql(tx as unknown as Parameters<typeof restrictedTurnSql>[0], 't', [readerOwnerOf(ctx)]) as never}
                ORDER BY CASE WHEN ${args.taskMode === 'as-of' || !!args.stopKinds?.length} THEN -t.turn_idx ELSE t.turn_idx END
@@ -384,7 +385,7 @@ export default defineTool({
             FROM (
               SELECT id, kind, ts FROM harness_shared.psu_pty_host_events
                WHERE ${args.includeHostEvents === true} AND workspace_id = ${workspaceId} AND owner_id = a.owner
-                 AND ts <= COALESCE(a.stop_ts, ${until}::timestamptz)
+                 AND ts <= COALESCE(a.stop_ts, ${until}::text::timestamptz)
                  AND (${since ?? null}::timestamptz IS NULL OR ts >= ${since ?? null}::timestamptz)
                  AND kind IN ('launch-kickoff-quota-rejected', 'launch-kickoff-model-capacity-rejected',
                               'turn-deferred-quota-blocked', 'quota-block-starvation')

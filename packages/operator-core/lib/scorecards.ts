@@ -1512,6 +1512,8 @@ export function builtInCriterionKeysForRubric(rubricRef: string): string[] | nul
 
 /** One scorecard row — a rubric-graded observation projected for monitoring. */
 export interface ScorecardRow {
+  purpose?: 'diagnostic' | 'grading';
+  barSetHash?: string | null;
   /** The engineer_issue id (EI-/WI-…) — the drill-back key. */
   issueId: string;
   /** ISO timestamp the scorecard was filed. */
@@ -1783,6 +1785,8 @@ export type ScorecardEvidenceCriterion = ObservationRatings[string] & {
 };
 
 export interface ScorecardEvidenceRow {
+  purpose?: 'diagnostic' | 'grading';
+  barSetHash?: string | null;
   issueId: string;
   createdAt: string;
   createdBy: string | null;
@@ -1821,6 +1825,8 @@ export interface ScorecardEvidenceRow {
 }
 
 export interface ScorecardAuditTargetStatus {
+  /** Diagnostics remain inspectable but are never a final grading audit target. */
+  purpose?: 'diagnostic' | 'grading';
   /**
    * True when the card and all applicable read-time relations are current; false
    * when it is known stale, superseded, or retracted; null when currentness is
@@ -2307,12 +2313,13 @@ async function readScorecard(
     evidenceBindingCurrentness?.state,
   ];
   const auditTargetCurrent =
-    supersededBy !== null || retracted || applicableCurrentnessStates.includes('stale')
+    observation.purpose === 'diagnostic' || supersededBy !== null || retracted || applicableCurrentnessStates.includes('stale')
       ? false
       : applicableCurrentnessStates.includes('unknown')
         ? null
         : true;
   const auditTarget: ScorecardAuditTargetStatus = {
+    ...(observation.purpose ? { purpose: observation.purpose } : {}),
     current: auditTargetCurrent,
     superseded: supersededBy !== null,
     supersededBy,
@@ -2326,6 +2333,8 @@ async function readScorecard(
     createdAt: tsIso(row.created_at),
     createdBy: row.created_by,
     rubricRef: observation.rubricRef,
+    ...(observation.purpose ? { purpose: observation.purpose } : {}),
+    ...(observation.barSetHash !== undefined ? { barSetHash: observation.barSetHash } : {}),
     ...(observation.rubricRevision != null ? { rubricRevision: observation.rubricRevision } : {}),
     rubricCurrentness,
     ...(observation.rubricMeaningRevision != null
@@ -3940,6 +3949,8 @@ export interface ScorecardListCursor {
 }
 
 export interface ListScorecardsFilter {
+  /** Explicit baseline/audit history; diagnostics never occupy default page slots. */
+  includeDiagnostics?: boolean;
   /** Restrict to one rubric (e.g. 'pot-coordination-health'). */
   rubricRef?: string;
   /** Restrict to scorecards from one source-hive. */
@@ -4210,6 +4221,7 @@ async function listScorecardsAtLimit(filter: ListScorecardsFilter, limit: number
      WHERE scorecard.workspace_id = ${issuesScopeWorkspace()}
        AND COALESCE(scorecard.signal_origin, 'organic') = 'organic'
        AND scorecard.payload -> 'observation' ->> 'rubricRef' IS NOT NULL
+       AND ${filter.includeDiagnostics ? tx`TRUE` : tx`scorecard.payload -> 'observation' ->> 'purpose' IS DISTINCT FROM 'diagnostic'`}
        AND ${filter.rubricRef ? tx`scorecard.payload -> 'observation' ->> 'rubricRef' = ${filter.rubricRef}` : tx`TRUE`}
        AND ${filter.sourceHive ? tx`scorecard.payload -> 'observation' ->> 'sourceHive' = ${filter.sourceHive}` : tx`TRUE`}
        AND ${filter.subjectRef ? tx`scorecard.payload -> 'observation' -> 'subject' ->> 'ref' = ${filter.subjectRef}` : tx`TRUE`}
@@ -4438,6 +4450,8 @@ async function listScorecardsAtLimit(filter: ListScorecardsFilter, limit: number
       ...(observation.evidenceFingerprint ? { evidenceFingerprint: observation.evidenceFingerprint } : {}),
       ...(observation.supersedes ? { supersedes: observation.supersedes } : {}),
       ...(observation.baselineRef ? { baselineRef: observation.baselineRef } : {}),
+      ...(observation.purpose ? { purpose: observation.purpose } : {}),
+      ...(observation.barSetHash !== undefined ? { barSetHash: observation.barSetHash } : {}),
       ...(observation.retracted ? { retracted: observation.retracted } : {}),
       ...(observation.provisional ? { provisional: observation.provisional } : {}),
       ...(gradingAudit ? { gradingAudit } : {}),
@@ -5060,7 +5074,7 @@ export async function scorecardTrend(filter: ScorecardTrendFilter): Promise<Rubr
     const excluded = scorecardAdmissionExclusion(r);
     if (excluded === 'provisional') provisionalExcluded += 1;
     else if (excluded === 'grading-audit-pending') gradingAuditPendingExcluded += 1;
-    else finalCards.push(r);
+    else if (excluded === null) finalCards.push(r);
   }
   // listScorecards is newest-first; the series wants chronological (oldest→newest).
   const chrono = [...finalCards].reverse();

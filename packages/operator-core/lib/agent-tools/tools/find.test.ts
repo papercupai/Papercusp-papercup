@@ -1086,6 +1086,7 @@ describe('buildCorpus (live registry → corpus + embed text)', () => {
     expect(currentEvidence).toContain('specRevision?');
     expect(currentEvidence).toContain('specFingerprint?');
     expect(currentEvidence).toMatch(/evidenceKind:enum\([^)]*\)/);
+    expect(currentEvidence).toMatch(/evidenceKind:enum\([^)]*independent-verification[^)]*\)/);
     expect(currentEvidence).toContain('evidenceRef:string');
     expect(currentEvidence).toContain('sourceFingerprint:string');
     expect(currentEvidence).toContain('testFingerprint?:string|null(1-256)');

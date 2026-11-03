@@ -158,6 +158,8 @@ const body = async (args: unknown) => {
   return JSON.parse((response as ToolOutput).content[0]!.text);
 };
 
+afterEach(() => workItemMocks.commentWorkItem.mockReset());
+
 beforeEach(() => {
   vi.clearAllMocks();
   runtimeMocks.hostIdentity.mockReturnValue('pid-test');
@@ -916,6 +918,31 @@ describe('rubrics:amend routed review (P-006, RR-P-006-amend-opens-routed-review
     expect(
       rubricsAmendArgs.safeParse({ ...patchArgs, reviewPreviewPost: 'thread-post:42', requestReview: { workItemId: 'WI-9' } }).success,
     ).toBe(false);
+  });
+
+  it('retains the same approval comment key when the worker loses its receipt after posting', async () => {
+    rubricsMocks.previewAcceptanceBarAmendment.mockResolvedValue(approvalRequired);
+    const posts = new Map<string, number>();
+    workItemMocks.commentWorkItem.mockImplementation(async (_id, _body, _author, opts) => {
+      const key = opts.idempotencyKey ?? `unkeyed-${posts.size}`;
+      if (!posts.has(key)) posts.set(key, 80 + posts.size);
+      return { id: posts.get(key) };
+    });
+    reviewMocks.openAcceptanceBarAmendmentReview.mockRejectedValueOnce(new Error('worker died after approval post'));
+    const args = { ...patchArgs, requestReview: { workItemId: 'WI-9' } };
+    await expect(body(args)).rejects.toThrow('worker died after approval post');
+    // The thread write survived; the executor's receipt did not. Recovery must
+    // reuse the durable comment identity before it starts review again.
+    receiptDb.rows.clear();
+    reviewMocks.openAcceptanceBarAmendmentReview.mockImplementation(async input => ({
+      state: 'routed', conversationId: 'conv-recovered', previewPostRef: input.previewPostRef,
+    }));
+    const recovered = await body(args);
+    expect(posts.size).toBe(1);
+    expect(recovered.review.previewPostRef).toBe('thread-post:80');
+    const keys = workItemMocks.commentWorkItem.mock.calls.map(call => call[3].idempotencyKey);
+    expect(keys[0]).toMatch(/^review-/);
+    expect(keys[1]).toBe(keys[0]);
   });
 
   it('settles a credit-walled fresh reviewer as a failed receipt', async () => {
