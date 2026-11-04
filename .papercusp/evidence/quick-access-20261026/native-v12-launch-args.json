@@ -1,9 +1,0 @@
-{
-  "command": "PAPERCUSP_TEST_RUN_GROUP=operator-e2e-isolated-20261029T034650Z-qa-v12 PAPERCUSP_REPO_DIR=/home/marsh-office/papercupai-workspace/papercusp TMPDIR=/mnt/data/tmp RTK_DISABLED=1 VERIFY_TAURI_ISOLATED_DB=1 VERIFY_TAURI_ISOLATED_SEED=ready VERIFY_TAURI_ISOLATED_SHORTCUT=CmdOrCtrl+Shift+K VERIFY_TAURI_DEPENDENCY_SNAPSHOT_MODE=copy VERIFY_TAURI_SOURCE_REF=46f867505e78b0a8b5baf1362e9aee7e48d38f1f VERIFY_TAURI_SOURCE_INPUTS=apps/operator/app/quick-panel/QuickAccessLauncher.tsx,apps/operator/app/quick-panel/QuickAccessLauncher.test.tsx,apps/operator/app/quick-panel/quick-access-model.ts,apps/operator/app/quick-panel/quick-access.css,apps/operator/app/quick-panel/page.tsx,apps/operator-vite/src/routes/quick-panel.tsx,apps/operator/e2e/quick-access.native.spec.mts,papercusp-desktop/src-tauri/src/docs_search.rs,scripts/verify-tauri-headless.sh,apps/operator/lib/verify-tauri-headless-ready-seed.test.ts PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:e2e:isolated -- e2e/quick-access.native.spec.mts --workers=1",
-  "cwd": "/tmp/pcv/papercusp-lint-as-committed-46f867505e-TZN2nE/apps/operator",
-  "description": "Verify corrected committed Quick Access native acceptance",
-  "run_in_background": true,
-  "timeout": 7200000,
-  "work_item_id": "WI-6554700010029574",
-  "require_task_confinement": true
-}
