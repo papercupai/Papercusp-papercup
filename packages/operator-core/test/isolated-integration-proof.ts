@@ -18,6 +18,8 @@ import { it } from 'vitest';
 import { assertPrivateIntegrationEvidence, defaultTestFileRunTimeoutMs, testFileListTimeoutMs, testFileRunTimeoutMs, MAX_TEST_FILE_RUN_TIMEOUT_MS, TEST_FILE_KILL_GRACE_MS, TEST_FILE_SCOPE_STOP_TIMEOUT_SEC } from '../../../scripts/test-files.mjs';
 // @ts-ignore -- same progress watchdog used by that router.
 import { createProgressAwareWatchdog } from '../../../scripts/lib/batch-watchdog.mjs';
+// @ts-ignore -- reuse the router's immutable diagnostic artifact archive.
+import { createNativeArtifactPersister } from '../../../scripts/lib/budgeted-task-scheduler.mjs';
 
 /** Own the parent reader's delayed telemetry until it has been flushed. The
  * child runtime's private DB does not route getOrgPg() in this process. Reuse
@@ -580,6 +582,23 @@ export function captureIsolatedWorker(child: ChildProcess, evidenceDir: string, 
       const result = { code: child.exitCode, signal: child.signalCode, timedOut, timeoutPhase, exitWaitTimedOut, stdioDrainTimedOut };
       writeFileSync(join(evidenceDir, 'worker-result.json'), JSON.stringify({ ...result,
         pendingStage: isolatedWorkerPendingStage(evidenceDir), error: error?.message ?? null }), { flag: 'wx' });
+      // Callers remove evidenceDir in finally, and their assertion often prints
+      // only a cleanup-heavy tail. Preserve the first failure bytes before that
+      // removal and put its immutable reference at the end of the diagnostic.
+      if (error || result.code !== 0 || result.signal || timedOut || exitWaitTimedOut || stdioDrainTimedOut) {
+        try {
+          const archive = createNativeArtifactPersister(process.env.PAPERCUSP_TEST_ARTIFACT_DIR
+            ? join(process.env.PAPERCUSP_TEST_ARTIFACT_DIR, 'isolated-worker-failures')
+            : defaultEvidenceRoot('isolated-worker-failures'));
+          const retained = archive.persist(readFileSync(join(evidenceDir, 'worker.log')), 'log');
+          output += '\nISOLATED_WORKER_FAILURE_LOG ' + JSON.stringify({ ...retained,
+            path: join(archive.root, retained.ref) }) + '\n';
+        } catch (archiveError) {
+          reject(new AggregateError(error ? [error, archiveError] : [archiveError],
+            'Isolated worker failure log retention failed'));
+          return;
+        }
+      }
       if (error) reject(error);
       else resolve({ ...result, output });
     };

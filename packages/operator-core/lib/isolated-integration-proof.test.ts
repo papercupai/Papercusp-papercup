@@ -153,6 +153,36 @@ async function withCapturedRouter(options: Parameters<typeof captureIsolatedWork
 const routerPhaseOptions = { phaseTimeouts: { bootstrapMs: 100, executeMs: 80, finalizeMs: 30, teardownMs: 30 },
   killGraceMs: 10, drainGraceMs: 10, testFileExecutionFromStdout: true };
 
+it('retains the first worker failure after cleanup chatter and temporary log removal', async () => {
+  const packet = mkdtempSync(join(tmpdir(), 'isolated-failure-packet-'));
+  const evidenceDir = mkdtempSync(join(tmpdir(), 'isolated-failure-source-'));
+  const child = Object.assign(new EventEmitter(), { stdout: new PassThrough(), stderr: new PassThrough(),
+    exitCode: null, signalCode: null, kill: vi.fn(() => true) }) as unknown as ChildProcess;
+  vi.stubEnv('PAPERCUSP_TEST_ARTIFACT_DIR', packet);
+  try {
+    const captured = captureIsolatedWorker(child, evidenceDir, { timeoutMs: 5_000 });
+    const original = 'operator-api preflight failed: original cause\n' + 'cleanup chatter\n'.repeat(1000);
+    child.stderr!.emit('data', original);
+    Object.assign(child, { exitCode: 1 });
+    child.emit('exit', 1, null);
+    child.emit('close', 1, null);
+    const result = await captured;
+    rmSync(evidenceDir, { recursive: true, force: true });
+    const line = result.output.slice(-6000).split('\n').find(value => value.startsWith('ISOLATED_WORKER_FAILURE_LOG '));
+    expect(line).toBeDefined();
+    const retained = JSON.parse(line!.slice('ISOLATED_WORKER_FAILURE_LOG '.length));
+    const bytes = readFileSync(retained.path);
+    expect(bytes.toString()).toBe(original);
+    expect(retained.byteLength).toBe(bytes.length);
+    expect(retained.sha256).toBe(createHash('sha256').update(bytes).digest('hex'));
+  } finally {
+    vi.unstubAllEnvs();
+    child.stdout!.destroy(); child.stderr!.destroy();
+    rmSync(evidenceDir, { recursive: true, force: true });
+    rmSync(packet, { recursive: true, force: true });
+  }
+});
+
 it('starts an opted-in native execution clock at the first observed case, not router spawn', async () => {
   await withCapturedRouter({ ...routerPhaseOptions, testFileExecutionFromStdout: 'case' }, async (child, result) => {
     child.stderr!.emit('data', 'TEST_FILE_PROGRESS state=started\n');

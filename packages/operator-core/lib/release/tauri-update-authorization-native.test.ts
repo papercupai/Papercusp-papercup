@@ -9,6 +9,14 @@ import { encodeTauriUpdateAuthorization, type TauriUpdateAuthorization } from '.
 const archiveDependencies = ['fs2="0.4"', 'tar="=0.4.46"', 'flate2="=1.1.9"',
   'plist={version="=1.10.0",features=["enable_unstable_features_that_may_break_with_minor_version_bumps"]}'];
 
+// The results ledger bounds assertion messages from the front. Keep actual Rust
+// errors and test failures ahead of Cargo's long dependency-compilation prelude.
+function nativeFailure(result: { error?: Error; stderr: string; stdout: string }): string {
+  const errors = result.stderr.split('\n').filter(line => /^(error|thread)|panicked|^\s*-->/.test(line));
+  return [result.error?.message, errors.join('\n'), result.stdout.slice(-8000), result.stderr.slice(-2000)]
+    .filter(Boolean).join('\n');
+}
+
 // Compile the actual portable native consumer, avoiding a dependency on a running
 // desktop/WebKit. This maintained Vitest test owns the Cargo harness and fixtures.
 it('native consumer verifies real dual signatures, actual bytes, identities and current trust', () => {
@@ -268,7 +276,7 @@ it('native consumer verifies real dual signatures, actual bytes, identities and 
 `);
     const result = spawnSync('cargo', ['test', '--offline', '--manifest-path', join(root, 'Cargo.toml'), '--', '--nocapture'],
       { encoding: 'utf8', timeout: 120_000, env: { ...process.env, CARGO_TARGET_DIR: join(root, 'target') } });
-    expect(result.status, [result.error?.message, result.stderr, result.stdout].filter(Boolean).join('\n')).toBe(0);
+    expect(result.status, nativeFailure(result)).toBe(0);
     expect(result.stdout).toContain('0 failed; 0 ignored');
     if (process.platform !== 'win32') {
       expect(result.stdout).toContain('native-activation: serialized install, current revocation and crash-conservative monotonic floors');
@@ -306,7 +314,7 @@ fn main(){ std::hint::black_box(&INPUTS); ${options.duplicate ? 'std::hint::blac
 `);
       const result = spawnSync('rustc', ['--edition=2021', '--crate-name', 'candidate_fixture', source, '-o', binary],
         { encoding: 'utf8', timeout: 30_000 });
-      expect(result.status, String(result.error || result.stderr)).toBe(0);
+      expect(result.status, nativeFailure(result)).toBe(0);
       return binary;
     };
     const valid = compile('valid', JSON.stringify(inputs));
@@ -377,7 +385,7 @@ fn main(){ std::hint::black_box(&INPUTS); ${options.duplicate ? 'std::hint::blac
 `);
     const result = spawnSync('cargo', ['test', '--offline', '--manifest-path', join(root, 'Cargo.toml'), 'actual_compiled_image_and_negative_containers', '--', '--nocapture'],
       { encoding: 'utf8', timeout: 120_000, env: { ...process.env, CARGO_TARGET_DIR: join(root, 'target') } });
-    expect(result.status, [result.error?.message, result.stderr, result.stdout].filter(Boolean).join('\n')).toBe(0);
+    expect(result.status, nativeFailure(result)).toBe(0);
     expect(result.stdout).toContain('native-extraction: actual compiled image and exact bytes');
     for (const [name] of variants) expect(result.stdout).toContain(`native-extraction-refused: ${JSON.stringify(name)}`);
   } finally {
@@ -389,6 +397,27 @@ it('selects universal Mach-O and Mac archive inputs by installed executable iden
   const root = mkdtempSync(join(tmpdir(), 'tauri-update-universal-'));
   try {
     const source = resolve(__dirname, '../../../../papercusp-desktop/src-tauri/src/update_authorization.rs');
+    // Sign canonical metadata from the Rust archive fixture with real independent keys.
+    const signer = join(root, 'sign.cjs');
+    writeFileSync(signer, `
+const {createHash,generateKeyPairSync,sign}=require('node:crypto');
+const payload=require('node:fs').readFileSync(0,'utf8');
+function key(id,principalId) {
+  const pair=generateKeyPairSync('ed25519'), keyId=createHash('sha256').update(id).digest().subarray(0,8);
+  const raw=pair.publicKey.export({format:'der',type:'spki'}).subarray(-32);
+  return { trusted:{id,epoch:2,principalId,revoked:false,
+    publicKey:Buffer.concat([Buffer.from('Ed'),keyId,raw]).toString('base64')},
+    sign(){const signature=sign(null,createHash('blake2b512').update(payload).digest(),pair.privateKey);
+      const comment='timestamp:2 file:update-authorization';
+      const global=sign(null,Buffer.concat([signature,Buffer.from(comment)]),pair.privateKey).toString('base64');
+      return Buffer.from(['untrusted comment: update',Buffer.concat([Buffer.from('ED'),keyId,signature]).toString('base64'),
+        'trusted comment: '+comment,global,''].join('\\n')).toString('base64');}};
+}
+const signer=key('release','release-principal'), reviewer=key('reviewer','reviewer-principal');
+process.stdout.write(JSON.stringify({trust:{rootEpoch:3,minRollbackCounter:0,minIssuedAt:0,maxMetadataAgeMs:1500,
+  signers:[signer.trusted],approvers:[reviewer.trusted]},
+  manifest:{updateAuthorization:{payload,signature:signer.sign(),approvalSignature:reviewer.sign()}}}));
+`);
     writeFileSync(join(root, 'Cargo.toml'), [
       '[package]', 'name="update-universal-native-regression"', 'version="0.0.0"', 'edition="2021"',
       '[workspace]', '[lib]', 'path="driver.rs"', '[dependencies]',
@@ -567,6 +596,80 @@ it('selects universal Mach-O and Mac archive inputs by installed executable iden
         assert!(extract_macos_archive_inputs(&bytes,"darwin-x86_64").is_ok());
         println!("native-mac-archive: XML/binary plist, GNU long path, thin/universal, full archive binding");
     }
+    #[cfg(unix)] #[test] fn candidate_mac_activation_uses_downloaded_bytes_and_current_policy() {
+        use super::update_authorization::{activate_test_macos_update, DownloadedUpdate, Metadata};
+        use std::fs::{self,File,Permissions};
+        use std::os::unix::fs::PermissionsExt;
+        use std::io::Write;
+        use std::process::{Command,Stdio};
+        use std::cell::Cell;
+        let bytes=bundle(x86(),bundle_info("Main","gui","1.2.3",false),vec![]);
+        let inputs=extract_macos_archive_inputs(&bytes,"darwin-x86_64").unwrap();
+        let c=inputs.candidate(&bytes);
+        let digest=|s:&[u8]|format!("{:x}",Sha256::digest(s));
+        let metadata=Metadata {schema:"tauri-update-authorization-v2".into(),artifact_sha256:digest(c.artifact),
+            policy_sha256:digest(c.policy),configuration_sha256:digest(c.configuration),
+            source_revision:c.source_revision.into(),version:c.version.into(),product:c.product.into(),
+            platform:c.platform.into(),author_ids:c.author_ids.to_vec(),approver_id:"reviewer".into(),approver_epoch:2,
+            signer_id:"release".into(),signer_epoch:2,root_epoch:3,rollback_counter:7,issued_at:1000,expires_at:3000};
+        let mut child=Command::new(${JSON.stringify(process.execPath)}).arg(${JSON.stringify(signer)})
+            .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+        child.stdin.take().unwrap().write_all(serde_json::to_string(&metadata).unwrap().as_bytes()).unwrap();
+        let signed=child.wait_with_output().unwrap();
+        assert!(signed.status.success(),"{:?}",signed);
+        let signed:serde_json::Value=serde_json::from_slice(&signed.stdout).unwrap();
+        let path=std::path::Path::new(${JSON.stringify(root)}).join("mac-activation");
+        fs::create_dir(&path).unwrap(); fs::set_permissions(&path,Permissions::from_mode(0o700)).unwrap();
+        let directory=File::open(&path).unwrap(); let policy_path=path.join("managed-policy.json");
+        let policy=serde_json::json!({"version":1,"update_channel":"stable","updateAuthorization":signed["trust"]});
+        let write=|p:&serde_json::Value| {fs::write(&policy_path,serde_json::to_vec(p).unwrap()).unwrap();
+            fs::set_permissions(&policy_path,Permissions::from_mode(0o600)).unwrap();};
+        let read=||serde_json::from_slice::<serde_json::Value>(&fs::read(&policy_path).unwrap()).unwrap();
+        let download=DownloadedUpdate {artifact:&bytes,manifest:&signed["manifest"],version:"1.2.3",product:"gui",platform:"darwin-x86_64"};
+        let effects=Cell::new(0);
+        let install=|| {assert_eq!(read()["updateAuthorization"]["minRollbackCounter"],7);
+            assert_eq!(read()["updateAuthorization"]["minIssuedAt"],1000);
+            effects.set(effects.get()+1); Ok(())};
+        write(&policy);
+        activate_test_macos_update(&directory,&download,2000,install).unwrap();
+        assert_eq!(effects.get(),1);
+        let retained=read();
+        let refuses=|d:&DownloadedUpdate<'_>| {
+            assert!(activate_test_macos_update(&directory,d,2000,install).is_err());
+            assert_eq!(effects.get(),1,"refusal must leave teardown/install untouched");
+        };
+        for manifest in [serde_json::json!({}),serde_json::json!({"updateAuthorization":null}),{
+            let mut m=signed["manifest"].clone(); m["updateAuthorization"]["ignored"]=true.into(); m
+        },{
+            let mut m=signed["manifest"].clone(); m["updateAuthorization"]["approvalSignature"]="tampered".into(); m
+        }] {refuses(&DownloadedUpdate {manifest:&manifest,..download});}
+        refuses(&DownloadedUpdate {version:"9.0.0",..download});
+        refuses(&DownloadedUpdate {product:"server",..download});
+        refuses(&DownloadedUpdate {platform:"darwin-aarch64",..download});
+        let mut tampered=bytes.clone(); tampered.push(1);
+        refuses(&DownloadedUpdate {artifact:&tampered,..download});
+        for p in [{let mut p=retained.clone();p["updateAuthorization"]["signers"][0]["revoked"]=true.into();p},
+            {let mut p=retained.clone();p["updateAuthorization"]["minRollbackCounter"]=8.into();p},
+            {let mut p=retained.clone();p["updateAuthorization"]["minIssuedAt"]=1001.into();p}] {
+            write(&p); refuses(&download); assert_eq!(read(),p);
+        }
+        write(&retained);
+        assert!(activate_test_macos_update(&directory,&download,3000,install).is_err());
+        assert_eq!(effects.get(),1);
+        fs::set_permissions(&policy_path,Permissions::from_mode(0o666)).unwrap(); refuses(&download);
+        write(&policy);
+        if unsafe {libc::geteuid()} != 0 {
+            fs::set_permissions(&path,Permissions::from_mode(0o500)).unwrap(); refuses(&download);
+            fs::set_permissions(&path,Permissions::from_mode(0o700)).unwrap();
+            assert_eq!(read(),policy,"persistence refusal must preserve the original policy");
+        }
+        let failed=activate_test_macos_update(&directory,&download,2000,|| {
+            install()?; Err::<(),_>("installer failed".to_string())});
+        assert_eq!(failed.unwrap_err(),"installer failed");
+        assert_eq!(read(),retained,"failed install retains floors");
+        assert_eq!(effects.get(),2);
+        println!("native-mac-activation: real dual signatures, selected identity, current policy and no-effect refusals");
+    }
     #[test] fn candidate_mac_bundle_refuses_identity_and_namespace_ambiguity() {
         let good=bundle_info("Main","gui","1.2.3",false);
         let xml=String::from_utf8(good.clone()).unwrap();
@@ -648,12 +751,13 @@ it('selects universal Mach-O and Mac archive inputs by installed executable iden
 `);
     const result = spawnSync('cargo', ['test', '--offline', '--manifest-path', join(root, 'Cargo.toml'), 'candidate_', '--', '--nocapture'],
       { encoding: 'utf8', timeout: 120_000, env: { ...process.env, CARGO_TARGET_DIR: join(root, 'target') } });
-    expect(result.status, [result.error?.message, result.stderr, result.stdout].filter(Boolean).join('\n')).toBe(0);
+    expect(result.status, nativeFailure(result)).toBe(0);
     expect(result.stdout).toContain('native-universal: both table widths, both targets, full artifact and all-slice refusal');
     expect(result.stdout).toContain('native-mac-archive: XML/binary plist, GNU long path, thin/universal, full archive binding');
     expect(result.stdout).toContain('native-mac-refusal: plist identity, aliases, traversal, links, types and unattributed inputs');
     expect(result.stdout).toContain('native-mac-bounds: entry/metadata size, count, truncation, CRC and trailing members');
     expect(result.stdout).toContain('native-mac-inflation: bound includes padding after tar end');
+    if (process.platform !== 'win32') expect(result.stdout).toContain('native-mac-activation: real dual signatures, selected identity, current policy and no-effect refusals');
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -790,7 +894,7 @@ include!(concat!(env!("OUT_DIR"),"/update-build-inputs.rs"));
 }
 `);
     const triple = spawnSync('rustc', ['-vV'], { encoding: 'utf8', timeout: 30_000 });
-    expect(triple.status, String(triple.error || triple.stderr)).toBe(0);
+    expect(triple.status, nativeFailure(triple)).toBe(0);
     const host = /^host: (.+)$/m.exec(triple.stdout)?.[1];
     expect(host).toBeTruthy();
     const result = spawnSync('cargo', ['test', '--offline', '--manifest-path', join(root, 'Cargo.toml'),
@@ -801,7 +905,7 @@ include!(concat!(env!("OUT_DIR"),"/update-build-inputs.rs"));
           security: { csp: null }, windows: [{ label: 'main', title: 'runtime' }],
         } }), GIT_AUTHOR_NAME: 'not-an-authenticated-principal' },
     });
-    expect(result.status, [result.error?.message, result.stderr, result.stdout].filter(Boolean).join('\n')).toBe(0);
+    expect(result.status, nativeFailure(result)).toBe(0);
     expect(result.stdout).toContain('producer-proof: real Tauri ACLs');
   } finally {
     rmSync(root, { recursive: true, force: true });

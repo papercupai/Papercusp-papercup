@@ -166,7 +166,13 @@ export function captureClosure(root) {
 export function verifyClosure(generation, sourceRoot, copy = false, materialized = false) {
   generation = realpathSync(generation); sourceRoot = realpathSync(sourceRoot);
   const closure = JSON.parse(readFileSync(join(generation, CLOSURE), 'utf8'));
-  if (closure.schema !== 1 || closure.complete !== true || !Array.isArray(closure.workspaces)) fail('incomplete-closure');
+  if (closure.schema !== 1 || closure.complete !== true || !Array.isArray(closure.workspaces)) {
+    // The producer deliberately preserves incomplete closures for dependency-only
+    // consumers. Keep its measured failure and selected identity visible when a
+    // verifier refuses one, rather than making the next caller rediscover it.
+    const reason = typeof closure.reason === 'string' ? closure.reason : 'invalid closure contract';
+    fail('incomplete-closure:' + generation + ': ' + reason);
+  }
   const tree = join(generation, 'tree');
   // The lock/patch selector alone cannot bind a source package's new bin.
   // Check the selected requirement census even when the producer had none.

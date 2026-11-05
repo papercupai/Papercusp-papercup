@@ -47,6 +47,12 @@ async function measurePlanStage<T>(stage: string, observe: PlanExecutionTimingOb
     try { observe({ stage, durationMs: performance.now() - startedAt }); } catch { /* diagnostics only */ }
   }
 }
+
+/** Settle concurrent reads before interpreting them in the original refusal order. */
+function settledPlanValue<T>(result: PromiseSettledResult<T>): T {
+  if (result.status === 'rejected') throw result.reason;
+  return result.value;
+}
 export interface ExecutionPlanGoalResolution {
   goal: ResolvedGoal | null;
   diagnostics: readonly unknown[];
@@ -269,16 +275,19 @@ export async function checkPlanExecutionReadiness(binding: ExecutionPlanBinding,
       return [`plan_status:${parsed.frontmatter.status ?? 'unknown'}`];
     const scope = { workspaceId, harnessSlug: row.harness_slug, planSlug: binding.planSlug };
     const { evaluateConversationActivationGate } = await import('./plan-activation-gate');
-    const activation = await measurePlanStage('activation', observe, () => evaluateConversationActivationGate(sql as never, scope));
+    const [activationRead, auditRead] = await Promise.allSettled([
+      measurePlanStage('activation', observe, () => evaluateConversationActivationGate(sql as never, scope)),
+      measurePlanStage('audit', observe, () => sql<Array<{ audited_plan_content_hash: string | null; content_snapshot: string | null }>>`
+        SELECT a.audited_plan_content_hash, r.content_snapshot
+          FROM harness_shared.plan_audits a
+          LEFT JOIN harness_shared.plan_revisions r ON r.id=a.audited_plan_revision_id
+            AND r.workspace_id=a.workspace_id AND r.harness_slug=a.harness_slug AND r.plan_slug=a.plan_slug
+         WHERE a.workspace_id=${workspaceId} AND a.harness_slug=${row.harness_slug} AND a.plan_slug=${binding.planSlug}
+           AND a.audit_kind='activation' ORDER BY a.audit_seq DESC LIMIT 1`),
+    ]);
+    const activation = settledPlanValue(activationRead);
     if (!activation.satisfied) return [activation.code ?? 'conversation_audit_required'];
-    const audits = await measurePlanStage('audit', observe, () => sql<Array<{ audited_plan_content_hash: string | null; content_snapshot: string | null }>>`
-      SELECT a.audited_plan_content_hash, r.content_snapshot
-        FROM harness_shared.plan_audits a
-        LEFT JOIN harness_shared.plan_revisions r ON r.id=a.audited_plan_revision_id
-          AND r.workspace_id=a.workspace_id AND r.harness_slug=a.harness_slug AND r.plan_slug=a.plan_slug
-       WHERE a.workspace_id=${workspaceId} AND a.harness_slug=${row.harness_slug} AND a.plan_slug=${binding.planSlug}
-         AND a.audit_kind='activation' ORDER BY a.audit_seq DESC LIMIT 1`);
-    const audit = audits[0];
+    const audit = settledPlanValue(auditRead)[0];
     // Preserve the canonical gate's explicit legacy/template exemptions, not an ad-hoc override.
     if (!activation.grandfathered) {
       if (!audit?.audited_plan_content_hash) return ['activation_revision_unmeasured'];
@@ -299,32 +308,48 @@ export async function checkPlanExecutionReadiness(binding: ExecutionPlanBinding,
     // This door enforces the current contract, not proof completion. Measuring
     // every bound artifact here repeats ship-only work on each native tool call.
     // Metadata still reads the live bounded sources; grading/ship reject reuse.
-    const gate = await measurePlanStage('start_gate', observe,
-      () => checkPlanStartable(binding.planSlug, opts, null, 'start', { proofMode: 'metadata' }));
-    if (!gate.ok) return [gate.refusal.code];
     const items = plan.items.length ? plan.items : parsed.items;
-    const quality = await measurePlanStage('spec_quality', observe, () => evaluatePlanSpecQualityGate({ harnessSlug: row.harness_slug,
-      planSlug: binding.planSlug, planItemIds: specQualityPlanItemIds(items), planItems: items }));
-    if (!quality.satisfied) return [quality.code ?? 'spec_quality_not_current'];
     // Legacy plans only receive diagnostic critiques. Native authority needs no
     // reconstruction of those histories; full start/report readers retain it.
     // Read the cohort on every invocation, and evaluate unknown dates normally.
     const createdMs = row.created_at == null ? Number.NaN : new Date(row.created_at).getTime();
-    if (quality.applicable && isPlanStartBarCritiqueInCohort(createdMs)) {
-      const critique = await measurePlanStage('critique', observe, () => evaluatePlanStartBarCritique({ workspaceId, harnessSlug: row.harness_slug,
-        planSlug: binding.planSlug, nonDroppedItemCount: specQualityPlanItemIds(items).length,
-        contractEnforced: quality.mode === 'enforced' }));
-      if (critique?.mode === 'enforced' && !critique.verdict.satisfied)
-        return [critique.verdict.code ?? 'critique_missing'];
-    }
+    // These readers share the pinned plan revision, not settled authority.
+    // Quality and admission do not depend on the BAR reader's reconciliation.
+    // Critique does depend on quality, so keep that edge within its branch.
+    const [gateRead, qualityRead, admissionRead] = await Promise.allSettled([
+      measurePlanStage('start_gate', observe,
+        () => checkPlanStartable(binding.planSlug, opts, null, 'start', { proofMode: 'metadata' })),
+      (async () => {
+        const quality = await measurePlanStage('spec_quality', observe, () => evaluatePlanSpecQualityGate({ harnessSlug: row.harness_slug,
+          planSlug: binding.planSlug, planItemIds: specQualityPlanItemIds(items), planItems: items }));
+        const critique = quality.satisfied && quality.applicable && isPlanStartBarCritiqueInCohort(createdMs)
+          ? await measurePlanStage('critique', observe, () => evaluatePlanStartBarCritique({ workspaceId, harnessSlug: row.harness_slug,
+            planSlug: binding.planSlug, nonDroppedItemCount: specQualityPlanItemIds(items).length,
+            contractEnforced: quality.mode === 'enforced' }))
+          : null;
+        return { quality, critique };
+      })(),
+      measurePlanStage('admission', observe,
+        () => checkPlanAdmission({ slug: binding.planSlug, door: 'run-now', opts, row: plan })),
+    ]);
+    const gate = settledPlanValue(gateRead);
+    if (!gate.ok) return [gate.refusal.code];
+    const { quality, critique } = settledPlanValue(qualityRead);
+    if (!quality.satisfied) return [quality.code ?? 'spec_quality_not_current'];
+    if (critique?.mode === 'enforced' && !critique.verdict.satisfied)
+      return [critique.verdict.code ?? 'critique_missing'];
     const inputs = evaluatePlanStartReadiness({ template: plan.template, inputSchema: plan.inputSchema }, plan.templateData);
     if (!inputs.ready) return [inputs.code];
     // checkPlanStartable already evaluates the complete pre-start BAR under pinned
     // plan types on this invocation. Repeating it remeasures every evidence binding.
     // Keep that canonical check fresh on every use; do not cache its verdict.
-    const admission = await measurePlanStage('admission', observe,
-      () => checkPlanAdmission({ slug: binding.planSlug, door: 'run-now', opts, row: plan }));
-    return admission.admitted ? [] : [admission.refusal.code];
+    const admission = settledPlanValue(admissionRead);
+    if (!admission.admitted) return [admission.refusal.code];
+    // Never combine successful branches from a revision changed during the reads.
+    const current = await measurePlanStage('recheck', observe, () => sql<Array<{ content_hash: string }>>`
+      SELECT content_hash FROM harness_shared.harness_plans
+       WHERE workspace_id=${workspaceId} AND harness_slug=${row.harness_slug} AND plan_slug=${binding.planSlug}`);
+    return current.length === 1 && current[0]!.content_hash === row.content_hash ? [] : ['plan_revision_changed'];
   });
 }
 

@@ -61,7 +61,8 @@
  * mutation of the shared checkout to prove falsifiability.
  */
 import { describe, it, expect } from 'vitest';
-import { readFileSync, existsSync, readdirSync } from 'node:fs';
+import { readFileSync, existsSync, readdirSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import os from 'node:os';
 
@@ -75,6 +76,90 @@ const INSTALLING_COMMANDS = ['install_update', 'revert_to'] as const;
 const HELPER = 'download_verify_then_install';
 /** The ONLY function allowed to switch off the plugin's "must be newer" gate. */
 const MAY_ACCEPT_DOWNGRADE = ['revert_to'] as const;
+
+it('compiled install helper keeps the sidecar alive on Mac authorization refusal', () => {
+  const src = readFileSync(MAIN_RS_PATH, 'utf8');
+  const start = src.indexOf(`async fn ${HELPER}(`);
+  const body = extractFnBody(src, HELPER)!;
+  expect(body).toBeTruthy();
+  const open = src.indexOf('{', start);
+  // Compile the exact production helper on this host with a controlled cfg
+  // selecting its Mac adapter. These mocks measure ordering, not Mac OS approval.
+  const helper = src.slice(start, open + body.length)
+    .replace('#[cfg(target_os = "macos")]', '#[cfg(mac_adapter)]')
+    .replace('#[cfg(not(target_os = "macos"))]', '#[cfg(not(mac_adapter))]');
+  const root = mkdtempSync(path.join(os.tmpdir(), 'updater-install-order-'));
+  try {
+    const driver = `
+use std::sync::{Arc,Mutex,atomic::{AtomicBool,Ordering}};
+static EVENTS:Mutex<Vec<&str>>=Mutex::new(Vec::new());
+static DOWNLOAD:AtomicBool=AtomicBool::new(true);
+static AUTH:AtomicBool=AtomicBool::new(true);
+static INSTALL:AtomicBool=AtomicBool::new(true);
+fn event(s:&'static str){EVENTS.lock().unwrap().push(s);}
+struct SidecarState {shutdown_done:AtomicBool}
+struct Config {identifier:String}
+#[derive(Clone)] struct AppHandle {state:Arc<SidecarState>,config:Arc<Config>}
+impl AppHandle {fn state(&self)->&SidecarState {&self.state} fn config(&self)->&Config {&self.config}}
+mod tauri {pub type State<'a,T> = &'a T;}
+fn make_download_progress_reporter(_:AppHandle) {}
+fn kill_sidecar(app:&AppHandle) {assert!(app.state.shutdown_done.load(Ordering::SeqCst));event("teardown");}
+mod tauri_plugin_updater {
+    use super::*;
+    pub fn target()->Option<String>{Some("darwin-x86_64".into())}
+    pub struct Update {pub version:String,pub raw_json:&'static str}
+    impl Update {
+        pub async fn download(&self,_:(),_:impl FnOnce())->Result<Vec<u8>,&str>{
+            event("download");if DOWNLOAD.load(Ordering::SeqCst){Ok(b"actual downloaded bytes".to_vec())}else{Err("bad download signature")}}
+        pub fn install(&self,bytes:impl AsRef<[u8]>)->Result<(),&str>{
+            assert_eq!(bytes.as_ref(),b"actual downloaded bytes"); event("install");
+            if INSTALL.load(Ordering::SeqCst){Ok(())}else{Err("swap failed")}}
+    }
+}
+mod update_authorization {
+    use super::*;
+    pub struct DownloadedUpdate<'a>{pub artifact:&'a [u8],pub manifest:&'a &'static str,
+        pub version:&'a str,pub product:&'a str,pub platform:&'a str}
+    pub fn activate_downloaded_macos_update<T>(d:&DownloadedUpdate<'_>,install:impl FnOnce()->Result<T,String>)->Result<T,String>{
+        assert_eq!(d.artifact,b"actual downloaded bytes");assert_eq!(*d.manifest,"raw manifest authorization");
+        assert_eq!(d.version,"1.2.3");assert_eq!(d.product,"com.papercusp.gui");assert_eq!(d.platform,"darwin-x86_64");
+        event("authorize");if AUTH.load(Ordering::SeqCst){install()}else{Err("authorization or persistence refused".into())}}
+}
+${helper}
+fn run<F:std::future::Future>(f:F)->F::Output {
+    struct Wake;impl std::task::Wake for Wake {fn wake(self:Arc<Self>){}}
+    let waker=std::task::Waker::from(Arc::new(Wake));let mut cx=std::task::Context::from_waker(&waker);
+    match Box::pin(f).as_mut().poll(&mut cx){std::task::Poll::Ready(v)=>v,_=>panic!("unexpected pending mock")}
+}
+fn main(){
+    for (download,auth,install) in [(false,true,true),(true,false,true),(true,true,false),(true,true,true)]{
+        EVENTS.lock().unwrap().clear();DOWNLOAD.store(download,Ordering::SeqCst);AUTH.store(auth,Ordering::SeqCst);INSTALL.store(install,Ordering::SeqCst);
+        let app=AppHandle {state:Arc::new(SidecarState {shutdown_done:AtomicBool::new(false)}),config:Arc::new(Config {identifier:"com.papercusp.gui".into()})};
+        let update=tauri_plugin_updater::Update {version:"1.2.3".into(),raw_json:"raw manifest authorization"};
+        let result=run(download_verify_then_install(&app,update));
+        let authorized=!cfg!(mac_adapter)||auth;
+        assert_eq!(result.is_ok(),download&&authorized&&install);
+        let expected=if !download {vec!["download"]}else if !authorized {vec!["download","authorize"]}
+            else if cfg!(mac_adapter){vec!["download","authorize","teardown","install"]}else{vec!["download","teardown","install"]};
+        assert_eq!(*EVENTS.lock().unwrap(),expected);
+        assert_eq!(app.state.shutdown_done.load(Ordering::SeqCst),download&&authorized&&install);
+    }
+    println!("compiled installer: refusal has no teardown; failed swap clears latch");
+}
+`;
+    const source = path.join(root, 'driver.rs');
+    writeFileSync(source, driver);
+    for (const mac of [true, false]) {
+      const binary = path.join(root, mac ? 'mac-adapter' : 'other-adapter');
+      const built = spawnSync('rustc', ['--edition=2021', ...(mac ? ['--cfg', 'mac_adapter'] : []), source, '-o', binary],
+        { encoding: 'utf8', timeout: 60_000 });
+      expect(built.status, [built.error?.message, built.stderr, built.stdout].join('\n')).toBe(0);
+      const result = spawnSync(binary, [], { encoding: 'utf8', timeout: 10_000 });
+      expect(result.status, [result.error?.message, result.stderr, result.stdout].join('\n')).toBe(0);
+      expect(result.stdout).toContain('compiled installer: refusal has no teardown; failed swap clears latch');
+    }
+  } finally { rmSync(root, { recursive: true, force: true }); }
+}, 180_000);
 
 // ── Pure analysis over main.rs ──────────────────────────────────────────────
 

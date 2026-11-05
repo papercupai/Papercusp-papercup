@@ -152,6 +152,31 @@ describe('scorecards:get evidence-first projection', () => {
     expect((getTool as unknown as { skipWorkspaceTx?: boolean }).skipWorkspaceTx).toBe(true);
   });
 
+  it('keeps the header criteria result schema compatible with the saved recipe read', async () => {
+    const { validateRecipeScriptAgainstCatalog } = await import('../recipes/recipe-schema-validation');
+    const scorecardsGet = {
+      pluginName: 'test',
+      description: 'scorecards:get',
+      inputSchema: z.toJSONSchema(scorecardGetArgs),
+      outputJsonSchema: z.toJSONSchema(getTool.result as unknown as z.ZodType),
+      capabilities: [],
+      expose: { mcp: { name: 'scorecards:get' } },
+      fn: (async () => ({ content: [] })) as never,
+    };
+    const result = await validateRecipeScriptAgainstCatalog(
+      'const card = await tools.scorecards.get({ issueId: "scorecard-1" });\n' +
+        'const criteria = (card.scorecard && card.scorecard.criteria || [])[0];\n' +
+        'return criteria || null;',
+      [scorecardsGet as never],
+    );
+
+    expect(result).toEqual({
+      ok: true,
+      issues: [],
+      staticToolNames: ['scorecards:get'],
+    });
+  });
+
   it('requires an exact criterion and refuses paging for retained historical replay', () => {
     expect(scorecardGetArgs.safeParse({ issueId: 'EI-audited-card', replay: 'retained-measurement' }).success).toBe(false);
     expect(scorecardGetArgs.safeParse({ issueId: 'EI-audited-card', criterionKey: 'disk', replay: 'retained-measurement', evidenceOffset: 0 }).success).toBe(false);

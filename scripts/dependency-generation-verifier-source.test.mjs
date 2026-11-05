@@ -75,3 +75,24 @@ test('selected-source verification ignores candidate output but rejects a new so
   generatedPackage(root, 'packages/new-cli');
   assert.throws(() => verifyClosure(generation, root), /workspace-requirements-mismatch/);
 });
+
+test('incomplete generation reports producer evidence before copying workspace output', () => {
+  const root = fixture();
+  generatedPackage(root, 'packages/cli');
+  const closure = captureClosure(root);
+  assert.equal(closure.complete, false);
+  const generation = mkdtempSync(join(tmpdir(), 'verifier-incomplete-generation-'));
+  roots.push(generation);
+  write(generation, '.verifier-closure.json', JSON.stringify(closure));
+
+  assert.throws(() => verifyClosure(generation, root, true), error => {
+    assert.match(error.message, /^verifier-generation:incomplete-closure:/);
+    assert.ok(error.message.includes(generation));
+    assert.ok(error.message.includes(closure.reason));
+    return true;
+  });
+  // Refusal must precede any materialization, even if no generation tree exists.
+  assert.equal(readFileSync(join(root, 'packages/cli/src/cli.cjs'), 'utf8'),
+    'console.log("source-census");\n');
+  assert.throws(() => readFileSync(join(root, 'packages/cli/dist/cli.cjs')), { code: 'ENOENT' });
+});

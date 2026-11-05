@@ -15,7 +15,7 @@ vi.mock('./plan-activation-gate', () => ({ evaluateConversationActivationGate: a
 // refusal keeps this narrow fixture from claiming complete start admission or
 // provisioning the unrelated registry, scorecard and budget subsystems.
 const policy = vi.hoisted(() => ({ realStartGate: false, qualityApplicable: false,
-  readLifecycle: vi.fn(), critique: vi.fn() }));
+  readLifecycle: vi.fn(), readQuality: vi.fn(), readAdmission: vi.fn(), critique: vi.fn() }));
 vi.mock('./plan-start-gate', async original => {
   const actual = await original<typeof import('./plan-start-gate')>();
   return { ...actual, checkPlanStartable: (...args: Parameters<typeof actual.checkPlanStartable>) =>
@@ -32,8 +32,13 @@ vi.mock('../../plan-types/pins', async original => ({
 }));
 vi.mock('./plan-spec-quality-gate', async original => ({
   ...(await original<typeof import('./plan-spec-quality-gate')>()),
-  evaluatePlanSpecQualityGate: async () => ({ satisfied: true, applicable: policy.qualityApplicable, mode: 'enforced' }),
+  evaluatePlanSpecQualityGate: (...args: unknown[]) => policy.readQuality(...args),
 }));
+vi.mock('./plan-admission-gate', async original => {
+  const actual = await original<typeof import('./plan-admission-gate')>();
+  return { ...actual, checkPlanAdmission: (...args: Parameters<typeof actual.checkPlanAdmission>) =>
+    policy.readAdmission(...args) ?? actual.checkPlanAdmission(...args) };
+});
 vi.mock('./plan-start-critique-gate', async original => ({
   ...(await original<typeof import('./plan-start-critique-gate')>()),
   evaluatePlanStartBarCritique: (...args: unknown[]) => policy.critique(...args),
@@ -103,6 +108,9 @@ beforeAll(async () => {
 afterAll(async () => { connection.sql = null; await db?.cleanup(); });
 beforeEach(async () => {
   policy.qualityApplicable = false;
+  policy.readQuality.mockReset();
+  policy.readQuality.mockImplementation(async () => ({ satisfied: true, applicable: policy.qualityApplicable, mode: 'enforced' }));
+  policy.readAdmission.mockReset();
   policy.critique.mockReset();
   await db.sql.unsafe('TRUNCATE harness_shared.session_briefs, harness_shared.adv_sessions, harness_shared.plan_item_claims, harness_shared.work_items, harness_shared.harness_plans, harness_shared.plan_audits, harness_shared.plan_revisions');
   await db.sql`INSERT INTO harness_shared.harness_plans (workspace_id,harness_slug,plan_slug,content,content_hash,op_status) VALUES (${WS}, 'project', 'draft-feature',
@@ -250,13 +258,63 @@ describe('real write-boundary bypass regression', () => {
       expect(await checkPlanExecutionReadiness(binding, WS, timing => {
         stages.push(timing.stage); throw Error('diagnostic sink unavailable');
       })).toEqual([]);
-      expect(stages).toEqual(['scope', 'plan_row', 'activation', 'audit', 'start_gate', 'spec_quality', 'admission']);
+      expect(stages.sort()).toEqual(['scope', 'plan_row', 'activation', 'audit', 'start_gate', 'spec_quality', 'admission', 'recheck'].sort());
       expect(policy.readLifecycle).toHaveBeenCalledTimes(1);
       expect(policy.readLifecycle).toHaveBeenLastCalledWith('draft-feature', 'pre-start', {
         harnessSlug: 'project', requireCompleteContractBeforeProof: true, proofMode: 'metadata',
       });
       expect(await checkPlanExecutionReadiness(binding, WS)).toEqual(['acceptance_bar_contract_not_ready']);
       expect(policy.readLifecycle).toHaveBeenCalledTimes(2);
+    } finally {
+      policy.realStartGate = false;
+      policy.readLifecycle.mockReset();
+    }
+  });
+  it('starts independent authority reads while BAR evaluation is pending and rejects revision drift', async () => {
+    const content = '---\ntitle: Feature\nstatus: active\n---\n# Feature\n';
+    await db.sql`UPDATE harness_shared.harness_plans SET content=${content}, content_hash='current', status='active', op_status='started'`;
+    await db.sql`INSERT INTO harness_shared.plan_audits VALUES (${WS},'project','draft-feature','activation',1,'current',NULL)`;
+    policy.realStartGate = true;
+    let entered!: () => void;
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    let release!: (value: { satisfied: boolean; codes: string[]; blockingBars: never[] }) => void;
+    const blocked = new Promise<{ satisfied: boolean; codes: string[]; blockingBars: never[] }>(resolve => { release = resolve; });
+    policy.readLifecycle.mockImplementation(() => { entered(); return blocked; });
+    const { checkPlanExecutionReadiness } = await import('./plan-execution-guard');
+    const attempt = checkPlanExecutionReadiness(binding, WS);
+    try {
+      await started;
+      expect(policy.readQuality).toHaveBeenCalledTimes(1);
+      expect(policy.readAdmission).toHaveBeenCalledWith(expect.objectContaining({ door: 'run-now' }));
+      // The policy reads began under 'current'; changing it before their join must deny.
+      await db.sql`UPDATE harness_shared.harness_plans SET content_hash='changed-during-read'`;
+      release({ satisfied: true, codes: [], blockingBars: [] });
+      expect(await attempt).toEqual(['plan_revision_changed']);
+    } finally {
+      release({ satisfied: true, codes: [], blockingBars: [] });
+      await attempt.catch(() => {});
+      policy.realStartGate = false;
+      policy.readLifecycle.mockReset();
+    }
+  });
+  it('preserves refusal precedence when a concurrent later policy read rejects', async () => {
+    const content = '---\ntitle: Feature\nstatus: active\n---\n# Feature\n';
+    await db.sql`UPDATE harness_shared.harness_plans SET content=${content}, content_hash='current', status='active', op_status='started'`;
+    await db.sql`INSERT INTO harness_shared.plan_audits VALUES (${WS},'project','draft-feature','activation',1,'current',NULL)`;
+    policy.realStartGate = true;
+    policy.readLifecycle.mockResolvedValue({ satisfied: false, codes: ['bar-refused'], blockingBars: [] });
+    policy.readQuality.mockRejectedValue(new Error('quality unavailable'));
+    policy.readAdmission.mockRejectedValue(new Error('admission unavailable'));
+    const { checkPlanExecutionReadiness } = await import('./plan-execution-guard');
+    try {
+      expect(await checkPlanExecutionReadiness(binding, WS)).toEqual(['acceptance_bar_contract_not_ready']);
+      policy.readLifecycle.mockResolvedValue({ satisfied: true, codes: [], blockingBars: [] });
+      policy.readQuality.mockResolvedValue({ satisfied: false, code: 'spec_quality_failed', applicable: true, mode: 'enforced' });
+      expect(await checkPlanExecutionReadiness(binding, WS)).toEqual(['spec_quality_failed']);
+      policy.readQuality.mockResolvedValue({ satisfied: true, applicable: false, mode: 'enforced' });
+      expect(await checkPlanExecutionGuard({ ownerId: OWNER, workspaceId: WS, toolName: 'apply_patch', args: {} }, {
+        readBindings: async () => [binding], checkPlan: checkPlanExecutionReadiness,
+      })).toMatchObject({ blockers: ['plan_authority_unavailable'] });
     } finally {
       policy.realStartGate = false;
       policy.readLifecycle.mockReset();
