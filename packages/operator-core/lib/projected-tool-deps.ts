@@ -88,6 +88,11 @@ import { envelopeRoleOverrides, envelopeProtectedAdditions } from './capability-
 // live-configurability-audit-2026-06-20 P-020 — runtime telemetry-buffer sizing (D-010 sync-cache).
 // Returns the baked defaults when the kill-switch flag is off / no override ⇒ byte-identical.
 import { telemetryBufferConfig } from './telemetry-buffer-config';
+import {
+  activateSessionTools,
+  recordSessionToolUse,
+  sessionToolSurfaceKey,
+} from './endpoint-route/routes/transport/tool-allowlist';
 import { recordDecisionLedger } from './decision-ledger/emit';
 import { resolveAgentIdentity } from './agent-tools/coordination/identity';
 import { readAgentStateStamp } from './agent-state-stamp';
@@ -2165,6 +2170,13 @@ async function recordInvocationImpl(input: RecordInvocationInput): Promise<void>
   // hot path.
   const row = buildTelemetryRow(input);
   if (!row) return;
+  // Discovery needs this settled invocation's name, not a global telemetry
+  // transaction. Reuse the seeded session surface for direct AND nested calls
+  // before the writer can stall or drop a row. This is listing state only;
+  // current catalog, principal and confinement filters still authorize it.
+  const surfaceKey = sessionToolSurfaceKey(input.ctx.uiClientId, input.ctx.workspaceId!);
+  activateSessionTools(surfaceKey, [input.toolName]);
+  recordSessionToolUse(surfaceKey, [input.toolName]);
   telemetryQueue.push(row);
   const maxPending = telemetryBufferConfig().maxPending;
   if (telemetryQueue.length > maxPending) {

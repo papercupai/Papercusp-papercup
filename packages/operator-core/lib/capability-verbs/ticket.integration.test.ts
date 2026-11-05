@@ -315,11 +315,11 @@ describe('ticket:file durable classification', () => {
     const untouched = { options: { hostFetchFor: () => { throw new Error('negative verdict called provider'); } } };
     for (const classification of ['non-bug', 'needs-information'] as const) {
       const run = await triggerRun(await installPack({ channels: ['C1'] }));
-      expect(await fileTicketFromPlanRun(sql, { workspaceId: WS, planRunId: run, classification, reason: 'Original reason' }, untouched))
-        .toMatchObject({ classification, recorded: true, filed: false });
+      await expect(fileTicketFromPlanRun(sql, { workspaceId: WS, planRunId: run, classification, reason: 'Original reason' }, untouched))
+        .resolves.toMatchObject({ classification, recorded: true, filed: false });
       expect(await classificationOf(run)).toMatchObject({ verdict: classification, reason: 'Original reason', ownerUserId: userId });
-      expect(await fileTicketFromPlanRun(sql, { workspaceId: WS, planRunId: run, classification, reason: 'Changed reason' }, untouched))
-        .toMatchObject({ classification, recorded: false, filed: false });
+      await expect(fileTicketFromPlanRun(sql, { workspaceId: WS, planRunId: run, classification, reason: 'Changed reason' }, untouched))
+        .resolves.toMatchObject({ classification, recorded: false, filed: false });
       expect(await classificationOf(run)).toMatchObject({ reason: 'Original reason' });
       expect(await filingOf(run)).toBeNull();
     }

@@ -35,7 +35,7 @@ vi.mock('../capability-envelope/identity-grants-port', () => ({
   appliedOrCurrentIdentityArtifact: appliedIdentityArtifactMock,
 }));
 
-import { evaluateToolGuard, readAppliedIdentityRules, readAppliedWornRules, type WornSyncRules } from './sync-hook-rules';
+import { evaluateToolGuard, readAppliedIdentityRules, readAppliedWornRules, setLocalSyncRulesReader, type WornSyncRules } from './sync-hook-rules';
 import { evaluateKernelSafetyRails, KERNEL_IDENTITY_ID, KERNEL_INPUT_BOUND_RULE_ID, KERNEL_SAFETY_RAILS } from './kernel-safety-rails';
 import { readAppliedIdentityRecall } from './identity-recall';
 
@@ -54,7 +54,56 @@ beforeEach(() => {
   readGateSelectedLaunchSpecMock.mockReset().mockResolvedValue({ launch: true });
   appliedIdentityArtifactMock.mockReset().mockReturnValue(ruleArtifact);
 });
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => {
+  setLocalSyncRulesReader(null);
+  vi.restoreAllMocks();
+});
+
+describe('authoritative identity read timing', () => {
+  it('attributes revision, artifact and local reads while preserving revision freshness and caching', async () => {
+    applied('owner-read-timing');
+    const local = vi.fn(async () => ({ rules: [], unreadable: [] }));
+    setLocalSyncRulesReader(local);
+    let now = 0;
+    vi.spyOn(performance, 'now').mockImplementation(() => now += 5);
+    const observe = vi.fn();
+    await readAppliedWornRules('owner-read-timing', 'ws', observe);
+    expect(observe.mock.calls.map(([timing]) => timing)).toEqual([
+      { stage: 'applied_revision', durationMs: 5 },
+      { stage: 'applied_artifact', durationMs: 5 },
+      { stage: 'local_rules', durationMs: 5 },
+    ]);
+    await readAppliedWornRules('owner-read-timing', 'ws', observe);
+    expect(readGateSelectedLaunchSpecMock).toHaveBeenCalledTimes(1);
+    applied('owner-read-timing', 's2');
+    await readAppliedWornRules('owner-read-timing', 'ws', observe);
+    expect(readGateSelectedLaunchSpecMock).toHaveBeenCalledTimes(2);
+    expect(observe.mock.calls.filter(([timing]) => timing.stage === 'applied_revision')).toHaveLength(3);
+    expect(local).toHaveBeenCalledTimes(3);
+  });
+
+  it('keeps a throwing observer from changing a refusal or replacing a read failure', async () => {
+    applied('owner-read-timing-failure');
+    const observe = vi.fn(() => { throw new Error('diagnostic sink failed'); });
+    const pending = { tool: 'Bash', input: { command: 'rm -rf build' }, client: 'claude' };
+    expect(await evaluateToolGuard(pending, () => readAppliedWornRules('owner-read-timing-failure', 'ws', observe)))
+      .toMatchObject({ decision: 'deny', ruleId: 'no-rm' });
+    const failure = new Error('local authoritative read failed');
+    setLocalSyncRulesReader(async () => { throw failure; });
+    await expect(readAppliedWornRules('owner-read-timing-failure', 'ws', observe)).rejects.toBe(failure);
+    expect(observe).toHaveBeenLastCalledWith(expect.objectContaining({ stage: 'local_rules' }));
+  });
+
+  it('reports only the revision read when no identity is applied', async () => {
+    const local = vi.fn(async () => ({ rules: [], unreadable: [] }));
+    setLocalSyncRulesReader(local);
+    const observe = vi.fn();
+    expect(await readAppliedWornRules('owner-read-timing-none', 'ws', observe)).toBeNull();
+    expect(observe).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ stage: 'applied_revision' }));
+    expect(local).not.toHaveBeenCalled();
+    expect(readGateSelectedLaunchSpecMock).not.toHaveBeenCalled();
+  });
+});
 
 describe('readAppliedWornRules', () => {
   it('copies the exact APPLIED package pins without reading mutable sources or later revisions', async () => {

@@ -49,7 +49,7 @@ export default function(pi) {
       const tool = turn < 4;
       const args = turn === 1 ? { command: "printf 'OMP_NATIVE_ESCAPE'" }
         : turn === 2 ? { name: 'capability:bash', args: {
-          command: "printf 'OMP_MANAGED_OK'", cwd: process.cwd(), timeout: 10000, yield_after: 15000 } }
+          command: "printf 'OMP_MANAGED_OK'", cwd: process.cwd(), timeout: 10000, yield_after_ms: 15000 } }
         : { name: 'capability:__omp_missing_control__', args: {} };
       const content = tool ? [{ type: 'toolCall', id, name: turn === 1 ? 'bash' : dispatcher, arguments: args }]
         : [{ type: 'text', text: 'OMP lifecycle proof complete.' }];

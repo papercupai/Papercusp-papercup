@@ -68,6 +68,8 @@ export interface FallbackReasonAggregate {
   applied: number;
   /** Unknown-cardinality decision batches, never eligible file units. */
   unknownSamples?: number;
+  /** Latest event time folded into this reason; used to order failure and recovery evidence. */
+  latestObservedAt?: Date;
 }
 
 export interface FallbackReasonSummary extends FallbackReasonAggregate {
@@ -133,6 +135,8 @@ interface PendingRow {
   process_tag: string | null;
   correlation_id: string | null;
   observed_at: Date;
+  /** First event time anchors the fixed-width coalescing window. */
+  coalesce_anchor_at: Date;
   /** Decisions this row stands for (identical ones coalesce; see the module doc). */
   samples: number;
 }
@@ -280,6 +284,7 @@ export function observeFallback(mechanism: string, decision: FallbackDecision, o
     warnThrottled('refused observation with an invalid correlation id');
     return false;
   }
+  const observedAt = opts.observedAt ?? new Date();
   const row: PendingRow = {
     sql: opts.sql,
     workspace_id: opts.workspaceId?.trim() || process.env.PAPERCUSP_WORKSPACE_ID?.trim() || 'default',
@@ -291,7 +296,8 @@ export function observeFallback(mechanism: string, decision: FallbackDecision, o
     scope: decision.scope ?? null,
     process_tag: opts.processTag ?? null,
     correlation_id: opts.correlationId ?? null,
-    observed_at: opts.observedAt ?? new Date(),
+    observed_at: observedAt,
+    coalesce_anchor_at: observedAt,
     samples: 1,
   };
   if (!coalesceInto(row)) {
@@ -322,11 +328,12 @@ function coalesceInto(row: PendingRow): boolean {
   if (key === null) return false;
   const open = state.open.get(row.sql)?.get(key);
   if (!open) return false;
-  if (Math.abs(row.observed_at.getTime() - open.observed_at.getTime()) > FALLBACK_COALESCE_SPAN_MS) return false;
+  if (Math.abs(row.observed_at.getTime() - open.coalesce_anchor_at.getTime()) > FALLBACK_COALESCE_SPAN_MS) return false;
   if (open.eligible + row.eligible > INT4_MAX || open.samples + row.samples > INT4_MAX) return false;
   open.eligible += row.eligible;
   open.applied += row.applied;
   open.samples += row.samples;
+  if (row.observed_at.getTime() > open.observed_at.getTime()) open.observed_at = row.observed_at;
   state.totalCoalesced += row.samples;
   return true;
 }
@@ -350,7 +357,7 @@ function forgetOpen(row: PendingRow): void {
 }
 
 async function writeBatch(sql: Sql, rows: PendingRow[]): Promise<void> {
-  const values = rows.map(({ sql: _ignored, ...r }) => r);
+  const values = rows.map(({ sql: _ignored, coalesce_anchor_at: _anchorIgnored, ...r }) => r);
   await sql`
     INSERT INTO harness_shared.fallback_observations
       ${sql(values, 'workspace_id', 'mechanism', 'eligible', 'applied', 'reason', 'scope', 'process_tag', 'correlation_id', 'observed_at', 'samples', 'population_known')}
@@ -467,7 +474,7 @@ export function summarizeFallbackWindow(
   aggregates: readonly FallbackReasonAggregate[],
 ): FallbackWindow {
   const normalizedMechanism = mechanism.trim();
-  const byReason = new Map<string, Required<FallbackReasonAggregate>>();
+  const byReason = new Map<string, FallbackReasonAggregate & { unknownSamples: number }>();
   for (const a of aggregates) {
     // Older gate-pass-reuse writers counted expired proofs in `eligible`. They
     // are diagnostic only: an expired proof is never a reuse opportunity, so
@@ -482,8 +489,15 @@ export function summarizeFallbackWindow(
       prev.eligible += eligible;
       prev.applied += applied;
       prev.unknownSamples += a.unknownSamples ?? 0;
+      if (a.latestObservedAt && (!prev.latestObservedAt || a.latestObservedAt > prev.latestObservedAt)) {
+        prev.latestObservedAt = a.latestObservedAt;
+      }
     } else {
-      byReason.set(a.reason, { reason: a.reason, samples: a.samples, eligible, applied, unknownSamples: a.unknownSamples ?? 0 });
+      const summary: FallbackReasonAggregate & { unknownSamples: number } = {
+        reason: a.reason, samples: a.samples, eligible, applied, unknownSamples: a.unknownSamples ?? 0,
+      };
+      if (a.latestObservedAt) summary.latestObservedAt = a.latestObservedAt;
+      byReason.set(a.reason, summary);
     }
   }
   const reasons: FallbackReasonSummary[] = [...byReason.values()]
@@ -520,6 +534,13 @@ export function summarizeFallbackWindow(
   };
 }
 
+function parseLatestObservedAt(value: Date | string | null | undefined): Date | undefined {
+  if (value == null) return undefined;
+  const observedAt = value instanceof Date ? value : new Date(value);
+  if (!Number.isFinite(observedAt.getTime())) throw new Error('invalid fallback observation timestamp');
+  return observedAt;
+}
+
 /**
  * Aggregate one mechanism's observations over the trailing `windowMs`.
  * Without `workspaceId`, every workspace's rows are included.
@@ -533,11 +554,12 @@ export async function readFallbackWindow(
   const since = new Date((opts.now ?? new Date()).getTime() - windowMs);
   const ws = opts.workspaceId ?? null;
   const processTag = opts.processTag ?? null;
-  const rows = await sql<Array<{ reason: string; samples: number | string; eligible: number | string; applied: number | string; unknown_samples: number | string }>>`
+  const rows = await sql<Array<{ reason: string; samples: number | string; eligible: number | string; applied: number | string; unknown_samples: number | string; latest_observed_at?: Date | string | null }>>`
     SELECT reason,
            sum(samples)::bigint  AS samples,
            sum(eligible)::bigint AS eligible,
            sum(applied)::bigint  AS applied,
+           max(observed_at) AS latest_observed_at,
            sum(CASE WHEN population_known IS FALSE OR
              (population_known IS NULL AND mechanism = 'gate-pass-reuse' AND eligible = 0)
              THEN samples ELSE 0 END)::bigint AS unknown_samples
@@ -551,7 +573,18 @@ export async function readFallbackWindow(
   return summarizeFallbackWindow(
     mechanism.trim(),
     windowMs,
-    rows.map((r) => ({ reason: r.reason, samples: Number(r.samples), eligible: Number(r.eligible), applied: Number(r.applied), unknownSamples: Number(r.unknown_samples) })),
+    rows.map((r) => {
+      const aggregate: FallbackReasonAggregate = {
+        reason: r.reason,
+        samples: Number(r.samples),
+        eligible: Number(r.eligible),
+        applied: Number(r.applied),
+        unknownSamples: Number(r.unknown_samples),
+      };
+      const latestObservedAt = parseLatestObservedAt(r.latest_observed_at);
+      if (latestObservedAt) aggregate.latestObservedAt = latestObservedAt;
+      return aggregate;
+    }),
   );
 }
 
@@ -674,7 +707,7 @@ export async function readFallbackWindowsByScope(
   const ws = opts.workspaceId ?? null;
   const processTag = opts.processTag ?? null;
   const name = mechanism.trim();
-  type WindowRow = { scope: string | null; reason: string; samples: number | string; eligible: number | string; applied: number | string; unknown_samples: number | string };
+  type WindowRow = { scope: string | null; reason: string; samples: number | string; eligible: number | string; applied: number | string; unknown_samples: number | string; latest_observed_at?: Date | string | null };
   // Session-scoped mechanisms must not let a predecessor's trailing observations
   // contaminate the current incarnation. Match resolveSessionRef's active-session
   // predicate and started_at ordering so stale owner-keyed rows are excluded while
@@ -686,6 +719,7 @@ export async function readFallbackWindowsByScope(
                sum(f.samples)::bigint  AS samples,
                sum(f.eligible)::bigint AS eligible,
                sum(f.applied)::bigint  AS applied,
+               max(f.observed_at) AS latest_observed_at,
                sum(CASE WHEN f.population_known IS FALSE OR
                  (f.population_known IS NULL AND f.mechanism = 'gate-pass-reuse' AND f.eligible = 0)
                  THEN f.samples ELSE 0 END)::bigint AS unknown_samples
@@ -714,6 +748,7 @@ export async function readFallbackWindowsByScope(
            sum(samples)::bigint  AS samples,
            sum(eligible)::bigint AS eligible,
            sum(applied)::bigint  AS applied,
+           max(observed_at) AS latest_observed_at,
            sum(CASE WHEN population_known IS FALSE OR
              (population_known IS NULL AND mechanism = 'gate-pass-reuse' AND eligible = 0)
              THEN samples ELSE 0 END)::bigint AS unknown_samples
@@ -728,7 +763,15 @@ export async function readFallbackWindowsByScope(
   const byScope = new Map<string | null, FallbackReasonAggregate[]>();
   for (const r of rows) {
     const key = r.scope ?? null;
-    const agg = { reason: r.reason, samples: Number(r.samples), eligible: Number(r.eligible), applied: Number(r.applied), unknownSamples: Number(r.unknown_samples) };
+    const agg: FallbackReasonAggregate = {
+      reason: r.reason,
+      samples: Number(r.samples),
+      eligible: Number(r.eligible),
+      applied: Number(r.applied),
+      unknownSamples: Number(r.unknown_samples),
+    };
+    const latestObservedAt = parseLatestObservedAt(r.latest_observed_at);
+    if (latestObservedAt) agg.latestObservedAt = latestObservedAt;
     const list = byScope.get(key);
     if (list) list.push(agg);
     else byScope.set(key, [agg]);

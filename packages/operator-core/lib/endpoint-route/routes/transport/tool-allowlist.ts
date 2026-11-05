@@ -193,6 +193,8 @@ interface SessionSurface {
   touched: number;
   /** Coalesce concurrent lists; each later list refreshes newly used tools. */
   restored?: Promise<void>;
+  /** Actual-use entries acknowledged by the last successful restoration. */
+  restoredUsedSize?: number;
 }
 
 const sessionSurfaces = new Map<string, SessionSurface>();
@@ -395,7 +397,9 @@ export async function restoreSessionTools(input: {
   if (!input.seed || !input.sessionKey) return false;
   getSessionSurface(input.sessionKey, input.seed);
   const entry = sessionSurfaces.get(input.sessionKey)!;
-  const usedBefore = entry.used.size;
+  // Dispatch may already have recorded use before telemetry is persisted.
+  // Include that growth in the next refresh's notification decision.
+  const usedBefore = entry.restoredUsedSize ?? 0;
   if (!entry.restored) {
     const read = input.readUsedTools ?? (async (ownerId: string, workspaceId: string) => {
       const { getOrgPg } = await import('@papercusp/db-org');
@@ -420,7 +424,8 @@ export async function restoreSessionTools(input: {
     });
   }
   await entry.restored;
-  return entry.used.size > usedBefore;
+  entry.restoredUsedSize = entry.used.size;
+  return entry.restoredUsedSize > usedBefore;
 }
 
 /**

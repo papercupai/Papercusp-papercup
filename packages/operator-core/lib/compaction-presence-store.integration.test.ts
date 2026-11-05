@@ -67,6 +67,20 @@ async function addSession(
 }
 
 describe('PgPresenceStore compaction columns (agent-managed-compaction)', () => {
+  it('bootstrap seeds an unset limit atomically and preserves a later owner choice', async () => {
+    const s = store();
+    const o = owner();
+    await s.write(identity(o), {});
+    await s.setCompactionLimit(o, 20_000, { explicit: true, onlyIfUnset: true });
+    expect(await s.get(o)).toMatchObject({ compactionLimit: 20_000, compactionLimitExplicit: true });
+    await s.setCompactionLimit(o, 30_000, { explicit: true });
+    await s.setCompactionLimit(o, 20_000, { explicit: true, onlyIfUnset: true });
+    expect(await s.get(o)).toMatchObject({ compactionLimit: 30_000, compactionLimitExplicit: true });
+    await s.setCompactionLimit(o, 40_000, { explicit: false });
+    await s.setCompactionLimit(o, 20_000, { explicit: true, onlyIfUnset: true });
+    expect(await s.get(o)).toMatchObject({ compactionLimit: 40_000, compactionLimitExplicit: false });
+  });
+
   it('setCompactionLimit persists and a later write preserves it', async () => {
     const s = store();
     const o = owner();

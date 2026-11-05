@@ -75,7 +75,7 @@ vi.mock('../blueprint/operation-worker-binding', async (importOriginal) => {
 });
 
 // Imported AFTER the mocks are registered (vi.mock is hoisted).
-const { observeFallback, flushFallbackObservations, readFallbackWindowsByScope, _resetFallbackObservationsForTests } = await import(
+const { observeFallback, flushFallbackObservations, fallbackObservationCounters, readFallbackWindowsByScope, _resetFallbackObservationsForTests } = await import(
   '../degradation/fallback-observations'
 );
 const { CONDITIONS_FAST_PATH_ROW_CAP } = await import('../agent-tools/coordination/tools/conditions');
@@ -196,7 +196,24 @@ describe('degradation watchdog on the real condition rail (R-2, R-8)', () => {
     const priorHomeSlug = process.env.PAPERCUSP_POT_HOME_SLUG;
     const forkSlug = `${operatorHomeHarnessSlug()}-fork-fixture`;
     const forkProcessTag = `gate-reuse:green-checkpoint:${forkSlug}`;
-    const writer = { observeFallback, flushFallbackObservations };
+    const observations: Array<{ processTag: string; accepted: boolean }> = [];
+    const flushes: Array<Awaited<ReturnType<typeof flushFallbackObservations>>> = [];
+    const writer = {
+      observeFallback: (
+        mechanism: string,
+        decision: Parameters<typeof observeFallback>[1],
+        options: Parameters<typeof observeFallback>[2],
+      ) => {
+        const accepted = observeFallback(mechanism, decision, options);
+        observations.push({ processTag: options?.processTag ?? '<missing>', accepted });
+        return accepted;
+      },
+      flushFallbackObservations: async () => {
+        const result = await flushFallbackObservations();
+        flushes.push(result);
+        return result;
+      },
+    };
     process.env.PAPERCUSP_POT_HOME_SLUG = forkSlug;
     try {
       for (let i = 0; i < 20; i += 1) {
@@ -212,10 +229,26 @@ describe('degradation watchdog on the real condition rail (R-2, R-8)', () => {
     const forkWindows = await readFallbackWindowsByScope(MECHANISM, 60 * 60_000, {
       sql: db.adminSql, workspaceId: 'default', processTag: forkProcessTag,
     });
-    expect(forkWindows).toMatchObject([{ scope: SCOPE, window: { eligible: 20, applied: 0 } }]);
-    expect(await readFallbackWindowsByScope(MECHANISM, 60 * 60_000, {
+    const homeWindows = await readFallbackWindowsByScope(MECHANISM, 60 * 60_000, {
       sql: db.adminSql, workspaceId: 'default', processTag: GATE_REUSE_PROCESS_TAG,
-    })).toEqual([]);
+    });
+    const persistedByTag = await db.adminSql<Array<{
+      process_tag: string | null; samples: number; eligible: number; applied: number;
+    }>>`
+      SELECT process_tag, sum(samples)::int AS samples, sum(eligible)::int AS eligible, sum(applied)::int AS applied
+        FROM harness_shared.fallback_observations
+       WHERE mechanism = ${MECHANISM} AND workspace_id = 'default' AND scope = ${SCOPE}
+       GROUP BY process_tag ORDER BY process_tag
+    `;
+    const counters = fallbackObservationCounters();
+    expect(observations).toEqual(Array.from({ length: 20 }, () => ({ processTag: forkProcessTag, accepted: true })));
+    expect(flushes).toHaveLength(20);
+    expect(counters).toMatchObject({ dropped: 0, rejected: 0, failed: 0 });
+    expect(persistedByTag, JSON.stringify({ observations, flushes, counters, persistedByTag })).toEqual([
+      { process_tag: forkProcessTag, samples: 20, eligible: 20, applied: 0 },
+    ]);
+    expect(forkWindows).toMatchObject([{ scope: SCOPE, window: { eligible: 20, applied: 0 } }]);
+    expect(homeWindows).toEqual([]);
     expect((await runDegradationSweepOnce({ prune: null })).opened).toEqual([]);
   }, 120_000);
 
@@ -486,7 +519,7 @@ describe('degradation watchdog on the real condition rail (R-2, R-8)', () => {
     await observe(200, 200, 'applied');
     const s4 = await runDegradationSweepOnce();
     expect(s4.errors).toEqual([]);
-    expect(s4.evaluated).toContainEqual({ mechanism: MECHANISM, scope: SCOPE, verdict: 'recovered' });
+    expect(s4.evaluated).toContainEqual({ mechanism: MECHANISM, scope: SCOPE, verdict: 'unmeasured-recovered' });
     expect(s4.resolved).toEqual([key]);
     expect(s4.opened).toEqual([]);
 

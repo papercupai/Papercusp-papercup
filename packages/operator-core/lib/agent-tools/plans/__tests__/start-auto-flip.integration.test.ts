@@ -165,8 +165,10 @@ const HARNESS = `zzz-start-flip-${Date.now()}-${Math.random().toString(36).slice
 const SLUG = `${HARNESS}-plan`;
 const WS = DEFAULT_WORKSPACE_ID;
 
-async function seedLegacyPlan(status: 'draft' | 'ready') {
-  await seedPlan(admin, WS, HARNESS, SLUG, planBody(status));
+async function seedLegacyPlan(status: 'draft' | 'ready', withItem = false) {
+  const body = withItem ? planBody(status).replace('## Decisions',
+    '## Tasks\n\n- **P-001** `todo` Record baseline findings deliverable: doc\n\n## Decisions') : planBody(status);
+  await seedPlan(admin, WS, HARNESS, SLUG, body);
   // Migration 1111 marks every INSERT as post-epoch. These approval/revision
   // fixtures deliberately represent existing legacy plans, which have no BAR
   // contract. Seed that identity in the throwaway DB; keep the real reader and
@@ -327,6 +329,59 @@ beforeEach(async () => {
 });
 
 describe('plans:start — draft auto-approve (P2-3)', () => {
+  it('refuses a migration park before approval and permits its lane after audited release', async () => {
+    await seedLegacyPlan('draft', true);
+    const node = `WI-start-park-${HARNESS}`;
+    const payload = { _claimHold: true, claim_hold_by: 'migration:plan-line-work-item-nodes',
+      plan_item: { plan_slug: SLUG, harness_slug: HARNESS, item_id: 'P-001' } };
+    await admin`INSERT INTO harness_shared.work_items
+      (workspace_id, harness_slug, feature_id, item_kind, title, status, created_ts, updated_ts,
+       source_plan_slug, source_plan_item_ids, plan_slug, plan_line_id, plan_deliverable, plan_line_text, plan_seq, payload)
+      VALUES (${WS}, ${HARNESS}, ${node}, 'feature', 'parked first lane', 'open', 0, 0,
+        ${SLUG}, ARRAY['P-001']::text[], ${SLUG}, 'P-001', 'doc', 'Record baseline findings', 1,
+        ${JSON.stringify(payload)}::text::jsonb)`;
+    const before = await persistedStartState();
+    const { initialChangeScopeProblems } = await import('../initial-change-scope');
+    expect(initialChangeScopeProblems({ content: before.plan.content, anchors: {} }),
+      'the document-only fixture must satisfy the independent initial-scope gate').toEqual([]);
+    const source = await import('../source');
+    const snapshot = await source.getPlanRow(SLUG, { workspaceId: WS, harnessSlug: HARNESS });
+    expect(snapshot, 'the fixture must have a canonical indexed plan').not.toBeNull();
+    expect(source.planItemsForRow(snapshot!)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'P-001', storedStatus: 'todo' }),
+    ]));
+    const { listWorkItems } = await import('../../../work-items');
+    const census = await runWithWorkspace(WS, () => listWorkItems({
+      harness: HARNESS, sourcePlanSlug: SLUG, includeChildren: true,
+    }));
+    expect(census, JSON.stringify(census)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: node, payload: expect.objectContaining(payload) }),
+    ]));
+    const refused = await runStart();
+    expect(refused.data, JSON.stringify(refused.data)).toMatchObject({
+      ok: false, error: 'admission_refused', admissionReason: 'promotion-lag',
+    });
+    expect(refused.data.message).toContain('P-008 / D-011');
+    expect(await persistedStartState()).toEqual(before);
+    expect(START_GATES.promotion).not.toHaveBeenCalled();
+    expect(START_GATES.claimSpec).not.toHaveBeenCalled();
+    const [held] = await admin`SELECT payload FROM harness_shared.work_items
+      WHERE workspace_id=${WS} AND harness_slug=${HARNESS} AND feature_id=${node}`;
+    expect(held.payload).toEqual(payload);
+
+    // Model the separate migration authority's audited release in this private
+    // database. Start itself must neither clear the park nor create a new node.
+    await admin`UPDATE harness_shared.work_items SET payload=payload - '_claimHold' - 'claim_hold_by'
+      WHERE workspace_id=${WS} AND harness_slug=${HARNESS} AND feature_id=${node}`;
+    const started = await runStart();
+    expect(started.isError, JSON.stringify(started.data)).toBe(false);
+    expect(started.data).toMatchObject({ status: 'started', autoApproved: true });
+    expect(await frontmatterStatus()).toBe('ready');
+    const rows = await admin`SELECT feature_id FROM harness_shared.work_items
+      WHERE workspace_id=${WS} AND harness_slug=${HARNESS} AND source_plan_slug=${SLUG}`;
+    expect(rows.map(row => row.feature_id)).toEqual([node]);
+  });
+
   it.each(['promotion','binding'])('issues no authority when the final %s leg fails', async leg => {
     await seedLegacyPlan('ready');
     if (leg === 'promotion') START_GATES.promotion.mockRejectedValueOnce(new Error('promotion unavailable'));

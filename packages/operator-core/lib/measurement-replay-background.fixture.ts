@@ -51,8 +51,10 @@ try {
   assert.equal(identity!.ready, true, 'mutable private fixture requires replica identity');
   await sql`INSERT INTO harness_shared.measurement_replay_source VALUES
     (${workspaceId},9007199254740993,10,now()),(${workspaceId},9007199254740994,30,now())`;
-  const query = `SELECT avg(duration_ms)::float8 budget_pct FROM harness_shared.measurement_replay_source
-    WHERE workspace_id='${workspaceId}' AND measured_at > now()-interval '1 hour'`;
+  const query = `WITH samples AS (SELECT duration_ms FROM harness_shared.measurement_replay_source
+    WHERE workspace_id='${workspaceId}' AND measured_at > now()-interval '1 hour'),
+    measurement AS (SELECT avg(duration_ms)::float8 budget_pct FROM samples)
+    SELECT * FROM measurement`;
   const scopedQuery = `WITH original AS (${query}) SELECT budget_pct,repeat('advisory ',60) advisory FROM original`;
   const criterion = (key: string, query: string): CheckedCriterion => ({ key, check: { kind: 'probe', unit: '%',
     probe: { kind: 'sql', sql: query, maxRows: 50, schemaRevision: continuityProbeRevision('dev:pg_query')!,

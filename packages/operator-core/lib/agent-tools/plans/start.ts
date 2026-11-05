@@ -49,7 +49,7 @@ import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { withPlanLock, bumpUpdatedDate } from './with-plan-lock';
 import { evaluateConversationActivationGate } from './plan-activation-gate';
 import { flipPlanFrontmatterStatus } from './set-plan-status';
-import { readPlanBySlug } from './source';
+import { planItemsForRow, readPlanBySlug } from './source';
 import { isTerminalPlanStatus } from './plan-start-state';
 import { checkPlanStartable } from './plan-start-gate';
 import { evaluatePlanStartReadiness, type PlanStartReadiness } from './plan-input-validation';
@@ -377,6 +377,7 @@ export default defineTool({
             actor: ownerId,
             claimant: ownerId,
             specId: `plans-start-${slug}`,
+            planItems: read ? (read.row.items.length ? planItemsForRow(read.row) : read.parsed.items) : undefined,
           });
           if (!laneHealthPreflight || laneHealthPreflight.effective.claimable == null) {
             const message = laneHealthPreflight
@@ -401,11 +402,13 @@ export default defineTool({
           }
         } catch (error) {
           laneHealthPreflightError = error instanceof Error ? error.message : String(error);
+          const migrationParked = error instanceof Error && error.name === 'PlanPromotionParkError';
+          const admissionReason = migrationParked ? 'promotion-lag' as const : 'lane-unknown' as const;
           ctxAny.metadata?.({
             slug,
             harnessSlug,
             refused: 'admission_refused',
-            admissionReason: 'lane-unknown',
+            admissionReason,
             laneHealthPreflight: 'error',
           });
           return {
@@ -413,10 +416,11 @@ export default defineTool({
             error: 'admission_refused' as const,
             slug,
             harnessSlug,
-            admissionReason: 'lane-unknown' as const,
+            admissionReason,
             laneHealthPreflight,
             laneHealthPreflightError,
-            message: `The exact-plan claim lane could not be measured before approval or promotion: ${laneHealthPreflightError}`,
+            message: migrationParked ? laneHealthPreflightError
+              : `The exact-plan claim lane could not be measured before approval or promotion: ${laneHealthPreflightError}`,
           };
         }
 

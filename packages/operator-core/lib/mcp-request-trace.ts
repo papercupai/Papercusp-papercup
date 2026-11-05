@@ -20,6 +20,7 @@ export type McpRequestTraceStage =
   | 'request_started'
   | 'inner_dispatch_started'
   | 'inner_dispatch_settled'
+  | 'result_delivery_backfill'
   | 'deadline'
   | 'scratch_write_progress'
   | 'scratch_write_settled'
@@ -110,6 +111,13 @@ export interface McpRequestTraceEvent {
   scratchWriteProgress?: ScratchWriteProgress;
   /** Final per-write timing emitted if a spill settles after its dispatch trace. */
   scratchWriteTimings?: ScratchWriteTimings;
+  /** Wall time awaiting result-delivery metadata backfill; settled means the promise resolved, not that a row matched. */
+  resultDeliveryBackfill?: {
+    toolName: 'reports:get' | 'capability:read';
+    state: 'started' | 'settled' | 'skipped';
+    durationMs?: number;
+    reason?: 'no-scratch-result';
+  };
   /** Hashes only; never persist the protocol/native session identifiers themselves. */
   mcpSessionKeyFingerprint?: string | null;
   wireMcpSessionIdFingerprint?: string | null;

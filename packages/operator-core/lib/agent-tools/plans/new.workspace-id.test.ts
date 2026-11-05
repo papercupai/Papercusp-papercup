@@ -85,7 +85,10 @@ const meta = vi.fn();
 const call = (extra: Record<string, unknown> = {}) =>
   tool.handler(
     { harness: 'offsite-planner-demo', slug: 'demo-plan', title: 'Demo plan', force: true, ...extra } as never,
-    { metadata: meta } as never,
+    {
+      metadata: meta,
+      principal: { kind: 'agent', slug: 'test-plans-new', workspaceId: 'default' },
+    } as never,
   ) as Promise<Out>;
 
 beforeEach(() => {

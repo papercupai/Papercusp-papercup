@@ -767,10 +767,18 @@ function normalizeAcceptanceGraderLog(rawLog: string): string {
     .replace(/\r/g, '\n');
 }
 
-// gateway.ts emits this when local admission times out, before an upstream
-// attempt. It does not prove a provider usage wall or a model quota reset.
+// gateway.ts emits both forms before an upstream attempt: admission timeout
+// for one account, or fail-fast shedding for the reachable pool. Neither
+// proves a provider usage wall or a model quota reset.
 const GRADER_GATEWAY_ADMISSION_TIMEOUT_RE =
-  /inference-gateway:\s*account\s+'[^'\n]{1,120}'\s+paced\/paused;\s*retry after \d+s/i;
+  /inference-gateway:\s*(?:all accounts\s+throttled|account\s+'[^'\n]{1,120}'\s+paced\/paused);\s*retry after (\d+)s\b/i;
+
+/** A local retry hint is a suppression window, never proof that capacity returned. */
+export function parseAcceptanceGraderGatewayRetryAfterMs(rawLog: string): number | null {
+  const match = GRADER_GATEWAY_ADMISSION_TIMEOUT_RE.exec(normalizeAcceptanceGraderLog(rawLog));
+  const ms = Number(match?.[1]) * 1_000;
+  return Number.isSafeInteger(ms) && ms > 0 ? ms : null;
+}
 
 /**
  * A bounded, exact detector for a terminal first turn that can never satisfy the
@@ -866,7 +874,7 @@ export function classifyAcceptanceGraderTerminalFailure(
         .trim()
         .slice(0, 400);
       return {
-        code: GRADER_GATEWAY_ADMISSION_TIMEOUT_RE.test(before)
+        code: GRADER_GATEWAY_ADMISSION_TIMEOUT_RE.test(quotaContext ?? '')
           ? 'inference_gateway_error'
           : 'model_quota_exhausted',
         evidence,

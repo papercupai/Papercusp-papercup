@@ -1968,12 +1968,20 @@ export function noteScratchWriteSettled(workspaceId: string, needsRefresh = fals
  * other writers record the time awaiting that shared recovery as quotaWaitMs. */
 export interface ScratchWriteTimings {
   quotaWaitMs: number;
+  /** Owner observed during this write's quota-admission mutex wait. */
+  quotaWaitMutexOwner?: ScratchWriteMutexWaitOwner;
   refreshWaitMs: number;
+  /** Owner observed while this write waits for a shared usage refresh. */
+  refreshWaitMutexOwner?: ScratchWriteMutexWaitOwner;
   quotaRecoveryMs: number;
   /** Time waiting for the shared payload-data read lease. */
   dataLeaseWaitMs?: number;
+  /** Owner observed while this write waits for the shared payload-data read lease. */
+  dataLeaseMutexOwner?: ScratchWriteMutexWaitOwner;
   /** Time quota recovery waits to acquire the exclusive scratch data mutex. */
   quotaRecoveryDataMutexWaitMs?: number;
+  /** Owner observed while quota recovery waits for the exclusive scratch data mutex. */
+  quotaRecoveryDataMutexWaitOwner?: ScratchWriteMutexWaitOwner;
   /** Filesystem mutex admission time within the quota-recovery data mutex wait. */
   quotaRecoveryDataMutexAdmissionMs?: number;
   /** Awaited shared quota-state file reads, including the revision read before publication. */
@@ -2411,8 +2419,13 @@ export async function writeWithScratchQuota(
         subphases[key] = (subphases[key] ?? 0) + elapsedMs;
       }
     }
-    if (refreshWaitOwner) timings.refreshWaitMs += info.waitedMs;
-    else timings.quotaWaitMs += info.waitedMs;
+    if (refreshWaitOwner) {
+      timings.refreshWaitMs += info.waitedMs;
+      if (mutexWaitOwner) timings.refreshWaitMutexOwner = mutexWaitOwner;
+    } else {
+      timings.quotaWaitMs += info.waitedMs;
+      if (mutexWaitOwner) timings.quotaWaitMutexOwner = mutexWaitOwner;
+    }
   };
   const observeAwait: ScratchWriteAwaitObserver = async (phase, subphase, operation) => {
     const start = performance.now();
@@ -2514,6 +2527,9 @@ export async function writeWithScratchQuota(
           } : undefined, (info) => {
             timings.quotaRecoveryDataMutexWaitMs = info.waitedMs;
             timings.quotaRecoveryDataMutexAdmissionMs = info.fsMutexAdmissionMs;
+            if (recoveryDataMutexWaitOwner) {
+              timings.quotaRecoveryDataMutexWaitOwner = recoveryDataMutexWaitOwner;
+            }
             if (opts.captureSubphaseTimings) {
               const subphases = timings.awaitSubphaseTimingsMs ??= {};
               for (const [name, elapsedMs] of Object.entries(info.admissionSubphaseTimingsMs ?? {})) {
@@ -2555,6 +2571,7 @@ export async function writeWithScratchQuota(
     admissionSubphaseTimingsMs?: Record<string, number>;
   }) => {
     timings.dataLeaseWaitMs = (timings.dataLeaseWaitMs ?? 0) + info.waitedMs;
+    if (mutexWaitOwner) timings.dataLeaseMutexOwner = mutexWaitOwner;
     // Data-lease admission is separate from quota admission. Keep it in its dedicated
     // timing field so callers can tell payload protection from quota contention.
     if (opts.captureSubphaseTimings) {

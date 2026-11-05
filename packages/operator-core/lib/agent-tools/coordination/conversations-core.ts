@@ -589,7 +589,7 @@ async function appendPost(
   identity: AgentIdentity,
   conversationId: string,
   body: string,
-  opts: { isAnswer: boolean; mentions?: string[]; viaConsultVerb?: boolean },
+  opts: { isAnswer: boolean; mentions?: string[]; viaConsultVerb?: boolean; settledReviewDisposition?: true },
 ): Promise<PostResult | { error: 'not_found' } | { error: 'resolved' } | { error: 'closed' } | { error: 'superseded' } | { error: 'consult_requires_typed_verb' }> {
   const resolved = await resolveConversationRow(deps, conversationId);
   if (!resolved) return { error: 'not_found' };
@@ -609,7 +609,11 @@ async function appendPost(
   // A terminal conversation no longer takes posts (P1-17): a resolved question
   // is answered, and a promoted one continues on its issue thread — appending
   // here would silently land a post nobody is watching the conversation for.
-  if (conv.state === 'resolved') return { error: 'resolved' };
+  // Only consultReplyCore's validated requester disposition append may reach a
+  // resolved consult. The internal marker is absent from public tool schemas.
+  const settledReviewDisposition = conv.state === 'resolved' && conv.kind === 'consult' &&
+    opts.viaConsultVerb && opts.settledReviewDisposition;
+  if (conv.state === 'resolved' && !settledReviewDisposition) return { error: 'resolved' };
   if (conv.state === 'closed') return { error: 'closed' };
   if (conv.state === 'superseded') return { error: 'superseded' };
   // consult:close's requester late-disposition path is intentionally allowed to
@@ -637,6 +641,7 @@ async function appendPost(
     });
     return threads.addPost({ thread_id: thread.thread_id, author_id: identity.ownerId, body, created_ts: now });
   });
+  if (settledReviewDisposition) return { post, delivered: 0, author_origin: conversationAuthorOrigin(identity.ownerId) };
   await deps.conversations.touch(conversationId, now);
   // Contributing → auto-join (so the rest of the thread reaches the poster), then fan out excluding them.
   await selfSubscribe(deps, conversationId, identity.ownerId, now);
@@ -686,12 +691,13 @@ export type AppendPostError =
 export function postReplyCore(
   deps: ConversationDeps,
   identity: AgentIdentity,
-  input: { conversation_id: string; body: string; mentions?: string[]; via_consult_verb?: boolean },
+  input: { conversation_id: string; body: string; mentions?: string[]; via_consult_verb?: boolean; settled_review_disposition?: true },
 ): Promise<PostResult | AppendPostError> {
   return appendPost(deps, identity, input.conversation_id, input.body, {
     isAnswer: false,
     mentions: input.mentions,
     viaConsultVerb: input.via_consult_verb,
+    settledReviewDisposition: input.settled_review_disposition,
   });
 }
 

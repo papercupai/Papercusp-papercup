@@ -2255,7 +2255,8 @@ snapshot_verifier_pinned_deps() {
         snapshot_root="$5"
         mode="$6"
         if [ -n "$source_ref" ]; then
-          bash "$generation_script" --integration "$donor" --ensure-ref "$source_ref"
+          bash "$generation_script" --integration "$donor" --ensure-ref "$source_ref" \
+            --verifier-source "$snapshot_root"
         else
           bash "$generation_script" --integration "$donor"
         fi

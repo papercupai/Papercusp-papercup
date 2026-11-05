@@ -2145,14 +2145,63 @@ function storedTreeStamp(value: unknown): CompletionTreeStamp | undefined {
 }
 
 function identityByPath(
-  identity: readonly CompletionTreeContentIdentity[],
+  stamp: CompletionTreeStamp & { contentIdentity: readonly CompletionTreeContentIdentity[] },
 ): Map<string, CompletionTreeContentIdentity> | undefined {
+  if (!stamp.repositoryRoot) return undefined;
+  const primaryRoot = stamp.repositoryRoot;
   const byPath = new Map<string, CompletionTreeContentIdentity>();
-  for (const entry of identity) {
-    if (byPath.has(entry.path)) return undefined;
-    byPath.set(entry.path, entry);
+  for (const entry of stamp.contentIdentity) {
+    const key = JSON.stringify([entry.outOfRepoArtifact === true ? null :
+      nodePath.resolve(entry.repositoryRoot ?? primaryRoot), entry.path]);
+    if (byPath.has(key)) return undefined;
+    byPath.set(key, entry);
   }
   return byPath;
+}
+
+/** Re-observe the recorded owners, rather than resolving their relative paths in the primary checkout. */
+async function currentCompletionTreeStamp(stored: CompletionTreeStamp): Promise<CompletionTreeStamp | undefined> {
+  if (!stored.repositoryRoot) return undefined;
+  const primaryRoot = stored.repositoryRoot;
+  const groups = new Map<string, CompletionTreeContentIdentityWithDeletion[]>();
+  const artifacts: CompletionTreeContentIdentity[] = [];
+  for (const entry of stored.contentIdentity ?? []) {
+    if (entry.outOfRepoArtifact) {
+      artifacts.push(entry);
+      continue;
+    }
+    const root = nodePath.resolve(entry.repositoryRoot ?? primaryRoot);
+    const group = groups.get(root) ?? [];
+    group.push(entry);
+    groups.set(root, group);
+  }
+  // The primary HEAD is still required for artifact-only or secondary-only stamps.
+  if (!groups.has(primaryRoot)) groups.set(primaryRoot, []);
+  let primary: CompletionTreeStamp | undefined;
+  const identity: CompletionTreeContentIdentity[] = [];
+  for (const [root, entries] of groups) {
+    const stamp = await completionTreeStamp({
+      repoRoot: root,
+      filesChanged: entries.filter(entry => !entry.deletion).map(entry => entry.path),
+      filesDeleted: entries.filter(entry => entry.deletion).map(entry => entry.path),
+    });
+    if (root === stored.repositoryRoot) primary = stamp;
+    if (!stamp || (entries.length > 0 && !stamp.contentIdentity)) {
+      if (root === stored.repositoryRoot) return undefined;
+      identity.push(...entries.map(entry => ({
+        path: entry.path,
+        ...(entry.deletion ? { deletion: true as const } : {}),
+        repositoryRoot: root,
+        workingTreeBlobSha: null,
+        headBlobSha: null,
+        headBlobUnresolvable: `checkout '${root}' HEAD or declared content could not be read`,
+      })));
+      continue;
+    }
+    identity.push(...(stamp.contentIdentity ?? []).map(entry => root === stored.repositoryRoot ? entry :
+      { ...entry, repositoryRoot: root, headSha: stamp.headSha }));
+  }
+  return primary ? { ...primary, contentIdentity: [...identity, ...artifacts] } : undefined;
 }
 
 /**
@@ -2195,19 +2244,7 @@ export async function completionFreshnessForEvidence(
 
   let current: CompletionTreeStamp | undefined;
   try {
-    current = await (
-      probe.currentStamp ??
-      ((stamp) =>
-        completionTreeStamp({
-          repoRoot: stamp.repositoryRoot,
-          filesChanged: stamp.contentIdentity
-            ?.filter((entry) => (entry as CompletionTreeContentIdentityWithDeletion).deletion !== true)
-            .map((entry) => entry.path),
-          filesDeleted: stamp.contentIdentity
-            ?.filter((entry) => (entry as CompletionTreeContentIdentityWithDeletion).deletion === true)
-            .map((entry) => entry.path),
-        }))
-    )(stored);
+    current = await (probe.currentStamp ?? currentCompletionTreeStamp)(stored);
   } catch {
     current = undefined;
   }
@@ -2279,8 +2316,8 @@ export async function completionFreshnessForEvidence(
     };
   }
 
-  const storedByPath = identityByPath(stored.contentIdentity);
-  const currentByPath = identityByPath(current.contentIdentity);
+  const storedByPath = identityByPath({ ...stored, contentIdentity: stored.contentIdentity });
+  const currentByPath = identityByPath({ ...current, contentIdentity: current.contentIdentity });
   const samePaths =
     storedByPath &&
     currentByPath &&
@@ -2295,15 +2332,15 @@ export async function completionFreshnessForEvidence(
     };
   }
 
-  for (const [path, storedEntry] of storedByPath) {
-    const currentEntry = currentByPath.get(path)!;
+  for (const [key, storedEntry] of storedByPath) {
+    const currentEntry = currentByPath.get(key)!;
     if (storedEntry.headBlobSha !== currentEntry.headBlobSha) {
       return {
         verdict: 'stale',
         storedTreeStamp: stored,
         currentTreeStamp: current,
         reason:
-          `Committed content for ${path} changed between verification HEAD ${stored.headSha} and current HEAD ${current.headSha}; ` +
+          `Committed content for ${storedEntry.path} changed between verification HEAD ${storedEntry.headSha ?? stored.headSha} and current HEAD ${currentEntry.headSha ?? current.headSha}; ` +
           're-verify before treating the terminal result as current.',
       };
     }

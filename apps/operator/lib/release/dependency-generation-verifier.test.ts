@@ -25,6 +25,10 @@ function fixture(workspace = 'packages/cli') {
   // silently substitute the previous committed helper for the code under test.
   const tooling = join(root, 'tooling');
   cpSync(dirname(script), join(tooling, 'apps/operator/bin/release'), { recursive: true });
+  // The lock-tree auditor's source-only CLI guard is a runtime dependency,
+  // including when the shell fixture runs before any npm installation.
+  const cliEntry = 'packages/operator-core/lib/util/cli-entry.ts';
+  write(tooling, cliEntry, readFileSync(join(repo, cliEntry), 'utf8'));
   write(tooling, 'papercusp-desktop/bin/lib/pinned-deps.sh', readFileSync(helper, 'utf8'));
   execFileSync('git', ['init', '-q'], { cwd: tooling });
   execFileSync('git', ['add', '.'], { cwd: tooling });
@@ -37,7 +41,7 @@ function fixture(workspace = 'packages/cli') {
   write(donor, 'package-lock.json', JSON.stringify({ lockfileVersion: 3, packages: {
     'node_modules/pkg': { version: '1.0.0' },
   } }));
-  write(donor, workspace + '/package.json', '{"name":"probe","bin":{"probe":"dist/cli.cjs"}}');
+  write(donor, workspace + '/package.json', '{"name":"probe","bin":{"probe":"dist/cli.cjs"},"scripts":{"build":"node build.cjs"}}');
   write(donor, workspace + '/src/cli.cjs', 'console.log("frozen-workspace");\n');
   write(donor, workspace + '/build.cjs', 'require("node:fs").mkdirSync("dist");require("node:fs").copyFileSync("src/cli.cjs","dist/cli.cjs");');
   // Any attempted canonical reader is an immediate test failure.
@@ -47,6 +51,7 @@ function fixture(workspace = 'packages/cli') {
     'node_modules/@tauri-apps/cli': { version: '2.0.0' },
   } }));
   cpSync(join(tooling, 'apps'), join(donor, 'apps'), { recursive: true });
+  write(donor, cliEntry, readFileSync(join(tooling, cliEntry), 'utf8'));
   write(donor, 'papercusp-desktop/bin/lib/pinned-deps.sh', readFileSync(snapshotHelper, 'utf8'));
   execFileSync('git', ['init', '-q'], { cwd: donor });
   execFileSync('git', ['add', '.'], { cwd: donor });
@@ -73,11 +78,67 @@ function fixture(workspace = 'packages/cli') {
     expect(result.status, result.stderr).toBe(0);
     return result.stdout.match(/\bpath=([^\n]+)$/m)![1]!;
   };
-  return { root, donor, dest, store, env, shell, publish, snapshotHelper };
+  return { root, donor, dest, store, env, shell, publish, snapshotHelper, generationScript };
 }
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 
 describe('D012 native generation closure', () => {
+  it.each(['source-stale', 'incomplete'])('rebuilds a %s exact-ref native closure with unchanged locks, then reuses it', defect => {
+    const f = fixture();
+    if (defect === 'incomplete') rmSync(join(f.donor, 'packages/cli/dist/.papercusp-workspace-build.json'));
+    const before = f.publish();
+    const oldClosure = readFileSync(join(before, '.verifier-closure.json'), 'utf8');
+    // Only source changes; the lock/patch key still selects the old generation.
+    write(f.dest, 'packages/cli/src/cli.cjs', 'console.log("new-exact-source");\n');
+    execFileSync('git', ['add', 'packages/cli/src/cli.cjs'], { cwd: f.dest });
+    execFileSync('git', ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
+      'commit', '-qm', 'new exact source with unchanged dependencies'], { cwd: f.dest });
+    const ref = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: f.dest, encoding: 'utf8' }).trim();
+    // The donor knows the commit but its working source remains at the old ref.
+    execFileSync('git', ['fetch', f.dest, ref], { cwd: f.donor });
+    const stale = f.shell(f.snapshotHelper, ['preflight-generation', f.dest, f.dest]);
+    expect(stale.status).toBe(74);
+    expect(stale.stderr).toContain(defect === 'incomplete' ? 'incomplete-closure' : 'stale-build-input');
+
+    const args = ['--integration', f.donor, '--generation-root', f.store,
+      '--ensure-ref', ref, '--verifier-source', f.dest, '--retain-as', 'native-exact-test'];
+    const rebuilt = f.shell(f.generationScript, args);
+    expect(rebuilt.status, rebuilt.stderr).toBe(0);
+    expect(rebuilt.stdout).toContain('reused=false');
+    const after = rebuilt.stdout.match(/\bpath=([^\n]+)$/m)![1]!;
+    expect(after).not.toBe(before);
+    expect(readFileSync(join(after, 'tree/packages/cli/dist/cli.cjs'), 'utf8')).toContain('new-exact-source');
+    expect(readFileSync(join(before, '.verifier-closure.json'), 'utf8')).toBe(oldClosure);
+    if (defect === 'source-stale')
+      expect(readFileSync(join(before, 'tree/packages/cli/dist/cli.cjs'), 'utf8')).toContain('frozen-workspace');
+    expect(existsSync(join(f.dest, 'node_modules'))).toBe(false);
+    expect(existsSync(join(f.dest, 'packages/cli/dist'))).toBe(false);
+    expect(readdirSync(join(f.donor, '.papercusp/dependency-exact-ref'))).toEqual([]);
+    expect(existsSync(join(f.store, '.leases')) ? readdirSync(join(f.store, '.leases')) : []).toEqual([]);
+    const compatible = f.shell(f.snapshotHelper, ['preflight-generation', f.dest, f.dest]);
+    expect(compatible.status, compatible.stderr).toBe(0);
+    const reused = f.shell(f.generationScript, args);
+    expect(reused.status, reused.stderr).toBe(0);
+    expect(reused.stdout).toContain('reused=true');
+    expect(reused.stdout).toContain('path=' + after);
+    const materialized = f.shell(f.snapshotHelper, ['snapshot-generation-locked', f.donor, f.dest]);
+    expect(materialized.status, materialized.stderr).toBe(0);
+    expect(spawnSync(process.execPath, [join(f.dest, 'node_modules/.bin/probe')], { encoding: 'utf8' }).stdout)
+      .toBe('new-exact-source\n');
+  }, 120_000);
+
+  it('refuses dirty native source before publishing or changing the existing selector', () => {
+    const f = fixture(), generation = f.publish();
+    const ref = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: f.dest, encoding: 'utf8' }).trim();
+    write(f.dest, 'packages/cli/src/cli.cjs', 'dirty source');
+    const result = f.shell(f.generationScript, ['--integration', f.donor, '--generation-root', f.store,
+      '--ensure-ref', ref, '--verifier-source', f.dest]);
+    expect(result.status).toBe(74);
+    expect(result.stderr).toContain('dirty-verifier-source');
+    expect(f.publish()).toBe(generation);
+    expect(existsSync(join(f.dest, 'node_modules'))).toBe(false);
+  }, 120_000);
+
   it('runs the source-preview command from a generation without a physical dependency donor', async () => {
     const workspace = 'packages/omp-plugin';
     const f = fixture(workspace);

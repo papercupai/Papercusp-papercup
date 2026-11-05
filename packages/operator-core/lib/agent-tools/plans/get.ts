@@ -264,6 +264,12 @@ const argsSchema = z
       .describe(
         "Read-only activation preview: activationReadiness.consult gives plans:start's candidates, evidence, provenance and no-responder/degraded outcome, without opening a consult. Read before activation audit/start to shape clauses.",
       ),
+    executionReadiness: z
+      .boolean()
+      .optional()
+      .describe(
+        'Read current execution blockers with the SAME canonical start-proof and live-policy checks the mutation guard enforces. Opt-in, uncached, and read-only; startStatus is a lifecycle label and does not establish execution authority. A failed lookup reports ready:null and status:unknown.',
+      ),
     efficiency: z
       .boolean()
       .optional()
@@ -279,7 +285,7 @@ const argsSchema = z
   })
   .refine((v) => v.revision === undefined || !(
     v.includeEnrichments || v.includeHistory || v.priorAttemptRefs?.length ||
-    v.shipReadiness || v.activationReadiness || v.operationalBrief || v.efficiency || v.current?.length
+    v.shipReadiness || v.activationReadiness || v.executionReadiness || v.operationalBrief || v.efficiency || v.current?.length
   ), {
     message: 'revision reads immutable content only; live enrichments, history and readiness options require a separate current read.',
   });
@@ -1612,6 +1618,41 @@ export default defineTool({
           history,
           ...(args.priorAttemptRefs?.length ? { priorAttemptRecords } : {}),
         };
+      }
+    }
+    // Execution authority can change without a plan-body write. Reuse the
+    // mutation guard's proof + policy reader outside cachedRead, including for
+    // legacy and narrow reads. Never turn an unavailable verdict into a pass.
+    if (args.executionReadiness) {
+      const executionResults = env.results as Array<Record<string, unknown>>;
+      for (const [index, cachedResult] of executionResults.entries()) {
+        if (cachedResult.ok !== true || typeof cachedResult.slug !== 'string' || typeof cachedResult.harness !== 'string') continue;
+        // runBulk can retain the cached object itself. Decorate only a copy so
+        // an ordinary read never inherits a previous invocation's verdict.
+        const result: Record<string, unknown> & { slug: string; harness: string } = {
+          ...cachedResult, slug: cachedResult.slug, harness: cachedResult.harness,
+        };
+        executionResults[index] = result;
+        try {
+          const { checkExecutionPlan } = await import('./plan-execution-guard');
+          const executionScope = await resolvePlanScope({ ...opts, harnessSlug: result.harness });
+          const blockers = await checkExecutionPlan({
+            planSlug: result.slug,
+            harnessSlug: executionScope.harnessSlug,
+          }, executionScope.workspaceId);
+          result.executionReadiness = {
+            status: blockers.length ? 'blocked' : 'ready',
+            ready: blockers.length === 0,
+            blockers,
+          };
+        } catch (error) {
+          result.executionReadiness = {
+            status: 'unknown',
+            ready: null,
+            unavailableReason: 'execution_readiness_unavailable',
+            message: `Execution readiness could not be read (${error instanceof Error ? error.message : String(error)}).`,
+          };
+        }
       }
     }
     // EI-21967410937471873: the opt-in ship-blocker verdict — what would refuse

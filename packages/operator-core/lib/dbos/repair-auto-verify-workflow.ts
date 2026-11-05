@@ -14,6 +14,8 @@ import { operatorHomeHarnessSlug } from '../harness/operator-home-harness';
 import { resolveCheckpointRouting } from '../harness/routines/hive-release-env';
 import type { GateVerdictTarget } from '../release/gate-verdict-target';
 import {
+  REPAIR_AUTO_VERIFY_QUEUE_NAME,
+  REPAIR_AUTO_VERIFY_WORKFLOW_NAME,
   repairAutoVerifyWorkflowId,
   runRepairAutoVerify,
   setRepairAutoVerifyRunner,
@@ -58,13 +60,13 @@ async function repairAutoVerifyImpl(input: RepairAutoVerifyRequest): Promise<Rep
   return outcome;
 }
 
-export const repairAutoVerifyWorkflow = idempotentRegisterWorkflow('repairAutoVerify', () =>
-  DBOS.registerWorkflow(repairAutoVerifyImpl, { name: 'repairAutoVerify', maxRecoveryAttempts: 5 }),
+export const repairAutoVerifyWorkflow = idempotentRegisterWorkflow(REPAIR_AUTO_VERIFY_WORKFLOW_NAME, () =>
+  DBOS.registerWorkflow(repairAutoVerifyImpl, { name: REPAIR_AUTO_VERIFY_WORKFLOW_NAME, maxRecoveryAttempts: 5 }),
 );
 
 const repairAutoVerifyQueue = idempotentWorkflowQueue(
-  'repair-auto-verify',
-  () => new WorkflowQueue('repair-auto-verify', { concurrency: queueConcurrency(4) }),
+  REPAIR_AUTO_VERIFY_QUEUE_NAME,
+  () => new WorkflowQueue(REPAIR_AUTO_VERIFY_QUEUE_NAME, { concurrency: queueConcurrency(4) }),
 );
 
 export async function enqueueRepairAutoVerify(input: RepairAutoVerifyRequest): Promise<{ workflowId: string }> {

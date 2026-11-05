@@ -247,7 +247,7 @@ async function priorBarCritiqueLineageOwners(
 
 export interface GetFeedbackDeps {
   /** Internal recovery context, never an externally supplied conversation id. */
-  acceptedRequest?: { conversation_id: string; thread_id: string; leaseToken: string };
+  acceptedRequest?: { conversation_id: string; thread_id: string; leaseToken: string; leaseUntilMs?: number };
   getSql: () => Sql;
   /** Optional test seam; production defaults to the shared acceptance lineage mapper. */
   getPartyKeys?: (workspaceId: string, ownerIds: string[]) => Promise<ReadonlyMap<string, string>>;
@@ -481,10 +481,11 @@ export async function continueFeedbackRequestCore(
   const sql = deps.getSql();
   const now = deps.now?.() ?? new Date();
   const token = randomUUID();
+  const leaseUntilMs = now.getTime() + 120_000;
   const rows = await sql<{ requester_id: string; routing: { request: AcceptedRequest } }[]>`
     UPDATE harness_shared.consult_state
        SET routing = jsonb_set(routing, '{request}', (routing->'request') ||
-         ${sql.json({ leaseToken: token, leaseUntil: new Date(now.getTime() + 120_000).toISOString() } as never)}),
+         ${sql.json({ leaseToken: token, leaseUntil: new Date(leaseUntilMs).toISOString() } as never)}),
            updated_at = ${now.toISOString()}::timestamptz
      WHERE workspace_id = ${workspaceId} AND conversation_id = ${conversationId}
        AND state = 'routing' AND closed_at IS NULL AND routing #>> '{request,version}' = '1'
@@ -496,7 +497,8 @@ export async function continueFeedbackRequestCore(
   if (request.payload.workspaceId !== workspaceId || request.payload.requesterId !== row.requester_id ||
       request.fingerprint !== requestFingerprint(request.payload)) throw new Error('consult-request-provenance-mismatch');
   try {
-    const result = await deps.execute(request.payload, { conversation_id: conversationId, thread_id: `thr-${conversationId}`, leaseToken: token });
+    const result = await deps.execute(request.payload, { conversation_id: conversationId,
+      thread_id: `thr-${conversationId}`, leaseToken: token, leaseUntilMs });
     await sql`
       UPDATE harness_shared.consult_state SET routing = jsonb_set(routing, '{request}',
         (routing->'request') || ${sql.json({ result, leaseToken: null, leaseUntil: null } as never)}),

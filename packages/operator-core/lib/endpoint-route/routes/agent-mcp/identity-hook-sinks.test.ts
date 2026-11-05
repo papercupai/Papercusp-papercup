@@ -182,6 +182,37 @@ describe('POST /agent-mcp/tool-guard', () => {
     } finally { clock.mockRestore(); }
   });
 
+  it('carries bounded identity-stage timings through a refused call without logging tool content', async () => {
+    let now = 0;
+    const clock = vi.spyOn(performance, 'now').mockImplementation(() => now);
+    const log = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    readAppliedWornRulesMock.mockImplementation(async (_owner, _workspace, observeTiming) => {
+      observeTiming({ stage: 'applied_revision', durationMs: 600 });
+      observeTiming({ stage: 'applied_artifact', durationMs: 50 });
+      observeTiming({ stage: 'local_rules', durationMs: 40 });
+      observeTiming({ stage: 'local_rules', durationMs: 10 });
+      observeTiming({ stage: 'private-owner-content', durationMs: 1 });
+      observeTiming({ stage: 'invalid', durationMs: Infinity });
+      now += 700;
+      return noRmRules();
+    });
+    try {
+      const res = await route('/agent-mcp/tool-guard').handler(new Request('http://localhost/api/agent-mcp/tool-guard', {
+        method: 'POST', body: JSON.stringify({ owner: 'builder', workspace: 'ws', tool: 'Bash',
+          input: { command: 'rm -rf build', secret: NEVER_EMIT_MARKER } }),
+      }));
+      expect((await res.json()).text).toContain('Refused by identity');
+      expect(res.headers.get('Server-Timing')).toContain(
+        'identity_applied_revision;dur=600.0, identity_applied_artifact;dur=50.0, identity_local_rules;dur=50.0');
+      expect(log).toHaveBeenCalledWith('[tool-guard-timing]', JSON.stringify({
+        totalMs: 700, setupMs: 0, planMs: 0, identityMs: 700, aborted: false,
+        identityStages: { applied_revision: 600, applied_artifact: 50, local_rules: 50 },
+      }));
+      expect(JSON.stringify(log.mock.calls)).not.toContain(NEVER_EMIT_MARKER);
+      expect(JSON.stringify(log.mock.calls)).not.toContain('private-owner-content');
+    } finally { clock.mockRestore(); log.mockRestore(); }
+  });
+
   it('retains slow-request attribution after client abort without logging tool content', async () => {
     let now = 0;
     const clock = vi.spyOn(performance, 'now').mockImplementation(() => now);
@@ -285,7 +316,7 @@ describe('POST /agent-mcp/tool-guard', () => {
   it("refuses from the wearer's worn rules, in the resolved workspace", async () => {
     readAppliedWornRulesMock.mockResolvedValue(noRmRules());
     const out = await post('/agent-mcp/tool-guard', { owner: 'o', workspace: '*', tool: 'Bash', input: { command: 'rm -rf /' } });
-    expect(readAppliedWornRulesMock).toHaveBeenCalledWith('o', 'ws-active');
+    expect(readAppliedWornRulesMock).toHaveBeenCalledWith('o', 'ws-active', expect.any(Function));
     expect(out.text).toBe('Refused by identity safe-coder rule no-rm: no recursive deletes');
   });
 

@@ -18,7 +18,10 @@ import { SESSION_PORT_PROTOCOL_VERSION, SESSION_PORT_TRANSFORM_VERSION } from '.
 
 // This suite invokes route handlers directly; keep route-shaped definitions but
 // skip @papercusp/agent-mcp's package-entry bootstrap of the full tool catalog.
-vi.mock('@papercusp/agent-mcp', () => ({
+vi.mock('@papercusp/agent-mcp', async () => ({
+  ...await import('@papercusp/tooldef'),
+  ...await import('../../../../agent-mcp/src/role-config'),
+  ...await import('../../../../agent-mcp/src/gate-bypass'),
   defineTool: (definition: any) => definition,
 }));
 
@@ -539,11 +542,13 @@ const writePresenceMock = vi.fn(
 // WI-10006674: a harness-less boot stamp reads the row first (create-if-absent).
 // Default null = no row yet, i.e. a fresh launch.
 const getPresenceMock = vi.fn(async (_ownerId: string): Promise<unknown> => null);
+const setCompactionLimitMock = vi.fn(async (_ownerId: string, _limit: number, _opts: unknown) => {});
 vi.mock('../../agent-tools/coordination/presence', async (orig) => ({
   ...((await orig()) as Record<string, unknown>),
   writePresence: (...args: unknown[]) =>
     writePresenceMock(...(args as [unknown, unknown, unknown])),
   getPresence: (...args: unknown[]) => getPresenceMock(...(args as [string])),
+  setCompactionLimit: (...args: unknown[]) => setCompactionLimitMock(...(args as [string, number, unknown])),
 }));
 type PendingCarryRespawnTestSlot = {
   nonce: string;
@@ -652,6 +657,10 @@ async function callPost(
 
 describe('bootstrap headless task/session binding', () => {
   it('forwards the exact enrolled task id to the owner-scoped binder', async () => {
+    // Module compilation is setup; the deadline below measures the handler.
+    // Otherwise a cold import can time out and leave that handler running into
+    // the next test after its mocks have been reset.
+    await routesOf();
     const taskId = '0123456789abcdefghj';
     let routeStage = 'not-started';
     let timeout: ReturnType<typeof setTimeout> | undefined;
@@ -1705,6 +1714,34 @@ describe('bootstrap-su', () => {
     } finally {
       getPresenceMock.mockReset().mockResolvedValue(null);
     }
+  });
+
+  it('bootstrap compaction registers a fresh ceiling after presence creation', async () => {
+    const { stampPresenceAtBoot } = await import('../routes/agent-mcp/bootstrap-su');
+    getPresenceMock.mockResolvedValueOnce(null).mockResolvedValueOnce({ compactionLimit: 20_000 });
+    await expect(stampPresenceAtBoot({ workspaceId: 'default', ownerId: 'su-fresh-budget',
+      compactionLimit: 20_000 })).resolves.toBeNull();
+    expect(setCompactionLimitMock).toHaveBeenCalledWith('su-fresh-budget', 20_000,
+      { explicit: true, onlyIfUnset: true });
+    expect(writePresenceMock.mock.invocationCallOrder[0]).toBeLessThan(
+      setCompactionLimitMock.mock.invocationCallOrder[0]);
+  });
+
+  it('bootstrap compaction seeds an existing harness-less row without overwriting its lane', async () => {
+    const { stampPresenceAtBoot } = await import('../routes/agent-mcp/bootstrap-su');
+    getPresenceMock.mockResolvedValueOnce({ intent: 'live lane', compactionLimit: null })
+      .mockResolvedValueOnce({ compactionLimit: 20_000 });
+    await expect(stampPresenceAtBoot({ workspaceId: 'default', ownerId: 'su-existing-budget',
+      compactionLimit: 20_000 })).resolves.toBeNull();
+    expect(writePresenceMock).not.toHaveBeenCalled();
+    expect(setCompactionLimitMock).toHaveBeenCalledOnce();
+  });
+
+  it.each([null, { compactionLimit: 30_000 }])('bootstrap compaction refuses unregistered or changed host budgets: %j', async (stored) => {
+    const { stampPresenceAtBoot } = await import('../routes/agent-mcp/bootstrap-su');
+    getPresenceMock.mockResolvedValueOnce(null).mockResolvedValueOnce(stored);
+    await expect(stampPresenceAtBoot({ workspaceId: 'default', ownerId: 'su-unregistered-budget',
+      compactionLimit: 20_000 })).resolves.toBe('Bootstrap compaction limit differs from registered presence');
   });
 
   it('no harness + no plan → playbook prompt still written; spec gets nulls', async () => {

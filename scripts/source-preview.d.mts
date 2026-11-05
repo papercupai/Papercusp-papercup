@@ -151,13 +151,6 @@ export function prepareVerifierSource({ repo, ref, dest, inputs, inputsFile, git
         sha256: string;
     };
 }>;
-/** @typedef {{ completedTrees: number, totalTrees: number, currentTree: string, cacheHit?: boolean }} VerifierDependencyProgress */
-/** @typedef {{ copyMode: 'copy' | 'hardlink', generationSnapshotSupported: boolean, explicitGeneration?: boolean,
- *   command: 'snapshot-locked' | 'snapshot-generation-locked' }} VerifierSnapshotSelection */
-/** @typedef {{ snapshotSelection?: VerifierSnapshotSelection }} VerifierPhaseMetadata */
-/** @typedef {(<T>(phase: string, operation: () => T | Promise<T>, metadata?: VerifierPhaseMetadata) => Promise<T>) & {
- *   reportProgress?: (phase: 'deps.census' | 'deps.postverify', progress: VerifierDependencyProgress) => void
- * }} VerifierPhaseRunner */
 /** Keep the verifier's snapshot path selection explicit and independently checkable.
  * @param {VerifierSnapshotSelection['copyMode']} copyMode
  * @param {boolean} generationSnapshotSupported

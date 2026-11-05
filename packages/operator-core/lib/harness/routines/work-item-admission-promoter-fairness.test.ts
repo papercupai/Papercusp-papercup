@@ -4,8 +4,10 @@ import type { Sql } from 'postgres';
 const io = vi.hoisted(() => ({
   review: vi.fn(), recover: vi.fn(), promote: vi.fn(), components: vi.fn(),
 }));
-vi.mock('@dbos-inc/dbos-sdk', () => ({ DBOS: {} }));
-vi.mock('./system-actions', () => ({ registerSystemAction: vi.fn() }));
+vi.mock('@dbos-inc/dbos-sdk', () => ({
+  DBOS: { registerWorkflow: (workflow: unknown) => workflow },
+}));
+vi.mock('./system-actions', () => ({ SYSTEM_TARGET_PREFIX: 'system:', registerSystemAction: vi.fn() }));
 vi.mock('../../work-item-admission-review', () => ({ runAdmissionReviews: io.review }));
 vi.mock('../../work-item-admission-recovery', () => ({
   withAdmissionPromoterLock: async (_scope: unknown, _sql: unknown, run: () => Promise<unknown>) => run(),
@@ -30,7 +32,7 @@ const result = (runId: string) => ({
 
 /** Inject storage/model ports into the real production composition. No PG,
  * model call, request creation, or dispatch can escape this test's ports. */
-function fixture(due = true) {
+function fixture(due = true, now: Date | string = new Date('2026-11-02T09:40:00.000Z')) {
   const events: string[] = [];
   let slot: Record<string, unknown> = { dueAt: due ? '2000-01-01T00:00:00.000Z' : '2099-01-01T00:00:00.000Z' };
   const ledger = new Map<string, { result: ReturnType<typeof result>; settled: boolean }>();
@@ -44,7 +46,7 @@ function fixture(due = true) {
     }
     if (text.includes('SELECT id, trigger_config')) return [{
       id: 'original-promoter', trigger_config: { cron: '*/30 * * * *' },
-      metadata: { admissionOrdinarySlot: slot }, now: new Date('2026-11-02T09:40:00.000Z'),
+      metadata: { admissionOrdinarySlot: slot }, now,
     }];
     if (text.includes('UPDATE harness_shared.routines SET metadata')) {
       const json = values.find((v) => typeof v === 'string' && v.startsWith('{')) as string;
@@ -98,6 +100,13 @@ describe('D099 ordinary/exact admission fairness (injected production compositio
     expect(io.recover).toHaveBeenLastCalledWith(expect.objectContaining({
       workspaceId: options.workspaceId, harnessSlug: options.harnessSlug,
     }), expect.objectContaining({ authorize: f.deps.authorize, dispatch: f.deps.dispatch }), f.deps.sql);
+  });
+
+  it('accepts raw PostgreSQL timestamptz strings when claiming an ordinary slot', async () => {
+    const f = fixture(true, '2026-11-02 09:40:00.000000+00');
+    await expect(runAdmissionPromoterWithRecovery(options, f.deps)).resolves.toEqual(result(options.runId));
+    expect(f.events).toEqual(['review', 'defer-original', 'ordinary', 'recover-original', 'finish-ordinary']);
+    expect(f.slot().runId).toBe(options.runId);
   });
 
   it('does not let an ordinary screen failure dispatch exact work or lose the ordinary slot', async () => {

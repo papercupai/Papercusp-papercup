@@ -807,6 +807,31 @@ describe('the consult kind gate (get-feedback-relevance-consults P-004, D-008 §
     if ('error' in res) throw new Error(res.error);
     expect(res.post.body).toBe('plain');
   });
+  it('appends a settled consult disposition only through the internal typed marker, without lifecycle or notification changes', async () => {
+    const opened = await openConversationCore(deps, ident('requester'), { kind: 'consult', body: 'q' });
+    const conversation_id = opened.conversation.id;
+    await store.setState(conversation_id, 'resolved', { now_ts: '2030-01-01T01:00:00.000Z' });
+    const before = await store.get(conversation_id);
+    const inbox = structuredClone(sinkBox.inbox);
+    expect(await postReplyCore(deps, ident('requester'), { conversation_id, body: 'untyped',
+      settled_review_disposition: true })).toEqual({ error: 'consult_requires_typed_verb' });
+    expect(await postReplyCore(deps, ident('requester'), { conversation_id, body: 'ordinary typed reply',
+      via_consult_verb: true })).toEqual({ error: 'resolved' });
+    const result = await postReplyCore(deps, ident('requester'), { conversation_id, body: 'finding planned',
+      via_consult_verb: true, settled_review_disposition: true });
+    expect(result).toMatchObject({ post: { body: 'finding planned' }, delivered: 0 });
+    expect(await store.get(conversation_id)).toEqual(before);
+    expect(sinkBox.inbox).toEqual(inbox);
+    expect(await threads.listPosts(`thr-${conversation_id}`)).toHaveLength(1);
+  });
+  it.each(['question', 'discussion'] as const)('the settled review marker cannot append to a resolved %s', async (kind) => {
+    const opened = await openConversationCore(deps, ident('requester'), { kind, body: 'q' });
+    const conversation_id = opened.conversation.id;
+    await store.setState(conversation_id, 'resolved', { now_ts: '2030-01-01T01:00:00.000Z' });
+    expect(await postReplyCore(deps, ident('requester'), { conversation_id, body: 'late',
+      via_consult_verb: true, settled_review_disposition: true })).toEqual({ error: 'resolved' });
+    expect(await threads.listPosts(`thr-${conversation_id}`)).toHaveLength(0);
+  });
 });
 
 describe('resolveConversationCore', () => {

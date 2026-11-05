@@ -3,7 +3,12 @@
  * decision: debounce reset, run-lock skip, per-head idempotence — plus the phase guard and the
  * scheduling seam's never-throw contract.
  */
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+const primary = vi.hoisted(() => ({ client: vi.fn(), enqueue: vi.fn(), getWorkflow: vi.fn() }));
+vi.mock('../dbos/primary-dbos-client', () => ({
+  getPrimaryDbosClient: primary.client,
+  primaryDbosAppVersion: () => 'primary-test-version',
+}));
 import {
   createFrozenCandidateRepairQueue,
   type FrozenCandidateRepairQueue,
@@ -57,6 +62,11 @@ function deps(queue: () => FrozenCandidateRepairQueue | null, opts: { lock?: boo
 }
 
 describe('D-131 repair auto-verify', () => {
+  beforeEach(() => {
+    primary.client.mockReset().mockResolvedValue({ enqueue: primary.enqueue, getWorkflow: primary.getWorkflow });
+    primary.enqueue.mockReset().mockResolvedValue({});
+    primary.getWorkflow.mockReset().mockResolvedValue(undefined);
+  });
   afterEach(() => setRepairAutoVerifyRunner(null));
 
   it('launches after the quiet window when the head is still ready-to-verify and no run holds the lock', async () => {
@@ -125,9 +135,10 @@ describe('D-131 repair auto-verify', () => {
       .toEqual({ status: 'not-launched', repairHead: HEAD1, reason: 'already_running' });
   });
 
-  it('scheduling never throws: unwired and failing runners degrade to scheduled:false', async () => {
+  it('scheduling never throws: unavailable primary and failing runners degrade to scheduled:false', async () => {
     const req = { candidate: CAND, repairHead: HEAD1, admittedAtMs: 100 };
-    expect(await scheduleRepairAutoVerify(req)).toMatchObject({ scheduled: false });
+    primary.client.mockRejectedValueOnce(new Error('primary unavailable'));
+    expect(await scheduleRepairAutoVerify(req)).toMatchObject({ scheduled: false, reason: expect.stringContaining('primary unavailable') });
     setRepairAutoVerifyRunner(async () => {
       throw new Error('boom');
     });
@@ -142,5 +153,32 @@ describe('D-131 repair auto-verify', () => {
       fireAfterMs: 100 + REPAIR_AUTO_VERIFY_QUIET_MS,
     });
     expect(runner).toHaveBeenCalledWith({ ...req, quietMs: REPAIR_AUTO_VERIFY_QUIET_MS });
+  });
+
+  it('request hosts enqueue the existing primary workflow without a locally wired runner', async () => {
+    const target = { workspaceId: 'workspace', installSlug: 'drill' };
+    const req = { candidate: CAND, repairHead: HEAD1, admittedAtMs: 100, target };
+    const workflowId = repairAutoVerifyWorkflowId(HEAD1, target);
+    for (let replay = 0; replay < 2; replay++) {
+      expect(await scheduleRepairAutoVerify(req)).toEqual({ scheduled: true, workflowId,
+        repairHead: HEAD1, quietMs: REPAIR_AUTO_VERIFY_QUIET_MS, fireAfterMs: 100 + REPAIR_AUTO_VERIFY_QUIET_MS });
+    }
+    expect(primary.enqueue).toHaveBeenCalledTimes(2);
+    for (const call of primary.enqueue.mock.calls) {
+      expect(call).toEqual([{
+        queueName: 'repair-auto-verify', workflowName: 'repairAutoVerify',
+        workflowID: workflowId, deduplicationID: workflowId, duplicationPolicy: 'return-existing',
+        appVersion: 'primary-test-version',
+      }, { ...req, quietMs: REPAIR_AUTO_VERIFY_QUIET_MS }]);
+    }
+  });
+
+  it('confirms a committed enqueue after response loss and exposes an unconfirmed failure', async () => {
+    const req = { candidate: CAND, repairHead: HEAD1, admittedAtMs: 100 };
+    primary.enqueue.mockRejectedValue(new Error('response lost'));
+    primary.getWorkflow.mockResolvedValueOnce({ workflowID: repairAutoVerifyWorkflowId(HEAD1) });
+    expect(await scheduleRepairAutoVerify(req)).toMatchObject({ scheduled: true });
+    expect(primary.getWorkflow).toHaveBeenCalledWith(repairAutoVerifyWorkflowId(HEAD1));
+    expect(await scheduleRepairAutoVerify(req)).toMatchObject({ scheduled: false, reason: expect.stringContaining('response lost') });
   });
 });

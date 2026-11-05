@@ -74,6 +74,8 @@ export type EffectivePermissionDecision = {
   trace: AuthorityTrace[];
   decidingAuthority?: AuthorityRef;
   reason?: string;
+  /** What must change before a new request can pass this refusal. */
+  liftsWhen?: string;
 };
 
 const requiredKinds = AUTHORITY_KINDS.filter(kind => kind !== 'vault');
@@ -192,7 +194,8 @@ export function evaluateEffectivePermission(
     if (!verdict.allow && !decidingAuthority) decidingAuthority = { kind: policy.kind, id: policy.id };
   }
   return decidingAuthority
-    ? { allowed: false, code: 'denied', request: trustedRequest, revisions, trace, decidingAuthority }
+    ? { allowed: false, code: 'denied', request: trustedRequest, revisions, trace, decidingAuthority,
+      liftsWhen: 'Retry with a request permitted by every required authority, or have the authorized policy owner change the denying policy; the host must load the current policy and context revisions.' }
     : { allowed: true, code: 'allowed', request: trustedRequest, revisions, trace };
 }
 

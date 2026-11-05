@@ -78,7 +78,6 @@ import { measureBootOperatorArtifact } from './release/operator-artifact';
 import { cleanupEndedVerifierDirectories, verifierResourceInventory, verifierSourceFiles, writeVerifierTaskReceipt } from './verifier-source';
 import { readProcessIdentity } from './process-identity';
 import { bindFrozenDependencyGeneration } from './dependency-generation-proof';
-import { buildWorkspace } from '../../../apps/operator/bin/release/dependency-generation-verifier.mjs';
 import { closeTask } from './task-manager/store';
 import type { TaskRow } from './task-manager/types';
 
@@ -316,11 +315,14 @@ describe('immutable generation verifier snapshots', () => {
       // relative support files beside the separately frozen helper.
       cpSync(join(SOURCE_ROOT, 'apps/operator/bin/release'), join(root, 'apps/operator/bin/release'),
         { recursive: true });
+      const cliEntryPath = 'packages/operator-core/lib/util/cli-entry.ts';
+      write(root, cliEntryPath, readFileSync(join(SOURCE_ROOT, cliEntryPath), 'utf8'));
       git(root, ['init', '-q']);
       git(root, ['add', '.']);
       git(root, ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'current generation tooling']);
       const generation = join(root, 'apps/operator/bin/release/dependency-generation.sh');
-      const env = { ...childEnv(), PAPERCUSP_DEPENDENCY_GENERATION_ROOT: store,
+      const env: NodeJS.ProcessEnv & { DEPENDENCY_GENERATION_COPY_LOCK_FILE: string } = {
+        ...childEnv(), PAPERCUSP_DEPENDENCY_GENERATION_ROOT: store,
         DEPENDENCY_GENERATION_COPY_LOCK_FILE: join(root, 'copy.lock'),
         DEPENDENCY_GENERATION_ALLOW_HARDLINK: '1' };
       const shell = (file: string, args: string[], extra = {}) => spawnSync('bash', [file, ...args],
@@ -353,6 +355,7 @@ describe('immutable generation verifier snapshots', () => {
         write(dest, '.verifier-source.json', JSON.stringify({ files: [{ path: 'packages/cli/package.json' }] }));
         for (const tree of [donor, dest]) {
           cpSync(join(root, 'apps/operator/bin/release'), join(tree, 'apps/operator/bin/release'), { recursive: true });
+          write(tree, cliEntryPath, readFileSync(join(root, cliEntryPath), 'utf8'));
           write(tree, '.gitignore', 'node_modules/\ndist/\n.verifier-source.json\n');
           write(tree, 'scripts/npm-install-safe.mjs', 'process.stderr.write("DONOR_READ_FORBIDDEN");process.exit(91);');
           git(tree, ['init', '-q']);
@@ -360,8 +363,11 @@ describe('immutable generation verifier snapshots', () => {
           git(tree, ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'frozen input fixture']);
         }
         const sourceCommit = git(dest, ['rev-parse', 'HEAD']).trim();
-        buildWorkspace(donor, 'packages/cli', [process.execPath, '-e',
-          'const fs=require("node:fs");fs.mkdirSync("dist");fs.copyFileSync("src/run.js","dist/run.js");']);
+        const build = spawnSync(process.execPath, [join(donor, 'apps/operator/bin/release/dependency-generation-verifier.mjs'),
+          'build', donor, 'packages/cli', '--', process.execPath, '-e',
+          'const fs=require("node:fs");fs.mkdirSync("dist");fs.copyFileSync("src/run.js","dist/run.js");'],
+        { encoding: 'utf8', env: childEnv() });
+        expect(build.status, build.stderr).toBe(0);
         const published = shell(generation, ['--integration', donor, '--generation-root', store]);
         expect(published.status, published.stderr).toBe(0);
         const generationPath = published.stdout.match(/\bpath=([^\n]+)$/m)![1]!;
@@ -1362,7 +1368,7 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
       'test -z "$NODE_OPTIONS"', 'test -z "$NODE_PATH"',
       'if [ "$1" = trees ]; then if [ -n "${VERIFIER_SLOW_CENSUS:-}" ]; then "$VERIFIER_PREP_NODE" "$2/scripts/dependency-progress.cjs" >&2; fi; echo node_modules; exit; fi',
       'if [ -z "${VERIFIER_SLOW_CENSUS:-}" ]; then "$VERIFIER_PREP_NODE" "$3/scripts/dependency-progress.cjs"; fi',
-      'cp -al -- "$2/node_modules" "$3/node_modules"',
+      'if [ "$4" = copy ]; then cp -a -- "$2/node_modules" "$3/node_modules"; else cp -al -- "$2/node_modules" "$3/node_modules"; fi',
     ].join('\n'));
     write(fixture.repo, '.gitignore', readFileSync(join(fixture.repo, '.gitignore'), 'utf8') + '\n/.papercusp/scratch/\n');
     git(fixture.repo, ['add', helper, script, writer, DEPENDENCY_POLICY_PATH, '.gitignore']);
@@ -1526,8 +1532,8 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     { rootDonor: true, generationHelper: true },
   ])('freezes materialized committed source without cloning on root (root donor=$rootDonor, generation helper=$generationHelper)', async ({ rootDonor, generationHelper }) => {
     const caseId = `${rootDonor}-${generationHelper}`;
-    const fixtureParent = rootDonor && process.platform === 'linux'
-      ? mkdtempSync('/var/tmp/source-preview-root-donor-') : tmp;
+    const fixtureParent = process.platform === 'linux'
+      ? mkdtempSync(rootDonor ? '/var/tmp/source-preview-root-donor-' : '/mnt/data/tmp/source-preview-data-donor-') : tmp;
     try {
     const fixture = makeSuperproject(join(fixtureParent, 'verifier-materialized-dependencies-' + caseId));
     const copiesDependencies = process.platform === 'linux' && statSync(fixture.repo).dev === statSync('/').dev;
@@ -1583,7 +1589,9 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     if (copiesDependencies) {
       expect(dependencyReceipt.root).toMatch(/^\/mnt\/data\/tmp\/verifier-command-/);
       expect(statSync(fixture.repo).dev).not.toBe(statSync('/mnt/data/tmp').dev);
-    } else expect(relative(fixture.repo, dependencyReceipt.root)).toMatch(/^\.papercusp\/scratch\/verifier-command-/);
+    }
+    expect(relative(fixture.repo, dependencyReceipt.root).startsWith('..' + sep)).toBe(true);
+    expect(existsSync(join(fixture.repo, '.papercusp/scratch'))).toBe(false);
     expect(dependencyReceipt.sourceCommit).toBe(sha);
     // The recorded donor must never make a mismatched source identity acceptable.
     write(materialized, shadow.OWNER_MARKER, JSON.stringify({ sha: '0'.repeat(40), sourceRepoRoot: fixture.repo }));
@@ -1594,6 +1602,89 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
       if (fixtureParent !== tmp) rmSync(fixtureParent, { recursive: true, force: true });
     }
   });
+
+  it.each(['data', 'temporary'] as const)('keeps an immutable donor verified during concurrent verifier commands and independent cleanup (%s)', async placement => {
+    const fixture = makeSuperproject(join(tmp, 'verifier-concurrent-donor-fixture-' + placement));
+    git(fixture.repo, ['rm', '-r', '--', 'node_modules', 'apps/operator/node_modules']);
+    const script = 'scripts/source-preview.mjs';
+    const helper = 'papercusp-desktop/bin/lib/pinned-deps.sh';
+    write(fixture.repo, script, "console.log(process.argv.includes('verifier-measure') ? '4096' : 'inputs-ok');\n");
+    write(fixture.repo, DEPENDENCY_POLICY_PATH, DEPENDENCY_POLICY);
+    write(fixture.repo, helper, [
+      '#!/bin/bash', 'set -eu', 'case "$1" in',
+      '  trees) echo node_modules; exit ;;',
+      '  preflight-generation) exit ;;',
+      '  snapshot-generation-locked) ;;',
+      '  snapshot-locked) ;;',
+      '  *) exit 94 ;;', 'esac',
+      'if [ "$4" = copy ]; then cp -a -- "$2/node_modules" "$3/node_modules"; else cp -al -- "$2/node_modules" "$3/node_modules"; fi',
+    ].join('\n'));
+    git(fixture.repo, ['add', script, helper, DEPENDENCY_POLICY_PATH]);
+    git(fixture.repo, ['commit', '-qm', 'immutable concurrent donor fixture']);
+    installVerifierTsx(fixture.repo);
+    const donorParent = placement === 'data' && process.platform === 'linux'
+      ? mkdtempSync('/mnt/data/tmp/verifier-concurrent-donor-') : tmp;
+    const donor = join(donorParent, 'verifier-concurrent-qualified-donor-' + placement);
+    try {
+    const receipt = await prepareVerifierSource({ repo: fixture.repo, ref: 'HEAD', dest: donor,
+      inputs: [script], gitCheckout: true });
+    await prepareVerifierDependencies({ donor: fixture.repo, dest: donor, receipt, env: childEnv() });
+    const before = verifierSourceFiles(donor);
+    await expect(verifyVerifierSource(donor, receipt, { runtimeArtifacts: true })).resolves.toEqual(receipt);
+    const gates = [0, 1].map(() => {
+      let ready!: (root: string) => void, failed!: (error: unknown) => void, release!: () => void;
+      const prepared = new Promise<string>((resolve, reject) => { ready = resolve; failed = reject; });
+      const proceed = new Promise<void>(resolve => { release = resolve; });
+      return { ready, failed, release, prepared, proceed };
+    });
+    const receipts = gates.map((_, index) => join(tmp, `verifier-concurrent-${placement}-${index}.json`));
+    const runs = gates.map((gate, index) => runVerifierCommand({ repo: donor, ref: receipt.sourceCommit,
+      inputs: [script], receiptPath: receipts[index]!, env: childEnv(),
+      command: [process.execPath, '-e', 'process.exit(0)'],
+      prepareChildEnv: async ({ sourceRoot }) => { gate.ready(sourceRoot); await gate.proceed; },
+    }).then(code => ({ code, error: null }), error => {
+      gate.failed(error); return { code: null, error };
+    }));
+    try {
+      const roots = await Promise.all(gates.map(gate => gate.prepared));
+      expect(new Set(roots).size).toBe(2);
+      const tasks = receipts.map(path => JSON.parse(readFileSync(path + '.task.json', 'utf8')));
+      for (const [index, root] of roots.entries()) {
+        expect(relative(donor, root).startsWith('..' + sep)).toBe(true);
+        expect(root).toBe(join(tasks[index].ownedRoot, 'invoked-source'));
+        expect(tasks[index]).toMatchObject({ repoRoot: donor, cleanup: 'pending' });
+      }
+      expect(verifierSourceFiles(donor)).toEqual(before);
+      await expect(verifyVerifierSource(donor, receipt, { runtimeArtifacts: true })).resolves.toEqual(receipt);
+      // Preserve the detector: an actual added donor file must still fail.
+      const added = join(donor, 'unexpected-concurrent-source.txt');
+      writeFileSync(added, 'must not be ignored');
+      try { await expect(verifyVerifierSource(donor, receipt, { runtimeArtifacts: true }))
+        .rejects.toThrow('tampered verification source'); }
+      finally { rmSync(added); }
+      gates[0]!.release();
+      expect(await runs[0]).toEqual({ code: 0, error: null });
+      expect(existsSync(tasks[0].ownedRoot)).toBe(false);
+      expect(existsSync(roots[1]!)).toBe(true);
+      await expect(verifyVerifierSource(donor, receipt, { runtimeArtifacts: true })).resolves.toEqual(receipt);
+      gates[1]!.release();
+      expect(await runs[1]).toEqual({ code: 0, error: null });
+      for (const [index, task] of tasks.entries()) {
+        expect(existsSync(task.ownedRoot)).toBe(false);
+        expect(JSON.parse(readFileSync(receipts[index] + '.task.json', 'utf8')).cleanup).toBe('completed');
+        const phases = readFileSync(receipts[index] + '.phases.jsonl', 'utf8').trim().split('\n').map(line => JSON.parse(line));
+        expect(phases.find(row => row.phase === 'source.postverify' && row.event === 'completed')).toBeDefined();
+      }
+      expect(verifierSourceFiles(donor)).toEqual(before);
+      await expect(verifyVerifierSource(donor, receipt, { runtimeArtifacts: true })).resolves.toEqual(receipt);
+    } finally {
+      for (const gate of gates) gate.release();
+      await Promise.all(runs);
+    }
+    } finally {
+      if (donorParent !== tmp) rmSync(donorParent, { recursive: true, force: true });
+    }
+  }, 120_000);
 
   it.each(['automatic', 'explicit'] as const)('rejects %s generation custody before allocating verifier source', async selection => {
     const parent = process.platform === 'linux' ? mkdtempSync('/var/tmp/source-preview-generation-preflight-') : tmp;
@@ -1704,7 +1795,7 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
       write(fixture.repo, DEPENDENCY_POLICY_PATH, DEPENDENCY_POLICY);
       write(fixture.repo, preflight, "console.log(process.argv.includes('verifier-measure') ? '4096' : 'inputs-ok');\n");
       const snapshotCustody = 'donor=fixture\nmode=generation-copy\ntrees=1\ngeneration=original-generation\ninput=original-input\ntoken=original-token\n';
-      write(fixture.repo, helper, '#!/bin/bash\nset -eu\nif [ "$1" = trees ]; then if [ "${VERIFIER_CENSUS_FAIL:-}" = 1 ]; then echo census failure >&2; exit 43; fi; echo node_modules; exit; fi\nif [ "${VERIFIER_PREPARE_FAIL:-}" = 1 ]; then echo missing dependency generation >&2; exit 42; fi\ncp -al -- "$2/node_modules" "$3/node_modules"\nprintf "' + snapshotCustody.replaceAll('\n', '\\n') + '" > "$3/.papercusp-pinned-deps"\n');
+      write(fixture.repo, helper, '#!/bin/bash\nset -eu\nif [ "$1" = trees ]; then if [ "${VERIFIER_CENSUS_FAIL:-}" = 1 ]; then echo census failure >&2; exit 43; fi; echo node_modules; exit; fi\nif [ "${VERIFIER_PREPARE_FAIL:-}" = 1 ]; then echo missing dependency generation >&2; exit 42; fi\nif [ "$4" = copy ]; then cp -a -- "$2/node_modules" "$3/node_modules"; else cp -al -- "$2/node_modules" "$3/node_modules"; fi\nprintf "' + snapshotCustody.replaceAll('\n', '\\n') + '" > "$3/.papercusp-pinned-deps"\n');
       write(fixture.repo, '.gitignore', readFileSync(join(fixture.repo, '.gitignore'), 'utf8') + '\n/.papercusp/scratch/\n');
       write(fixture.repo, provider, [
         "import { readFileSync, writeFileSync, rmSync, mkdirSync } from 'node:fs';",
@@ -1784,7 +1875,7 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
         await expect(invocation).rejects.toThrow(mode === 'census-failure' ? 'census failure' : 'missing dependency generation');
         expect(prepareChildEnv).not.toHaveBeenCalled();
         expect(existsSync(proofPath)).toBe(false);
-        expect(readdirSync(join(fixture.repo, '.papercusp/scratch'))).toEqual([]);
+        expect(existsSync(join(fixture.repo, '.papercusp/scratch'))).toBe(false);
         const phases = readFileSync(receiptPath + '.phases.jsonl', 'utf8').trim().split('\n').map(line => JSON.parse(line));
         expect(phases.find(row => row.event === 'failed')).toMatchObject({ phase: mode === 'census-failure' ? 'deps.census' : 'deps.snapshot' });
         expect(phases.some(row => row.phase === 'child.environment' || row.phase === 'child.run')).toBe(false);
@@ -1808,7 +1899,7 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
         expect(prepareChildEnv).not.toHaveBeenCalled();
         await expect(invocation).rejects.toThrow('TASK_DEADLINE_REFUSAL');
         expect(existsSync(proofPath)).toBe(false);
-        expect(readdirSync(join(fixture.repo, '.papercusp/scratch'))).toEqual([]);
+        expect(existsSync(join(fixture.repo, '.papercusp/scratch'))).toBe(false);
         const phases = readFileSync(receiptPath + '.phases.jsonl', 'utf8').trim().split('\n').map(line => JSON.parse(line));
         expect(phases.some(row => row.phase === 'child.preflight' || row.phase === 'child.run')).toBe(false);
         expect(phases.filter(row => row.event === 'failed').map(row => row.phase))
@@ -1848,7 +1939,7 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
       expect(proof.root).toBe(proof.repo);
       expect(proof.root).not.toBe(fixture.repo);
       expect(existsSync(proof.root)).toBe(false);
-      expect(readdirSync(join(fixture.repo, '.papercusp/scratch'))).toEqual([]);
+      expect(existsSync(join(fixture.repo, '.papercusp/scratch'))).toBe(false);
       expect(readFileSync(join(fixture.repo, provider), 'utf8')).toBe('peer edit after allocation');
       expect(existsSync(join(fixture.repo, 'node_modules'))).toBe(false);
       expect(JSON.parse(readFileSync(receiptPath, 'utf8')).sourceCommit).toBe(ref);
@@ -1960,7 +2051,7 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
       const ready = join(tmp, 'verifier-cutoff-ready-' + mode);
       write(fixture.repo, DEPENDENCY_POLICY_PATH, DEPENDENCY_POLICY);
       write(fixture.repo, preflight, "console.log(process.argv.includes('verifier-measure') ? '4096' : 'inputs-ok');\n");
-      write(fixture.repo, helper, '#!/bin/bash\nset -eu\nif [ "$1" = trees ]; then echo node_modules; exit; fi\ncp -al -- "$2/node_modules" "$3/node_modules"\n');
+      write(fixture.repo, helper, '#!/bin/bash\nset -eu\nif [ "$1" = trees ]; then echo node_modules; exit; fi\nif [ "$4" = copy ]; then cp -a -- "$2/node_modules" "$3/node_modules"; else cp -al -- "$2/node_modules" "$3/node_modules"; fi\n');
       const successful = mode === 'completed' || mode === 'no-deadline';
       write(fixture.repo, provider, [
         "import { spawn } from 'node:child_process';",
@@ -2103,7 +2194,7 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
         '  echo node_modules; exit', 'fi',
         'if [ "$VERIFIER_CANCEL_PHASE" = snapshot ] || [ "$VERIFIER_CANCEL_PHASE" = sighup ] || [ "$VERIFIER_CANCEL_PHASE" = sigkill ]; then',
         '  printf "%s\\n" "$3" > "$VERIFIER_CANCEL_READY"; exec sleep 60', 'fi',
-        'cp -al -- "$2/node_modules" "$3/node_modules"',
+        'if [ "$4" = copy ]; then cp -a -- "$2/node_modules" "$3/node_modules"; else cp -al -- "$2/node_modules" "$3/node_modules"; fi',
       ].join('\n') + '\n');
       write(fixture.repo, provider, [
         "import { spawn } from 'node:child_process';",
@@ -2220,10 +2311,12 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
         .split('\n').map(line => JSON.parse(line));
       expect(phases.at(-1)).toMatchObject({ phase: 'deps.snapshot', event: 'started', taskId });
       expect(phases.some(row => row.phase === 'child.run')).toBe(false);
-      if (scratchLocation === 'data') {
-        // The exporter uses this root for root-device donors. Exercise discovery
-        // independently of the filesystem on which this synthetic repo lives.
-        const relocated = mkdtempSync(join(await fsPromises.realpath('/mnt/data/tmp'), 'verifier-command-'));
+      if (scratchLocation === 'repo') {
+        // Older invocations used repository-local scratch. Preserve recovery
+        // coverage for those receipts as well as the current external root.
+        const legacyScratch = join(fixture.repo, '.papercusp/scratch');
+        mkdirSync(legacyScratch, { recursive: true });
+        const relocated = mkdtempSync(join(legacyScratch, 'verifier-command-'));
         cleanupPaths.push(relocated);
         cpSync(owned, relocated, { recursive: true, verbatimSymlinks: true });
         rmSync(owned, { recursive: true, force: true });
@@ -2315,7 +2408,7 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
       command: [process.execPath, '-e', 'require("node:fs").writeFileSync(process.argv[1], "allocated")', marker] }))
       .rejects.toThrow('dirty tested-input mismatch: ' + input);
     expect(existsSync(marker)).toBe(false); expect(existsSync(receiptPath)).toBe(false);
-    expect(readdirSync(join(fixture.repo, '.papercusp/scratch'))).toEqual([]);
+    expect(existsSync(join(fixture.repo, '.papercusp/scratch'))).toBe(false);
     const phases = readFileSync(receiptPath + '.phases.jsonl', 'utf8').trim()
       .split('\n').map(line => JSON.parse(line));
     expect(phases.find(row => row.event === 'failed')).toMatchObject({
@@ -2327,7 +2420,7 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     await expect(runVerifierCommand({ repo: fixture.repo, ref, inputs: [input], receiptPath,
       command: [process.execPath, '-e', 'process.exit(0)'] })).rejects.toThrow('EEXIST');
     expect(readFileSync(receiptPath + '.phases.jsonl', 'utf8')).toBe(retained);
-    expect(readdirSync(join(fixture.repo, '.papercusp/scratch'))).toEqual([]);
+    expect(existsSync(join(fixture.repo, '.papercusp/scratch'))).toBe(false);
     await expect(runCli(['verifier-run', '--repo', fixture.repo, '--ref', ref, '--receipt', receiptPath,
       '--inputs', input, '--'])).rejects.toThrow('and -- <command>');
   });

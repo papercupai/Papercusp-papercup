@@ -4071,11 +4071,81 @@ dependency_generation_prepare_exact_ref_root() {
   printf '%s\n' "$scratch"
 }
 
+# Native assets bind more than the lock/patch selector. Reuse the ordinary
+# exact-ref publisher for dependencies, then validate the generated closure
+# against the selected source before reporting a native-compatible hit. A miss
+# rebuilds in an owned exact-ref scratch using leased, independent dependency
+# copies. The caller's source, donor and existing immutable generation stay intact.
+dependency_generation_ensure_verifier_ref() (
+  local integration_root="$1" ref="$2" source_root="$3" generation_root="$4" retain_as="$5"
+  local helper="${DEPENDENCY_GENERATION_VERIFIER_HELPER:-$(dirname "${BASH_SOURCE[0]}")/dependency-generation-verifier.mjs}"
+  local parent scratch nm rel input rc=0
+  source_root="$(cd "$source_root" && pwd -P)" || return 1
+  [ "$source_root" != "$integration_root" ] || {
+    dependency_generation_log 'FATAL: --verifier-source requires an independent frozen checkout'
+    return 74
+  }
+  "${DEPENDENCY_GENERATION_NODE:-node}" "$helper" check-source "$source_root" "$ref" || return $?
+  # Dependency-only consumers retain their existing selector and corruption
+  # checks. A corrupt publication is never treated as a native cache miss.
+  dependency_generation_main --integration "$integration_root" --generation-root "$generation_root" \
+    --ensure-ref "$ref" >/dev/null || return $?
+  input="$DEPENDENCY_GENERATION_INPUT_FINGERPRINT"
+  dependency_generation_acquire_selector_lease "$generation_root" "$DEPENDENCY_GENERATION_ID" \
+    "${BASHPID:-$$}" "$DEPENDENCY_GENERATION_TOKEN" || return $?
+  trap 'dependency_generation_release_selector_lease; dependency_generation_cleanup_exact_scratch' EXIT
+  "${DEPENDENCY_GENERATION_NODE:-node}" "$helper" verify "$DEPENDENCY_GENERATION_PATH" "$source_root" || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    [ "$rc" -eq 74 ] || return "$rc"
+    # Do not copy a caller's dependency symlinks or recursively copy a scratch
+    # into itself. Native preparation supplies source before materialization.
+    [ -z "$(find "$source_root" -name node_modules -print -quit)" ] || {
+      dependency_generation_log 'FATAL: --verifier-source must precede dependency materialization'
+      return 74
+    }
+    parent="$(dependency_generation_exact_scratch_parent "$integration_root")"
+    mkdir -p "$parent" || return 1
+    scratch="$(mktemp -d "$parent/native-${ref:0:16}.XXXXXX")" || return 1
+    DEPENDENCY_GENERATION_EXACT_SCRATCH="$scratch"
+    dependency_generation_ensure_store_root "$scratch" || return $?
+    dependency_generation_write_owner "$scratch/.papercusp-exact-ref-writer" || return $?
+    cp -a -- "$source_root/." "$scratch/" || return $?
+    "${DEPENDENCY_GENERATION_NODE:-node}" "$helper" check-source "$scratch" "$ref" || return $?
+    "${DEPENDENCY_GENERATION_NODE:-node}" "$helper" same-source "$scratch" "$source_root" || return $?
+    while IFS= read -r nm; do
+      [ -n "$nm" ] || continue
+      rel="${nm#"$DEPENDENCY_GENERATION_TREE"/}"
+      DEPENDENCY_GENERATION_ALLOW_HARDLINK=0 DEPENDENCY_GENERATION_FORCE_COPY=1 \
+        dependency_generation_materialize_tree "$nm" "$scratch/$rel" || return $?
+    done < <(dependency_generation_enumerate_node_modules "$DEPENDENCY_GENERATION_TREE")
+    dependency_generation_release_selector_lease
+    dependency_generation_log "rebuilding verifier workspace closure for exact ref $ref"
+    "${DEPENDENCY_GENERATION_NODE:-node}" "$helper" build-closure "$scratch" || return $?
+    "${DEPENDENCY_GENERATION_NODE:-node}" "$helper" same-source "$scratch" "$source_root" || return $?
+    # Publishing uses the existing provenance-bound identity, token, atomic
+    # rename, selector, retention and lease machinery, including torn-source checks.
+    dependency_generation_main --integration "$scratch" --generation-root "$generation_root" >/dev/null || return $?
+    dependency_generation_select_input_fingerprint "$input" "$generation_root" || return $?
+    dependency_generation_acquire_selector_lease "$generation_root" "$DEPENDENCY_GENERATION_ID" \
+      "${BASHPID:-$$}" "$DEPENDENCY_GENERATION_TOKEN" || return $?
+    "${DEPENDENCY_GENERATION_NODE:-node}" "$helper" verify "$DEPENDENCY_GENERATION_PATH" "$source_root" || return $?
+    DEPENDENCY_GENERATION_REUSED=false
+  else
+    DEPENDENCY_GENERATION_REUSED=true
+  fi
+  dependency_generation_retain_ensured_ref "$generation_root" "$integration_root" \
+    "$retain_as" "$DEPENDENCY_GENERATION_ID" "$ref" || return $?
+  printf 'DEPENDENCY_GENERATION_RESULT schema=1 identity=%s source=%s input=%s scope=full reused=%s token=%s path=%s\n' \
+    "$DEPENDENCY_GENERATION_ID" "$DEPENDENCY_GENERATION_SOURCE_FINGERPRINT" \
+    "$DEPENDENCY_GENERATION_INPUT_FINGERPRINT" "$DEPENDENCY_GENERATION_REUSED" \
+    "$DEPENDENCY_GENERATION_TOKEN" "$DEPENDENCY_GENERATION_PATH"
+)
+
 dependency_generation_main() {
   local integration_root='' generation_root='' select_inputs_from='' ensure_ref='' fingerprint_ref='' retention_rc=0 prune_only='' check_headroom=''
   local remember_store='' retired_store='' skip_recorded_stores='' current_root='' old_root='' record line registered=''
   local input_before='' input_after='' exact_input='' selector='' lease_owner_pid='' live_input='' build_root=''
-  local predict_ref='' predict_verdict='' predict_rc=0 line retain_as=''
+  local predict_ref='' predict_verdict='' predict_rc=0 line retain_as='' verifier_source=''
   local workspace_dirs=()
   while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -4085,6 +4155,7 @@ dependency_generation_main() {
       --select-inputs-from) select_inputs_from="$2"; shift 2 ;;
       --lease-owner-pid) lease_owner_pid="$2"; shift 2 ;;
       --ensure-ref) ensure_ref="$2"; shift 2 ;;
+      --verifier-source) verifier_source="$2"; shift 2 ;;
       --retain-as) retain_as="$2"; shift 2 ;;
       --fingerprint-ref) fingerprint_ref="$2"; shift 2 ;;
       --predict-ref) predict_ref="$2"; shift 2 ;;
@@ -4096,6 +4167,13 @@ dependency_generation_main() {
       *) dependency_generation_log "unknown arg: $1"; return 2 ;;
     esac
   done
+  [ -z "$verifier_source" ] || {
+    [ -n "$ensure_ref" ] && [ -z "$select_inputs_from$fingerprint_ref$lease_owner_pid$prune_only$check_headroom$predict_ref$remember_store$retired_store$skip_recorded_stores" ] \
+      && [ "${#workspace_dirs[@]}" -eq 0 ] || {
+      dependency_generation_log '--verifier-source requires only --ensure-ref (and optional --retain-as)'
+      return 2
+    }
+  }
   [ -z "$predict_ref" ] || {
     [ -z "$select_inputs_from$ensure_ref$fingerprint_ref$lease_owner_pid$prune_only$check_headroom" ] \
       && [ "${#workspace_dirs[@]}" -eq 0 ] || {
@@ -4317,6 +4395,11 @@ dependency_generation_main() {
       dependency_generation_log "FATAL: --ensure-ref is not a commit: $ensure_ref"
       return 74
     }
+    if [ -n "$verifier_source" ]; then
+      dependency_generation_ensure_verifier_ref "$integration_root" "$ensure_ref" \
+        "$verifier_source" "$generation_root" "$retain_as"
+      return $?
+    fi
     exact_input="$(
       dependency_generation_input_fingerprint_ref "$integration_root" "$ensure_ref"
     )" || return $?

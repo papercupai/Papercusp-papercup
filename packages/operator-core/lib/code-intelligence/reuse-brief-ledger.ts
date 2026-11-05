@@ -38,22 +38,32 @@ export async function recordReuseBriefIssued(input: ReuseIssuedRecord, signal: A
   if (!input.context.workspaceId || !input.context.owner || !input.context.invocation || signal.aborted) return false;
   const { withWorkspace } = await import('@papercusp/db-org');
   return withWorkspace(input.context.workspaceId, async tx => {
-    await tx`SELECT set_config('lock_timeout', '50ms', true), set_config('statement_timeout', '100ms', true)`;
+    // A single batch avoids applying the statement cap once per provider.
+    const statementTimeout = '1000ms';
+    await tx`SELECT set_config('lock_timeout', '50ms', true),
+      set_config('statement_timeout', ${statementTimeout}, true)`;
     const turns = await tx<{ turn_id: string }[]>`SELECT turn_id FROM harness_shared.identity_hook_turns
       WHERE workspace_id = ${input.context.workspaceId} AND owner_id = ${input.context.owner}`;
     // Do not mint a turn just to make telemetry look measured.
     if (!turns[0]?.turn_id) return false;
     const epochs = await tx<{ epoch: number }[]>`SELECT epoch FROM harness_shared.memory_session_epochs
       WHERE session_id = ${input.context.owner}`;
-    for (const { row, subject } of subjects) {
-      if (signal.aborted) throw new Error('Reuse brief ledger deadline');
-      await tx`INSERT INTO harness_shared.code_intel_pushes
-        (workspace_id, owner_id, epoch, turn_id, leg, subject, snapshot_commit, cited_paths, suggested_call, chars)
-        VALUES (${input.context.workspaceId}, ${input.context.owner}, ${Number(epochs[0]?.epoch ?? 0)},
-          ${turns[0].turn_id}, ${row.status === 'held-out' ? `reuse-holdout-${row.provider}` : `reuse-${row.provider}`}, ${subject}, ${input.context.commit ?? null},
-          ${row.citedPaths}::text[], ${input.recover ? `${input.recover.tool} ${JSON.stringify(input.recover.args)}` : null}, ${row.chars})
-        ON CONFLICT (workspace_id, owner_id, epoch, leg, subject) DO NOTHING`;
-    }
+    if (signal.aborted) throw new Error('Reuse brief ledger deadline');
+    const inserts = subjects.map(({ row, subject }) => ({
+      leg: row.status === 'held-out' ? `reuse-holdout-${row.provider}` : `reuse-${row.provider}`,
+      subject,
+      cited_paths: row.citedPaths,
+      suggested_call: input.recover ? `${input.recover.tool} ${JSON.stringify(input.recover.args)}` : null,
+      chars: row.chars,
+    }));
+    await tx`INSERT INTO harness_shared.code_intel_pushes
+      (workspace_id, owner_id, epoch, turn_id, leg, subject, snapshot_commit, cited_paths, suggested_call, chars)
+      SELECT ${input.context.workspaceId}, ${input.context.owner}, ${Number(epochs[0]?.epoch ?? 0)},
+        ${turns[0].turn_id}, candidate.leg, candidate.subject, ${input.context.commit ?? null},
+        candidate.cited_paths, candidate.suggested_call, candidate.chars
+      FROM jsonb_to_recordset(${JSON.stringify(inserts)}::jsonb) AS candidate(
+        leg text, subject text, cited_paths text[], suggested_call text, chars integer)
+      ON CONFLICT (workspace_id, owner_id, epoch, leg, subject) DO NOTHING`;
     if (signal.aborted) throw new Error('Reuse brief ledger deadline');
     return true;
   });

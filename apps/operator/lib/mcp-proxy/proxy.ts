@@ -2093,6 +2093,7 @@ function forwardOnce(
   agent: http.Agent,
   timeoutMs?: number,
   signal?: AbortSignal,
+  observeTransport?: (stage: "socketAssignedMs" | "socketConnectedMs" | "requestFlushedMs") => void,
 ): Promise<ForwardOutcome> {
   return new Promise((resolve) => {
     let connected = false;
@@ -2133,18 +2134,23 @@ function forwardOnce(
       (ures) => done({ ures, connected: true }),
     );
     upstream.on("socket", (s) => {
+      observeTransport?.("socketAssignedMs");
       // Once the TCP handshake completes, the request is (or may be) in flight at :3070.
       // A reused keep-alive socket is ALREADY connected — return without adding a
       // 'connect' listener (one per proxied request accumulated on the shared socket:
       // the MaxListenersExceededWarning in the unit journal, mcp-outage-triage-2026-07-02).
       if (s.connecting === false) {
         connected = true;
+        observeTransport?.("socketConnectedMs");
         return;
       }
       s.once("connect", () => {
         connected = true;
+        observeTransport?.("socketConnectedMs");
       });
     });
+    // 'finish' means Node finished writing, not that the target handler received it.
+    if (observeTransport) upstream.once("finish", () => observeTransport("requestFlushedMs"));
     upstream.on("error", (err: NodeJS.ErrnoException) =>
       done({ err, connected }),
     );
@@ -4784,7 +4790,11 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
     const guardTiming = typeof guardHeader === "string" &&
       /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(guardHeader)
       ? { guardRequestId: guardHeader.toLowerCase(), bodyReadyMs: null as number | null,
-        forwardStartedMs: null as number | null, responseHeadersMs: null as number | null }
+        forwardStartedMs: null as number | null, responseHeadersMs: null as number | null,
+        // These milestones describe the FIRST attempt, even if a later retry responds.
+        // A forward attempt can wait in http.Agent before it gets a socket at all.
+        socketAssignedMs: null as number | null, socketConnectedMs: null as number | null,
+        requestFlushedMs: null as number | null, forwardAttempts: 0 }
       : null;
     let guardTimingRecorded = false;
     const recordGuardTiming = (outcome: "response_finished" | "client_disconnected"): void => {
@@ -6359,6 +6369,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
               attemptTargetKey = attemptTarget.host + ":" + attemptTarget.port;
               if (guardTiming && guardTiming.forwardStartedMs === null)
                 guardTiming.forwardStartedMs = boundedMcpProxyStageMs(Date.now() - receivedAt);
+              if (guardTiming) guardTiming.forwardAttempts = attempts;
               outcome = await forwardOnce(
                 opts,
                 attemptTarget,
@@ -6384,6 +6395,9 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
                     ? maxHoldMs
                     : 0,
                 attemptAbort?.signal,
+                attempts === 1 && guardTiming
+                  ? (stage) => { guardTiming[stage] = boundedMcpProxyStageMs(Date.now() - receivedAt); }
+                  : undefined,
               );
               if (outcome.ures) {
                 lastResponseTarget = attemptTarget;

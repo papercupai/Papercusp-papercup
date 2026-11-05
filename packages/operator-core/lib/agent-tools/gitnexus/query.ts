@@ -49,7 +49,7 @@ import { sourceRuntimeProvenance } from '../../code-intelligence/source-runtime-
 import { scopedContractQuery } from '../../code-intelligence/scoped-contracts';
 import { runtimeEvidenceForContracts } from '../../code-intelligence/runtime-code-evidence';
 import { queryPushSnapshot } from '../../code-intelligence/push-snapshot';
-import { readCoChange, readSymbolProvenance } from '../../code-intelligence/change-history';
+import { readWarmCoChange, readSymbolProvenance } from '../../code-intelligence/change-history';
 import { postgresLineageQuery } from '../../code-intelligence/postgres-lineage-query';
 import { reuseGraphQuery } from '../../code-intelligence/reuse-graph';
 import { semanticConceptQuery, semanticSimilarQuery } from '../../code-intelligence/semantic-code-runtime';
@@ -239,7 +239,7 @@ export default defineTool({
     if (op === 'cochange') {
       const paths = args.paths ?? (args.file_path ? [args.file_path] : []);
       if (!paths.length) return { data: { status: 'unknown', error: 'cochange requires bounded exact paths.' } };
-      return { data: await readCoChange(resolveAgentWorkspaceRoot(ctx), paths, undefined, ctx.signal) };
+      return { data: await readWarmCoChange(resolveAgentWorkspaceRoot(ctx), paths, undefined, ctx.signal) };
     }
     if (op === 'provenance') {
       const workspaceId = ctx.workspaceId ?? ctx.principal?.workspaceId;

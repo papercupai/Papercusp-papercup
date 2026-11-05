@@ -32,6 +32,8 @@ import type { GateVerdictTarget } from './gate-verdict-target';
 
 /** D-131 quiet window: no further admit to the same queue for this long ⇒ verify. */
 export const REPAIR_AUTO_VERIFY_QUIET_MS = 5 * 60_000;
+export const REPAIR_AUTO_VERIFY_WORKFLOW_NAME = 'repairAutoVerify';
+export const REPAIR_AUTO_VERIFY_QUEUE_NAME = 'repair-auto-verify';
 
 export interface RepairAutoVerifyRequest {
   /** The admitted queue's harness; omitted only by legacy operator-home requests. */
@@ -151,17 +153,43 @@ export function setRepairAutoVerifyRunner(next: RepairAutoVerifyRunner | null): 
 /**
  * Schedule the debounced verify for a persisted admit. Never throws: an admit has already
  * persisted, so a scheduling failure degrades to the D-127 manual path and is reported in the
- * returned value (the admit response carries it).
+ * returned value (the admit response carries it). Request workers never launch DBOS, so
+ * without a local runner enqueue the same workflow on the primary's existing durable queue.
  */
 export async function scheduleRepairAutoVerify(
   input: RepairAutoVerifyRequest,
 ): Promise<RepairAutoVerifyReceipt | { scheduled: false; reason: string }> {
-  if (!runner) return { scheduled: false, reason: 'auto-verify runner not wired (DBOS not launched in this host)' };
   const quietMs = Math.max(0, input.quietMs ?? REPAIR_AUTO_VERIFY_QUIET_MS);
   try {
-    const { workflowId } = await runner({ ...input, quietMs });
+    const request = { ...input, quietMs };
+    const { workflowId } = runner
+      ? await runner(request)
+      : await enqueueOnPrimary(request);
     return { scheduled: true, workflowId, repairHead: input.repairHead, quietMs, fireAfterMs: input.admittedAtMs + quietMs };
   } catch (err) {
     return { scheduled: false, reason: `auto-verify enqueue failed: ${(err as Error).message}` };
   }
+}
+
+async function enqueueOnPrimary(input: RepairAutoVerifyRequest): Promise<{ workflowId: string }> {
+  // Import only the shared client: importing the workflow here would register worker-only
+  // code in every request process. The background bootstrap already registers this queue.
+  const { getPrimaryDbosClient, primaryDbosAppVersion } = await import('../dbos/primary-dbos-client');
+  const client = await getPrimaryDbosClient();
+  const workflowId = repairAutoVerifyWorkflowId(input.repairHead, input.target);
+  try {
+    await client.enqueue({
+      queueName: REPAIR_AUTO_VERIFY_QUEUE_NAME,
+      workflowName: REPAIR_AUTO_VERIFY_WORKFLOW_NAME,
+      workflowID: workflowId,
+      deduplicationID: workflowId,
+      duplicationPolicy: 'return-existing',
+      appVersion: primaryDbosAppVersion(),
+    }, input);
+  } catch (error) {
+    // A lost response can follow a committed enqueue. Confirm the deterministic workflow
+    // before reporting failure, so a transport error does not create a manual handoff.
+    if (!await client.getWorkflow(workflowId).catch(() => undefined)) throw error;
+  }
+  return { workflowId };
 }

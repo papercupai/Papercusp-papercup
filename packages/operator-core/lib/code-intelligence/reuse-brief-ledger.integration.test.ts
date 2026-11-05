@@ -62,7 +62,42 @@ describe('P009 existing issued-only PG ledger', () => {
       WHERE workspace_id = ${fx.workspaceId} AND owner_id = 'no-turn-fixture'`;
     expect(turns).toEqual([]);
   });
+  it('records five issued sources within the bounded PostgreSQL statement budget', async () => {
+    const delayedOwner = 'reuse-brief-ledger-delayed-fixture';
+    const delayedTurn = 'reuse-ledger-delay-turn';
+    await fx.admin`INSERT INTO harness_shared.identity_hook_turns (workspace_id, owner_id, turn_id)
+      VALUES (${fx.workspaceId}, ${delayedOwner}, ${delayedTurn})`;
+    await fx.admin.unsafe(`CREATE FUNCTION harness_shared.reuse_ledger_delay_fixture()
+      RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN
+        IF NEW.owner_id = 'reuse-brief-ledger-delayed-fixture' THEN PERFORM pg_sleep(0.12); END IF;
+        RETURN NEW;
+      END $$;
+      CREATE TRIGGER reuse_ledger_delay_fixture BEFORE INSERT
+      ON harness_shared.code_intel_pushes FOR EACH ROW
+      EXECUTE FUNCTION harness_shared.reuse_ledger_delay_fixture()`);
+    const record = input('bounded-five-source-delay');
+    record.context.owner = delayedOwner;
+    record.observations = ['clones', 'cochange', 'provenance', 'sql', 'coverage'].map(provider =>
+      row(provider as ReuseProviderObservation['provider']));
+    try {
+      expect(await recordReuseBriefIssued(record, new AbortController().signal)).toBe(true);
+      const persisted = await fx.admin`SELECT subject, turn_id FROM harness_shared.code_intel_pushes
+        WHERE workspace_id = ${fx.workspaceId} AND owner_id = ${delayedOwner}
+        AND subject::jsonb->>'invocation' = ${record.context.invocation} ORDER BY id`;
+      expect(persisted).toHaveLength(5);
+      expect(persisted.every(value => value.turn_id === delayedTurn)).toBe(true);
+      expect(persisted.map(value => JSON.parse(value.subject).provider).sort())
+        .toEqual(record.observations.map(value => value.provider).sort());
+    } finally {
+      await fx.admin.unsafe(`DROP TRIGGER IF EXISTS reuse_ledger_delay_fixture
+        ON harness_shared.code_intel_pushes;
+        DROP FUNCTION IF EXISTS harness_shared.reuse_ledger_delay_fixture()`);
+    }
+  });
   it('records five issued sources atomically while concurrent identical dispatches dedupe', async () => {
+    await fx.admin`INSERT INTO harness_shared.identity_hook_turns (workspace_id, owner_id, turn_id)
+      VALUES (${fx.workspaceId}, ${owner}, 'actual-fixture-turn') ON CONFLICT DO NOTHING`;
     const record = input('five-source-concurrency');
     record.observations = ['clones', 'cochange', 'provenance', 'sql', 'coverage'].map(provider =>
       row(provider as ReuseProviderObservation['provider']));

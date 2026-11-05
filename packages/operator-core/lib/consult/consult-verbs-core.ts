@@ -109,6 +109,7 @@ export interface ConsultVerbDeps {
     body: string;
     mentions?: string[];
     via_consult_verb: true;
+    settled_review_disposition?: true;
   }) => Promise<PostResult | { error: string }>;
   /** Keep the coarse coord_conversations lifecycle in sync with the consult's
    * fine-grained terminal state. Bound by consult:close and terminal
@@ -568,7 +569,13 @@ export async function consultReplyCore(
     ? await claimPendingRevival(sql, req.workspaceId, req.conversationId, req.authorId, now)
     : null;
   if (pendingClaim) currentRow = pendingClaim;
-  const gated = gateCommon(currentRow, {
+  // Settlement ends deliberation, but the original requester still owns the
+  // findings' disposition ledger. This narrow append cannot reopen a review.
+  const appendsSettledReview = currentRow?.state === 'closed_answered' &&
+    req.authorId === currentRow.requester_id && req.kind === 'new_fact' &&
+    Boolean(req.reviewDispositions?.length) && req.review === undefined &&
+    req.evidence === undefined && req.stance === undefined && req.parkResponse === undefined;
+  const gated = appendsSettledReview ? { row: currentRow! } : gateCommon(currentRow, {
     authorId: req.authorId,
     kind: req.kind,
   });
@@ -662,7 +669,8 @@ export async function consultReplyCore(
   const isPerspective = role === 'responder' && isCurrentResponder(row, req.authorId);
 
   // The exchange cap (D-001): a reply past the cap is refused; close/decline stay open.
-  if (!isPerspective && row.exchanges_used + 1 > row.max_exchanges) {
+  const exchangeDebit = isPerspective || appendsSettledReview ? 0 : 1;
+  if (exchangeDebit && row.exchanges_used + exchangeDebit > row.max_exchanges) {
     return {
       error: 'exchange_cap',
       exchanges_used: row.exchanges_used,
@@ -675,14 +683,15 @@ export async function consultReplyCore(
   // wake budget is REMOVED (consult-min-max-and-rubric-vetting-2026-08-17
   // D-005: the per-consult exchange cap above is the remaining bound;
   // wakes_used keeps being written as a plain stat, never a gate).
-  const willWake = role === 'requester' && row.responder_id != null && Boolean(deps.reach);
+  const willWake = !appendsSettledReview && role === 'requester' && row.responder_id != null && Boolean(deps.reach);
 
   // Write-through: post (the substrate commit) → meta overlay → state debit.
   // Sequential by house style (no txn across the substrate binding); the meta
   // INSERT lands only after the post committed, so an orphan meta row is
   // impossible — the reverse (post without meta) is the crash window and is
   // repaired by P-006 backfill semantics.
-  const posted = await deps.post({ conversation_id: req.conversationId, body: req.body, via_consult_verb: true });
+  const posted = await deps.post({ conversation_id: req.conversationId, body: req.body, via_consult_verb: true,
+    ...(appendsSettledReview ? { settled_review_disposition: true as const } : {}) });
   if ('error' in posted) return { error: 'post_failed', cause: posted.error };
   const postId = posted.post.id;
 
@@ -690,7 +699,7 @@ export async function consultReplyCore(
     role === 'responder' && (row.state === 'awaiting_responder' || row.state === 'no_qualified_responder')
       ? 'active'
       : row.state;
-  let exchangesUsed = row.exchanges_used + (isPerspective ? 0 : 1);
+  let exchangesUsed = row.exchanges_used + exchangeDebit;
   let review: ConsultReviewState | undefined;
   let replayed = false;
   // Serialize structured history with close/other answers so neither can erase it.
@@ -745,7 +754,7 @@ export async function consultReplyCore(
     UPDATE harness_shared.consult_state
        SET state = CASE WHEN ${role === 'responder'}::boolean AND state IN ('awaiting_responder', 'no_qualified_responder')
                         THEN 'active' ELSE state END,
-           exchanges_used = exchanges_used + ${isPerspective ? 0 : 1},
+           exchanges_used = exchanges_used + ${exchangeDebit},
            wakes_used = wakes_used + ${willWake ? 1 : 0},
            outcome = COALESCE(outcome, '{}'::jsonb) || ${tx.json(review ? { review } as never : {} as never)}::jsonb,
            updated_at = ${now}::timestamptz
@@ -759,6 +768,9 @@ export async function consultReplyCore(
     state: (await readState(sql, req.workspaceId, req.conversationId))?.state ?? nextState,
     exchanges_used: exchangesUsed, max_exchanges: row.max_exchanges,
     hint: 'Accepted source post reprocessed; review history is unchanged.' };
+  if (appendsSettledReview) return { ok: true, post_id: postId, role, review,
+    state: row.state, exchanges_used: exchangesUsed, max_exchanges: row.max_exchanges,
+    hint: 'Finding dispositions recorded; the accepted review remains settled.' };
 
   // consult-backed-parking P-006: the parker's adopt/rebut is data, recorded on the
   // committed reply (not fail-soft); the resolver run after it is a side effect (fail-soft).

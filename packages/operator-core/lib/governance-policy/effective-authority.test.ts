@@ -29,11 +29,16 @@ describe('effective authority contract (P-024)', () => {
     policy.rules = { ...policy.rules, resources: { allow: [] } };
     const decision = evaluateEffectivePermission(snapshot, request);
     expect(decision.allowed).toBe(false);
+    expect(decision).toMatchObject({ code: 'denied', liftsWhen: expect.stringContaining('every required authority') });
     expect(decision.decidingAuthority?.kind).toBe(kind);
     expect(decision.trace).toContainEqual(expect.objectContaining({
       authority: expect.objectContaining({ kind, revision: `${kind}:1` }),
       category: 'resources', outcome: 'not-allowed',
     }));
+    policy.rules.resources = { allow: ['*'] };
+    const permitted = evaluateEffectivePermission(snapshot, request);
+    expect(permitted.allowed).toBe(true);
+    expect(permitted).not.toHaveProperty('liftsWhen');
   });
 
   it('an additional retained vault narrows permission instead of adding grants', () => {

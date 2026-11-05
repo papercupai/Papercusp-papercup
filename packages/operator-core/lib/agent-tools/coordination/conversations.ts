@@ -303,7 +303,7 @@ export async function openConversation(identity: AgentIdentity, input: OpenConve
 
 export function postReply(
   identity: AgentIdentity,
-  input: { conversation_id: string; body: string; mentions?: string[]; via_consult_verb?: boolean },
+  input: { conversation_id: string; body: string; mentions?: string[]; via_consult_verb?: boolean; settled_review_disposition?: true },
 ): Promise<PostResult | AppendPostError> {
   return withConversationsIdentityScope(identity, undefined, () => postReplyCore(deps, identity, input));
 }

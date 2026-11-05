@@ -8,6 +8,68 @@ import { buildSuiteReport, type AggregateOpts, type SuiteReport, type TaskRunRes
 import type { PreregRecord, RolloutRecord } from './schema';
 import { currentProtocolFromConfig, currentProtocolPriceTable } from './schema';
 import { resolveDb, type DbScope } from './db';
+import { z } from 'zod';
+import { computePreregHash } from './prereg';
+import { canonicalJson } from './canonical-json';
+import { evaluateManagedCapabilityEffectiveness, type ManagedTrialRun } from '../../../../../libs/papercusp/packages/orchestrator/src/managed-capability-effectiveness';
+import { MANAGED_CAPABILITY_FAMILY_IDS } from '../../../../../libs/papercusp/packages/orchestrator/src/managed-capability-contract';
+
+const trialClient = z.enum(['claude', 'codex', 'omp']);
+const trialAssignment = z.object({
+  client: trialClient, clientVersion: z.string().min(1), modelId: z.string().min(1),
+  taskId: z.string().min(1), seed: z.number().int().nonnegative(),
+  planSlug: z.string().min(1), itemId: z.string().regex(/^P-\d{3,}$/),
+  preImplementationCommit: z.string().regex(/^[a-f0-9]{40}$/),
+  graderTestPaths: z.array(z.string().min(1)).min(1),
+  families: z.array(z.enum(MANAGED_CAPABILITY_FAMILY_IDS)).min(1),
+});
+const trialConfig = z.object({
+  sharedCheckoutRealpath: z.string().min(1), assignments: z.array(trialAssignment).min(1),
+});
+const trialWitness = z.object({
+  client: trialClient, clientVersion: z.string().min(1), toolMode: z.enum(['native', 'managed-only']),
+  sourceCommit: z.string().regex(/^[a-f0-9]{40}$/), checkoutRealpath: z.string().min(1),
+  environmentHash: z.string().min(1), startedAt: z.string().datetime(),
+  graderTestPaths: z.array(z.string().min(1)).min(1),
+  toolCalls: z.number().int().nonnegative(), errors: z.number().int().nonnegative(),
+  retries: z.number().int().nonnegative(), refusals: z.number().int().nonnegative(),
+});
+
+/** R-17 reuses the benchmark preregistration, result and rollout stores.
+ * config.managedCapabilityTrial extends the frozen config with assignments;
+ * envFingerprint retains the execution witness. Never infer a corpus from the
+ * surviving results. A live pilot remains separate evidence.
+ */
+export async function getManagedCapabilityEffectiveness(runId: string, opts: DbScope = {}) {
+  const unknown = (issue: string): ReturnType<typeof evaluateManagedCapabilityEffectiveness> =>
+    ({ verdict: 'unknown', issues: [issue], clients: [] });
+  const prereg = await getPrereg({ runId }, opts);
+  if (!prereg || !prereg.gitCommitted || !prereg.gitCommitSha ||
+      computePreregHash(prereg.config) !== prereg.preregHash ||
+      canonicalJson(prereg.suites) !== canonicalJson(['harness-bench']))
+    return unknown('preregistration-unverified');
+  const config = trialConfig.safeParse(prereg.config.managedCapabilityTrial);
+  if (!config.success) return unknown('trial-assignment-unmeasured');
+  const results = await listRunResults({ ...opts, runId, suite: 'harness-bench' });
+  const runs: ManagedTrialRun[] = [];
+  for (const result of results) {
+    const rollout = await getRollout(result.rolloutId, opts);
+    const witness = trialWitness.safeParse(rollout?.envFingerprint);
+    if (!rollout || !witness.success || rollout.runId !== runId ||
+        rollout.preregHash !== prereg.preregHash || rollout.suite !== result.suite ||
+        rollout.taskId !== result.taskId || rollout.arm !== result.arm || rollout.seed !== result.seed ||
+        rollout.modelId !== result.modelId || rollout.graderFamily !== result.graderFamily ||
+        rollout.graderVersion !== result.graderVersion || !rollout.rawGraderOutput?.trim() ||
+        result.rawGraderOutputRef !== `rollout:${rollout.rolloutId}#grader` ||
+        canonicalJson(rollout.configSnapshot?.managedCapabilityTrial ?? null) !==
+          canonicalJson(prereg.config.managedCapabilityTrial))
+      return unknown(`rollout-witness-unverified:${result.rolloutId}`);
+    runs.push({ result, witness: witness.data });
+  }
+  return evaluateManagedCapabilityEffectiveness({ ...config.data,
+    runId, preregHash: prereg.preregHash, registeredAt: prereg.createdAt,
+    registrationCommit: prereg.gitCommitSha }, runs);
+}
 
 /** bigint/numeric columns arrive as strings from postgres.js — coerce to number. */
 const num = (v: unknown): number => (v == null ? 0 : Number(v));

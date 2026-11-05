@@ -14,8 +14,13 @@ const h = vi.hoisted(() => ({
   })),
   workflowID: 'durable-promoter-test',
 }));
-vi.mock('@dbos-inc/dbos-sdk', () => ({ DBOS: { get workflowID() { return h.workflowID; } } }));
-vi.mock('./system-actions', () => ({ registerSystemAction: h.register }));
+vi.mock('@dbos-inc/dbos-sdk', () => ({
+  DBOS: {
+    get workflowID() { return h.workflowID; },
+    registerWorkflow: (workflow: unknown) => workflow,
+  },
+}));
+vi.mock('./system-actions', () => ({ SYSTEM_TARGET_PREFIX: 'system:', registerSystemAction: h.register }));
 // The real getOrgPg() throws without a live operator DB; the production reaper wiring only
 // needs a handle to pass through to the (mocked) reaper, never one that is queried.
 vi.mock('@papercusp/db-org', async (orig) => ({

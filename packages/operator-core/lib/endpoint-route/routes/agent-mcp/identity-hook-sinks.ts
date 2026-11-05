@@ -34,6 +34,7 @@ import {
   readAppliedWornRules,
   type GuardVerdict,
   type HookTurnStore,
+  type IdentityRuleReadTimingObserver,
   type PendingToolCall,
   type WornSyncRules,
 } from '../../../agent-identities/sync-hook-rules';
@@ -103,9 +104,10 @@ export function guardRefusalText(verdict: GuardVerdict): string {
  */
 export async function toolGuardText(
   input: { ownerId: string; workspaceId: string; call: PendingToolCall },
-  readWornRules: (ownerId: string, workspaceId: string) => Promise<WornSyncRules | null> = readAppliedWornRules,
+  readWornRules: (ownerId: string, workspaceId: string, observeTiming?: IdentityRuleReadTimingObserver) => Promise<WornSyncRules | null> = readAppliedWornRules,
   recordTiming?: (phase: 'plan' | 'identity', durationMs: number) => void,
   observePlanTiming?: PlanExecutionTimingObserver,
+  observeIdentityTiming?: IdentityRuleReadTimingObserver,
 ): Promise<string> {
   const planStartedAt = performance.now();
   let refused;
@@ -118,7 +120,8 @@ export async function toolGuardText(
   if (refused) return `${refused.code}: ${refused.reason}`;
   const identityStartedAt = performance.now();
   try {
-    return guardRefusalText(await evaluateToolGuard(input.call, () => readWornRules(input.ownerId, input.workspaceId)));
+    return guardRefusalText(await evaluateToolGuard(input.call,
+      () => readWornRules(input.ownerId, input.workspaceId, observeIdentityTiming)));
   } finally {
     recordTiming?.('identity', performance.now() - identityStartedAt);
   }
@@ -160,6 +163,12 @@ const toolGuard = defineTool({
       ? body.guardRequestId : null;
     const phases: Partial<Record<'plan' | 'identity', number>> = {};
     const planStages: Record<string, number> = {};
+    const identityStages: Record<string, number> = {};
+    const observeIdentityTiming: IdentityRuleReadTimingObserver = ({ stage, durationMs }) => {
+      if (!['applied_revision', 'applied_artifact', 'local_rules'].includes(stage) ||
+          !Number.isFinite(durationMs) || durationMs < 0) return;
+      identityStages[stage] = (identityStages[stage] ?? 0) + durationMs;
+    };
     const observePlanTiming: PlanExecutionTimingObserver = ({ stage, durationMs }) => {
       // A bounded vocabulary, with no owner, plan, input or verdict content.
       if (!/^[a-z_]{1,32}$/.test(stage) || !Number.isFinite(durationMs) || durationMs < 0) return;
@@ -179,7 +188,7 @@ const toolGuard = defineTool({
           client: typeof body.client === 'string' ? body.client : '',
           ...(body.inputTruncated === true ? { inputTruncated: true } : {}),
         },
-      }, readAppliedWornRules, (phase, durationMs) => { phases[phase] = durationMs; }, observePlanTiming));
+      }, readAppliedWornRules, (phase, durationMs) => { phases[phase] = durationMs; }, observePlanTiming, observeIdentityTiming));
     } finally {
       const totalMs = performance.now() - startedAt;
       // Keep attribution after the client has aborted too. No tool inputs, plan
@@ -191,10 +200,12 @@ const toolGuard = defineTool({
         identityMs: phases.identity === undefined ? null : Math.round(phases.identity),
         aborted: req.signal.aborted,
         ...(Object.keys(planStages).length ? { planStages } : {}),
+        ...(Object.keys(identityStages).length ? { identityStages } : {}),
       }));
     }
     const timings = { guard: performance.now() - startedAt, setup: setupMs, ...phases,
-      ...Object.fromEntries(Object.entries(planStages).map(([stage, duration]) => ['plan_' + stage, duration])) };
+      ...Object.fromEntries(Object.entries(planStages).map(([stage, duration]) => ['plan_' + stage, duration])),
+      ...Object.fromEntries(Object.entries(identityStages).map(([stage, duration]) => ['identity_' + stage, duration])) };
     return Response.json({ ok: true, text }, { headers: {
       ...(guardRequestId ? { 'X-Papercusp-Guard-Request-Id': guardRequestId } : {}),
       'Server-Timing': Object.entries(timings).map(([phase, duration]) => `${phase};dur=${duration.toFixed(1)}`).join(', '),

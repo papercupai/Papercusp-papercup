@@ -1233,8 +1233,34 @@ export default defineTool({
       };
     }
 
-    const job = getJob(bashId);
+    let job = getJob(bashId);
+    if (!job && !attachedLedgerRow && !args.task_id && workspaceId && args.bash_id) {
+      // A carried launch receipt can leave callers with the durable task_id but
+      // have it sent under the older `bash_id` field. Resolve that exact task
+      // inside this workspace and reuse its recorded bash handle; never launch.
+      try {
+        const taskIdRow = await getTask(args.bash_id);
+        const durableBashId = taskIdRow?.detail?.bashJobId;
+        if (
+          taskIdRow?.workspaceId === workspaceId &&
+          taskIdRow.class === 'bash-job' &&
+          typeof durableBashId === 'string' &&
+          durableBashId.length > 0
+        ) {
+          attachedLedgerRow = taskIdRow;
+          bashId = durableBashId;
+          job = getJob(bashId);
+        }
+      } catch {
+        // Preserve the conservative miss path; a failed lookup does not prove
+        // that the task or its payload is absent.
+      }
+    }
     if (!job) {
+      const unresolvedJobAdvice =
+        'This lookup did not establish a usable task result or readable output log. An unknown handle does not ' +
+        'prove that the payload stopped. Check processes:list for the durable task_id and any recorded log_path, ' +
+        'inspect that log, and verify the process is no longer live before starting a replacement.';
       // The JOBS map is worker-local in the clustered operator. Pin the durable
       // lookup to this request's workspace before deciding that the id is gone;
       // otherwise a clean exit on a sibling worker is misread as an unknown job.
@@ -1736,8 +1762,7 @@ export default defineTool({
                   ok: false,
                   ...jobIdentity,
                   reason: 'unknown_bash_id',
-                  advice:
-                    'No surviving output log is available for this background job. Re-run with capability:bash if you still need the result.',
+                  advice: unresolvedJobAdvice,
                 }),
               },
             ],
@@ -1780,8 +1805,7 @@ export default defineTool({
               ok: false,
               bash_id: bashId,
               reason: 'unknown_bash_id',
-              advice:
-                'No such background job (it may have been pruned, or the id is wrong). Re-run with capability:bash.',
+              advice: unresolvedJobAdvice,
             }),
           },
         ],

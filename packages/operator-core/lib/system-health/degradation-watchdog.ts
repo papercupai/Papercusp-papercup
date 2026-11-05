@@ -73,6 +73,8 @@ export interface DegradationThresholds {
   minEligible: number;
   /** Lower floors for named, high-confidence failure reasons; all other reasons use minEligible. */
   minEligibleByReason?: Readonly<Record<string, number>>;
+  /** Minimum unknown-cardinality batches that independently prove a hard failure by reason. */
+  minUnmeasuredSamplesByReason?: Readonly<Record<string, number>>;
   /** Minimum failed units under named reasons before their scoped alarm is eligible. */
   minFallbacksByReason?: Readonly<Record<string, number>>;
   collapseRate: number;
@@ -92,6 +94,7 @@ export interface YieldDropThresholds {
 export const DEFAULT_DEGRADATION_THRESHOLDS: Readonly<DegradationThresholds> = Object.freeze({
   minEligible: DEGRADATION_MIN_ELIGIBLE,
   minEligibleByReason: Object.freeze({}),
+  minUnmeasuredSamplesByReason: Object.freeze({}),
   collapseRate: DEGRADATION_COLLAPSE_RATE,
   recoverRate: DEGRADATION_RECOVER_RATE,
   dominantShare: DEGRADATION_DOMINANT_SHARE,
@@ -176,6 +179,23 @@ export function _resetDegradationPruneClockForTests(): void {
   state.lastPrunedAt = 0;
 }
 
+const GATE_PASS_REUSE_HARD_FAILURE_FLOORS = Object.freeze({
+  'workspace-unresolved': 1,
+  'no-judged-sha': 1,
+  'head-mismatch': 1,
+  'checkout-status-unknown': 1,
+  'checkpoint-root-unverified': 1,
+  'checkpoint-restore-failed': 1,
+  'checkpoint-remains-dirty': 1,
+  'dirty-checkout': 1,
+  'no-runner-identity': 1,
+  'pg-unavailable': 1,
+  'proofs-unavailable': 1,
+  'lane-filter-unavailable': 1,
+  'skip-list-unwritable': 1,
+  'arming-threw': 1,
+});
+
 // Seed registrations. A producer migrated onto observeFallback registers here, in one
 // place, so the set of mechanisms that can raise a condition is reviewable at a glance.
 registerDegradationMechanism({
@@ -192,25 +212,11 @@ registerDegradationMechanism({
     dropRate: 0.5,
   },
   thresholds: {
-    // Ordinary candidate buckets need a useful sample. A hard fail-open reason is itself
-    // sufficient evidence for that task: these observations deliberately carry one eligible
-    // unit because the selector could not safely establish the candidate denominator.
-    minEligibleByReason: {
-      'workspace-unresolved': 1,
-      'no-judged-sha': 1,
-      'head-mismatch': 1,
-      'checkout-status-unknown': 1,
-      'checkpoint-root-unverified': 1,
-      'checkpoint-restore-failed': 1,
-      'checkpoint-remains-dirty': 1,
-      'dirty-checkout': 1,
-      'no-runner-identity': 1,
-      'pg-unavailable': 1,
-      'proofs-unavailable': 1,
-      'lane-filter-unavailable': 1,
-      'skip-list-unwritable': 1,
-      'arming-threw': 1,
-    },
+    // Ordinary candidate buckets need a useful sample. These hard failure reasons can
+    // alarm from one measured unit or one unknown-cardinality batch, without inventing a
+    // candidate count for the latter.
+    minEligibleByReason: GATE_PASS_REUSE_HARD_FAILURE_FLOORS,
+    minUnmeasuredSamplesByReason: GATE_PASS_REUSE_HARD_FAILURE_FLOORS,
   },
 });
 registerDegradationMechanism({
@@ -513,6 +519,14 @@ export type DegradationVerdict =
   | { kind: 'between'; appliedRate: number }
   | { kind: 'recovered'; appliedRate: number }
   | {
+      kind: 'unmeasured-failure';
+      reason: string;
+      sourceReason: string;
+      unknownSamples: number;
+      conditionKey: string;
+    }
+  | { kind: 'unmeasured-recovered'; conditionKeys: string[]; appliedAtMs: number }
+  | {
       kind: 'collapsed';
       appliedRate: number;
       /** The reason segment used in the key: the dominant reason, or `mixed`. */
@@ -538,6 +552,95 @@ function minEligibleForReason(t: DegradationThresholds, reason: string | null): 
 function minFallbacksForReason(t: DegradationThresholds, reason: string | null): number {
   const configured = reason ? t.minFallbacksByReason?.[reason] : undefined;
   return Number.isSafeInteger(configured) && configured! > 0 ? configured! : 0;
+}
+
+function minUnmeasuredSamplesForReason(t: DegradationThresholds, reason: string | null): number {
+  const configured = reason ? t.minUnmeasuredSamplesByReason?.[reason] : undefined;
+  return Number.isSafeInteger(configured) && configured! > 0 ? configured! : 0;
+}
+
+/**
+ * A categorical hard failure is evidence without a candidate denominator. It may open
+ * only for registered high-confidence reasons, and a later fully-applied sample in the
+ * same scope makes an older failure ineligible to open a new episode.
+ */
+export function judgeUnmeasuredHardFailure(
+  window: FallbackWindow,
+  target: { mechanism: string; scope?: string | null },
+  thresholds?: Partial<DegradationThresholds>,
+  previous?: FallbackWindow,
+  yieldDrop?: YieldDropThresholds,
+): Extract<DegradationVerdict, { kind: 'unmeasured-failure' }> | null {
+  const t = resolveThresholds(thresholds);
+  const applied = window.reasons.find((r) => r.reason === 'applied' && r.eligible > 0 && r.applied >= r.eligible);
+  const candidates = window.reasons
+    .filter((r) => {
+      const floor = minUnmeasuredSamplesForReason(t, r.reason);
+      return floor > 0 && r.unknownSamples >= floor;
+    })
+    .filter((r) => {
+      if (!applied) return true;
+      // Missing timestamps cannot establish which decision came last, so fail closed
+      // toward the ordinary numeric judge instead of opening or recovering by guess.
+      return r.latestObservedAt != null && applied.latestObservedAt != null && r.latestObservedAt > applied.latestObservedAt;
+    })
+    .sort((a, b) =>
+      (b.latestObservedAt?.getTime() ?? 0) - (a.latestObservedAt?.getTime() ?? 0) ||
+      b.unknownSamples - a.unknownSamples ||
+      a.reason.localeCompare(b.reason),
+    );
+  const source = candidates[0];
+  if (!source) return null;
+
+  const healthyPrior = previous && yieldDrop && previous.appliedRate !== null &&
+    previous.eligible >= yieldDrop.minPreviousEligible &&
+    previous.appliedRate >= yieldDrop.healthyAppliedRate - EPS;
+  const reason = healthyPrior ? 'yield-decline' : source.reason;
+  return {
+    kind: 'unmeasured-failure',
+    reason,
+    sourceReason: source.reason,
+    unknownSamples: source.unknownSamples,
+    conditionKey: degradationConditionKey(target.mechanism, target.scope ?? null, reason),
+  };
+}
+
+/** Resolve hard-failure episodes only after a later, fully-applied decision is measured. */
+export function judgeUnmeasuredRecovery(
+  window: FallbackWindow,
+  target: { mechanism: string; scope?: string | null },
+  openEpisodes: ReadonlyArray<{ conditionKey: string; openedAtMs: number }>,
+  thresholds?: Partial<DegradationThresholds>,
+  yieldDrop?: YieldDropThresholds,
+): Extract<DegradationVerdict, { kind: 'unmeasured-recovered' }> | null {
+  const t = resolveThresholds(thresholds);
+  const applied = window.reasons.find((r) => r.reason === 'applied' && r.eligible > 0 && r.applied >= r.eligible);
+  const appliedAt = applied?.latestObservedAt?.getTime();
+  if (appliedAt == null || !Number.isFinite(appliedAt)) return null;
+
+  const prefix = degradationKeyPrefix(target.mechanism, target.scope ?? null);
+  const conditionKeys: string[] = [];
+  for (const episode of openEpisodes) {
+    if (!keyBelongsToPrefix(episode.conditionKey, prefix)) continue;
+    const reason = episode.conditionKey.slice(prefix.length);
+    const canRecover = minUnmeasuredSamplesForReason(t, reason) > 0 || (reason === 'yield-decline' && yieldDrop != null);
+    if (!canRecover || !Number.isFinite(episode.openedAtMs) || appliedAt <= episode.openedAtMs) continue;
+
+    const failureReasons = reason === 'yield-decline'
+      ? Object.keys(t.minUnmeasuredSamplesByReason ?? {})
+      : [reason];
+    const failureRows = window.reasons.filter((r) => {
+      if (!failureReasons.includes(r.reason)) return false;
+      const unmeasured = r.unknownSamples >= minUnmeasuredSamplesForReason(t, r.reason);
+      return unmeasured || r.fellBack > 0;
+    });
+    if (failureRows.some((r) => r.latestObservedAt == null || r.latestObservedAt.getTime() >= appliedAt)) continue;
+    conditionKeys.push(episode.conditionKey);
+  }
+
+  return conditionKeys.length > 0
+    ? { kind: 'unmeasured-recovered', conditionKeys: conditionKeys.sort(), appliedAtMs: appliedAt }
+    : null;
 }
 
 /**
@@ -621,13 +724,17 @@ export function planDegradationActions(
   openKeys: ReadonlySet<string> | readonly string[],
 ): { open: string | null; resolve: string[] } {
   const open = [...openKeys].filter((k) => keyBelongsToPrefix(k, prefix)).sort();
-  if (verdict.kind === 'collapsed') {
+  if (verdict.kind === 'collapsed' || verdict.kind === 'unmeasured-failure') {
     return {
       open: open.includes(verdict.conditionKey) ? null : verdict.conditionKey,
       resolve: open.filter((k) => k !== verdict.conditionKey),
     };
   }
   if (verdict.kind === 'recovered') return { open: null, resolve: open };
+  if (verdict.kind === 'unmeasured-recovered') {
+    const recovered = new Set(verdict.conditionKeys);
+    return { open: null, resolve: open.filter((key) => recovered.has(key)) };
+  }
   return { open: null, resolve: [] };
 }
 
@@ -693,6 +800,29 @@ function renderYieldDropAlarm(
       `${thresholds.minPreviousEligible} prior eligible units and prior healthy rate ` +
       `>= ${thresholds.healthyAppliedRate.toFixed(3)}. Current leading fallback reason: ` +
       `${verdict.topReason ?? '(none)'}.`,
+  };
+}
+
+function renderUnmeasuredFailureAlarm(
+  m: DegradationMechanism,
+  scope: string | null,
+  window: FallbackWindow,
+  verdict: Extract<DegradationVerdict, { kind: 'unmeasured-failure' }>,
+): Pick<SevereEventBroadcast, 'summary' | 'body'> {
+  const where = scope ? m.mechanism + ' (' + scope + ')' : m.mechanism;
+  const keyedReason = verdict.reason === 'yield-decline'
+    ? 'yield decline after a healthy baseline'
+    : 'hard failure ' + verdict.sourceReason;
+  return {
+    summary:
+      'Unmeasured hard failure: ' + where + ' reported ' + keyedReason +
+      ' in ' + verdict.unknownSamples + ' unknown-cardinality batch(es)',
+    body:
+      m.description + '\n\n' +
+      'Window: ' + window.samples + ' decision batch(es); ' + verdict.unknownSamples +
+      ' unknown-cardinality batch(es) carried hard-failure reason ' + verdict.sourceReason + '. ' +
+      'The candidate population is unknown, so no eligible count or applied rate was inferred. ' +
+      'A later fully-applied measured decision for this scope resolves this episode.',
   };
 }
 
@@ -1091,30 +1221,50 @@ export async function runDegradationSweepOnce(
       const scope = m.scopeKeyed ? rawScope : null;
       if (scope != null && endedOwnerScopes.has(scope)) continue;
       const previous = previousByScope.get(scope);
+      const prefix = degradationKeyPrefix(m.mechanism, scope);
+      const unmeasuredFailure = judgeUnmeasuredHardFailure(
+        window,
+        { mechanism: m.mechanism, scope },
+        t,
+        previous,
+        m.yieldDrop,
+      );
+      const unmeasuredRecovery = unmeasuredFailure
+        ? null
+        : judgeUnmeasuredRecovery(
+          window,
+          { mechanism: m.mechanism, scope },
+          openEpisodes,
+          t,
+          m.yieldDrop,
+        );
       const yieldDrop = previous && m.yieldDrop
         ? judgeYieldDrop(previous, window, { mechanism: m.mechanism, scope }, m.yieldDrop)
         : null;
-      const verdict = yieldDrop ?? judgeDegradation(window, { mechanism: m.mechanism, scope }, t);
+      const verdict = unmeasuredFailure ?? unmeasuredRecovery ?? yieldDrop ?? judgeDegradation(window, { mechanism: m.mechanism, scope }, t);
       out.evaluated.push({ mechanism: m.mechanism, scope, verdict: verdict.kind });
-      const prefix = degradationKeyPrefix(m.mechanism, scope);
       const plan = planDegradationActions(verdict, prefix, openKeys);
       for (const key of plan.resolve) {
         const ok = await deps.resolve({
           conditionKey: key,
           summary:
             verdict.kind === 'recovered'
-              ? `RECOVERED: ${m.mechanism}${scope ? ` (${scope})` : ''} applied rate is back to ${pct(verdict.appliedRate)}`
-              : `Superseded: ${m.mechanism}${scope ? ` (${scope})` : ''} is still degraded, now keyed by a different reason`,
+              ? 'RECOVERED: ' + m.mechanism + (scope ? ' (' + scope + ')' : '') + ' applied rate is back to ' + pct(verdict.appliedRate)
+              : verdict.kind === 'unmeasured-recovered'
+                ? 'RECOVERED: ' + m.mechanism + (scope ? ' (' + scope + ')' : '') + ' a later fully-applied measured decision followed the hard failure.'
+                : 'Superseded: ' + m.mechanism + (scope ? ' (' + scope + ')' : '') + ' is still degraded, now keyed by a different reason',
         });
         if (ok) {
           openKeys.delete(key);
           out.resolved.push(key);
         } else out.errors.push(`resolve failed: ${key}`);
       }
-      if (plan.open && verdict.kind === 'collapsed') {
-        const text = yieldDrop && previous
-          ? renderYieldDropAlarm(m, scope, previous, window, verdict, m.yieldDrop!)
-          : renderDegradationAlarm(m, scope, window, verdict, t);
+      if (plan.open && (verdict.kind === 'collapsed' || verdict.kind === 'unmeasured-failure')) {
+        const text = verdict.kind === 'unmeasured-failure'
+          ? renderUnmeasuredFailureAlarm(m, scope, window, verdict)
+          : yieldDrop && previous
+            ? renderYieldDropAlarm(m, scope, previous, window, verdict, m.yieldDrop!)
+            : renderDegradationAlarm(m, scope, window, verdict, t);
         const ok = await deps.broadcast({
           ...text,
           category: 'degradation',

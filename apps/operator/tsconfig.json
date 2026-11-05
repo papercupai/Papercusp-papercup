@@ -65,6 +65,7 @@
   // artifact instead of relying on nobody ever producing one.
   "exclude": [
     "node_modules",
+    "dist-verify",
     "next-env.d.ts"
   ]
 }

@@ -254,6 +254,80 @@ describe('capability:bash_output — durable task attachment', () => {
     });
   });
 
+  it('reattaches when the durable task_id is supplied through bash_id after a registry reset', async () => {
+    const stateDir = mkdtempSync(join(tmpdir(), 'bash-reattach-misplaced-task-id-'));
+    const logPath = join(stateDir, 'job.log');
+    writeFileSync(logPath, 'journey still running\n');
+    store.getTask.mockResolvedValue(taskRow({ logPath }));
+    jobs.getJob.mockReturnValue(null);
+
+    try {
+      const result = await bashOutput.handler({ bash_id: 'task-carry-1' }, ctx('ws-current', stateDir));
+      const payload = JSON.parse(result.content[0]!.text) as Record<string, unknown>;
+
+      expect(result.isError).toBeUndefined();
+      expect(store.getTask).toHaveBeenCalledWith('task-carry-1');
+      expect(jobs.getJob).toHaveBeenCalledWith('bash-carry-1');
+      expect(store.getTaskByBashJobId).not.toHaveBeenCalled();
+      expect(payload).toMatchObject({
+        ok: true,
+        bash_id: 'bash-carry-1',
+        task_id: 'task-carry-1',
+        status: 'running',
+        running: true,
+        recovered_from_ledger: true,
+        output_recoverable: true,
+        log_path: logPath,
+        output_tail: 'journey still running\n',
+      });
+      expect(jobs.startBackground).not.toHaveBeenCalled();
+    } finally {
+      rmSync(stateDir, { recursive: true, force: true });
+    }
+  });
+
+  it('does not resolve a misplaced task_id from another workspace', async () => {
+    const stateDir = mkdtempSync(join(tmpdir(), 'bash-reattach-cross-workspace-'));
+    store.getTask.mockResolvedValue(taskRow({ workspaceId: 'ws-other' }));
+    store.getTaskByBashJobId.mockResolvedValue(null);
+    jobs.getJob.mockReturnValue(null);
+
+    try {
+      const result = await bashOutput.handler({ bash_id: 'task-carry-1' }, ctx('ws-current', stateDir));
+      const payload = JSON.parse(result.content[0]!.text) as Record<string, unknown>;
+
+      expect(result.isError).toBe(true);
+      expect(payload.reason).toBe('unknown_bash_id');
+      expect(payload).not.toHaveProperty('task_id');
+      expect(jobs.getJob).not.toHaveBeenCalledWith('bash-carry-1');
+      expect(jobs.startBackground).not.toHaveBeenCalled();
+    } finally {
+      rmSync(stateDir, { recursive: true, force: true });
+    }
+  });
+
+  it('requires process and log verification before relaunching an unresolved ID', async () => {
+    const stateDir = mkdtempSync(join(tmpdir(), 'bash-reattach-unknown-id-'));
+    store.getTask.mockResolvedValue(null);
+    store.getTaskByBashJobId.mockResolvedValue(null);
+    jobs.getJob.mockReturnValue(null);
+
+    try {
+      const result = await bashOutput.handler({ bash_id: 'no-such-job' }, ctx('ws-current', stateDir));
+      const payload = JSON.parse(result.content[0]!.text) as Record<string, unknown>;
+
+      expect(result.isError).toBe(true);
+      expect(payload.reason).toBe('unknown_bash_id');
+      expect(String(payload.advice)).toContain('processes:list');
+      expect(String(payload.advice)).toContain('log_path');
+      expect(String(payload.advice)).toContain('verify the process is no longer live');
+      expect(String(payload.advice)).not.toMatch(/re-run/i);
+      expect(jobs.startBackground).not.toHaveBeenCalled();
+    } finally {
+      rmSync(stateDir, { recursive: true, force: true });
+    }
+  });
+
   it('returns a normal running recovery when the registry misses but the ledger proves the process alive', async () => {
     jobs.getJob.mockReturnValue(null);
 

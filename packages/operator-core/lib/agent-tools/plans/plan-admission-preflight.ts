@@ -545,6 +545,17 @@ export interface ExactPlanLaneHealthPreflightArgs {
   fleetSlug?: string;
   /** Explicit family narrowing is safe only when the caller already knows it. */
   claimKinds?: readonly string[];
+  /** Start's already-read snapshot; check existing migration parks before writes. */
+  planItems?: PlanItem[];
+}
+
+export class PlanPromotionParkError extends Error {
+  constructor(readonly rows: Array<{ planItemId: string; workItemId: string }>) {
+    super('Actionable plan items have only migration-parked coverage: ' +
+      rows.map(row => `${row.planItemId} (${row.workItemId})`).join(', ') +
+      '. Preserve the holds; resolve one-work-graph-structured-holds-2026-10-26 P-008 / D-011 before plans:start.');
+    this.name = 'PlanPromotionParkError';
+  }
 }
 
 /**
@@ -559,12 +570,34 @@ export interface ExactPlanLaneHealthPreflightArgs {
 export async function preflightExactPlanLaneHealth(
   args: ExactPlanLaneHealthPreflightArgs,
 ): Promise<FleetLaneHealth | null> {
+  if (args.planItems) {
+    const workItems = await runWithWorkspaceIfConcrete(args.workspaceId, () => listWorkItems({
+      harness: args.harnessSlug, sourcePlanSlug: args.planSlug,
+      includeChildren: true, limit: WORK_ITEMS_MAX_LIMIT,
+    }));
+    if (workItems.length >= WORK_ITEMS_MAX_LIMIT) {
+      throw new Error('The pre-promotion row census hit its source cap; migration-hold coverage is unknown.');
+    }
+    // Reuse admission's actionable DAG and execution-child coverage. Empty
+    // first-start coverage is expected; an existing parked conversion node is
+    // different: promotion reuses it, so it cannot repair this missing lane.
+    const structural = evaluateExactPlanAdmission({
+      planSlug: args.planSlug, planItems: args.planItems, workItems, laneHealth: null,
+    });
+    const missing = new Set(structural.promotion.missingActionableItemIds);
+    const parked = workItems.filter(item => !isSettledWorkItemState(item.state) &&
+      isClaimHoldParked(item.payload) &&
+      record(item.payload).claim_hold_by === 'migration:plan-line-work-item-nodes')
+      .flatMap(item => provenanceIds(item).filter(id => missing.has(id))
+        .map(planItemId => ({ planItemId, workItemId: item.id })));
+    if (parked.length) throw new PlanPromotionParkError(parked);
+  }
   const built = buildExactPlanClaimSpec(args.specId, args.planSlug, args.claimKinds);
   const validation = validateClaimSpec(built);
   if (!validation.ok || !validation.spec)
     throw new Error(`invalid exact-plan claim spec: ${validation.errors.join('; ')}`);
   const spec = validation.spec;
-  const record: ClaimSpecRecord = {
+  const claimRecord: ClaimSpecRecord = {
     source: 'fleet',
     spec,
     revision: spec.revision,
@@ -575,8 +608,8 @@ export async function preflightExactPlanLaneHealth(
   };
   return readClaimSpecLaneHealth({
     spec,
-    record,
-    fleet: record.fleetSlug!,
+    record: claimRecord,
+    fleet: claimRecord.fleetSlug!,
     harness: args.harnessSlug,
     workspaceId: args.workspaceId,
     assignee: args.claimant,

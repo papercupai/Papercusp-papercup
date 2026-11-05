@@ -144,6 +144,9 @@ export async function getFeedbackProd(
         embeddingProfile,
         embeddingMode: embeddingProfile && resolved ? resolved.mode : null,
         embeddingAcquisition,
+        // Accepted work already acknowledged the MCP caller. Score within its
+        // actual recovery lease, rather than the foreground response budget.
+        subjectEvidenceDeadline: options.acceptedRequest?.leaseUntilMs,
         getLiveness: async (ownerIds) => {
           const [verdicts, pausedOwners] = await Promise.all([
             resolveSessionStates(ownerIds.map((ownerId) => ({ ownerId })), {

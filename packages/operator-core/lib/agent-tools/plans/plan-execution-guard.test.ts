@@ -22,6 +22,25 @@ describe('implementation authority before direct writes (EI-27540173897381380)',
     expect(await checkPlanExecutionGuard(call(), { readBindings: async () => [], checkPlan })).toBeNull();
     expect(checkPlan).not.toHaveBeenCalled();
   });
+  it('avoids goal selection for an empty census but reads and enforces newly attached plans', async () => {
+    const readBindings = vi.fn().mockResolvedValueOnce([]).mockResolvedValueOnce([binding]);
+    const resolveGoal = vi.fn(async () => ({ goal: null, diagnostics: [] }));
+    const checkPlan = vi.fn(async () => ['plan_not_started']);
+    const deps = { readBindings, resolveGoal, checkPlan };
+    const timings: string[] = [];
+
+    expect(await checkPlanExecutionGuard({ ...call(), observeTiming: t => { timings.push(t.stage); } }, deps)).toBeNull();
+    expect(resolveGoal).not.toHaveBeenCalled();
+    expect(checkPlan).not.toHaveBeenCalled();
+    expect(timings).toEqual(['bindings']);
+
+    expect(await checkPlanExecutionGuard(call(), deps)).toMatchObject({
+      planSlug: binding.planSlug, blockers: ['plan_not_started'],
+    });
+    expect(readBindings).toHaveBeenCalledTimes(2);
+    expect(resolveGoal).toHaveBeenCalledTimes(1);
+    expect(checkPlan).toHaveBeenCalledWith(binding, 'ws', undefined);
+  });
   it.each(['activation_audit_stale', 'conversation_audit_required', 'acceptance_bar_contract_not_ready'])('retains %s as an actionable blocker', async blocker => {
     expect(await checkPlanExecutionGuard(call(), { readBindings: async () => [binding], checkPlan: async () => [blocker] }))
       .toMatchObject({ blockers: [blocker] });

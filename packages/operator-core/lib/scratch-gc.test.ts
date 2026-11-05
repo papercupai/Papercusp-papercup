@@ -631,7 +631,9 @@ describe('reserveScratchSpace — no synchronous walk on the hot path (WI-100045
     });
 
     expect(readFileSync(filePath)).toHaveLength(7);
-    expect(scratchUsageBytes(workspaceId)).toBe(7);
+    await vi.waitFor(() => {
+      expect(scratchUsageBytes(workspaceId)).toBe(7);
+    }, { timeout: 1_000, interval: 10 });
   });
 
   it('keeps the scratch quota mutex available while a stale usage refresh scans the tree', async () => {
@@ -2120,6 +2122,12 @@ describe('deferred scratch quota recovery', () => {
       const settled = timings.find((row) => !row.progress);
       expect(settled?.quotaRecoveryDataMutexWaitMs).toEqual(expect.any(Number));
       expect(settled?.quotaRecoveryDataMutexAdmissionMs).toEqual(expect.any(Number));
+      expect(settled?.quotaRecoveryDataMutexWaitOwner).toMatchObject({
+        layer: 'filesystem',
+        operation: 'test-payload-holder',
+        subsystem: 'scratch-quota',
+        requestTraceId: holderTraceId,
+      });
       expect(settled?.awaitSubphaseTimingsMs).toEqual(expect.objectContaining({
         'quota-recovery-data-admission.lock-root.ensure': expect.any(Number),
       }));
@@ -2489,7 +2497,9 @@ describe('deferred scratch quota recovery', () => {
     }).then(() => { spillSettled = true; });
     try {
       await scanStarted;
-      expect(spillSettled).toBe(true);
+      await vi.waitFor(() => {
+        expect(spillSettled).toBe(true);
+      }, { timeout: 1_000, interval: 10 });
       expect(existsSync(spillPath)).toBe(true);
     } finally {
       releaseScan();
@@ -3264,10 +3274,17 @@ describe('deferred scratch quota recovery', () => {
       await holder;
       await Promise.all(waiters);
       for (const timings of timingsByWriter) {
-        expect(timings.find((row) => !row.progress)?.awaitSubphaseTimingsMs).toMatchObject({
+        const settled = timings.find((row) => !row.progress);
+        expect(settled?.quotaWaitMutexOwner).toMatchObject({
+          layer: 'filesystem',
+          operation: 'write',
+          subsystem: 'scratch-quota',
+          requestTraceId: holderTraceId,
+        });
+        expect(settled?.awaitSubphaseTimingsMs).toMatchObject({
           'fs-mutex-admission.reader-drain': expect.any(Number),
         });
-        expect(timings.find((row) => !row.progress)?.awaitSubphaseTimingsMs)
+        expect(settled?.awaitSubphaseTimingsMs)
           .not.toHaveProperty('fs-mutex-admission.root-mkdir');
       }
     } finally {
@@ -3410,7 +3427,9 @@ describe('deferred scratch quota recovery', () => {
       await writeFile(filePath, Buffer.alloc(1024));
       await refreshScratchUsage('ws-Q');
     });
-    expect(scratchUsageBytes('ws-Q')).toBe(1024);
+    await vi.waitFor(() => {
+      expect(scratchUsageBytes('ws-Q')).toBe(1024);
+    }, { timeout: 1_000, interval: 10 });
   });
 
   it.each(['deferred', 'synchronous'])('does not lose a %s write that completes while a usage refresh is walking the tree', async (mode) => {
@@ -3451,7 +3470,9 @@ describe('deferred scratch quota recovery', () => {
       readdirMock.mockImplementation(originalRead);
     }
     await measurement;
-    expect(scratchUsageBytes('ws-Q')).toBe(1024);
+    await vi.waitFor(() => {
+      expect(scratchUsageBytes('ws-Q')).toBe(1024);
+    }, { timeout: 1_000, interval: 10 });
     await refreshScratchUsage('ws-Q');
   });
 });

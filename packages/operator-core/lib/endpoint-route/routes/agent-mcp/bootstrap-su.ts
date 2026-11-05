@@ -927,9 +927,11 @@ export async function stampPresenceAtBoot(opts: {
   harnessSlug?: string | null;
   /** Fine-grained role for a role-scoped session; SU launches default to `su`. */
   agentRole?: string | null;
+  /** Register the same ceiling already materialized into the native home. */
+  compactionLimit?: number | null;
 }): Promise<string | null> {
   try {
-    const { writePresence, getPresence } = await import('../../../agent-tools/coordination/presence');
+    const { writePresence, getPresence, setCompactionLimit } = await import('../../../agent-tools/coordination/presence');
     // WI-10006674: a session with NO harness (a workspace-level su, and every
     // consult/headless `--fork`) has no pot_slug to stamp, so the only job here is to
     // make the row EXIST — the launcher's supervisor beat (touchHeartbeat) never mints
@@ -939,19 +941,32 @@ export async function stampPresenceAtBoot(opts: {
     // store.write() overwrites intent/current_plan_slug unconditionally, and a
     // carry-respawn re-POSTs bootstrap with the same ownerId, so an unconditional write
     // here would wipe the live session's declared lane.
-    if (!opts.harnessSlug && (await getPresence(opts.ownerId))) return null;
-    const agentRole = opts.agentRole?.trim() || 'su';
-    await writePresence(
-      {
-        ownerId: opts.ownerId,
-        ownerLabel: opts.ownerLabel?.trim() || `su · ${opts.ownerId.slice(0, 8)}`,
-        source: 'omp-hook-session',
-        workspaceId: opts.workspaceId,
-        userId: null,
-      },
-      { agentRole },
-      opts.harnessSlug,
-    );
+    if (opts.harnessSlug || !(await getPresence(opts.ownerId))) {
+      const agentRole = opts.agentRole?.trim() || 'su';
+      await writePresence(
+        {
+          ownerId: opts.ownerId,
+          ownerLabel: opts.ownerLabel?.trim() || `su · ${opts.ownerId.slice(0, 8)}`,
+          source: 'omp-hook-session',
+          workspaceId: opts.workspaceId,
+          userId: null,
+        },
+        { agentRole },
+        opts.harnessSlug,
+      );
+    }
+    // EI-27978454985256034: the periodic watchdog used to be the only seed
+    // writer. A fresh native CLI could make requests with its configured ceiling
+    // while host presence was still NULL (forever in a private workerless host).
+    // Seed AFTER the row exists; UPDATE-only setters cannot create presence.
+    if (opts.compactionLimit != null) {
+      if (!Number.isSafeInteger(opts.compactionLimit) || opts.compactionLimit <= 0)
+        throw new Error('Invalid bootstrap compaction limit');
+      await setCompactionLimit(opts.ownerId, opts.compactionLimit, { explicit: true, onlyIfUnset: true });
+      const stored = await getPresence(opts.ownerId);
+      if (stored?.compactionLimit !== opts.compactionLimit)
+        throw new Error('Bootstrap compaction limit differs from registered presence');
+    }
     return null;
   } catch (e: any) {
     return e?.message ?? String(e);
@@ -3350,8 +3365,12 @@ export const bootstrapSu = defineTool({
         ownerId: sid,
         ownerLabel: body.label?.trim() || null,
         harnessSlug: harnessSlug || null,
+        compactionLimit: codexCompactionLimit,
       });
       if (presenceStampErr) {
+        // A native home with a registered budget must agree with its host before
+        // launch succeeds. An ordinary presence-only stamp remains recoverable.
+        if (codexCompactionLimit != null) throw new Error(presenceStampErr);
         process.stderr.write(
           `[bootstrap-su] presence stamp failed (non-fatal; first coord:orient can repair it): ${presenceStampErr}\n`,
         );

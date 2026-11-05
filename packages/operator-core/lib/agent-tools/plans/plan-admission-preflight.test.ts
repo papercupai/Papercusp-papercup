@@ -1088,7 +1088,47 @@ describe('preflightExactPlanAdmission IO wiring', () => {
 describe('preflightExactPlanLaneHealth', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mocks.readClaimSpecLaneHealth.mockResolvedValue(lane({ issue: 0, feature: 0 }));
+    mocks.listWorkItems.mockReset().mockResolvedValue([
+      { id: 'WI-1', family: 'issue', sourcePlanItemIds: ['P-001'], payload: null },
+    ]);
+    mocks.readClaimSpecLaneHealth.mockReset().mockResolvedValue(lane({ issue: 0, feature: 0 }));
+  });
+
+  const startArgs = { workspaceId: 'ws-1', harnessSlug: 'papercusp', planSlug: 'plan-a',
+    actor: 'su-test', specId: 'plans-start-plan-a', planItems: [item('P-001')] };
+  const parked = { id: 'WI-parked', family: 'feature', state: 'open', sourcePlanItemIds: ['P-001'],
+    payload: { _claimHold: true, claim_hold_by: 'migration:plan-line-work-item-nodes' } };
+
+  it('refuses parked-only coverage before reading a claim lane, preserving the hold', async () => {
+    mocks.listWorkItems.mockResolvedValue([parked]);
+    const before = structuredClone(parked);
+    await expect(preflightExactPlanLaneHealth(startArgs)).rejects.toMatchObject({
+      name: 'PlanPromotionParkError', rows: [{ planItemId: 'P-001', workItemId: 'WI-parked' }],
+      message: expect.stringContaining('P-008 / D-011'),
+    });
+    expect(parked).toEqual(before);
+    expect(mocks.readClaimSpecLaneHealth).not.toHaveBeenCalled();
+  });
+
+  it.each(['first-start', 'execution-child', 'released-park', 'settled-park', 'blocked-item'])(
+    'allows %s through the pre-promotion check', async kind => {
+      const rows = kind === 'first-start' ? []
+        : kind === 'execution-child' ? [parked, { ...parked, id: 'WI-child', parent: parked.id, payload: null }]
+        : kind === 'released-park' ? [{ ...parked, payload: { ...parked.payload, _claimHold: false } }]
+        : kind === 'settled-park' ? [{ ...parked, state: 'done' }]
+        : [parked];
+      mocks.listWorkItems.mockResolvedValue(rows);
+      await expect(preflightExactPlanLaneHealth({ ...startArgs,
+        ...(kind === 'blocked-item' ? { planItems: [item('P-001', 'blocked')] } : {}),
+      })).resolves.toMatchObject({ effective: { claimable: 0 } });
+      expect(mocks.readClaimSpecLaneHealth).toHaveBeenCalledOnce();
+    },
+  );
+
+  it('does not infer the absence of a migration hold from an incomplete census', async () => {
+    mocks.listWorkItems.mockResolvedValue(Array(2000).fill(parked));
+    await expect(preflightExactPlanLaneHealth(startArgs)).rejects.toThrow('source cap');
+    expect(mocks.readClaimSpecLaneHealth).not.toHaveBeenCalled();
   });
 
   it('reads the broad exact-plan lane without requiring promoted-row coverage', async () => {

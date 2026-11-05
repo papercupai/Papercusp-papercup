@@ -111,6 +111,8 @@ const M = vi.hoisted(() => {
     resolveCtxHarnessSlug: vi.fn(() => 'papercup'),
     resolveEffectiveHarnessSlug: vi.fn(() => 'papercup'),
     previewPlanStartConsult: vi.fn(),
+    checkExecutionPlan: vi.fn(async (): Promise<string[]> => []),
+    derivePlanLifecycleForRead: vi.fn(async () => null),
     getAcceptanceRubricForPlan: vi.fn(async (slug: string) => ({
       rubricId: `rubric-${slug}`,
       status: 'ratified',
@@ -182,6 +184,7 @@ vi.mock('./source', async (orig) => {
     ...actual,
     planHarnessesForSlugs: M.planHarnessesForSlugs,
     readPlanBySlug: M.readPlanBySlug,
+    resolvePlanScope: vi.fn(async (opts) => ({ workspaceId: opts.workspaceId, harnessSlug: opts.harnessSlug })),
   };
 });
 vi.mock('./_ctx-opts', () => ({
@@ -190,6 +193,10 @@ vi.mock('./_ctx-opts', () => ({
   resolveEffectiveHarnessSlug: M.resolveEffectiveHarnessSlug,
 }));
 vi.mock('../../plan-items/anchor-store', () => ({ readPlanItemAnchors: M.readPlanItemAnchors }));
+vi.mock('./plan-lifecycle-derivation', async (orig) => ({
+  ...(await orig<typeof import('./plan-lifecycle-derivation')>()),
+  derivePlanLifecycleForRead: M.derivePlanLifecycleForRead,
+}));
 vi.mock('../../issue-blocks-merge', async (orig) => {
   const actual = await orig<typeof import('../../issue-blocks-merge')>();
   return {
@@ -209,7 +216,8 @@ vi.mock('@papercusp/db-org', async (orig) => {
     }),
   };
 });
-vi.mock('../../rubrics', () => ({
+vi.mock('../../rubrics', async (orig) => ({
+  ...(await orig<typeof import('../../rubrics')>()),
   getAcceptanceRubricForPlan: M.getAcceptanceRubricForPlan,
 }));
 vi.mock('../../plan-audits', () => ({
@@ -222,12 +230,12 @@ vi.mock('./get-activation-readiness', () => ({
     ready: false, applies: true, reuse: 'missing', libraries: 'missing', blockers: [], diagnostics: [],
   }),
 }));
+vi.mock('./plan-execution-guard', () => ({ checkExecutionPlan: M.checkExecutionPlan }));
 vi.mock('../coordination/identity', () => ({
   resolveAgentIdentity: () => ({ ownerId: 'su-reader' }),
 }));
 
 import tool from './get';
-import { withWorkspace } from '@papercusp/db-org';
 import {
   getOperatorCache,
   resetOperatorCacheForTests,
@@ -272,8 +280,9 @@ beforeEach(async () => {
   M.getAcceptanceRubricForPlan.mockClear();
   M.getLatestPlanAudit.mockClear();
   M.overlayIssueBlocksForPlan.mockClear();
-  vi.mocked(withWorkspace).mockClear();
+  M.derivePlanLifecycleForRead.mockClear();
   M.previewPlanStartConsult.mockClear();
+  M.checkExecutionPlan.mockReset().mockResolvedValue([]);
   M.previewPlanStartConsult.mockResolvedValue({
     outcome: 'proceed',
     verdict: 'all_responders_paused',
@@ -391,7 +400,7 @@ describe('plans:get — cache wiring', () => {
     expect(M.getAcceptanceRubricForPlan).not.toHaveBeenCalled();
     expect(M.getLatestPlanAudit).not.toHaveBeenCalled();
     // A fast body defers lifecycle as well as the optional feature/test reads.
-    expect(withWorkspace).not.toHaveBeenCalled();
+    expect(M.derivePlanLifecycleForRead).not.toHaveBeenCalled();
 
     const decorated = await run({ slug: 'alpha', mode: 'full', includeRaw: true, includeHistory: false });
     expect(decorated.results[0].enrichmentsDeferred).toBeUndefined();
@@ -399,9 +408,7 @@ describe('plans:get — cache wiring', () => {
     expect(M.overlayIssueBlocksForPlan).toHaveBeenCalledOnce();
     expect(M.getAcceptanceRubricForPlan).toHaveBeenCalledOnce();
     expect(M.getLatestPlanAudit).toHaveBeenCalledOnce();
-    // Lifecycle + linkedFeatures; the planItemTests read is retired with inline VAL-*
-    // (verification-system-improvements-2026-10-10 P-003).
-    expect(withWorkspace).toHaveBeenCalledTimes(2);
+    expect(M.derivePlanLifecycleForRead).toHaveBeenCalledOnce();
   });
 
   it('still honors explicit history requests when the UI default omits incidental history', async () => {
@@ -604,6 +611,58 @@ describe('plans:get — cache wiring', () => {
       },
     });
     expect(M.getLatestActivationAudit).toHaveBeenCalledWith('alpha', { workspaceId: 'ws-get' });
+  });
+
+  it('reads canonical execution blockers afresh even when the plan body is cached', async () => {
+    M.checkExecutionPlan.mockResolvedValueOnce([]).mockResolvedValueOnce(['plan_start_revision_stale']);
+    const first = await run({ slug: 'alpha', mode: 'meta', executionReadiness: true });
+    expect(first.results[0]).toMatchObject({ executionReadiness: {
+      status: 'ready', ready: true, blockers: [],
+    } });
+    const second = await run({ slug: 'alpha', mode: 'meta', executionReadiness: true });
+    expect(second.results[0]).toMatchObject({ executionReadiness: {
+      status: 'blocked', ready: false, blockers: ['plan_start_revision_stale'],
+    } });
+    expect(M.checkExecutionPlan).toHaveBeenCalledTimes(2);
+    expect(M.checkExecutionPlan).toHaveBeenLastCalledWith(
+      { planSlug: 'alpha', harnessSlug: 'papercup' }, 'ws-get',
+    );
+    expect(M.readPlanBySlug).toHaveBeenCalledTimes(1);
+    expect((await run({ slug: 'alpha', mode: 'meta' })).results[0]).not.toHaveProperty('executionReadiness');
+    expect(M.checkExecutionPlan).toHaveBeenCalledTimes(2);
+  });
+
+  it('accepts execution readiness only on current reads', () => {
+    expect(tool.args.safeParse({ slug: 'alpha', executionReadiness: true }).success).toBe(true);
+    expect(tool.args.safeParse({ slug: 'alpha', revision: 1, executionReadiness: true }).success).toBe(false);
+  });
+
+  it('reports unknown execution readiness when the authority lookup fails', async () => {
+    M.checkExecutionPlan.mockRejectedValueOnce(new Error('authority unavailable'));
+    const result = await run({ slug: 'alpha', executionReadiness: true });
+    expect(result.results[0]).toMatchObject({ slug: 'alpha', executionReadiness: {
+      status: 'unknown', ready: null, unavailableReason: 'execution_readiness_unavailable',
+      message: expect.stringContaining('authority unavailable'),
+    } });
+    expect(result.results[0].executionReadiness).not.toHaveProperty('blockers');
+  });
+
+  it('does not evaluate execution readiness unless requested or for a missing plan', async () => {
+    await run({ slug: 'alpha' });
+    M.readPlanBySlug.mockResolvedValueOnce(null);
+    await run({ slug: 'missing', executionReadiness: true });
+    expect(M.checkExecutionPlan).not.toHaveBeenCalled();
+  });
+
+  it('exposes canonical start-proof blockers on legacy reads', async () => {
+    const fixture = await M.readPlanBySlug('legacy');
+    fixture!.parsed.isLegacy = true;
+    M.readPlanBySlug.mockResolvedValueOnce(fixture);
+    M.checkExecutionPlan.mockResolvedValueOnce(['plan_not_started']);
+    const result = await run({ slug: 'legacy', executionReadiness: true });
+    expect(result.results[0]).toMatchObject({ legacy: true, executionReadiness: {
+      status: 'blocked', ready: false, blockers: ['plan_not_started'],
+    } });
   });
 
   it('opts into a fresh activation consult preview without caching its time-varying result', async () => {

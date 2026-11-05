@@ -298,7 +298,7 @@ export class PgPresenceStore implements PresenceStore {
     `;
   }
 
-  async setCompactionLimit(ownerId: string, limit: number, opts: { explicit?: boolean } = {}): Promise<void> {
+  async setCompactionLimit(ownerId: string, limit: number, opts: { explicit?: boolean; onlyIfUnset?: boolean } = {}): Promise<void> {
     await this.opts.ensureSchema();
     const sql = this.opts.getSql();
     // Per-session SOFT compaction target in tokens (agent-managed-compaction-2026-07-01).
@@ -319,7 +319,16 @@ export class PgPresenceStore implements PresenceStore {
     // authoritative write supplies provenance (either branch below still sets both).
     // `IS NOT TRUE` (not `= false`) so a NULL/never-set provenance still accepts the
     // derived write.
-    if (opts.explicit === undefined) {
+    // Bootstrap must register its native ceiling before the first request,
+    // without replacing a choice made concurrently by the owner/watchdog.
+    if (opts.onlyIfUnset) {
+      await sql`
+        UPDATE harness_shared.coord_presence
+           SET compaction_limit = ${limit}, compaction_limit_explicit = ${opts.explicit ?? false}
+         WHERE owner_id = ${ownerId}
+           AND compaction_limit IS NULL
+      `;
+    } else if (opts.explicit === undefined) {
       await sql`
         UPDATE harness_shared.coord_presence
            SET compaction_limit = ${limit}

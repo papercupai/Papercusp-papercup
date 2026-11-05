@@ -452,11 +452,27 @@ export async function turnStartSyncRuleRequests(input: {
 let localSyncReader: ((ownerId: string, workspaceId: string) => Promise<WornSyncRules>) | null = null;
 export function setLocalSyncRulesReader(reader: typeof localSyncReader): void { localSyncReader = reader; }
 
-export async function readAppliedWornRules(ownerId: string, workspaceId: string): Promise<WornSyncRules | null> {
-  const applied = await readAppliedIdentityRules(ownerId, workspaceId);
+export type IdentityRuleReadTimingObserver = (timing: {
+  stage: 'applied_revision' | 'applied_artifact' | 'local_rules'; durationMs: number;
+}) => void;
+
+/** Observe the authoritative read itself, including rejection; diagnostics never vote. */
+async function measureIdentityRead<T>(stage: Parameters<IdentityRuleReadTimingObserver>[0]['stage'],
+  observe: IdentityRuleReadTimingObserver | undefined, read: () => Promise<T>): Promise<T> {
+  if (!observe) return read();
+  const startedAt = performance.now();
+  try { return await read(); } finally {
+    try { observe({ stage, durationMs: Math.max(0, performance.now() - startedAt) }); } catch { /* diagnostics only */ }
+  }
+}
+
+export async function readAppliedWornRules(ownerId: string, workspaceId: string,
+  observeTiming?: IdentityRuleReadTimingObserver): Promise<WornSyncRules | null> {
+  const applied = await readAppliedIdentityRules(ownerId, workspaceId, observeTiming);
   if (!applied) return null;
   if (!localSyncReader) return applied.sync;
-  const local = await localSyncReader(ownerId, workspaceId);
+  const readLocal = localSyncReader;
+  const local = await measureIdentityRead('local_rules', observeTiming, () => readLocal(ownerId, workspaceId));
   return local.rules.length || local.unreadable.length
     ? { rules: [...applied.sync.rules, ...local.rules], unreadable: [...applied.sync.unreadable, ...local.unreadable] }
     : applied.sync;
@@ -503,17 +519,19 @@ export function wearsPapercuspEngineer(identity: Pick<AppliedIdentityRules, 'pac
  */
 export async function readAppliedIdentityRules(
   ownerId: string, workspaceId: string,
+  observeTiming?: IdentityRuleReadTimingObserver,
 ): Promise<AppliedIdentityRules | null> {
   const sql = getOrgPg().sql;
-  const rows = await sql<{ applied: unknown }[]>`
+  const rows = await measureIdentityRead('applied_revision', observeTiming, async () => sql<{ applied: unknown }[]>`
     SELECT control_state->'activation'->'applied' AS applied
       FROM harness_shared.session_briefs
      WHERE owner_id = ${ownerId} AND workspace_id = ${workspaceId}
-     LIMIT 1`;
+     LIMIT 1`);
   const applied = rows[0]?.applied as { specificationRevision?: unknown; stateRevision?: unknown } | null | undefined;
   if (typeof applied?.specificationRevision !== 'string' || typeof applied.stateRevision !== 'string') return null;
-  return appliedIdentityRulesAt(ownerId, workspaceId,
-    { specificationRevision: applied.specificationRevision, stateRevision: applied.stateRevision });
+  const revision = { specificationRevision: applied.specificationRevision, stateRevision: applied.stateRevision };
+  return measureIdentityRead('applied_artifact', observeTiming,
+    () => appliedIdentityRulesAt(ownerId, workspaceId, revision));
 }
 
 /** The rules at one applied revision pair the caller already read; throws when unreadable. */

@@ -280,6 +280,8 @@ export interface RoutingSnapshot {
     evaluated: number;
     unmeasured: number;
     limit: number;
+    /** Actual execution budget; accepted workers are bounded by their lease. */
+    budgetMs?: number;
     unresolved: string[];
     /** Bounded scoring failures, counted by invocation, never inferred from
      * unmeasured owners. Raw provider error text is deliberately excluded. */
@@ -511,6 +513,8 @@ export interface ConsultRouteParams {
 }
 
 export interface ConsultRouteDeps {
+  /** Internal accepted-worker lease deadline; absent on foreground requests. */
+  subjectEvidenceDeadline?: number;
   /** Same local crossencoder as prose search; no hosted credential required. */
   scoreSubjectEvidence?: (subject: string, texts: string[], deadline: number,
     onPhase?: (event: SubjectEvidencePhaseTiming) => void) => Promise<Array<number | null>>;
@@ -1556,9 +1560,13 @@ async function routeConsultCore(
         text: r.subjectText,
       })));
     const usable = passages.filter(p => typeof p.text === 'string' && p.text.trim());
+    const evidenceStartedAt = Date.now();
+    const deadline = deps.subjectEvidenceDeadline === undefined
+      ? evidenceStartedAt + SUBJECT_EVIDENCE_TIMEOUT_MS
+      : Number.isFinite(deps.subjectEvidenceDeadline) ? deps.subjectEvidenceDeadline : evidenceStartedAt;
+    const evidenceBudgetMs = Math.max(0, deadline - evidenceStartedAt);
     if (usable.length && subjectRefs.length) {
       try {
-        const deadline = Date.now() + SUBJECT_EVIDENCE_TIMEOUT_MS;
         const { value: scoreBySubject, degraded: deadlineExpired } = await measure('evidence', () => withDeadlineFallback((async () => {
           const all: Array<Array<number | null>> = [];
           for (const subject of subjectRefs) {
@@ -1595,7 +1603,7 @@ async function routeConsultCore(
             all.push(aligned);
           }
           return all;
-        })(), SUBJECT_EVIDENCE_TIMEOUT_MS, () => subjectRefs.map(() => usable.map(() => null))));
+        })(), evidenceBudgetMs, () => subjectRefs.map(() => usable.map(() => null))));
         if (deadlineExpired) recordFailure({ reason: 'deadline' });
         for (const ownerId of boundedOwners) {
           const evidence = subjectRefs.map((subject, subjectIndex) => {
@@ -1640,6 +1648,7 @@ async function routeConsultCore(
       evaluated: coverage.length - unmeasured,
       unmeasured,
       limit: SUBJECT_EVIDENCE_OWNER_LIMIT,
+      budgetMs: evidenceBudgetMs,
       unresolved: unresolvedSubjectRefs,
       ...(failureCounts.size ? { failures: [...failureCounts.values()] } : {}),
       ...(scoring.length ? { scoring: scoring.map(({ record, started, phaseStarts }) => ({

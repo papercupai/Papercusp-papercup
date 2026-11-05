@@ -680,6 +680,42 @@ describe('routeConsult — same-plan bar-critique party exclusions', () => {
 });
 
 describe('routeConsult — routing + blend', () => {
+  it.each([false, true])('keeps foreground bounded while lease-bound work can finish scoring: %s', async accepted => {
+    const leaseDeadline = Date.now() + 12_000;
+    let scoringWork: Promise<number[]> | undefined;
+    const scorer = vi.fn(async (_subject: string, texts: string[], deadline: number) => {
+      if (accepted) expect(deadline).toBe(leaseDeadline);
+      else expect(deadline - Date.now()).toBeLessThanOrEqual(SUBJECT_EVIDENCE_TIMEOUT_MS);
+      scoringWork = new Promise(resolve => setTimeout(() => resolve(texts.map(() => 1)),
+        SUBJECT_EVIDENCE_TIMEOUT_MS + 200));
+      return scoringWork;
+    });
+    const result = await routeConsult(baseParams, deps(0, { scoreSubjectEvidence: scorer,
+      ...(accepted ? { subjectEvidenceDeadline: leaseDeadline } : {}) }));
+    await scoringWork;
+    expect(scorer).toHaveBeenCalledOnce();
+    expect(result.snapshot.subjectValidation?.threshold).toBe(0.5);
+    if (accepted) {
+      expect(result.verdict).toBe('routed');
+      expect(result.qualified[0]?.ownerId).toBe('agent-alpha');
+      expect(result.snapshot.subjectValidation?.unmeasured).toBe(0);
+      expect(result.snapshot.subjectValidation?.budgetMs).toBeGreaterThan(SUBJECT_EVIDENCE_TIMEOUT_MS);
+    } else {
+      expect(result.verdict).toBe('relevance_unmeasured');
+      expect(result.qualified).toEqual([]);
+      expect(result.snapshot.subjectValidation?.budgetMs).toBe(SUBJECT_EVIDENCE_TIMEOUT_MS);
+    }
+  }, 30_000);
+
+  it.each([-1, NaN])('does not score under an expired or invalid accepted deadline: %s', async remaining => {
+    const scorer = vi.fn(async (_subject: string, texts: string[]) => texts.map(() => 1));
+    const result = await routeConsult(baseParams, deps(0, { scoreSubjectEvidence: scorer,
+      subjectEvidenceDeadline: Date.now() + remaining }));
+    expect(scorer).not.toHaveBeenCalled();
+    expect(result.qualified).toEqual([]);
+    expect(result.snapshot.subjectValidation).toMatchObject({ budgetMs: 0 });
+  });
+
   it('routes to the similar+recent+verified owner; snapshot carries the D-008 shape', async () => {
     const r = await routeConsult(baseParams, deps(0));
     expect(r.verdict).toBe('routed');

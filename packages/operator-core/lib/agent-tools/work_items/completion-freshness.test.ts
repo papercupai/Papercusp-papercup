@@ -430,6 +430,102 @@ describe('completionFreshnessForEvidence (EI-21259433290500193)', () => {
   });
 });
 
+describe('multi-repository completion freshness (WI-6554700010045460)', () => {
+  async function withRepositories(run: (primary: string, secondary: string) => Promise<void>) {
+    const root = mkdtempSync(join(tmpdir(), 'completion-freshness-repositories-'));
+    try {
+      const primary = join(root, 'primary-checkout');
+      const secondary = join(root, 'secondary');
+      for (const repo of [primary, secondary]) {
+        mkdirSync(repo);
+        initializeIgnoreFixture(repo);
+        // Equal relative paths deliberately have different contents in each checkout.
+        writeFileSync(join(repo, 'fix.ts'), `export const repository = ${JSON.stringify(repo)};\n`);
+        gitFixture(repo, 'add', '--', 'fix.ts');
+        gitFixture(repo, 'commit', '-qm', 'source');
+      }
+      await run(primary, secondary);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
+
+  async function evidenceFor(primary: string, secondary: string) {
+    const treeStamp = await completionTreeStampForEvidence({
+      filesChanged: [join(primary, 'fix.ts'), join(secondary, 'fix.ts')],
+      filesDeleted: [join(secondary, 'removed.ts')],
+    }, [primary, secondary]);
+    expect(treeStamp?.repositoryRoot).toBe(primary);
+    expect(treeStamp?.contentIdentity).toContainEqual(expect.objectContaining({
+      path: 'fix.ts', repositoryRoot: secondary,
+    }));
+    expect(completionTreeContentIdentityMatches(treeStamp?.contentIdentity)).toBe(true);
+    return { treeStamp };
+  }
+
+  it('re-probes each owning checkout, preserving duplicate relative paths, deletions and external artifacts', async () => {
+    await withRepositories(async (primary, secondary) => {
+      const evidence = await evidenceFor(primary, secondary);
+      evidence.treeStamp!.contentIdentity!.push({
+        path: '/external/report.json', workingTreeBlobSha: null, headBlobSha: null, outOfRepoArtifact: true,
+      });
+      const result = await completionFreshnessForEvidence(evidence);
+      expect(result?.verdict).toBe('fresh');
+      expect(result?.currentTreeStamp?.contentIdentity).toEqual(expect.arrayContaining([
+        expect.objectContaining({ path: 'fix.ts', repositoryRoot: secondary }),
+        expect.objectContaining({ path: 'removed.ts', repositoryRoot: secondary, deletion: true }),
+        expect.objectContaining({ path: '/external/report.json', outOfRepoArtifact: true }),
+      ]));
+    });
+  });
+
+  it('measures secondary HEAD movement without invalidating unchanged declared content', async () => {
+    await withRepositories(async (primary, secondary) => {
+      const evidence = await evidenceFor(primary, secondary);
+      gitFixture(secondary, 'commit', '--allow-empty', '-qm', 'unrelated');
+      const currentHead = gitFixture(secondary, 'rev-parse', 'HEAD');
+      const result = await completionFreshnessForEvidence(evidence);
+      expect(result?.verdict).toBe('fresh');
+      expect(result?.currentTreeStamp?.contentIdentity).toContainEqual(expect.objectContaining({
+        path: 'fix.ts', repositoryRoot: secondary, headSha: currentHead,
+      }));
+    });
+  });
+
+  it.each(['dirty', 'committed', 'resurrected deletion'] as const)('reports stale for a secondary %s change', async (change) => {
+    await withRepositories(async (primary, secondary) => {
+      const evidence = await evidenceFor(primary, secondary);
+      const file = change === 'resurrected deletion' ? 'removed.ts' : 'fix.ts';
+      writeFileSync(join(secondary, file), 'export const changed = true;\n');
+      if (change === 'committed') {
+        gitFixture(secondary, 'add', '--', file);
+        gitFixture(secondary, 'commit', '-qm', 'changed');
+      }
+      const result = await completionFreshnessForEvidence(evidence);
+      expect(result?.verdict).toBe('stale');
+      expect(result?.currentTreeStamp?.contentIdentity).toContainEqual(expect.objectContaining({
+        path: file, repositoryRoot: secondary, headSha: gitFixture(secondary, 'rev-parse', 'HEAD'),
+      }));
+    });
+  });
+
+  it('reports unavailable when the secondary checkout cannot be observed', async () => {
+    await withRepositories(async (primary, secondary) => {
+      const evidence = await evidenceFor(primary, secondary);
+      rmSync(join(secondary, '.git'), { recursive: true });
+      expect((await completionFreshnessForEvidence(evidence))?.verdict).toBe('unavailable');
+    });
+  });
+
+  it('rejects a changed owning repository even when the relative path and blobs match', async () => {
+    const entry = { ...identity[0]!, repositoryRoot: '/secondary' };
+    const result = await completionFreshnessForEvidence({ treeStamp: { ...stored, contentIdentity: [entry] } }, {
+      currentStamp: () => ({ ...current, contentIdentity: [{ ...entry, repositoryRoot: '/other' }] }),
+    });
+    expect(result?.verdict).toBe('stale');
+  });
+});
+
 describe('completionTreeContentIdentityMatches — WI-1409142 absent-key hole', () => {
   /**
    * Stored evidence really can arrive with these keys MISSING rather than null: a

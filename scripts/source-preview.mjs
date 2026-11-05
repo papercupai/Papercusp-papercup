@@ -699,6 +699,30 @@ export async function prepareVerifierSource({ repo, ref, dest, inputs = [], inpu
  *   reportProgress?: (phase: 'deps.census' | 'deps.postverify', progress: VerifierDependencyProgress) => void
  * }} VerifierPhaseRunner */
 
+/** Device numbers alone do not distinguish Linux bind mounts: link(2) returns
+ * EXDEV across them even on one filesystem. Unknown mount identity uses copies.
+ * @param {string} donor
+ * @param {string} dest
+ * @returns {'copy' | 'hardlink'}
+ */
+function verifierDependencyCopyMode(donor, dest) {
+  const sourceFd = openSync(donor, 'r');
+  let targetFd;
+  try {
+    targetFd = openSync(dest, 'r');
+    if (fstatSync(sourceFd).dev !== fstatSync(targetFd).dev) return 'copy';
+    if (process.platform === 'linux') {
+      const mountId = fd => readFileSync(`/proc/self/fdinfo/${fd}`, 'utf8').match(/^mnt_id:\s*(\d+)$/m)?.[1];
+      const sourceMount = mountId(sourceFd), targetMount = mountId(targetFd);
+      if (!sourceMount || sourceMount !== targetMount) return 'copy';
+    }
+    return 'hardlink';
+  } finally {
+    if (targetFd !== undefined) closeSync(targetFd);
+    closeSync(sourceFd);
+  }
+}
+
 /** Keep the verifier's snapshot path selection explicit and independently checkable.
  * @param {VerifierSnapshotSelection['copyMode']} copyMode
  * @param {boolean} generationSnapshotSupported
@@ -2157,7 +2181,7 @@ export async function prepareVerifierDependencies({ donor, dest, receipt, runPha
   }
   await runPhase('deps.source.after-runtime-assets', () => verifyVerifierSource(dest, receipt,
     { runtimeArtifacts: true, dependencyStaging: true }));
-  const copyMode = (await fs.stat(donor)).dev === (await fs.stat(dest)).dev ? 'hardlink' : 'copy';
+  const copyMode = verifierDependencyCopyMode(donor, dest);
   // Reuse a full immutable generation on the destination filesystem instead
   // of repeatedly copying the mutable donor across devices before tests start.
   // Older frozen refs pin a helper that only has the original locked snapshot.
@@ -2502,11 +2526,26 @@ export async function runVerifierCommand({ repo, ref, receiptPath, inputs = [], 
       throw new PreviewError('verifier runtime asset preflight failed: ' +
         (check.error?.message || check.stderr || check.status), 2);
   }
-  const donorOnRootDevice = process.platform === 'linux' &&
-    (await fs.stat(donor)).dev === (await fs.stat('/')).dev;
+  // Never allocate below a source donor: even ignored scratch is part of an
+  // immutable source census. Reuse the external root the task reconciler knows.
+  let scratch = await fs.realpath(tmpdir());
+  if (process.platform === 'linux') {
+    const data = await fs.realpath('/mnt/data');
+    const dataDevice = (await fs.stat(data)).dev;
+    if (dataDevice === (await fs.stat('/')).dev)
+      throw new PreviewError('verifier command requires a separate /mnt/data filesystem', 2);
+    scratch = join(data, 'tmp');
+    await fs.mkdir(scratch, { recursive: true });
+    scratch = await fs.realpath(scratch);
+    if ((await fs.stat(scratch)).dev !== dataDevice)
+      throw new PreviewError('verifier command scratch resolves outside the data filesystem', 2);
+  }
+  if (isInside(donor, scratch) || isInside(sourceRepo, scratch))
+    throw new PreviewError('verifier command scratch must be outside the source and dependency donor', 2);
+  const copyMode = verifierDependencyCopyMode(donor, scratch);
   const helper = join(sourceRepo, 'papercusp-desktop/bin/lib/pinned-deps.sh');
   const helperSource = existsSync(helper) ? readFileSync(helper, 'utf8') : '';
-  const snapshotSelection = selectVerifierDependencySnapshot(donorOnRootDevice ? 'copy' : 'hardlink',
+  const snapshotSelection = selectVerifierDependencySnapshot(copyMode,
     /^\s*snapshot-generation-locked\s*\)/m.test(helperSource), explicitGeneration);
   // Automatic cross-device selection consumes the same immutable closure as an
   // explicit generation. Refuse missing custody before allocating source, too.
@@ -2518,22 +2557,6 @@ export async function runVerifierCommand({ repo, ref, receiptPath, inputs = [], 
     if (check.error || check.status !== 0)
       throw new PreviewError('verifier generation preflight failed: ' + (check.error?.message || check.stderr || check.status), 2);
   } else preflightVerifierWorkspaceBinDonor({ repo: sourceRepo, commit: sourceCommit, donor });
-  // Keep hardlinks beside a donor on a data device. A donor on the root device
-  // must use the admitted data scratch instead; pinned-deps already supports
-  // independent cross-device copies and checks their headroom before copying.
-  let scratch = join(donor, '.papercusp', 'scratch');
-  if (donorOnRootDevice) {
-    const data = await fs.realpath('/mnt/data');
-    const dataDevice = (await fs.stat(data)).dev;
-    if (dataDevice === (await fs.stat('/')).dev)
-      throw new PreviewError('verifier command requires a separate /mnt/data filesystem', 2);
-    scratch = join(data, 'tmp');
-    await fs.mkdir(scratch, { recursive: true });
-    scratch = await fs.realpath(scratch);
-    if ((await fs.stat(scratch)).dev !== dataDevice)
-      throw new PreviewError('verifier command scratch resolves outside the data filesystem', 2);
-  }
-  await fs.mkdir(scratch, { recursive: true });
   const taskReceiptPath = `${resolve(receiptPath)}.task.json`;
   const cancellation = new AbortController();
   let cancellationSignal;

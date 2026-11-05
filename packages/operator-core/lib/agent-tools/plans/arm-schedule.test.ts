@@ -110,10 +110,10 @@ describe('plans:arm-schedule guard chain', () => {
     expect(armM).not.toHaveBeenCalled();
   });
 
-  it('nothing_to_run reads items from content when the stored index is empty', async () => {
+  it('keeps an explicit empty item index when markdown still lists completed items', async () => {
     rowOverride = { content: '# Shipped\n\n## Phase 1\n\n- **P-001** `done` finished thing\n' };
-    expect(body(await call()).results[0].error).toBe('nothing_to_run');
-    expect(armM).not.toHaveBeenCalled();
+    expect(body(await call()).results[0]).toMatchObject({ ok: true, routineId: 'r1' });
+    expect(armM).toHaveBeenCalledTimes(1);
   });
 
   it('arms a plan with at least one open item alongside terminal ones', async () => {

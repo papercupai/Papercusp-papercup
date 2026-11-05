@@ -2927,12 +2927,74 @@ describe("createMcpProxy — forwarding + restart recovery", () => {
       expect(complete).toMatchObject({ guardRequestId: guardId, outcome: "response_finished", httpStatus: 200 });
       expect(complete.bodyReadyMs).toBeGreaterThanOrEqual(0);
       expect(complete.forwardStartedMs).toBeGreaterThanOrEqual(complete.bodyReadyMs);
-      expect(complete.responseHeadersMs).toBeGreaterThanOrEqual(complete.forwardStartedMs);
+      expect(complete.forwardAttempts).toBe(1);
+      expect(complete.socketAssignedMs).toBeGreaterThanOrEqual(complete.forwardStartedMs);
+      expect(complete.socketConnectedMs).toBeGreaterThanOrEqual(complete.socketAssignedMs);
+      expect(complete.requestFlushedMs).toBeGreaterThanOrEqual(complete.socketConnectedMs);
+      expect(complete.responseHeadersMs).toBeGreaterThanOrEqual(complete.requestFlushedMs);
       expect(disconnected).toMatchObject({ guardRequestId: guardId, outcome: "client_disconnected",
-        bodyReadyMs: expect.any(Number), forwardStartedMs: expect.any(Number), responseHeadersMs: null });
+        bodyReadyMs: expect.any(Number), forwardStartedMs: expect.any(Number), responseHeadersMs: null,
+        socketAssignedMs: expect.any(Number), socketConnectedMs: expect.any(Number),
+        requestFlushedMs: expect.any(Number), forwardAttempts: 1 });
       expect(disconnected.elapsedMs).toBeGreaterThanOrEqual(disconnected.forwardStartedMs);
       expect(JSON.stringify(timings())).not.toMatch(/private-owner|private-input|private-invalid-header/);
     } finally {
+      if (previous === undefined) delete process.env.PAPERCUSP_MCP_PROXY_FAILURE_LOG;
+      else process.env.PAPERCUSP_MCP_PROXY_FAILURE_LOG = previous;
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("distinguishes a native guard queued for a socket from one sent to the target", async () => {
+    const fs = await import("node:fs");
+    const os = await import("node:os");
+    const path = await import("node:path");
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "proxy-guard-socket-"));
+    const logFile = path.join(dir, "events.jsonl");
+    const previous = process.env.PAPERCUSP_MCP_PROXY_FAILURE_LOG;
+    process.env.PAPERCUSP_MCP_PROXY_FAILURE_LOG = logFile;
+    const agent = new http.Agent({ keepAlive: false, maxSockets: 1 });
+    const firstId = "11111111-1111-4111-8111-111111111111";
+    const queuedId = "22222222-2222-4222-8222-222222222222";
+    let reached!: () => void;
+    const firstReached = new Promise<void>(resolve => { reached = resolve; });
+    let releaseFirst = () => {};
+    const upstream = track(http.createServer((req, res) => {
+      req.resume();
+      req.on("end", () => {
+        if (req.headers["x-papercusp-guard-request-id"] === firstId) {
+          releaseFirst = () => { if (!res.writableEnded) res.end('{"ok":true}'); };
+          reached();
+        } else res.end('{"ok":true}');
+      });
+    }));
+    try {
+      await listen(upstream);
+      const proxy = track(createMcpProxy({ listenPort: 0, targetHost: "127.0.0.1",
+        targetPort: port(upstream), maxInFlight: 4, controlPlaneReserve: 2,
+        upstreamAgent: agent, controlPlaneAgent: agent, log: () => {} }));
+      await listen(proxy);
+      const first = request(port(proxy), "{}", "/api/agent-mcp/tool-guard",
+        { "x-papercusp-guard-request-id": firstId });
+      await firstReached;
+      const queued = http.request({ host: "127.0.0.1", port: port(proxy), method: "POST",
+        path: "/api/agent-mcp/tool-guard", headers: { "x-papercusp-guard-request-id": queuedId } });
+      queued.on("error", () => {});
+      queued.end("{}");
+      await waitFor(() => Object.values(agent.requests).some(queue => queue?.length === 1));
+      queued.destroy();
+      const timings = () => fs.readFileSync(logFile, "utf8").trim().split("\n")
+        .map(line => JSON.parse(line)).filter(row => row.kind === "tool_guard_timing");
+      await waitFor(() => fs.existsSync(logFile) && timings().some(row => row.guardRequestId === queuedId));
+      const queuedTiming = timings().find(row => row.guardRequestId === queuedId);
+      expect(queuedTiming).toMatchObject({ outcome: "client_disconnected", forwardAttempts: 1,
+        forwardStartedMs: expect.any(Number), socketAssignedMs: null, socketConnectedMs: null,
+        requestFlushedMs: null, responseHeadersMs: null });
+      releaseFirst();
+      expect((await first).status).toBe(200);
+    } finally {
+      releaseFirst();
+      agent.destroy();
       if (previous === undefined) delete process.env.PAPERCUSP_MCP_PROXY_FAILURE_LOG;
       else process.env.PAPERCUSP_MCP_PROXY_FAILURE_LOG = previous;
       fs.rmSync(dir, { recursive: true, force: true });

@@ -76,6 +76,22 @@ export function buildInputs(root) {
   return sourcePaths(root).map(path => identity(root, path));
 }
 
+// A native publisher takes its source from an independently frozen checkout,
+// never the moving integration tree. Check both tracked and untracked inputs;
+// generated receipts and dependency/output directories are excluded by the same
+// census used by the producing build.
+export function checkSource(root, ref) {
+  root = realpathSync(root);
+  const git = args => execFileSync('git', args, { cwd: root, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+  equal(realpathSync(git(['rev-parse', '--show-toplevel']).trim()), root, 'source-is-not-checkout-root');
+  equal(git(['rev-parse', 'HEAD']).trim(), ref, 'source-ref-mismatch');
+  const diff = spawnSync('git', ['diff', '--quiet', ref, '--'], { cwd: root });
+  if (diff.error || diff.status !== 0) fail('dirty-verifier-source');
+  const population = new Set(sourcePaths(root));
+  for (const path of git(['ls-files', '-z', '--others', '--exclude-standard']).split('\0').filter(Boolean))
+    if (population.has(path)) fail('untracked-verifier-source:' + path);
+}
+
 export function buildWorkspace(root, packagePath, command) {
   root = realpathSync(root);
   const packageDir = safe(root, packagePath), output = packagePath + '/dist';
@@ -128,6 +144,20 @@ function workspaceRequirements(root) {
     if (!tracked) required.push({ path, packagePath, output, targets });
   }
   return required;
+}
+
+// Use the package's maintained build, and record provenance at the producing
+// invocation. In particular, never stamp an existing dist with today's inputs.
+export function buildClosure(root) {
+  root = realpathSync(root);
+  for (const { path, packagePath } of workspaceRequirements(root)) {
+    const pkg = JSON.parse(readFileSync(safe(root, path), 'utf8'));
+    if (!pkg.scripts?.build) fail('missing-workspace-build:' + path);
+    buildWorkspace(root, packagePath, ['npm', 'run', 'build']);
+  }
+  const closure = captureClosure(root);
+  if (!closure.complete) fail('rebuilt-closure-incomplete:' + closure.reason);
+  return closure;
 }
 
 export function captureClosure(root) {
@@ -223,6 +253,9 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
     else if (command === 'verify' || command === 'copy' || command === 'verify-materialized')
       verifyClosure(root, dest, command === 'copy', command === 'verify-materialized');
     else if (command === 'build') buildWorkspace(root, dest, process.argv.slice(6));
+    else if (command === 'check-source') checkSource(root, dest);
+    else if (command === 'same-source') equal(buildInputs(root), buildInputs(dest), 'copied-source-mismatch');
+    else if (command === 'build-closure') buildClosure(root);
     else fail('unknown-command');
   } catch (error) { console.error(error.message); process.exitCode = 74; }
 }

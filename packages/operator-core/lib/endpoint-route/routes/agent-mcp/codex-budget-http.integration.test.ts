@@ -18,6 +18,7 @@ it('current-build bootstrap preserves registered budgets in its response, native
       'packages/operator-core/test/private-http-workspace-preflight.ts',
       'packages/operator-core/lib/endpoint-route/routes/agent-mcp/bootstrap-su.ts',
       'packages/operator-core/lib/agent-tools/coordination/presence.ts',
+      'packages/coordination/src/presence/pg-store.ts',
       'packages/operator-core/lib/role-codex-home.ts',
       'apps/operator/scripts/psu-launcher.mjs', 'apps/operator/bin/bundle-host.sh',
       'apps/operator/bin/bundle-host-common.sh', 'apps/operator/bin/hono-host.ts'],
@@ -57,7 +58,9 @@ it('current-build bootstrap preserves registered budgets in its response, native
         cases: [
           { name: 'stale-argv', registeredBudget: 225_000, responseBudget: 225_000, configThreshold: 180_000, argvThreshold: 180_000 },
           { name: 'absent-argv', registeredBudget: 225_000, responseBudget: 225_000, configThreshold: 180_000, argvThreshold: 180_000 },
-          { name: 'legacy-argv', responseBudget: 250_000, configThreshold: 200_000, argvThreshold: 200_000 },
+          { name: 'legacy-argv', registeredBudget: 250_000, responseBudget: 250_000, configThreshold: 200_000, argvThreshold: 200_000 },
+          { name: 'fresh-argv', registeredBudget: 20_000, responseBudget: 20_000,
+            configThreshold: expect.any(Number), argvThreshold: expect.any(Number) },
         ] });
       console.info('CODEX_BUDGET_HTTP_VERIFIED ' + JSON.stringify(receipt));
     },

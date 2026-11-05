@@ -254,6 +254,7 @@ export class SuNativeCards {
       // Never forward a parser error: schema defaults and upstream URL fields
       // can contain credentials. Validation failures stay generic at this edge.
       this.emit({ type: 'error', scope: 'command', code: 'native_elicitation_refused',
+        liftsWhen: 'The native server must send a supported elicitation mode and schema; retry with a supported request after the server or host adapter is corrected.',
         message: 'The native elicitation schema or mode is unsupported', recoverable: true });
       return { action: 'cancel' };
     }

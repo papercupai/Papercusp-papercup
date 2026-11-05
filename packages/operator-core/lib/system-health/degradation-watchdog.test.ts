@@ -21,6 +21,8 @@ import {
   degradationKeyPrefix,
   getDegradationMechanism,
   judgeDegradation,
+  judgeUnmeasuredHardFailure,
+  judgeUnmeasuredRecovery,
   judgeYieldDrop,
   keyBelongsToPrefix,
   planDegradationActions,
@@ -164,6 +166,72 @@ describe('judgeYieldDrop — adjacent healthy-window yield declines', () => {
     expect(judgeYieldDrop(prior, smallerDrop, { mechanism: mechanism.mechanism, scope: 'task' }, yieldDrop)).toBeNull();
     expect(judgeYieldDrop(windowOf(19, 19), windowOf(1, 0), { mechanism: mechanism.mechanism }, yieldDrop)).toBeNull();
     expect(judgeYieldDrop(windowOf(40, 19), windowOf(1, 0), { mechanism: mechanism.mechanism }, yieldDrop)).toBeNull();
+  });
+});
+
+describe('unmeasured gate-pass-reuse hard failures', () => {
+  const mechanism = getDegradationMechanism('gate-pass-reuse');
+  if (!mechanism?.yieldDrop) throw new Error('gate-pass-reuse registration is missing');
+  const target = { mechanism: 'gate-pass-reuse', scope: 'task' };
+  const hardKey = degradationConditionKey(target.mechanism, target.scope, 'proofs-unavailable');
+  const yieldKey = degradationConditionKey(target.mechanism, target.scope, 'yield-decline');
+  const hardFailure = (at: number) => ({
+    reason: 'proofs-unavailable', samples: 1, eligible: 0, applied: 0,
+    unknownSamples: 1, latestObservedAt: new Date(at),
+  });
+  const applied = (at: number) => ({
+    reason: 'applied', samples: 1, eligible: 1, applied: 1,
+    unknownSamples: 0, latestObservedAt: new Date(at),
+  });
+
+  it('opens a categorical hard-failure condition without inventing a denominator', () => {
+    const window = summarizeFallbackWindow('gate-pass-reuse', 3_600_000, [hardFailure(1_000)]);
+    expect(window).toMatchObject({ eligible: 0, appliedRate: null, populationComplete: false });
+    expect(judgeDegradation(window, target, mechanism.thresholds)).toMatchObject({ kind: 'insufficient' });
+    expect(judgeUnmeasuredHardFailure(window, target, mechanism.thresholds)).toMatchObject({
+      kind: 'unmeasured-failure',
+      reason: 'proofs-unavailable',
+      sourceReason: 'proofs-unavailable',
+      unknownSamples: 1,
+      conditionKey: hardKey,
+    });
+  });
+
+  it('keys an unmeasured hard failure as a yield decline after a healthy prior window', () => {
+    const current = summarizeFallbackWindow('gate-pass-reuse', 3_600_000, [hardFailure(1_000)]);
+    const verdict = judgeUnmeasuredHardFailure(
+      current,
+      target,
+      mechanism.thresholds,
+      windowOf(20, 20),
+      mechanism.yieldDrop,
+    );
+    expect(verdict).toMatchObject({ kind: 'unmeasured-failure', reason: 'yield-decline', sourceReason: 'proofs-unavailable', conditionKey: yieldKey });
+  });
+
+  it('ignores unknown-cardinality reasons outside the registered hard-failure set', () => {
+    const window = summarizeFallbackWindow('gate-pass-reuse', 3_600_000, [{
+      reason: 'unavailable', samples: 1, eligible: 0, applied: 0, unknownSamples: 1,
+    }]);
+    expect(judgeUnmeasuredHardFailure(window, target, mechanism.thresholds)).toBeNull();
+  });
+
+  it('recovers only when a measured applied decision follows the failure and open episode', () => {
+    const window = summarizeFallbackWindow('gate-pass-reuse', 3_600_000, [hardFailure(1_000), applied(2_000)]);
+    const episodes = [{ conditionKey: hardKey, openedAtMs: 1_500 }];
+    expect(judgeUnmeasuredHardFailure(window, target, mechanism.thresholds)).toBeNull();
+    expect(judgeUnmeasuredRecovery(window, target, episodes, mechanism.thresholds, mechanism.yieldDrop)).toMatchObject({
+      kind: 'unmeasured-recovered', conditionKeys: [hardKey], appliedAtMs: 2_000,
+    });
+    expect(judgeUnmeasuredRecovery(window, target, [{ conditionKey: hardKey, openedAtMs: 2_000 }], mechanism.thresholds, mechanism.yieldDrop)).toBeNull();
+  });
+
+  it('keeps the hard failure active when it is newer than the applied decision', () => {
+    const window = summarizeFallbackWindow('gate-pass-reuse', 3_600_000, [applied(1_000), hardFailure(2_000)]);
+    expect(judgeUnmeasuredHardFailure(window, target, mechanism.thresholds)).toMatchObject({
+      kind: 'unmeasured-failure', reason: 'proofs-unavailable', conditionKey: hardKey,
+    });
+    expect(judgeUnmeasuredRecovery(window, target, [{ conditionKey: hardKey, openedAtMs: 500 }], mechanism.thresholds, mechanism.yieldDrop)).toBeNull();
   });
 });
 

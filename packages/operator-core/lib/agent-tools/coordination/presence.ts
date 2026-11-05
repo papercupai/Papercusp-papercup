@@ -349,11 +349,12 @@ export async function touchActivity(ownerId: string): Promise<void> {
 /** Set a per-session SOFT compaction limit in tokens. No-op if the presence row
  * does not exist. `explicit` marks a deliberate runtime override; omitted
  * provenance is reserved for derived/watchdog repairs that must preserve the
- * existing marker. agent-managed-compaction-2026-07-01. */
+ * existing marker. `onlyIfUnset` atomically seeds an unregistered ceiling while
+ * preserving a concurrent owner choice. agent-managed-compaction-2026-07-01. */
 export async function setCompactionLimit(
   ownerId: string,
   limit: number,
-  opts: { explicit?: boolean } = {},
+  opts: { explicit?: boolean; onlyIfUnset?: boolean } = {},
 ): Promise<void> {
   await store.setCompactionLimit(ownerId, limit, opts);
 }

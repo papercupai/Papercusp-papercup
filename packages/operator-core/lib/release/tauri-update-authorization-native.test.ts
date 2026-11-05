@@ -609,7 +609,7 @@ process.stdout.write(JSON.stringify({trust:{rootEpoch:3,minRollbackCounter:0,min
     }
     #[cfg(unix)] #[test] fn candidate_mac_activation_uses_downloaded_bytes_and_current_policy() {
         use super::update_authorization::{activate_test_macos_update, DownloadedUpdate, Metadata};
-        use super::update_authorization::macos_update_installer::{Request, install_test, serve, transact};
+        use super::update_authorization::macos_update_installer::{Request, install_test, provision_test, provision_with_helper_test, serve, transact};
         use std::fs::{self,File,Permissions};
         use std::os::unix::fs::PermissionsExt;
         use std::io::Write;
@@ -617,7 +617,9 @@ process.stdout.write(JSON.stringify({trust:{rootEpoch:3,minRollbackCounter:0,min
         use std::cell::Cell;
         let product="com.papercusp.gui";
         let main=thin(Architecture::X86_64,"darwin-x86_64","product",product.into());
-        let bytes=bundle(main.clone(),bundle_info("Main",product,"1.2.3",false),vec![]);
+        let approved_helper=b"independently approved helper bytes";
+        let bytes=bundle(main.clone(),bundle_info("Main",product,"1.2.3",false),vec![
+            ("GUI.app/Contents/Library/HelperTools/com.papercusp.update-installer",b'0',0o755,approved_helper.to_vec(),"")]);
         let inputs=extract_macos_archive_inputs(&bytes,"darwin-x86_64").unwrap();
         let c=inputs.candidate(&bytes);
         let digest=|s:&[u8]|format!("{:x}",Sha256::digest(s));
@@ -718,9 +720,12 @@ process.stdout.write(JSON.stringify({trust:{rootEpoch:3,minRollbackCounter:0,min
         assert!(install_test(&directory,&applications,request(),2000,no_ready).is_err());
         fs::remove_file(&target).unwrap();fs::rename(apps.join("saved.app"),&target).unwrap();
         assert_eq!(read(),policy);assert_eq!(ready_count.get(),0);
-        fs::set_permissions(&apps,Permissions::from_mode(0o770)).unwrap();
-        assert!(install_test(&directory,&applications,request(),2000,no_ready).is_err());
-        fs::set_permissions(&apps,Permissions::from_mode(0o700)).unwrap();
+        for mode in [0o770,0o775,0o777,0o1777] {
+            fs::set_permissions(&apps,Permissions::from_mode(mode)).unwrap();
+            assert!(install_test(&directory,&applications,request(),2000,no_ready).is_err());
+            assert!(target.join("old-product").exists());
+        }
+        fs::set_permissions(&apps,Permissions::from_mode(0o1775)).unwrap();
         assert_eq!(read(),policy);assert_eq!(ready_count.get(),0);
         let cancelled=install_test(&directory,&applications,receive(request()),2000,||Err("cancelled".into()));
         assert_eq!(cancelled.unwrap_err(),"cancelled","must reach READY before exercising cancellation");
@@ -742,6 +747,8 @@ process.stdout.write(JSON.stringify({trust:{rootEpoch:3,minRollbackCounter:0,min
         assert!(!target.join("external-link").exists());
         assert_eq!(fs::read(outside.join("keep")).unwrap(),b"untouched");
         assert_eq!(fs::read_dir(&apps).unwrap().count(),1,"completed swap removes the previous private tree");
+        assert_eq!(fs::metadata(&apps).unwrap().permissions().mode() & 0o7777,0o1775,
+            "updating preserves ordinary application creation and the administrator sticky bit");
         assert_eq!(read(),retained);
         // Exercise the actual duplex protocol and filesystem effect together.
         // The two threads have separate pipe ends, as do the GUI and root helper.
@@ -790,6 +797,61 @@ process.stdout.write(JSON.stringify({trust:{rootEpoch:3,minRollbackCounter:0,min
             activate_test_macos_update(&directory,&download,2000,||Ok(())).unwrap();
         }
         println!("native-mac-handshake: actual duplex READY before quiescence, COMMIT effect, cancellation, current revocation, disconnect and invalid commit with lock release");
+        println!("native-mac-applications: sticky group-writable parent supports actual exchange; writable nonsticky and world-writable parents refuse before READY");
+        // Administrator package installation shares real approval verification,
+        // floors, extraction and atomic placement. No recursive chown of an
+        // untrusted existing application or traversal of an exchanged alias.
+        fs::remove_dir_all(&target).unwrap();
+        fs::set_permissions(&apps,Permissions::from_mode(0o775)).unwrap();
+        write(&revoked);
+        assert!(provision_test(&directory,&applications,request(),2000).is_err());
+        assert!(!target.exists());
+        assert_eq!(fs::metadata(&apps).unwrap().permissions().mode() & 0o7777,0o775,
+            "unapproved package cannot change shared installation permissions");
+        write(&policy);
+        provision_test(&directory,&applications,request(),2000).unwrap();
+        assert_eq!(fs::read(target.join("Contents/MacOS/Main")).unwrap(),main);
+        assert_eq!(read(),retained);
+        assert_eq!(fs::metadata(&apps).unwrap().permissions().mode() & 0o7777,0o1775);
+        fs::remove_dir_all(&target).unwrap();
+        std::os::unix::fs::symlink(&outside,&target).unwrap();
+        provision_test(&directory,&applications,request(),2000).unwrap();
+        assert!(!fs::symlink_metadata(&target).unwrap().file_type().is_symlink());
+        assert_eq!(fs::read(target.join("Contents/MacOS/Main")).unwrap(),main);
+        assert_eq!(fs::read(outside.join("keep")).unwrap(),b"untouched");
+        assert_eq!(fs::read_dir(&apps).unwrap().count(),1);
+        provision_test(&directory,&applications,request(),2000).unwrap();
+        assert_eq!(fs::read(target.join("Contents/MacOS/Main")).unwrap(),main);
+        println!("native-mac-provision: actual first install and replacement, sticky without removing group write, revoked approval no effect, alias victim preserved");
+        // Verify real helper effects; a package signer mock is not independent
+        // current-policy authorization of a privileged verifier replacement.
+        let helper_path=path.join("trusted-helpers");
+        fs::create_dir(&helper_path).unwrap();fs::set_permissions(&helper_path,Permissions::from_mode(0o700)).unwrap();
+        let helpers=File::open(&helper_path).unwrap();
+        let verifier=helper_path.join("com.papercusp.update-installer");
+        fs::remove_dir_all(&target).unwrap();
+        assert!(provision_with_helper_test(&directory,&applications,&helpers,request(),2000).is_err());
+        assert!(!target.exists());assert!(!verifier.exists(),"candidate must never bootstrap its own verifier");
+        let seed=|| {fs::write(&verifier,b"administrator trusted baseline").unwrap();
+            fs::set_permissions(&verifier,Permissions::from_mode(0o755)).unwrap();};
+        seed();write(&revoked);
+        assert!(provision_with_helper_test(&directory,&applications,&helpers,request(),2000).is_err());
+        assert!(!target.exists());assert_eq!(fs::read(&verifier).unwrap(),b"administrator trusted baseline");
+        write(&policy);
+        let mut wire=Vec::new();request().send(&mut wire).unwrap();
+        *wire.last_mut().unwrap()^=1;
+        let bad=Request::receive(wire.as_slice()).unwrap();
+        assert!(provision_with_helper_test(&directory,&applications,&helpers,bad,2000).is_err());
+        assert!(!target.exists());assert_eq!(fs::read(&verifier).unwrap(),b"administrator trusted baseline");
+        provision_with_helper_test(&directory,&applications,&helpers,request(),2000).unwrap();
+        assert_eq!(fs::read(&verifier).unwrap(),approved_helper);
+        assert_eq!(fs::read(target.join("Contents/MacOS/Main")).unwrap(),main);
+        assert_eq!(read(),retained);
+        assert_eq!(fs::read_dir(&helper_path).unwrap().count(),1,"no leftover helper staging tree");
+        seed();
+        provision_with_helper_test(&directory,&applications,&helpers,request(),2000).unwrap();
+        assert_eq!(fs::read(&verifier).unwrap(),approved_helper);
+        println!("native-mac-helper-approval: trusted baseline required; revoked or modified candidate leaves helper and first-install app untouched; approved first install and upgrade replace both under current trust");
         println!("native-mac-installer: owned framed bytes, fixed destination, current revocation, symlink/writable-directory refusal, READY cancellation, lock through exchange, exact installed bytes and external canary");
         println!("native-mac-activation: real dual signatures, selected identity, current policy and no-effect refusals");
     }
@@ -883,6 +945,9 @@ process.stdout.write(JSON.stringify({trust:{rootEpoch:3,minRollbackCounter:0,min
     if (process.platform !== 'win32') expect(result.stdout).toContain('native-mac-activation: real dual signatures, selected identity, current policy and no-effect refusals');
     if (process.platform !== 'win32') {
       expect(result.stdout).toContain('native-mac-handshake: actual duplex READY before quiescence');
+      expect(result.stdout).toContain('native-mac-applications: sticky group-writable parent supports actual exchange');
+      expect(result.stdout).toContain('native-mac-provision: actual first install and replacement');
+      expect(result.stdout).toContain('native-mac-helper-approval: trusted baseline required');
       expect(result.stdout).toContain('native-mac-helper: fixed protected executable and bounded stalled pipe');
     }
   } finally {

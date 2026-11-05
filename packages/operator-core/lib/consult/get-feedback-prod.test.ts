@@ -70,6 +70,20 @@ vi.mock('./expert-routing-settings', async (importOriginal) => {
 import { acceptFeedbackRequestProd, continueFeedbackRequestProd, getFeedbackProd } from './get-feedback-prod';
 
 describe('getFeedbackProd expert-routing settings', () => {
+  it.each([undefined, Date.now() + 120_000])('uses only the internal accepted lease for scoring: %s', async leaseUntilMs => {
+    const request = { workspaceId: 'ws-budget', requesterId: 'requester', question: 'same question' };
+    await getFeedbackProd(request, { ownerId: 'requester' } as never, {
+      allowDispatch: false,
+      ...(leaseUntilMs === undefined ? {} : { acceptedRequest: {
+        conversation_id: 'accepted-budget', thread_id: 'thr-accepted-budget', leaseToken: 'lease', leaseUntilMs,
+      } }),
+    });
+    const deps = h.getFeedbackCore.mock.calls[0]![1] as { route: (params: unknown) => Promise<unknown> };
+    await deps.route({ question: request.question });
+    expect(h.routeConsult.mock.calls[0]![1]).toMatchObject({ subjectEvidenceDeadline: leaseUntilMs });
+    expect(h.getFeedbackCore.mock.calls[0]![0]).toEqual({ ...request, allowDispatch: false });
+  });
+
   it.each([
     { status: 'timed-out', cause: 'acquisition-budget-exhausted' },
     { status: 'failed', cause: 'ECONNREFUSED' },

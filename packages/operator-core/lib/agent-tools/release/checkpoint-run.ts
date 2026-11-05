@@ -12,7 +12,8 @@
  * ONLY on its hourly cron (or routines:set pause/retune) — so after fixing/quarantining reds you
  * had to WAIT up to an hour for a fresh verdict. This fires the SAME suite the cron tick runs.
  *
- * Detached (the suite runs up to ~55 min, bounded by RuntimeMaxSec) + OOM-safe: green-checkpoint.ts
+ * Detached with no run-level wall-clock cap; a no-progress watchdog stops stalled runs.
+ * OOM-safe: green-checkpoint.ts
  * self-locks, so firing this while a cron tick is mid-run no-ops rather than spawning a second
  * concurrent suite. Verdict lands on /admin/git, not this reply.
  *

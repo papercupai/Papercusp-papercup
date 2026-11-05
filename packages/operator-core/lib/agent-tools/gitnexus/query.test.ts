@@ -10,10 +10,27 @@ import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { serializeToolResponse } from '@papercusp/tooldef';
 import { versionedSymbolIdentity, type CodeIntelAnswer, type SymbolSite } from '../../code-intelligence/contracts';
-const snapshotState = vi.hoisted(() => ({ answer: null as CodeIntelAnswer | null, calls: [] as unknown[] }));
+const snapshotState = vi.hoisted(() => ({ answer: null as CodeIntelAnswer | null, calls: [] as unknown[],
+  cochangeCalls: [] as { reader: string; root: string; paths: string[] }[] }));
 vi.mock('../../code-intelligence/push-snapshot', () => ({ queryPushSnapshot: async (args: unknown) => {
   snapshotState.calls.push(args); return snapshotState.answer;
 } }));
+vi.mock('../../code-intelligence/change-history', () => ({
+  readCoChange: async (root: string, paths: readonly string[]) => {
+    snapshotState.cochangeCalls.push({ reader: 'capped', root, paths: [...paths] });
+    return { status: 'unknown', version: 'bounded', commit: null,
+      window: { start: '2026-08-01T00:00:00.000Z', end: '2026-11-05T00:00:00.000Z', lineage: 'first-parent' },
+      pairs: [], unknownPaths: [...paths], eligibleCommits: 0, complete: false, limitations: [], error: 'bounded history incomplete' };
+  },
+  readWarmCoChange: async (root: string, paths: readonly string[]) => {
+    snapshotState.cochangeCalls.push({ reader: 'resident', root, paths: [...paths] });
+    return { status: 'measured', version: 'resident', commit: 'f'.repeat(40),
+      window: { start: '2026-08-01T00:00:00.000Z', end: '2026-11-05T00:00:00.000Z', lineage: 'first-parent' },
+      pairs: [{ path: paths[0] ?? '', partner: 'src/partner.ts', shared: 2, union: 3, score: 2 / 3 }],
+      unknownPaths: [], eligibleCommits: 1205, complete: true, limitations: [], error: null };
+  },
+  readSymbolProvenance: vi.fn(),
+}));
 import graphQuery from './query';
 
 let root = '';
@@ -60,6 +77,16 @@ describe('graph:query engineering evidence admission', () => {
 });
 
 describe('graph:query callers', () => {
+  it('routes co-change through the resident full-window reader', async () => {
+    snapshotState.cochangeCalls.length = 0;
+    const parsed = graphQuery.args.parse({ op: 'cochange', paths: ['src/target.ts'] });
+    const out = await graphQuery.handler(parsed, { projectDir: root } as never) as { data: {
+      status: string; complete: boolean; eligibleCommits: number; pairs: { partner: string }[];
+    } };
+    expect(out.data).toMatchObject({ status: 'measured', complete: true, eligibleCommits: 1205,
+      pairs: [{ partner: 'src/partner.ts' }] });
+    expect(snapshotState.cochangeCalls).toEqual([{ reader: 'resident', root, paths: ['src/target.ts'] }]);
+  });
   it('routes a source-proven snapshot answer through the public evidence guard', async () => {
     const site: SymbolSite = { path: 'src/use.ts', line1: 2, kind: null, name: 'target' };
     const source = { path: site.path, contentHash: 'a'.repeat(64), language: 'typescript', representation: 'full-source' as const };

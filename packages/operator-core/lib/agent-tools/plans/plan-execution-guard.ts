@@ -373,6 +373,10 @@ export async function checkPlanExecutionGuard(input: PlanExecutionGuardInput,
   try {
     const allBindings = await measurePlanStage('bindings', input.observeTiming,
       () => deps.readBindings(input.ownerId, input.workspaceId));
+    // Goal selection only narrows this authoritative census; it cannot add a
+    // bound plan. Avoid its store reads when there is nothing to select. The
+    // census is still read afresh on every call, and read failures refuse below.
+    if (allBindings.length === 0) return null;
     let resolution: ExecutionPlanGoalResolution | null = null;
     if (deps.resolveGoal) {
       try {

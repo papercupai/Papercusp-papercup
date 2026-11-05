@@ -23,7 +23,7 @@ vi.mock("./sync-sse", () => ({
 }));
 
 const failingBegin = vi.hoisted(() =>
-  vi.fn(async () => {
+  vi.fn<(...args: unknown[]) => Promise<void>>(async () => {
     throw new Error("telemetry insert exploded");
   }),
 );
@@ -48,21 +48,29 @@ import {
   getTelemetryHealth,
   PROJECTED_DEPS,
 } from "./projected-tool-deps";
+import {
+  __resetSessionSurfaces,
+  getSessionSurface,
+  getSessionUsedTools,
+  restoreSessionTools,
+  sessionToolSurfaceKey,
+} from "./endpoint-route/routes/transport/tool-allowlist";
 
-const ctx = () =>
+const ctx = (overrides: Record<string, unknown> = {}) =>
   ({
     workspaceId: "ws-test",
     harnessSlug: "papercusp",
     role: "worker",
     spawnId: "s-test",
     log: vi.fn(),
+    ...overrides,
   }) as never;
 
-function record(toolName: string): Promise<void> | void {
+function record(toolName: string, context = ctx()): Promise<void> | void {
   return PROJECTED_DEPS.recordInvocation!({
     toolName,
     pluginName: "agent-mcp",
-    ctx: ctx(),
+    ctx: context,
     windowKey: "w1",
     durationMs: 3,
     status: "ok",
@@ -73,7 +81,8 @@ function record(toolName: string): Promise<void> | void {
 describe("telemetry health counters (EI-7431)", () => {
   beforeEach(() => {
     __resetTelemetryHealthForTests();
-    failingBegin.mockClear();
+    __resetSessionSurfaces();
+    failingBegin.mockReset().mockRejectedValue(new Error("telemetry insert exploded"));
   });
 
   afterEach(async () => {
@@ -104,5 +113,40 @@ describe("telemetry health counters (EI-7431)", () => {
     expect(health.insertErrorCount).toBe(1);
     expect(Date.parse(health.lastInsertErrorAt ?? "")).toBeGreaterThan(0);
     expect(warn).toHaveBeenCalled();
+  });
+
+  it("retains nested settled tool use while an unrelated telemetry transaction is stalled", async () => {
+    const seed = new Set(["tools:invoke"]);
+    const owner = "su-telemetry-stall";
+    const key = sessionToolSurfaceKey(owner, "ws-test")!;
+    const otherOwner = sessionToolSurfaceKey("su-other", "ws-test")!;
+    const otherWorkspace = sessionToolSurfaceKey(owner, "ws-other")!;
+    for (const surface of [key, otherOwner, otherWorkspace]) getSessionSurface(surface, seed);
+    const restore = () => restoreSessionTools({ sessionKey: key, seed, ownerId: owner,
+      workspaceId: "ws-test", readUsedTools: async () => [] });
+    await expect(restore()).resolves.toBe(false);
+    let release!: () => void;
+    let entered!: () => void;
+    const blocked = new Promise<void>(resolve => { release = resolve; });
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    failingBegin.mockImplementation(async () => { entered(); await blocked; });
+    await record("unrelated:tool");
+    const flushing = flushPendingTelemetry();
+    await started;
+    try {
+      await record("plans:get", ctx({ uiClientId: owner, isSuperuser: true }));
+      await expect(restore()).resolves.toBe(true);
+      await expect(restore()).resolves.toBe(false);
+      expect(getSessionSurface(key, seed)).toEqual(new Set(["tools:invoke", "plans:get"]));
+      expect(getSessionUsedTools(key)).toEqual(new Set(["plans:get"]));
+      expect(getSessionUsedTools(otherOwner)?.size).toBe(0);
+      expect(getSessionUsedTools(otherWorkspace)?.size).toBe(0);
+      expect(getSessionSurface(otherOwner, seed)?.has("plans:get")).toBe(false);
+      expect(getSessionSurface(otherWorkspace, seed)?.has("plans:get")).toBe(false);
+      expect(failingBegin).toHaveBeenCalledTimes(1);
+    } finally {
+      release();
+      await flushing;
+    }
   });
 });

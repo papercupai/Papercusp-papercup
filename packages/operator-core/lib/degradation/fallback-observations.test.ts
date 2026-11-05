@@ -96,6 +96,18 @@ describe('coalescing identical decisions (WI-6554700010009713)', () => {
     ]);
   });
 
+  it('keeps the newest event time when identical observations coalesce', async () => {
+    const f = fakeSql();
+    const first = new Date('2026-10-13T00:00:00.000Z');
+    const latest = new Date(first.getTime() + 1);
+    const decision = { eligible: 1, applied: 0, reason: 'proofs-unavailable', scope: 'task' };
+    observeFallback('gate-pass-reuse', decision, { sql: f.sql, observedAt: first });
+    observeFallback('gate-pass-reuse', decision, { sql: f.sql, observedAt: latest });
+
+    expect(await flushFallbackObservations()).toMatchObject({ written: 1, failed: 0 });
+    expect(f.inserts.flat()[0].observed_at).toEqual(latest);
+  });
+
   it('keeps rows apart when any key field or the handle differs, and never folds a correlated decision', async () => {
     const f = fakeSql();
     const g = fakeSql();
@@ -245,12 +257,14 @@ describe('summarizeFallbackWindow', () => {
   });
 
   it('merges duplicate reason rows instead of double-listing them', () => {
+    const first = new Date('2026-10-13T00:00:00.000Z');
+    const latest = new Date(first.getTime() + 1);
     const w = summarizeFallbackWindow('m', 1_000, [
-      { reason: 'x', samples: 1, eligible: 4, applied: 1 },
-      { reason: 'x', samples: 2, eligible: 6, applied: 1 },
+      { reason: 'x', samples: 1, eligible: 4, applied: 1, latestObservedAt: first },
+      { reason: 'x', samples: 2, eligible: 6, applied: 1, latestObservedAt: latest },
     ]);
     expect(w.reasons).toHaveLength(1);
-    expect(w.reasons[0]).toEqual({ reason: 'x', samples: 3, eligible: 10, applied: 2, unknownSamples: 0, fellBack: 8 });
+    expect(w.reasons[0]).toEqual({ reason: 'x', samples: 3, eligible: 10, applied: 2, unknownSamples: 0, latestObservedAt: latest, fellBack: 8 });
     expect(w.dominantShare).toBe(1);
   });
 

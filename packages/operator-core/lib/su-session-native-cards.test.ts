@@ -240,6 +240,10 @@ describe('native requests through the shared PUI card correlator', () => {
       type: 'object', properties: { first: { type: 'string' }, unsupported: { type: 'object', secret: 'DO_NOT_LOG' } },
     } }, 'turn', { signal: new AbortController().signal, requestId: 'unsupported' })).resolves.toEqual({ action: 'cancel' });
     expect(f.events.some(event => event.type === 'card')).toBe(false);
+    expect(f.events).toContainEqual(expect.objectContaining({
+      type: 'error', code: 'native_elicitation_refused',
+      liftsWhen: expect.stringContaining('supported elicitation mode and schema'),
+    }));
     expect(JSON.stringify(f.events)).not.toContain('DO_NOT_LOG');
   });
 

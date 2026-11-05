@@ -18,6 +18,48 @@ import {
   type HolderInfo,
 } from './set-status';
 import { deriveIndexFromContent } from './derive-index';
+import { planExecutionMeaning } from './plan-execution-meaning';
+
+describe('completion reflection execution meaning (WI-6554700010045479)', () => {
+  const original = '# Scope\n## Requirements\nPreserve findings.\n## Phase 1\n- **P-001** `todo` Preserve findings blocked-by: P-002\n';
+
+  it.each(['WI-123', 'EI-456', 'F-789'])('keeps activation current for the real completion writer suffix from %s', id => {
+    const completed = flipStatusInBody(original, 'P-001', 'done', `← ${id} completed (done)`);
+    expect(completed.found).toBe(true);
+    expect(completed.newBody).toContain(` — note: ← ${id} completed (done)`);
+    expect(planExecutionMeaning(completed.newBody)).toBe(planExecutionMeaning(original));
+    const replaced = flipStatusInBody(completed.newBody, 'P-001', 'done', '← WI-999 completed (done)');
+    expect(planExecutionMeaning(replaced.newBody)).toBe(planExecutionMeaning(original));
+  });
+
+  it.each([
+    ['author scope', 'Preserve findings blocked-by:', 'Discard findings blocked-by:'],
+    ['dependency', 'blocked-by: P-002', 'blocked-by: P-003'],
+    ['requirements', 'Preserve findings.', 'Preserve findings and history.'],
+  ])('retains material %s changes alongside a completion suffix', (_kind, before, after) => {
+    const completed = flipStatusInBody(original.replace(before, after), 'P-001', 'done', '← WI-123 completed (done)');
+    expect(planExecutionMeaning(completed.newBody)).not.toBe(planExecutionMeaning(original));
+  });
+
+  it.each([
+    'Author explanation',
+    '← WI-123 completed (done); discard history',
+    '← WI-123 completed (done) blocked-by: P-999',
+    '← WI-123 completed (unknown)',
+    'prefix ← WI-123 completed (done)',
+  ])('preserves non-machine or extended note text: %s', note => {
+    expect(planExecutionMeaning(flipStatusInBody(original, 'P-001', 'done', note).newBody))
+      .not.toBe(planExecutionMeaning(original));
+  });
+
+  it('keeps a dropped transition and decisions material even with an exact completion suffix', () => {
+    const dropped = flipStatusInBody(original, 'P-001', 'dropped', '← WI-123 completed (dropped)');
+    expect(planExecutionMeaning(dropped.newBody)).not.toBe(planExecutionMeaning(original));
+    const completed = flipStatusInBody(original, 'P-001', 'done', '← WI-123 completed (done)');
+    expect(planExecutionMeaning(completed.newBody + '\n## Decisions\n### D-001 Delete old findings\nDelete history.\n'))
+      .not.toBe(planExecutionMeaning(original));
+  });
+});
 
 // EI-22377738415938641: the `plan-item:done` EDGE gate. Reported as "the event can precede
 // the durable status transition"; the ledger disproves that (one fire, 560ms AFTER the
