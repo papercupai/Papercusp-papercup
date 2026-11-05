@@ -12,10 +12,21 @@ const archiveDependencies = ['fs2="0.4"', 'tar="=0.4.46"', 'flate2="=1.1.9"',
 // The results ledger bounds assertion messages from the front. Keep actual Rust
 // errors and test failures ahead of Cargo's long dependency-compilation prelude.
 function nativeFailure(result: { error?: Error; stderr: string; stdout: string }): string {
-  const errors = result.stderr.split('\n').filter(line => /^(error|thread)|panicked|^\s*-->/.test(line));
-  return [result.error?.message, errors.join('\n'), result.stdout.slice(-8000), result.stderr.slice(-2000)]
+  const lines = result.stderr.split('\n');
+  const errors = lines.flatMap((line, index) => /^(error(?:\[|:)|thread )|panicked|^assertion/.test(line)
+    ? lines.slice(index, index + 10) : []);
+  return [result.error?.message, errors.join('\n').slice(0, 8000), result.stdout.slice(-8000), result.stderr.slice(-2000)]
     .filter(Boolean).join('\n');
 }
+
+it('keeps native failures ahead of warning locations in bounded diagnostic records', () => {
+  const warnings = 'warning: unused function\n   --> source.rs:1:1\n'.repeat(100);
+  const panic = "thread 'protected_ancestors' panicked at source.rs:444:13:\nassertion failed: trusted ancestor";
+  const diagnostic = nativeFailure({ stderr: `${warnings}${panic}\nerror: test failed`, stdout: '' });
+  expect(diagnostic.slice(0, 300)).toContain(panic);
+  const compile = nativeFailure({ stderr: `${warnings}error[E0425]: missing value\n --> source.rs:12:3\n  missing`, stdout: '' });
+  expect(compile.slice(0, 300)).toContain('error[E0425]: missing value\n --> source.rs:12:3');
+});
 
 // Compile the actual portable native consumer, avoiding a dependency on a running
 // desktop/WebKit. This maintained Vitest test owns the Cargo harness and fixtures.

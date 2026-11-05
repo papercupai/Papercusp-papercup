@@ -42,6 +42,23 @@ describe('postInjection reports which branch produced its answer', () => {
     expect(await outcomeOf('stop', fetchImpl)).toEqual([expect.objectContaining({ stage: 'http-error', status: 503 })]);
   });
 
+  it('separates header wait from response body decoding in a successful receipt', async () => {
+    let time = 1_000;
+    const seen: Array<Record<string, unknown>> = [];
+    const fetchImpl = (async () => {
+      time += 100;
+      return { ok: true, json: async () => { time += 40; return { text: 'kept' }; } };
+    }) as unknown as typeof fetch;
+    const result = await postInjection('stop', { owner: 'su-test' }, {
+      env: {}, fetchImpl, now: () => time, onHookOutcome: o => seen.push(o),
+    });
+    expect(result).toMatchObject({ text: 'kept' });
+    expect(seen).toEqual([expect.objectContaining({
+      stage: 'response-received', transportPhase: 'body-received', elapsedMs: 140,
+      fetchMs: 100, headersElapsedMs: 100, responseBodyMs: 40,
+    })]);
+  });
+
   it('a refused connection is unreachable, distinct from a wall abort', async () => {
     const fetchImpl = (async () => { throw new Error('ECONNREFUSED'); }) as unknown as typeof fetch;
     expect(await outcomeOf('stop', fetchImpl)).toEqual([expect.objectContaining({ stage: 'unreachable' })]);
@@ -155,7 +172,32 @@ describe('unavailable mutation authority reports its transport branch', () => {
     expect(guardRequestId).toMatch(/^[0-9a-f-]{36}$/);
     expect(out).toContain(`requestId=${guardRequestId}`);
     expect(out).toContain('stage=wall-during-fetch');
+    expect(out).toContain('transportPhase=waiting-for-headers');
+    expect(out).toContain('headersElapsedMs=null');
+    expect(out).toContain('responseBodyMs=null');
     expect(out).toContain(`timeoutMs=${PORTS['pre-tool']!.timeoutMs}`);
+  });
+
+  it('identifies a body-read timeout after headers while keeping the same fail-closed wall', async () => {
+    vi.useFakeTimers();
+    const fetchImpl = (async (_url: unknown, init: RequestInit) => ({
+      ok: true,
+      json: () => new Promise((_resolve, reject) => {
+        init.signal!.addEventListener('abort', () => reject(new Error('private-body-error')));
+      }),
+    })) as unknown as typeof fetch;
+    const pending = run(fetchImpl);
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(PORTS['pre-tool']!.timeoutMs);
+    const out = await pending;
+    expect(out).toContain('execution-authority lookup failed');
+    expect(out).toContain('no server verdict was received');
+    expect(out).toContain('stage=wall-during-fetch');
+    expect(out).toContain('transportPhase=reading-body');
+    expect(out).toContain('headersElapsedMs=0');
+    expect(out).toContain(`responseBodyMs=${PORTS['pre-tool']!.timeoutMs}`);
+    expect(out).toContain(`timeoutMs=${PORTS['pre-tool']!.timeoutMs}`);
+    expect(out).not.toContain('private-body-error');
   });
 
   it('uses a fresh opaque id per lookup and preserves it across fallback origins', async () => {

@@ -982,6 +982,29 @@ describe('a refusal names its REPAIR VERB and says it is not recruiting', () => 
   // said nothing about recruitment. The agent spent hours recruiting a grader for a
   // phase-2 step that a phase-1 refusal cannot reach. Both halves are now asserted.
 
+  it('does not turn an unresolved pinned rubric into absent declarations', () => {
+    const subject = snapshot({
+      bars: [],
+      rubric: null,
+      completeness: {
+        complete: false,
+        truncated: false,
+        problems: [{
+          code: 'bar_snapshot_rubric_unresolved',
+          source: 'rubric',
+          severity: 'error',
+          detail: 'The pinned acceptance-plan-a rubric could not be resolved.',
+        }],
+      },
+    });
+    const verdict = evaluateAcceptanceBarLifecycle(subject, 'ship');
+    expect(subject.plan?.rubricSlug).toBe('acceptance-plan-a');
+    expect(verdict.satisfied).toBe(false);
+    expect(verdict.contractCodes).toContain('bar_snapshot_rubric_unresolved');
+    expect(verdict.message).toContain('no BARs resolved in this snapshot');
+    expect(verdict.message).not.toContain('no BARs declared');
+  });
+
   it('is a MEANINGFUL fixture — the default ship verdict actually refuses', () => {
     // Guards the assertions below against passing vacuously on a satisfied verdict
     // whose message is null.

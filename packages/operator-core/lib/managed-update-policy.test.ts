@@ -35,7 +35,12 @@ beforeEach(() => {
 });
 afterEach(() => Object.defineProperty(process, 'platform', { value: realPlatform }));
 
-describe('Linux administrator update policy', () => {
+describe.each(['linux', 'darwin'] as const)('%s administrator update policy', platform => {
+  const directories = platform === 'darwin'
+    ? ['/', '/private', '/private/etc', '/private/etc/papercusp']
+    : ['/', '/etc', '/etc/papercusp'];
+  const policyPath = platform === 'darwin' ? `/private${MANAGED_UPDATE_POLICY_PATH}` : MANAGED_UPDATE_POLICY_PATH;
+  beforeEach(() => Object.defineProperty(process, 'platform', { value: platform }));
   const trust = () => ({ rootEpoch: 3, minRollbackCounter: 7, minIssuedAt: 1000, maxMetadataAgeMs: 1500,
     signers: [{ id: 'release', epoch: 2, principalId: 'release-principal', publicKey: 'pinned-release-key', revoked: false }],
     approvers: [{ id: 'reviewer', epoch: 2, principalId: 'reviewer-principal', publicKey: 'pinned-review-key', revoked: false }],
@@ -63,21 +68,21 @@ describe('Linux administrator update policy', () => {
   it.each(['alpha', 'beta', 'stable'])('accepts the trusted %s lane using a bounded no-follow descriptor', channel => {
     content = Buffer.from(JSON.stringify({ version: 1, update_channel: channel }));
     expect(readManagedUpdateChannel()).toBe(channel);
-    expect(fs.lstatSync.mock.calls.map(call => call[0])).toEqual(['/', '/etc', '/etc/papercusp']);
-    expect(fs.openSync).toHaveBeenCalledWith(MANAGED_UPDATE_POLICY_PATH, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    expect(fs.lstatSync.mock.calls.map(call => call[0])).toEqual(directories);
+    expect(fs.openSync).toHaveBeenCalledWith(policyPath, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
     expect(fs.readSync.mock.calls[0]?.[1].length).toBe(16_385);
     expect(fs.closeSync).toHaveBeenCalledWith(41);
   });
 
-  it('leaves other platforms unmanaged without reading a Linux policy', () => {
-    Object.defineProperty(process, 'platform', { value: 'darwin' });
+  it('leaves unsupported platforms unmanaged without reading a Unix policy', () => {
+    Object.defineProperty(process, 'platform', { value: 'win32' });
     expect(readManagedUpdateChannel()).toBeNull();
     expect(fs.lstatSync).not.toHaveBeenCalled();
   });
 
   it('treats a missing policy directory or file as unmanaged', () => {
     fs.lstatSync.mockImplementation(path => {
-      if (path === '/etc/papercusp') throw Object.assign(new Error(), { code: 'ENOENT' });
+      if (path === directories.at(-1)) throw Object.assign(new Error(), { code: 'ENOENT' });
       return stat(true);
     });
     expect(readManagedUpdateChannel()).toBeNull();
@@ -85,6 +90,12 @@ describe('Linux administrator update policy', () => {
     fs.lstatSync.mockImplementation(() => stat(true));
     fs.openSync.mockImplementation(() => { throw Object.assign(new Error(), { code: 'ENOENT' }); });
     expect(readManagedUpdateChannel()).toBeNull();
+  });
+
+  it.each(directories)('refuses a symlink at the exact ancestor %s without opening policy', ancestor => {
+    fs.lstatSync.mockImplementation(path => stat(true, path === ancestor ? { isDirectory: () => false } : {}));
+    expect(readManagedUpdateChannel).toThrow(expect.objectContaining({ code: 'managed_policy_invalid' }));
+    expect(fs.openSync).not.toHaveBeenCalled();
   });
 
   it.each([

@@ -32,8 +32,7 @@ import type { GitSyncSkippedPath } from './harness/git-sync/run-git-sync';
 import { operatorHomeHarnessSlug } from './harness/operator-home-harness';
 import { gatePausedBanner, readRoutinePause } from './harness/routines/release-pause-ttl';
 import { evaluateGateVerdictFreshness, type GateVerdictFreshness } from './release/gate-verdict-freshness';
-import { describeGateRedOwnership, gateFailureSignature, type GateRedOwnership } from './release/gate-red-ownership';
-import { releaseFixerSpawnAlive } from './release/fixer-liveness';
+import type { GateRedOwnership } from './release/gate-red-ownership';
 import {
   describeUnreadableFrozenCandidateRepairQueue,
   diagnoseFrozenCandidateRepairQueue,
@@ -1725,6 +1724,9 @@ export async function gitPipelineSnapshot(
   // dispatcher makes for a record it cannot resolve — never a fabricated liveness value.
   let redOwner: GateRedOwnership | null = null;
   if (effectiveGate.consecutiveReds > 0) {
+    // Ownership pulls in work-item control; healthy/paused snapshots must not
+    // pay to evaluate that graph just to report their pipeline state.
+    const { describeGateRedOwnership, gateFailureSignature } = await import('./release/gate-red-ownership');
     const currentSignature = gateFailureSignature(
       effectiveGate.failingTests,
       gatePromotionIdentity.observedCandidate,
@@ -1733,6 +1735,7 @@ export async function gitPipelineSnapshot(
     const spawnId = typeof lastFixer?.spawnId === 'string' ? lastFixer.spawnId : null;
     let fixerAlive: boolean | null = null;
     if (!gcVerdictStale && ownerSignature && currentSignature && ownerSignature === currentSignature) {
+      const { releaseFixerSpawnAlive } = await import('./release/fixer-liveness');
       fixerAlive = await releaseFixerSpawnAlive(sql, spawnId).catch(() => null);
     }
     redOwner = describeGateRedOwnership({
@@ -1755,6 +1758,7 @@ export async function gitPipelineSnapshot(
   const repairQueueRead = repairQueueProjection.read;
   let repairQueueFixerAlive: boolean | null | undefined;
   if (persistedRepairQueue?.fixerSpawnId) {
+    const { releaseFixerSpawnAlive } = await import('./release/fixer-liveness');
     repairQueueFixerAlive = await releaseFixerSpawnAlive(
       sql,
       persistedRepairQueue.fixerSpawnId,

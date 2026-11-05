@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { encodeTauriUpdateAuthorization } from '@papercusp/tauri-release-kit/signature';
 
 vi.mock('../../../operator-state-pg', () => ({
   readOperatorState: vi.fn(async () => ({ update_channel: 'alpha' })),
@@ -20,6 +21,16 @@ import { ManagedUpdatePolicyError, readManagedUpdateChannel } from '../../../man
 import { resolveGithubToken } from './updates-github';
 
 const fetchMock = vi.fn();
+// Transport fixture only; native consumer tests perform cryptographic verification.
+const authorization = {
+  payload: encodeTauriUpdateAuthorization({ schema: 'tauri-update-authorization-v2',
+    artifactSha256: 'a'.repeat(64), policySha256: 'b'.repeat(64), configurationSha256: 'c'.repeat(64),
+    sourceRevision: 'd'.repeat(40), version: '1.1.0', product: 'gui', platform: 'linux-x86_64',
+    authorIds: ['author', 'coauthor'], approverId: 'reviewer', approverEpoch: 1, signerId: 'signer', signerEpoch: 1,
+    rootEpoch: 1, rollbackCounter: 5, issuedAt: 1000, expiresAt: 2000 }),
+  signature: Buffer.from('untrusted comment: transport\nAA\ntrusted comment: transport\nAA\n').toString('base64'),
+  approvalSignature: Buffer.from('untrusted comment: approval\nAA\ntrusted comment: approval\nAA\n').toString('base64'),
+};
 const releases: StaticHistoryRelease[] = [
   { tag: 'desktop-v1.2.0-alpha', version: '1.2.0-alpha', channel: 'alpha', pub_date: '2026-10-15T00:00:00Z', notes: '', prerelease: true, artifacts: [] },
   { tag: 'desktop-v1.1.0', version: '1.1.0', channel: 'stable', pub_date: '2026-10-14T00:00:00Z', notes: '', prerelease: false, artifacts: [{ product: 'gui', platform: 'linux-x86_64', name: 'stable.AppImage', url: 'stable.AppImage', size: 1, sha256: 'fixture' }] },
@@ -35,6 +46,7 @@ beforeEach(() => {
   vi.stubGlobal('fetch', fetchMock);
   fetchMock.mockImplementation(async (url: string) => {
     if (url.endsWith('.sig')) return new Response('SIGNATURE');
+    if (url.endsWith('.update-authorization.json')) return Response.json({ 'linux-x86_64': authorization });
     if (url.endsWith('/history.json')) return Response.json({ generated_at: '2026-10-15T00:00:00Z', releases });
     return Response.json({
       version: '1.2.0-alpha', channel: 'alpha', pub_date: '2026-10-15T00:00:00Z',
@@ -58,7 +70,19 @@ describe('managed update policy across release endpoints', () => {
   it('allows a signed rollback within the managed lane', async () => {
     const response = await call(rollback, 'channel=alpha&tag=desktop-v1.1.0');
     expect(response.status).toBe(200);
-    expect(await response.json()).toMatchObject({ ok: true, channel: 'stable', version: '1.1.0', signature: 'SIGNATURE' });
+    expect(await response.json()).toMatchObject({ ok: true, channel: 'stable', version: '1.1.0',
+      signature: 'SIGNATURE', updateAuthorization: authorization,
+      manifest: { platforms: { 'linux-x86_64': { updateAuthorization: authorization } } } });
+  });
+
+  it('refuses managed rollback when independent authorization is unavailable', async () => {
+    const completeFetch = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation((url: string) => url.endsWith('.update-authorization.json')
+      ? new Response('', { status: 503 }) : completeFetch(url));
+    const response = await call(rollback, 'channel=alpha&tag=desktop-v1.1.0');
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ ok: false, reason: 'invalid_update_authorization' });
+    expect(resolveGithubToken).not.toHaveBeenCalled();
   });
 
   it('does not offer an alpha manifest when both query and saved preference try to override stable policy', async () => {

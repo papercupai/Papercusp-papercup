@@ -243,14 +243,26 @@ export async function postInjection(port, body, opts = {}) {
   // Reported once; a throwing callback never changes transport delivery.
   let collectMs = null;
   let attemptedOperatorOrigin = null;
+  let fetchStartedAt = null;
+  let headersReceivedAt = null;
+  let bodyStartedAt = null;
+  let bodyFinishedAt = null;
+  let transportPhase = null;
   const collectErrors = [];
   let hookOutcomeReported = false;
   const reportHookOutcome = (stage, extra = {}) => {
     if (hookOutcomeReported || typeof opts.onHookOutcome !== 'function') return;
     hookOutcomeReported = true;
     try {
+      const finishedAt = now();
       opts.onHookOutcome({
-        port, stage, timeoutMs: spec.timeoutMs, elapsedMs: Math.max(0, now() - startedAt), collectMs,
+        port, stage, timeoutMs: spec.timeoutMs, elapsedMs: Math.max(0, finishedAt - startedAt), collectMs,
+        ...(fetchStartedAt !== null ? {
+          transportPhase,
+          fetchMs: Math.max(0, (headersReceivedAt ?? finishedAt) - fetchStartedAt),
+          headersElapsedMs: headersReceivedAt === null ? null : Math.max(0, headersReceivedAt - startedAt),
+          responseBodyMs: bodyStartedAt === null ? null : Math.max(0, (bodyFinishedAt ?? finishedAt) - bodyStartedAt),
+        } : {}),
         ...(guardRequestId ? { guardRequestId } : {}),
         ...(attemptedOperatorOrigin ? { operatorOrigin: attemptedOperatorOrigin } : {}),
         ...(collectErrors.length ? { collectErrors } : {}), ...extra,
@@ -304,6 +316,8 @@ export async function postInjection(port, body, opts = {}) {
     const wallMs = Math.max(1, spec.timeoutMs - Math.max(0, now() - startedAt));
     const payloadBody = JSON.stringify({ ...body, wallMs, ...(guardRequestId ? { guardRequestId } : {}) });
     let res = null;
+    fetchStartedAt = now();
+    transportPhase = 'waiting-for-headers';
     // WI-10005007: the next base is tried ONLY when the previous one could not be
     // reached at all (the fetch rejected before the wall fired — refused, reset,
     // unreachable). A wall abort means the time is spent, and an HTTP answer means
@@ -323,6 +337,8 @@ export async function postInjection(port, body, opts = {}) {
           body: payloadBody,
           signal: controller.signal,
         });
+        headersReceivedAt = now();
+        transportPhase = 'headers-received';
         break;
       } catch (err) {
         if (controller.signal.aborted) throw err;
@@ -333,7 +349,13 @@ export async function postInjection(port, body, opts = {}) {
       reportHookOutcome(res ? 'http-error' : 'unreachable', res ? { status: res.status } : {});
       return finish();
     }
+    // The hard wall covers both phases. Preserve the distinction when a proxy
+    // completed its response but this client still timed out reading/decoding it.
+    bodyStartedAt = now();
+    transportPhase = 'reading-body';
     const payload = await res.json();
+    bodyFinishedAt = now();
+    transportPhase = 'body-received';
     if (!payload || typeof payload !== 'object') {
       reportTurnStartOutcome('invalid-response');
       reportHookOutcome('invalid-response');
@@ -929,6 +951,7 @@ export async function runInjection({ adapter, nativeEvent, event, env = process.
           ? `stage=${post.stage}; elapsedMs=${post.elapsedMs}; timeoutMs=${post.timeoutMs}` +
             (post.guardRequestId ? `; requestId=${post.guardRequestId}` : '') +
             (Number.isInteger(post.status) ? `; httpStatus=${post.status}` : '') +
+            (post.transportPhase ? `; transportPhase=${post.transportPhase}; fetchMs=${post.fetchMs}; headersElapsedMs=${post.headersElapsedMs}; responseBodyMs=${post.responseBodyMs}` : '') +
             (post.operatorOrigin ? `; operatorOrigin=${post.operatorOrigin}` : '')
           : `stage=guard-threw; errorType=${error?.name ?? 'unknown'}`;
         return adapter.render('pre-tool',

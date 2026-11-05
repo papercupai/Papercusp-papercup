@@ -1,13 +1,15 @@
 /**
- * Linux administrator policy for the existing desktop update lane.
+ * Administrator policy for the existing Linux and macOS desktop update lane.
  *
  * Provision /etc/papercusp/managed-policy.json as root, mode 0644 (or stricter):
  *   { "version": 1, "update_channel": "stable" }
+ * macOS uses its physical /private/etc/papercusp path: /etc is a symlink,
+ * which must not require weakening the no-follow ownership checks.
  * All ancestors must be real root-owned directories without group/other write
  * permission. No environment/path override: user-owned configuration and the
  * operator database must not be able to bypass an administrator's update ring.
  * Absence is unmanaged; a present but invalid/unreadable policy fails closed.
- * This is a Linux source contract, not Intune/Jamf/package qualification.
+ * This is a source contract, not Intune/Jamf/package qualification.
  * Optional updateAuthorization contains the CURRENT administrator-controlled
  * signing/review roots and floors consumed by the native updater. Keeping it in
  * this policy preserves the same protected path and ownership contract.
@@ -19,6 +21,10 @@ import type { UpdateChannel } from './endpoint-route/routes/desktop/setup-wizard
 
 export const MANAGED_UPDATE_POLICY_PATH = '/etc/papercusp/managed-policy.json';
 const MAX_POLICY_BYTES = 16_384;
+
+function policyPath(): string {
+  return process.platform === 'darwin' ? `/private${MANAGED_UPDATE_POLICY_PATH}` : MANAGED_UPDATE_POLICY_PATH;
+}
 
 export class ManagedUpdatePolicyError extends Error {
   constructor(
@@ -37,7 +43,7 @@ export class ManagedUpdatePolicyError extends Error {
 function invalid(): never {
   throw new ManagedUpdatePolicyError(
     'managed_policy_invalid',
-    `Administrator update policy at ${MANAGED_UPDATE_POLICY_PATH} is invalid or unreadable.`,
+    `Administrator update policy at ${policyPath()} is invalid or unreadable.`,
   );
 }
 
@@ -68,22 +74,25 @@ function validUpdateTrust(value: unknown): value is TauriUpdateTrust {
 
 /** Re-read on each decision, so administrator changes need no process restart. */
 export function readManagedUpdateChannel(): UpdateChannel | null {
-  if (process.platform !== 'linux') return null;
+  if (process.platform !== 'linux' && process.platform !== 'darwin') return null;
+  const directories = process.platform === 'darwin'
+    ? ['/', '/private', '/private/etc', '/private/etc/papercusp']
+    : ['/', '/etc', '/etc/papercusp'];
   let fd: number | undefined;
   try {
-    for (const path of ['/', '/etc', '/etc/papercusp']) {
+    for (const path of directories) {
       let stat: Stats;
       try {
         stat = lstatSync(path);
       } catch (error) {
-        if (path === '/etc/papercusp' && (error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+        if (path === directories.at(-1) && (error as NodeJS.ErrnoException).code === 'ENOENT') return null;
         throw error;
       }
       if (!stat.isDirectory() || !trusted(stat)) invalid();
     }
     try {
       // NONBLOCK prevents a substituted FIFO from hanging before fstat rejects it.
-      fd = openSync(MANAGED_UPDATE_POLICY_PATH, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+      fd = openSync(policyPath(), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
       throw error;

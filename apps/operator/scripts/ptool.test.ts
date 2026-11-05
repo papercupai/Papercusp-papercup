@@ -1478,28 +1478,14 @@ describe('ptool call deadlines', () => {
     expect(timeoutForTool('docs:get', args)).toBeGreaterThan(PTOOL_CALL_TOOL_TIMEOUT_MS);
   });
 
-  it('keeps the client alive only for bounded read-only admit previews', () => {
+  it.each(['admit', 'converge'])('keeps %s receipts alive through bounded preflight on both transport routes', op => {
     expect(PTOOL_REPAIR_QUEUE_PREVIEW_TIMEOUT_MS).toBe(305_000);
-    expect(timeoutForTool('release:repair-queue', { op: 'admit' }))
-      .toBe(PTOOL_REPAIR_QUEUE_PREVIEW_TIMEOUT_MS);
-    expect(timeoutForTool('release:repair-queue', { op: 'admit', confirm: false }))
-      .toBe(PTOOL_REPAIR_QUEUE_PREVIEW_TIMEOUT_MS);
-    expect(timeoutForTool('tools:invoke', {
-      name: 'release:repair-queue',
-      args: { op: 'admit' },
-    })).toBe(PTOOL_REPAIR_QUEUE_PREVIEW_TIMEOUT_MS);
-    expect(timeoutForTool('tools:invoke', {
-      name: 'release:repair-queue',
-      args: { op: 'admit', confirm: false },
-    })).toBe(PTOOL_REPAIR_QUEUE_PREVIEW_TIMEOUT_MS);
-    expect(timeoutForTool('release:repair-queue', { op: 'converge', confirm: false }))
-      .toBe(PTOOL_CALL_TOOL_TIMEOUT_MS);
-    expect(timeoutForTool('tools:invoke', {
-      name: 'release:repair-queue',
-      args: { op: 'converge', confirm: false },
-    })).toBe(PTOOL_CALL_TOOL_TIMEOUT_MS);
-    expect(timeoutForTool('release:repair-queue', { op: 'admit', confirm: true }))
-      .toBe(PTOOL_CALL_TOOL_TIMEOUT_MS);
+    for (const args of [{ op }, { op, confirm: false }, { op, confirm: true }]) {
+      expect(timeoutForTool('release:repair-queue', args))
+        .toBe(PTOOL_REPAIR_QUEUE_PREVIEW_TIMEOUT_MS);
+      expect(timeoutForTool('tools:invoke', { name: 'release:repair-queue', args }))
+        .toBe(PTOOL_REPAIR_QUEUE_PREVIEW_TIMEOUT_MS);
+    }
     expect(timeoutForTool('release:repair-queue', { op: 'get' }))
       .toBe(PTOOL_CALL_TOOL_TIMEOUT_MS);
   });

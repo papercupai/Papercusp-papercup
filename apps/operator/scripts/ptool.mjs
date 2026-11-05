@@ -2220,9 +2220,9 @@ export const PTOOL_CHECKPOINT_RUN_TIMEOUT_MS = PTOOL_FOREGROUND_TOOL_TIMEOUT_MS;
 // ADMISSION_PREVIEW_JOB_TIMEOUT_MS=240s and documents a 300s MCP client deadline
 // (packages/operator-core/lib/agent-tools/release/repair-queue.ts). The generic
 // 30s ptool cutoff abandoned the larger import-closure preview before its bounded
-// result could return. Keep a 5s settlement margin over that deadline, but only
-// for read-only admit calls; confirmed writes still return their durable
-// precheck-running receipt under the normal call budget.
+// result could return. Confirmed admissions perform the same dependency preflight
+// before returning their detached precheck receipt, and converge is the same door.
+// Keep both routes alive through that bounded work and its settlement margin.
 export const PTOOL_REPAIR_QUEUE_PREVIEW_TIMEOUT_MS = 305_000;
 
 // EI-22613070628418671: db:migrate declares timeoutSec=1020
@@ -2769,8 +2769,7 @@ export function timeoutForTool(toolName, callArgs) {
   }
   if (
     effectiveToolName === 'release:repair-queue' &&
-    effectiveArgs?.op === 'admit' &&
-    effectiveArgs?.confirm !== true
+    (effectiveArgs?.op === 'admit' || effectiveArgs?.op === 'converge')
   ) {
     return PTOOL_REPAIR_QUEUE_PREVIEW_TIMEOUT_MS;
   }

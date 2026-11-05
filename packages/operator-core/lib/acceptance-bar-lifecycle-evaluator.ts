@@ -236,7 +236,7 @@ function attributedMessage(
   const total = snapshot.bars.length;
   const scope =
     total === 0
-      ? 'no BARs declared'
+      ? 'no BARs resolved in this snapshot'
       : `${blockingBars.length} of ${total} BAR(s) blocking, ${total - blockingBars.length} clean`;
   const head = `acceptance BAR contract is not ready for ${phaseLabel} — ${scope}: ${segments.join('; ')}`;
 
