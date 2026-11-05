@@ -90,6 +90,18 @@ export function retainMeasurementProvenance(input: {
     }
     if (typeof value === 'string') {
       const safe = scrub(value);
+      // Command replay needs the complete parser input. Keep long stdout in
+      // bounded leaves after scrubbing the WHOLE text, so chunk boundaries
+      // cannot hide sensitive assignments. The same node/leaf/byte caps apply.
+      if (safe.length > 256 && input.procedure !== null && typeof input.procedure === 'object'
+        && 'kind' in input.procedure && input.procedure.kind === 'command'
+        && /^\$\["samples"\]\["\d+"\]\["stdout"\]$/.test(path)) {
+        const chunkCount = Math.ceil(safe.length / 256);
+        visit({ chunkCount, chunks: Array.from({ length: Math.min(chunkCount, 65) }, (_, i) =>
+          safe.slice(i * 256, (i + 1) * 256)) }, path, depth);
+        diagnosticsTruncated ||= chunkCount > 65;
+        return;
+      }
       diagnosticsTruncated ||= safe.length > 256;
       diagnostics.push({ path, value: safe.slice(0, 256) }); return;
     }

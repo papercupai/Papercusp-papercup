@@ -55,6 +55,11 @@ function pgDumpArgv(calls: ReadonlyArray<readonly string[]>): string[][] {
       `PGOUT='${dir}'; JOBS=4; TIMEOUT_SEC=60; TIMEOUT_MAX_SEC=120; BACKUP_USER=nobody`,
       'PC_BACKUP_SPACE_SAFETY=150; PC_BACKUP_MIN_FREE_GB=5',
       'HOST_BACKUP_APPLICATION_NAME=pcbackup',
+      // dump_one records the database identity before launching pg_dump. Keep
+      // that real boundary in the fixture without probing the host database.
+      'PSQL=backup_fixture_psql',
+      'backup_fixture_psql() { printf "123456789\\n"; }',
+      'declare -A ARTIFACT_DUMP_START_EPOCHS=() ARTIFACT_DUMP_SYSTEM_IDENTIFIERS=()',
       `log() { printf 'LOG %s\\n' "$*"; }`,
       'rm_tmp() { :; }',
       'fs_avail_gb() { echo 1000; }',

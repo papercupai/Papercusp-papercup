@@ -10,6 +10,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import net from 'node:net';
+import ts from 'typescript';
 import {
   FORCED_RECONNECT_CAP,
   forcedReconnectEnvelope,
@@ -145,7 +146,23 @@ describe('mcp-reconnect native-Bash self-serve CLI', () => {
     expect(hostHonoursForcedReconnect({ caps: 'mcp-reconnect-force' })).toBe(false);
     expect(hostHonoursForcedReconnect(null)).toBe(false);
     const hostSource = readFileSync(new URL('./psu-pty-host.mjs', import.meta.url), 'utf8');
-    const baseCaps = /\bcaps:\s*\[([^\]]*)\]/.exec(hostSource)?.[1] ?? '';
-    expect(baseCaps).toContain(`'${FORCED_RECONNECT_CAP}'`);
+    const advertisesForceCap = (source: string) => {
+      const file = ts.createSourceFile('host.mjs', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+      let found = false;
+      const visit = (node: ts.Node) => {
+        if (ts.isPropertyAssignment(node) && node.name.getText(file) === 'caps'
+          && ts.isArrayLiteralExpression(node.initializer)) {
+          found ||= node.initializer.elements.some((element) => ts.isStringLiteral(element) && element.text === FORCED_RECONNECT_CAP);
+        }
+        ts.forEachChild(node, visit);
+      };
+      visit(file);
+      return found;
+    };
+    // Conditional spread arrays must not truncate the outer capability list.
+    expect(advertisesForceCap("const host = { caps: ['carry-respawn', ...(enabled ? ['conditional'] : []), 'mcp-reconnect-force'] };" )).toBe(true);
+    expect(advertisesForceCap("const host = { caps: ['carry-respawn', ...(enabled ? ['mcp-reconnect-force'] : [])] };" )).toBe(false);
+    expect(advertisesForceCap(hostSource)).toBe(true);
+    expect(advertisesForceCap(hostSource.replaceAll(`'${FORCED_RECONNECT_CAP}'`, "'removed-force-cap'"))).toBe(false);
   });
 });

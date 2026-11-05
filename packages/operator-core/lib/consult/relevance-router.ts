@@ -235,6 +235,8 @@ export type RoutingCodeSubjects = CodeSubjects & {
 
 export interface RoutingSnapshot {
   query: string;
+  embeddingAcquisition?: import('../agent-tools/search/embedder').QueryEmbedderAcquisition;
+  embeddingFailure?: { stage: 'acquisition' | 'inference'; cause: string };
   /** This routing execution, separate from consultation delivery. */
   measurement?: ExpertiseRoutingReceipt;
   /** Set by consultation creation; absent on legacy rows, never inferred. */
@@ -522,6 +524,7 @@ export interface ConsultRouteDeps {
   embed: ConsultEmbedder | null;
   embeddingProfile: ProseProfileSelection | null;
   embeddingMode: string | null;
+  embeddingAcquisition?: import('../agent-tools/search/embedder').QueryEmbedderAcquisition;
   /** Presence oracle: ownerId → sessionState. Optional; default 'unknown'. */
   /** `null` for an owner the liveness oracle could not measure
    *  (EI-18771777750306094 — the oracle reports an unknown IN BAND rather than
@@ -1139,6 +1142,7 @@ async function routeConsultCore(
 
   const base: Omit<RoutingSnapshot, 'candidates'> = {
     query: params.question,
+    ...(deps.embeddingAcquisition ? { embeddingAcquisition: deps.embeddingAcquisition } : {}),
     ...(subjectRefs.length ? { subjectRefs } : {}),
     ...(unresolvedSubjectRefs.length ? { unresolvedSubjectRefs } : {}),
     relevanceFloor: floors.relevanceFloor,
@@ -1154,9 +1158,15 @@ async function routeConsultCore(
   const notRestricted = (sql as unknown as Sql)`NOT ${restrictedOwnerSql(sql as unknown as Sql, 'session_turns')}`;
   const nativePopulation = nativeSourcePopulationSql(sql as unknown as Sql, params);
   const vec = deps.embed && deps.embeddingProfile
-    ? await measure('embedding', () => deps.embed!(params.question)).catch(() => null)
+    ? await measure('embedding', () => deps.embed!(params.question)).catch((error: unknown) => {
+        base.embeddingFailure = { stage: 'inference', cause: routingErrorCode(error) ?? 'inference_failed' };
+        return null;
+      })
     : null;
   if (!vec || vec.length === 0) {
+    base.embeddingFailure ??= deps.embed && deps.embeddingProfile
+      ? { stage: 'inference', cause: 'empty_vector' }
+      : { stage: 'acquisition', cause: deps.embeddingAcquisition?.cause ?? 'embedder_unavailable' };
     // The semantic instrument is unavailable, but the session-turn corpus still
     // has the same bounded lexical contract as search: the first 20k chars,
     // ranked best-first by the shared lexical seam (BM25 over

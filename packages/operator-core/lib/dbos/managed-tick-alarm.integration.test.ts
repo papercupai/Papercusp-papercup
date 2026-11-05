@@ -3,7 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { once } from 'node:events';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
-import { computeConditionStates } from '../agent-tools/coordination/tools/conditions';
+import { computeConditionStates } from '../agent-tools/coordination/condition-state';
 
 const WS = 'p005-managed-original-process';
 const children = new Set<ChildProcess>();

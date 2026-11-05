@@ -230,10 +230,12 @@ describe("bundle-host-freshness proof", () => {
     entry = join(repo, "entry.ts");
     outfile = join(repo, "dist-host", "hono-host.mjs");
     manifest = join(repo, "dist-host", ".bundle-fresh.json");
-    writeFileSync(join(repo, ".gitignore"), "dist-host/\n");
+    writeFileSync(join(repo, ".gitignore"), "dist-host/\nnode_modules/\n");
     writeFileSync(entry, "export const version = 1;\n");
     git("add", ".gitignore", "entry.ts");
     git("commit", "-q", "-m", "fixture");
+    mkdirSync(join(repo, "node_modules"));
+    writeFileSync(join(repo, "node_modules", ".package-lock.json"), JSON.stringify({ lockfileVersion: 3, packages: {} }));
     mkdirSync(join(repo, "dist-host", "sql"), { recursive: true });
     writeFileSync(outfile, 'console.log("bundle");\n');
     writeFileSync(join(repo, "dist-host", "sql", "001.sql"), "select 1;\n");
@@ -244,6 +246,13 @@ describe("bundle-host-freshness proof", () => {
   it("accepts the same clean HEAD, entry and complete output tree", () => {
     expect(run("stamp").status).toBe(0);
     expect(run("check").status).toBe(0);
+  });
+
+  it("rejects a missing installed dependency lock instead of blessing an incomplete fixture", () => {
+    unlinkSync(join(repo, "node_modules", ".package-lock.json"));
+    const result = run("stamp");
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("installed dependency lock is missing");
   });
 
   it("ignores the esbuild metafile removed by bundle-host.sh's EXIT trap after stamping", () => {

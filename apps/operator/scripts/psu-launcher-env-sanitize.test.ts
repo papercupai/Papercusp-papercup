@@ -10,9 +10,28 @@
  * Run: cd apps/operator && npx vitest run scripts/psu-launcher-env-sanitize.test.ts
  */
 import { describe, it, expect } from 'vitest';
-import { sanitizeInheritedEnv } from './psu-launcher.mjs';
+import { buildResumeEnv, sanitizeInheritedEnv } from './psu-launcher.mjs';
 
 const delimiter = process.platform === 'win32' ? ';' : ':';
+
+describe('resume launch custody', () => {
+  const session = { agent: 'codex', id: 42, coordOwnerId: 'su-resumed-agent' };
+
+  it('preserves the explicit launcher without replacing the resumed identity', () => {
+    const options = { launchedBy: 'su-recovery-coordinator' };
+    const env = buildResumeEnv(session, options);
+    expect(env.PAPERCUSP_LAUNCHED_BY).toBe('su-recovery-coordinator');
+    expect(env.PAPERCUSP_SID).toBe('su-resumed-agent');
+  });
+
+  it('clears inherited custody for an interactive resume, including account overlays', () => {
+    const env = buildResumeEnv(session, {
+      accountEnv: { env: { PAPERCUSP_LAUNCHED_BY: 'su-unrelated-parent' } },
+    });
+    expect(env.PAPERCUSP_LAUNCHED_BY).toBe('');
+    expect(env.PAPERCUSP_SID).toBe('su-resumed-agent');
+  });
+});
 
 describe('sanitizeInheritedEnv (EI-8868/EI-8877)', () => {
   it('strips npm_config_local_prefix, npm_package_*, npm_lifecycle_*, and INIT_CWD', () => {

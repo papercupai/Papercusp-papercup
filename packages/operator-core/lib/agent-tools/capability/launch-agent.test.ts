@@ -3581,6 +3581,35 @@ describe('resume + fork (D-004/D-007)', () => {
     expect(dataOf(res)?.launch).toMatchObject({ fleet: 'target-fleet', independent: true, mode: 'resume' });
   });
 
+  it('preserves recorded headless placement on an exact resume without a fleet launch profile', async () => {
+    findLiveHostMock.mockReturnValue(null);
+    resolveResumeTargetMock.mockResolvedValue({ ...dead, headless: true });
+    latestFleetMembershipMock.mockResolvedValue({ fleetSlug: 'target-fleet', fleetRole: 'member' });
+
+    const res = await launchAgent.handler(
+      { resume: { agentId: dead.ownerId }, fork: false, brief: 'recover the original member' }, ctx,
+    );
+
+    expect(isError(res), textOf(res)).toBe(false);
+    expect(spawnHeadlessMock).toHaveBeenCalledTimes(1);
+    expect(spawnConsoleMock).not.toHaveBeenCalled();
+    expect(spawnedCommand(spawnHeadlessMock)).toContain('--resume=sid-dead');
+    expect(spawnedCommand(spawnHeadlessMock)).toContain('--headless');
+  });
+
+  it('honors an explicit visible placement when resuming a recorded headless source without a fleet profile', async () => {
+    findLiveHostMock.mockReturnValue(null);
+    resolveResumeTargetMock.mockResolvedValue({ ...dead, headless: true });
+
+    const res = await launchAgent.handler(
+      { resume: { agentId: dead.ownerId }, fork: false, headless: false, brief: 'recover visibly' }, ctx,
+    );
+
+    expect(isError(res), textOf(res)).toBe(false);
+    expect(spawnConsoleMock).toHaveBeenCalledTimes(1);
+    expect(spawnHeadlessMock).not.toHaveBeenCalled();
+  });
+
   it('reuses the canonical fleet profile on resume and corrects an ended visible member back to saved headless placement', async () => {
     resolveResumeTargetMock.mockResolvedValue(dead);
     latestFleetMembershipMock.mockResolvedValue({ fleetSlug: 'target-fleet', fleetRole: 'member' });

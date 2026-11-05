@@ -21,8 +21,8 @@ describe("remote GUI parity", () => {
     ).toContain("import Page from '@/app/cloud-workspaces/page'");
 
     const workspaces = read("packages/operator-core/lib/workspaces-tauri.ts");
-    expect(workspaces).toContain(
-      "return http<WorkspaceRegistry>('/api/workspaces')",
+    expect(workspaces).toMatch(
+      /return http<WorkspaceRegistry>\(['"]\/api\/workspaces['"]\s*[,)]/,
     );
     expect(workspaces).toContain(
       "await http<unknown>('/api/workspaces/switch'",

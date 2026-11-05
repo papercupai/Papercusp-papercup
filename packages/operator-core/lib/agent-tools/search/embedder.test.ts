@@ -61,6 +61,7 @@ import {
   embedderProfileIdOf,
   withAcquireBudget,
   _clearQueryEmbedCacheForTests,
+  type QueryEmbedderAcquisition,
 } from './embedder';
 import { EMBEDDER_DIM_SPECS } from '@papercusp/memory';
 // Import the width rather than restating it: this assertion is ABOUT the prose
@@ -74,6 +75,49 @@ import { buildSidecarAwareEmbedder, isLocalEmbedAcquisitionCheap } from '../../m
 import { markOpenAiEmbedFailure, __resetOpenAiEmbedCooldownForTest } from '../../memory/configure';
 
 const savedKey = process.env.OPENAI_API_KEY;
+
+describe('request-local acquisition provenance', () => {
+  it('distinguishes timed out rejected disabled and compatible provider acquisition', async () => {
+    vi.useFakeTimers();
+    const outcomes: QueryEmbedderAcquisition[] = [];
+    const opts = { acquireBudgetMs: 10, onAcquisition: (value: QueryEmbedderAcquisition) => outcomes.push(value) };
+    const observeFallback = vi.fn();
+    try {
+      let settleLate!: (value: null) => void;
+      const pending = buildQueryEmbedderResolved(opts, {
+        acquire: () => new Promise(resolve => { settleLate = resolve; }), observeFallback,
+      });
+      await vi.advanceTimersByTimeAsync(10);
+      expect(await pending).toBeNull();
+      expect(outcomes).toMatchObject([{ status: 'timed-out', cause: 'acquisition-budget-exhausted', budgetMs: 10 }]);
+      settleLate(null);
+      await Promise.resolve();
+      expect(outcomes).toHaveLength(1);
+
+      await buildQueryEmbedderResolved(opts, { acquire: async () => {
+        throw Object.assign(new Error('private provider URL and key must not escape'), { code: 'ECONNREFUSED' });
+      }, observeFallback });
+      expect(outcomes.at(-1)).toMatchObject({ status: 'failed', cause: 'ECONNREFUSED' });
+      expect(JSON.stringify(outcomes)).not.toContain('private provider');
+
+      await buildQueryEmbedderResolved(opts, { acquire: async () => ({ mode: 'disabled', reason: 'user_disabled' }), observeFallback });
+      expect(outcomes.at(-1)).toMatchObject({ status: 'disabled', cause: 'user_disabled' });
+      await buildQueryEmbedderResolved(opts, { acquire: async () => ({ mode: 'disabled', reason: 'gemma_forced_but_transformers_not_installed' }), observeFallback });
+      expect(outcomes.at(-1)).toMatchObject({ status: 'unavailable', cause: 'gemma_forced_but_transformers_not_installed' });
+
+      const profile = EMBEDDER_DIM_SPECS.gemma;
+      const acquired = await buildQueryEmbedderResolved(opts, { acquire: async () => ({
+        mode: 'gemma', dims: profile.targetDims, profile, embed: async () => [0.25],
+      }), observeFallback });
+      expect(outcomes.at(-1)).toMatchObject({ status: 'acquired', mode: 'gemma', profileId: profile.profileId });
+      expect(acquired?.profile).toBe(profile);
+      expect(embedderProfileIdOf(acquired!.embed)).toBe(profile.profileId);
+      expect(outcomes).toHaveLength(5);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
 
 beforeEach(() => {
   vi.clearAllMocks();

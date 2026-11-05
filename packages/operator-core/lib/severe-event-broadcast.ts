@@ -231,7 +231,7 @@ export function isRepeatOfOpenOneShotAlarm(
 async function readOpenConditionRepeat(ev: SevereEventBroadcast): Promise<boolean> {
   if (!ev.conditionKey) return false;
   try {
-    const { readLatestConditionEnvelope } = await import('./agent-tools/coordination/tools/conditions');
+    const { readLatestConditionEnvelope } = await import('./agent-tools/coordination/condition-state');
     return isRepeatOfOpenConditionAlarm(
       await readLatestConditionEnvelope(ev.conditionKey),
       ev.conditionKey,

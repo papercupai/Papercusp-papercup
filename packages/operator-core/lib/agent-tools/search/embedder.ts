@@ -123,6 +123,8 @@ export interface ResolvedQueryEmbedder {
  *  endpoint-route/routes/adv/sessions.ts; see WI-3922. */
 export interface QueryEmbedderAcquireOpts {
   acquireBudgetMs?: number;
+  /** Request-local diagnostics; preserves the nullable API for search callers. */
+  onAcquisition?: (outcome: QueryEmbedderAcquisition) => void;
   /** WI-3923: for an INTERACTIVE caller only. When true AND OpenAI embed is in
    *  its post-failure cooldown (isOpenAiEmbedInCooldown) AND the local
    *  acquisition is currently known-cold (!isLocalEmbedAcquisitionCheap —
@@ -142,6 +144,21 @@ export interface QueryEmbedderAcquireOpts {
   skipAcquisitionWhenCold?: boolean;
 }
 
+export interface QueryEmbedderAcquisition {
+  status: 'acquired' | 'timed-out' | 'disabled' | 'unavailable' | 'failed' | 'cold-skipped';
+  durationMs: number;
+  budgetMs: number | null;
+  cause?: string;
+  mode?: ResolvedQueryEmbedder['mode'];
+  profileId?: string;
+}
+
+/** Diagnostic codes must never copy provider messages (which can contain secrets). */
+function acquisitionErrorCode(error: unknown): string {
+  const code = error && typeof error === 'object' && 'code' in error ? error.code : null;
+  return typeof code === 'string' && /^[A-Za-z0-9_-]{1,80}$/.test(code) ? code : 'provider_error';
+}
+
 /** Interactive default acquisition budget (ms) — env-overridable via
  *  PAPERCUSP_QUERY_EMBED_ACQUIRE_BUDGET_MS; ≤0 disables the bound. */
 export function interactiveEmbedAcquireBudgetMs(): number {
@@ -154,7 +171,10 @@ export function interactiveEmbedAcquireBudgetMs(): number {
  *  on to warm the process-memoized pipeline for a later query, and its late
  *  settle is swallowed so it never surfaces as an unhandled rejection.
  *  Exported for unit test (embedder.test.ts) — internal otherwise. */
-export async function withAcquireBudget<T>(p: Promise<T | null>, budgetMs: number): Promise<T | null> {
+export async function withAcquireBudget<T>(
+  p: Promise<T | null>, budgetMs: number,
+  onFailure?: (failure: { status: 'timed-out' } | { status: 'failed'; error: unknown }) => void,
+): Promise<T | null> {
   if (!(budgetMs > 0)) return await p;
   return await new Promise<T | null>((resolve) => {
     let settled = false;
@@ -165,8 +185,14 @@ export async function withAcquireBudget<T>(p: Promise<T | null>, budgetMs: numbe
       if (timer !== undefined) clearTimeout(timer);
       resolve(v);
     };
-    timer = setTimeout(() => finish(null), budgetMs);
-    p.then((v) => finish(v), () => finish(null));
+    timer = setTimeout(() => {
+      if (!settled) onFailure?.({ status: 'timed-out' });
+      finish(null);
+    }, budgetMs);
+    p.then((v) => finish(v), (error: unknown) => {
+      if (!settled) onFailure?.({ status: 'failed', error });
+      finish(null);
+    });
   });
 }
 
@@ -271,6 +297,11 @@ export async function buildQueryEmbedderResolved(
   } = {},
 ): Promise<ResolvedQueryEmbedder | null> {
   const { observeFallback = recordFallback } = deps;
+  const startedAt = performance.now();
+  const report = (outcome: Omit<QueryEmbedderAcquisition, 'durationMs' | 'budgetMs'>) => {
+    opts?.onAcquisition?.({ ...outcome, durationMs: performance.now() - startedAt,
+      budgetMs: (opts?.acquireBudgetMs ?? 0) > 0 ? opts!.acquireBudgetMs! : null });
+  };
   try {
     const acquire = deps.acquire ? deps.acquire() : resolveEmbedderWith({
       // P-015 harrier default flip: the QUERY side must keep ranking in the
@@ -299,15 +330,25 @@ export async function buildQueryEmbedderResolved(
       // orphaned acquisition on a withAcquireBudget timeout, below).
       acquire.catch(() => {});
       observeFallback('query-embedder-acquisition', { eligible: 1, applied: 0, reason: 'cold-acquisition-skipped' });
+      report({ status: 'cold-skipped', cause: 'cold-acquisition-skipped' });
       return null;
     }
-    const resolved = await withAcquireBudget(acquire, opts?.acquireBudgetMs ?? 0);
+    let failure: { status: 'timed-out' } | { status: 'failed'; error: unknown } | undefined;
+    const resolved = await withAcquireBudget(acquire, opts?.acquireBudgetMs ?? 0, value => { failure = value; });
     if (resolved === null) {
-      observeFallback('query-embedder-acquisition', { eligible: 1, applied: 0, reason: 'acquisition-budget-exhausted' });
+      const status = failure?.status ?? 'unavailable';
+      const cause = failure?.status === 'failed' ? acquisitionErrorCode(failure.error)
+        : failure?.status === 'timed-out' ? 'acquisition-budget-exhausted' : 'provider-unavailable';
+      observeFallback('query-embedder-acquisition', { eligible: 1, applied: 0,
+        reason: status === 'timed-out' ? 'acquisition-budget-exhausted' : 'acquisition-failed' });
+      report({ status, cause });
       return null;
     }
     // Disabled by preference is not an eligible primary path.
-    if (resolved.mode === 'disabled') return null;
+    if (resolved.mode === 'disabled') {
+      report({ status: resolved.reason === 'user_disabled' ? 'disabled' : 'unavailable', cause: resolved.reason });
+      return null;
+    }
     // WI-4734: memoized per (mode, dims, query) — see queryEmbedCache above.
     const cachedEmbed = cachedQueryEmbed(resolved.profile.profileId, resolved.dims, resolved.embed);
     const embed: Embedder = resolved.mode === 'openai'
@@ -324,9 +365,11 @@ export async function buildQueryEmbedderResolved(
     // so the floor policy can recognise it without any caller passing a mode.
     stampEmbedderMode(embed, resolved.mode, resolved.profile.profileId);
     observeFallback('query-embedder-acquisition', { eligible: 1, applied: 1, reason: 'acquired' });
+    report({ status: 'acquired', mode: resolved.mode, profileId: resolved.profile.profileId });
     return { mode: resolved.mode, dims: resolved.dims, profile: resolved.profile, embed };
   } catch (err) {
     observeFallback('query-embedder-acquisition', { eligible: 1, applied: 0, reason: 'acquisition-failed' });
+    report({ status: 'failed', cause: acquisitionErrorCode(err) });
     // Mirrors the prior local-mode behavior: a pipeline load failure (package missing,
     // model fetch failed, …) degrades to BM25-only rather than throwing.
     //

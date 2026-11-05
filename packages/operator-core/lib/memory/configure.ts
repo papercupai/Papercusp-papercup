@@ -30,6 +30,7 @@ import {
   invalidateMemoryClient,
   dynamicImport,
   EMBEDDER_DIM_SPECS,
+  resolveEmbedSidecarUrl,
   type EmbedFn,
   type EmbedderMode,
   type ResolvedEmbedder,
@@ -165,6 +166,9 @@ export function buildOpenAiEmbedder(apiKey: string, opts: OpenAiEmbedderOpts = {
 /** Is the local transformers package installed?
  *  Exported as a seam for the `resolveEmbedder` cascade tests (GAP 4). */
 export async function localAvailable(): Promise<boolean> {
+  // A configured sidecar owns inference and validates its own capabilities.
+  // Importing an unused local engine here can wrongly disable that endpoint.
+  if (resolveEmbedSidecarUrl()) return true;
   // A local-engine override (test fixtures only) serves every local leg itself,
   // so the engine IS available — and probing by import would dlopen the
   // onnxruntime native binding for nothing (EI-24688584300743328: measured in
@@ -306,9 +310,8 @@ export async function resolveEmbedderWith(deps: ResolveEmbedderDeps): Promise<Re
     return { mode: 'disabled', reason: 'user_disabled' };
   }
 
-  const key = await deps.resolveKey();
-
   if (preference === 'openai') {
+    const key = await deps.resolveKey();
     if (key) return resolvedEmbedder('openai', deps.buildOpenAi(key));
     return { mode: 'disabled', reason: 'openai_forced_but_no_key' };
   }
@@ -347,6 +350,7 @@ export async function resolveEmbedderWith(deps: ResolveEmbedderDeps): Promise<Re
     return resolvedEmbedder('local', await deps.buildLocal());
   }
   // 'auto' — openai first, then local, then disabled.
+  const key = await deps.resolveKey();
   if (key) return resolvedEmbedder('openai', deps.buildOpenAi(key));
   if (await deps.localInstalled()) {
     return resolvedEmbedder('local', await deps.buildLocal());

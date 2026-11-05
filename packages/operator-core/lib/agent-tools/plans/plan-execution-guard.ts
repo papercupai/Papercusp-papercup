@@ -59,7 +59,7 @@ export interface ExecutionPlanGoalResolution {
 }
 export interface PlanExecutionGuardDeps {
   readBindings: (ownerId: string, workspaceId: string) => Promise<ExecutionPlanBinding[]>;
-  resolveGoal?: (ownerId: string, workspaceId: string) => Promise<ExecutionPlanGoalResolution>;
+  resolveGoal?: (ownerId: string, workspaceId: string, observe?: PlanExecutionTimingObserver) => Promise<ExecutionPlanGoalResolution>;
   checkPlan: (binding: ExecutionPlanBinding, workspaceId: string, observe?: PlanExecutionTimingObserver) => Promise<string[]>;
 }
 
@@ -241,10 +241,12 @@ export function selectExecutionPlanBindings(
   return uniquePlanBindings(selected);
 }
 
-async function readExecutionPlanGoal(ownerId: string, workspaceId: string): Promise<ExecutionPlanGoalResolution> {
+async function readExecutionPlanGoal(ownerId: string, workspaceId: string,
+  observe?: PlanExecutionTimingObserver): Promise<ExecutionPlanGoalResolution> {
   return runWithWorkspace(workspaceId, async () => {
-    const { resolveOwnerGoalWithAssessment } = await import('../coordination/agent-goal-sources');
-    return resolveOwnerGoalWithAssessment(ownerId, 'self');
+    const { resolveOwnerGoalWithAssessment } = await measurePlanStage('goal_module', observe,
+      () => import('../coordination/agent-goal-sources'));
+    return measurePlanStage('goal_read', observe, () => resolveOwnerGoalWithAssessment(ownerId, 'self'));
   });
 }
 
@@ -368,7 +370,7 @@ export async function checkPlanExecutionGuard(input: PlanExecutionGuardInput,
     if (deps.resolveGoal) {
       try {
         resolution = await measurePlanStage('goal', input.observeTiming,
-          () => deps.resolveGoal!(input.ownerId, input.workspaceId));
+          () => deps.resolveGoal!(input.ownerId, input.workspaceId, input.observeTiming));
       } catch {
         // An unreadable selector cannot narrow authority. Check the entire durable
         // census instead, preserving the existing fail-closed behavior.

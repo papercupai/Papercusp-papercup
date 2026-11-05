@@ -64,7 +64,10 @@ describe('implementation authority before direct writes (EI-27540173897381380)',
         timings.push(timing); throw Error('broken timing sink');
       } }, {
         readBindings: async () => [binding],
-        resolveGoal: async () => ({ goal: null, diagnostics: [] }),
+        resolveGoal: async (_owner, _workspace, observe) => {
+          expect(observe).toBeTypeOf('function');
+          return { goal: null, diagnostics: [] };
+        },
         checkPlan: async (_binding, _workspace, observe) => {
           expect(observe).toBeTypeOf('function');
           return blockers;

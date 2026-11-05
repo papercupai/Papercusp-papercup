@@ -424,6 +424,43 @@ describe('the registry seed set', () => {
 });
 
 describe('runInstrument', () => {
+  it('replays long profile and memory inputs without redundant diagnostic leaves exhausting retention', async () => {
+    const at = 1_700_000_000_000;
+    const profiles = Array.from({ length: 12 }, (_, i) =>
+      `loop-saturation-${at - i * 1000}-pid${i + 1}-p95_700ms.cpuprofile\n`).join('');
+    const counters = Array.from({ length: 65 }, (_, i) => `other_counter_${i} ${i}\n`).join('');
+    const memory = `anon 6000000000\n${counters}anon 4000000000\n${counters}`;
+    for (const [key, stdout] of [['host:loop-profile-budget-pct', profiles], ['host:serving-anon-budget-pct', memory]]) {
+      const exec = vi.fn(async () => stdout);
+      const reading = await runInstrument(key!, { exec, now: () => at });
+      expect(reading.value).not.toBeNull();
+      expect(reading.provenance?.gaps).toEqual([]);
+      expect(replayRetainedInstrument(reading)).toMatchObject({ status: 'reproduced', value: reading.value });
+      expect(exec).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  it('redacts full command text before chunking and refuses incomplete or ambiguous chunk populations', async () => {
+    const stdout = 'Use%\n 42%\n' + 'x'.repeat(237) + '\nAuthorization: Bearer tiny-secret\n';
+    const redacted = await runInstrument('host:df-root-used-pct', { exec: async () => stdout });
+    expect(JSON.stringify(redacted.provenance)).not.toContain('tiny-secret');
+    expect(redacted.provenance?.gaps).toEqual(['redacted']);
+    expect(replayRetainedInstrument(redacted)).toMatchObject({ status: 'unavailable' });
+
+    const reading = await runInstrument('host:df-root-used-pct', {
+      exec: async () => 'Use%\n 42%\n' + '界'.repeat(600),
+    });
+    const p = reading.provenance!;
+    expect(p.gaps).toEqual([]);
+    expect(replayRetainedInstrument(reading)).toMatchObject({ status: 'reproduced', value: 42 });
+    const prefix = '$["samples"]["0"]["stdout"]';
+    const missing = { ...p, diagnostics: p.diagnostics.filter(entry => entry.path !== prefix + '["chunks"]["1"]') };
+    const mixed = { ...p, diagnostics: [...p.diagnostics, { path: prefix, value: 'Use%\n 42%\n' }] };
+    for (const provenance of [missing, mixed]) {
+      expect(replayRetainedInstrument({ ...reading, provenance })).toMatchObject({ status: 'unavailable' });
+    }
+  });
+
   it('replays retained inputs without running a command or consulting the present clock', async () => {
     const exec = vi.fn(async () => 'Use%\n 42%\n 96%\n');
     const reading = await runInstrument('host:df-max-used-pct', { exec, now: () => 1_700_000_000_000 });
@@ -523,12 +560,13 @@ describe('runInstrument', () => {
     const bounded = await runInstrument('host:df-root-used-pct', {
       exec: async () => 'Use%\n 42%\n' + 'x'.repeat(20_000),
     });
-    const input = bounded.provenance?.diagnostics.find(entry => entry.path === '$["samples"]["0"]["stdout"]');
+    const input = bounded.provenance?.diagnostics.find(entry => entry.path === '$["samples"]["0"]["stdout"]["chunks"]["0"]');
     expect(typeof input?.value).toBe('string');
     expect((input?.value as string).length).toBe(256);
     expect(bounded.provenance?.gaps).toContain('diagnostics-truncated');
     expect(Buffer.byteLength(JSON.stringify(bounded.provenance))).toBeLessThanOrEqual(16_384);
     expect(bounded.value).toBe(42);
+    expect(replayRetainedInstrument(bounded)).toMatchObject({ status: 'unavailable', value: null });
   });
 
   it('runs the registered argv without a shell and parses one value', async () => {
@@ -795,9 +833,8 @@ describe('papercusp-app-performance instruments (P-010)', () => {
     expect(reading).toMatchObject({ key: 'host:memory-paging-budget-pct', unit: '%', value: 500 });
     expect(reading.error).toBeUndefined();
     expect(reading.provenance?.diagnostics).toEqual(expect.arrayContaining([
-      { path: '$["samples"]["0"]["numericFields"]["4"]["label"]', value: 'pswpin' },
-      { path: '$["samples"]["0"]["numericFields"]["4"]["value"]', value: '1000' },
-      { path: '$["samples"]["1"]["numericFields"]["4"]["value"]', value: '7103' },
+      { path: '$["samples"]["0"]["stdout"]', value: expect.stringContaining('pswpin 1000\n') },
+      { path: '$["samples"]["1"]["stdout"]', value: expect.stringContaining('pswpin 7103\n') },
     ]));
   });
 

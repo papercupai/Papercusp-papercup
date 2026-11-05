@@ -7165,11 +7165,11 @@ export function resumeAccountPlan(args) {
  * for tests. With no `accountEnv`, the account routing stays byte-identical to
  * the pre-account resume; `accountEnv.env` layers the gateway pin on top.
  * @param {*} session
- * @param {{fork?: boolean, brain?: boolean, accountEnv?: {mode?: string, id?: string | null, env?: Record<string, string>} | null, ownerId?: string | null}} [options]
+ * @param {{fork?: boolean, brain?: boolean, accountEnv?: {mode?: string, id?: string | null, env?: Record<string, string>} | null, ownerId?: string | null, launchedBy?: string | null}} [options]
  */
 export function buildResumeEnv(
   session,
-  { fork = false, brain = false, accountEnv = null, ownerId = null } = {},
+  { fork = false, brain = false, accountEnv = null, ownerId = null, launchedBy = null } = {},
 ) {
   return {
     ...resumeEnvFor(session, { fork, ownerId }),
@@ -7189,6 +7189,9 @@ export function buildResumeEnv(
     // PAPERCUSP_TOOLS / PAPERCUSP_CONTEXT_TIER boots with the whole catalog inline.
     ...contextTrimmingEnv(session?.agent),
     ...(accountEnv?.env ?? {}),
+    // Plain resumes do not bootstrap again. Carry only this launch's explicit
+    // custody into the host; an interactive resume must not inherit a parent's.
+    PAPERCUSP_LAUNCHED_BY: String(launchedBy || '').trim(),
     // Codex keeps the route in config.toml, so its account env is otherwise
     // empty. The managed host needs this choice when it rebuilds that config
     // during a carry; it cannot infer the choice after the rebuild erased it.
@@ -14845,6 +14848,7 @@ async function launchResume(
     ownerId = null,
     originalRouting = null,
     managedAssume = null,
+    launchedBy = null,
   } = {},
 ) {
   if (originalRouting) {
@@ -15076,7 +15080,7 @@ async function launchResume(
     // the inference-gateway account (spawn-env only, otherwise lost on resume); the
     // agent-session marker arms the hook-level scheduler guard (bash gate / omp
     // coord-hook) for the brain only — never the owner's own sessions (D-003).
-    const env = buildResumeEnv(session, { fork, brain, accountEnv, ownerId });
+    const env = buildResumeEnv(session, { fork, brain, accountEnv, ownerId, launchedBy });
     const restoredClaudeToolRefs = addClaudeResumeToolReferencesToEnv(session, env, { neutralizeNative: !fork });
     if (restoredClaudeToolRefs.nativeNeutralized?.rewritten > 0) {
       console.error(
@@ -17900,6 +17904,7 @@ async function launchResolvedResume(source, args, { tracked }) {
     // Honored on the FORK branch only (resumeEnvFor): a same-backend resume
     // re-attaches its recorded coord id and must not be re-pinned.
     ownerId: args.ownerId || null,
+    launchedBy: args.launchedBy || null,
   });
 }
 
@@ -17927,7 +17932,7 @@ export async function resumeFlow(
       return;
     }
     await launchResume(source, { headless: args.headless === true, carry: args.carry, accountEnv: account, model,
-      kickoff: resumeKickoffText(args), originalRouting });
+      kickoff: resumeKickoffText(args), originalRouting, launchedBy: args.launchedBy || null });
     return;
   }
   const data = await apiImpl("/api/adv/sessions/resumable");

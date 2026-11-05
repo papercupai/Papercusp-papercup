@@ -109,18 +109,19 @@ describe('bin/publish-release-instructions.sh', () => {
   const script = path.join(DESKTOP_BIN, 'publish-release-instructions.sh');
   const PAGE = '<!doctype html><html><body><div class="prose" id="instructions-body">steps</div></body></html>\n';
 
-  /** Stub npx (renderer + gate), aws and curl; everything else is the real script. */
+  /** Stub the renderer, gate, GCS and public read; run the real publisher and storage adapter. */
   function run(opts: { dryRun?: boolean; gateRc?: number; served?: 'match' | 'stale' | 404 }) {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'publish-instructions-'));
     const home = path.join(root, 'home');
     const bin = path.join(root, 'bin');
-    const awsLog = path.join(root, 'aws.log');
+    const storageLog = path.join(root, 'storage.log');
+    const storageState = path.join(root, 'storage-state.json');
     fs.mkdirSync(path.join(home, '.papercusp'), { recursive: true });
     fs.mkdirSync(bin, { recursive: true });
     fs.writeFileSync(path.join(home, '.papercusp', 'release-host.env'), 'PAPERCUSP_UPDATE_BASE_URL=https://release.example/secret-path\n');
     fs.writeFileSync(
-      path.join(home, '.papercusp', 'r2.env'),
-      'R2_ACCOUNT_ID=acct\nR2_BUCKET=bucket\nAWS_ACCESS_KEY_ID=key\nAWS_SECRET_ACCESS_KEY=secret\n',
+      path.join(home, '.papercusp', 'release-storage.env'),
+      'PAPERCUSP_RELEASE_GCS_BUCKET=fixture-release-bucket\n',
     );
     fs.writeFileSync(
       path.join(bin, 'npx'),
@@ -136,7 +137,26 @@ process.exit(0);
 `,
       { mode: 0o755 },
     );
-    fs.writeFileSync(path.join(bin, 'aws'), `#!/bin/sh\necho "$@" >> ${JSON.stringify(awsLog)}\nexit 0\n`, { mode: 0o755 });
+    // Mirror the existing record-release-cli GCS fixture: uploaded bytes become
+    // observable metadata so release_storage_put must reconcile its real write.
+    fs.writeFileSync(path.join(bin, 'gcloud'), `#!/usr/bin/env node
+const fs = require('node:fs');
+const { createHash } = require('node:crypto');
+const args = process.argv.slice(2);
+const stateFile = process.env.PROBE_GCS_STATE;
+const state = fs.existsSync(stateFile) ? JSON.parse(fs.readFileSync(stateFile, 'utf8')) : {};
+if (args[0] === 'storage' && args[1] === 'objects' && args[2] === 'describe') {
+  const object = state[args[3]];
+  if (!object) { process.stderr.write('HTTPError 404 Not found\\n'); process.exit(1); }
+  process.stdout.write(JSON.stringify(object));
+} else if (args[0] === 'storage' && args[1] === 'cp') {
+  const bytes = fs.readFileSync(args[2]);
+  state[args[3]] = { generation: '1', size: String(bytes.length),
+    metadata: { sha256: createHash('sha256').update(bytes).digest('hex') } };
+  fs.writeFileSync(stateFile, JSON.stringify(state));
+  fs.appendFileSync(process.env.PROBE_GCS_LOG, args.join(' ') + '\\n');
+} else { process.stderr.write('Unexpected fixture storage command'); process.exit(99); }
+`, { mode: 0o755 });
     const served = opts.served ?? 'match';
     fs.writeFileSync(
       path.join(bin, 'curl'),
@@ -152,18 +172,21 @@ if (args.includes('-w')) process.stdout.write('200');
     );
     const result = spawnSync('bash', [script], {
       cwd: REPO_ROOT,
-      env: { ...process.env, PATH: `${bin}:${process.env.PATH ?? ''}`, HOME: home, DRY_RUN: opts.dryRun ? '1' : '0' },
+      env: { ...process.env, PATH: `${bin}:${process.env.PATH ?? ''}`, HOME: home, DRY_RUN: opts.dryRun ? '1' : '0',
+        PAPERCUSP_RELEASE_STORAGE_ENV: path.join(home, '.papercusp', 'release-storage.env'),
+        PROBE_GCS_STATE: storageState, PROBE_GCS_LOG: storageLog },
       encoding: 'utf8',
     });
-    const aws = fs.existsSync(awsLog) ? fs.readFileSync(awsLog, 'utf8') : '';
+    const storage = fs.existsSync(storageLog) ? fs.readFileSync(storageLog, 'utf8') : '';
     fs.rmSync(root, { recursive: true, force: true });
-    return { ...result, output: `${result.stdout}\n${result.stderr}`, aws };
+    return { ...result, output: `${result.stdout}\n${result.stderr}`, storage };
   }
 
   it('uploads instructions.html to the secret path and verifies the served bytes', () => {
     const r = run({});
     expect(r.status, r.output).toBe(0);
-    expect(r.aws).toContain('s3://bucket/secret-path/instructions.html');
+    expect(r.storage).toContain('gs://fixture-release-bucket/secret-path/instructions.html');
+    expect(r.storage).toContain('--if-generation-match=0');
     expect(r.output).toContain('instructions.html served and byte-identical');
     // The secret path segment never reaches the console.
     expect(r.output).not.toContain('secret-path');
@@ -173,7 +196,7 @@ if (args.includes('-w')) process.stdout.write('200');
     const r = run({ dryRun: true });
     expect(r.status, r.output).toBe(0);
     expect(r.output).toContain('DRY_RUN=1');
-    expect(r.aws).toBe('');
+    expect(r.storage).toBe('');
   });
 
   it('refuses to upload when the identity gate finds a leak (1) or cannot check (2)', () => {
@@ -181,7 +204,7 @@ if (args.includes('-w')) process.stdout.write('200');
       const r = run({ gateRc });
       expect(r.status).toBe(gateRc);
       expect(r.output).toContain('REFUSING TO UPLOAD');
-      expect(r.aws).toBe('');
+      expect(r.storage).toBe('');
     }
   });
 

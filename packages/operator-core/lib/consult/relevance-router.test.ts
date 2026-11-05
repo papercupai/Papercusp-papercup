@@ -429,6 +429,25 @@ describe('routing stage receipts', () => {
     expect(result.snapshot.measurement).toEqual(receipts[0]);
   });
 
+  it('distinguishes successful acquisition followed by query inference timeout', async () => {
+    const sql = vi.fn(async () => []) as unknown as ReturnType<ConsultRouteDeps['getSql']>;
+    const acquisition = { status: 'acquired' as const, durationMs: 1, budgetMs: 10,
+      mode: 'gemma' as const, profileId: EMBEDDER_DIM_SPECS.gemma.profileId };
+    const embed = vi.fn(async () => { throw new DOMException('private provider text', 'TimeoutError'); });
+    const result = await routeConsult(params, { getSql: () => sql, embed,
+      embeddingProfile: resolveProseProfileSelection('gemma', EMBEDDER_DIM_SPECS.gemma),
+      embeddingMode: 'gemma', embeddingAcquisition: acquisition });
+    expect(embed).toHaveBeenCalledOnce();
+    expect(result.snapshot).toMatchObject({ embeddingAcquisition: acquisition,
+      embeddingFailure: { stage: 'inference', cause: 'ETIMEDOUT' }, degraded: 'embed-unavailable' });
+    expect(JSON.stringify(result.snapshot.embeddingFailure)).not.toContain('private');
+
+    const unavailable = await routeConsult(params, { getSql: () => sql, embed: null,
+      embeddingProfile: null, embeddingMode: null,
+      embeddingAcquisition: { status: 'failed', cause: 'ECONNREFUSED', durationMs: 1, budgetMs: 10 } });
+    expect(unavailable.snapshot.embeddingFailure).toEqual({ stage: 'acquisition', cause: 'ECONNREFUSED' });
+  });
+
   it('a synchronous or rejected diagnostic recorder does not replace the routing exception', async () => {
     const error = new Error('route failed');
     for (const recordTelemetry of [() => { throw new Error('sink failed'); }, async () => { throw new Error('sink failed'); }]) {

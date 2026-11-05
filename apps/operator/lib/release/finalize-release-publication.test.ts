@@ -193,9 +193,11 @@ describe('release publication configuration and wiring', () => {
     expect(finalizer).toBeGreaterThan(publicProbe);
     const scopePreflight = upload.indexOf('--preflight');
     const preflightCommand = upload.lastIndexOf('if ! npx tsx', scopePreflight);
-    const firstArtifactUpload = upload.indexOf('s3 cp "$f"');
+    const firstArtifactUpload = upload.indexOf('release_storage_put "$f"');
     const manifestUpload = upload.indexOf('upload_manifest "$LATEST_JSON"');
     expect(scopePreflight).toBeGreaterThanOrEqual(0);
+    expect(firstArtifactUpload).toBeGreaterThanOrEqual(0);
+    expect(manifestUpload).toBeGreaterThanOrEqual(0);
     expect(scopePreflight).toBeLessThan(firstArtifactUpload);
     expect(scopePreflight).toBeLessThan(manifestUpload);
     expect(preflightCommand).toBeGreaterThanOrEqual(0);

@@ -118,6 +118,19 @@ beforeEach(async () => {
 });
 
 describe('real write-boundary bypass regression', () => {
+  it('separates goal module and read timing without allowing a broken diagnostic sink to change refusal', async () => {
+    await db.sql`INSERT INTO harness_shared.session_briefs VALUES (${OWNER}, ${WS}, 'draft-feature', 'project',
+      ${db.sql.json({ scope: { plan: 'draft-feature', harness: 'project' } })}, 1)`;
+    const timings: Array<{ stage: string; durationMs: number }> = [];
+    const result = await checkPlanExecutionGuard({ ownerId: OWNER, workspaceId: WS,
+      toolName: 'apply_patch', args: {}, observeTiming: timing => {
+        timings.push(timing);
+        throw new Error('diagnostic sink unavailable');
+      } });
+    expect(result).toMatchObject({ planSlug: 'draft-feature', blockers: ['plan_status:draft'] });
+    expect(timings.map(timing => timing.stage)).toEqual(expect.arrayContaining(['goal_module', 'goal_read', 'goal']));
+    expect(timings.every(timing => Number.isFinite(timing.durationMs) && timing.durationMs >= 0)).toBe(true);
+  });
   it('denies native patches and shell writes despite an unrelated held WI and no worn identity', async () => {
     await db.sql`INSERT INTO harness_shared.session_briefs VALUES (${OWNER}, ${WS}, 'draft-feature', 'project',
       ${db.sql.json({ scope: { plan: 'draft-feature', harness: 'project' } })}, 1)`;

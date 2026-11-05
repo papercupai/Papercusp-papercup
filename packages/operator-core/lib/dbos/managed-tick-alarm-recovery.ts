@@ -20,7 +20,7 @@ export async function reconcileManagedTickAlarms(deps: ManagedTickRecoveryDeps =
   resolved: string[]; intervalMs: number;
 }> {
   const { computeConditionStates, readConditionEnvelopesForPrefix } =
-    await import('../agent-tools/coordination/tools/conditions');
+    await import('../agent-tools/coordination/condition-state');
   const envelopes = await (deps.read ?? (() => readConditionEnvelopesForPrefix(PREFIX)))();
   const states = computeConditionStates(envelopes);
   const alarms = new Map<string, Record<string, unknown>>();

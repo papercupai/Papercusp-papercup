@@ -19,6 +19,9 @@ const findSessionTranscript = vi.hoisted(() => vi.fn<(id: string, opts?: unknown
 vi.mock('../claude-sessions', () => ({ findSessionTranscript }));
 const resolveDispatchSource = vi.hoisted(() => vi.fn<typeof import('./consult-dispatch').resolveDispatchSource>());
 vi.mock('./consult-dispatch', () => ({ resolveDispatchSource }));
+// This fixture resolves its own source; importing the live launcher would pull
+// unrelated database/bootstrap state into the fail-open probe under test.
+vi.mock('../agent-launch-core', () => ({ resolveResumeTarget: vi.fn() }));
 
 beforeEach(() => {
   findSessionTranscript.mockReset();

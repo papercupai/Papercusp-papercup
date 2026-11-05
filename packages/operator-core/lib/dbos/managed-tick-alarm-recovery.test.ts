@@ -4,7 +4,7 @@ import { reconcileManagedTickAlarms, startManagedTickAlarmRecovery } from './man
 
 vi.mock('@dbos-inc/dbos-sdk', () => { throw new Error('DBOS unavailable'); });
 vi.mock('../pg-notify-bus', () => ({ createNotifyBus: () => ({ subscribe: () => () => {} }) }));
-beforeAll(async () => { await import('../agent-tools/coordination/tools/conditions'); });
+beforeAll(async () => { await import('../agent-tools/coordination/condition-state'); });
 afterEach(() => { resetScheduledRegistry(); vi.useRealTimers(); });
 
 function alarm(id = 1, run = 'original'): Record<string, unknown> {
@@ -117,6 +117,7 @@ describe('managed tick original-incarnation recovery', () => {
   });
 
   it('re-reads a change arriving during an older empty snapshot and stops its subscription', async () => {
+    vi.useFakeTimers();
     let changed!: () => void;
     let finish!: (value: Record<string, unknown>[]) => void;
     const unsubscribe = vi.fn();

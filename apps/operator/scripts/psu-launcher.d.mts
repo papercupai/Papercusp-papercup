@@ -1756,9 +1756,9 @@ export function resumeAccountPlan(args: any): {
  * for tests. With no `accountEnv`, the account routing stays byte-identical to
  * the pre-account resume; `accountEnv.env` layers the gateway pin on top.
  * @param {*} session
- * @param {{fork?: boolean, brain?: boolean, accountEnv?: {mode?: string, id?: string | null, env?: Record<string, string>} | null, ownerId?: string | null}} [options]
+ * @param {{fork?: boolean, brain?: boolean, accountEnv?: {mode?: string, id?: string | null, env?: Record<string, string>} | null, ownerId?: string | null, launchedBy?: string | null}} [options]
  */
-export function buildResumeEnv(session: any, { fork, brain, accountEnv, ownerId }?: {
+export function buildResumeEnv(session: any, { fork, brain, accountEnv, ownerId, launchedBy }?: {
     fork?: boolean;
     brain?: boolean;
     accountEnv?: {
@@ -1767,9 +1767,11 @@ export function buildResumeEnv(session: any, { fork, brain, accountEnv, ownerId 
         env?: Record<string, string>;
     } | null;
     ownerId?: string | null;
+    launchedBy?: string | null;
 }): {
     PAPERCUSP_ACCOUNT_ID?: string | undefined;
     PAPERCUSP_ACCOUNT_ROUTING_MODE?: string | undefined;
+    PAPERCUSP_LAUNCHED_BY: string;
     PAPERCUSP_TOOLS?: string | undefined;
     PAPERCUSP_TOOLS_COMPACT?: string | undefined;
     ENABLE_TOOL_SEARCH?: string | undefined;
@@ -1787,6 +1789,7 @@ export function buildResumeEnv(session: any, { fork, brain, accountEnv, ownerId 
 } | {
     PAPERCUSP_ACCOUNT_ID?: string | undefined;
     PAPERCUSP_ACCOUNT_ROUTING_MODE?: string | undefined;
+    PAPERCUSP_LAUNCHED_BY: string;
     PAPERCUSP_TOOLS?: string | undefined;
     PAPERCUSP_TOOLS_COMPACT?: string | undefined;
     ENABLE_TOOL_SEARCH?: string | undefined;
@@ -1804,6 +1807,7 @@ export function buildResumeEnv(session: any, { fork, brain, accountEnv, ownerId 
 } | {
     PAPERCUSP_ACCOUNT_ID?: string | undefined;
     PAPERCUSP_ACCOUNT_ROUTING_MODE?: string | undefined;
+    PAPERCUSP_LAUNCHED_BY: string;
     PAPERCUSP_TOOLS?: string | undefined;
     PAPERCUSP_TOOLS_COMPACT?: string | undefined;
     ENABLE_TOOL_SEARCH?: string | undefined;
@@ -1821,6 +1825,7 @@ export function buildResumeEnv(session: any, { fork, brain, accountEnv, ownerId 
 } | {
     PAPERCUSP_ACCOUNT_ID?: string | undefined;
     PAPERCUSP_ACCOUNT_ROUTING_MODE?: string | undefined;
+    PAPERCUSP_LAUNCHED_BY: string;
     PAPERCUSP_TOOLS?: string | undefined;
     PAPERCUSP_TOOLS_COMPACT?: string | undefined;
     ENABLE_TOOL_SEARCH?: string | undefined;

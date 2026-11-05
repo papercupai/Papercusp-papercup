@@ -193,7 +193,7 @@ describe('EI-20207763368144905 — nested HUD assertion quoting', () => {
   it('removes the per-run bridge token only after stopping the owned process tree', () => {
     // Teardown captures the stop script's exit code (a failed stop is FATAL) rather than
     // discarding it; the token cleanup must still come after that stop.
-    const stopIndex = src.indexOf('"$WORK/stop.sh" >/dev/null 2>&1 || stop_rc=$?');
+    const stopIndex = src.search(/^\s*"\$WORK\/stop\.sh"[^\n]*\|\|\s*stop_rc=\$\?/m);
     const runtimeTokenCleanupIndex = src.indexOf(
       'rm -f -- "${TMPDIR:-/tmp}/tauri-dev-bridge-$BRIDGE_PID.token"',
     );

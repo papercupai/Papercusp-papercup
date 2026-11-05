@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { mockResolvedOnceTyped } from '../testing/typed-mock';
 
 type ValidateBarCritiquePlanOrigin = typeof import('./get-feedback-core').validateBarCritiquePlanOrigin;
+type BuildQueryEmbedderResolved = typeof import('../agent-tools/search/embedder').buildQueryEmbedderResolved;
 
 const h = vi.hoisted(() => {
   const sql = {};
@@ -20,7 +21,7 @@ const h = vi.hoisted(() => {
     validateBarCritiquePlanOrigin: vi.fn<ValidateBarCritiquePlanOrigin>(async () => null),
     continueFeedbackRequestCore: vi.fn(async (_workspace: string, _conversation: string, _deps: unknown) => false),
     getOrgPg: vi.fn(() => ({ sql })),
-    buildQueryEmbedderResolved: vi.fn(async () => null),
+    buildQueryEmbedderResolved: vi.fn<BuildQueryEmbedderResolved>(async () => null),
     interactiveEmbedAcquireBudgetMs: vi.fn(() => 10),
     resolveProseProfileSelection: vi.fn(),
     resolveSessionStates: vi.fn(),
@@ -69,6 +70,28 @@ vi.mock('./expert-routing-settings', async (importOriginal) => {
 import { acceptFeedbackRequestProd, continueFeedbackRequestProd, getFeedbackProd } from './get-feedback-prod';
 
 describe('getFeedbackProd expert-routing settings', () => {
+  it.each([
+    { status: 'timed-out', cause: 'acquisition-budget-exhausted' },
+    { status: 'failed', cause: 'ECONNREFUSED' },
+    { status: 'disabled', cause: 'user_disabled' },
+    { status: 'unavailable', cause: 'gemma_forced_but_transformers_not_installed' },
+  ] as const)('retains exact acquisition cause $cause at the consult boundary without duplicate dispatch', async (failure) => {
+    const outcome = { ...failure, durationMs: 10, budgetMs: 10 };
+    h.buildQueryEmbedderResolved.mockImplementationOnce(async opts => {
+      opts?.onAcquisition?.(outcome);
+      return null;
+    });
+    const request = { workspaceId: 'ws-acquisition', requesterId: 'requester', question: 'exact saved question', requestKey: 'same-key' };
+    await getFeedbackProd(request, { ownerId: 'requester' } as never, { allowDispatch: false });
+    expect(h.getFeedbackCore).toHaveBeenCalledOnce();
+    expect(h.getFeedbackCore.mock.calls[0]![0]).toMatchObject(request);
+    const deps = h.getFeedbackCore.mock.calls[0]![1] as { route: (params: unknown) => Promise<unknown> };
+    await deps.route({ question: request.question });
+    expect(h.routeConsult).toHaveBeenCalledOnce();
+    expect(h.routeConsult.mock.calls[0]![1]).toMatchObject({ embeddingAcquisition: outcome, embed: null });
+    expect(h.makeConsultReachDispatcher).not.toHaveBeenCalled();
+  });
+
   it.each(['floor', 'minimum', 'lexical'])('screens the canonical METHOD target before %s selection, including recovery', async (via) => {
     const saved = { workspaceId: 'ws-method', requesterId: 'applier', question: 'current method',
       policy: 'method-review', methodReviewRubricRef: 'acceptance-native' };

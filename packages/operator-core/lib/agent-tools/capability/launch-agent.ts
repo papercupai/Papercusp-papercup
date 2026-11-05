@@ -1255,6 +1255,7 @@ export default defineTool({
     let resumeModel: string | null = null;
     let resumeModelSource: CodexModelSource | null = null;
     let resumeAccount: string | null = null;
+    let resumeHeadless: boolean | undefined;
     let successorBrief: string | null = null;
     const successorPreparation: { reconcile?: () => Promise<string | null>;
       beforeSpawn?: () => Promise<void>; release?: () => Promise<void> } = {};
@@ -1352,6 +1353,7 @@ export default defineTool({
       resumeNeedsStartupReservation = hasAdvSessionTerminalEvidence(target) || target.live === false;
       resumeModel = target.model;
       resumeAccount = target.account;
+      resumeHeadless = target.headless;
       if (args.restoreOriginalMember) {
         const pin = args.restoreOriginalMember;
         if (target.agent !== 'codex' || target.workspaceId !== workspaceId || target.live || !target.endedAt ||
@@ -2159,6 +2161,12 @@ export default defineTool({
         }
       }
     }
+
+    // An exact continuation keeps its recorded placement when no canonical
+    // fleet profile supplies one. Explicit caller placement and saved fleet
+    // configuration retain precedence; forks and fresh successors keep their
+    // own launch defaults.
+    if (isResume && !fork) args.headless ??= resumeHeadless;
 
     let base;
     try {

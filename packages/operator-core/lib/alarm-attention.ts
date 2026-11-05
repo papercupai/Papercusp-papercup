@@ -63,7 +63,7 @@ async function defaultRecentlyEscalated(title: string, cooldownMs: number): Prom
 
 async function defaultResolve(input: SevereEventResolution): Promise<boolean> {
   const { computeConditionStates, readConditionEnvelopes, readLatestConditionEnvelope } =
-    await import('./agent-tools/coordination/tools/conditions');
+    await import('./agent-tools/coordination/condition-state');
   // The generic fold deliberately stops at CONDITIONS_FAST_PATH_ROW_CAP across
   // every condition family. Long-open one-shot conditions can age out of that
   // window while still being current, so prefer the indexed exact-key read when

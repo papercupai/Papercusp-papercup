@@ -48,7 +48,6 @@ import { effectiveCriterionInstrumentKey } from './rubrics';
 import type { RubricCriterionCheck } from './agent-tools/plans/rubric-template';
 import { retainMeasurementProvenance } from './measurement-provenance';
 import { parseRecordedMeasurementProvenance, type RecordedMeasurementProvenance } from '@papercusp/test-config/execution-details';
-import { isSensitiveValueKey } from './sensitive-text';
 import { HOLDER_BEHAVIOR_INSTRUMENT_KEYS } from './goal-holder-behavior-metrics';
 import { GOAL_MODE_INSTRUMENT_KEYS } from './goal-mode-computed-instruments';
 import { PROVIDER_PACKAGE_INSTRUMENT_KEYS } from './integrations/provider-package-acceptance';
@@ -1103,7 +1102,26 @@ export function replayRetainedInstrument(input: {
   try {
     for (let i = 0; i < count; i++) {
       const prefix = `$["samples"]["${i}"]`;
-      const stdout = diagnostics.get(prefix + '["stdout"]'), atText = diagnostics.get(prefix + '["at"]');
+      const rawPath = prefix + '["stdout"]';
+      let stdout = diagnostics.get(rawPath);
+      const chunkPaths = [...diagnostics.keys()].filter(path => path.startsWith(rawPath + '['));
+      if (chunkPaths.length) {
+        const chunkCount = diagnostics.get(rawPath + '["chunkCount"]');
+        if (stdout !== undefined || typeof chunkCount !== 'number' || !Number.isInteger(chunkCount)
+          || chunkCount < 2 || chunkCount > 64 || chunkPaths.length !== chunkCount + 1) {
+          return unavailable('Original raw text chunks are incomplete or ambiguous.');
+        }
+        const chunks: string[] = [];
+        for (let j = 0; j < chunkCount; j++) {
+          const chunk = diagnostics.get(rawPath + `["chunks"]["${j}"]`);
+          if (typeof chunk !== 'string' || chunk.length === 0 || (j < chunkCount - 1 && chunk.length !== 256)) {
+            return unavailable('An original raw text chunk is missing or malformed.');
+          }
+          chunks.push(chunk);
+        }
+        stdout = chunks.join('');
+      }
+      const atText = diagnostics.get(prefix + '["at"]');
       const at = typeof atText === 'string' ? Date.parse(atText) : NaN;
       if (typeof stdout !== 'string' || !Number.isFinite(at) || at < started || at > finished) {
         return unavailable('An original raw sample or its clock is missing.');
@@ -1141,7 +1159,7 @@ export async function runInstrument(key: string, deps: InstrumentRunDeps = {}): 
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   const base = { key: instrument.key, unit: instrument.unit, argv: instrument.argv };
   const startedAt = new Date(now()).toISOString();
-  const samples: Array<{ value: number | null; at: string; stdout: string; numericFields: Array<{ label: string; value: string }> }> = [];
+  const samples: Array<{ value: number | null; at: string; stdout: string }> = [];
   const finish = (reading: InstrumentReading): InstrumentReading => ({
     ...reading,
     provenance: retainMeasurementProvenance({
@@ -1156,21 +1174,10 @@ export async function runInstrument(key: string, deps: InstrumentRunDeps = {}): 
       : await exec(instrument.argv, instrument.timeoutMs);
     const at = now();
     const value = instrument.parse(stdout, { now: at });
-    // Raw-output combiners (e.g. PSI + pswpin) need the original counters,
-    // not just parse(stdout)'s preliminary scalar. Retain labelled numbers
-    // only; the shared bounded sanitizer handles the final context budget.
-    const numericFields: Array<{ label: string; value: string }> = [];
-    const numeric = /\b([A-Za-z_][A-Za-z0-9_.-]{0,63})[\t ]*(?:=|:|[\t ])[\t ]*(-?\d+(?:\.\d+)?(?:[Ee][+-]?\d+)?)(?=$|[\s,}])/g;
-    for (const match of stdout.matchAll(numeric)) {
-      if (isSensitiveValueKey(match[1]!)) continue;
-      numericFields.push({ label: match[1]!, value: match[2]! });
-      // More fields would be omitted by the 64-entry retention policy anyway.
-      // A sentinel beyond that limit makes the truncation explicit.
-      if (numericFields.length === 65) break;
-    }
-    // Retain the parser input, not just its answer. The shared provenance policy
-    // redacts and bounds stdout and records gaps when exact replay is unavailable.
-    samples.push({ value, at: new Date(at).toISOString(), stdout, numericFields });
+    // Raw-output combiners need the original counters. The complete parser
+    // input already contains them; duplicating numeric leaves can exhaust the
+    // bounded envelope before stdout or the measured value is retained.
+    samples.push({ value, at: new Date(at).toISOString(), stdout });
     return { value, at, stdout };
   };
   try {

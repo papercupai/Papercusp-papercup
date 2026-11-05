@@ -30,7 +30,7 @@ const M = vi.hoisted(() => ({
   readLatestConditionEnvelope: vi.fn(async (_key: string) => null as Record<string, unknown> | null),
 }));
 vi.mock('./agent-tools/coordination/messages', () => ({ sendMessage: M.sendMessage }));
-vi.mock('./agent-tools/coordination/tools/conditions', () => ({
+vi.mock('./agent-tools/coordination/condition-state', () => ({
   readLatestConditionEnvelope: M.readLatestConditionEnvelope,
 }));
 vi.mock('./agent-tools/coordination/inbox-wake', () => ({ wakeRecipients: M.wakeRecipients }));

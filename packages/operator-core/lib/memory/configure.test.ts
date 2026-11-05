@@ -41,6 +41,7 @@ import { EmbedBudgetExhaustedError } from './embed-admission';
 // The per-mode declared widths — the emitting side of the dims contract. The
 // mock above spreads `...actual`, so this is the real spec table.
 import { EMBEDDER_DIM_SPECS, memoryHost } from '@papercusp/memory';
+import * as memory from '@papercusp/memory';
 
 // Capture module evaluation before any test selects a backend. Registry-only
 // imports must configure the host without starting the org-PG settings read.
@@ -458,6 +459,17 @@ describe('resolveEmbedderWith — the openai → local → disabled cascade (GAP
     expect(localInstalled).not.toHaveBeenCalled();
   });
 
+  it.each(['local', 'gemma', 'harrier'] as const)('forced %s stays usable when cloud credential resolution throws', async (mode) => {
+    const { deps, resolveKey, buildOpenAi } = makeDeps({
+      readPreference: async () => mode,
+      resolveKey: async () => { throw new Error('credential store unavailable'); },
+      localInstalled: async () => true,
+    });
+    expect((await resolveEmbedderWith(deps)).mode).toBe(mode);
+    expect(resolveKey).not.toHaveBeenCalled();
+    expect(buildOpenAi).not.toHaveBeenCalled();
+  });
+
   it('local-forced never consults the openai key (forced means forced)', async () => {
     const { deps, resolveKey, buildOpenAi } = makeDeps({
       readPreference: async () => 'local',
@@ -653,6 +665,21 @@ describe('readEmbedderPreference — env override wiring (production seam)', () 
  * available", never "this box has transformers installed".
  */
 describe('localAvailable — must not report "not installed" for a VM-realm import failure', () => {
+  it('keeps a configured sidecar available without importing the in-process inference package', async () => {
+    const probe = vi.spyOn(memory, 'dynamicImport').mockRejectedValue(new Error('in-process package absent'));
+    try {
+      vi.stubEnv('PAPERCUSP_EMBED_SIDECAR_URL', 'http://127.0.0.1:3384');
+      await expect(localAvailable()).resolves.toBe(true);
+      expect(probe).not.toHaveBeenCalled();
+      vi.stubEnv('PAPERCUSP_EMBED_SIDECAR_URL', '');
+      await expect(localAvailable()).resolves.toBe(false);
+      expect(probe).toHaveBeenCalledOnce();
+    } finally {
+      probe.mockRestore();
+      vi.unstubAllEnvs();
+    }
+  });
+
   it('reports true whenever the package is genuinely importable here', async () => {
     let importable = false;
     try {

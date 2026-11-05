@@ -6,7 +6,7 @@ const { readLatestConditionEnvelopeMock, broadcastResolvedMock } = vi.hoisted(()
   readLatestConditionEnvelopeMock: vi.fn(async (_conditionKey: string) => null as null | Record<string, unknown>),
   broadcastResolvedMock: vi.fn(async () => true),
 }));
-vi.mock('./agent-tools/coordination/tools/conditions', () => ({
+vi.mock('./agent-tools/coordination/condition-state', () => ({
   readLatestConditionEnvelope: readLatestConditionEnvelopeMock,
   readConditionEnvelopes: vi.fn(async () => []),
   computeConditionStates: vi.fn(() => []),
@@ -150,7 +150,7 @@ describe('default alarm recovery', () => {
     vi.clearAllMocks();
     const conditionKey = 'alarm:legacy-transport';
     readLatestConditionEnvelopeMock.mockResolvedValue(null);
-    const { computeConditionStates } = await import('./agent-tools/coordination/tools/conditions');
+    const { computeConditionStates } = await import('./agent-tools/coordination/condition-state');
     mockReturnOnceTyped(vi.mocked(computeConditionStates), [
       {
         condition_key: conditionKey,

@@ -4,6 +4,7 @@ import { getBuildInfo } from '../build-info';
 import { recordExpertiseRoutingInvocation } from '../endpoint-route/telemetry';
 import { CONSULT_DEFAULT_POLICY, methodReviewTarget } from './selection-policies';
 import type { AcceptedFeedbackResult, GetFeedbackDeps, GetFeedbackRequest } from './get-feedback-core';
+import type { QueryEmbedderAcquisition } from '../agent-tools/search/embedder';
 
 export interface GetFeedbackProdOptions {
     acceptedRequest?: GetFeedbackDeps['acceptedRequest'];
@@ -108,7 +109,9 @@ export async function getFeedbackProd(
   // edit rank against one policy and dispatch against another.
   const routingSettings = await readConsultExpertRoutingSettings(request.workspaceId);
   const expertRouting = bindConsultExpertRoutingSettings(routingSettings);
-  const resolved = await buildQueryEmbedderResolved({ acquireBudgetMs: interactiveEmbedAcquireBudgetMs() });
+  let embeddingAcquisition: QueryEmbedderAcquisition | undefined;
+  const resolved = await buildQueryEmbedderResolved({ acquireBudgetMs: interactiveEmbedAcquireBudgetMs(),
+    onAcquisition: outcome => { embeddingAcquisition = outcome; } });
   const embed = resolved?.embed ?? null;
   const embeddingProfile = resolved
     ? resolveProseProfileSelection(resolved.mode, resolved.profile)
@@ -140,6 +143,7 @@ export async function getFeedbackProd(
         embed,
         embeddingProfile,
         embeddingMode: embeddingProfile && resolved ? resolved.mode : null,
+        embeddingAcquisition,
         getLiveness: async (ownerIds) => {
           const [verdicts, pausedOwners] = await Promise.all([
             resolveSessionStates(ownerIds.map((ownerId) => ({ ownerId })), {
