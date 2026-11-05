@@ -13,6 +13,7 @@ import {
   readFileSync,
   rmSync,
   symlinkSync,
+  utimesSync,
   writeFileSync,
 } from "node:fs";
 import { hostname, tmpdir } from "node:os";
@@ -1138,6 +1139,19 @@ test("fs-mutex wait budget honours the unattended knob below the explicit one", 
     25,
   );
   assert.equal(resolveFsMutexTimeoutMs({ PAPERCUSP_UNATTENDED_LOCK_WAIT_SEC: "junk" }), 180_000);
+});
+
+test("fs-mutex admission reconciles abandoned staging readers", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "install-safe-staging-admission-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  for (const [name, acquire] of [["staging-read", withFsMutexRead], ["staging-write", withFsMutex]]) {
+    const orphan = join(root, `${name}.readers-staging`, "orphan.lock");
+    mkdirSync(orphan, { recursive: true });
+    utimesSync(orphan, new Date(0), new Date(0));
+    await acquire(name, async () => {
+      assert.equal(existsSync(orphan), false, "admission must reconcile an abandoned staging marker");
+    }, { lockRootDir: root, timeoutMs: 100, retryMs: 5 });
+  }
 });
 
 test("fs-mutex reclaims a recycled reader PID but retains its matching live identity", async () => {
