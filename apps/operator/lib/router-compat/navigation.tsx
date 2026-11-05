@@ -6,6 +6,7 @@ import {
   useRouterState,
   redirect as tsrRedirect,
   notFound as tsrNotFound,
+  type AnyRouter,
 } from '@tanstack/react-router';
 import { navigationFromHref } from './href';
 
@@ -68,11 +69,11 @@ export function useRouter(): AppRouterInstance {
 }
 
 export function usePathname(): string {
-  return useRouterState({ select: (s) => s.location.pathname });
+  return useRouterState<AnyRouter, string>({ select: (s) => s.location.pathname });
 }
 
 export function useSearchParams(): URLSearchParams {
-  const searchStr = useRouterState({ select: (s) => s.location.searchStr ?? '' });
+  const searchStr = useRouterState<AnyRouter, string>({ select: (s) => s.location.searchStr ?? '' });
   return useMemo(() => new URLSearchParams(searchStr), [searchStr]);
 }
 

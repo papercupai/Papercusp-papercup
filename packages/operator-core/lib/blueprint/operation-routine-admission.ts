@@ -5,6 +5,62 @@
 import type { Sql, TransactionSql } from 'postgres';
 import { PRICE_TABLE_VERSION } from '@papercusp/model-pricing';
 import { ANY_FAMILY_TERMINAL_STATES } from '../work-item-dispatch-states';
+import { AGENT_PLACEMENT_DEFAULTS } from './operation-agent-placement';
+import { runWithWorkspace } from '../workspace-als';
+
+/** The registered routine owns exhausted admissions; it does not impersonate
+ * their workers or turn a retained partial report into successful output. */
+export async function reconcileRetiredRoutineOperations(
+  sql: Sql, input: { workspaceId: string; routineId: string },
+): Promise<string[]> {
+  const callerId = `routine:${input.routineId}`;
+  const rows = await sql<Array<{
+    receipt_id: string; feature_id: string; harness_slug: string; status: string; updated_ts: string | number;
+  }>>`
+    SELECT i.id::text AS receipt_id, w.feature_id, w.harness_slug, w.status, w.updated_ts
+      FROM harness_shared.routines r
+      JOIN harness_shared.blueprint_operation_invocations i
+        ON i.workspace_id = r.workspace_id AND i.caller_id = ${callerId}
+      JOIN harness_shared.work_items w ON w.workspace_id = i.workspace_id
+       AND w.harness_slug = COALESCE(i.target_harness_slug, i.harness_slug)
+       AND w.feature_id = i.target_ref
+     WHERE r.workspace_id = ${input.workspaceId} AND r.id = ${input.routineId}
+       AND r.active AND r.target_role = 'system:blueprint-operation'
+       AND i.target_kind = 'work-item' AND i.agent_placement_retired_at IS NOT NULL
+       AND i.agent_launch_attempts >= ${AGENT_PLACEMENT_DEFAULTS.maxAttempts}
+       AND i.agent_last_launch_at <= now() - make_interval(secs => ${AGENT_PLACEMENT_DEFAULTS.retryAfterSec})
+       AND w.status <> ALL(${[...ANY_FAMILY_TERMINAL_STATES]}::text[])
+       AND w.taken_by IS NULL AND w.origin <> 'remote'
+       AND w.payload->'blueprintOperation'->>'callerId' = i.caller_id
+       AND w.payload->'blueprintOperation'->>'operationId' = i.operation_id
+       AND w.payload->'blueprintOperation'->>'specificationRevision' = i.specification_revision
+       AND NOT (w.payload ? 'externalRuntimeProducer')
+       AND NOT EXISTS (SELECT 1 FROM harness_shared.adv_sessions s
+         WHERE s.workspace_id = i.workspace_id AND s.ended_at IS NULL AND s.ended_by IS NULL
+           AND (s.coord_owner_id = i.agent_launch_owner_id OR s.feature = w.feature_id))
+       AND NOT EXISTS (SELECT 1 FROM harness_shared.coord_event_log e
+         WHERE e.workspace_id = i.workspace_id AND e.surface = 'blueprint-operation'
+           AND e.writer_key = 'receipt:' || i.id::text AND e.body->>'kind' = 'completion-pending'
+           AND CASE WHEN e.body->>'deadlineAt' ~ '^[0-9]+$'
+                    THEN (e.body->>'deadlineAt')::numeric > extract(epoch FROM clock_timestamp()) * 1000
+                    ELSE true END
+           AND NOT EXISTS (SELECT 1 FROM harness_shared.coord_event_log d
+             WHERE d.workspace_id = e.workspace_id AND d.surface = e.surface AND d.writer_key = e.writer_key
+               AND d.body->>'kind' = 'completion-settlement' AND d.body->>'attemptEventId' = e.id::text))
+     ORDER BY i.id LIMIT 32
+  `;
+  const { setWorkItemState } = await import('../work-items');
+  const disposed: string[] = [];
+  for (const row of rows) {
+    const item = await runWithWorkspace(input.workspaceId, () => setWorkItemState(row.feature_id, 'dropped', {
+      harness: row.harness_slug, by: 'system:blueprint-operation', skipCompletionGate: true,
+      expectedCurrentState: row.status, unclaimedSnapshotTs: Number(row.updated_ts),
+      completionRef: `routine:${input.routineId}:receipt:${row.receipt_id}:placement-exhausted`,
+    }));
+    if (item?.state === 'dropped') disposed.push(row.feature_id);
+  }
+  return disposed;
+}
 
 type Reason = 'inactive' | 'overlap' | 'unsupported-concurrency' | 'cost-unknown' | 'cost-exceeded';
 export class RoutineOperationAdmissionRefusal extends Error {

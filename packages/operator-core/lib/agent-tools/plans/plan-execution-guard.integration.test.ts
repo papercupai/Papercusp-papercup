@@ -263,7 +263,11 @@ describe('real write-boundary bypass regression', () => {
     await db.sql`INSERT INTO harness_shared.plan_audits VALUES (${WS},'project','draft-feature','activation',1,'current',NULL)`;
     policy.realStartGate = true;
     policy.readLifecycle.mockReset();
-    policy.readLifecycle.mockResolvedValueOnce({ satisfied: true, codes: [], blockingBars: [] })
+    policy.readLifecycle.mockImplementationOnce(async (...args: unknown[]) => {
+      const options = args[2] as { onRead?: (source: string, elapsedMs: number) => void };
+      options.onRead?.('plan', 4);
+      return { satisfied: true, codes: [], blockingBars: [] };
+    })
       .mockResolvedValue({ satisfied: false, codes: ['current-policy-regressed'], blockingBars: [] });
     try {
       const { checkPlanExecutionReadiness } = await import('./plan-execution-guard');
@@ -271,10 +275,11 @@ describe('real write-boundary bypass regression', () => {
       expect(await checkPlanExecutionReadiness(binding, WS, timing => {
         stages.push(timing.stage); throw Error('diagnostic sink unavailable');
       })).toEqual([]);
-      expect(stages.sort()).toEqual(['scope', 'plan_row', 'activation', 'audit', 'start_gate', 'spec_quality', 'admission', 'recheck'].sort());
+      expect(stages.sort()).toEqual(['scope', 'plan_row', 'activation', 'audit', 'start_gate', 'start_gate_snapshot_plan', 'spec_quality', 'admission', 'recheck'].sort());
       expect(policy.readLifecycle).toHaveBeenCalledTimes(1);
       expect(policy.readLifecycle).toHaveBeenLastCalledWith('draft-feature', 'pre-start', {
         harnessSlug: 'project', requireCompleteContractBeforeProof: true, proofMode: 'metadata',
+        onRead: expect.any(Function),
       });
       expect(await checkPlanExecutionReadiness(binding, WS)).toEqual(['acceptance_bar_contract_not_ready']);
       expect(policy.readLifecycle).toHaveBeenCalledTimes(2);

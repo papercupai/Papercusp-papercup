@@ -75,6 +75,11 @@ export function startManagedTickAlarmRecovery(deps: ManagedTickRecoveryDeps = {}
   let dirty = false;
   let intervalMs = MAX_INTERVAL_MS;
   let observationVersion = 0;
+  // An idle watcher may encounter its first dead producer on a short cadence.
+  // Load the default persistence rail before readiness, rather than spending
+  // that episode's resolution deadline importing its delivery dependencies.
+  const resolutionReady = deps.resolve ? Promise.resolve() :
+    import('../severe-event-broadcast').then(() => undefined);
   const replaceInterval = (nextMs: number): void => {
     if (!active || nextMs === intervalMs) return;
     intervalMs = nextMs;
@@ -85,6 +90,7 @@ export function startManagedTickAlarmRecovery(deps: ManagedTickRecoveryDeps = {}
     dirty = true;
     if (inFlight) return inFlight;
     inFlight = (async () => {
+      await resolutionReady;
       while (active && dirty) {
         dirty = false;
         const version = observationVersion;

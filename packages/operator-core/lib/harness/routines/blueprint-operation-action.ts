@@ -12,7 +12,7 @@ import {
   type SubmitBlueprintOperationInput,
   type InternalBlueprintOperationSubmission,
 } from '../../blueprint/operation-service';
-import { assertRoutineOperationAdmission, pauseRefusedRoutineOperation,
+import { assertRoutineOperationAdmission, pauseRefusedRoutineOperation, reconcileRetiredRoutineOperations,
   RoutineOperationAdmissionRefusal } from '../../blueprint/operation-routine-admission';
 import { registerSystemAction, type SystemActionCtx, type SystemActionResult } from './system-actions';
 
@@ -34,7 +34,8 @@ function requiredString(value: unknown, field: string): string {
 
 export async function runBlueprintOperationAction(
   ctx: SystemActionCtx,
-  deps: { submit?: SubmitOperation; sql?: ReturnType<typeof getOrgPg>['sql'] } = {},
+  deps: { submit?: SubmitOperation; sql?: ReturnType<typeof getOrgPg>['sql'];
+    reconcile?: typeof reconcileRetiredRoutineOperations } = {},
 ): Promise<SystemActionResult> {
   const routineId = requiredString(ctx.routineId, 'routine_id');
   const workflowId = requiredString(ctx.workflowId, 'workflow_id');
@@ -50,6 +51,9 @@ export async function runBlueprintOperationAction(
   const sql = deps.sql ?? getOrgPg().sql;
   const callerId = `routine:${routineId}`;
   try {
+    const disposed = await (deps.reconcile ?? reconcileRetiredRoutineOperations)(sql, {
+      workspaceId: ctx.workspaceId, routineId,
+    });
     const handle = await (deps.submit ?? submitBlueprintOperation)(sql, {
       workspaceId: ctx.workspaceId,
       harnessSlug: operationHarnessSlug,
@@ -60,7 +64,8 @@ export async function runBlueprintOperationAction(
     }, { beforeNewAdmission: tx => assertRoutineOperationAdmission(tx, {
       workspaceId: ctx.workspaceId, routineId, callerId, requestKey: workflowId,
     }) });
-    return { diagnostics: { blueprintOperation: handle } };
+    return { diagnostics: { blueprintOperation: handle,
+      ...(disposed.length ? { retiredBlueprintOperations: disposed } : {}) } };
   } catch (error) {
     if (!(error instanceof RoutineOperationAdmissionRefusal)) throw error;
     const paused = !['inactive', 'overlap'].includes(error.reason);

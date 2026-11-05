@@ -4,7 +4,13 @@ import { reconcileManagedTickAlarms, startManagedTickAlarmRecovery } from './man
 
 vi.mock('@dbos-inc/dbos-sdk', () => { throw new Error('DBOS unavailable'); });
 vi.mock('../pg-notify-bus', () => ({ createNotifyBus: () => ({ subscribe: () => () => {} }) }));
-beforeAll(async () => { await import('../agent-tools/coordination/condition-state'); });
+beforeAll(async () => {
+  await import('../agent-tools/coordination/condition-state');
+  // Module preparation belongs to real-timer startup. The cadence controls
+  // below deliberately use fake timers after this default rail is available;
+  // the throwing DBOS mock still applies to this import and every test.
+  await import('../severe-event-broadcast');
+}, 30_000);
 afterEach(() => { resetScheduledRegistry(); vi.useRealTimers(); });
 
 function alarm(id = 1, run = 'original'): Record<string, unknown> {

@@ -23,7 +23,7 @@
 
 import { getPlanRow, type PlanRow, type PlanSourceOpts } from './source';
 import { evaluatePlanStartReadiness, type PlanStartReadiness } from './plan-input-validation';
-import { readAndEvaluateAcceptanceBarLifecycle } from '../../acceptance-bar-lifecycle-evaluator';
+import { readAndEvaluateAcceptanceBarLifecycle, type AcceptanceBarLifecycleOptions } from '../../acceptance-bar-lifecycle-evaluator';
 import { reconcileStaleAcceptanceBarSubjectPin } from '../../acceptance-bar-pin-reconcile';
 import { checkPlanAdmission, type PlanAdmissionRefusal } from './plan-admission-gate';
 import { initialChangeScopeProblems } from './initial-change-scope';
@@ -121,7 +121,7 @@ export async function checkPlanStartable(
   opts: PlanSourceOpts = {},
   overrides?: Record<string, unknown> | null,
   door: PlanAdmissionDoor = 'start',
-  evaluationOptions: { proofMode?: 'metadata' } = {},
+  evaluationOptions: Pick<AcceptanceBarLifecycleOptions, 'proofMode' | 'onRead'> = {},
 ): Promise<PlanStartGateResult> {
   const row = await getPlanRow(slug, opts);
   // Absent plan: not this gate's error to report (see the module header).

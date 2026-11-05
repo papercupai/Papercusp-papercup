@@ -3771,6 +3771,8 @@ export async function setIssueState(
     harnessSlug?: string | null;
     /** Internal lifecycle restore guard: only transition from this persisted state. */
     expectedCurrentState?: string;
+    /** Internal system-disposition compare-and-set; never an agent tool arg. */
+    unclaimedSnapshotTs?: number;
     /** Internal lifecycle restore guard: require no active typed external blocker under the row lock. */
     requireNoActiveExternalBlockers?: boolean;
   } = {},
@@ -3921,6 +3923,10 @@ export async function setIssueState(
     const priorRow = prior[0];
     if (!priorRow) return [] as IssueRowDb[];
     if (opts.expectedCurrentState !== undefined && priorRow.status !== opts.expectedCurrentState) {
+      return [] as IssueRowDb[];
+    }
+    if (opts.unclaimedSnapshotTs !== undefined &&
+        (priorRow.taken_by !== null || Number(priorRow.updated_ts) !== opts.unclaimedSnapshotTs)) {
       return [] as IssueRowDb[];
     }
     if (opts.requireNoActiveExternalBlockers && activeExternalBlockers(priorRow.payload).length > 0) {

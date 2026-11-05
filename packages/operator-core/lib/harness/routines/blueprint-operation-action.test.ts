@@ -37,13 +37,15 @@ describe('system:blueprint-operation routine action', () => {
       },
     };
     const sql = {} as never;
-    expect(await runBlueprintOperationAction(ctx, { submit, sql })).toEqual({
+    const reconcile = vi.fn(async () => [] as string[]);
+    expect(await runBlueprintOperationAction(ctx, { submit, sql, reconcile })).toEqual({
       diagnostics: { blueprintOperation: handle },
     });
-    expect(await runBlueprintOperationAction(ctx, { submit, sql })).toEqual({
+    expect(await runBlueprintOperationAction(ctx, { submit, sql, reconcile })).toEqual({
       diagnostics: { blueprintOperation: handle },
     });
     expect(submit).toHaveBeenCalledTimes(2);
+    expect(reconcile).toHaveBeenCalledWith(sql, { workspaceId: 'ws-1', routineId: 'routine-44' });
     expect(submit.mock.calls[0]![2]).toMatchObject({ beforeNewAdmission: expect.any(Function) });
     expect(submit.mock.calls[0]![1]).toEqual({
       workspaceId: 'ws-1',

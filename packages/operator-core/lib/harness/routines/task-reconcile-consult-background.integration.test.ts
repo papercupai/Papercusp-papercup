@@ -37,7 +37,7 @@ it('loads current consult posts in an isolated background runtime and persists o
         expect(receipt.workspaceId).toMatch(/^test-runtime-/);
         expect(receipt).toMatchObject({ unfinishedPosts: 3, unfinishedSettlement: null,
           finalPosts: 4, persistedSettlements: 1, finalAnswerAt: '2026-11-05T17:50:00.000Z' });
-        console.info('CONSULT_REAPER_VERIFIED ' + JSON.stringify({ runId, ...receipt }));
+        console.info('CONSULT_REAPER_VERIFIED ' + JSON.stringify(receipt));
       } finally {
         if (child.exitCode === null && child.signalCode === null) child.kill('SIGTERM');
       }

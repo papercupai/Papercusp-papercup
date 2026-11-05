@@ -253,6 +253,29 @@ export function mcpIdentityFixture(identity: McpIdentityFixture, query: string) 
   } };
 }
 
+/** Prepare exact schedule bytes without credentials, a host, or a manifest.
+ * Repeat identity namespaces output groups; it is not evidence of independence.
+ */
+export function identityWorkloadFixture(fixture: ReturnType<typeof mcpIdentityFixture>, count: number, repeatId: string) {
+  if (!Number.isSafeInteger(count) || count < 1 || count > 10_000) throw new Error('count must be 1–10000');
+  if (!repeatId.trim()) throw new Error('explicit repeat-id required for fixture');
+  const groups: PerfWorkloadRunPlan['groups'] = (['warm', 'burst'] as const).map(stratum => ({
+    journey: 'attributed-mcp-identity-only', stratum, armOrder: ['a', 'b'],
+    concurrency: stratum === 'burst' ? 4 : 1, exposureMs: count * 15_000 + 1_000, maximumStartLatenessMs: 1_000,
+    requests: Array.from({ length: count }, (_, index) => {
+      const hash = perfProtocolHash({ identity: fixture.identity, path: fixture.request.path, repeatId, stratum, index });
+      const outputGroupId = `${hash.slice(0, 8)}-${hash.slice(8, 12)}-4${hash.slice(13, 16)}-8${hash.slice(17, 20)}-${hash.slice(20, 32)}`;
+      return { ...fixture.request, id: `identity-${index}`,
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call',
+          params: buildMcpCallParams('coord:whoami', {}, { outputGroupId }) }),
+        atMs: stratum === 'burst' ? Math.floor(index / 4) * 15_000 : index * 15_000 };
+    }),
+  }));
+  return { kind: 'unqualified-identity-workload-fixture' as const, acceptance: 'unknown' as const,
+    reason: 'identity-only;no-cold-reset;no-repeat-independence-or-runtime-qualification',
+    independentRepeatId: repeatId, groups, fixtureHash: perfProtocolHash({ groups }) };
+}
+
 export interface IdentityWarmupClient {
   callTool(params: { name: string; arguments: Record<string, unknown>; _meta?: { outputGroupId: string } }): Promise<unknown>;
   close(): Promise<void>;
@@ -525,13 +548,19 @@ export async function captureIdentityEnvironment(fixture: ReturnType<typeof mcpI
 async function runMatchedIdentity(flags: Record<string, string>, runtime: IdentityRuntime = { kind: 'staging', origin: 'http://127.0.0.1:3170' }) {
   if (!flags['identity-file'] || flags.port && flags.port !== new URL(runtime.origin).port) throw new Error('matched identity requires --identity-file and exact runtime port');
   const stage = flags.stage ?? 'collect';
-  if (!['manifest', 'preparation', 'collect'].includes(stage)) throw new Error('unknown identity stage');
+  if (!['fixture', 'manifest', 'preparation', 'collect'].includes(stage)) throw new Error('unknown identity stage');
   const identity = JSON.parse(await readFile(resolve(flags['identity-file']), 'utf8')) as McpIdentityFixture;
   if (identity.ownerId !== process.env.PAPERCUSP_SID || identity.workspaceId !== process.env.PAPERCUSP_WORKSPACE) throw new Error('fixture does not belong to this session');
   const query = buildMcpSessionQuery({ client: identity.ownerId, workspace: identity.workspaceId,
     harness: runtime.kind === 'staging' ? 'papercusp' : identity.workspaceId,
     role: resolveMcpRole(), origin: resolveMcpCallOrigin(identity.ownerId) });
   const fixture = mcpIdentityFixture(identity, query.toString());
+  const schedule = identityWorkloadFixture(fixture, Number(flags.count ?? 1),
+    flags['repeat-id'] ?? (stage === 'fixture' ? '' : `identity-smoke-${Date.now()}`));
+  if (stage === 'fixture') {
+    process.stdout.write(`${JSON.stringify(schedule, null, 2)}\n`);
+    return;
+  }
   const tokens = superuserTokenPaths().flatMap(path => { try { return path ? [readFileSync(path, 'utf8').trim()].filter(Boolean) : []; } catch { return []; } });
   if (!tokens.length) throw new Error('runtime credential unavailable');
   const headers = { authorization: `Bearer ${tokens[0]}` };
@@ -540,8 +569,6 @@ async function runMatchedIdentity(flags: Record<string, string>, runtime: Identi
     headers: { ...headers, 'mcp-session-id': randomUUID() }, mode: 'http', timeoutMs: 10_000,
     name: 'host-memory-p001-identity-preparation',
   })).client);
-  const count = Number(flags.count ?? 1);
-  if (!Number.isSafeInteger(count) || count < 1 || count > 10_000) throw new Error('count must be 1–10000');
   const capture = () => captureIdentityEnvironment(fixture, runtime);
   if (stage === 'preparation') {
     const probe = await identityPreparationProbe(capture, () => prepare({ arm: 'a', journey: 'attributed-mcp-identity-only', stratum: 'warm', requestId: null }));
@@ -560,15 +587,10 @@ async function runMatchedIdentity(flags: Record<string, string>, runtime: Identi
   const manifest = initial.manifest;
   const preparationFailures: Array<{ arm: string; stratum: string; failures: IdentityPreparationError['failures'] }> = [];
   const manifestFailures: Array<{ arm: string; diagnostic: Record<string, unknown> }> = [];
-  const plan: PerfWorkloadRunPlan = { independentRepeatId: flags['repeat-id'] ?? `identity-smoke-${Date.now()}`,
+  const plan: PerfWorkloadRunPlan = { independentRepeatId: schedule.independentRepeatId,
     phase: 'baseline', origins: { a: runtime.origin, b: runtime.origin },
     expectedManifestHashes: { a: perfProtocolHash(manifest), b: perfProtocolHash(manifest) },
-    groups: (['warm', 'burst'] as const).map(stratum => ({ journey: 'attributed-mcp-identity-only', stratum,
-      armOrder: ['a', 'b'], concurrency: stratum === 'burst' ? 4 : 1, exposureMs: count * 15_000 + 1_000,
-      maximumStartLatenessMs: 1_000, requests: Array.from({ length: count }, (_, index) => ({ ...fixture.request,
-        id: `identity-${index}`, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call',
-          params: buildMcpCallParams('coord:whoami', {}, { outputGroupId: randomUUID() }) }),
-        atMs: stratum === 'burst' ? Math.floor(index / 4) * 15_000 : index * 15_000 })) })) };
+    groups: schedule.groups };
   const run = await collectPerfWorkloadRun(plan, { transportHeaders: { a: headers, b: headers }, prepare: async context => {
     try { return await prepare(context); } catch (error) {
       preparationFailures.push({ arm: context.arm, stratum: context.stratum,

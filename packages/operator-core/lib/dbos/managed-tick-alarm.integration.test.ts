@@ -9,7 +9,7 @@ const WS = 'p005-managed-original-process';
 const children = new Set<ChildProcess>();
 let db: OrgTestDb;
 function phase(stage: string, detail: Record<string, unknown> = {}) {
-  console.error('P005_PROCESS_PHASE ' + JSON.stringify({ stage, atMs: Date.now(), ...detail }));
+  process.stderr.write('P005_PROCESS_PHASE ' + JSON.stringify({ stage, atMs: Date.now(), ...detail }) + '\n');
 }
 async function stopChildren() {
   await Promise.all([...children].map(async child => {

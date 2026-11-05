@@ -37,33 +37,53 @@ describe('condition-rail immutable audit manifest (P-017)', () => {
     }
   });
 
-  it('pins the original row set and retains reasoned dispositions and routes', () => {
+  it('pins the original row set and validates reviewed refactor amendments', () => {
     const pinnedHash = 'a2fdb5475a100101ea8dafb6019d75045cb38e53ef1a5e4870c6670d5abb77e4';
     expect(createHash('sha256').update(JSON.stringify(manifest.rows)).digest('hex')).toBe(pinnedHash);
     expect(manifest.rowsSha256).toBe(pinnedHash);
     expect(manifest.rows).toHaveLength(307);
     expect(manifest.rows.filter((row: { disposition: string }) => row.disposition === 'migrate')).toHaveLength(243);
     expect(manifest.rows.filter((row: { disposition: string }) => row.disposition === 'not-applicable')).toHaveLength(64);
-    expect(manifestProblems(manifest, inventoryTree(fileURLToPath(new URL('../../../../', import.meta.url))),
-      { completedItems: RAIL_MIGRATION_COMPLETE_ITEMS })).toEqual([]);
+    const live = inventoryTree(fileURLToPath(new URL('../../../../', import.meta.url)));
+    expect(manifestProblems(manifest, live, { completedItems: RAIL_MIGRATION_COMPLETE_ITEMS })).toEqual([]);
+
+    const graderRowId = 'health-flag-no-condition|packages/operator-core/lib/system-health/goal-grading-backlog-sweep.ts|defaultWakeGrader|1';
+    expect(manifest.amendments.find((entry: { rowId: string }) => entry.rowId === graderRowId))
+      .toMatchObject({ change: { disposition: 'removed' }, reviewerRef: 'thread-post:1214093' });
+    expect(live.sites.find((site: { id: string }) => site.id === graderRowId)).toBeUndefined();
+
+    const transportRowId = 'log-only-fallback|packages/operator-core/lib/endpoint-route/routes/transport/_mcp-host.ts|tryBuildSpawnContext|1';
+    const relocatedId = 'log-only-fallback|packages/operator-core/lib/endpoint-route/routes/transport/_mcp-host.ts|tryBuildUnboundSpawnContext|1';
+    expect(manifest.amendments.find((entry: { rowId: string }) => entry.rowId === transportRowId))
+      .toMatchObject({ change: { disposition: 'removed', relocatedTo: relocatedId }, reviewerRef: 'thread-post:1214093' });
+    expect(live.sites.find((site: { id: string }) => site.id === relocatedId)).toMatchObject({ onRail: true });
   }, 120_000);
 
-  it('applies exactly the 55 independently reviewed annotation exclusions and preserves runtime siblings', () => {
+  it('preserves the 55 reviewed annotation exclusions, including historical review superseded by removal', () => {
     const approved = annotationReview.proposals;
+    const supersededAnnotationId = 'health-flag-no-condition|packages/operator-core/lib/system-health/goal-grading-backlog-sweep.ts|defaultWakeGrader|1';
     expect(annotationReview).toMatchObject({ status: 'applied-reviewed',
       seedRowsSha256: manifest.rowsSha256, reviewerRef: 'thread-post:1176052' });
     expect(approved).toHaveLength(55);
     const ids = approved.map((proposal: { rowId: string }) => proposal.rowId);
     expect(new Set(ids).size).toBe(55);
     expect(manifest.amendments.filter((entry: { reviewerRef: string }) => entry.reviewerRef === annotationReview.reviewerRef)
-      .map((entry: { rowId: string }) => entry.rowId).sort()).toEqual([...ids].sort());
+      .map((entry: { rowId: string }) => entry.rowId).concat(supersededAnnotationId).sort()).toEqual([...ids].sort());
+    expect(approved.find((proposal: { rowId: string }) => proposal.rowId === supersededAnnotationId))
+      .toMatchObject({ change: { disposition: 'not-applicable' }, evidence: { syntax: 'Parameter' } });
     const live = inventoryTree(fileURLToPath(new URL('../../../../', import.meta.url)));
 
     const kinds: string[] = [];
     for (const proposal of approved) {
       expect(manifest.rows.find((seed: { id: string }) => seed.id === proposal.rowId))
         .toMatchObject({ disposition: 'migrate', item: 'P-014', route: 'condition' });
-      expect(manifest.amendments.find((entry: { rowId: string }) => entry.rowId === proposal.rowId))
+      const currentAmendment = manifest.amendments.find((entry: { rowId: string }) => entry.rowId === proposal.rowId);
+      if (proposal.rowId === supersededAnnotationId) {
+        expect(currentAmendment).toMatchObject({ change: { disposition: 'removed' }, reviewerRef: 'thread-post:1214093' });
+        expect(live.sites.find((site: { id: string }) => site.id === proposal.rowId)).toBeUndefined();
+        continue;
+      }
+      expect(currentAmendment)
         .toMatchObject({ change: proposal.change, author: proposal.author, reviewerRef: annotationReview.reviewerRef });
       expect(baseline.rowIds).not.toContain(proposal.rowId);
       const file = proposal.evidence.file;
@@ -97,7 +117,7 @@ describe('condition-rail immutable audit manifest (P-017)', () => {
           /^(alarm|alarming|alert|alerting|degraded|unhealthy|breached)$/.test(property.name.getText(source)))).toBe(false);
       }
     }
-    expect(kinds.filter((kind) => kind === 'Parameter')).toHaveLength(53);
+    expect(kinds.filter((kind) => kind === 'Parameter')).toHaveLength(52);
     expect(kinds.filter((kind) => kind === 'PropertySignature')).toHaveLength(1);
     expect(kinds.filter((kind) => kind === 'VariableDeclaration')).toHaveLength(1);
     for (const [file, enclosing] of [

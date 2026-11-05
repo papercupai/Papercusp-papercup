@@ -274,7 +274,8 @@ const { defaultEvidenceRoot } = await import('../libs/generic/verification-harne
 const { processGroupLifetime } = await import('../packages/operator-core/lib/fleet/process-group-lifetime.ts');
 const { cleanupOwnedTestState, createPrivateTestPgReleaseHandler, createSingleFlightStop,
   PRIVATE_TEST_PG_RELEASE_TOKEN_ENV, unhookRegisteredExitSignals } = await import('./lib/with-test-pg-cleanup.mjs');
-const { cleanupOwnedTestDatabases, OWNED_TEST_DB_DIR_ENV } = await import('../libs/test-config/src/owned-test-db-cleanup.ts');
+const { cleanupOwnedTestDatabases, createOwnedTestDatabaseScope, OWNED_TEST_DB_DIR_ENV } = await import('../libs/test-config/src/owned-test-db-cleanup.ts');
+const ownedDatabaseDir = createOwnedTestDatabaseScope();
 const { dropDatabaseOnDedicatedConnection } = await import('../libs/test-config/src/pg-migrate.ts');
 
 /** Ask the OS for a free TCP port. Never hardcode 5432 — that is the host's own PG. */
@@ -307,7 +308,7 @@ let pg = null;
 // Early private-verifier release and terminal wrapper cleanup own the same
 // PG instance. Share one stop so the second path observes the first receipt.
 const stopPrivatePg = createSingleFlightStop(async () => { await pg?.stop(); }, async () => {
-  const dir = process.env[OWNED_TEST_DB_DIR_ENV];
+  const dir = ownedDatabaseDir;
   if (!dir || !pg) return;
   const runId = process.env.PAPERCUSP_TEST_RUN_GROUP;
   if (!runId) throw new Error('owned private database cleanup requires a run group');
@@ -316,7 +317,7 @@ const stopPrivatePg = createSingleFlightStop(async () => { await pg?.stop(); }, 
   const result = await cleanupOwnedTestDatabases({ dir, runId, adminUri: pg.urls.admin,
     deadlineAtMs: Date.now() + 10_000, drop: dropDatabaseOnDedicatedConnection });
   console.log('[with-test-pg] owned database cleanup ' + JSON.stringify({
-    complete: result.complete, databases: result.databases, errorCount: result.errors.length,
+    complete: result.complete, databases: result.databases, errorCount: result.errors.length, errors: result.errors,
   }));
   if (!result.complete) throw new Error('private database cleanup remains unverified; see retained owned database receipts');
 });
@@ -716,6 +717,7 @@ if (runtimeRoot && runtimeId) {
 }
 
 const childEnv = { ...process.env };
+if (ownedDatabaseDir) childEnv[OWNED_TEST_DB_DIR_ENV] = ownedDatabaseDir;
 // A product DSN pin outranks PAPERCUSP_PG_PORT in both connection resolvers.
 // Keeping an ambient DATABASE_URL made ordinary affected integration workers
 // select the live server even though their private port was propagated correctly

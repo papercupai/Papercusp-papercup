@@ -3,16 +3,32 @@ import { configureScheduledRegistry, managedSetInterval } from '@papercusp/sched
 import { getOrgPg, _resetForTests } from '@papercusp/db-org';
 import { installManagedTickAlarm } from '../lib/dbos/managed-tick-alarm';
 import { reconcileManagedTickAlarms } from '../lib/dbos/managed-tick-alarm-recovery';
+import { readConditionEnvelopesForPrefix } from '../lib/agent-tools/coordination/condition-state';
+import { probeSevereEventEmitter } from '../lib/severe-event-emitter';
 
-function phase(stage: string): void {
-  process.send?.({ kind: 'phase', stage, atMs: Date.now(), pid: process.pid });
+function phase(stage: string, detail: Record<string, unknown> = {}): void {
+  process.send?.({ kind: 'phase', stage, atMs: Date.now(), pid: process.pid, ...detail });
 }
 
 async function main(): Promise<void> {
   phase('imports-ready');
   if (process.argv[2] === 'idle-watch') {
     phase('watcher-start');
-    const recovery = (await import('../lib/dbos/managed-tick-alarm-recovery')).startManagedTickAlarmRecovery();
+    const recovery = (await import('../lib/dbos/managed-tick-alarm-recovery')).startManagedTickAlarmRecovery({
+      // Trace the existing real-store and kernel-probe seams. Resolution and
+      // notification subscription retain their production defaults.
+      read: async () => {
+        phase('snapshot-read-start');
+        const rows = await readConditionEnvelopesForPrefix('alarm:managed-tick:');
+        phase('snapshot-read-complete', { rows: rows.length });
+        return rows;
+      },
+      probe: emitter => {
+        const state = probeSevereEventEmitter(emitter);
+        phase('producer-probe', { state, producerPid: emitter.pid });
+        return state;
+      },
+    });
     process.on('message', () => {});
     await recovery.ready;
     phase('initial-scan-complete');

@@ -7,6 +7,7 @@ import { parsePlan } from './parser';
 import { getPlanRow } from './source';
 import { planExecutionMeaning } from './plan-execution-meaning';
 import type { ResolvedGoal } from '../../agent-goal-ref';
+import type { AcceptanceBarSnapshotSource } from '../../acceptance-bar-contract-snapshot';
 export { planExecutionMeaning } from './plan-execution-meaning';
 
 // The installed parser has no bundled declarations. Treat its tokens as unknown
@@ -320,7 +321,13 @@ export async function checkPlanExecutionReadiness(binding: ExecutionPlanBinding,
     // Critique does depend on quality, so keep that edge within its branch.
     const [gateRead, qualityRead, admissionRead] = await Promise.allSettled([
       measurePlanStage('start_gate', observe,
-        () => checkPlanStartable(binding.planSlug, opts, null, 'start', { proofMode: 'metadata' })),
+        () => checkPlanStartable(binding.planSlug, opts, null, 'start', {
+          proofMode: 'metadata',
+          ...(observe ? { onRead: (source: AcceptanceBarSnapshotSource, durationMs: number) => {
+            try { observe({ stage: `start_gate_snapshot_${source}`, durationMs }); }
+            catch { /* Diagnostics do not grant or refuse authority. */ }
+          } } : {}),
+        })),
       (async () => {
         const quality = await measurePlanStage('spec_quality', observe, () => evaluatePlanSpecQualityGate({ harnessSlug: row.harness_slug,
           planSlug: binding.planSlug, planItemIds: specQualityPlanItemIds(items), planItems: items }));

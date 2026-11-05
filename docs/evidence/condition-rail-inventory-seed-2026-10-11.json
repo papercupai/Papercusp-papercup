@@ -4276,18 +4276,11 @@
     {
       "rowId": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-grading-backlog-sweep.ts|defaultWakeGrader|1",
       "change": {
-        "disposition": "not-applicable",
-        "reason": "Type annotation on a parameter, property signature or variable; it neither writes an alarm-shaped health field nor detects a runtime condition."
+    "disposition": "removed"
       },
-      "reason": "Independent TypeScript AST classifies the exact seed location as Parameter, not PropertyAssignment. The lexical scanner treated the annotation span as a health-field value. The genuine runGoalGradingBacklogSweepOnce|1 health field remains migrate/P-014; openEscalation-only emitters fall outside the five D-006 classes and the census caveat is tracked in EI-25769222848861661.",
-      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
-      "evidence": {
-        "file": "packages/operator-core/lib/system-health/goal-grading-backlog-sweep.ts",
-        "line": 151,
-        "syntax": "Parameter",
-        "declaration": "alert: GoalGradingBacklogAlert & { graderId: string }"
-      },
-      "reviewerRef": "thread-post:1176052"
+   "reason": "Independent review confirmed the current file has no defaultWakeGrader occurrence; the seed identity was its old parameter annotation, and the replacement grading path is outside this file.",
+   "author": "su-62ee053e-9db6-4051-be0e-fc8212de8735",
+   "reviewerRef": "thread-post:1214093"
     },
     {
       "rowId": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-grading-backlog-sweep.ts|runGoalGradingBacklogSweepOnce|2",
@@ -4656,6 +4649,16 @@
         "declaration": "alert: UnservableAlert"
       },
       "reviewerRef": "thread-post:1176052"
+    },
+    {
+      "rowId": "log-only-fallback|packages/operator-core/lib/endpoint-route/routes/transport/_mcp-host.ts|tryBuildSpawnContext|1",
+      "change": {
+        "disposition": "removed",
+        "relocatedTo": "log-only-fallback|packages/operator-core/lib/endpoint-route/routes/transport/_mcp-host.ts|tryBuildUnboundSpawnContext|1"
+      },
+      "reason": "Independent review confirmed the old tryBuildSpawnContext seed identity is absent and its same-file replacement tryBuildUnboundSpawnContext|1 is on the rail; retain the P-012 seed lineage through relocation.",
+      "author": "su-62ee053e-9db6-4051-be0e-fc8212de8735",
+      "reviewerRef": "thread-post:1214093"
     }
   ]
 }

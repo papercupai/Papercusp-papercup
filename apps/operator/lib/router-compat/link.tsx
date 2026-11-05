@@ -1,5 +1,5 @@
 import type { ComponentProps, ReactNode } from 'react';
-import { Link as TsrLink } from '@tanstack/react-router';
+import { Link as TsrLink, type AnyRouter } from '@tanstack/react-router';
 import { navigationFromHref } from './href';
 
 /**
@@ -33,5 +33,6 @@ export default function Link({
   ...rest
 }: LinkProps) {
   const { to, search, hash } = navigationFromHref(href);
-  return <TsrLink to={to} search={search} hash={hash} {...rest} />;
+  // Runtime hrefs and forwarded masks both have dynamic string destinations.
+  return <TsrLink<AnyRouter, string, string, string, string> to={to} search={search} hash={hash} {...rest} />;
 }

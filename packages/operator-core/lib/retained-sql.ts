@@ -1,5 +1,5 @@
 /** Bounded SQL source capture. Reuses the maintained parser and provenance store.
- * Only a single explicitly scoped base relation and deterministic expressions
+ * Only one explicitly scoped base relation and deterministic SELECT/CTE expressions
  * are supported. Unsupported/oversized/redacted inputs never become a replay.
  */
 import { createHash } from 'node:crypto';
@@ -29,20 +29,45 @@ function plan(sql: string) {
   let statements: ReturnType<typeof parse>;
   try { statements = parse(sql); } catch { return null; }
   const select = statements[0];
-  if (statements.length !== 1 || select?.type !== 'select' || select.from?.length !== 1 ||
-      select.from[0]?.type !== 'table' || !select.from[0].name.schema ||
-      select.from[0].join || select.for || select.skip || select.limit) return null;
-  const table = select.from[0].name;
-  let selections = 0, relations = 0, valid = true;
-  const kinds = new Set(['select', 'table', 'ref', 'binary', 'unary', 'call', 'cast',
+  if (statements.length !== 1 || (select?.type !== 'select' && select?.type !== 'with')) return null;
+  // Deliberately support one nonrecursive WITH scope. Every unqualified FROM
+  // must name one of its bindings; it must never resolve a current search_path.
+  const bindings = select.type === 'with' ? select.bind.map(b => b.alias.name) : [];
+  if (new Set(bindings).size !== bindings.length) return null;
+  const sources: SelectFromStatement[] = [];
+  let table: { schema?: string; name: string; alias?: string } | undefined;
+  let valid = true;
+  const kinds = new Set(['with', 'select', 'table', 'ref', 'binary', 'unary', 'call', 'cast',
     'case', 'integer', 'numeric', 'string', 'boolean', 'null', 'constant', 'list', 'member']);
   const visit = (value: unknown): void => {
     if (!value || typeof value !== 'object') return;
     if (Array.isArray(value)) { value.forEach(visit); return; }
     const n = value as Record<string, any>;
     if (typeof n.type === 'string' && !kinds.has(n.type)) valid = false;
-    if (n.type === 'select') selections++;
-    if (n.type === 'table') relations++;
+    if (n.type === 'with' && n !== select) valid = false;
+    if (n.type === 'select') {
+      if (n.for || n.skip || n.limit || n.from?.length > 1) valid = false;
+      const from = n.from?.[0];
+      if (from && (from.type !== 'table' || from.join)) valid = false;
+      if (from?.type === 'table' && from.name.schema) {
+        if (table && (from.name.schema !== table.schema || from.name.name !== table.name)) valid = false;
+        table ??= from.name;
+        // The capture runs outside WITH. A base filter must depend only on
+        // this row, never a CTE/subquery or a correlated outer alias.
+        const independent = (value: unknown): boolean => {
+          if (!value || typeof value !== 'object') return true;
+          const expr = value as Record<string, any>;
+          if (expr.type === 'select' || expr.type === 'with' ||
+              (expr.type === 'ref' && expr.table &&
+                (expr.table.name !== (from.name.alias ?? from.name.name) ||
+                  (expr.table.schema && expr.table.schema !== from.name.schema)))) return false;
+          return Object.values(expr).every(independent);
+        };
+        if (!independent(n.where)) valid = false;
+        sources.push(n as SelectFromStatement);
+      }
+    }
+    if (n.type === 'table' && !n.name.schema && !bindings.includes(n.name.name)) valid = false;
     if (n.opSchema || n.collate) valid = false;
     if (n.type === 'call' && (!pureCalls.has(n.function.name) ||
         (n.function.schema && n.function.schema !== 'pg_catalog'))) valid = false;
@@ -51,11 +76,13 @@ function plan(sql: string) {
     Object.values(n).forEach(visit);
   };
   visit(select);
-  return valid && selections === 1 && relations === 1 ? { select, table } : null;
+  return valid && table && sources.length ? { select, table, sources } : null;
 }
 
 /** The aggregate and source export are one SQL statement, hence one MVCC
- * snapshot. The source repeats the exact WHERE, including tenant scope. It
+ * snapshot. The source repeats the union of the base WHERE scopes. OR over
+ * the original relation retains actual duplicate rows without duplicating
+ * rows that satisfy several CTE filters. Each CTE reapplies its exact filter. It
  * never changes the aggregate's population or substitutes the capped rows.
  * Plain tables only: views, foreign tables and volatile statistic readers are
  * deliberately unavailable. Every source value is exported as text by PG so
@@ -65,8 +92,9 @@ export function retainedSqlCaptureExpression(sql: string): string | null {
   const p = plan(sql);
   if (!p) return null;
   const relation = ident(p.table.schema!) + '.' + ident(p.table.name);
-  const filtered = toSql.statement({ ...p.select, columns: [{ expr: { type: 'ref', name: '*' } }],
-    groupBy: undefined, having: undefined, orderBy: undefined, distinct: undefined } as SelectFromStatement);
+  const unqualified = astMapper(() => ({ ref: ref => ({ ...ref, table: undefined }) }));
+  const scopes = p.sources.map(s => s.where ? toSql.expr(unqualified.expr(s.where)!) : 'true');
+  const filtered = `SELECT * FROM ${relation} WHERE ${scopes.map(s => `(${s})`).join(' OR ')}`;
   return `(WITH __pc_rows AS MATERIALIZED (SELECT * FROM (${filtered}) __pc_filtered LIMIT ${MAX_ROWS + 1}),
     __pc_input AS (SELECT pg_catalog.jsonb_build_object(
       'version',1,'relation',${literal(relation)},
@@ -100,8 +128,9 @@ export function compileRetainedSql(sql: string, input: unknown, transactionAt: s
         Object.keys(row).length !== columns.length || columns.some(c => !Object.hasOwn(row, c.name)) ||
         Object.values(row).some(v => v !== null && typeof v !== 'string'))) return null;
   const mapper = astMapper(map => ({
-    fromTable: () => ({ type: 'table', name: { name: sourceName, alias: p.table.alias ?? p.table.name } }),
-    ref: ref => ({ ...ref, ...(ref.table ? { table: { name: p.table.alias ?? p.table.name } } : {}) }),
+    fromTable: from => from.name.schema
+      ? { ...from, name: { name: sourceName, alias: from.name.alias ?? from.name.name } } : from,
+    ref: ref => ref.table?.schema ? { ...ref, table: { name: ref.table.name } } : ref,
     cast: c => ({ ...map.super().cast(c)!, to: { ...c.to, schema: 'pg_catalog' } }),
     call: c => c.function.name === 'now' || c.function.name === 'transaction_timestamp'
       ? { type: 'cast', operand: { type: 'string', value: transactionAt }, to: { name: 'timestamptz', schema: 'pg_catalog' } }
@@ -109,7 +138,7 @@ export function compileRetainedSql(sql: string, input: unknown, transactionAt: s
   }));
   const query = toSql.statement(mapper.statement(p.select)!);
   const fields = columns.map(c => ident(c.name) + ' pg_catalog.' + types[c.typeOid]).join(',');
-  return `WITH ${ident(sourceName)} AS (SELECT * FROM pg_catalog.jsonb_to_recordset(${literal(JSON.stringify(s.rows))}::pg_catalog.jsonb) AS __pc_values(${fields})) ${query}`;
+  return `WITH ${ident(sourceName)} AS (SELECT * FROM pg_catalog.jsonb_to_recordset(${literal(JSON.stringify(s.rows))}::pg_catalog.jsonb) AS __pc_values(${fields})) SELECT * FROM (${query}) __pc_replayed_query`;
 }
 
 export function retainedSqlImplementationSha256(): string {

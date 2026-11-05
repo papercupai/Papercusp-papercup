@@ -4035,6 +4035,9 @@ export async function setWorkItemState(
     family?: WorkItemFamily;
     /** Internal issue lifecycle compare-and-set guard; not exposed by the tool surface. */
     expectedCurrentState?: string;
+    /** Trusted system disposition: compare the read epoch and require no holder
+     * in the terminal writer, so a concurrent claim or progress wins. */
+    unclaimedSnapshotTs?: number;
     /** Internal issue lifecycle guard used when reopening a needs-human row after blockers clear. */
     requireNoActiveExternalBlockers?: boolean;
     /**
@@ -4671,6 +4674,7 @@ export async function setWorkItemState(
       terminalReason: requestedTerminalReason,
       harnessSlug: issueSlug,
       expectedCurrentState: opts.expectedCurrentState,
+      unclaimedSnapshotTs: opts.unclaimedSnapshotTs,
       requireNoActiveExternalBlockers: opts.requireNoActiveExternalBlockers,
     });
     result = updated ? issueToWorkItem(updated) : null;
@@ -4834,6 +4838,8 @@ export async function setWorkItemState(
                                  )
                        END
        WHERE harness_slug = ${wi.harness} AND feature_id = ${id}
+         AND ${opts.unclaimedSnapshotTs !== undefined
+           ? tx`taken_by IS NULL AND updated_ts = ${opts.unclaimedSnapshotTs}` : tx`TRUE`}
          AND ${opts.deferredOperationCompletion ? tx`
            taken_by = ${opts.deferredOperationCompletion.ownerId}
            AND taken_at IS NOT DISTINCT FROM ${opts.deferredOperationCompletion.claimStamp ?? opts.deferredOperationCompletion.takenAt}::text::timestamptz

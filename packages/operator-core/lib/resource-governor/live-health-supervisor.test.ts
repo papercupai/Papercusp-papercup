@@ -1,10 +1,11 @@
+import { createRequire } from 'node:module';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { buildLiveHealthMonitorSpawnPlan } from './live-health-supervisor';
 
 describe('live-health managed-child topology', () => {
-  it('uses dev tsx from source and bundled self-reexec for packaged/service builds', () => {
+  it('uses explicit Node with the tsx loader in source and bundled self-reexec for packaged/service builds', () => {
     const dev = buildLiveHealthMonitorSpawnPlan({
       selfPath: '/repo/packages/operator-core/lib/resource-governor/live-health-supervisor.ts',
       moduleDirOverride: '/repo/packages/operator-core/lib/resource-governor',
@@ -12,8 +13,12 @@ describe('live-health managed-child topology', () => {
       spawnerPid: 42,
     });
     expect(dev).toEqual({
-      cmd: 'npx',
-      args: ['tsx', '/repo/packages/operator-core/lib/resource-governor/live-health-monitor-bin.ts'],
+      cmd: '/node',
+      args: [
+        '--import',
+        createRequire(import.meta.url).resolve('tsx'),
+        '/repo/packages/operator-core/lib/resource-governor/live-health-monitor-bin.ts',
+      ],
       env: { PAPERCUSP_DESKTOP_PARENT_PID: '42' },
       mode: 'dev-tsx',
     });

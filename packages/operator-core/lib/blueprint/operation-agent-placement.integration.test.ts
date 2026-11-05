@@ -12,6 +12,9 @@ import { canonicalJson } from '../authority/authority-rpc-envelope';
 import { projectBlueprintToPg } from './project-to-pg';
 import { acceptBlueprintDirectWorkItem } from './operation-admission';
 import { submitBlueprintOperation } from './operation-service';
+import { assertRoutineOperationAdmission, reconcileRetiredRoutineOperations } from './operation-routine-admission';
+import { getWorkItem, setWorkItemState } from '../work-items';
+import { runWithWorkspace } from '../workspace-als';
 import {
   buildAgentPlacementKickoff, claimAgentOperationPlacements, placeAcceptedAgentOperations,
   type AgentOperationPlacement,
@@ -125,6 +128,83 @@ async function age(receiptId: number) {
 }
 
 describe('accepted agent operation placement (WI-10006859)', () => {
+  it.each(['feature', 'task'] as const)('disposes only exhausted orphaned routine %s operations and preserves live convergence', async kind => {
+    const selected = compileAgentSpecification({ source: {
+      ...specification.configuration,
+      operations: specification.configuration.operations!.map(op => op.id === 'leaf'
+        ? { ...op, target: { kind: 'work-item' as const, itemKind: kind } } : op),
+    } });
+    const ws = await workspace(`routine-retired-${kind}`, selected);
+    const routineId = `rt-retired-${kind}`;
+    const callerId = `routine:${routineId}`;
+    await sql`INSERT INTO harness_shared.routines
+      (id, workspace_id, install_slug, name, trigger_kind, trigger_config, target_role, concurrency, active)
+      VALUES (${routineId}, ${ws}, ${harnessSlug}, ${routineId}, 'cron', '{}'::jsonb,
+        'system:blueprint-operation', 'skip', true)`;
+    const handles = new Map<string, Awaited<ReturnType<typeof submitBlueprintOperation>>>();
+    for (const scenario of ['orphan', 'live', 'claimed', 'pending', 'unretired', 'retryable', 'changed']) {
+      const handle = await submitBlueprintOperation(sql, { workspaceId: ws, harnessSlug, callerId,
+        operationId: 'leaf', requestKey: scenario, input: { value: scenario } });
+      handles.set(scenario, handle);
+      await sql`UPDATE harness_shared.blueprint_operation_invocations SET agent_launch_attempts = 3,
+        agent_last_launch_at = now() - interval '1 hour', agent_placement_retired_at = now(),
+        agent_launch_owner_id = ${`retired-${kind}-${scenario}`} WHERE id = ${handle.receiptId}`;
+    }
+    const id = (scenario: string) => {
+      const target = handles.get(scenario)!.target;
+      if (target.kind !== 'work-item') throw new Error('expected direct fixture operation');
+      return target.id;
+    };
+    await sql`INSERT INTO harness_shared.adv_sessions (workspace_id, mode, coord_owner_id, feature)
+      VALUES (${ws}, 'console', ${`retired-${kind}-live`}, ${id('live')})`;
+    await sql`UPDATE harness_shared.work_items SET taken_by = 'replacement-holder'
+      WHERE workspace_id = ${ws} AND feature_id = ${id('claimed')}`;
+    await sql`UPDATE harness_shared.blueprint_operation_invocations SET agent_placement_retired_at = NULL
+      WHERE id = ${handles.get('unretired')!.receiptId}`;
+    await sql`UPDATE harness_shared.blueprint_operation_invocations SET agent_launch_attempts = 2
+      WHERE id = ${handles.get('retryable')!.receiptId}`;
+    await sql`INSERT INTO harness_shared.coord_event_log (workspace_id, surface, writer_key, msg_id, body)
+      VALUES (${ws}, 'blueprint-operation', ${`receipt:${handles.get('pending')!.receiptId}`},
+        ${`pending-${kind}`}, ${JSON.stringify({ kind: 'completion-pending', deadlineAt: Date.now() + 60_000 })}::jsonb)`;
+    const changed = await runWithWorkspace(ws, () => getWorkItem(id('changed'), harnessSlug));
+    const systemDisposition = { harness: harnessSlug, by: 'system:blueprint-operation',
+      skipCompletionGate: true, unclaimedSnapshotTs: Date.parse(changed!.updatedAt),
+      completionRef: 'fixture:guarded-negative-disposition' };
+    // The canonical writer, including the issue-family locked row, rejects
+    // a claim or progress arriving after the reaper's candidate read.
+    await sql`UPDATE harness_shared.work_items SET updated_ts = updated_ts + 1
+      WHERE workspace_id = ${ws} AND feature_id = ${id('changed')}`;
+    expect(await runWithWorkspace(ws, () => setWorkItemState(id('changed'), 'dropped', systemDisposition))).toBeNull();
+    const afterProgress = await runWithWorkspace(ws, () => getWorkItem(id('changed'), harnessSlug));
+    await sql`UPDATE harness_shared.work_items SET taken_by = 'new-holder'
+      WHERE workspace_id = ${ws} AND feature_id = ${id('changed')}`;
+    expect(await runWithWorkspace(ws, () => setWorkItemState(id('changed'), 'dropped', {
+      ...systemDisposition, unclaimedSnapshotTs: Date.parse(afterProgress!.updatedAt),
+    }))).toBeNull();
+    const original = await runWithWorkspace(ws, () => getWorkItem(id('orphan'), harnessSlug));
+    expect(await reconcileRetiredRoutineOperations(sql, { workspaceId: ws, routineId: 'foreign-routine' })).toEqual([]);
+    expect(await reconcileRetiredRoutineOperations(sql, { workspaceId: ws, routineId })).toEqual([id('orphan')]);
+    const disposed = await runWithWorkspace(ws, () => getWorkItem(id('orphan'), harnessSlug));
+    expect(disposed).toMatchObject({ state: 'dropped', terminalOwner: 'system:blueprint-operation',
+      terminalCompletionRef: expect.stringContaining('placement-exhausted'), payload: original!.payload });
+    expect(await reconcileRetiredRoutineOperations(sql, { workspaceId: ws, routineId })).toEqual([]);
+    for (const scenario of ['live', 'claimed', 'pending', 'unretired', 'retryable', 'changed']) {
+      expect((await runWithWorkspace(ws, () => getWorkItem(id(scenario), harnessSlug)))?.state).toBe('open');
+    }
+    await expect(sql.begin(tx => assertRoutineOperationAdmission(tx, { workspaceId: ws, routineId,
+      callerId, requestKey: 'next' }))).rejects.toMatchObject({ reason: 'overlap' });
+    // Settle the protected controls as fixture setup; the disposed orphan
+    // then ceases to block a real subsequent admission by this same routine.
+    await sql`UPDATE harness_shared.work_items SET status = 'dropped'
+      WHERE workspace_id = ${ws} AND feature_id <> ${id('orphan')}`;
+    const next = await submitBlueprintOperation(sql, { workspaceId: ws, harnessSlug, callerId,
+      operationId: 'leaf', requestKey: 'next', input: { value: 'next' } }, {
+      beforeNewAdmission: tx => assertRoutineOperationAdmission(tx, { workspaceId: ws, routineId,
+        callerId, requestKey: 'next' }),
+    });
+    expect(next.receiptId).not.toBe(handles.get('orphan')!.receiptId);
+  }, 120_000);
+
   it('carries model policy from the accepted snapshot through placement, not a mutable launch default', async () => {
     const modelPolicy = { mode: 'exact' as const, models: ['gpt-6.1'], effort: 'high', onUnavailable: 'fail' as const };
     const pinned = compileAgentSpecification({ source: {

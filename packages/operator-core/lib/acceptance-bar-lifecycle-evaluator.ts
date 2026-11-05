@@ -10,6 +10,7 @@
 import type {
   AcceptanceBarContractSnapshot,
   AcceptanceBarSnapshotCode,
+  AcceptanceBarSnapshotSource,
   AcceptanceBarTrace,
 } from './acceptance-bar-contract-snapshot';
 import {
@@ -92,6 +93,8 @@ export interface AcceptanceBarLifecycleOptions {
   snapshot?: AcceptanceBarContractSnapshot | Promise<AcceptanceBarContractSnapshot>;
   /** Internal early contract gate; never valid for grading, shipping or operational proof. */
   proofMode?: 'metadata';
+  /** Forward the bounded reader's diagnostic hook without changing its verdict. */
+  onRead?: (source: AcceptanceBarSnapshotSource, elapsedMs: number) => void;
 }
 
 const DELIVERY_PROOF_CODES = new Set<AcceptanceBarSnapshotCode>([
@@ -612,6 +615,7 @@ export async function readAndEvaluateAcceptanceBarLifecycle(
         current: options.current,
         ...(options.harnessSlug ? { harnessSlug: options.harnessSlug } : {}),
         ...(options.proofMode === 'metadata' ? { proofMode: 'metadata' as const } : {}),
+        ...(options.onRead ? { onRead: options.onRead } : {}),
       });
   // Only a positively identified legacy plan may bypass the contract. A missing,
   // unavailable, ambiguous, or truncated subject read cannot establish legacy

@@ -11,12 +11,48 @@ import { open } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { verifierSourceFiles } from '../packages/operator-core/lib/verifier-source';
+import { identityWorkloadFixture } from './bench-work-items-get';
+import { perfProtocolHash } from '../packages/operator-core/lib/system-health/perf-workload-protocol';
 // @ts-expect-error -- The maintained CLI preflight is JavaScript without declarations.
 import { assertPrivateIntegrationEvidence } from './test-files.mjs';
 
 const identity: McpIdentityFixture = { ownerId: 'su-fixture', ownerLabel: 'Fixture', source: 'test', workspaceId: 'test-workspace',
   userId: null, fleetSlug: null, fleetRole: null, inbox_wake_key: 'coord:inbox-wake:su-fixture' };
 const identityFixture = () => mcpIdentityFixture(identity, 'superuser=1&client=su-fixture&workspace=test-workspace&format=json');
+
+describe('identity-only fixture export', () => {
+  it('reproduces exact schedule bytes across fresh fixtures and retains the response oracle', () => {
+    const a = identityWorkloadFixture(identityFixture(), 5, 'repeat-one');
+    const b = identityWorkloadFixture(identityFixture(), 5, 'repeat-one');
+    expect(a).toEqual(b);
+    expect(a.fixtureHash).toBe(perfProtocolHash({ groups: a.groups }));
+    expect(a.acceptance).toBe('unknown');
+    expect(a.groups.map(group => [group.stratum, group.concurrency])).toEqual([['warm', 1], ['burst', 4]]);
+    expect(a.groups[0].requests.map(row => row.atMs)).toEqual([0, 15000, 30000, 45000, 60000]);
+    expect(a.groups[1].requests.map(row => row.atMs)).toEqual([0, 0, 0, 0, 15000]);
+    for (const group of a.groups) for (const request of group.requests) {
+      expect(request.expectedBodySha256).toBe(identityFixture().request.expectedBodySha256);
+      expect(request.atMs + request.timeoutMs).toBeLessThanOrEqual(group.exposureMs);
+    }
+  });
+  it('namespaces output groups by request, stratum and repeat and changes the fixture pin', () => {
+    const a = identityWorkloadFixture(identityFixture(), 5, 'repeat-one');
+    const b = identityWorkloadFixture(identityFixture(), 5, 'repeat-two');
+    const ids = [a, b].flatMap(value => value.groups.flatMap(group => group.requests.map(row =>
+      JSON.parse(row.body!).params._meta.outputGroupId)));
+    expect(new Set(ids).size).toBe(20);
+    expect(ids.every(id => /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-8[a-f0-9]{3}-[a-f0-9]{12}$/.test(id))).toBe(true);
+    expect(a.fixtureHash).not.toBe(b.fixtureHash);
+    expect(a.fixtureHash).not.toBe(identityWorkloadFixture(identityFixture(), 4, 'repeat-one').fixtureHash);
+  });
+  it.each([0, -1, 1.5, NaN, 10001])('refuses invalid count %s before runtime allocation', count => {
+    expect(() => identityWorkloadFixture(identityFixture(), count, 'repeat-one')).toThrow('count');
+  });
+  it('requires an explicit repeat identity without claiming independent repetition', () => {
+    expect(() => identityWorkloadFixture(identityFixture(), 1, ' ')).toThrow('repeat-id');
+    expect(identityWorkloadFixture(identityFixture(), 1, 'repeat-one').reason).toContain('no-repeat-independence');
+  });
+});
 
 describe('retained isolated runtime preparation failures', () => {
   it.each([

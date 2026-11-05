@@ -3949,7 +3949,17 @@ export function darkFlagReviewLane(c: DarkCase): "parking" | "owner" {
 // is no longer effective live state. PostHog overrides were not probed. Full
 // per-flag evidence is in item comment 1193509. Renew parking review for 14 days;
 // membership, watermark and the separate owner-review clock stay unchanged.
-export const DARK_FLAGS_PARKING_REVIEW_BY = "2026-11-05";
+// ─── REVIEW 2026-11-05 (EI-26655290415413901) —
+// Re-derived all 12 parking entries (8 parked + 4 incomplete); zero graduates:
+//   CLOUDFLARE_PUBLISH / HARNESS_PHASES / DESIGN / TESTING remain V1 cuts.
+//   THE_HIVE remains internal/testing; CONVERSATIONS_RAIL_TAB stays hidden per owner direction.
+//   TEMPLATES_MARKETPLACE / RUBRICS_MARKETPLACE remain owner-directed v2 cuts.
+//   EXTERNAL_BENCH stays retired; ONBOARDING_PREVIEW_FEATURES still gates mobile-pairing
+//     and update-channel previews; CAPABILITY_EXEC_SANDBOX awaits explicit Avi resume and
+//     end-to-end bwrap verification (WI-10002560); SUBSTRATE_SIDECAR still lacks rollout proof.
+// `npm run audit:dark-flags -- --json`: zero critical live-true parked/incomplete PG/env
+// overrides across five scopes; PostHog was not probed. Watermark remains 12.
+export const DARK_FLAGS_PARKING_REVIEW_BY = "2026-11-19";
 export const DARK_FLAGS_OWNER_REVIEW_BY = "2026-10-01";
 // 2026-07-12 (WI-4238, su-00a91): 25 → 26 for papercusp-queen-full-autonomy.
 //

@@ -207,6 +207,25 @@ describe('readAndEvaluateAcceptanceBarLifecycle — authoritative applicability'
   beforeEach(() => vi.mocked(readAcceptanceBarContractSnapshot).mockReset());
 
   const phases = ['pre-start', 'pre-vetting', 'pre-grading', 'ship'] as const;
+  it.each([false, true])('forwards bounded read diagnostics without changing the verdict (read unavailable: %s)', async unavailable => {
+    const value = snapshot(unavailable ? {
+      completeness: { complete: false, truncated: false, problems: [{
+        code: 'bar_snapshot_source_unavailable', source: 'plan', severity: 'error', detail: 'plan read unavailable',
+      }] },
+    } : {});
+    vi.mocked(readAcceptanceBarContractSnapshot).mockResolvedValue(value);
+    const onRead = vi.fn();
+    const observed = await readAndEvaluateAcceptanceBarLifecycle('plan-a', 'pre-start', {
+      harnessSlug: 'project', proofMode: 'metadata', onRead,
+    });
+    expect(readAcceptanceBarContractSnapshot).toHaveBeenCalledWith('plan-a', {}, {
+      current: undefined, harnessSlug: 'project', proofMode: 'metadata', onRead,
+    });
+    expect(observed).toEqual(await readAndEvaluateAcceptanceBarLifecycle('plan-a', 'pre-start', {
+      harnessSlug: 'project', proofMode: 'metadata',
+    }));
+    if (unavailable) expect(observed).toMatchObject({ satisfied: false });
+  });
   const failures = [
     { code: 'bar_snapshot_plan_missing', planPresent: false },
     { code: 'bar_snapshot_source_unavailable', planPresent: false },

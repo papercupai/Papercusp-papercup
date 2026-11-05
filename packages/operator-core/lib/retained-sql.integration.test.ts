@@ -39,6 +39,39 @@ async function capture(sql = query) {
 }
 
 describe('bounded historical SQL source replay (real PostgreSQL)', () => {
+  it('replays a same-relation CTE chain without losing duplicate source rows', async () => {
+    await db.sql`INSERT INTO harness_shared.replay_rows SELECT * FROM harness_shared.replay_rows
+      WHERE workspace_id='private' AND id=9007199254740994`;
+    const cte = `WITH samples AS (SELECT r.* FROM harness_shared.replay_rows r
+      WHERE r.workspace_id='private' AND r.measured_at>now()-interval '1 hour'),
+      summary AS (SELECT count(*)::float8 n,sum(duration_ms)::float8 total,
+        avg(duration_ms)::float8 budget FROM samples)
+      SELECT summary.*,(SELECT max(id)::text FROM samples) largest FROM summary`;
+    const captured = await capture(cte);
+    expect(captured.inputs).toMatchObject({ truncated: false, rows: expect.any(Array) });
+    expect((captured.inputs as { rows: unknown[] }).rows).toHaveLength(3);
+    const compiled = compileRetainedSql(cte, captured.inputs, captured.transactionAt);
+    expect(compiled).not.toBeNull();
+    await db.sql`DELETE FROM harness_shared.replay_rows`;
+    const replay = await pgReadQuery(compiled!, { client: db.sql });
+    expect(replay.rows[0]).toMatchObject({ n: 3, total: 70, largest: '9007199254740994' });
+    expect(replay.rows[0]!.budget).toBeCloseTo(70 / 3);
+  });
+
+  it('captures overlapping CTE populations once while preserving each original filter', async () => {
+    const scope = `workspace_id='private' AND measured_at>now()-interval '1 hour'`;
+    const cte = `WITH all_samples AS (SELECT * FROM harness_shared.replay_rows a WHERE ${scope}),
+      slow_samples AS (SELECT * FROM harness_shared.replay_rows b WHERE ${scope} AND duration_ms>=30)
+      SELECT (SELECT count(*)::float8 FROM all_samples) n,
+        (SELECT avg(duration_ms)::float8 FROM slow_samples) budget`;
+    const captured = await capture(cte);
+    expect((captured.inputs as { rows: unknown[] }).rows).toHaveLength(2);
+    await db.sql`UPDATE harness_shared.replay_rows SET duration_ms=10000`;
+    const compiled = compileRetainedSql(cte, captured.inputs, captured.transactionAt);
+    expect(compiled).not.toBeNull();
+    expect((await pgReadQuery(compiled!, { client: db.sql })).rows[0]).toEqual({ n: 2, budget: 30 });
+  });
+
   it('replays complete source inputs when an unrelated tool advisory is clipped', async () => {
     const probe: ContinuityProbe = { kind: 'sql', sql: query, maxRows: 5,
       schemaRevision: continuityProbeRevision('dev:pg_query')!,
@@ -139,7 +172,10 @@ describe('bounded historical SQL source replay (real PostgreSQL)', () => {
   it('refuses unsupported queries, forged input shape and missing historical inputs before any SQL runs', async () => {
     for (const sql of [
       'SELECT * FROM unscoped', 'SELECT * FROM a.b JOIN a.c ON true',
-      'WITH x AS (SELECT * FROM a.b) SELECT * FROM x',
+      'WITH x AS (SELECT * FROM a.b) SELECT * FROM a.c',
+      'WITH x AS (DELETE FROM a.b RETURNING *) SELECT * FROM x',
+      'WITH RECURSIVE x AS (SELECT * FROM a.b) SELECT * FROM x',
+      'WITH x AS (SELECT * FROM a.b) SELECT * FROM unknown_relation',
       'SELECT pg_sleep(1) FROM a.b', 'SELECT private.fn() FROM a.b',
       'SELECT (SELECT count(*) FROM a.c) FROM a.b',
       'SELECT id::private.secret FROM a.b', 'DELETE FROM a.b RETURNING *',
