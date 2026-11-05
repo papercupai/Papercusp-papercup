@@ -489,6 +489,41 @@ describe('rubrics:amend complete acceptance criteria input', () => {
     });
   });
 
+  it('returns acceptance BAR check-layer mismatches as structured refusals', async () => {
+    const error = new Error(
+      'acceptance_bar_amendment_check_layer_mismatch: R-5: a manual check cannot declare required test layers',
+    );
+    rubricsMocks.previewAcceptanceBarAmendment.mockRejectedValueOnce(error);
+
+    const dryRunResult = await body({
+      rubricRef: 'acceptance-example',
+      dryRun: true,
+      criteria: [criterion],
+    });
+
+    expect(dryRunResult).toMatchObject({
+      ok: false,
+      dryRun: true,
+      code: 'acceptance_bar_amendment_check_layer_mismatch',
+      error: error.message,
+      next: expect.stringContaining('Correct the acceptance BAR contract'),
+    });
+
+    rubricsMocks.amendRubric.mockRejectedValueOnce(error);
+    const applyResult = await body({
+      rubricRef: 'acceptance-example',
+      idempotencyKey: 'check-layer-mismatch-apply',
+      criteria: [criterion],
+    });
+
+    expect(applyResult).toMatchObject({
+      ok: false,
+      code: 'acceptance_bar_amendment_check_layer_mismatch',
+      error: error.message,
+      next: expect.stringContaining('Correct the acceptance BAR contract'),
+    });
+  });
+
   it('returns proposeRubric validation failures as structured invalid_args refusals', async () => {
     const error = new Error(
       "invalid_args: proposeRubric: rubric 'acceptance-example' contains off-scale rating instructions — " +

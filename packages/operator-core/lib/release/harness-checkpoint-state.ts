@@ -1,6 +1,7 @@
 /** Read the caller's recorded checkpoint authority without probing the operator-home pipeline. */
 import { getOrgPg } from '@papercusp/db-org';
 import type { GateVerdictTarget } from './gate-verdict-target';
+import { resolveConcreteHarnessSlug } from '../agent-tools/_harness-scope';
 import {
   CHECKPOINT_QUALIFICATION_METADATA_KEY,
   parseCheckpointQualificationTransaction,
@@ -16,10 +17,10 @@ export interface CheckpointCallerScope {
 /** No home fallback: an unscoped caller has no checkpoint subject. */
 export function callerCheckpointTarget(ctx: CheckpointCallerScope): GateVerdictTarget | null {
   const workspaceId = ctx.workspaceId?.trim();
-  const installSlug = ctx.harnessSlug?.trim();
+  const installSlug = resolveConcreteHarnessSlug(undefined, ctx);
   const concrete = (value: string | undefined): value is string =>
     !!value && value !== '*' && value.toLowerCase() !== 'all';
-  return concrete(workspaceId) && concrete(installSlug) ? { workspaceId, installSlug } : null;
+  return concrete(workspaceId) && installSlug ? { workspaceId, installSlug } : null;
 }
 
 type MetadataQuery = (statement: string, parameters: string[]) => Promise<{ metadata: unknown }[]>;

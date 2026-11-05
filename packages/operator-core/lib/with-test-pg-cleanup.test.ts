@@ -149,6 +149,29 @@ describe('private PostgreSQL independent cleanup', () => {
     } finally { f.dispose(); }
   });
 
+  it.each([false, true])('reaps registered databases before early/final PG stop and retains cleanup failure (fails=%s)', async fails => {
+    const order: string[] = [];
+    let alive = true;
+    const failure = new Error('owned database drop is unconfirmed');
+    const prepare = vi.fn(async () => {
+      expect(alive).toBe(true);
+      order.push('databases');
+      if (fails) throw failure;
+    });
+    const stop = createSingleFlightStop(async () => { order.push('pg-stop'); alive = false; }, prepare);
+    if (fails) {
+      await expect(stop()).rejects.toBe(failure);
+      expect(alive).toBe(false);
+      await expect(stop()).rejects.toBe(failure);
+      expect(order).toEqual(['databases', 'pg-stop', 'pg-stop']);
+    } else {
+      await Promise.all([stop(), stop()]);
+      await stop();
+      expect(order).toEqual(['databases', 'pg-stop']);
+    }
+    expect(prepare).toHaveBeenCalledOnce();
+  });
+
   it.each([false, true])('fences detached managed tasks before private PG removal (fails=%s)', async fails => {
     const f = fixture();
     try {
@@ -289,7 +312,7 @@ describe('private PostgreSQL independent cleanup', () => {
         isolatedRuntime: true, cleanupStartedAt: Date.now(), runtimeId: 'test-runtime-ipc',
         runtimeRoot: f.resources.runtimeRoot, dataDir: f.resources.dataDir, port: 12345,
         child: f.resources.child, cleanupReceiptFailures: receiptFailures, pendingCleanupReceipts: pendingReceipts,
-        existsSync, console: { log: vi.fn() },
+        existsSync, console: { log: vi.fn() }, persistIsolatedProgress: vi.fn(),
         pg: { stop: async () => {
           await f.resources.pg.stop();
           if (mode === 'background-callback') launcher.queueCleanupStage('pg-log', { message: 'stopping' });
@@ -326,8 +349,14 @@ describe('private PostgreSQL independent cleanup', () => {
         const cleanup = launcher.finishChildOwned(0, null).catch(error => { failure = error; })
           .finally(() => { settled = true; });
         if (mode === 'background-callback') {
-          await backgroundStarted;
-          await observationFinished;
+          const prematureFinish = cleanup.then(() => {
+            throw new Error('cleanup settled before its background IPC fence: ' + String(failure)
+              + '; calls=' + JSON.stringify(f.calls) + '; stages=' + JSON.stringify(sentStages));
+          });
+          // A launcher exception before either signal is useful failure
+          // evidence, rather than an unresolved promise until test timeout.
+          await Promise.race([backgroundStarted, prematureFinish]);
+          await Promise.race([observationFinished, prematureFinish]);
           expect(settled).toBe(false);
           expect(sentStages).not.toContain('remove-private-state');
           expect(existsSync(join(f.resources.dataDir, 'evidence'))).toBe(true);
@@ -336,6 +365,7 @@ describe('private PostgreSQL independent cleanup', () => {
         }
         await cleanup;
         expect(f.calls).toEqual(['child', 'profile', 'observe', 'pg', 'observation-stopped']);
+        if (mode !== 'disconnected') expect(sentStages).toContain('pg-stop');
         expect(failure).toBeTruthy();
         expect(exits).toEqual([]);
         expect(existsSync(join(f.resources.dataDir, 'evidence'))).toBe(true);

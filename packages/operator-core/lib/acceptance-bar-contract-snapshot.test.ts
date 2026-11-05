@@ -835,6 +835,98 @@ describe('AcceptanceBarContractSnapshot — pure bounded projection', () => {
       .not.toContain('bar_snapshot_grading_not_pass');
   });
 
+  // The amendment writer retires disclosure projections. Keep this fixture
+  // aligned with that production shape: only the covered outcome owns execution.
+  function unmappedDisclosureFixture(): AcceptanceBarContractSnapshotInput {
+    const input = provedFixture(2);
+    const rubric = input.rubrics.rows[0]!;
+    const disclosure = rubric.criteria[1]!;
+    Object.assign(disclosure, {
+      role: 'disclosure', mandatory: false, passRatings: [], coversBarKeys: ['R-1'],
+      method: '', check: null, requiredTestLayers: [],
+    });
+    disclosure.barHash = computeAcceptanceBarHash(disclosure);
+    const barSetHash = computeAcceptanceBarSetHash(rubric.criteria);
+    rubric.barSetHash = barSetHash;
+    input.planRows.rows[0]!.barSetHash = barSetHash;
+    input.clauses.rows = input.clauses.rows.filter((clause) => clause.sourceBar?.barKey === 'R-1');
+    const specIds = new Set(input.clauses.rows.map((clause) => clause.specId));
+    input.clauses.rows.forEach((clause) => { clause.sourceBar!.barSetHash = barSetHash; });
+    input.workContracts.rows = input.workContracts.rows.filter((row) => specIds.has(row.specId));
+    input.evidence.rows = input.evidence.rows.filter((row) => specIds.has(row.specId));
+    return input;
+  }
+
+  it.each(['pre-start', 'pre-vetting', 'pre-grading', 'ship'] as const)(
+    'permits an unmapped disclosure at %s when its covered outcome is proved', (phase) => {
+      const snapshot = projectAcceptanceBarContractSnapshot(unmappedDisclosureFixture());
+      expect(snapshot.bars.find((bar) => bar.barKey === 'R-2')).toMatchObject({
+        role: 'disclosure', coversBarKeys: ['R-1'], mappings: [], workContracts: [],
+        proof: { state: 'missing' }, readiness: { state: 'ready', codes: [] },
+      });
+      expect(evaluateAcceptanceBarLifecycle(snapshot, phase, {
+        requireCompleteContractBeforeProof: true,
+      })).toMatchObject({ satisfied: true, codes: [] });
+    },
+  );
+
+  it.each(['missing mapping', 'dropped mapping', 'missing proof', 'missing contract', 'failing grade'])(
+    'an unmapped disclosure does not excuse its covered outcome: %s', (defect) => {
+      const input = unmappedDisclosureFixture();
+      if (defect === 'missing mapping') input.clauses.rows = [];
+      if (defect === 'dropped mapping') input.planItems.rows[0]!.status = 'dropped';
+      if (defect === 'missing proof') input.evidence.rows = [];
+      if (defect === 'missing contract') input.workContracts.rows = [];
+      if (defect === 'failing grade') {
+        input.scorecards.rows.find((card) => card.issueId === 'SC-GRADE')!.ratings['r-1'] = {
+          rating: 'broken', evidence: 'Covered outcome failed.',
+        };
+      }
+      const expectedCode = {
+        'missing mapping': 'bar_snapshot_mapping_missing',
+        'dropped mapping': 'bar_snapshot_mapping_dropped_only',
+        'missing proof': 'bar_snapshot_proof_missing',
+        'missing contract': 'bar_snapshot_work_contract_missing',
+        'failing grade': 'bar_snapshot_grading_not_pass',
+      }[defect];
+      const snapshot = projectAcceptanceBarContractSnapshot(input);
+      expect(snapshot.bars.find((bar) => bar.barKey === 'R-1')!.readiness.codes).toContain(expectedCode);
+      const verdict = evaluateAcceptanceBarLifecycle(snapshot, 'ship');
+      expect(verdict.satisfied).toBe(false);
+      expect(verdict.codes).toContain(expectedCode);
+    },
+  );
+
+  it.each([{ coversBarKeys: [] }, { coversBarKeys: ['R-404'] }, { coversBarKeys: ['R-2'] }])(
+    'rejects invalid disclosure coverage $coversBarKeys', ({ coversBarKeys }) => {
+    const input = unmappedDisclosureFixture();
+    const rubric = input.rubrics.rows[0]!;
+    const disclosure = rubric.criteria[1]!;
+    disclosure.coversBarKeys = coversBarKeys;
+    disclosure.barHash = computeAcceptanceBarHash(disclosure);
+    const barSetHash = computeAcceptanceBarSetHash(rubric.criteria);
+    rubric.barSetHash = barSetHash;
+    input.planRows.rows[0]!.barSetHash = barSetHash;
+    input.clauses.rows[0]!.sourceBar!.barSetHash = barSetHash;
+    const verdict = evaluateAcceptanceBarLifecycle(projectAcceptanceBarContractSnapshot(input), 'pre-start');
+    expect(verdict.satisfied).toBe(false);
+    expect(verdict.blockingBars).toContainEqual({
+      barKey: 'R-2', codes: expect.arrayContaining(['bar_snapshot_coverage_invalid']),
+      contract: expect.any(String),
+    });
+  });
+
+  it('preserves disclosure hash validation and fails closed on truncated source reads', () => {
+    const input = unmappedDisclosureFixture();
+    input.rubrics.rows[0]!.criteria[1]!.model = 'Changed without updating the hash.';
+    expect(evaluateAcceptanceBarLifecycle(projectAcceptanceBarContractSnapshot(input), 'pre-start').codes)
+      .toContain('bar_snapshot_bar_hash_mismatch');
+    const truncated = unmappedDisclosureFixture();
+    truncated.evidence.truncated = true;
+    expect(evaluateAcceptanceBarLifecycle(projectAcceptanceBarContractSnapshot(truncated), 'ship').satisfied)
+      .toBe(false);
+  });
+
   it('CONTROL: a mandatory outcome with a non-pass rating still blocks shipment', () => {
     const input = provedFixture(1);
     const independent = input.scorecards.rows.find((card) => card.issueId === 'SC-GRADE')!;

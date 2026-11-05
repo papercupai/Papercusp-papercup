@@ -1402,21 +1402,44 @@ export async function isWorkItemAutoPickable(
  * Per-id duplicate-screening read for consumers that hydrate the legacy WorkItem
  * projection (which intentionally does not grow a new selected column for every
  * lifecycle axis). IDs are workspace-unique across both physical families, so the
- * shared base table is the one exact read. Missing rows fail safe.
+ * shared base table is the one exact read. Return its canonical fail-open
+ * exclusion too, so observers can explain admission without a second query.
+ * Missing rows fail safe.
  */
+export async function readWorkItemDuplicateAdmission(
+  workItemId: string,
+  opts: { workspaceId?: string } = {},
+): Promise<{
+  admitted: boolean;
+  failOpenExclusion: AdmissionFailOpenExclusion | null;
+  duplicateOf: string | null;
+} | null> {
+  if (!workItemId) return null;
+  const { sql } = getOrgPg();
+  const ws = opts.workspaceId ?? activeWorkspaceId();
+  const rows = await sql<{
+    admission: string | null;
+    duplicate_of: string | null;
+    fail_open_exclusion: string | null;
+  }[]>`
+    SELECT admission, duplicate_of, ${failOpenExclusionSql(sql)} AS fail_open_exclusion
+      FROM harness_shared.work_items
+     WHERE workspace_id = ${ws} AND feature_id = ${workItemId}
+     LIMIT 1`;
+  const row = rows[0];
+  return row ? {
+    admitted: isAdmitted(row.admission, row.duplicate_of),
+    failOpenExclusion: asAdmissionFailOpenExclusion(row.fail_open_exclusion),
+    duplicateOf: row.duplicate_of,
+  } : null;
+}
+
+/** Compatibility predicate for callers that need admission without its reason. */
 export async function isWorkItemDuplicateAdmitted(
   workItemId: string,
   opts: { workspaceId?: string } = {},
 ): Promise<boolean> {
-  if (!workItemId) return false;
-  const { sql } = getOrgPg();
-  const ws = opts.workspaceId ?? activeWorkspaceId();
-  const rows = await sql<{ admission: string | null; duplicate_of: string | null }[]>`
-    SELECT admission, duplicate_of
-      FROM harness_shared.work_items
-     WHERE workspace_id = ${ws} AND feature_id = ${workItemId}
-     LIMIT 1`;
-  return rows[0] ? isAdmitted(rows[0].admission, rows[0].duplicate_of) : false;
+  return (await readWorkItemDuplicateAdmission(workItemId, opts))?.admitted ?? false;
 }
 
 /**

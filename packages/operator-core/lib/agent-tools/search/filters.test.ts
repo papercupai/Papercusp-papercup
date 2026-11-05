@@ -1,16 +1,20 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { Sql } from 'postgres';
 import { resolveSearchFilters, searchFilterArgs } from './filters';
 
-// The session:'self' and owner:'self' paths never touch `sql` (only the fleet
-// branch queries), so a null stub is safe for these cases. resolveSelfSession
-// runs against the real FS but resolves to null for a fabricated owner with no
-// isolation dir — which still exercises the owner-scope branch.
+// The session:'self' and owner:'self' paths never use `sql` (only the fleet
+// branch queries). Keep transcript discovery out of this filter-mapping unit
+// test: its real DB/filesystem lookup can exceed the bounded timeout.
 const noSql = null as unknown as Sql;
 const FAKE_OWNER = 'su-wi5644-test-owner-no-real-dir';
+const resolveSelfSession = vi.fn();
+vi.mock('../../search/self-session', () => ({
+  resolveSelfSession: (...args: unknown[]) => resolveSelfSession(...args),
+}));
 
 describe('resolveSearchFilters — session:self owner-scoping (WI-5644)', () => {
   it("owner-scopes session:'self' across the whole respawn chain and never pins a single native sessionId", async () => {
+    resolveSelfSession.mockResolvedValue(null);
     const { filters } = await resolveSearchFilters(noSql, { session: 'self' }, FAKE_OWNER);
     // The fix: `session:'self'` recall must span EVERY transcript the coord
     // owner produced (a cold carry-respawn scatters history across many native

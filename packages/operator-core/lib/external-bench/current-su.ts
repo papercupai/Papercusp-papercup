@@ -2011,15 +2011,18 @@ export function currentBenchSoloCapabilityControl(arm: CurrentBenchmarkProtocol[
   if (arm.control?.topology !== 'solo' || arm.agent !== 'codex')
     throw new Error('Native capability control requires a frozen Codex solo arm.');
   const unsupported = Object.entries(arm.control.capabilities)
-    .filter(([capability, toggle]) => toggle === 'on' && !['work-item-ledger', 'planning', 'memory-recall'].includes(capability))
+    .filter(([capability, toggle]) => toggle === 'on' && !['work-item-ledger', 'planning', 'memory-recall',
+      ...(arm.control!.compactionLimit !== undefined ? ['carry-respawn'] : [])].includes(capability))
     .map(([capability]) => capability);
   if (unsupported.length)
     throw new Error(`Native capability control is unavailable for: ${unsupported.join(', ')}.`);
   return Object.freeze({ topology: 'solo' as const,
     capabilities: Object.freeze({ ...arm.control.capabilities }),
-    // No managed carry, dispatch, consult or ambient context in this
-    // control. Observer ownership remains outside the experimental ceiling.
+    // Both carry treatments use the same explicit native boundary. Carry-off
+    // resumes the frozen initial task without a prior-session note.
+    // Dispatch, consult and ambient context remain outside this control.
     toolNames: Object.freeze(['coord:whoami',
+      ...(arm.control.compactionLimit !== undefined ? ['session:request-compaction'] : []),
       ...(currentBenchLedgerEnabled(arm) ? ['work_items:get', 'work_items:checkpoint', 'work_items:complete'] : []),
       ...(arm.control.capabilities['memory-recall'] === 'on' ? ['memory:search'] : []),
       ...(arm.control.capabilities.planning === 'on' ? BENCHMARK_SCRATCH_PLAN_TOOLS : [])]),

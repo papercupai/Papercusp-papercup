@@ -2435,9 +2435,9 @@ describe('current benchmark restart and live binding', () => {
     await expect(recoverCurrentBenchRun(f.ports, options)).rejects.toThrow(/census exceeded/);
     expect(f.ports.killTask).not.toHaveBeenCalled();
   });
-  it.each([[undefined, 'off', 'off'], ['on', 'off', 'off'], ['off', 'off', 'off'], ['on', 'on', 'off'],
-    ['off', 'on', 'off'], ['on', 'off', 'on'], ['off', 'off', 'on']] as const)
-    ('binds native ledger exposure %s planning %s memory %s while retaining authenticated observer ownership', async (ledger, planning, memory) => {
+  it.each([[undefined, 'off', 'off', undefined], ['on', 'off', 'off', 'off'], ['off', 'off', 'off', 'off'], ['on', 'on', 'off', 'off'],
+    ['off', 'on', 'off', 'off'], ['on', 'off', 'on', 'off'], ['off', 'off', 'on', 'off'], ['off', 'off', 'off', 'on']] as const)
+    ('binds native ledger exposure %s planning %s memory %s carry %s while retaining authenticated observer ownership', async (ledger, planning, memory, carry) => {
     const f = fixture();
     const archivedBefore = native.archivePlans.mock.calls.length;
     const ctx = { workspaceId: 'bench-private', authenticatedPrincipal: { retained: true } } as unknown as PapercuspUnifiedToolContext;
@@ -2445,7 +2445,8 @@ describe('current benchmark restart and live binding', () => {
     if (ledger) {
       protocol.arms[0].control = { topology: 'solo', solverGroup: 'ledger-control',
         compactionLimit: 20_000,
-        solverToolsHash: 'f'.repeat(64), capabilities: { ...allCapabilities('off'), 'work-item-ledger': ledger, planning, 'memory-recall': memory } };
+        solverToolsHash: 'f'.repeat(64), capabilities: { ...allCapabilities('off'), 'work-item-ledger': ledger, planning, 'memory-recall': memory,
+          'carry-respawn': carry ?? 'off' } };
       protocol.arms[1].control = { topology: 'stock-native-reference', solverGroup: 'stock-control',
         solverToolsHash: 'f'.repeat(64), capabilities: allCapabilities('off') };
     }
@@ -2551,10 +2552,12 @@ describe('current benchmark restart and live binding', () => {
     }
     expect(confinement.denyCarryOutside).toEqual({ initialPrompt: args.brief,
       ...(ledger ? { compactionLimit: 20_000 } : {}),
-      initialPromptSha256: createHash('sha256').update(args.brief!).digest('hex'), mode: ledger ? 'off' : 'on' });
-    // Controlled carry-off arms deny managed carry; legacy assignments retain
-    // their existing hook path. Neither is a measurement of a real respawn.
-    expect(evaluateSessionConfinement({ toolName: 'session:request-compaction', args: {}, confinement }).allowed).toBe(!ledger);
+      initialPromptSha256: createHash('sha256').update(args.brief!).digest('hex'), mode: carry ?? 'on' });
+    // Explicitly matched carry-off boundaries permit a fresh initial-task
+    // continuation, while refusing a prior-session note.
+    expect(evaluateSessionConfinement({ toolName: 'session:request-compaction', args: {}, confinement }).allowed).toBe(true);
+    if (ledger) expect(evaluateSessionConfinement({ toolName: 'session:request-compaction',
+      args: { continueNote: 'prior state' }, confinement }).allowed).toBe(carry === 'on');
     if (!ledger) {
     const nativeSessionId = randomUUID();
     const dispatch = vi.fn<typeof globalThis.fetch>(async (url, init) => {

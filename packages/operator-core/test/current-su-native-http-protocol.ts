@@ -4,6 +4,8 @@ import { createHash } from 'node:crypto';
 import type { IncomingMessage, RequestListener, ServerResponse } from 'node:http';
 import { decode } from '@papercusp/result-encoding';
 import { codexCliResponsesBody, codexCliResponsesCompletionSse } from '../lib/inference-gateway/codex-cli-bridge';
+import type { CurrentBenchmarkProtocol } from '../lib/external-bench/reproducibility/schema';
+import { allCapabilities } from '../lib/external-bench/reproducibility/_protocol-test-fixture';
 
 type Body = Record<string, unknown>;
 type Tool = { type: string; name: string; tools?: Tool[] };
@@ -31,6 +33,14 @@ function queuedCompactionAcknowledgement(value: unknown): Body | null {
 
 export const FROZEN_NATIVE_CARRY_NOTE = 'The assignment already changed answer.txt to after; verify that retained edit.';
 export const FROZEN_NATIVE_CARRY_LIMIT = 20_000;
+
+/** Pin the private lifecycle experiment before preregistration and launch.
+ * This fixture does not register a runnable paid-study ablation. */
+export function freezeCurrentSuNativeCarryProtocol(config: CurrentBenchmarkProtocol, mode: 'on' | 'off') {
+  for (const arm of config.arms) arm.control = { topology: 'solo', solverGroup: 'private-frozen-carry',
+    solverToolsHash: 'f'.repeat(64), compactionLimit: FROZEN_NATIVE_CARRY_LIMIT,
+    capabilities: { ...allCapabilities('off'), 'carry-respawn': arm.id === 'papercusp' ? mode : 'off' } };
+}
 
 /** Observe actual native provider input, independently of the carry builder.
  * Hash the exact delivered bytes; an echo, a queue receipt or a substring in a
@@ -72,7 +82,7 @@ function offeredTools(body: Body) {
   return flattened;
 }
 
-function scriptedTool(body: Body, kind: 'edit' | 'compact', options: { frozen?: boolean } = {}) {
+function scriptedTool(body: Body, kind: 'edit' | 'compact', options: { frozen?: boolean; carryMode?: 'on' | 'off' } = {}) {
   const flattened = offeredTools(body);
   const command = "printf 'after\\n' > /app/answer.txt";
   const direct = flattened.find(tool => tool.type === 'function' && (kind === 'edit'
@@ -82,7 +92,7 @@ function scriptedTool(body: Body, kind: 'edit' | 'compact', options: { frozen?: 
   const exec = flattened.find(tool => tool.type === 'custom' && tool.name === 'exec' && tool.namespace === 'functions');
   const tool = direct ?? (kind === 'compact' ? invoke : undefined) ?? exec;
   assert.ok(tool, `Native ${kind} tool missing: ${JSON.stringify(flattened.map(({ type, name, namespace }) => ({ type, name, namespace })))}`);
-  const compactArgs = options.frozen ? { continueNote: FROZEN_NATIVE_CARRY_NOTE } : {};
+  const compactArgs = options.frozen && options.carryMode !== 'off' ? { continueNote: FROZEN_NATIVE_CARRY_NOTE } : {};
   const input = direct ? kind === 'edit' ? { cmd: command } : compactArgs
     : kind === 'compact' ? { name: 'session:request-compaction', args: compactArgs } : { cmd: command };
   const text = tool === exec ? kind === 'edit'
@@ -99,7 +109,7 @@ function scriptedTool(body: Body, kind: 'edit' | 'compact', options: { frozen?: 
       ? { response } : { output_index: 0, item: call }) })}\n\n`).join('') + 'data: [DONE]\n\n';
 }
 
-export function createCurrentSuNativeProtocol(options: { frozen?: boolean } = {}) {
+export function createCurrentSuNativeProtocol(options: { frozen?: boolean; carryMode?: 'on' | 'off' } = {}) {
   let initialBody: Body | undefined, initialInput: string | undefined;
   let stage: 'initial' | 'edit' | 'compact' | 'queued' = 'initial';
   let carryInputSeen = false;

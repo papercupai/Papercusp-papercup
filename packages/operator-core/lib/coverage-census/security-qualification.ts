@@ -10,6 +10,7 @@ import type { UnifiedToolContext } from '@papercusp/tooldef';
 import { z } from 'zod';
 import { areAcceptanceLineageRelated } from '../acceptance-author-identity';
 import { resolveAgentIdentity, isTransportOnlyIdentity } from '../agent-tools/coordination/identity';
+import { resolveConcreteHarnessSlug } from '../agent-tools/_harness-scope';
 import { decodeOperatorSecretKey } from '../operator-secret-key';
 import { activeWorkspaceId } from '../workspace-registry';
 import { claimImmutableTextArtifact, loadImmutableTextArtifact, loadImmutableTextArtifactClaim,
@@ -53,11 +54,14 @@ const discoveryMac = (receipt: z.infer<typeof discoveryReceiptSchema>, secret: B
 function refuse(reason: string): never { throw new Error(`security_qualification_${reason}`); }
 function actor(ctx: UnifiedToolContext, harness: string): string {
   const identity = resolveAgentIdentity(ctx), principal = ctx.principal;
+  const contextHarness = resolveConcreteHarnessSlug(undefined, ctx);
+  const requestedHarness = resolveConcreteHarnessSlug(harness, ctx);
   if (!principal || !['trusted', 'verified'].includes(principal.trust ?? '') ||
       !['bearer-token', 'spawn-url', 'cookie-session', 'jwt'].includes(principal.authMethod ?? '') ||
       identity.workspaceId !== activeWorkspaceId() || principal.workspaceId !== identity.workspaceId ||
       isTransportOnlyIdentity(identity.ownerId) ||
-      ctx.harnessSlug && ctx.harnessSlug !== harness) refuse('authenticated_actor_required');
+      !requestedHarness || requestedHarness !== harness ||
+      contextHarness && contextHarness !== requestedHarness) refuse('authenticated_actor_required');
   return identity.ownerId;
 }
 async function key(): Promise<Buffer> {

@@ -19,6 +19,7 @@ import { nativeToolArguments } from '../su-session-usage';
 import type { HostRequestPrincipalResolver } from '../auth/require-principal';
 import { appendAuthorizedNativeDispatch, type NativeDispatchAppend } from '../agent-opportunities/native-capture';
 import { declareMeter, LocalMeteredTurnRefusedError, type LocalMeteredTurn } from '../p2p/metered-invocation';
+import { resolveConcreteHarnessSlug } from './_harness-scope';
 
 type Request = Parameters<NonNullable<DispatchProjectedDeps['aroundInvoke']>>[0];
 type FundedInstalledAdmission = { ok: true; admission: AdmittedPerUseToolTurn;
@@ -512,9 +513,20 @@ export class NativeInstalledPerUseTurns {
   async appendAuthorizedCapture(request: Request,
     append: typeof appendAuthorizedNativeDispatch = appendAuthorizedNativeDispatch): Promise<boolean> {
     const native = request.ctx.requestOrigin?.nativeSession, principal = request.ctx.principal;
-    const workspaceId = request.ctx.workspaceId, harnessSlug = request.ctx.harnessSlug;
+    const workspaceId = request.ctx.workspaceId;
+    const contextHarnessSlug = resolveConcreteHarnessSlug(undefined, request.ctx);
+    const args = nativeToolArguments(request.input);
+    const harnessFields = ['harness', 'harness_slug'] as const;
+    const harnessField = args ? harnessFields.find(field => Object.hasOwn(args, field)) : undefined;
+    const requestedHarness = harnessField === undefined ? undefined : args?.[harnessField];
+    const harnessSlug = harnessField === undefined
+      ? contextHarnessSlug
+      : typeof requestedHarness === 'string' && requestedHarness.trim()
+        ? resolveConcreteHarnessSlug(requestedHarness, request.ctx) : null;
+    const matchesHarnessArg = (value: unknown) => typeof value === 'string' && !!value.trim()
+      && resolveConcreteHarnessSlug(value, request.ctx) === harnessSlug;
     if (request.tool.pluginInstallation || request.ctx.transport !== 'mcp' || request.ctx.gateBypass?.policy
-      || !workspaceId || !harnessSlug || harnessSlug === '*' || !principal
+      || !workspaceId || !harnessSlug || (contextHarnessSlug !== null && contextHarnessSlug !== harnessSlug) || !principal
       || principal.workspaceId !== workspaceId || !principal.kind || !principal.authMethod
       || !['trusted', 'verified'].includes(principal.trust ?? '') || native?.binding !== 'bound'
       || native.carrier !== 'meta:threadId' || !native.valueFingerprint || !native.callIdFingerprint
@@ -522,13 +534,12 @@ export class NativeInstalledPerUseTurns {
       || ['tools:invoke', 'code:run'].includes(request.toolName)) return false;
     const key = this.key(workspaceId, native.candidateAdvSessionId!, native.valueFingerprint);
     const entry = this.turns.get(key), observed = entry?.observations.get(native.callIdFingerprint);
-    const args = nativeToolArguments(request.input);
     if (!entry || entry.withdrawn || entry.nativeTurnId === null || !entry.resolveRequestPrincipal
       || !observed || observed.captureClaimed || observed.requestPrincipal !== principal || !observed.runtimeBearer
       || observed.arguments === null || args === null || observed.toolName !== request.toolName
       || request.ctx.uiClientId !== entry.context.ownerId
       || canonicalJson(observed.arguments) !== canonicalJson(args)
-      || ['harness', 'harness_slug'].some(field => Object.hasOwn(args, field) && args[field] !== harnessSlug)
+      || harnessFields.some(field => Object.hasOwn(args, field) && !matchesHarnessArg(args[field]))
       || ['workspace', 'workspace_id'].some(field => Object.hasOwn(args, field) && args[field] !== workspaceId)) return false;
     observed.captureClaimed = true;
     const tool = request.tool, authorizeResource = tool.authorize, ctx = request.ctx, toolName = request.toolName;
@@ -545,7 +556,8 @@ export class NativeInstalledPerUseTurns {
         const currentArgs = nativeToolArguments(request.input);
         return request.ctx === ctx && request.tool === tool && request.toolName === toolName
           && tool.authorize === authorizeResource && !tool.pluginInstallation && !ctx.gateBypass?.policy
-          && ctx.transport === 'mcp' && ctx.workspaceId === workspaceId && ctx.harnessSlug === harnessSlug
+          && ctx.transport === 'mcp' && ctx.workspaceId === workspaceId
+          && resolveConcreteHarnessSlug(undefined, ctx) === contextHarnessSlug
           && ctx.uiClientId === entry.context.ownerId && ctx.principal === principal
           && snapshot(principal) === principalJson && canonicalJson(ctx.requestOrigin?.nativeSession) === nativeJson
           && currentArgs !== null && canonicalJson(currentArgs) === argsJson;

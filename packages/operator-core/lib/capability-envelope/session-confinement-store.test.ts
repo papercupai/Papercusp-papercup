@@ -73,6 +73,16 @@ describe('frozen carry policy persistence', () => {
     pgState.payload = { sessions: { [IMPLEMENTER_OWNER]: stored({ confinement: malformed }) } };
     await expect(readSessionConfinement(IMPLEMENTER_OWNER, 'private')).rejects.toThrow(/malformed/);
   });
+  it.each(['mode', 'compactionLimit'] as const)('refuses changing launch-owned carry %s', async field => {
+    const input = { ...structuredClone(confinement), denyCarryOutside: {
+      ...confinement.denyCarryOutside, compactionLimit: 20_000 } };
+    expect(await declareSessionConfinement({ ownerId: IMPLEMENTER_OWNER, workspaceId: 'private', confinement: input })).toEqual({ ok: true });
+    const changed = { ...input, denyCarryOutside: { ...input.denyCarryOutside,
+      ...(field === 'mode' ? { mode: 'off' as const } : { compactionLimit: 25_000 }) } };
+    await expect(declareSessionConfinement({ ownerId: IMPLEMENTER_OWNER, workspaceId: 'private', confinement: changed }))
+      .rejects.toThrow(/cannot be replaced/);
+    expect((await readSessionConfinement(IMPLEMENTER_OWNER, 'private'))?.denyCarryOutside).toEqual(input.denyCarryOutside);
+  });
 });
 
 // ── D-017 §5: installation is bound to the import, not to a boot step ─────────────

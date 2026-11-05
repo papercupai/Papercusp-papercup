@@ -15,6 +15,8 @@ export function retainMeasurementProvenance(input: {
   finishedAt: string;
   transactionAt?: string;
   needsTransactionClock?: boolean;
+  /** Caller has checked response completeness and sensitive path components. */
+  predicateInput?: { path: string; value: unknown };
 }): RecordedMeasurementProvenance {
   let redacted = false;
   let procedureTruncated = false;
@@ -79,6 +81,15 @@ export function retainMeasurementProvenance(input: {
     snapshot = '{}'; procedureTruncated = true;
   }
   const diagnostics: RecordedMeasurementProvenance['diagnostics'] = [];
+  const selected = input.predicateInput;
+  let predicateInput: RecordedMeasurementProvenance['predicateInput'];
+  if (selected && selected.path.length <= 256 && scrub(selected.path) === selected.path) {
+    const value = selected.value;
+    if (value === null || typeof value === 'boolean' || (typeof value === 'number' && Number.isFinite(value))
+      || (typeof value === 'string' && value.length <= 256 && scrub(value) === value)) {
+      predicateInput = { path: selected.path, value };
+    }
+  }
   let nodes = 0;
   const visit = (value: unknown, path: string, depth: number, sensitive = false): void => {
     if (++nodes > 256 || depth > 6 || diagnostics.length >= 64 || path.length > 256) {
@@ -123,6 +134,7 @@ export function retainMeasurementProvenance(input: {
     schemaVersion: 1, startedAt: input.startedAt, finishedAt: input.finishedAt,
     ...(input.transactionAt ? { transactionAt: input.transactionAt } : {}),
     procedure: { sha256, snapshot }, diagnostics, truncated: false, redacted, gaps: [],
+    ...(predicateInput ? { predicateInput } : {}),
   };
   const flags = (): void => {
     result.truncated = procedureTruncated || diagnosticsTruncated;

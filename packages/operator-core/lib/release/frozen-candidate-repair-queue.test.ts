@@ -62,9 +62,10 @@ function fresh(): FrozenCandidateRepairQueue {
 }
 
 describe('frozen-candidate repair queue', () => {
-  it('round-trips an observable admission pre-check and clears it when an admission publishes', () => {
+  it.each([1, 2, 3, 4, FROZEN_CANDIDATE_REPAIR_QUEUE_SCHEMA_VERSION] as const)('upgrades schema %i without losing managed pre-check identity or measurement', schemaVersion => {
     const pending: FrozenCandidateRepairQueue = {
       ...fresh(),
+      schemaVersion,
       admissionPrecheck: {
         schemaVersion: 1,
         operationId: 'repair-precheck-1',
@@ -78,6 +79,7 @@ describe('frozen-candidate repair queue', () => {
         actor: 'su-test',
         runnerPid: 123,
         runnerPidIdentity: 'boot-id:456',
+        runnerTaskId: 'managed-task-1',
         startedAtMs: T0 + 1,
         updatedAtMs: T0 + 1,
         expiresAtMs: T0 + 60_000,
@@ -88,6 +90,9 @@ describe('frozen-candidate repair queue', () => {
       },
     };
     const parsed = parseFrozenCandidateRepairQueue(JSON.parse(JSON.stringify(pending)));
+    // Schema-4 main hosts reject this version instead of rewriting mutable state
+    // without the managed task/environment/measurement fields they cannot read.
+    expect(parsed?.schemaVersion).toBe(5);
     expect(parsed?.admissionPrecheck).toEqual(pending.admissionPrecheck);
     const measurement = { schemaVersion: 1 as const, identity: 'a'.repeat(64), results: [
       { path: 'lib/a.test.ts', status: 'fail' as const, exitCode: 1, durationMs: 12, detail: 'native assertion failed' },
@@ -347,7 +352,7 @@ describe('frozen-candidate repair queue', () => {
   it('persists the first red as an unassigned serialized queue without moving C', () => {
     const queue = fresh();
     expect(queue).toMatchObject({
-      schemaVersion: 4,
+      schemaVersion: FROZEN_CANDIDATE_REPAIR_QUEUE_SCHEMA_VERSION,
       phase: 'awaiting-fixer',
       candidate: C,
       base: BASE,
@@ -708,7 +713,7 @@ describe('frozen-candidate repair queue', () => {
     });
 
     expect(queue).toMatchObject({
-      schemaVersion: 4,
+      schemaVersion: FROZEN_CANDIDATE_REPAIR_QUEUE_SCHEMA_VERSION,
       phase: 'ready-to-test',
       candidate: C,
       qualificationAttemptId: 'qualification-attempt-1',
@@ -844,7 +849,7 @@ describe('frozen-candidate repair queue', () => {
       nowMs: T0,
     });
     expect(current).toMatchObject({
-      schemaVersion: 4,
+      schemaVersion: FROZEN_CANDIDATE_REPAIR_QUEUE_SCHEMA_VERSION,
       affectedTestProofGroup: 'initial-gate-run',
     });
     expect(
@@ -853,19 +858,19 @@ describe('frozen-candidate repair queue', () => {
         schemaVersion: 1,
         affectedTestProofGroup: undefined,
       }),
-    ).toMatchObject({ schemaVersion: 4, affectedTestProofGroup: null });
+    ).toMatchObject({ schemaVersion: FROZEN_CANDIDATE_REPAIR_QUEUE_SCHEMA_VERSION, affectedTestProofGroup: null });
     expect(
       parseFrozenCandidateRepairQueue({
         ...current,
         schemaVersion: 2,
       }),
-    ).toMatchObject({ schemaVersion: 4, affectedTestProofGroup: 'initial-gate-run' });
+    ).toMatchObject({ schemaVersion: FROZEN_CANDIDATE_REPAIR_QUEUE_SCHEMA_VERSION, affectedTestProofGroup: 'initial-gate-run' });
     expect(
       parseFrozenCandidateRepairQueue({
         ...current,
         affectedTestProofGroup: { corrupt: true },
       }),
-    ).toMatchObject({ schemaVersion: 4, affectedTestProofGroup: null });
+    ).toMatchObject({ schemaVersion: FROZEN_CANDIDATE_REPAIR_QUEUE_SCHEMA_VERSION, affectedTestProofGroup: null });
     expect(
       parseFrozenCandidateRepairQueue({
         ...current,
@@ -877,7 +882,7 @@ describe('frozen-candidate repair queue', () => {
         ...current,
         qualificationAttemptId: undefined,
       }),
-    ).toMatchObject({ schemaVersion: 4, qualificationAttemptId: null });
+    ).toMatchObject({ schemaVersion: FROZEN_CANDIDATE_REPAIR_QUEUE_SCHEMA_VERSION, qualificationAttemptId: null });
   });
 
   it('leaves an absent queue on the existing normal gate path', () => {
@@ -1360,7 +1365,7 @@ describe('frozen-candidate repair queue', () => {
     expect(parsed).toEqual(raw);
     expect(parsed).not.toBe(raw);
     expect(parsed?.failingTests).not.toBe(raw.failingTests);
-    expect(parseFrozenCandidateRepairQueue({ ...raw, schemaVersion: 5 })).toBeNull();
+    expect(parseFrozenCandidateRepairQueue({ ...raw, schemaVersion: FROZEN_CANDIDATE_REPAIR_QUEUE_SCHEMA_VERSION + 1 })).toBeNull();
     expect(parseFrozenCandidateRepairQueue({ ...raw, attempts: -1 })).toBeNull();
     expect(parseFrozenCandidateRepairQueue({ ...raw, updatedAtMs: T0 - 1 })).toBeNull();
     expect(

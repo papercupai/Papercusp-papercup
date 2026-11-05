@@ -30,6 +30,7 @@ function fixture() {
   mkdirSync(join(modules, 'example'));
   writeFileSync(join(modules, 'example', 'package.json'), JSON.stringify({ name: 'example', main: 'index.js' }));
   writeFileSync(join(modules, 'example', 'index.js'), 'module.exports = 1');
+  symlinkSync('../helper.ts', join(modules, 'workspace-helper'));
   // Match the private worker's maintained dependency resolution from its bundle.
   symlinkSync(modules, join(dir, 'node_modules'), 'dir');
   const bundle = join(prepared, 'hono-host.mjs'); writeFileSync(bundle, 'export const host = 1;');
@@ -42,7 +43,7 @@ function fixture() {
   const closure: CommittedReaderClosure = { sourceCommit: source.sourceCommit, sha256: digest(readFileSync(bundle)),
     metafileSha256: digest(readFileSync(`${bundle}.meta.json`)), testPaths: ['reader.test.ts'],
     helperPaths: ['helper.ts'], configPaths: ['config.ts'], executedImports: ['helper.ts', 'import.ts'],
-    dependencyFiles: verifierSourceFiles(modules), externalResolutions: { example: 'node_modules/example/index.js' },
+    dependencyFiles: verifierSourceFiles(modules, { symlinkRoot: root }), externalResolutions: { example: 'node_modules/example/index.js' },
     copiedSources: ['asset.sql'], artifacts: [
       ...[bundle, `${bundle}.meta.json`].map(path => ({ path, sha256: digest(readFileSync(path)) })),
       { path: copiedAsset, sha256: digest('asset.sql'), sourcePath: 'asset.sql' },
@@ -395,6 +396,32 @@ describe('private worker source selection before allocation', () => {
 });
 
 describe('original build observations without runtime qualification', () => {
+  it('admits archive workspace links through preparation and dependency recheck', () => {
+    const f = observedBuildFixture();
+    const built = f.produceObserved();
+    const inputs = JSON.parse(readFileSync(join(f.dir, 'prepare/operator-api-inputs.json'), 'utf8'));
+    expect(inputs.dependencyFiles).toContainEqual({ path: 'workspace-helper', kind: 'symlink',
+      executable: true, sha256: digest('../helper.ts') });
+    expect(built.qualification).toEqual({ status: 'pending' });
+    expect(readFileSync(`${f.bundle}.builds`, 'utf8')).toBe('build\n');
+  });
+
+  it('refuses an escaping workspace link before invoking the compiler', () => {
+    const f = observedBuildFixture();
+    writeFileSync(join(f.dir, 'external.ts'), 'external');
+    const link = join(f.root, 'node_modules/workspace-helper');
+    rmSync(link); symlinkSync('../../external.ts', link);
+    expect(() => f.produceObserved()).toThrow(/archive symlink escapes source root/);
+    expect(existsSync(`${f.bundle}.builds`)).toBe(false);
+  });
+
+  it('refuses workspace link retargeting during compilation', () => {
+    const f = observedBuildFixture('rm node_modules/workspace-helper\nln -s ../import.ts node_modules/workspace-helper\n');
+    expect(() => f.produceObserved()).toThrow(/Materialized dependencies changed during build/);
+    expect(readFileSync(`${f.bundle}.builds`, 'utf8')).toBe('build\n');
+    expect(existsSync(join(f.dir, 'prepare/operator-api-preflight.json'))).toBe(false);
+  });
+
   it('retains independent inputs before compilation and refuses them at the qualified consumer', () => {
     const f = observedBuildFixture();
     const built = f.produceObserved();

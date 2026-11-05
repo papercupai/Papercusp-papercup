@@ -609,12 +609,15 @@ process.stdout.write(JSON.stringify({trust:{rootEpoch:3,minRollbackCounter:0,min
     }
     #[cfg(unix)] #[test] fn candidate_mac_activation_uses_downloaded_bytes_and_current_policy() {
         use super::update_authorization::{activate_test_macos_update, DownloadedUpdate, Metadata};
+        use super::update_authorization::macos_update_installer::{Request, install_test};
         use std::fs::{self,File,Permissions};
         use std::os::unix::fs::PermissionsExt;
         use std::io::Write;
         use std::process::{Command,Stdio};
         use std::cell::Cell;
-        let bytes=bundle(x86(),bundle_info("Main","gui","1.2.3",false),vec![]);
+        let product="com.papercusp.gui";
+        let main=thin(Architecture::X86_64,"darwin-x86_64","product",product.into());
+        let bytes=bundle(main.clone(),bundle_info("Main",product,"1.2.3",false),vec![]);
         let inputs=extract_macos_archive_inputs(&bytes,"darwin-x86_64").unwrap();
         let c=inputs.candidate(&bytes);
         let digest=|s:&[u8]|format!("{:x}",Sha256::digest(s));
@@ -636,7 +639,7 @@ process.stdout.write(JSON.stringify({trust:{rootEpoch:3,minRollbackCounter:0,min
         let write=|p:&serde_json::Value| {fs::write(&policy_path,serde_json::to_vec(p).unwrap()).unwrap();
             fs::set_permissions(&policy_path,Permissions::from_mode(0o600)).unwrap();};
         let read=||serde_json::from_slice::<serde_json::Value>(&fs::read(&policy_path).unwrap()).unwrap();
-        let download=DownloadedUpdate {artifact:&bytes,manifest:&signed["manifest"],version:"1.2.3",product:"gui",platform:"darwin-x86_64"};
+        let download=DownloadedUpdate {artifact:&bytes,manifest:&signed["manifest"],version:"1.2.3",product,platform:"darwin-x86_64"};
         let effects=Cell::new(0);
         let install=|| {assert_eq!(read()["updateAuthorization"]["minRollbackCounter"],7);
             assert_eq!(read()["updateAuthorization"]["minIssuedAt"],1000);
@@ -679,6 +682,68 @@ process.stdout.write(JSON.stringify({trust:{rootEpoch:3,minRollbackCounter:0,min
         assert_eq!(failed.unwrap_err(),"installer failed");
         assert_eq!(read(),retained,"failed install retains floors");
         assert_eq!(effects.get(),2);
+
+        // Exercise the real installer core against protected native directories.
+        // Linux exchange semantics are local development proof, not signed Mac proof.
+        let apps=path.join("Applications"); fs::create_dir(&apps).unwrap();
+        fs::set_permissions(&apps,Permissions::from_mode(0o700)).unwrap();
+        let target=apps.join("Papercusp GUI.app"); fs::create_dir(&target).unwrap();
+        fs::set_permissions(&target,Permissions::from_mode(0o755)).unwrap();
+        fs::write(target.join("old-product"),b"old").unwrap();
+        let outside=path.join("outside"); fs::create_dir(&outside).unwrap();
+        fs::write(outside.join("keep"),b"untouched").unwrap();
+        std::os::unix::fs::symlink(&outside,target.join("external-link")).unwrap();
+        let applications=File::open(&apps).unwrap();
+        let ready_count=Cell::new(0);
+        let request=||Request::capture(&download).unwrap();
+        let receive=|request:Request| {
+            let mut wire=Vec::new();request.send(&mut wire).unwrap();
+            Request::receive(wire.as_slice()).unwrap()
+        };
+        let no_ready=|| {ready_count.set(ready_count.get()+1);Ok(())};
+        let captured=receive(request());
+        let mut revoked=policy.clone();revoked["updateAuthorization"]["signers"][0]["revoked"]=true.into();
+        write(&revoked);
+        assert!(install_test(&directory,&applications,captured,2000,no_ready).is_err());
+        assert_eq!(ready_count.get(),0);assert!(target.join("old-product").exists());
+        let mut wire=Vec::new();request().send(&mut wire).unwrap();
+        for n in [0,11,12,wire.len()-1] {assert!(Request::receive(&wire[..n]).is_err());}
+        let mut trailing=wire.clone();trailing.push(0);assert!(Request::receive(trailing.as_slice()).is_err());
+        let mut huge=wire.clone();huge[..4].copy_from_slice(&u32::MAX.to_be_bytes());
+        assert!(Request::receive(huge.as_slice()).is_err());
+        assert!(Request::capture(&DownloadedUpdate {product:"../../outside",..download}).is_err());
+        write(&policy);
+        fs::rename(&target,apps.join("saved.app")).unwrap();
+        std::os::unix::fs::symlink(&outside,&target).unwrap();
+        assert!(install_test(&directory,&applications,request(),2000,no_ready).is_err());
+        fs::remove_file(&target).unwrap();fs::rename(apps.join("saved.app"),&target).unwrap();
+        assert_eq!(read(),policy);assert_eq!(ready_count.get(),0);
+        fs::set_permissions(&apps,Permissions::from_mode(0o770)).unwrap();
+        assert!(install_test(&directory,&applications,request(),2000,no_ready).is_err());
+        fs::set_permissions(&apps,Permissions::from_mode(0o700)).unwrap();
+        assert_eq!(read(),policy);assert_eq!(ready_count.get(),0);
+        let cancelled=install_test(&directory,&applications,receive(request()),2000,||Err("cancelled".into()));
+        assert_eq!(cancelled.unwrap_err(),"cancelled","must reach READY before exercising cancellation");
+        assert_eq!(read(),retained);assert!(target.join("old-product").exists());
+        assert_eq!(fs::read(outside.join("keep")).unwrap(),b"untouched");
+        assert_eq!(fs::read_dir(&apps).unwrap().count(),1,"cancel cleans only its private stage");
+        let mut sender=bytes.clone();
+        let owned=Request::capture(&DownloadedUpdate {artifact:&sender,..download}).unwrap();
+        sender.fill(0);
+        install_test(&directory,&applications,receive(owned),2000,|| {
+            ready_count.set(ready_count.get()+1);
+            assert_eq!(read(),retained);assert!(target.join("old-product").exists());
+            assert!(activate_test_macos_update(&directory,&download,2000,|| -> Result<(),String> {panic!("lock bypass")}).is_err());
+            Ok(())
+        }).unwrap();
+        assert_eq!(ready_count.get(),1);
+        assert_eq!(fs::read(target.join("Contents/MacOS/Main")).unwrap(),main);
+        assert!(!target.join("old-product").exists());
+        assert!(!target.join("external-link").exists());
+        assert_eq!(fs::read(outside.join("keep")).unwrap(),b"untouched");
+        assert_eq!(fs::read_dir(&apps).unwrap().count(),1,"completed swap removes the previous private tree");
+        assert_eq!(read(),retained);
+        println!("native-mac-installer: owned framed bytes, fixed destination, current revocation, symlink/writable-directory refusal, READY cancellation, lock through exchange, exact installed bytes and external canary");
         println!("native-mac-activation: real dual signatures, selected identity, current policy and no-effect refusals");
     }
     #[test] fn candidate_mac_bundle_refuses_identity_and_namespace_ambiguity() {

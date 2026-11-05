@@ -16,7 +16,7 @@ import { listAllProjectedTools, projectedToolRegistryRevision, type ProjectedToo
 import { decode } from '@papercusp/result-encoding';
 import { checkAgainstJsonSchema } from './json-schema-validation';
 import { classifyProjectionBody, parseProjection } from './result-projection';
-import { redactSensitiveText, redactSensitiveValue } from './sensitive-text';
+import { isSensitiveValueKey, redactSensitiveText, redactSensitiveValue } from './sensitive-text';
 import { fitMeasurementProvenance, retainMeasurementProvenance } from './measurement-provenance';
 import { parseRecordedMeasurementProvenance, type RecordedMeasurementProvenance } from '@papercusp/test-config/execution-details';
 import { getCellUnchecked } from './cell-registry';
@@ -748,7 +748,6 @@ export function replayRetainedProbe(input: {
   if (!p || !descriptor || !['sql', 'tool', 'state-cell'].includes(String(descriptor.kind))) {
     return unavailable('Original typed probe provenance is missing or invalid.');
   }
-  if (p.truncated || p.redacted || p.gaps.length) return unavailable('Original inputs have retention gaps; exact predicate replay is unavailable.');
   const { replayDependencySha256: _identity, sqlInputs, sqlReplayImplementation: _sqlIdentity, ...probe } = descriptor;
   const shape = continuityProbeShapeSchema.safeParse(probe);
   if (!shape.success || shape.data.schemaRevision === LIVE_SCHEMA_REVISION) return unavailable('Original typed probe descriptor is invalid.');
@@ -770,16 +769,24 @@ export function replayRetainedProbe(input: {
   const parts = predicatePath(shape.data.expect.path);
   if (!parts) return unavailable('Original predicate path is invalid.');
   const path = '$' + parts.map(part => `[${JSON.stringify(String(part))}]`).join('');
-  if (!diagnostics.has(path) || [...diagnostics.keys()].some(key => key.startsWith(path + '['))) {
+  const selected = p.predicateInput;
+  if (selected && selected.path !== path) return unavailable('The retained scalar belongs to a different predicate path.');
+  if (!selected && (p.truncated || p.redacted || p.gaps.length)) {
+    return unavailable('Original inputs have retention gaps; exact predicate replay is unavailable.');
+  }
+  if ((!selected && !diagnostics.has(path)) || [...diagnostics.keys()].some(key => key.startsWith(path + '['))) {
     return unavailable('The original scalar input is absent or has an ambiguous object shape; missing is not null.');
   }
-  const value = diagnostics.get(path)!;
+  const value = selected ? selected.value : diagnostics.get(path)!;
+  if (selected && diagnostics.has(path) && !Object.is(value, diagnostics.get(path))) {
+    return unavailable('Retained scalar and response diagnostics disagree.');
+  }
   const verdict = evaluateContinuityPredicate({ ...shape.data.expect, path: '$' }, value);
   return { ...base, value, status: Object.is(value, input.value) ? 'reproduced' : 'mismatch',
     verdict: verdict.matches ? 'pass' : 'fail',
     window: { startedAt: p.startedAt, finishedAt: p.finishedAt },
     ...(p.transactionAt ? { transactionAt: p.transactionAt } : {}),
-    reason: 'Re-evaluated the original retained response scalar and predicate only; no query, tool or current measurement ran. Underlying SQL rows and query calculations are not reconstructed.' };
+    reason: 'Re-evaluated the original retained response scalar and predicate only; no query, tool or current measurement ran. Surrounding diagnostics may have retention gaps. Underlying SQL rows and query calculations are not reconstructed.' };
 }
 
 /** Re-execute the supported original SQL against retained literal source rows
@@ -793,6 +800,7 @@ export async function replayRetainedSqlProbe(input: {
   const unavailable = (reason: string): RetainedProbeReplay => ({ ...base, status: 'unavailable', reason });
   if (!predicate || predicate.status === 'unavailable') return unavailable(predicate?.reason ?? 'Original SQL inputs are unavailable.');
   const p = input.provenance!;
+  if (p.truncated || p.redacted || p.gaps.length) return unavailable('Original SQL inputs have retention gaps; scalar predicate evidence cannot establish query replay.');
   const descriptor = JSON.parse(p.procedure.snapshot);
   if (descriptor.kind !== 'sql' || !p.transactionAt) return unavailable('This measurement has no original SQL source snapshot.');
   const query = compileRetainedSql(descriptor.sql, descriptor.sqlInputs, p.transactionAt);
@@ -972,6 +980,14 @@ async function runOne(
   }
   const observed = observedScalar(verdict.actual);
   const finishedAt = new Date(ctx.now?.() ?? Date.now()).toISOString();
+  const parts = predicatePath(probe.expect.path);
+  const body = decoded && typeof decoded === 'object' ? decoded as Record<string, unknown> : {};
+  const partial = body._partial === true || body.partial === true || body.truncated === true
+    || body.complete === false || (body._projection && typeof body._projection === 'object'
+      && (body._projection as Record<string, unknown>).truncated === true);
+  const predicateInput = parts && !parts.some(part => isSensitiveValueKey(String(part))) && !partial
+    ? { path: '$' + parts.map(part => `[${JSON.stringify(String(part))}]`).join(''), value: verdict.actual }
+    : undefined;
   return {
     ...base,
     status: verdict.matches ? 'fresh' : 'stale',
@@ -980,6 +996,7 @@ async function runOne(
     ...(ctx.retainMeasurement ? { provenance: retainMeasurementProvenance({
       procedure: retainedProbeProcedure(probe, sqlInputs), result: decoded, startedAt, finishedAt,
       ...(transactionAt ? { transactionAt } : {}), needsTransactionClock: probe.kind === 'sql',
+      ...(predicateInput ? { predicateInput } : {}),
     }) } : {}),
   };
 }

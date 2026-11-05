@@ -1327,15 +1327,18 @@ describe('readScorecardEvidence audit-target status (EI-24583166035391772) — r
     const specRef = (classRef: string, hash: string, key = planKey) => `spec-set:${classRef}:${hash}:${key}`;
     const ratings = { 'stable-revision-identity': { rating: 'pass', evidence: 'checked' } };
     const records = [
-      ['EI-spec-quality-old', specRef('plan-class-feature-ship', 'a'.repeat(64)), '2026-06-21T11:00:00Z'],
-      ['EI-spec-quality-new', specRef('plan-class-feature-ship', 'b'.repeat(64)), '2026-06-21T11:01:00Z'],
+      ['EI-spec-quality-old', specRef('plan-class-feature-ship', 'a'.repeat(64)), '2026-06-21T11:00:00Z', null],
+      ['EI-spec-quality-new', specRef('plan-class-feature-ship', 'b'.repeat(64)), '2026-06-21T11:01:00Z', null],
       // Same-hash duplicate stays current alongside the newer card.
-      ['EI-spec-quality-new-duplicate', specRef('plan-class-feature-ship', 'b'.repeat(64)), '2026-06-21T11:02:00Z'],
+      ['EI-spec-quality-new-duplicate', specRef('plan-class-feature-ship', 'b'.repeat(64)), '2026-06-21T11:02:00Z', null],
       // Newer cards for another class or plan must not supersede this series.
-      ['EI-spec-quality-other-class', specRef('plan-class-bugfix', 'c'.repeat(64)), '2026-06-21T11:03:00Z'],
-      ['EI-spec-quality-other-plan', specRef('plan-class-feature-ship', 'd'.repeat(64), otherPlanKey), '2026-06-21T11:04:00Z'],
+      ['EI-spec-quality-other-class', specRef('plan-class-bugfix', 'c'.repeat(64)), '2026-06-21T11:03:00Z', null],
+      ['EI-spec-quality-other-plan', specRef('plan-class-feature-ship', 'd'.repeat(64), otherPlanKey), '2026-06-21T11:04:00Z', null],
+      // Same-hash cards stay current unless one explicitly supersedes the other.
+      ['EI-spec-quality-explicit-old', specRef('plan-class-bugfix', 'c'.repeat(64), otherPlanKey), '2026-06-21T11:05:00Z', null],
+      ['EI-spec-quality-explicit-new', specRef('plan-class-bugfix', 'c'.repeat(64), otherPlanKey), '2026-06-21T11:06:00Z', 'EI-spec-quality-explicit-old'],
     ] as const;
-    for (const [issueId, ref, at] of records) {
+    for (const [issueId, ref, at, supersedes] of records) {
       await db.adminSql`
         INSERT INTO harness_shared.engineer_issues
           (workspace_id, issue_id, kind, scope, title, body, severity, source,
@@ -1347,6 +1350,7 @@ describe('readScorecardEvidence audit-target status (EI-24583166035391772) — r
           ${JSON.stringify({ observation: {
             rubricRef: 'spec-quality', sourceHive: 'papercusp', ratings,
             subject: { kind: 'plan', ref },
+            ...(supersedes ? { supersedes } : {}),
           } })}::text::jsonb,
           'su-test', 'organic', ${at}::timestamptz, ${at}::timestamptz
         )`;
@@ -1378,15 +1382,23 @@ describe('readScorecardEvidence audit-target status (EI-24583166035391772) — r
     const issueIds = records.map(([id]) => id);
     const visibleByDefault = await listScorecards({ issueIds });
     expect(visibleByDefault.map((card) => card.issueId)).not.toContain('EI-spec-quality-old');
-    expect(visibleByDefault.map((card) => card.issueId)).toEqual(expect.arrayContaining([
+    expect(visibleByDefault.map((card) => card.issueId)).not.toContain('EI-spec-quality-explicit-old');
+    expect(visibleByDefault.map((card) => card.issueId).sort()).toEqual([
+      'EI-spec-quality-explicit-new',
       'EI-spec-quality-new',
       'EI-spec-quality-new-duplicate',
       'EI-spec-quality-other-class',
       'EI-spec-quality-other-plan',
-    ]));
+    ]);
+    expect(visibleByDefault.every((card) => card.supersededBy === undefined)).toBe(true);
+    expect(await listScorecards({ issueIds, includeSuperseded: false })).toEqual(visibleByDefault);
     const all = await listScorecards({ issueIds, includeSuperseded: true });
+    expect(all).toHaveLength(records.length);
     expect(all.find((card) => card.issueId === 'EI-spec-quality-old')?.supersededBy)
       .toBe('EI-spec-quality-new-duplicate');
+    expect(all.find((card) => card.issueId === 'EI-spec-quality-explicit-old')?.supersededBy)
+      .toBe('EI-spec-quality-explicit-new');
+    expect(all.filter((card) => !card.supersededBy)).toEqual(visibleByDefault);
   });
 });
 

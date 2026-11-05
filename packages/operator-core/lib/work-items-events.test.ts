@@ -97,7 +97,9 @@ describe('helpers', () => {
   it.each(['Plan GREEN-MAIN: body-only lane', '', null, undefined])(
     'preserves canonical summary on claimable payloads (%s)',
     (summary) => {
-      const item = wi({ summary });
+      // Persisted WorkItem summaries are strings; these nullish cases exercise
+      // the serializer's tolerance of legacy runtime inputs at that boundary.
+      const item = { ...wi(), summary } as WorkItem;
       expect(workItemClaimableEventPayload(item, 'released')).toHaveProperty('summary', summary ?? null);
       expect(workItemClaimableEventPayload(item)).toHaveProperty('summary', summary ?? null);
     },

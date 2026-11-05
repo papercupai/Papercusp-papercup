@@ -376,6 +376,26 @@ describe('evaluatePlanSpecQualityGate', () => {
     });
   });
 
+  it('refuses an otherwise exact current scorecard once superseded', async () => {
+    const clauses = [clause()];
+    const listCards = vi.fn(async () => [{ ...matchingCard(clauses), supersededBy: 'EI-quality-replacement' }]);
+    const result = await evaluatePlanSpecQualityGate(
+      { harnessSlug: 'papercusp', planSlug: 'quality-plan', planItemIds: ['P-001'] },
+      gateDeps({ listClauses: vi.fn(async () => clauses), listCards }),
+    );
+
+    expect(listCards).toHaveBeenCalledWith(expect.objectContaining({
+      rubricRef: SPEC_QUALITY_RUBRIC_REF,
+      subjectRef: matchingCard(clauses).subject!.ref,
+      includeGeneration: false,
+    }));
+    expect(result).toMatchObject({
+      satisfied: false,
+      code: 'spec_quality_scorecard_missing',
+      wouldBlock: ['exact-specSetHash-scorecard-missing'],
+    });
+  });
+
   it('accepts exact current findings with historical replay metadata but refuses changed findings and replay hashes', async () => {
     const clauses = [clause()];
     const evaluation = evaluatePlanSpecQuality({ planSlug: 'quality-plan', harnessSlug: 'papercusp',

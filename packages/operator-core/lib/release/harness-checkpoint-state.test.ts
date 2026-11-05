@@ -7,7 +7,7 @@ const ctx = { workspaceId: 'workspace-a', harnessSlug: 'isolated-drill' };
 describe('caller-harness checkpoint state', () => {
   it.each([
     {}, { workspaceId: 'workspace-a' }, { harnessSlug: 'isolated-drill' },
-    { ...ctx, harnessSlug: '*' }, { ...ctx, harnessSlug: 'all' },
+    { ...ctx, harnessSlug: '*' }, { ...ctx, harnessSlug: 'all' }, { ...ctx, harnessSlug: ' ALL ' },
     { ...ctx, workspaceId: '*' }, { ...ctx, workspaceId: ' ' },
   ])('does not fall back to the home pipeline for %j', async scope => {
     const read = vi.fn();

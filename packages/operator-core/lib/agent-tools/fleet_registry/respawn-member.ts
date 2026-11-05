@@ -1025,7 +1025,7 @@ async function preflightSavedModel(opts: {
 export default defineTool({
   name: 'fleet:respawn-member',
   description:
-    "Change ONE fleet member's BOOT-BAKED settings (model / effort / account / carry / contextSize / agent / compactionLimit) by draining + relaunching it (as its leader, an Overwatch pane, or the owner): the old session is killed (releasing its claims) and a fresh one is launched into the SAME fleet with the new spec and identity. Any explicit per-member claim spec is copied before launch; otherwise the member inherits the fleet lane. When no boot-baked override is supplied, it respawns the member with the canonical saved launch profile unchanged. `fleet` defaults to the one you lead. For RUNTIME settings that need no respawn (compaction limit alone, claim spec, a brief) use fleet:reconfigure-member. `claimKinds` is not settable here.",
+    "Change ONE fleet member's BOOT-BAKED settings (model / effort / account / carry / contextSize / agent / compactionLimit) by draining + relaunching it (leader, Overwatch pane, or owner): the old session is killed (releasing its claims) and a fresh one launches into the SAME fleet with the new spec via capability:launch-agent. Its explicit claim spec is copied; otherwise it inherits the fleet lane. With no override, it uses the saved launch profile. `fleet` defaults to your fleet. For runtime changes without respawn, use fleet:reconfigure-member; claimKinds requires fleet:launch-on-plan.",
   guidance: {
     when: 'Move a member to a different model/effort/account/carry/context-size/agent/role — anything fixed at launch — or recover it with the same saved profile.',
     notWhen:

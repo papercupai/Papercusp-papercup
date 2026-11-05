@@ -39,8 +39,8 @@ const { captureAuthenticatedSecurityManifest, prepareAuthenticatedSecurityLedger
 const ids = { producer: 'su-11111111-1111-4111-8111-111111111111',
   ledger: 'su-22222222-2222-4222-8222-222222222222', reviewer: 'su-33333333-3333-4333-8333-333333333333',
   executor: 'su-44444444-4444-4444-8444-444444444444' };
-function ctx(ownerId: string): UnifiedToolContext {
-  return { uiClientId: ownerId, workspaceId: 'ws-security', harnessSlug: 'test', isSuperuser: true,
+function ctx(ownerId: string, harnessSlug: string | null = 'test'): UnifiedToolContext {
+  return { uiClientId: ownerId, workspaceId: 'ws-security', harnessSlug, isSuperuser: true,
     log: () => {}, signal: new AbortController().signal, progress: async () => {}, emit: async () => {},
     principal: { kind: 'system', slug: 'system:superuser', workspaceId: 'ws-security',
       authMethod: 'bearer-token', trust: 'trusted', capabilities: new Set() } };
@@ -127,6 +127,17 @@ describe('authenticated host discovery custody', () => {
     h.keyAvailable = false;
     await expect(captureAuthenticatedRuntimeSecurityCensus(ctx(ids.producer), 'test')).rejects.toThrow('host_key_unavailable');
     expect(h.captureRuntimeSecurityCensus).not.toHaveBeenCalled(); expect(h.artifacts.size).toBe(0);
+  });
+
+  it('accepts an explicit concrete harness from operator scope and rejects sentinel targets', async () => {
+    h.captureRuntimeSecurityCensus.mockResolvedValue(discovery());
+    const result = await captureAuthenticatedRuntimeSecurityCensus(ctx(ids.producer, '*'), 'test');
+    expect(result).toMatchObject({ producer: ids.producer, readbackVerified: true });
+    const verified = await verifyAuthenticatedRuntimeSecurityCensus('test', result);
+    expect(verified.receipt).toMatchObject({ harness: 'test', actor: ids.producer });
+    await expect(captureAuthenticatedRuntimeSecurityCensus(ctx(ids.producer, '*'), 'all'))
+      .rejects.toThrow('authenticated_actor_required');
+    expect(h.captureRuntimeSecurityCensus).toHaveBeenCalledOnce();
   });
 
   it('rejects substituted snapshot pins and tampered custody or snapshot bytes', async () => {

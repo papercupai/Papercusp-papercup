@@ -21,6 +21,7 @@ import { FLAGS } from '@papercusp/flags';
 import { setFlagOverridesForTest } from '@papercusp/flags/test';
 import { mintLegacyFleetScopeDowngradeAdmission } from './work-item-fleet-scope-recovery';
 import { acknowledgeActivation, desiredActivation, prepareActivation } from './session-activation';
+import { ADMISSION_FAIL_OPEN_TICKS, DEFAULT_PROMOTER_TICK_MINUTES, isWorkItemDuplicateAdmitted } from './work-items-admission';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SQL_DIR = resolve(__dirname, '../../../libs/papercusp/libs/db/sql');
@@ -1332,6 +1333,65 @@ describe('work_items observe — `rd` (D-004, real PG)', () => {
     const obs = await wi.observeWorkItem('F-admitted-plain', { harness: H });
     expect(obs).toMatchObject({ available: true, claimedBy: null });
     expect(obs?.admissionPending).toBeUndefined();
+  });
+
+  // EI-27970744276418935: exercise the real observation reader and canonical SQL
+  // exclusions together; testing only the explanation constructor missed this seam.
+  describe.each(['feature', 'issue'] as const)('admission diagnostics for %s rows', (family) => {
+    it.each([
+      { name: 'degraded coverage', payload: { dedupCoverage: { degraded: true } }, duplicateOf: null,
+        explanation: /could NOT RUN/, clears: true },
+      { name: 'strong duplicate candidates', payload: { dedupCandidates: [{ id: 'EI-canonical', method: 'lexical' }], dedupCoverage: { degraded: true } }, duplicateOf: null,
+        explanation: /DUPLICATE CANDIDATES/, clears: true },
+      { name: 'typed duplicate verdict', payload: { dedupCandidates: [{ id: 'EI-canonical', method: 'lexical' }], dedupCoverage: { degraded: true } }, duplicateOf: 'EI-canonical',
+        explanation: /DUPLICATE VERDICT/, clears: false },
+    ])('admission diagnostics name $name without a false fixed ceiling', async ({ payload, duplicateOf, explanation, clears }) => {
+      const id = family === 'feature' ? 'F-specific-admission' : 'WI-specific-admission';
+      if (family === 'feature') await seedFeature(id, { admission: 'pending' });
+      else await seedIssue(id, { admission: 'pending' });
+      // Bind serialized JSON as text first: postgres otherwise serializes the
+      // string again for an inferred jsonb parameter, hiding every JSON field.
+      const stored = await db.sql`UPDATE harness_shared.work_items
+        SET payload = ${JSON.stringify(payload)}::text::jsonb, duplicate_of = ${duplicateOf}
+        WHERE workspace_id = 'default' AND feature_id = ${id}
+        RETURNING jsonb_typeof(payload) AS payload_type`;
+      expect(stored).toMatchObject([{ payload_type: 'object' }]);
+
+      const obs = await wi.observeWorkItem(id, { harness: H });
+      expect(obs).toMatchObject({ available: false, claimedBy: null, gated: true });
+      expect(obs?.admissionPending?.reason).toMatch(explanation);
+      expect(obs?.admissionPending?.reason).not.toContain(`${ADMISSION_FAIL_OPEN_TICKS * DEFAULT_PROMOTER_TICK_MINUTES} min`);
+      expect(obs?.admissionPending?.reason).toMatch(clears ? /CLEARS ON ITS OWN/ : /does NOT clear on its own/);
+      expect(obs?.admissionPending?.remedy).toContain('assign_to');
+      if (duplicateOf) expect(obs?.admissionPending?.reason).toContain(duplicateOf);
+      expect(await isWorkItemDuplicateAdmitted(id, { workspaceId: 'default' })).toBe(false);
+      expect((await wi.getWorkItem(id, H))?.assignee).toBeNull();
+    });
+  });
+
+  it('admission diagnostics revalidate a held row without changing ordinary held observations', async () => {
+    const id = 'F-held-specific-admission';
+    await seedFeature(id, { admission: 'pending', takenBy: 'agB' });
+    const stored = await db.sql`UPDATE harness_shared.work_items
+      SET payload = ${JSON.stringify({ dedupCoverage: { degraded: true } })}::text::jsonb
+      WHERE workspace_id = 'default' AND feature_id = ${id}
+      RETURNING jsonb_typeof(payload) AS payload_type`;
+    expect(stored).toMatchObject([{ payload_type: 'object' }]);
+    const ordinary = await wi.observeWorkItem(id, { harness: H });
+    expect(ordinary).toMatchObject({ available: false, claimedBy: 'agB' });
+    expect(ordinary?.admissionPending).toBeUndefined();
+    const revalidated = await wi.observeWorkItem(id, { harness: H, revalidateHeld: true });
+    expect(revalidated).toMatchObject({ available: false, claimedBy: 'agB', gated: true });
+    expect(revalidated?.admissionPending?.reason).toContain('could NOT RUN');
+    expect((await wi.getWorkItem(id, H))?.assignee).toBe('agB');
+  });
+
+  it('admission diagnostics preserve the boolean reader controls and fail closed on missing rows', async () => {
+    await seedFeature('F-admission-control', { admission: 'unreviewed' });
+    expect(await isWorkItemDuplicateAdmitted('F-admission-control', { workspaceId: 'default' })).toBe(true);
+    expect(await isWorkItemDuplicateAdmitted('F-missing', { workspaceId: 'default' })).toBe(false);
+    expect(await isWorkItemDuplicateAdmitted('', { workspaceId: 'default' })).toBe(false);
+    expect(await wi.observeWorkItem('F-missing', { harness: H })).toBeNull();
   });
 
   it('the G2/trust gate (remote, un-admitted) reports gated:true WITHOUT admissionPending — a different floor', async () => {

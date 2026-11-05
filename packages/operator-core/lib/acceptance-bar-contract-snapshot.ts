@@ -1180,7 +1180,8 @@ export function projectAcceptanceBarContractSnapshot(
     // statements about the BAR, so the criterion was unshippable by construction.
     // Deliberately narrow, and fails closed: the criterion must itself declare no layers,
     // it must have clauses, and NO clause may declare a layer or a mutation obligation.
-    const automatedProofRequired = projectedAutomatedProofRequired({
+    const ownsExecution = criterion.role !== 'disclosure';
+    const automatedProofRequired = ownsExecution && projectedAutomatedProofRequired({
       instrumentKey: effectiveCriterionInstrumentKey(criterion),
       structuredTestsCheck: criterion.check?.kind === 'tests',
       criterionTestLayers: criterion.requiredTestLayers,
@@ -1454,9 +1455,12 @@ export function projectAcceptanceBarContractSnapshot(
       if (problem.barKey === barKey) addCode(problem.code);
     }
     if (!criterion.barProvenance) addCode('bar_snapshot_bar_provenance_missing');
-    if (mappingState === 'missing') addCode('bar_snapshot_mapping_missing');
-    if (mappingState === 'dropped-only') addCode('bar_snapshot_mapping_dropped_only');
+    // Disclosures retain structural validation; their covered outcomes own execution.
+    // The amendment writer deliberately retires disclosure projections.
+    if (ownsExecution && mappingState === 'missing') addCode('bar_snapshot_mapping_missing');
+    if (ownsExecution && mappingState === 'dropped-only') addCode('bar_snapshot_mapping_dropped_only');
     if (
+      ownsExecution &&
       criterion.evidencePlane !== 'tree' &&
       !evidencePlanes.some((plane) => plane.toLowerCase() === criterion.evidencePlane)
     )
@@ -1468,7 +1472,7 @@ export function projectAcceptanceBarContractSnapshot(
     // re-create the exact churn P-001 removes. The set itself is still pinned: the
     // plan/rubric set-hash integrity check above (`bar_snapshot_bar_set_hash_mismatch`).
     if (
-      enforceableClauses.some(
+      ownsExecution && enforceableClauses.some(
         (clause) =>
           clause.sourceBar?.barHash !== criterion.barHash ||
           clause.sourceBar?.rubricSlug !== rubric?.rubricId ||
@@ -1477,17 +1481,17 @@ export function projectAcceptanceBarContractSnapshot(
       )
     )
       addCode('bar_snapshot_projection_stale');
-    if (!criterion.method?.trim()) addCode('bar_snapshot_method_missing');
-    if (workContractState === 'missing') addCode('bar_snapshot_work_contract_missing');
-    if (workContractState === 'stale') addCode('bar_snapshot_work_contract_stale');
+    if (ownsExecution && !criterion.method?.trim()) addCode('bar_snapshot_method_missing');
+    if (ownsExecution && workContractState === 'missing') addCode('bar_snapshot_work_contract_missing');
+    if (ownsExecution && workContractState === 'stale') addCode('bar_snapshot_work_contract_stale');
     // A never-accepted clause REPLACES the stale/depth/adequacy verdicts rather than joining
     // them: those are judged against enforceable clauses only, so here they describe the
     // lifecycle gap, not the proof. `proof_missing` stays (no evidence at all is a real
     // obligation, and a lifecycle-only promotion carries whatever is bound), as does
     // truncation (an incomplete read is never a lifecycle fact).
-    if (clauseAcceptance === 'not-accepted') addCode('bar_snapshot_clause_not_accepted');
-    if (proofState === 'missing') addCode('bar_snapshot_proof_missing');
-    if (proofState === 'truncated' || (proofState === 'stale' && clauseAcceptance !== 'not-accepted'))
+    if (ownsExecution && clauseAcceptance === 'not-accepted') addCode('bar_snapshot_clause_not_accepted');
+    if (ownsExecution && proofState === 'missing') addCode('bar_snapshot_proof_missing');
+    if (ownsExecution && (proofState === 'truncated' || (proofState === 'stale' && clauseAcceptance !== 'not-accepted')))
       addCode('bar_snapshot_proof_stale');
     if (criterion.role === 'outcome' && automatedProofRequired && clauseAcceptance !== 'not-accepted') {
       if (adequacyState === 'undeclared') addCode('bar_snapshot_proof_depth_missing');

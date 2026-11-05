@@ -33,12 +33,12 @@ import type { AdmissionRadius, FixPrecheckFileResult, FixPrecheckVerdict } from 
 import { roundMeasurementFromKinds, type FrozenRepairRoundMeasurement } from './round-one-measurement';
 
 /**
- * Schema 4 (P-006, frozen-candidate-stays-frozen-through-all-fixes-2026-09-03): the row
- * carries a TYPED `signature` beside the flat `failingTests` projection. Older rows (1–3)
- * still parse — their signature is DERIVED from `failingTests` on read (the P-014 migration
- * for the live queue, so a candidate-vs-staging parser skew can never strand an open queue).
+ * Schema 5 fences the managed pre-check's mutable task identity, environment and
+ * per-file measurement from schema-4 writers that would silently erase them.
+ * Schemas 1–4 still parse and upgrade on read; pre-signature rows derive their
+ * typed signature from `failingTests` as before.
  */
-export const FROZEN_CANDIDATE_REPAIR_QUEUE_SCHEMA_VERSION = 4 as const;
+export const FROZEN_CANDIDATE_REPAIR_QUEUE_SCHEMA_VERSION = 5 as const;
 export const FROZEN_REPAIR_STAGING_MISMATCH_SIGNATURE = 'repair-staging-mismatch';
 
 /**
@@ -579,7 +579,7 @@ export interface FrozenRepairAdmissionPrecheck {
 
 export interface FrozenCandidateRepairQueue {
   /** Every version the parser accepts; a parsed row is always re-stamped with the current one. */
-  schemaVersion: 1 | 2 | 3 | typeof FROZEN_CANDIDATE_REPAIR_QUEUE_SCHEMA_VERSION;
+  schemaVersion: 1 | 2 | 3 | 4 | typeof FROZEN_CANDIDATE_REPAIR_QUEUE_SCHEMA_VERSION;
   phase: FrozenCandidateRepairPhase;
   /** The fixed C persisted before its first suite. Never moves for this queue entry. */
   candidate: string;
@@ -2540,6 +2540,7 @@ export function parseFrozenCandidateRepairQueue(value: unknown): FrozenCandidate
     row.schemaVersion !== 1 &&
     row.schemaVersion !== 2 &&
     row.schemaVersion !== 3 &&
+    row.schemaVersion !== 4 &&
     row.schemaVersion !== FROZEN_CANDIDATE_REPAIR_QUEUE_SCHEMA_VERSION
   )
     return null;

@@ -20,6 +20,7 @@ import {
 } from './admission-fix-precheck-managed';
 import { ADMISSION_PRECHECK_MAX_FILES, admissionPrecheckFileConcurrency, type FixPrecheckRunner } from './admission-fix-precheck';
 import type { FrozenCandidateRepairQueue, FrozenRepairAdmissionPrecheck } from './frozen-candidate-repair-queue';
+import { createFrozenCandidateRepairQueue, parseFrozenCandidateRepairQueue } from './frozen-candidate-repair-queue';
 
 const operation = (overrides: Partial<FrozenRepairAdmissionPrecheck> = {}): FrozenRepairAdmissionPrecheck => ({
   schemaVersion: 1,
@@ -918,6 +919,26 @@ describe('managed R6 admission pre-check runner (WI-10006003)', () => {
     expect(serve.includes('runAdmissionPrecheckWorkerMain')).toBe(true);
     expect(hono).toContain("'repair-precheck'");
     expect(hono.includes('runAdmissionPrecheckWorkerMain')).toBe(true);
+  });
+
+  it.each([20, 30, 40])('keeps settlement readable when its clock %i precedes or matches the latest heartbeat', settledAtMs => {
+    const active = {
+      ...createFrozenCandidateRepairQueue({ candidate: 'a'.repeat(40), base: 'e'.repeat(40),
+        failingTests: ['lib/red.test.ts'], nowMs: 1 }),
+      repairHead: 'b'.repeat(40),
+      updatedAtMs: 30,
+      admissionPrecheck: operation({ updatedAtMs: 30, heartbeatAtMs: 30 }),
+      dispatchReservation: { token: input.operationId, claimedAtMs: 10, expiresAtMs: 60_000 },
+    };
+    const verdict = { ok: true as const, ran: false as const, reason: 'nothing-to-run' as const, population: {
+      signatureTestFiles: [], admittedTestFiles: [], nonTestKinds: [], canProveDoesNotFix: false, files: [],
+    } };
+    const settled = admissionPrecheckSettlementTransition(active, input.operationId, verdict, settledAtMs);
+    const reread = parseFrozenCandidateRepairQueue(JSON.parse(JSON.stringify(settled)));
+    expect(reread?.admissionPrecheck).toMatchObject({ operationId: input.operationId, status: 'deferred', heartbeatAtMs: 30 });
+    expect(settled.admissionPrecheck!.updatedAtMs).toBe(settled.updatedAtMs);
+    expect(settled.admissionPrecheck!.updatedAtMs).toBeGreaterThanOrEqual(30);
+    expect(settled.dispatchReservation).toBeUndefined();
   });
 
   it('uses CAS transforms that ignore progress and settlements from a replaced operationId', () => {

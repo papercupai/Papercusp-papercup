@@ -2,7 +2,7 @@
  * Reuses the registered tool, acceptance core, real migration, and shared PG
  * fixture. This is tree integration evidence; serving-runtime proof is separate.
  */
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { fileURLToPath } from 'node:url';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -13,7 +13,12 @@ import { applyMigrationForTest, createFreshPgDb, type FreshPgDb } from '../../te
 // evidence includes the catalog whose public contract these cases exercise.
 import '../agent-tools/index';
 import tool from '../agent-tools/consult/get-feedback';
-import { acceptFeedbackRequestCore, type GetFeedbackDeps, type GetFeedbackRequest } from './get-feedback-core';
+import { acceptFeedbackRequestCore, continueFeedbackRequestCore, getFeedbackCore,
+  type GetFeedbackDeps, type GetFeedbackRequest } from './get-feedback-core';
+import { buildQueryEmbedderResolved, type QueryEmbedderAcquisition } from '../agent-tools/search/embedder';
+import { EMBEDDER_DIM_SPECS } from '@papercusp/memory';
+import { resolveProseProfileSelection } from '../search/prose-vector-dims';
+import { routeConsult, type ConsultRouteDeps } from './relevance-router';
 import { appendDispatchRecord, dispatchConsultResponder, readIndexedConsultCitedTurns, readSourceDispatchRecords,
   type ConsultDispatchDeps } from './consult-dispatch';
 
@@ -35,6 +40,9 @@ beforeAll(async () => {
   )`);
   await applyMigrationForTest(db.sql, fileURLToPath(new URL(
     '../../../../libs/papercusp/libs/db/sql/834-consult-threads.sql', import.meta.url,
+  )));
+  await applyMigrationForTest(db.sql, fileURLToPath(new URL(
+    '../../../../libs/papercusp/libs/db/sql/844-consult-cascade-cursor.sql', import.meta.url,
   )));
   await applyMigrationForTest(db.sql, fileURLToPath(new URL(
     '../../../../libs/papercusp/libs/db/sql/1225-consult-dispatch-attempts.sql', import.meta.url,
@@ -59,6 +67,49 @@ function request(requestKey: string, question = 'Recover this accepted consult')
 }
 
 describe('registered consult contract and persisted recovery', () => {
+  it.each(['timeout', 'rejection', 'inference'] as const)(
+    'retains exact acquisition cause at the consult boundary without duplicate dispatch: %s', async (failure) => {
+      // This contract has no owning work item; explicitly suppress ambient
+      // attribution so the minimal consult fixture never queries product work.
+      const original = { ...request(`acquisition-${failure}`), originTaskRef: null };
+      const accepted = await acceptFeedbackRequestCore(original, deps);
+      let acquisition: QueryEmbedderAcquisition | undefined;
+      const profile = EMBEDDER_DIM_SPECS.gemma;
+      const resolved = await buildQueryEmbedderResolved({ acquireBudgetMs: 5,
+        onAcquisition: value => { acquisition = value; } }, {
+        observeFallback: () => false,
+        acquire: async () => {
+          if (failure === 'timeout') return await new Promise<never>(() => {});
+          if (failure === 'rejection') throw Object.assign(new Error('private credential text'), { code: 'ECONNREFUSED' });
+          return { mode: 'gemma', dims: profile.targetDims, profile,
+            embed: async () => { throw new DOMException('private inference text', 'TimeoutError'); } };
+        },
+      });
+      const retrievalSql = vi.fn(async () => []) as unknown as ReturnType<ConsultRouteDeps['getSql']>;
+      const route = vi.fn(async () => routeConsult({ workspaceId: WS,
+        requesterId: original.requesterId, question: original.question }, {
+        getSql: () => retrievalSql, embed: resolved?.embed ?? null,
+        embeddingProfile: resolved ? resolveProseProfileSelection(resolved.mode, resolved.profile) : null,
+        embeddingMode: resolved?.mode ?? null, embeddingAcquisition: acquisition,
+      }));
+      const reach = vi.fn(async () => ({ queued: 0, woke: 0 }));
+      await continueFeedbackRequestCore(WS, accepted.conversation_id!, { getSql: () => db.sql,
+        execute: (saved, acceptedRequest) => getFeedbackCore(saved, { ...deps, route, reach, acceptedRequest }) });
+      const [stored] = await db.sql`SELECT routing FROM harness_shared.consult_state
+        WHERE workspace_id = ${WS} AND conversation_id = ${accepted.conversation_id}`;
+      expect(stored.routing.embeddingAcquisition).toMatchObject(acquisition!);
+      expect(stored.routing.embeddingFailure).toEqual(failure === 'inference'
+        ? { stage: 'inference', cause: 'ETIMEDOUT' }
+        : { stage: 'acquisition', cause: failure === 'timeout' ? 'acquisition-budget-exhausted' : 'ECONNREFUSED' });
+      expect(JSON.stringify(stored.routing)).not.toContain('private');
+      expect((await acceptFeedbackRequestCore(original, deps)).conversation_id).toBe(accepted.conversation_id);
+      const [count] = await db.sql`SELECT count(*)::int AS n FROM harness_shared.consult_state
+        WHERE workspace_id = ${WS} AND conversation_id = ${accepted.conversation_id}`;
+      expect(count.n).toBe(1);
+      expect(route).toHaveBeenCalledOnce();
+      expect(reach).not.toHaveBeenCalled();
+    });
+
   it('loads the production catalog without the retired reporting callable and retains ordinary consult and plan tools', async () => {
     for (const name of ['consult:get_feedback', 'consult:reply', 'consult:decline', 'consult:close', 'plans:start']) {
       expect(lookupByMcpName(name), `positive catalog control ${name}`).toBeDefined();

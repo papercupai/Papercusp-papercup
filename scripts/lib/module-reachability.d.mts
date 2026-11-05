@@ -13,7 +13,7 @@
  * @returns {Set<string>} repo-relative paths
  */
 export function selfExclusionPaths(root: string): Set<string>;
-/** True for a test file — a test importer is NOT production usage (that is the whole point). */
+/** True for a test or fixture file — neither is a production module or caller. */
 export function isTestFile(file: any): boolean;
 /**
  * The population: non-test, non-declaration TypeScript modules under a `lib/release/`

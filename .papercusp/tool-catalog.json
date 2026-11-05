@@ -13726,7 +13726,7 @@
           "POST"
         ]
       },
-      "description": "Change ONE fleet member's BOOT-BAKED settings (model / effort / account / carry / contextSize / agent / compactionLimit) by draining + relaunching it (as its leader, an Overwatch pane, or the owner): the old session is killed (releasing its claims) and a fresh one is launched into the SAME fleet with the new spec and identity. Any explicit per-member claim spec is copied before launch; otherwise the member inherits the fleet lane. When no boot-baked override is supplied, it respawns the member with the canonical saved launch profile unchanged. `fleet` defaults to the one you lead. For RUNTIME settings that need no respawn (compaction limit alone, claim spec, a brief) use fleet:reconfigure-member. `claimKinds` is not settable here.",
+      "description": "Change ONE fleet member's BOOT-BAKED settings (model / effort / account / carry / contextSize / agent / compactionLimit) by draining + relaunching it (leader, Overwatch pane, or owner): the old session is killed (releasing its claims) and a fresh one launches into the SAME fleet with the new spec via capability:launch-agent. Its explicit claim spec is copied; otherwise it inherits the fleet lane. With no override, it uses the saved launch profile. `fleet` defaults to your fleet. For runtime changes without respawn, use fleet:reconfigure-member; claimKinds requires fleet:launch-on-plan.",
       "capabilities": [
         "fleet:respawn-member"
       ],
@@ -28606,7 +28606,7 @@
           "POST"
         ]
       },
-      "description": "Ledger-backed inventory of tasks this operator launched: provenance `ps` cannot give — launcher, work-item/plan, budget/deadline, log path, CPU/RSS/pid-count, and cgroup confinement. Also surfaces `unaccounted` rows — processes inside our slice with no registered chokepoint — and verifier-owned scopes in `live.verifierGroups`. Pass `live:true` to reconcile with the kernel (slower, authoritative). `taskPage` reports ledger-page coverage separately from kernel scan bounds.",
+      "description": "Task-ledger inventory of operator-launched work: launcher/work-item/plan, budget/deadline, log, CPU/RSS/PIDs, confinement, unaccounted processes and verifier scopes. `live:true` reconciles with the kernel; `taskPage` separates ledger coverage from scan bounds.",
       "capabilities": [
         "intel:read"
       ],
@@ -28622,7 +28622,7 @@
       "guidance": {
         "when": "You want to know WHAT IS RUNNING AND WHY — who started a job, what a work-item costs, which task uses CPU or memory, whether anything bypassed the spawn chokepoint, whether a managedSpawn job is still alive, or to inspect one slow-attempt failure excerpt.",
         "notWhen": "NOT a `ps` substitute — a process nothing in this operator launched is invisible unless it landed in our cgroup slice. For the six tracked AGENT process kinds use `dev:processes`; for a raw host process list, plain `ps`/`pgrep` is correct and is never gated. For a capability:bash job's OUTPUT use `capability:bash_output`.",
-        "chaining": "Pass `taskId`, `scopeUnit`, `invocationId` or `dispatchCallId` for one exact ledger row (matched before the limit). To read a saved slow-attempt source excerpt, pass its exact `taskId` with `includeAttemptEvidence:true`; the excerpt is bounded and redacted. Lost a capability:bash launch response? Pass its `dispatchCallId` with `includeEnded:true` instead of relaunching. Then `processes:kill { taskId }` (whole cgroup subtree), or `{ scopeUnit }` for a `live.unaccountedGroups` entry; `processes:freeze` pauses without losing work; `processes:limit` retunes the budget live. Check `taskPage.truncated` before treating a task missing from `tasks[]` as absent; `live.ownedTruncated` and `live.foreignTruncated` only describe the kernel scan."
+        "chaining": "Filter one exact row with `taskId`, `scopeUnit`, `invocationId` or `dispatchCallId`. Use `includeAttemptEvidence:true` for its bounded redacted excerpt. Lost a bash launch response? Search by `dispatchCallId` with `includeEnded:true`; do not relaunch. Then use `processes:kill`, `freeze` or `limit` on the exact task. Check `taskPage.truncated` and kernel scan truncation before treating a row as absent."
       }
     },
     {
@@ -29704,7 +29704,7 @@
           "POST"
         ]
       },
-      "description": "Inspect, admit exact paths onto, claim a manifest leg of, or retire the frozen repair queue for the selected harness (operator home if unscoped). For gate-red fixes, `admit{paths}` is the only door: it replays named integration-branch paths onto repairHead as one proved commit. Dry-run unless `confirm:true`. R6 test files first return `precheck-running`; no background leg publishes. `converge` aliases `admit`; `retire` uses exact-identity CAS and is dry-run unless confirmed.",
+      "description": "Inspect, claim or change the frozen repair queue. For gate-red fixes, `admit{paths}` replays exact integration-branch paths onto repairHead; dry-run unless `confirm:true`. R6 prechecks run first; read `get` before confirming. Never catch up to tip, retire live/unknown work, launch a checkpoint or deploy. See /internal/docs/agent-insights/frozen-candidate-fix-only-admission.",
       "capabilities": [
         "operator:write"
       ],
@@ -29723,9 +29723,9 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "After a gate-red fix is committed on staging, use `admit{paths}` for exactly the changed files; also inspect a frozen, blocked, or dead-fixer queue.",
+        "when": "After a staging gate-red fix, admit its exact changed paths; inspect frozen or blocked queues.",
         "notWhen": "Use the selected harness scope, not a harness/workspace key in the payload. Never catch up to tip, retire live/unknown work, launch a checkpoint, or deploy.",
-        "chaining": "`get` → preview `admit{paths, expectedCandidate, expectedRepairHead, expectedUpdatedAtMs}` → verify proof → repeat with `confirm:true`. Pin whole-blob source with `wholeBlob:true, sourceCommit:<reviewed ancestor SHA>, reason`. On `precheck-running`, read `get`; confirm only after pass with fresh identity. On `precheck-deferred`, inspect `precheckHolder`; no second operation is queued, so retry after that holder reaches a terminal status. Retry only a terminal failed pre-check. For missed hooks, `patchCommit:<full SHA>, reason` replays one delta; `patchCommits:[<older SHA>,<newer SHA>], reason` replays dependent deltas before one R6/publication; each path must change in each commit. One commit from mixed sources: `sources:[{paths, wholeBlob|patchCommit(s)}], reason` (all-or-nothing). Retire only with `retireAllowed` and exact identity."
+        "chaining": "`get` → preview `admit{paths, expectedCandidate, expectedRepairHead, expectedUpdatedAtMs}` → verify proof → confirm with fresh identity. Pin whole-blob sources with `wholeBlob`, reviewed `sourceCommit` and reason. On `precheck-running`, read `get` and confirm only after pass. On `precheck-deferred`, inspect `precheckHolder`; retry only after it is terminal. Missed hooks: use `patchCommit` or ordered `patchCommits`; each path must change in each commit. Mixed sources use `sources:[{paths, wholeBlob|patchCommit(s)}]` and reason. Retire only with `retireAllowed` and exact identity."
       }
     },
     {
@@ -31704,7 +31704,7 @@
           "POST"
         ]
       },
-      "description": "Read one rubric scorecard by issueId (id is a compatibility alias; issueId wins). Small cards return exact criterion evidence; oversized cards return an index via evidenceRead and recipes via rerunRecipeRead; follow their cursors, and never treat an incomplete page or index as missing evidence. Select with criterionKey; resume with indexOffset, evidenceOffset or rerunRecipeOffset. Add replay:retained-measurement for historical command-input or probe-predicate replay, or replay:retained-sql-query to recompute supported SQL from retained source rows. Both require criterionKey. History-only payload is omitted.",
+      "description": "Read one scorecard by issueId (id is an alias; issueId wins). Small cards include exact evidence; oversized cards page indexes/evidence via evidenceRead and recipes via rerunRecipeRead. Select criterionKey; resume with indexOffset, evidenceOffset or rerunRecipeOffset. Retained measurement/SQL replay requires criterionKey and uses historical inputs only. History-only payload is omitted.",
       "capabilities": [
         "coord:read"
       ],
@@ -31733,7 +31733,7 @@
       "guidance": {
         "when": "Audit one existing scorecard and re-run the probes its criterion evidence names. Take issueId from scorecards:list or a grading-audit reservation.",
         "notWhen": "Use scorecards:list for history or multiple rows, rubrics:get for rubric definitions, scorecards:emit to file a scorecard.",
-        "chaining": "For grading-integrity audits, call dev:pipeline_position for this path and use the same exact serving route for both scorecards:get and plans:evaluate-spec-test-adequacy: the process serving scorecards:get owns its currentness comparison; cross-route calls may report different currentness. For a spec-test-adequacy card call plans:evaluate-spec-test-adequacy with { slug: rerunRecipe.args.slug, scorecardId: issueId }; this replays its exact bindings as of scorecard.createdAt. Verify historicalAuditOnly.asOf matches scorecard.createdAt. Do not compare a direct replay of rerunRecipe.args with the historical card: freshness can change after evidence changes. Use rerunRecipe.args only when measuring the present state (current-state measurement). For a ledger measurement use scorecards:get { issueId, criterionKey, replay:\"retained-measurement\" } or the selected criterion retainedMeasurementReplay call. It recomputes retained command inputs or re-evaluates an original retained scalar probe response. scope:probe-predicate does not reconstruct SQL source rows or query calculations; unavailable SQL/counter snapshots remain unavailable, never current measurements. For original SQL query recomputation follow retainedSqlReplay or use replay:\"retained-sql-query\". scope:sql-query executes only a closed query over retained typed source rows at the original transaction clock. Unsupported, missing, redacted or truncated source snapshots return unavailable; there is no live-source fallback. Read independent criteria in small Promise.all groups; follow each criterion pages sequentially. Concatenate complete pages before grading. If a call returns papercusp.output-envelope/v1, recover it through capability:read before reading scorecard.criteria. Recover all evidence pages before grading; emit the audit last."
+        "chaining": "For grading-integrity audits, call dev:pipeline_position for this path and use the same exact serving route for both scorecards:get and plans:evaluate-spec-test-adequacy: the process serving scorecards:get owns its currentness comparison; cross-route calls may report different currentness. For a spec-test-adequacy card call plans:evaluate-spec-test-adequacy with { slug: rerunRecipe.args.slug, scorecardId: issueId }; this replays its exact bindings as of scorecard.createdAt. Verify historicalAuditOnly.asOf matches scorecard.createdAt. Do not compare a direct replay of rerunRecipe.args with the historical card: freshness can change after evidence changes. Use rerunRecipe.args only when measuring the present state (current-state measurement). Retained measurement/SQL replay requires criterionKey. scope:probe-predicate evaluates only the retained scalar; surrounding diagnostics may have gaps. scope:sql-query requires complete retained typed source rows at the original clock. Missing, redacted or unsupported SQL inputs stay unavailable; never fall back to live data. Read independent criteria in small Promise.all groups; follow each criterion pages sequentially. Concatenate complete pages before grading. If a call returns papercusp.output-envelope/v1, recover it through capability:read before reading scorecard.criteria. Recover complete recipe, index and evidence pages before grading; emit the audit last. See /internal/docs/system/rubrics-scorecards."
       }
     },
     {
@@ -34015,7 +34015,7 @@
           "POST"
         ]
       },
-      "description": "Run exact Vitest files through the Papercusp router or a discovered external npm-workspace Vitest checkout and return distilled counts plus bounded failures. Files may be repo-root-relative, absolute, or relative to exactly one declared npm workspace; ambiguous workspace-relative paths refuse before execution. `root` reports the checkout actually tested. Zero/partial matches and invalid checkouts refuse instead of passing vacuously. `privatePg:true` runs one Papercusp checkout with throwaway product Postgres while preserving the separate durable test-ledger sink, including detached recovery. `work_item_id` explicitly attributes a run and its slow-attempt gate to a held work-item, overriding a stale session goal stamp. `failed` is the true total; when `failuresTruncated` is set, read `failuresOmitted`. A Papercusp-router timeout starts a pollable detached recovery after the foreground process closes; if termination remains unconfirmed, `taskId` is returned and no concurrent recovery starts. Stamps PAPERCUSP_TEST_RUN_GROUP for ledger correlation.",
+      "description": "Run exact Vitest files through Papercusp or a discovered npm-workspace checkout; return counts and bounded failures. Files may be root-relative, absolute or relative to one declared workspace. Refuses zero/partial matches and invalid checkouts. `privatePg:true` uses disposable product Postgres and the durable test ledger. `work_item_id` attributes the run and gates slow attempts. `failed` is the total; read `failuresOmitted` when truncated. Timeout may start detached recovery; poll `testing:run-status` with its detachedRunId. Stamps PAPERCUSP_TEST_RUN_GROUP for correlation.",
       "capabilities": [
         "testing:run"
       ],

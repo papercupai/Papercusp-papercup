@@ -4,6 +4,23 @@ import { fitMeasurementProvenance, retainMeasurementProvenance } from './measure
 
 const times = { startedAt: '2026-10-23T00:00:00Z', finishedAt: '2026-10-23T00:00:01Z' };
 describe('bounded original measurement retention', () => {
+  it('validates and preserves scoped scalar inputs without upgrading surrounding diagnostics', () => {
+    const p = retainMeasurementProvenance({ ...times, procedure: {},
+      predicateInput: { path: '$["n"]', value: 7 }, result: { advisory: 'x'.repeat(1000) } });
+    expect(p.predicateInput).toEqual({ path: '$["n"]', value: 7 });
+    expect(p.gaps).toContain('diagnostics-truncated');
+    expect(fitMeasurementProvenance(p, 512).predicateInput).toEqual(p.predicateInput);
+    for (const predicateInput of [{ path: '$', value: {} }, { path: '$', value: Infinity },
+      { path: '$', value: 'x'.repeat(257) }, { path: '$', value: 7, extra: true },
+      { path: '', value: 7 }]) {
+      expect(parseRecordedMeasurementProvenance({ ...p, predicateInput })).toBeUndefined();
+    }
+    for (const value of ['Authorization: Bearer tiny', 'x'.repeat(257), undefined, {}]) {
+      expect(retainMeasurementProvenance({ ...times, procedure: {}, result: {},
+        predicateInput: { path: '$', value } }).predicateInput).toBeUndefined();
+    }
+  });
+
   it('retains internal SQL reader results with absent optional object fields without false gaps', () => {
     const p = retainMeasurementProvenance({ ...times, procedure: { kind: 'sql' }, result: {
       rows: [{ n: '9007199254740993' }], fields: ['n'], rowCount: 1,

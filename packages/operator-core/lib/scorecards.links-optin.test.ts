@@ -69,9 +69,16 @@ const DB_ROWS = [
  * mock discriminates on the template text: the real SELECT resolves rows, a fragment
  * returns an opaque marker.
  */
-const sqlTag = (strings: TemplateStringsArray, ..._vals: unknown[]) => {
-  const text = strings.join(' ? ');
-  if (text.includes('FROM harness_shared.engineer_issues')) {
+const scorecardQueries: string[] = [];
+const sqlTag = (strings: TemplateStringsArray, ...values: unknown[]) => {
+  const text = strings.reduce((query, part, index) => {
+    const value = values[index - 1];
+    const fragment = value && typeof value === 'object' && '__sqlFragment' in value
+      ? String(value.__sqlFragment) : '?';
+    return query + (index ? fragment : '') + part;
+  }, '');
+  if (text.includes('SELECT scorecard.issue_id, scorecard.created_by')) {
+    scorecardQueries.push(text);
     return Promise.resolve(DB_ROWS.map(row => ({ ...row, payload: { observation: {
       ...row.payload.observation, rubricRevision: 1, criteriaHash: 'criteria-v1',
       gradingAudit: { state: 'passed', metaRubricRef: 'grading-integrity', stampedAt: row.created_at,
@@ -122,6 +129,7 @@ vi.spyOn(rubrics, 'rubricInstrumentContract').mockReturnValue({
 });
 
 beforeEach(() => {
+  scorecardQueries.length = 0;
   issuesOutLinksMany.mockClear();
   issuesSupersededByRevision.mockClear();
 });
@@ -160,6 +168,35 @@ describe('listScorecards — outbound links are OPT-IN (WI-6124)', () => {
 });
 
 describe('the aggregate readers stay cheap (WI-6124)', () => {
+  it.each([undefined, false])('omits redundant superseder projection with includeSuperseded=%s', async (includeSuperseded) => {
+    const { listScorecards } = await import('./scorecards');
+    const rows = await listScorecards({ rubricRef: 'test-rubric', includeSuperseded });
+    expect(rows).toHaveLength(2);
+    expect(scorecardQueries).toHaveLength(1);
+    const [projection, filters] = scorecardQueries[0].split('FROM harness_shared.engineer_issues AS scorecard');
+    expect(projection).toContain('NULL::text AS superseded_by');
+    expect(projection).not.toContain('SELECT relation.issue_id');
+    expect(projection).not.toContain('explicit_superseder');
+    expect(projection).not.toContain('spec_superseder');
+    expect(filters).toContain('NOT EXISTS');
+    expect(filters).toContain("superseder.payload -> 'observation' ->> 'supersedes' = scorecard.issue_id");
+    expect(filters).toContain('NOT EXISTS (');
+    expect(filters).toContain('spec_superseder');
+    expect(rows.every(row => row.supersededBy === undefined)).toBe(true);
+  });
+
+  it('retains superseder projection when superseded cards are requested', async () => {
+    const { listScorecards } = await import('./scorecards');
+    await listScorecards({ rubricRef: 'test-rubric', includeSuperseded: true });
+    expect(scorecardQueries).toHaveLength(1);
+    const [projection, filters] = scorecardQueries[0].split('FROM harness_shared.engineer_issues AS scorecard');
+    expect(projection).toContain('SELECT relation.issue_id');
+    expect(projection).toContain('explicit_superseder');
+    expect(projection).toContain('spec_superseder');
+    expect(projection).not.toContain('NULL::text AS superseded_by');
+    expect(filters).not.toContain('NOT EXISTS');
+  });
+
   it('can project required card evidence without waiting for an unused generation probe', async () => {
     const { listScorecards } = await import('./scorecards');
     const observation = DB_ROWS[0].payload.observation as Record<string, unknown>;

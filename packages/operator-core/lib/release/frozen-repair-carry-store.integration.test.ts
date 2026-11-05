@@ -144,7 +144,7 @@ describe('prepared checkpoint selection and carry share durable authority', () =
       generation: { candidate: TIP, identity: 'generation-1', token: 'v3:token', inputFingerprint: '1'.repeat(64),
         root: '/generations', reused: true },
       carry: buildFrozenRepairCarryRecord({ pending, initial: assessment(pending, TIP), judged: assessment(pending, TIP), nowMs: NOW + 1 }),
-      queue: null,
+      queueAuthority: null,
     };
     await seed({ qualificationTransaction: beginQualificationTransaction(null, {
       attemptId: selection.attemptId, candidate: TIP, nowMs: NOW,

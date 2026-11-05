@@ -1,13 +1,35 @@
 import { createServer } from 'node:http';
 import { expect, it, vi } from 'vitest';
 import { createCurrentSuNativeProtocol, guardedCurrentSuNativeHandler, inspectFrozenNativeCarryInput,
-  FROZEN_NATIVE_CARRY_NOTE, FROZEN_NATIVE_CARRY_LIMIT } from './current-su-native-http-protocol';
+  freezeCurrentSuNativeCarryProtocol, FROZEN_NATIVE_CARRY_NOTE, FROZEN_NATIVE_CARRY_LIMIT } from './current-su-native-http-protocol';
+import { currentProtocolFixture } from '../lib/external-bench/reproducibility/_protocol-test-fixture';
+import { currentBenchmarkProtocolSchema } from '../lib/external-bench/reproducibility/schema';
+import { currentBenchLaunchRequest, currentBenchSoloCapabilityControl } from '../lib/external-bench/current-su';
 
 const tools = [{ type: 'function', name: 'exec_command' },
   { type: 'function', name: 'mcp__papercusp_su__session_request_compaction' }];
 const kickoff = { model: 'fixture', tools, input: [{ role: 'user', content: '<cwd>/app</cwd> task' }] };
 const output = (call_id: string, value: string) => ({ type: 'function_call_output', call_id, output: value });
 const proof = { predecessorSessionId: 'predecessor', editApplied: () => true };
+
+it.each(['on', 'off'] as const)('freezes carry %s and the matched threshold before native launch', async mode => {
+  const config = currentProtocolFixture();
+  freezeCurrentSuNativeCarryProtocol(config, mode);
+  const protocol = currentBenchmarkProtocolSchema.parse(config);
+  const arm = protocol.arms[0];
+  expect(arm.control?.capabilities['carry-respawn']).toBe(mode);
+  expect(protocol.arms.map(arm => arm.control?.compactionLimit)).toEqual([FROZEN_NATIVE_CARRY_LIMIT, FROZEN_NATIVE_CARRY_LIMIT]);
+  expect(currentBenchSoloCapabilityControl(arm).toolNames).toContain('session:request-compaction');
+  const request = currentBenchLaunchRequest({ workspaceId: 'private', runId: protocol.runId, armId: arm.id,
+    seed: 1, agent: 'codex', model: arm.model, effort: 'high', account: arm.account,
+    preregistration: { config: protocol, preregHash: 'a'.repeat(64) } },
+  { slug: 'private', featureId: 'F-own', worktreePath: '/private/task' }, 'task');
+  expect(request.members?.[0].compactionLimit).toBe(FROZEN_NATIVE_CARRY_LIMIT);
+  const native = createCurrentSuNativeProtocol({ frozen: true, carryMode: mode });
+  await native.respond(kickoff, proof);
+  const compact = calls(await native.respond({ ...kickoff, input: [output('call_private_edit', 'ok')] }, proof))[0];
+  expect(JSON.parse(compact.arguments)).toEqual(mode === 'on' ? { continueNote: FROZEN_NATIVE_CARRY_NOTE } : {});
+});
 
 it.each(['on', 'off'] as const)('checks exact native frozen carry %s bytes and rejects contaminated input', mode => {
   const initialPrompt = 'Frozen task bytes\nRetain the checkout.';

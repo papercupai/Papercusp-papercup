@@ -88,7 +88,7 @@ import {
   type AdmissionFailOpenExclusion,
   type BornAdmission,
   failOpenExclusionSql,
-  isWorkItemDuplicateAdmitted,
+  readWorkItemDuplicateAdmission,
   isAutoPickable,
   isIssueLocallyClaimable,
   isIssueLocallyClaimableWhereSql,
@@ -9937,13 +9937,13 @@ export interface WorkItemObservation {
   /**
    * EI-22122824405906276: set when the item is UNCLAIMED (or revalidateHeld was
    * requested) yet gated by the admission /
-   * duplicate-screening floor (`isWorkItemDuplicateAdmitted` — the FIRST floor checked
+   * duplicate-screening floor (`readWorkItemDuplicateAdmission` — the FIRST floor checked
    * below, and the only one of the `gated:true` cases here that carried no distinguishing
    * field at all before this). Rendered from the SAME {@link admissionPendingExplanation} /
    * {@link admissionPendingCreateRemedy} the claim-refusal path (`explainIssueClaimFloors`'s
    * `'admission-pending'` floor) already renders, so a caller reading `work_items:observe`
    * — or `coord:dispatch`'s `actionable-work-item-dispatch.ts`, which folds this into its
-   * `admission_gated` skip reason — sees the SAME "clears on its own" explanation and the
+   * `admission_gated` skip reason — sees the SAME row-specific exclusion explanation and the
    * SAME one-argument remedy instead of rediscovering it by hand. Measured cost of the gap
    * this closes: ~8 tool calls and five refuted hypotheses to rediscover a documented fix.
    */
@@ -10088,19 +10088,25 @@ export async function observeWorkItem(
       };
     }
   }
-  const duplicateAdmitted = checkAdmission
-    ? await isWorkItemDuplicateAdmitted(id, {
+  const duplicateAdmission = checkAdmission
+    ? await readWorkItemDuplicateAdmission(id, {
         workspaceId: wi.family === 'issue' ? issuesScopeWorkspace() : activeWorkspaceId(),
       })
-    : true;
+    : null;
   throwIfAborted();
-  if (checkAdmission && !duplicateAdmitted) {
+  if (checkAdmission && !duplicateAdmission?.admitted) {
     return {
       item: wi,
       available: false,
       claimedBy: wi.assignee,
       gated: true,
-      admissionPending: { reason: admissionPendingExplanation(), remedy: admissionPendingCreateRemedy() },
+      admissionPending: {
+        reason: admissionPendingExplanation(undefined, {
+          failOpenExclusion: duplicateAdmission?.failOpenExclusion,
+          duplicateOf: duplicateAdmission?.duplicateOf,
+        }),
+        remedy: admissionPendingCreateRemedy(),
+      },
     };
   }
   if (checkAdmission && wi.family === 'feature') {

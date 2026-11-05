@@ -166,6 +166,7 @@ describe('original gate selection preparation', () => {
     mkdirSync(parent, { recursive: true });
     const dir = mkdtempSync(join(parent, 'fixture-build-selection-'));
     try {
+      execFileSync('git', ['init', '--quiet', dir]);
       for (const sub of ['scripts', 'app', 'public', 'packages/data/src', '.next']) mkdirSync(join(dir, sub), { recursive: true });
       for (const file of ['build.mjs', 'source-identity.mjs', 'dependency-preflight.mjs'])
         writeFileSync(join(dir, 'scripts', file), readFileSync(join(repo, 'apps/slack-asana-bug-drill/scripts', file)));
@@ -175,6 +176,14 @@ describe('original gate selection preparation', () => {
       writeFileSync(join(dir, 'public/logo.svg'), '<svg/>');
       writeFileSync(join(dir, 'next-env.d.ts'), 'declare const input: true;');
       writeFileSync(join(dir, '.next/fixture-build.json'), 'unchanged build sentinel');
+      const emptyHooks = join(dir, '.empty-hooks');
+      mkdirSync(emptyHooks);
+      execFileSync('git', ['add', '-A'], { cwd: dir });
+      execFileSync('git', ['-c', `core.hooksPath=${emptyHooks}`, '-c', 'user.name=Fixture',
+        '-c', 'user.email=fixture@example.invalid', '-c', 'commit.gpgsign=false',
+        'commit', '--quiet', '-m', 'fixture'], { cwd: dir });
+      expect(execFileSync('git', ['rev-parse', 'HEAD'], { cwd: dir, encoding: 'utf8' }).trim())
+        .toMatch(/^[a-f0-9]{40,64}$/);
       const relativeDir = dir.slice(repo.length + 1).replaceAll('\\', '/');
       const ws = { name: '@bug-drill/fixture', dir: relativeDir,
         scripts: { test: 'vitest run', pretest: 'node scripts/build.mjs' } };

@@ -216,6 +216,7 @@ function deps() {
     listTasks,
     readRetainedTaskKernelVerdicts: vi.fn(async (_tasks: readonly TaskRow[], _workspaceId?: string) =>
       new Map<string, string>()),
+    markEndedUnobserved: vi.fn(async () => 0),
     bindTaskNativeSession: vi.fn<NonNullable<DispatchPendingGradingAuditsDeps['bindTaskNativeSession']>>()
       .mockResolvedValue(null),
     getTask,
@@ -4168,6 +4169,58 @@ describe('dispatchPendingGradingAudits', () => {
       else expect(killTask).not.toHaveBeenCalled();
     },
   );
+
+  it.each([true, false])('reconciles pre-native auditor death under a fresh lease (targeted: %s)', async targeted => {
+    for (const proof of ['dead', 'live', 'unavailable', 'unpersisted', 'healthy-peer'] as const) {
+      const d = deps();
+      const issueId = `EI-fresh-kernel-${proof}`;
+      const prior = { key: `grading-audit:${issueId}`, reservedAt: '2026-10-23T22:44:48.945Z' };
+      const target = card(issueId);
+      target.gradingAudit = { ...target.gradingAudit!, dispatchReservation: prior };
+      d.listScorecards.mockResolvedValue([target]);
+      d.reserve.mockResolvedValueOnce({ status: 'already-reserved' });
+      // A launch can die before a native session or transcript exists. Its
+      // exact kernel identity and persisted terminal task receipt still prove
+      // that there is no auditor to preserve behind the fresh lease.
+      const task = {
+        taskId: `task-${proof}`, sessionId: null, workspaceId: 'ws-test', class: 'agent-session',
+        state: 'running', logPath: null, detail: { label: prior.key, coordOwnerId: 'su-pre-native' },
+      } as unknown as TaskRow;
+      const healthy = { ...task, taskId: 'task-healthy', detail: { ...task.detail, coordOwnerId: 'su-healthy' } } as TaskRow;
+      d.listTasks.mockResolvedValueOnce(proof === 'healthy-peer' ? [task, healthy] : [task]);
+      if (proof === 'unavailable') d.readRetainedTaskKernelVerdicts.mockRejectedValueOnce(new Error('kernel unavailable'));
+      else d.readRetainedTaskKernelVerdicts.mockResolvedValueOnce(
+        proof === 'live' ? new Map() : new Map([[task.taskId, 'exact process identity gone; scope collected']]),
+      );
+      let persisted: TaskRow['state'] = 'running';
+      const markEndedUnobserved = vi.fn(async () => {
+        if (proof !== 'unpersisted') persisted = 'ended_unobserved';
+        return proof === 'unpersisted' ? 0 : 1;
+      });
+      d.getTask.mockImplementation(async taskId => ({
+        state: taskId === task.taskId ? persisted : 'running',
+      } as TaskRow));
+      const result = await dispatchPendingGradingAudits({ ...(targeted ? { targetIds: [issueId] } : {}), ctx }, {
+        ...d, markEndedUnobserved,
+      });
+      expect(d.readRetainedTaskKernelVerdicts).toHaveBeenCalledWith(
+        proof === 'healthy-peer' ? [task, healthy] : [task], 'ws-test',
+      );
+      if (proof === 'dead') {
+        expect(d.bindTaskNativeSession).not.toHaveBeenCalled();
+        expect(d.release).toHaveBeenCalledWith(issueId, prior.key,
+          expect.objectContaining({ workspaceId: 'ws-test', reservedAt: prior.reservedAt }));
+        expect(d.launch).toHaveBeenCalledOnce();
+        expect(result.receipts[0]).toMatchObject({ state: 'launched',
+          terminalRecovery: { retiredTaskIds: [task.taskId], codes: ['task_receipt_not_live'] } });
+      } else {
+        expect(d.release).not.toHaveBeenCalled();
+        expect(d.launch).not.toHaveBeenCalled();
+        expect(result.receipts[0]).toMatchObject({ state: 'skipped' });
+      }
+      expect(markEndedUnobserved).toHaveBeenCalledTimes(proof === 'live' || proof === 'unavailable' ? 0 : 1);
+    }
+  });
 
   it('recovers a fresh reserved auditor from its exact terminal native transcript during a periodic no-target sweep', async () => {
     const d = deps();

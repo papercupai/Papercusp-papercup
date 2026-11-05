@@ -22,13 +22,13 @@ import { currentProtocolFixture } from '../lib/external-bench/reproducibility/_p
 import { preregister } from '../lib/external-bench/reproducibility/prereg';
 import { getModes } from '../lib/modes/store';
 import { readSessionConfinement, declareSessionConfinement } from '../lib/capability-envelope/session-confinement-store';
-import { setCompactionLimit } from '../lib/agent-tools/coordination/presence';
+import { getPresence } from '../lib/agent-tools/coordination/presence';
 import { emptyPool, registerAccount } from '../lib/deployment/account-pool';
 import { loadAccountPool, updateAccountPool } from '../lib/deployment/account-pool-store';
 import { installClaudeHooks, installInjectionHooks } from '../lib/desktop-install/papercusp-files';
 import { isValidSuperuserBearer, readSuperuserToken, superuserTokenPath } from '../lib/superuser-token';
 import { createCurrentSuNativeProtocol, guardedCurrentSuNativeHandler, inspectFrozenNativeCarryInput,
-  FROZEN_NATIVE_CARRY_LIMIT } from './current-su-native-http-protocol';
+  freezeCurrentSuNativeCarryProtocol, FROZEN_NATIVE_CARRY_LIMIT } from './current-su-native-http-protocol';
 
 const CURRENT_SU_NATIVE_EGRESS_RUN_ID_MANIFEST = 'current-su-native-egress-run-id';
 
@@ -169,6 +169,7 @@ export async function measureCurrentSuNativeScenario(input: { workspace: string;
   const config = currentProtocolFixture(`PRIVATE-CURRENT-SU-${randomUUID()}`, 180000);
   for (const arm of config.arms) { arm.model = 'gpt-6-luna'; arm.effort = 'max'; }
   config.priceSchedule.rates[0].model = 'gpt-6-luna';
+  if (frozenCarryMode) freezeCurrentSuNativeCarryProtocol(config, frozenCarryMode);
   const snapshot = JSON.stringify({ entries: [{ key: 'permitted:private-native', text: 'Frozen local lifecycle context.' }] });
   for (const name of ['corpus', 'memory']) writeFileSync(join(repoRoot, `${name}.json`), snapshot);
   config.context = { ...config.context, corpusRef: 'corpus.json', memoryRef: 'memory.json',
@@ -208,7 +209,7 @@ export async function measureCurrentSuNativeScenario(input: { workspace: string;
   let predecessor: { ownerId: string; taskId: string; sessionId: string } | undefined;
   let successorId: string | undefined;
   let stoppedAfterCarry = false;
-  const protocol = createCurrentSuNativeProtocol({ frozen: frozenCarryMode !== undefined });
+  const protocol = createCurrentSuNativeProtocol({ frozen: frozenCarryMode !== undefined, carryMode: frozenCarryMode });
   let frozenInitialPrompt: string | undefined;
   let frozenDelivery: ReturnType<typeof inspectFrozenNativeCarryInput> | undefined;
   const nativeDriveTimeoutMs = 180_000;
@@ -233,19 +234,19 @@ export async function measureCurrentSuNativeScenario(input: { workspace: string;
         try {
           wire = await protocol.respond(body, { predecessorSessionId: row.session_id,
             editApplied: () => readFileSync(join(taskCheckout, 'answer.txt'), 'utf8') === 'after\n',
-            // A trusted observer seeds only this disposable session's policy.
+            // A trusted observer verifies the launch-owned immutable policy.
             // This exercises real native delivery/handler thresholds, NOT
             // controlled-arm admission or complete gateway accounting.
             ...(frozenCarryMode ? { beforeCompaction: async (nativeId: string) => {
               assert.equal(nativeId, protocol.predecessorSessionId);
               const previous = await readSessionConfinement(row.coord_owner_id, workspace);
               assert.ok(previous?.denyCarryOutside, 'Native frozen carry requires its launch-owned initial prompt');
+              assert.equal(previous.denyCarryOutside.mode, frozenCarryMode);
+              assert.equal(previous.denyCarryOutside.compactionLimit, FROZEN_NATIVE_CARRY_LIMIT);
               frozenInitialPrompt = previous.denyCarryOutside.initialPrompt;
-              const result = await declareSessionConfinement({ ownerId: row.coord_owner_id, workspaceId: workspace,
-                confinement: { ...previous, denyCarryOutside: { ...previous.denyCarryOutside,
-                  mode: frozenCarryMode, compactionLimit: FROZEN_NATIVE_CARRY_LIMIT } } });
-              assert.equal(result.ok, true, JSON.stringify(result));
-              await setCompactionLimit(row.coord_owner_id, FROZEN_NATIVE_CARRY_LIMIT, { explicit: true });
+              const presence = await getPresence(row.coord_owner_id, sql);
+              assert.equal(presence?.compactionLimit, FROZEN_NATIVE_CARRY_LIMIT);
+              assert.equal(presence?.compactionLimitExplicit, true);
             } } : {}),
             binding: {
               deadlineMs: new Date(row.started_at).getTime() + nativeDriveTimeoutMs,

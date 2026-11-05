@@ -83,14 +83,14 @@ describe('request-local acquisition provenance', () => {
     const opts = { acquireBudgetMs: 10, onAcquisition: (value: QueryEmbedderAcquisition) => outcomes.push(value) };
     const observeFallback = vi.fn();
     try {
-      let settleLate!: (value: null) => void;
+      let settleLate!: () => void;
       const pending = buildQueryEmbedderResolved(opts, {
-        acquire: () => new Promise(resolve => { settleLate = resolve; }), observeFallback,
+        acquire: () => new Promise(resolve => { settleLate = () => resolve({ mode: 'disabled', reason: 'user_disabled' }); }), observeFallback,
       });
       await vi.advanceTimersByTimeAsync(10);
       expect(await pending).toBeNull();
       expect(outcomes).toMatchObject([{ status: 'timed-out', cause: 'acquisition-budget-exhausted', budgetMs: 10 }]);
-      settleLate(null);
+      settleLate();
       await Promise.resolve();
       expect(outcomes).toHaveLength(1);
 

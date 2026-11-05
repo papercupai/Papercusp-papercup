@@ -2204,6 +2204,7 @@ export async function dispatchPendingGradingAudits(
   const confirmReservation = deps.confirmReservation ?? confirmPendingGradingAuditReservation;
   const release = deps.release ?? releasePendingGradingAudit;
   const readTasks = deps.listTasks ?? listTasks;
+  const readTask = deps.getTask ?? getTask;
   const listNativeSessionsByTranscriptHandles = deps.listNativeSessionsByTranscriptHandles ??
     ((sessionIds: readonly string[]) => advSessionsByTranscriptHandles({ sessionIds }));
   const resolveSessionTranscript = deps.findSessionTranscript ?? findSessionTranscript;
@@ -2562,7 +2563,36 @@ export async function dispatchPendingGradingAudits(
       retiredTaskIds, codes, errors: ['retained auditor task scan reached its page limit'],
       remainingTaskIds: matchingTasks.map(task => task.taskId),
     };
+    // A boot can fail before creating a native transcript. Apply the same
+    // exact kernel-identity reconciliation used after reservation admission
+    // here too: a fresh lease must not hide a provably dead auditor. Unknown
+    // kernel evidence and unpersisted terminal receipts keep the lease intact.
+    let kernelEnded: ReadonlyMap<string, string> = new Map();
+    if (matchingTasks.length > 0) {
+      try {
+        kernelEnded = await (deps.readRetainedTaskKernelVerdicts ?? readRetainedTaskKernelVerdicts)(
+          matchingTasks, workspaceId,
+        );
+      } catch { /* An unavailable oracle cannot authorize replacement. */ }
+    }
     for (const task of matchingTasks) {
+      const kernelReason = kernelEnded.get(task.taskId);
+      if (kernelReason !== undefined) {
+        try {
+          await (deps.markEndedUnobserved ?? markEndedUnobserved)([{ taskId: task.taskId, reason: kernelReason }]);
+          const persisted = await readTask(task.taskId);
+          if (!persisted || !isTerminalState(persisted.state)) {
+            errors.push(`kernel-ended grading auditor '${task.taskId}' still lacks a terminal task-ledger receipt`);
+            continue;
+          }
+        } catch (error) {
+          errors.push(`kernel-ended grading auditor '${task.taskId}' reconciliation failed: ${error instanceof Error ? error.message : String(error)}`);
+          continue;
+        }
+        retiredTaskIds.push(task.taskId);
+        codes.push('task_receipt_not_live');
+        continue;
+      }
       const taskLogPath = task.logPath ?? null;
       const taskOwnerId = typeof task.detail?.coordOwnerId === 'string' ? task.detail.coordOwnerId.trim() : '';
       let taskSessionId = typeof task.sessionId === 'string' ? task.sessionId.trim() : '';
@@ -2806,7 +2836,6 @@ export async function dispatchPendingGradingAudits(
     });
     const terminateTask = (taskId: string, options: Parameters<typeof killTask>[1]) =>
       retireGradingAuditTask(taskId, options, deps);
-    const readTask = deps.getTask ?? getTask;
     /**
      * EI-22978598482930667: a terminal QUOTA failure is futile to retry until
      * capacity returns, and the recovery instant is knowable — from the account

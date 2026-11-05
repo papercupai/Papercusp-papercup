@@ -274,8 +274,8 @@ describe('host-local native request principal', () => {
     await f.hooks.withdraw();
   });
 
-  async function captureFixture() {
-    const f = await fixture();
+  async function captureFixture(args: unknown = { harness: 'selected', resource: 'private' }) {
+    const f = await fixture(args);
     const principal = await f.registry.resolveRequestPrincipal(f.input);
     const request: Parameters<NativeInstalledPerUseTurns['appendAuthorizedCapture']>[0] = {
       tool: { ...tool(), pluginInstallation: undefined }, toolName: f.input.toolName,
@@ -301,7 +301,25 @@ describe('host-local native request principal', () => {
     await f.hooks.withdraw();
   });
 
-  it.each(['json-principal', 'arguments', 'wrapper', 'installed', 'bypass', 'wildcard', 'transport', 'withdrawn', 'owner', 'harness'])(
+  it.each(['*', 'all'] as const)('uses the explicit concrete target for an operator-scope %s caller', async sentinel => {
+    const f = await captureFixture();
+    f.request.ctx.harnessSlug = sentinel;
+    const append = vi.fn(async (_input: NativeDispatchAppend, authorize: () => Promise<boolean>) => authorize());
+    expect(await f.registry.appendAuthorizedCapture(f.request, append)).toBe(true);
+    expect(append).toHaveBeenCalledWith(expect.objectContaining({ harnessSlug: 'selected' }), expect.any(Function));
+    await f.hooks.withdraw();
+  });
+
+  it('refuses an operator-scope capture without a concrete per-call target', async () => {
+    const f = await captureFixture({ resource: 'private' });
+    f.request.ctx.harnessSlug = '*';
+    const append = vi.fn();
+    expect(await f.registry.appendAuthorizedCapture(f.request, append)).toBe(false);
+    expect(append).not.toHaveBeenCalled();
+    await f.hooks.withdraw();
+  });
+
+  it.each(['json-principal', 'arguments', 'wrapper', 'installed', 'bypass', 'transport', 'withdrawn', 'owner', 'harness'])(
     'refuses protected append for %s without a host proof', async kind => {
       const f = await captureFixture();
       if (kind === 'json-principal') f.request.ctx.principal = structuredClone(f.request.ctx.principal);
@@ -309,7 +327,6 @@ describe('host-local native request principal', () => {
       if (kind === 'wrapper') f.request.toolName = 'tools:invoke';
       if (kind === 'installed') f.request.tool.pluginInstallation = tool().pluginInstallation;
       if (kind === 'bypass') f.request.ctx.gateBypass = { policy: true };
-      if (kind === 'wildcard') f.request.ctx.harnessSlug = '*';
       if (kind === 'transport') f.request.ctx.transport = 'http';
       if (kind === 'owner') f.request.ctx.uiClientId = 'other-owner';
       if (kind === 'harness') f.request.ctx.harnessSlug = 'other-harness';
@@ -368,7 +385,7 @@ describe('host-local native request principal', () => {
       } finally { await f.hooks.withdraw(); }
     });
 
-  it.each(['workspace', 'harness', 'owner', 'transport', 'principal', 'capabilities', 'native-call',
+  it.each(['workspace', 'harness', 'operator-sentinel', 'owner', 'transport', 'principal', 'capabilities', 'native-call',
     'target', 'authorizer', 'installed', 'bypass'] as const)(
     'refuses a %s replacement while the original principal is being renewed', async kind => {
       const f = await captureFixture();
@@ -377,6 +394,7 @@ describe('host-local native request principal', () => {
       f.resolve.mockImplementationOnce(async () => {
         if (kind === 'workspace') f.request.ctx.workspaceId = 'replacement';
         if (kind === 'harness') f.request.ctx.harnessSlug = 'replacement';
+        if (kind === 'operator-sentinel') f.request.ctx.harnessSlug = '*';
         if (kind === 'owner') f.request.ctx.uiClientId = 'replacement';
         if (kind === 'transport') f.request.ctx.transport = 'http';
         if (kind === 'principal') f.request.ctx.principal = structuredClone(f.request.ctx.principal);

@@ -183,6 +183,10 @@ export function admissionPrecheckSettlementTransition(
   const current = fresh.admissionPrecheck;
   if (!current || current.operationId !== operationId || current.status !== 'running') return fresh;
   const { dispatchReservation, ...rest } = fresh;
+  // The settlement clock is sampled before acquiring the row lock. A worker
+  // heartbeat can win that lock first; never make the settled marker older than
+  // its retained progress, which would make the strict reader discard it.
+  const updatedAtMs = Math.max(fresh.updatedAtMs + 1, current.updatedAtMs, current.heartbeatAtMs ?? 0, settledAtMs);
   return {
     ...rest,
     ...(dispatchReservation?.token === operationId ? {} : { dispatchReservation }),
@@ -190,9 +194,9 @@ export function admissionPrecheckSettlementTransition(
       ...current,
       status: verdict.ok ? (verdict.ran ? 'passed' : 'deferred') : 'failed',
       verdict,
-      updatedAtMs: settledAtMs,
+      updatedAtMs,
     },
-    updatedAtMs: Math.max(fresh.updatedAtMs + 1, settledAtMs),
+    updatedAtMs,
   };
 }
 

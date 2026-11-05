@@ -699,7 +699,7 @@ function qualifyCommittedReaderInputs(root: string, sourceReceiptPath: string, s
     ...closure.executedImports, ...closure.copiedSources]) sourcePath(path);
   for (const path of closure.testPaths)
     assert.ok(source.testedInputs.some(input => input.path === path), `Test is absent from selected tested inputs: ${path}`);
-  const dependencies = verifierSourceFiles(join(root, 'node_modules'));
+  const dependencies = verifierSourceFiles(join(root, 'node_modules'), { symlinkRoot: root });
   assert.deepEqual(dependencies, closure.dependencyFiles, 'Materialized dependency census differs');
   return { source, sourcePath, dependencies };
 }
@@ -1564,7 +1564,7 @@ export function preparePrivateOperatorApiBundle(root: string, evidenceDir: strin
     const source = readVerifierSourceReceiptSync(root, selected.sourceReceiptPath);
     assert.equal(source.sourceCommit, selected.selectedCommit, 'Observed selected source differs');
     const inputs: ObservedPrivateApiBuildInputs = { phase: 'build-observation', sourceCommit: selected.selectedCommit,
-      dependencyFiles: verifierSourceFiles(join(root, 'node_modules')) };
+      dependencyFiles: verifierSourceFiles(join(root, 'node_modules'), { symlinkRoot: root }) };
     const inputBytes = Buffer.from(JSON.stringify(inputs));
     const sourceReceiptPath = join(evidenceDir, 'verifier-source.json');
     const inputReceiptPath = join(evidenceDir, 'operator-api-inputs.json');
@@ -1575,7 +1575,7 @@ export function preparePrivateOperatorApiBundle(root: string, evidenceDir: strin
       assert.deepEqual(readFileSync(sourceReceiptPath), sourceBytes, 'Retained source receipt changed during build');
       assert.deepEqual(readFileSync(inputReceiptPath), inputBytes, 'Original build inputs changed during build');
       readVerifierSourceReceiptSync(root, selected.sourceReceiptPath);
-      assert.deepEqual(verifierSourceFiles(join(root, 'node_modules')), inputs.dependencyFiles,
+      assert.deepEqual(verifierSourceFiles(join(root, 'node_modules'), { symlinkRoot: root }), inputs.dependencyFiles,
         'Materialized dependencies changed during build');
       const artifactCensus = preparedArtifactCensus(evidenceDir);
       assert.ok(artifactCensus.every(file => file.kind === 'file'), 'Observed build symlinks are not qualified');

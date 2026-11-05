@@ -274,6 +274,8 @@ const { defaultEvidenceRoot } = await import('../libs/generic/verification-harne
 const { processGroupLifetime } = await import('../packages/operator-core/lib/fleet/process-group-lifetime.ts');
 const { cleanupOwnedTestState, createPrivateTestPgReleaseHandler, createSingleFlightStop,
   PRIVATE_TEST_PG_RELEASE_TOKEN_ENV, unhookRegisteredExitSignals } = await import('./lib/with-test-pg-cleanup.mjs');
+const { cleanupOwnedTestDatabases, OWNED_TEST_DB_DIR_ENV } = await import('../libs/test-config/src/owned-test-db-cleanup.ts');
+const { dropDatabaseOnDedicatedConnection } = await import('../libs/test-config/src/pg-migrate.ts');
 
 /** Ask the OS for a free TCP port. Never hardcode 5432 — that is the host's own PG. */
 function freePort() {
@@ -304,7 +306,20 @@ const port = await freePort();
 let pg = null;
 // Early private-verifier release and terminal wrapper cleanup own the same
 // PG instance. Share one stop so the second path observes the first receipt.
-const stopPrivatePg = createSingleFlightStop(async () => { await pg?.stop(); });
+const stopPrivatePg = createSingleFlightStop(async () => { await pg?.stop(); }, async () => {
+  const dir = process.env[OWNED_TEST_DB_DIR_ENV];
+  if (!dir || !pg) return;
+  const runId = process.env.PAPERCUSP_TEST_RUN_GROUP;
+  if (!runId) throw new Error('owned private database cleanup requires a run group');
+  // The outer test router cannot DROP after this wrapper stops the cluster.
+  // Reuse its private registry while the exact owned endpoint is still alive.
+  const result = await cleanupOwnedTestDatabases({ dir, runId, adminUri: pg.urls.admin,
+    deadlineAtMs: Date.now() + 10_000, drop: dropDatabaseOnDedicatedConnection });
+  console.log('[with-test-pg] owned database cleanup ' + JSON.stringify({
+    complete: result.complete, databases: result.databases, errorCount: result.errors.length,
+  }));
+  if (!result.complete) throw new Error('private database cleanup remains unverified; see retained owned database receipts');
+});
 let profileProcess = null;
 let profileLifetime = null;
 let child = null;
@@ -732,6 +747,7 @@ if (isolatedRuntime) {
     'PAPERCUSP_TEST_RUNS_DB_URL', 'PAPERCUSP_TEST_RUN_RECEIPT_FILE',
     'PAPERCUSP_TEST_RUN_WORKSPACE', 'PAPERCUSP_TEST_RUN_HARNESS',
     'PAPERCUSP_TEST_RUN_GROUP', 'PAPERCUSP_TEST_RUN_SOURCE',
+    OWNED_TEST_DB_DIR_ENV,
     'PAPERCUSP_TEST_RUN_COMMIT', 'PAPERCUSP_TEST_RUN_CASE_TITLE_PATTERN',
     'PAPERCUSP_TEST_RUN_LOOP_LAG_P95_MS',
     // The reporter needs the maintained probe's phase and original checkout

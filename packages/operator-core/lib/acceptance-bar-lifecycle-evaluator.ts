@@ -127,7 +127,7 @@ function anyProofBound(snapshot: AcceptanceBarContractSnapshot): boolean {
 function snapshotContractGaps(
   snapshot: AcceptanceBarContractSnapshot,
 ): NonNullable<AcceptanceBarLifecycleVerdict['contractGaps']> {
-  return snapshot.bars.flatMap((bar) =>
+  return snapshot.bars.filter((bar) => bar.role !== 'disclosure').flatMap((bar) =>
     acceptanceBarContractGaps({
       role: bar.role,
       method: bar.method,
@@ -377,7 +377,7 @@ function executionBarCodes(
   bar: AcceptanceBarTrace, phase: AcceptanceBarLifecyclePhase, pendingDelivery = false,
 ): AcceptanceBarSnapshotCode[] {
   const codes: AcceptanceBarSnapshotCode[] = [];
-  if (phase === 'pre-start') return codes;
+  if (phase === 'pre-start' || bar.role === 'disclosure') return codes;
   if (!bar.method.trim()) addCode(codes, 'bar_snapshot_method_missing');
   if (!bar.check) addCode(codes, 'bar_snapshot_check_missing');
   else if (bar.check.kind === 'instrument' && !bar.check.instrumentKey.trim())

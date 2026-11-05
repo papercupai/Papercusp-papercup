@@ -71,6 +71,7 @@ describe('selectDetectorModules', () => {
     const files = [
       DETECTOR,
       DETECTOR_TEST,
+      'apps/operator/lib/release/p2p-signed-physical.fixture.ts',
       'packages/operator-core/lib/release/external-prerequisites.ts',
       'packages/operator-core/lib/release/thing.d.ts',
       'packages/operator-core/lib/harness/unrelated.ts',
@@ -201,6 +202,20 @@ describe('findUnreachableModules', () => {
     expect(rows[0].dead).toBe(true);
     expect(rows[0].testedButUnwired).toBe(true);
     expect(rows[0].testImporters).toEqual([DETECTOR_TEST]);
+  });
+
+  it('a fixture-only importer is test support, never a production caller', () => {
+    const fixture = 'apps/operator/lib/release/p2p-signed-physical.fixture.ts';
+    const { rows } = findUnreachableModules({
+      population: [DETECTOR],
+      importers: new Map([[DETECTOR, new Set([fixture])]]),
+    });
+    expect(rows[0]).toMatchObject({
+      dead: true,
+      productionImporters: [],
+      testImporters: [fixture],
+      testedButUnwired: true,
+    });
   });
 
   it('kills a module kept alive only by another DEAD module (transitive, no root set)', () => {
@@ -641,6 +656,7 @@ describe('grace clock — a frozen candidate gets the same verdict every time (W
 describe('helpers', () => {
   it('classifies test files, and finds only fully-qualified release paths', () => {
     expect(isTestFile(DETECTOR_TEST)).toBe(true);
+    expect(isTestFile('apps/operator/lib/release/p2p-signed-physical.fixture.ts')).toBe(true);
     expect(isTestFile(DETECTOR)).toBe(false);
     // A bare stem is NOT a path mention — a baseline file listing `lib/release/x.ts`
     // relative to its own workspace must not read as an execution site.

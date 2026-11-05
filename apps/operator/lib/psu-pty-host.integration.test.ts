@@ -3904,7 +3904,11 @@ describe('carry-respawn TERMINAL FALLBACK — a successor that emits NOTHING sti
         "process.stdin.setEncoding('utf8');let b='';" +
         "process.stdin.on('data',d=>{b+=d;if(b.includes('QUIT'))process.exit(0);});" +
         'setTimeout(()=>process.exit(0),15000);';
-      const env = {
+      const env: ReturnType<typeof hermeticEnv> & {
+        PAPERCUSP_OPERATOR_URL: string;
+        PAPERCUSP_PSU_REEXEC?: string;
+        PAPERCUSP_PSU_REEXEC_PPID?: string;
+      } = {
         ...hermeticEnv(),
         PAPERCUSP_SID: ownerId,
         PAPERCUSP_OPERATOR_URL: 'http://agent:PRIVATE-CREDENTIAL@127.0.0.1:3170/api/mcp?token=PRIVATE-TOKEN',
@@ -5341,7 +5345,10 @@ describe('ADOPTION — a stale host hands the session to a fresh launcher instea
       const sock = socketPathFor(ownerId);
       const { captured, io } = fakeIo();
       const signalSource = new EventEmitter();
-      const env = { ...hermeticEnv(), PAPERCUSP_SID: ownerId, TERM: 'xterm-256color' };
+      const env: ReturnType<typeof hermeticEnv> & {
+        PAPERCUSP_PSU_REEXEC?: string;
+        PAPERCUSP_PSU_REEXEC_PPID?: string;
+      } = { ...hermeticEnv(), PAPERCUSP_SID: ownerId, TERM: 'xterm-256color' };
       delete env.PAPERCUSP_PSU_REEXEC;
       delete env.PAPERCUSP_PSU_REEXEC_PPID;
 

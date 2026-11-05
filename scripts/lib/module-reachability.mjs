@@ -71,7 +71,7 @@
 import { relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const TEST_RE = /\.test\.tsx?$/;
+const TEST_RE = /\.(?:test|fixture)\.tsx?$/;
 const DECLARATION_RE = /\.d\.[cm]?ts$/;
 const SOURCE_RE = /\.(?:tsx?|[cm]?js|[cm]ts)$/;
 const EXECUTION_MANIFEST_RE =
@@ -120,7 +120,7 @@ export function selfExclusionPaths(root) {
   return new Set([rel]);
 }
 
-/** True for a test file — a test importer is NOT production usage (that is the whole point). */
+/** True for a test or fixture file — neither is a production module or caller. */
 export function isTestFile(file) {
   return TEST_RE.test(String(file));
 }

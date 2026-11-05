@@ -1091,7 +1091,7 @@ export default defineTool({
   timeoutSec: 295,
   profile: 'engineer',
   description:
-    'Inspect, admit exact paths onto, claim a manifest leg of, or retire the frozen repair queue for the selected harness (operator home if unscoped). For gate-red fixes, `admit{paths}` is the only door: it replays named integration-branch paths onto repairHead as one proved commit. Dry-run unless `confirm:true`. R6 test files first return `precheck-running`; no background leg publishes. `converge` aliases `admit`; `retire` uses exact-identity CAS and is dry-run unless confirmed.',
+    'Inspect, claim or change the frozen repair queue. For gate-red fixes, `admit{paths}` replays exact integration-branch paths onto repairHead; dry-run unless `confirm:true`. R6 prechecks run first; read `get` before confirming. Never catch up to tip, retire live/unknown work, launch a checkpoint or deploy. See /internal/docs/agent-insights/frozen-candidate-fix-only-admission.',
   capability: 'operator:write',
   abortCompletionReceipt: repairQueueAbortCompletionReceipt,
   effectForCall: (args) => {
@@ -1108,11 +1108,11 @@ export default defineTool({
   agentRoles: [...SU_ROLES, 'release-fixer'],
   rolesQuota: { operator: { perRun: 20 } },
   guidance: {
-    when: 'After a gate-red fix is committed on staging, use `admit{paths}` for exactly the changed files; also inspect a frozen, blocked, or dead-fixer queue.',
+    when: 'After a staging gate-red fix, admit its exact changed paths; inspect frozen or blocked queues.',
     notWhen:
       'Use the selected harness scope, not a harness/workspace key in the payload. Never catch up to tip, retire live/unknown work, launch a checkpoint, or deploy.',
     chaining:
-      '`get` → preview `admit{paths, expectedCandidate, expectedRepairHead, expectedUpdatedAtMs}` → verify proof → repeat with `confirm:true`. Pin whole-blob source with `wholeBlob:true, sourceCommit:<reviewed ancestor SHA>, reason`. On `precheck-running`, read `get`; confirm only after pass with fresh identity. On `precheck-deferred`, inspect `precheckHolder`; no second operation is queued, so retry after that holder reaches a terminal status. Retry only a terminal failed pre-check. For missed hooks, `patchCommit:<full SHA>, reason` replays one delta; `patchCommits:[<older SHA>,<newer SHA>], reason` replays dependent deltas before one R6/publication; each path must change in each commit. One commit from mixed sources: `sources:[{paths, wholeBlob|patchCommit(s)}], reason` (all-or-nothing). Retire only with `retireAllowed` and exact identity.',
+      '`get` → preview `admit{paths, expectedCandidate, expectedRepairHead, expectedUpdatedAtMs}` → verify proof → confirm with fresh identity. Pin whole-blob sources with `wholeBlob`, reviewed `sourceCommit` and reason. On `precheck-running`, read `get` and confirm only after pass. On `precheck-deferred`, inspect `precheckHolder`; retry only after it is terminal. Missed hooks: use `patchCommit` or ordered `patchCommits`; each path must change in each commit. Mixed sources use `sources:[{paths, wholeBlob|patchCommit(s)}]` and reason. Retire only with `retireAllowed` and exact identity.',
     returns:
       '{ ok, op, verdict?, repairQueueRead?, admitted?, precheckOperation?, previewOperation?, admissionPreview?, dryRun?, judgedSha?, nextAction?, containment?, proof?, inconclusiveTerminal? }. A slow dry run returns `previewOperation`; read `get{previewOperationId}` for its `admissionPreview` or await its settle event. Read `nextAction`; a successful retire of an unjudged repairHead emits the exact-SHA inconclusive terminal and reports its wake status.',
     seeAlso: ['release:deploy', 'dev:pipeline_position', 'release:trace'],

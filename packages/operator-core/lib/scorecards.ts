@@ -4263,7 +4263,7 @@ async function listScorecardsAtLimit(
                 AND audit.issue_id = scorecard.payload -> 'observation' -> 'gradingAudit' ->> 'auditIssueId'
               LIMIT 1
            ) AS audit_criteria_hash,
-           (
+           ${filter.includeSuperseded ? tx`(
              SELECT relation.issue_id
                FROM (
                  (
@@ -4283,7 +4283,7 @@ async function listScorecardsAtLimit(
                ) AS relation
               ORDER BY relation.created_at DESC, relation.issue_id DESC
               LIMIT 1
-           ) AS superseded_by
+           )` : tx`NULL::text`} AS superseded_by
       FROM harness_shared.engineer_issues AS scorecard
      WHERE scorecard.workspace_id = ${issuesScopeWorkspace()}
        AND COALESCE(scorecard.signal_origin, 'organic') = 'organic'

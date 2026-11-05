@@ -6,8 +6,11 @@ export function unhookRegisteredExitSignals(exitHook: {
 
 export const PRIVATE_TEST_PG_RELEASE_TOKEN_ENV: 'PAPERCUSP_PRIVATE_TEST_PG_RELEASE_TOKEN';
 
-/** Cache a single owned-resource stop so early release and final cleanup share one result. */
-export function createSingleFlightStop(stop: () => Promise<unknown>): () => Promise<unknown>;
+/** Cache an owned stop and optional one-time preparation. Preparation failures
+ * remain visible across retries without preventing the owned resource stop. */
+export function createSingleFlightStop(
+  stop: () => Promise<unknown>, beforeStop?: () => Promise<unknown>,
+): () => Promise<unknown>;
 
 /** Authenticate a direct child request, stop the owned private PG, and return its correlated receipt. */
 export function createPrivateTestPgReleaseHandler(options: {

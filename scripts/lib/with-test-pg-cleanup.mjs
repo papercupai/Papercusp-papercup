@@ -11,11 +11,26 @@ const PRIVATE_TEST_PG_RELEASE_RESULT = 'papercusp-private-test-pg-release-result
 let privatePgReleaseRequestSequence = 0;
 
 /** Cache one owned-resource stop across an early request and final cleanup. */
-export function createSingleFlightStop(stop) {
+export function createSingleFlightStop(stop, beforeStop) {
   let pending;
+  let preparation;
   return () => {
     if (!pending) {
-      pending = Promise.resolve().then(stop).catch(error => {
+      pending = Promise.resolve().then(async () => {
+        const failures = [];
+        if (beforeStop) {
+          // Retain the database cleanup result across early release and final
+          // teardown. A failed preparation must not cause drops on a dead PG.
+          preparation ??= Promise.resolve().then(beforeStop);
+          try { await preparation; } catch (error) { failures.push(error); }
+        }
+        // A database receipt failure must still stop the owned server.
+        let result;
+        try { result = await stop(); } catch (error) { failures.push(error); }
+        if (failures.length === 1) throw failures[0];
+        if (failures.length) throw new AggregateError(failures, 'private PG stop has unverified cleanup');
+        return result;
+      }).catch(error => {
         pending = undefined;
         throw error;
       });
