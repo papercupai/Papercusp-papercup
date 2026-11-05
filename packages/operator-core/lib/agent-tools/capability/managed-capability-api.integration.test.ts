@@ -36,7 +36,8 @@ describe('managed capability acceptance over the production HTTP route', () => {
         ], { cwd: root, env: childEnv, detached: true, execArgv: [], stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
         observe(child);
         let result: Awaited<ReturnType<typeof captureIsolatedWorker>>;
-        try { result = await captureIsolatedWorker(child, evidenceDir, isolatedTestFileWorkerOptions(childEnv, 1)); }
+        try { result = await captureIsolatedWorker(child, evidenceDir,
+          isolatedTestFileWorkerOptions(childEnv, 1, {}, 'runtime')); }
         finally { await rm(resolve(evidenceDir, 'node_modules')); }
         expect(result.code, result.output).toBe(0);
         const cleanup = result.output.split('\n').find(row => row.startsWith('MANAGED_API_CLEANUP='));

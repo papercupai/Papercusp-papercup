@@ -12,6 +12,7 @@ import {
   PRECISION_BENCH_JEV_API_KEY_ENV,
   PRECISION_BENCH_JEV_GATE_ENV,
   PRECISION_BENCH_JEV_LEDGER_MARKER,
+  PRECISION_BENCH_PROGRESS_MARKER,
   PRECISION_BENCH_RESULT_MARKER,
   PRECISION_BENCH_WORKSPACE_ID_ENV,
 } from './precision-bench-core';
@@ -35,7 +36,13 @@ try {
       },
     });
   }
-  const metrics = await benchMemoryPrecision({ jevGate, ...(gate ? { gate } : {}) });
+  const metrics = await benchMemoryPrecision({
+    jevGate,
+    ...(gate ? { gate } : {}),
+    onProgress: (progress) => {
+      process.stdout.write(`${PRECISION_BENCH_PROGRESS_MARKER}${JSON.stringify(progress)}\n`);
+    },
+  });
   process.stdout.write(`${PRECISION_BENCH_RESULT_MARKER}${JSON.stringify(metrics)}\n`);
 } catch (error) {
   process.stderr.write(`${error instanceof Error ? error.stack ?? error.message : String(error)}\n`);

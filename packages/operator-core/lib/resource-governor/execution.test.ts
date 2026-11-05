@@ -524,6 +524,51 @@ describe('governed execution lifecycle', () => {
     expect(d.current()).toMatchObject({ state: 'cancelled' });
   });
 
+  it.each(['resolves', 'rejects'] as const)(
+    'preserves caller abort and retries durable cancellation when the operation %s during a persistence outage',
+    async (outcome) => {
+      vi.useFakeTimers();
+      const warning = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const d = deps();
+      const controller = new AbortController();
+      const abort = new Error('caller disconnected');
+      let persistenceAvailable = false;
+      const persistCancel = d.store.cancel.bind(d.store);
+      const cancel = vi.spyOn(d.store, 'cancel').mockImplementation(async (...args) => {
+        if (!persistenceAvailable) throw new Error('cancel statement timed out');
+        return persistCancel(...args);
+      });
+      const release = vi.spyOn(d.store, 'releaseClaim');
+      let finishRun!: () => void;
+      let started!: () => void;
+      const running = new Promise<void>((resolve) => { started = resolve; });
+      const operation = withGovernedExecution(
+        { idempotencyKey: 'abort-cancel-outage', admissionClass: 'process' },
+        { owner: 'bounded-runner', signal: controller.signal }, d,
+        async () => new Promise<string>((resolve, reject) => {
+          finishRun = () => outcome === 'resolves' ? resolve('late result') : reject(new Error('late operation failure'));
+          started();
+        }),
+      ).catch((error) => error);
+
+      await running;
+      controller.abort(abort);
+      await vi.advanceTimersByTimeAsync(0);
+      finishRun();
+      expect(await operation).toBe(abort);
+      expect(d.current()).toMatchObject({ state: 'running', lease: { owner: 'bounded-runner' } });
+      expect(warning).toHaveBeenCalledWith(expect.stringContaining('lease retained'),
+        expect.objectContaining({ receiptId: 'WI-R1', action: 'cancel' }));
+      expect(release).not.toHaveBeenCalled();
+
+      persistenceAvailable = true;
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(d.current()).toMatchObject({ state: 'cancelled', cancellationReason: 'governed execution aborted: caller disconnected' });
+      expect(cancel.mock.calls.every(([, , reason]) => reason === 'governed execution aborted: caller disconnected')).toBe(true);
+      expect(vi.getTimerCount()).toBe(0);
+    },
+  );
+
   it('does not create a durable receipt for an already-aborted caller', async () => {
     const d = deps();
     const controller = new AbortController();

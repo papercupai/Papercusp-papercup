@@ -607,6 +607,55 @@ describe('createCheckpointTreeFixPrecheckRunner', () => {
   // beside-checkpoint placement whatever PAPERCUSP_DEPENDENCY_GENERATION_ROOT says.
   const base = { integrationRoot: '/repo', checkpointRoot: '/ckpt', resolveGenerationRoot: () => null };
 
+  it('reuses one successful exact preparation across groups and rebuilds a dirty or moved tree', async () => {
+    const tree = 'a'.repeat(40);
+    let dirty = false;
+    let moved = false;
+    let setupCount = 0;
+    const exec = vi.fn(async (argv: readonly string[]): Promise<ExecResult> => {
+      let output = '';
+      if (argv.includes('--exec-under-lock')) setupCount += 1;
+      else if (argv[0] === 'git' && argv.includes('HEAD')) output = `${moved ? 'b'.repeat(40) : C}\n${tree}`;
+      else if (argv[0] === 'git' && argv.includes('HEAD^{tree}')) output = tree;
+      else if (argv[0] === 'git' && argv.includes('status')) output = dirty ? ' M lib/source.ts' : '';
+      return { exitCode: 0, signal: null, timedOut: false, output, durationMs: 1 };
+    });
+    const runner = createCheckpointTreeFixPrecheckRunner({ ...base, exec, reusePreparedTree: true,
+      runLockHeld: () => ({ held: false, elapsedSec: null }) });
+    const run = () => runner({ commit: C, expectedTree: tree, files: ['lib/a.test.ts'] });
+    expect(await run()).toMatchObject({ ran: true });
+    expect(await run()).toMatchObject({ ran: true, setup: { durationMs: 0 } });
+    expect(setupCount).toBe(1);
+    dirty = true;
+    expect(await run()).toMatchObject({ ran: true });
+    expect(setupCount).toBe(2);
+    dirty = false;
+    moved = true;
+    expect(await run()).toMatchObject({ ran: true });
+    expect(setupCount).toBe(3);
+  });
+
+  it('never reuses failed preparation or crosses a changed immutable identity', async () => {
+    const tree = 'a'.repeat(40);
+    let failSetup = true;
+    let setupCount = 0;
+    const exec = async (argv: readonly string[]): Promise<ExecResult> => {
+      const setup = argv.includes('--exec-under-lock');
+      if (setup) setupCount += 1;
+      return { exitCode: setup && failSetup ? 1 : 0, signal: null, timedOut: false,
+        output: argv[0] === 'git' && argv.includes('HEAD^{tree}') ? tree : '', durationMs: 1 };
+    };
+    const runner = createCheckpointTreeFixPrecheckRunner({ ...base, exec, reusePreparedTree: true,
+      runLockHeld: () => ({ held: false, elapsedSec: null }) });
+    const first = { commit: C, expectedTree: tree, files: ['lib/a.test.ts'] };
+    expect(await runner(first)).toMatchObject({ ran: false });
+    failSetup = false;
+    expect(await runner(first)).toMatchObject({ ran: true });
+    expect(setupCount).toBe(2);
+    expect(await runner({ ...first, commit: 'b'.repeat(40) })).toMatchObject({ ran: true });
+    expect(setupCount).toBe(3);
+  });
+
   it('WI-6554700010018823: without logDir the precheck log lands under PAPERCUSP_HOME, not a fixed operator home', async () => {
     const exec = vi.fn(async (_argv: readonly string[], _opts: ExecOptions) => ({ exitCode: 0, signal: null, timedOut: false, output: '', durationMs: 1 } as ExecResult));
     const runner = createCheckpointTreeFixPrecheckRunner({ ...base, exec, runLockHeld: () => ({ held: false, elapsedSec: null }) });

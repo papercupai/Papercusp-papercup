@@ -27,6 +27,7 @@ export const SKIP_DIRS = new Set([
   'node_modules',
   '_retired',
   'dist',
+  'dist-verify',
   'build',
   '.git',
   'coverage',

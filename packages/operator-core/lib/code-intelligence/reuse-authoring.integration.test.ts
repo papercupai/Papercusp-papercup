@@ -28,6 +28,7 @@ beforeAll(async () => {
     const samples: unknown[] = [];
     let finished = false;
     const started = Date.now();
+    let failureMessage: string | undefined;
     // Sample only this disposable database. Retain execution waits on failure,
     // rather than inferring the cause from the statement_timeout error alone.
     const monitor = (async () => {
@@ -47,13 +48,28 @@ beforeAll(async () => {
       if (!recorded) ledgerFailures.push(`not-recorded: aborted=${signal.aborted}`);
       return recorded;
     } catch (error) {
-      ledgerFailures.push(error instanceof Error ? `${error.name}: ${error.message}` : String(error));
-      console.info('R18_LEDGER_FAILURE_WAITS', JSON.stringify({ invocation: input.context.invocation,
-        elapsedMs: Date.now() - started, samples }));
+      failureMessage = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+      ledgerFailures.push(failureMessage);
       throw error;
     } finally {
       finished = true;
       await monitor;
+      if (failureMessage) {
+        const retained = samples.length <= 8 ? samples : [...samples.slice(0, 4), ...samples.slice(-4)];
+        const trace = retained.map(entry => {
+          const sample = entry as { atMs?: number; active?: Array<{ pid?: number; state?: string;
+            wait_event_type?: string | null; wait_event?: string | null; elapsed_ms?: number;
+            blockers?: number[] }> };
+          return { atMs: sample.atMs, active: Array.isArray(sample.active) ? sample.active.slice(0, 4)
+            .map(({ pid, state, wait_event_type, wait_event, elapsed_ms, blockers }) =>
+              ({ pid, state, wait_event_type, wait_event, elapsed_ms, blockers })) : [] };
+        });
+        const detail = { invocation: input.context.invocation, elapsedMs: Date.now() - started,
+          sampleCount: samples.length, samples: trace };
+        const diagnostic = `R18_LEDGER_FAILURE_WAITS ${JSON.stringify(detail)}`;
+        ledgerFailures.push(diagnostic);
+        console.info(diagnostic);
+      }
     }
   });
   fx = await setupPlanPgFixture({ isolated: true });

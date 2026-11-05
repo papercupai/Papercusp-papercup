@@ -211,6 +211,7 @@ export interface AdmissionPrecheckWorkerDeps {
   ) => Promise<unknown>;
   createRunner: (options: { integrationRoot: string; checkpointRoot: string; testRunHarness: string;
     fileConcurrency?: number;
+    reusePreparedTree?: boolean;
     prepareTestEnvironment?: (root: string, onOutput: () => void) => Promise<NodeJS.ProcessEnv>;
     /** D-004: the paired previous-head baseline measures in a second tree. */
     precheckRootSuffix?: string }) => FixPrecheckRunner;
@@ -698,6 +699,9 @@ export async function runAdmissionPrecheckWorker(
     testRunHarness: input.queueTarget.installSlug,
     // WI-6554700010030140: measure files concurrently; the baseline runner inherits it.
     fileConcurrency: admissionPrecheckFileConcurrency(),
+    // One runner per operation; keep the 40-file groups and durable per-file settlement,
+    // but avoid rebuilding the identical clean checkout at every group boundary.
+    reusePreparedTree: true,
     ...(input.toolingRoot ? { toolingRoot: input.toolingRoot } : {}),
     ...(input.testCommand ? { testCommand: input.testCommand } : {}),
     ...(input.clearEnv ? { clearEnv: input.clearEnv } : {}),

@@ -70,6 +70,44 @@ function fixture() {
     expect(socket.destroyed).toBe(true);
     expect(vi.getTimerCount()).toBe(0);
   });
+
+  it('destroys an established socket when termination interrupts pending work', async () => {
+    const accepted = new Set<net.Socket>();
+    let started!: () => void;
+    const startup = new Promise<void>(resolve => { started = resolve; });
+    // A peer that accepts startup but never answers cannot process a graceful
+    // PostgreSQL Terminate message. Forced shutdown must close our TCP handle.
+    const server = net.createServer(socket => {
+      accepted.add(socket);
+      socket.on('error', () => {});
+      socket.once('data', started);
+      socket.once('close', () => accepted.delete(socket));
+    });
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+    const port = (server.address() as net.AddressInfo).port;
+    let client!: net.Socket;
+    const sql = postgres(`postgres://test:test@127.0.0.1:${port}/test`, {
+      socket: () => new Promise<net.Socket>(resolve => {
+        client = net.createConnection({ host: '127.0.0.1', port }, () => resolve(client));
+      }),
+    });
+    const connection = Connection(sql.options);
+    const reject = vi.fn();
+    try {
+      connection.connect({ reserve: true, reject });
+      await startup;
+      expect(client.readyState).toBe('open');
+      connection.terminate();
+      expect(reject).toHaveBeenCalledOnce();
+      expect(client.destroyed, 'rejecting pending work must also destroy its TCP socket').toBe(true);
+    } finally {
+      connection.terminate();
+      client?.destroy();
+      for (const socket of accepted) socket.destroy();
+      await new Promise<void>(resolve => server.close(() => resolve()));
+      await sql.end({ timeout: 0 });
+    }
+  });
 });
 
 // The Cloudflare build uses its own Workers socket polyfill, rather than Node's

@@ -1,0 +1,25 @@
+{
+  "schemaVersion": "durable-park-reconcile-v1",
+  "runId": "work-item-durable-park-audit:reconcile:tool:WI-6554700010045560:b6a70c48bd9fcfeff7a832ed12a366d2",
+  "inputSha256": "b6a70c48bd9fcfeff7a832ed12a366d296723ff446284817534f6e772fa44abf",
+  "workspaceId": "papercusp-workspace",
+  "harnessSlug": "papercusp",
+  "generatedAt": "2026-11-05T21:21:52.678Z",
+  "actor": "su-716b0da2-850e-409e-8016-18efdd3390a5",
+  "requested": 1,
+  "cleared": 1,
+  "unchanged": 0,
+  "rows": [
+    {
+      "id": "WI-6554700010045560",
+      "outcome": "cleared",
+      "expectedParkFingerprint": "0d297c956661898997fccdb930014a4c96fc4490023a54dfa03e0e6f20c7528c",
+      "observedParkFingerprint": "0d297c956661898997fccdb930014a4c96fc4490023a54dfa03e0e6f20c7528c",
+      "reasonCode": "operator-directed",
+      "evidence": "Owner source session_turn:codex:01a1ace6-916d-7ca3-8fd9-bbebb602c510:17 explicitly approved AUTO/self implementation through shipment; continuation repeats it. Current plan start passed both complete outside-lineage critiques, activation audit and spec-quality, auto-approved ready, then refused only promotion-lag. Exact canonical node has conversion park by migration:plan-line-work-item-nodes. Bounded adoption under P-008 WI-6554700010030915 per D-011 uses this audited CAS path, preserving all other holds, DAG and gates.",
+      "preservedLease": false,
+      "takenBy": null
+    }
+  ],
+  "artifactPath": "reports/durable-parks/work-item-durable-park-audit-reconcile-tool-WI-6554700010045560-b6a70c48bd9fcfeff7a832ed12a366d2-reconcile.json"
+}

@@ -49,13 +49,25 @@ let checkRun: { ok: boolean; out: string } | undefined;
 function runCheck(): { ok: boolean; out: string } {
   if (!checkRun) {
     try {
-      const out = execFileSync('npx', ['tsx', 'scripts/gen-declarations.ts', '--check'], {
-        cwd: REPO_ROOT,
-        encoding: 'utf8',
-        stdio: 'pipe',
-        timeout: 120_000,
-        killSignal: 'SIGKILL',
-      });
+      // The test runner injects committed-source-loader before TSX; default-type=module keeps
+      // this CommonJS-scoped script on TSX's ESM path so .js specifiers resolve to .ts sources.
+      const out = execFileSync(
+        process.execPath,
+        [
+          '--experimental-default-type=module',
+          '--import',
+          'tsx',
+          'scripts/gen-declarations.ts',
+          '--check',
+        ],
+        {
+          cwd: REPO_ROOT,
+          encoding: 'utf8',
+          stdio: 'pipe',
+          timeout: 120_000,
+          killSignal: 'SIGKILL',
+        },
+      );
       checkRun = { ok: true, out };
     } catch (err) {
       const e = err as { stdout?: string; stderr?: string };

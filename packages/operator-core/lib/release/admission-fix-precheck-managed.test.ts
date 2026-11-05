@@ -635,6 +635,7 @@ describe('managed R6 admission pre-check runner (WI-10006003)', () => {
       assertTestEnvironment: expect.any(Function),
       testRunHarness: harness,
       fileConcurrency: admissionPrecheckFileConcurrency(),
+      reusePreparedTree: true,
       toolingRoot: '/operator',
       testCommand: ['npm', 'test'],
       clearEnv: ['DATABASE_URL'],

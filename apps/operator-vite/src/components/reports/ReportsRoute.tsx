@@ -14,6 +14,7 @@ import { seedOperatorChatDraft } from '@/app/_components/inbox/chat-seed';
 import { encodeScopedRef } from '@/app/_components/chat/chat-ref-popup-params';
 import type { toReportFull, toReportSummary } from '@papercusp/operator-core/lib/agent-tools/reports/_shared';
 import type { ReportKind, ReportVisibility, ReportSubjectKind } from '@papercusp/operator-core/lib/report-library';
+import type { ReportShareStatus } from '@papercusp/operator-core/lib/report-sharing';
 import './ReportsRoute.css';
 
 type Summary = ReturnType<typeof toReportSummary>;
@@ -81,6 +82,49 @@ function prepareReportTables(root: HTMLElement) {
     table.before(scroller);
     scroller.append(table);
   });
+}
+
+function ReportSharingActions({ reportId }: { reportId:string }) {
+  const query=useSyncQuery<ReportShareStatus>({queryName:'reports.sharing',args:{reportId},enabled:true});
+  const accountId=query.data[0]?.accountId;
+  const [result,setResult]=useState<ReportShareStatus|null>(null);
+  const [busy,setBusy]=useState(false);
+  const [message,setMessage]=useState('');
+  const generation=useRef(0);
+  useEffect(()=>{generation.current++;setResult(null);setMessage('');setBusy(false);return()=>{generation.current++;};},[reportId,accountId]);
+  const sharing=result ?? query.data[0];
+  async function change(action:'share'|'stop') {
+    if (!accountId || busy) return;
+    const requestGeneration=generation.current;
+    setBusy(true);setMessage('');
+    try {
+      const response=await fetch('/api/reports/sharing',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({reportId,accountId,action})});
+      const payload=await response.json() as {sharing?:ReportShareStatus;error?:string};
+      if(generation.current!==requestGeneration) return;
+      if(!response.ok || !payload.sharing) throw new Error(payload.error || 'Sharing could not be confirmed. Retry shortly.');
+      setResult(payload.sharing);query.invalidate();
+      if(action==='stop' && payload.sharing.phase==='inactive') setMessage('Sharing stopped. Previously saved copies cannot be recalled.');
+    } catch(error) {
+      if(generation.current===requestGeneration) setMessage(error instanceof Error ? error.message : 'Sharing could not be confirmed. Retry shortly.');
+    } finally {if(generation.current===requestGeneration)setBusy(false);}
+  }
+  async function copy() {
+    if(!sharing?.url)return;
+    try{await navigator.clipboard.writeText(sharing.url);setMessage('Shared link copied.');}
+    catch{setMessage('Clipboard access was denied. Select and copy the shared link below.');}
+  }
+  return <section aria-label="Report sharing">
+    <p className="reports-muted">Share publishes only this edition as an unlisted secret Gist{sharing?.login ? ` in ${sharing.login}'s GitHub account` : ''}. Anyone with the link can read it. Later editions stay unshared.</p>
+    <div className="reports-actions">
+      <Button disabled={!accountId || busy || query.loading} onClick={()=>{void change('share');}}>{busy ? 'Updating sharing…' : sharing?.phase==='pending' || sharing?.phase==='uncertain' ? 'Check sharing' : 'Share'}</Button>
+      {sharing?.phase==='ready' && sharing.url && <Button disabled={busy} onClick={()=>{void copy();}}>Copy shared link</Button>}
+      {sharing && sharing.phase!=='inactive' && <Button disabled={busy} onClick={()=>{void change('stop');}}>Stop sharing</Button>}
+    </div>
+    {sharing?.phase==='ready' && sharing.url && <label>Shared link <input aria-label="Shared link" value={sharing.url} readOnly onFocus={event=>event.currentTarget.select()}/></label>}
+    {sharing?.message && <p role="status">{sharing.message}</p>}
+    {message && <p role="status">{message}</p>}
+    {query.error && <p role="alert">GitHub sharing status is unavailable. Check your sign-in and permissions. <Button onClick={query.invalidate}>Retry sharing status</Button></p>}
+  </section>;
 }
 
 function ReportReader({ report, onSelect, historyOpen, onHistoryChange, onFollowUp }: {
@@ -157,6 +201,7 @@ function ReportReader({ report, onSelect, historyOpen, onHistoryChange, onFollow
           <Button onClick={() => setCompare(value => !value)} aria-expanded={compare}>{compare ? 'Close comparison' : 'Compare editions'}</Button></>}
       </div>
       {copyError && <p role="alert">Could not copy the report. Try copying the text directly.</p>}
+      <ReportSharingActions key={report.report_id} reportId={report.report_id}/>
       {history.error && <div role="alert">Could not load editions. <Button onClick={history.invalidate}>Retry editions</Button></div>}
       {report.retired_at && <p role="status">This report was retired. Its saved citation remains readable.</p>}
       {report.summary && <section className="reports-summary" aria-label="Report summary"><h3>Summary</h3><p>{report.summary}</p></section>}

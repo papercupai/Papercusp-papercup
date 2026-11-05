@@ -1968,15 +1968,15 @@ export function noteScratchWriteSettled(workspaceId: string, needsRefresh = fals
  * other writers record the time awaiting that shared recovery as quotaWaitMs. */
 export interface ScratchWriteTimings {
   quotaWaitMs: number;
-  /** Owner observed during this write's quota-admission mutex wait. */
+  /** Owner from the longest quota-admission wait with usable attribution; unknown never erases known. */
   quotaWaitMutexOwner?: ScratchWriteMutexWaitOwner;
   refreshWaitMs: number;
-  /** Owner observed while this write waits for a shared usage refresh. */
+  /** Owner from the longest shared usage-refresh wait with usable attribution; unknown never erases known. */
   refreshWaitMutexOwner?: ScratchWriteMutexWaitOwner;
   quotaRecoveryMs: number;
   /** Time waiting for the shared payload-data read lease. */
   dataLeaseWaitMs?: number;
-  /** Owner observed while this write waits for the shared payload-data read lease. */
+  /** Owner from the longest payload-data read-lease wait with usable attribution; unknown never erases known. */
   dataLeaseMutexOwner?: ScratchWriteMutexWaitOwner;
   /** Time quota recovery waits to acquire the exclusive scratch data mutex. */
   quotaRecoveryDataMutexWaitMs?: number;
@@ -2400,16 +2400,51 @@ export async function writeWithScratchQuota(
       // Diagnostic callbacks must never alter the writer's quota outcome.
     }
   };
-  const onMutexWaiting = opts.onTiming ? (info: { owner: string; elapsedMs: number }) => {
-    mutexWaitOwner = scratchWriteMutexWaitOwner(info.owner);
-    emitLockWaitProgress();
-  } : undefined;
+  const createMutexWaitOwnerCapture = () => {
+    let owner: ScratchWriteMutexWaitOwner | undefined;
+    return {
+      onWaiting: opts.onTiming ? (info: { owner: string; elapsedMs: number }) => {
+        owner = scratchWriteMutexWaitOwner(info.owner);
+        mutexWaitOwner = owner;
+        emitLockWaitProgress();
+      } : undefined,
+      getOwner: () => owner,
+    };
+  };
+  // Timing fields aggregate repeated waits; retain the longest known owner instead of letting a later
+  // unparseable owner overwrite the attribution for the wait that contributed most.
+  let quotaWaitMutexOwnerWaitMs = -1;
+  let refreshWaitMutexOwnerWaitMs = -1;
+  let dataLeaseMutexOwnerWaitMs = -1;
+  const shouldReplaceWaitOwner = (
+    current: ScratchWriteMutexWaitOwner | undefined,
+    candidate: ScratchWriteMutexWaitOwner | undefined,
+    currentWaitMs: number,
+    candidateWaitMs: number,
+  ): boolean => {
+    if (!candidate) return false;
+    if (!current || current.layer === 'unknown') {
+      return candidate.layer !== 'unknown' || candidateWaitMs > currentWaitMs;
+    }
+    if (candidate.layer === 'unknown') return false;
+    return candidateWaitMs > currentWaitMs;
+  };
+  const recordDataLeaseMutexWaitOwner = (
+    owner: ScratchWriteMutexWaitOwner | undefined,
+    waitedMs: number,
+  ) => {
+    if (!owner || !shouldReplaceWaitOwner(timings.dataLeaseMutexOwner, owner, dataLeaseMutexOwnerWaitMs, waitedMs)) {
+      return;
+    }
+    timings.dataLeaseMutexOwner = owner;
+    dataLeaseMutexOwnerWaitMs = waitedMs;
+  };
   const recordMutexWait = (info: {
     waitedMs: number;
     localWaitMs: number;
     fsMutexAdmissionMs: number;
     admissionSubphaseTimingsMs?: Record<string, number>;
-  }) => {
+  }, waitOwner: ScratchWriteMutexWaitOwner | undefined) => {
     if (opts.captureSubphaseTimings) {
       timings.localMutexWaitMs = info.localWaitMs;
       timings.fsMutexAdmissionMs = info.fsMutexAdmissionMs;
@@ -2421,10 +2456,26 @@ export async function writeWithScratchQuota(
     }
     if (refreshWaitOwner) {
       timings.refreshWaitMs += info.waitedMs;
-      if (mutexWaitOwner) timings.refreshWaitMutexOwner = mutexWaitOwner;
+      if (waitOwner && shouldReplaceWaitOwner(
+        timings.refreshWaitMutexOwner,
+        waitOwner,
+        refreshWaitMutexOwnerWaitMs,
+        info.waitedMs,
+      )) {
+        timings.refreshWaitMutexOwner = waitOwner;
+        refreshWaitMutexOwnerWaitMs = info.waitedMs;
+      }
     } else {
       timings.quotaWaitMs += info.waitedMs;
-      if (mutexWaitOwner) timings.quotaWaitMutexOwner = mutexWaitOwner;
+      if (waitOwner && shouldReplaceWaitOwner(
+        timings.quotaWaitMutexOwner,
+        waitOwner,
+        quotaWaitMutexOwnerWaitMs,
+        info.waitedMs,
+      )) {
+        timings.quotaWaitMutexOwner = waitOwner;
+        quotaWaitMutexOwnerWaitMs = info.waitedMs;
+      }
     }
   };
   const observeAwait: ScratchWriteAwaitObserver = async (phase, subphase, operation) => {
@@ -2569,9 +2620,9 @@ export async function writeWithScratchQuota(
     localWaitMs: number;
     fsMutexAdmissionMs: number;
     admissionSubphaseTimingsMs?: Record<string, number>;
-  }) => {
+  }, waitOwner: ScratchWriteMutexWaitOwner | undefined) => {
     timings.dataLeaseWaitMs = (timings.dataLeaseWaitMs ?? 0) + info.waitedMs;
-    if (mutexWaitOwner) timings.dataLeaseMutexOwner = mutexWaitOwner;
+    recordDataLeaseMutexWaitOwner(waitOwner, info.waitedMs);
     // Data-lease admission is separate from quota admission. Keep it in its dedicated
     // timing field so callers can tell payload protection from quota contention.
     if (opts.captureSubphaseTimings) {
@@ -2596,6 +2647,7 @@ export async function writeWithScratchQuota(
   let lastQuotaRefusal: ScratchQuotaError | undefined;
   try {
     for (;;) {
+      const quotaWaitOwnerCapture = createMutexWaitOwnerCapture();
       const reserve = () => withScratchWorkspaceMutex(opts.workspaceId, 'write', async () => {
         const cachedState = await readSharedScratchQuotaState(opts.workspaceId, observeAwait);
         if (!cachedState) {
@@ -2665,7 +2717,7 @@ export async function writeWithScratchQuota(
           markerPath,
           markerBytes,
         } satisfies ScratchQuotaReservation;
-      }, onMutexWaiting, recordMutexWait, opts.requestTraceId, opts.mutexTimeoutMs, recordMutexWait);
+      }, quotaWaitOwnerCapture.onWaiting, (info) => recordMutexWait(info, quotaWaitOwnerCapture.getOwner()), opts.requestTraceId, opts.mutexTimeoutMs, (info) => recordMutexWait(info, quotaWaitOwnerCapture.getOwner()));
       let outcome: Awaited<ReturnType<typeof reserve>> | typeof SCRATCH_PAYLOAD_WRITTEN;
       try {
         // Hold the shared data read lease from BEFORE the reservation until the payload is on
@@ -2683,6 +2735,7 @@ export async function writeWithScratchQuota(
         // (GC, retention, another process) stays payload-lease contention in dataLeaseWaitMs.
         const maintenanceActiveAtRequest = Boolean(entry.recovering || entry.refreshing);
         const maintenanceEpochAtRequest = entry.maintenanceEpoch;
+        const dataLeaseWaitOwnerCapture = createMutexWaitOwnerCapture();
         outcome = await withScratchWorkspaceDataReadLease(
           opts.workspaceId,
           'write',
@@ -2711,12 +2764,14 @@ export async function writeWithScratchQuota(
             }
             return SCRATCH_PAYLOAD_WRITTEN;
           },
-          onMutexWaiting,
+          dataLeaseWaitOwnerCapture.onWaiting,
           (info) => {
+            const dataLeaseWaitOwner = dataLeaseWaitOwnerCapture.getOwner();
+            recordDataLeaseMutexWaitOwner(dataLeaseWaitOwner, info.waitedMs);
             if (maintenanceActiveAtRequest || entry.maintenanceEpoch !== maintenanceEpochAtRequest) {
-              recordMutexWait(info);
+              recordMutexWait(info, undefined);
             } else {
-              recordDataLeaseWait(info);
+              recordDataLeaseWait(info, dataLeaseWaitOwner);
             }
           },
           opts.requestTraceId,
@@ -2794,7 +2849,7 @@ export async function writeWithScratchQuota(
             // measures the actual tree before making a quota decision.
             await removeSharedScratchQuotaState(opts.workspaceId).catch(() => {});
           }
-        }, onMutexWaiting, recordMutexWait, opts.requestTraceId, opts.mutexTimeoutMs, recordMutexWait);
+        }, quotaWaitOwnerCapture.onWaiting, (info) => recordMutexWait(info, quotaWaitOwnerCapture.getOwner()), opts.requestTraceId, opts.mutexTimeoutMs, (info) => recordMutexWait(info, quotaWaitOwnerCapture.getOwner()));
       } catch (error) {
         writeFailure ??= error;
       }

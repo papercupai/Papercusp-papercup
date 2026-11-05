@@ -1181,6 +1181,26 @@ dependency_generation_select_inputs() {
   dependency_generation_select_input_fingerprint "$input_fingerprint" "$generation_root"
 }
 
+dependency_generation_verifier_selector_key() {
+  local helper="${DEPENDENCY_GENERATION_VERIFIER_HELPER:-$(dirname "${BASH_SOURCE[0]}")/dependency-generation-verifier.mjs}" fingerprint
+  fingerprint="$("${DEPENDENCY_GENERATION_NODE:-node}" "$helper" fingerprint "$1")" || return $?
+  [[ "$fingerprint" =~ ^[0-9a-f]{64}$ ]] || return 74
+  printf 'native-%s\n' "$fingerprint"
+}
+
+# Reuse the selector/lease/token/GC machinery. Legacy dependency selectors
+# still require the caller's native closure check; a corrupt native selector
+# must never fall back to a different generation with the same locks.
+dependency_generation_select_verifier_inputs() {
+  local input_root="$1" generation_root="$2" input key
+  input="$(dependency_generation_input_fingerprint "$input_root")" || return $?
+  key="$(dependency_generation_verifier_selector_key "$input_root")" || return $?
+  [ -f "$generation_root/.inputs/$key" ] || key="$input"
+  dependency_generation_select_input_fingerprint "$key" "$generation_root" || return $?
+  DEPENDENCY_GENERATION_SELECTOR_KEY="$key"
+  DEPENDENCY_GENERATION_INPUT_FINGERPRINT="$input"
+}
+
 dependency_generation_marker_matches() {
   local generation="$1" expected_identity="$2"
   local marker="$generation/.papercusp-dependency-generation"
@@ -4079,7 +4099,7 @@ dependency_generation_prepare_exact_ref_root() {
 dependency_generation_ensure_verifier_ref() (
   local integration_root="$1" ref="$2" source_root="$3" generation_root="$4" retain_as="$5"
   local helper="${DEPENDENCY_GENERATION_VERIFIER_HELPER:-$(dirname "${BASH_SOURCE[0]}")/dependency-generation-verifier.mjs}"
-  local parent scratch nm rel input rc=0
+  local parent scratch nm rel input key indexed='' rc=0
   source_root="$(cd "$source_root" && pwd -P)" || return 1
   [ "$source_root" != "$integration_root" ] || {
     dependency_generation_log 'FATAL: --verifier-source requires an independent frozen checkout'
@@ -4088,14 +4108,21 @@ dependency_generation_ensure_verifier_ref() (
   "${DEPENDENCY_GENERATION_NODE:-node}" "$helper" check-source "$source_root" "$ref" || return $?
   # Dependency-only consumers retain their existing selector and corruption
   # checks. A corrupt publication is never treated as a native cache miss.
-  dependency_generation_main --integration "$integration_root" --generation-root "$generation_root" \
-    --ensure-ref "$ref" >/dev/null || return $?
-  input="$DEPENDENCY_GENERATION_INPUT_FINGERPRINT"
+  input="$(dependency_generation_input_fingerprint "$source_root")" || return $?
+  key="$(dependency_generation_verifier_selector_key "$source_root")" || return $?
+  if [ -f "$generation_root/.inputs/$key" ]; then
+    dependency_generation_select_verifier_inputs "$source_root" "$generation_root" || return $?
+    indexed=1
+  else
+    dependency_generation_main --integration "$integration_root" --generation-root "$generation_root" \
+      --ensure-ref "$ref" >/dev/null || return $?
+  fi
   dependency_generation_acquire_selector_lease "$generation_root" "$DEPENDENCY_GENERATION_ID" \
     "${BASHPID:-$$}" "$DEPENDENCY_GENERATION_TOKEN" || return $?
   trap 'dependency_generation_release_selector_lease; dependency_generation_cleanup_exact_scratch' EXIT
   "${DEPENDENCY_GENERATION_NODE:-node}" "$helper" verify "$DEPENDENCY_GENERATION_PATH" "$source_root" || rc=$?
   if [ "$rc" -ne 0 ]; then
+    [ -z "$indexed" ] || return "$rc"
     [ "$rc" -eq 74 ] || return "$rc"
     # Do not copy a caller's dependency symlinks or recursively copy a scratch
     # into itself. Native preparation supplies source before materialization.
@@ -4133,6 +4160,9 @@ dependency_generation_ensure_verifier_ref() (
   else
     DEPENDENCY_GENERATION_REUSED=true
   fi
+  DEPENDENCY_GENERATION_CLOSURE_FINGERPRINT="$(dependency_generation_read_field "$DEPENDENCY_GENERATION_PATH/.papercusp-dependency-generation" closure)"
+  dependency_generation_publish_input_selector "$generation_root" "$key" || return $?
+  DEPENDENCY_GENERATION_INPUT_FINGERPRINT="$input"
   dependency_generation_retain_ensured_ref "$generation_root" "$integration_root" \
     "$retain_as" "$DEPENDENCY_GENERATION_ID" "$ref" || return $?
   printf 'DEPENDENCY_GENERATION_RESULT schema=1 identity=%s source=%s input=%s scope=full reused=%s token=%s path=%s\n' \
@@ -4522,6 +4552,9 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
   # An exact-ref build's scratch root must not outlive a failed or killed run.
   trap 'dependency_generation_cleanup_exact_scratch' EXIT
   dependency_generation_main "$@"
+  # Stay inside the already-parsed command: after a long run the live file
+  # may have grown, so returning past the guard can resume at a stale offset.
+  exit 0
 fi
 
 }  # ── end self-read guard (WI-322485) ──

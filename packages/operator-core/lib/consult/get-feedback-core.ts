@@ -114,6 +114,10 @@ export interface GetFeedbackRequest {
   question: string;
   /** The production binding supplies its actual launch permission. */
   allowDispatch?: boolean;
+  /** Server-selected launch runtime, retained across durable recovery. Never a public tool argument. */
+  launchOperatorBaseUrl?: string;
+  /** Loopback URLs are meaningful only on the accepting machine. */
+  launchOperatorHost?: string;
   tried?: string;
   observed?: string;
   decisionAtStake?: string;
@@ -373,7 +377,8 @@ function requestFingerprint(req: GetFeedbackRequest): string {
  * Keep the full fingerprint separately: the persisted execution payload must
  * still pass its provenance check before it can be recovered or dispatched. */
 function requestInputFingerprint(req: GetFeedbackRequest): string {
-  const { resolvedSubjectRefs: _resolved, unresolvedSubjectRefs: _unresolved, ...input } = req;
+  const { resolvedSubjectRefs: _resolved, unresolvedSubjectRefs: _unresolved,
+    launchOperatorBaseUrl: _launchBase, launchOperatorHost: _launchHost, ...input } = req;
   return requestFingerprint(input);
 }
 
@@ -386,7 +391,8 @@ export async function acceptFeedbackRequestCore(
   methodReviewTarget(req);
   const sql = deps.getSql();
   const fingerprint = requestFingerprint(req);
-  const key = req.requestKey?.trim() || `auto:${fingerprint}`;
+  const { launchOperatorBaseUrl: _launchBase, launchOperatorHost: _launchHost, ...keyInput } = req;
+  const key = req.requestKey?.trim() || `auto:${requestFingerprint(keyInput)}`;
   const id = `conv-request-${createHash('sha256').update(JSON.stringify([req.workspaceId, req.requesterId, key])).digest('hex')}`;
   const opened = await deps.open({ id, kind: 'consult', title: consultTitle(req.question), body: consultBody(req),
     ...(req.topics?.length ? { topics: req.topics } : {}),
@@ -413,6 +419,10 @@ export async function acceptFeedbackRequestCore(
   };
   const previous = row.routing.request.result;
   if (previous && 'verdict' in previous && previous.verdict === 'relevance_unmeasured') {
+    const retryPayload = { ...req,
+      launchOperatorBaseUrl: stored.payload.launchOperatorBaseUrl ?? req.launchOperatorBaseUrl,
+      launchOperatorHost: stored.payload.launchOperatorHost ?? req.launchOperatorHost };
+    const retryFingerprint = requestFingerprint(retryPayload);
     const now = (deps.now?.() ?? new Date()).toISOString();
     // An explicit same-payload retry can recover an instrument outage. This is
     // preparation only: the existing continuation must acquire its CAS lease
@@ -426,7 +436,7 @@ export async function acceptFeedbackRequestCore(
          SET state = 'routing', updated_at = ${now}::timestamptz,
              routing = jsonb_set(routing, '{request}',
                ((routing->'request') - 'result') || jsonb_build_object(
-                 'payload', ${sql.json(req as never)}, 'fingerprint', ${fingerprint}::text,
+                 'payload', ${sql.json(retryPayload as never)}, 'fingerprint', ${retryFingerprint}::text,
                  'recoveryHistory', COALESCE(routing #> '{request,recoveryHistory}', '[]'::jsonb) ||
                    jsonb_build_array(jsonb_build_object('at', ${now}::text,
                      'result', routing #> '{request,result}'))))

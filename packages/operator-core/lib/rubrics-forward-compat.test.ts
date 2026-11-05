@@ -95,6 +95,32 @@ describe('planRowToRubric forward compatibility (WI-10002803)', () => {
     expect(planRowToRubric(row({ ...newerBuildData, ratingScale: 'not-an-array' }))).toBeNull();
   });
 
+  it.each([
+    { kind: 'instrument', instrumentKey: 'latency', maxAgeMs: 60_000, experimentId: 'latency-v2' },
+    { kind: 'probe', probe: cleanCheck.probe, maxAgeMs: 30_000 },
+  ])('preserves recognized $kind policy when an unknown check field triggers compatibility', (check) => {
+    const stored = {
+      ...cleanData,
+      criteria: [{ ...criterion, check: { ...check, futurePolicy: true } }],
+    };
+    const rubric = planRowToRubric(row(stored));
+
+    expect(rubric).not.toBeNull();
+    expect(rubric!.criteria[0]!.check).toEqual(check);
+    expect(rubric!.readCompat).toEqual({ strippedKeys: ['criteria[].check.futurePolicy'] });
+  });
+
+  it.each([
+    { kind: 'instrument', instrumentKey: 'latency', maxAgeMs: 0 },
+    { kind: 'instrument', instrumentKey: 'latency', experimentId: ' ' },
+    { kind: 'probe', probe: cleanCheck.probe, maxAgeMs: '30000' },
+  ])('refuses malformed known policy after stripping unrelated unknown fields: %j', (check) => {
+    expect(planRowToRubric(row({
+      ...cleanData,
+      criteria: [{ ...criterion, check: { ...check, futurePolicy: true } }],
+    }))).toBeNull();
+  });
+
   it('marks nothing on a fully understood rubric', () => {
     expect(planRowToRubric(row(cleanData))!.readCompat).toBeUndefined();
   });

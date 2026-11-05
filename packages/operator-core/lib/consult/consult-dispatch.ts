@@ -64,6 +64,7 @@ import {
 import { buildConsoleEnvelope } from '../console-launcher';
 import { spawnHeadless, type SpawnChildExit } from '../console-spawn';
 import { resolveSpawnHostOperatorBaseUrl } from '../mcp-base-url';
+import { hostname } from 'node:os';
 import { papercuspPathForWorkspace } from '../papercusp-root';
 import { codexHomeForSessionKey } from '@papercusp/orchestrator/session-launch-dirs';
 import { analyzeCodexRolloutFile, type CodexRolloutOverflowAnalysis } from '../events/await/codex-rollout-overflow';
@@ -419,6 +420,9 @@ export interface ConsultDispatchContext {
   harnessSlug: string | null;
   /** The requester's coord id — `--launched-by` provenance on the launch. */
   launchedBy: string | null;
+  /** Trusted accepting runtime; recovery must not replace it with its own build. */
+  launchOperatorBaseUrl?: string;
+  launchOperatorHost?: string;
 }
 
 export interface BackendAvailability {
@@ -832,6 +836,8 @@ export interface ConsultDispatchDeps extends ExpertModelAllowlistDeps {
   readDispatchChoice?: (workspaceId: string, conversationId: string) => Promise<{
     reviewerModel: ConsultReviewerModel | null; nativeConsult: NativeConsultConstraints | null;
     methodReview?: { rubricId: string; applierId: string };
+    launchOperatorBaseUrl?: string;
+    launchOperatorHost?: string;
   }>;
   checkApprover?: typeof import('../rubrics').checkAcceptanceBarApproverEligibility;
   /** Re-read the consult before launching a reviewer; cascades can race closure. */
@@ -2410,13 +2416,21 @@ async function launchAnsweringSession(
 
   let envelope: Awaited<ReturnType<typeof buildConsoleEnvelope>>;
   try {
-    const operatorBaseUrl = resolveSpawnHostOperatorBaseUrl();
+    const operatorBaseUrl = ctx.launchOperatorBaseUrl ?? resolveSpawnHostOperatorBaseUrl();
+    if (ctx.launchOperatorBaseUrl !== undefined) {
+      const url = new URL(operatorBaseUrl);
+      if (url.protocol !== 'http:' || !['localhost', '127.0.0.1', '[::1]'].includes(url.hostname) ||
+          !url.port || url.pathname !== '/' || url.username || url.password || url.search || url.hash ||
+          (ctx.launchOperatorHost !== undefined && ctx.launchOperatorHost !== hostname())) {
+        throw new Error('saved consult launch runtime is invalid or belongs to another machine');
+      }
+    }
     envelope = await d.buildConsoleEnvelope({
       workspaceId: ctx.workspaceId,
       slug: ctx.harnessSlug,
       operatorBaseUrl,
       // The default console MCP endpoint is the long-lived live proxy. A
-      // consult must prepare and answer on its spawning runtime: staging and
+      // consult must prepare and answer on its accepting runtime: staging and
       // background source guards may differ from the deployed live build.
       agentMcpBaseUrl: operatorBaseUrl,
       // The answering session is an MCP-connected agent (it must call
@@ -2938,7 +2952,10 @@ export function makeConsultReachDispatcher(
             body: opts.body,
           }),
       },
-      ctx,
+      'launchOperatorBaseUrl' in choice && choice.launchOperatorBaseUrl
+        ? { ...ctx, launchOperatorBaseUrl: choice.launchOperatorBaseUrl,
+            launchOperatorHost: choice.launchOperatorHost }
+        : ctx,
       dispatchDeps,
     );
     const pickupConfirmed = dispatch.dispatched && dispatch.verified === true;
@@ -2999,12 +3016,16 @@ export async function continueCascadeDispatchProd(
 async function readPersistedDispatchChoice(workspaceId: string, conversationId: string): Promise<{
   reviewerModel: ConsultReviewerModel | null; nativeConsult: NativeConsultConstraints | null;
   methodReview?: { rubricId: string; applierId: string };
+  launchOperatorBaseUrl?: string;
+  launchOperatorHost?: string;
 }> {
   const { getOrgPg } = await import('@papercusp/db-org');
   const [row] = await getOrgPg().sql<Array<{ policy: string | null; reviewer_model: unknown; native_consult: unknown;
-    method_rubric: string | null; requester_id: string }>>`
+    method_rubric: string | null; requester_id: string; launch_base: string | null; launch_host: string | null }>>`
     SELECT routing->>'policy' AS policy, routing->'reviewerModel' AS reviewer_model, routing->'nativeConsult' AS native_consult,
-           routing->>'methodReviewRubricRef' AS method_rubric, requester_id
+           routing->>'methodReviewRubricRef' AS method_rubric, requester_id,
+           routing #>> '{request,payload,launchOperatorBaseUrl}' AS launch_base,
+           routing #>> '{request,payload,launchOperatorHost}' AS launch_host
       FROM harness_shared.consult_state
      WHERE workspace_id = ${workspaceId} AND conversation_id = ${conversationId}
   `;
@@ -3014,7 +3035,10 @@ async function readPersistedDispatchChoice(workspaceId: string, conversationId: 
     methodReviewRubricRef: row?.method_rubric ?? undefined });
   if (rubricId && !row?.requester_id?.trim()) throw new Error('method_review_requester_missing');
   const methodReview = rubricId ? { rubricId, applierId: row!.requester_id } : undefined;
-  if (row?.reviewer_model == null) return { reviewerModel: null, nativeConsult, ...(methodReview ? { methodReview } : {}) };
+  const launchRuntime = row?.launch_base != null ? { launchOperatorBaseUrl: row.launch_base,
+    ...(row.launch_host != null ? { launchOperatorHost: row.launch_host } : {}) } : {};
+  if (row?.reviewer_model == null) return { reviewerModel: null, nativeConsult,
+    ...(methodReview ? { methodReview } : {}), ...launchRuntime };
   if (row.policy !== ACCEPTANCE_BAR_AMENDMENT_REVIEW_POLICY && row.policy !== RUBRIC_VETTING_POLICY) {
     throw new Error('reviewer model exists outside an authorized review policy');
   }
@@ -3026,5 +3050,5 @@ async function readPersistedDispatchChoice(workspaceId: string, conversationId: 
     (model.effort !== undefined && !['low', 'medium', 'high', 'xhigh', 'max'].includes(String(model.effort)))) {
     throw new Error('invalid persisted reviewer model');
   }
-  return { reviewerModel: model as unknown as ConsultReviewerModel, nativeConsult };
+  return { reviewerModel: model as unknown as ConsultReviewerModel, nativeConsult, ...launchRuntime };
 }

@@ -487,8 +487,7 @@ describe('evaluateLifecycleCandidates', () => {
     expect(summary).toContain('the ageSec-bearing row is terminal and the default tasks[] filter would hide it');
     expect(summary).toContain('When no addressable control exists, the same-kind control prerequisite is structurally unavailable, not a failed read');
     expect(summary).toContain('even when live.unaccountedGroups is non-empty');
-    expect(summary).toContain('A gone verdict requires state=stranded');
-    expect(summary).toContain('a missing/empty observedPids list leaves the verdict unknown');
+    expect(summary).toContain('For an exact candidate scopeUnit, a gone verdict requires state=stranded, no livePids in the exact task read, the passing same-kind control above, and the exact-scope proof below');
     expect(summary).toContain('do not use the cgroupfs path to work around a failed read');
     expect(summary).not.toContain('When live.unaccountedGroups is empty, the same-kind control prerequisite is structurally unavailable');
     expect(summary).toContain('independently walk the complete, readable Papercusp slice subtree under /sys/fs/cgroup by exact scopeUnit');
@@ -504,8 +503,12 @@ describe('evaluateLifecycleCandidates', () => {
     expect(summary).not.toContain('pc-unaccounted.scope');
 
     const noScope = { ...candidate, scopeUnit: null };
-    expect(lifecycleCandidateSummary(noScope)).toContain('unfiltered processes:list { live:true }');
-    expect(lifecycleCandidateSummary(noScope)).toContain('complete live.unaccountedGroups');
+    const noScopeSummary = lifecycleCandidateSummary(noScope);
+    expect(noScopeSummary).toContain('unfiltered processes:list { live:true }');
+    expect(noScopeSummary).toContain('complete live.unaccountedGroups');
+    expect(noScopeSummary).toContain('observedPids are last-known host PID hints only');
+    expect(noScopeSummary).toContain('no match or an empty list is inconclusive and leaves the result unknown');
+    expect(noScopeSummary).toContain('Never issue a gone or kill verdict from PID absence alone');
 
     const vteCandidate = evaluate({
       rows: [row({ taskId: 'vte-unaccounted', state: 'unaccounted', scopeUnit: 'vte-spawn-0e0e-4a4a.scope' })],

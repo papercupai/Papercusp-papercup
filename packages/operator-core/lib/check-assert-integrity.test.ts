@@ -499,6 +499,36 @@ describe('check-assert-integrity: R7 discarded reading', () => {
     expect(out).toEqual([]);
   });
 
+  it('does NOT mistake inline conditional use for the report later on that line', () => {
+    const out = r7([
+      '  name="$(basename "$f")"',
+      '  [ "$known" = 1 ] && return 0',
+      '  if [[ "$name" == *-seed.deb ]]; then echo companion',
+      '  elif [[ "$name" == *server* ]]; then echo server',
+      '  else echo gui',
+      '  fi',
+    ].join('\n'));
+    expect(out).toEqual([]);
+  });
+
+  it('recognizes logical consumption after a reporting command on the same line', () => {
+    const out = r7([
+      '  n="$(probe)"',
+      '  [ "$known" = 1 ] && return 0',
+      '  echo "n=$n"; [ "$n" -gt 0 ] || return 1',
+    ].join('\n'));
+    expect(out).toEqual([]);
+  });
+
+  it('FAIL-CLOSED: quoted shell separators and parameter defaults remain reports', () => {
+    const out = r7([
+      '  n="$(probe)"',
+      '  [ "$known" = 1 ] && return 0',
+      '  printf "n;value=%s\\n" "${n:-unmeasured}"',
+    ].join('\n'));
+    expect(out).toHaveLength(1);
+  });
+
   it('does NOT fire when the value feeds bare Bash arithmetic logic', () => {
     const out = r7(
       [

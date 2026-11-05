@@ -1091,6 +1091,41 @@ async function stateRow(conversationId: string, ws: string = WS) {
 
 // ── Tests ────────────────────────────────────────────────────────────────
 describe('recoverable interactive feedback requests', () => {
+  it('retains the original runtime through same-key retries on another host and durable recovery', async () => {
+    const fixture = makeDeps(routeOf([cand('runtime-expert')]));
+    const request = { ...baseReq, requestKey: 'saved-runtime', launchOperatorBaseUrl: 'http://localhost:3170' };
+    const accepted = await acceptFeedbackRequestCore(request, fixture.deps);
+    if ('error' in accepted) throw new Error(accepted.error);
+    const retry = await acceptFeedbackRequestCore({ ...request, launchOperatorBaseUrl: 'http://localhost:3271' }, fixture.deps);
+    expect(retry).not.toHaveProperty('error');
+    expect(retry).toMatchObject({ conversation_id: accepted.conversation_id });
+    const execute = vi.fn(async (payload: GetFeedbackRequest, context: NonNullable<GetFeedbackDeps['acceptedRequest']>) => {
+      expect(payload).toMatchObject({ launchOperatorBaseUrl: 'http://localhost:3170' });
+      return getFeedbackCore(payload, { ...fixture.deps, acceptedRequest: context });
+    });
+    await continueFeedbackRequestCore(WS, accepted.conversation_id, { getSql: () => rootSql, now: () => NOW, execute });
+    expect(execute).toHaveBeenCalledOnce();
+    expect((await stateRow(accepted.conversation_id)).routing).toMatchObject({
+      request: { payload: { launchOperatorBaseUrl: 'http://localhost:3170' } },
+    });
+  });
+
+  it('deduplicates automatic request keys across runtimes while detecting saved-runtime tampering', async () => {
+    const fixture = makeDeps(routeOf([cand('runtime-auto-expert')]));
+    const request = { ...baseReq, question: 'automatic runtime retry', launchOperatorBaseUrl: 'http://localhost:3170' };
+    const accepted = await acceptFeedbackRequestCore(request, fixture.deps);
+    if ('error' in accepted) throw new Error(accepted.error);
+    const retry = await acceptFeedbackRequestCore({ ...request, launchOperatorBaseUrl: 'http://localhost:3271' }, fixture.deps);
+    expect(retry).toMatchObject({ conversation_id: accepted.conversation_id });
+    await rootSql`UPDATE harness_shared.consult_state SET routing = jsonb_set(routing,
+      '{request,payload,launchOperatorBaseUrl}', '"http://localhost:3271"'::jsonb)
+      WHERE workspace_id = ${WS} AND conversation_id = ${accepted.conversation_id}`;
+    const execute = vi.fn();
+    await expect(continueFeedbackRequestCore(WS, accepted.conversation_id,
+      { getSql: () => rootSql, now: () => NOW, execute })).rejects.toThrow('consult-request-provenance-mismatch');
+    expect(execute).not.toHaveBeenCalled();
+  });
+
   it('requires explicit METHOD context, fingerprints it, and retains it through durable recovery', async () => {
     const fixture = makeDeps(routeOf([cand('method-context-expert')]));
     const request = { ...baseReq, requestKey: 'method-context', policy: 'method-review',
@@ -1251,6 +1286,24 @@ describe('recoverable interactive feedback requests', () => {
     expect(health.totals.launched).toBe(0);
     expect(fixture.routeCalls).toHaveLength(0);
     expect(fixture.reached).toHaveLength(0);
+  });
+
+  it('binds accepted scoring to the actual request lease without changing the saved payload', async () => {
+    const fixture = makeDeps(routeOf([]));
+    const request = { ...baseReq, requestKey: 'accepted-scoring-lease-bound' };
+    const accepted = await acceptFeedbackRequestCore(request, fixture.deps);
+    const execute = vi.fn((payload, context) => getFeedbackCore(payload, {
+      ...fixture.deps, acceptedRequest: context,
+    }));
+    await continueFeedbackRequestCore(WS, accepted.conversation_id, {
+      getSql: () => rootSql, now: () => NOW, execute,
+    });
+    expect(execute).toHaveBeenCalledOnce();
+    expect(execute.mock.calls[0]![1]).toMatchObject({
+      conversation_id: accepted.conversation_id, leaseUntilMs: NOW.getTime() + 120_000,
+    });
+    expect((await stateRow(accepted.conversation_id)).routing).toMatchObject({ request: { payload: request } });
+    expect(request).not.toHaveProperty('leaseUntilMs');
   });
 
   it.each(['embed-unavailable', 'evidence-unavailable', undefined] as const)(

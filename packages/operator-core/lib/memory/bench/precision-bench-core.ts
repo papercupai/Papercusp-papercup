@@ -38,6 +38,59 @@ export const PRECISION_BENCH_JEV_API_KEY_ENV = 'PAPERCUSP_PRECISION_BENCH_JEV_AP
 export const PRECISION_BENCH_WORKSPACE_ID_ENV = 'PAPERCUSP_PRECISION_BENCH_WORKSPACE_ID';
 export const PRECISION_BENCH_JEV_LEDGER_MARKER = 'PAPERCUSP_MEMORY_PRECISION_BENCH_JEV_LEDGER:';
 export const PRECISION_BENCH_JEV_CONSUMER = 'memory-bench';
+export const PRECISION_BENCH_PROGRESS_MARKER = 'PAPERCUSP_MEMORY_PRECISION_BENCH_PROGRESS:';
+
+export type PrecisionBenchPhase =
+  | 'load-fixtures'
+  | 'create-backend'
+  | 'seed-corpus'
+  | 'retrieve-gold-set'
+  | 'jev-gate'
+  | 'cleanup';
+
+export interface PrecisionBenchProgress {
+  readonly phase: PrecisionBenchPhase;
+  readonly status: 'started' | 'completed' | 'failed';
+  readonly at: string;
+  readonly expectedRows?: number;
+  readonly verifiedRows?: number;
+  readonly expectedQueries?: number;
+  readonly completedQueries?: number;
+}
+
+export type PrecisionBenchProgressReporter = (progress: PrecisionBenchProgress) => void;
+
+type PrecisionBenchProgressDetails = Partial<
+  Pick<PrecisionBenchProgress, 'expectedRows' | 'verifiedRows' | 'expectedQueries' | 'completedQueries'>
+>;
+
+async function runWithBenchProgress<T>(
+  reporter: PrecisionBenchProgressReporter | undefined,
+  phase: PrecisionBenchPhase,
+  work: () => T | Promise<T>,
+  details: {
+    started?: PrecisionBenchProgressDetails;
+    completed?: (result: T) => PrecisionBenchProgressDetails;
+  } = {},
+): Promise<T> {
+  const emit = (status: PrecisionBenchProgress['status'], fields: PrecisionBenchProgressDetails = {}) => {
+    try {
+      reporter?.({ phase, status, at: new Date().toISOString(), ...fields });
+    } catch {
+      // Progress is diagnostic only; a broken reporter must not fail the bench.
+    }
+  };
+
+  emit('started', details.started);
+  try {
+    const result = await work();
+    emit('completed', details.completed?.(result));
+    return result;
+  } catch (error) {
+    emit('failed');
+    throw error;
+  }
+}
 /**
  * A run whose corpus did not FULLY seed measures NOTHING: every gold query then
  * searches an empty (or partial) pool and scores 0. Recording that as a metric is
@@ -202,16 +255,34 @@ export async function gateReplayWithJev(
  * metrics describe the gated set.
  */
 export async function benchMemoryPrecision(
-  opts: { jevGate?: boolean; gate?: JevGateFn } = {},
+  opts: { jevGate?: boolean; gate?: JevGateFn; onProgress?: PrecisionBenchProgressReporter } = {},
 ): Promise<MemoryPrecisionMetrics> {
-  const corpus = loadCorpusFixture('v1');
-  const gold = loadGoldSetFixture('v1');
-  const ctx = await makeHybridBackendCtx(false);
+  const { corpus, gold } = await runWithBenchProgress(opts.onProgress, 'load-fixtures', () => ({
+    corpus: loadCorpusFixture('v1'),
+    gold: loadGoldSetFixture('v1'),
+  }));
+  const ctx = await runWithBenchProgress(opts.onProgress, 'create-backend', () => makeHybridBackendCtx(false));
   try {
-    const manifest = await seedCorpus(ctx.backend, corpus, { scope: BENCH_SCOPE, verbatim: true, concurrency: 8 });
-    // The manifest was previously DISCARDED — which is exactly how a total seed
-    // failure became "recall = 0" instead of "the bench could not run".
-    assertCorpusSeeded(manifest, corpus.length);
+    // This is a fresh isolated schema, so these new fixture rows exercise real
+    // embedding/inference work. Only report them verified after the seed guard passes.
+    await runWithBenchProgress(
+      opts.onProgress,
+      'seed-corpus',
+      async () => {
+        const manifest = await seedCorpus(ctx.backend, corpus, {
+          scope: BENCH_SCOPE,
+          verbatim: true,
+          concurrency: 8,
+        });
+        // The manifest was previously DISCARDED — which is exactly how a total seed
+        // failure became "recall = 0" instead of "the bench could not run".
+        assertCorpusSeeded(manifest, corpus.length);
+      },
+      {
+        started: { expectedRows: corpus.length },
+        completed: () => ({ verifiedRows: corpus.length }),
+      },
+    );
     // WI-7179: read all three admission values from pushSearchFloors() — the
     // SAME constructor `buildBlockInner` runs for the live push path — instead
     // of re-declaring them. A copied constant (the old `fusionMode:
@@ -221,18 +292,26 @@ export async function benchMemoryPrecision(
     // is precisely the failure mode `pushSearchFloors()`'s own doc comment
     // names this file as the example of. Pattern proven on floor-sweep-cli.ts.
     const f = pushSearchFloors();
-    const retrieval = await runGoldSet(ctx.backend, gold.queries, {
-      scope: BENCH_SCOPE,
-      limit: 10,
-      concurrency: 4,
-      // Measure the EXACT production push floor — the whole point is monitoring
-      // the LIVE injector's precision, not the unfloored raw-recall number.
-      minScore: f.minScore,
-      minLexScore: f.minLexScore,
-      fusionMode: f.fusionMode,
-      // The gate needs exactly the set the floor let through (P-008).
-      ...(opts.jevGate ? { captureCandidates: true } : {}),
-    });
+    const retrieval = await runWithBenchProgress(
+      opts.onProgress,
+      'retrieve-gold-set',
+      () => runGoldSet(ctx.backend, gold.queries, {
+        scope: BENCH_SCOPE,
+        limit: 10,
+        concurrency: 4,
+        // Measure the EXACT production push floor — the whole point is monitoring
+        // the LIVE injector's precision, not the unfloored raw-recall number.
+        minScore: f.minScore,
+        minLexScore: f.minLexScore,
+        fusionMode: f.fusionMode,
+        // The gate needs exactly the set the floor let through (P-008).
+        ...(opts.jevGate ? { captureCandidates: true } : {}),
+      }),
+      {
+        started: { expectedQueries: gold.queries.length },
+        completed: (result) => ({ completedQueries: result.perQuery.length }),
+      },
+    );
 
     // P-008: when the workspace's Jev switch is On, the injector filters the
     // floor-admitted set through Jev, so the monitor measures that set. A run in
@@ -246,7 +325,15 @@ export async function benchMemoryPrecision(
     if (opts.jevGate) {
       if (!opts.gate) throw new Error('precision bench Jev gate requested without a worker supplied gate');
       const queryText = new Map(gold.queries.map((q) => [q.id, q.query] as const));
-      const gated = await gateReplayWithJev(retrieval.perQuery, queryText, opts.gate);
+      const gated = await runWithBenchProgress(
+        opts.onProgress,
+        'jev-gate',
+        () => gateReplayWithJev(retrieval.perQuery, queryText, opts.gate!),
+        {
+          started: { expectedQueries: retrieval.perQuery.length },
+          completed: (result) => ({ completedQueries: result.outcomes.length }),
+        },
+      );
       jevStats = gated.stats;
       if (gated.stats.answered > 0 && gated.stats.model !== null) {
         ({ byClass, overall } = aggregateByClass(gated.outcomes));
@@ -285,6 +372,6 @@ export async function benchMemoryPrecision(
   } finally {
     // A cleanup failure (e.g. a held pooled connection) must never lose the run;
     // makeBackendCtx already drops the bench schema. Swallow non-fatally.
-    await ctx.cleanup().catch(() => {});
+    await runWithBenchProgress(opts.onProgress, 'cleanup', () => ctx.cleanup().catch(() => {}));
   }
 }

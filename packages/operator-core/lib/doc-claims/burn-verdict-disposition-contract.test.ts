@@ -95,6 +95,7 @@ const ALLOWED_BARE_VERDICTS: readonly AllowedBareVerdict[] = [
 const SKIP_DIRS = new Set([
   'node_modules',
   'dist',
+  'dist-verify',
   'build',
   '.next',
   '.git',

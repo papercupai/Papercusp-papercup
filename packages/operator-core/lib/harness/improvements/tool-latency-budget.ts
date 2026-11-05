@@ -27,6 +27,18 @@ export const TOOL_LATENCY_BUDGET_RATIO = 0.8;
 /** Below this many samples a p95 is just "the max of a handful" — not evidence. */
 export const TOOL_LATENCY_MIN_SAMPLES = 20;
 
+// A dispatch timeout is a correctness boundary, not an acceptable interactive
+// response time. Start with the completion API implicated by EI-27984315103577037;
+// deliberately long-running tools (tests, builds) must not inherit this SLO.
+export const TOOL_REQUEST_LATENCY_LIMITS = {
+  'work_items:complete': { p95Ms: 20_000, outlierMs: 50_000 },
+} as const;
+
+export interface ToolRequestLatencyRow extends ToolLatencyRow {
+  peak_ms: number | string | null;
+  peak_invocation_id: string;
+}
+
 export interface ToolLatencyBudget {
   /** Declared `timeoutSec`; null/undefined/non-positive = the dispatcher default applies. */
   timeoutSec?: number | null;
@@ -122,6 +134,46 @@ function toIso(value: string | Date | null | undefined): string | undefined {
   if (value == null) return undefined;
   const d = value instanceof Date ? value : new Date(value);
   return Number.isNaN(d.getTime()) ? undefined : d.toISOString();
+}
+
+/** Successful/idempotent completions can still keep a ready answer waiting.
+ * Judge full request latency independently of the late-write safety detector.
+ * A severe single request is actionable even when p95 hides it among fast calls. */
+export function toolRequestLatencySignalsFromRows(rows: readonly ToolRequestLatencyRow[]): WatchdogSignal[] {
+  const signals: WatchdogSignal[] = [];
+  for (const row of rows) {
+    const limits = Object.entries(TOOL_REQUEST_LATENCY_LIMITS).find(([name]) => name === row.tool_name)?.[1];
+    if (!limits) continue;
+    const n = toNumber(row.n);
+    const p95Ms = toNumber(row.p95_ms);
+    const peakMs = toNumber(row.peak_ms);
+    if (n == null || n < 1 || peakMs == null || peakMs < 0) continue;
+    const severe = peakMs >= limits.outlierMs;
+    const chronic = n >= TOOL_LATENCY_MIN_SAMPLES && p95Ms != null && p95Ms >= limits.p95Ms;
+    if (!severe && !chronic) continue;
+    signals.push({
+      source: 'repeated-tool-error',
+      key: `tool-request-latency:${row.tool_name}`,
+      title: `Tool ${row.tool_name} exceeds its interactive request latency budget`,
+      body: `Watchdog signal (tool-request-latency): \`${row.tool_name}\` measured peak ` +
+        `${Math.round(peakMs)}ms (invocation ${row.peak_invocation_id}), p95 ` +
+        `${p95Ms == null ? 'unknown' : `${Math.round(p95Ms)}ms`} over ${n} calls. ` +
+        `Thresholds: p95 >= ${limits.p95Ms}ms with >= ${TOOL_LATENCY_MIN_SAMPLES} samples, ` +
+        `or any request >= ${limits.outlierMs}ms.\n\n` +
+        `Timing uses the greater of dispatch duration and recorded MCP request settlement elapsedMs; ` +
+        `without request telemetry it is a dispatch-only lower bound. Successful calls and ` +
+        `idempotent mutations are included. Inspect that invocation's pre-dispatch, dispatch and ` +
+        `handler phases before diagnosing the cause. Reduce measured critical-path work, preserve ` +
+        `authorization/completion checks, add a regression test and verify current-build timing. ` +
+        `Raising the timeout or making retries safe does not resolve this latency finding.`,
+      severity: severe ? 'major' : 'minor',
+      kind: 'bug',
+      latestAt: toIso(row.latest_at),
+      earliestAt: toIso(row.earliest_at),
+      findingClass: 'tool-request-latency',
+    });
+  }
+  return signals.sort((a, b) => a.key.localeCompare(b.key));
 }
 
 /**

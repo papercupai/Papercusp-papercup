@@ -61,6 +61,7 @@ vi.mock('../../plan-items/convert', async (orig) => ({
 vi.mock('../../plan-items/reconcile-linked-work-items', async (orig) => ({
   ...(await orig<typeof import('../../plan-items/reconcile-linked-work-items')>()),
   findAllLinkedWorkItems: reconcileMocks.findAllLinkedWorkItems,
+  resyncDependentPlanItemLanesNow: vi.fn(async () => [] as string[]),
 }));
 
 import { withPlanLock } from './with-plan-lock';

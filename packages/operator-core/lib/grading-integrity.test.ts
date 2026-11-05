@@ -50,6 +50,7 @@ import {
   readGradingAuditDispatchSuppression,
   reconcilePendingGradingAudits,
   resolveGradingAuditQuotaBackoff,
+  resolveGradingAuditFailureBackoff,
   type GradingAuditReservationResult,
   type DispatchPendingGradingAuditsDeps,
   type DispatchPendingGradingAuditsInput,
@@ -3328,7 +3329,7 @@ describe('dispatchPendingGradingAudits', () => {
         terminalRecovery: expect.objectContaining({
           retiredTaskIds: ['task-live-terminal-auditor'],
           attempts: 1,
-          codes: ['model_quota_exhausted'],
+          codes: ['inference_gateway_error'],
         }),
       }),
     ]);
@@ -4025,14 +4026,14 @@ describe('dispatchPendingGradingAudits', () => {
     },
     {
       screen: 'gateway 429',
-      terminalCode: 'model_quota_exhausted',
+      terminalCode: 'inference_gateway_error',
       gatewayLog:
         '\u001b[38;5;220m●\u001b[3GAPI Error: Request rejected (429) · inference-gateway: all accounts \r\n' +
         'throttled; retry after 60s\u001b[0m\r\n\r\n✻ Worked for 13m 45s · done 9:09 AM\r\n❯',
     },
     {
       screen: 'gateway 429 without a completed-turn footer',
-      terminalCode: 'model_quota_exhausted',
+      terminalCode: 'inference_gateway_error',
       gatewayLog:
         '\u001b[38;5;220m●\u001b[3GAPI Error: Request rejected (429) · inference-gateway: all accounts \r\n' +
         'throttled; retry after 60s\u001b[0m',
@@ -4338,7 +4339,7 @@ describe('dispatchPendingGradingAudits', () => {
       state: 'launched',
       terminalRecovery: {
         retiredTaskIds: [task.taskId],
-        codes: ['model_quota_exhausted'],
+        codes: ['inference_gateway_error'],
         routedTo: 'codex',
       },
     });
@@ -4532,14 +4533,15 @@ describe('dispatchPendingGradingAudits', () => {
       state: 'launched',
       terminalRecovery: {
         retiredTaskIds: ['task-primary'],
-        codes: ['model_quota_exhausted'],
+        codes: ['inference_gateway_error'],
         attempts: 2,
       },
     });
     expect(d.release).not.toHaveBeenCalled();
   });
 
-  it('uses bounded dispatch backoff for paced admission timeouts without reading unrelated quota resets', async () => {
+  it.each(["account 'aviynw4' paced/paused", 'all accounts throttled'])(
+    'uses the local gateway retry hint for %s without reading unrelated quota resets', async (admission) => {
     const d = deps();
     const issueId = 'EI-paced-admission';
     const nowMs = Date.parse('2026-11-02T12:00:00.000Z');
@@ -4558,7 +4560,7 @@ describe('dispatchPendingGradingAudits', () => {
       providerCanServe: async () => true,
       readProviderResets,
       now: () => nowMs,
-      readLogTail: () => "API Error: Request rejected (429) · inference-gateway: account 'aviynw4' paced/paused; retry after 60s",
+      readLogTail: () => `API Error: Request rejected (429) · inference-gateway: ${admission}; retry after 60s`,
       terminalLogMaxRechecks: 0,
     });
     expect(d.launch).toHaveBeenCalledTimes(2);
@@ -4567,7 +4569,10 @@ describe('dispatchPendingGradingAudits', () => {
     } });
     expect(readProviderResets).not.toHaveBeenCalled();
     expect(d.release).toHaveBeenLastCalledWith(issueId, `grading-audit:${issueId}`, expect.objectContaining({
-      backoff: expect.objectContaining({ code: 'inference_gateway_error', source: 'retry-window' }),
+      backoff: expect.objectContaining({
+        code: 'inference_gateway_error', source: 'retry-window',
+        until: new Date(nowMs + 60_000).toISOString(),
+      }),
     }));
   });
 
@@ -5199,6 +5204,41 @@ describe('dispatchPendingGradingAudits', () => {
 // preflight, every refusal printing a contiguous `earliest known recovery <ISO>`.
 // Nothing consumed either signal, so the ~55s sweep tick relaunched the same doomed
 // judge forever. These cover the suppression that stops it.
+describe('local gateway admission backoff', () => {
+  const NOW = Date.parse('2026-11-05T19:00:00.000Z');
+  const admission = 'API Error: Request rejected (429) · inference-gateway: all accounts throttled; retry after ';
+
+  it.each([60, 120])('honors the gateway retry hint of %ss', (seconds) => {
+    expect(resolveGradingAuditFailureBackoff({
+      code: 'inference_gateway_error', reason: 'terminal gateway admission failure',
+      evidence: `${admission}${seconds}s`, nowMs: NOW,
+    }).until).toBe(new Date(NOW + seconds * 1_000).toISOString());
+  });
+
+  it.each(['0s', '-1s', 'NaNs', 'unknown'])('keeps a conservative backoff for an invalid gateway retry hint %s', (hint) => {
+    expect(resolveGradingAuditFailureBackoff({
+      code: 'inference_gateway_error', reason: 'terminal gateway admission failure',
+      evidence: admission + hint, nowMs: NOW,
+    }).until).toBe(new Date(NOW + GRADING_AUDIT_FAILURE_BACKOFF_MS).toISOString());
+  });
+
+  it('does not treat a provider retry hint or a bare native receipt as proof of local admission', () => {
+    for (const evidence of ['provider rate limit; retry after 60s',
+      '[psu] native-turn-failed agent=claude code=api_error_429 retryable=false retryAfterMs=60000']) {
+      expect(resolveGradingAuditFailureBackoff({
+        code: 'inference_gateway_error', reason: 'unknown gateway failure', evidence, nowMs: NOW,
+      }).until).toBe(new Date(NOW + GRADING_AUDIT_FAILURE_BACKOFF_MS).toISOString());
+    }
+  });
+
+  it('bounds an excessive local retry hint with the existing backoff ceiling', () => {
+    expect(resolveGradingAuditFailureBackoff({
+      code: 'inference_gateway_error', reason: 'terminal gateway admission failure',
+      evidence: admission + '999999s', nowMs: NOW,
+    }).until).toBe(new Date(NOW + GRADING_AUDIT_QUOTA_BACKOFF_MAX_MS).toISOString());
+  });
+});
+
 describe('resolveGradingAuditQuotaBackoff', () => {
   const NOW = Date.parse('2026-09-11T16:00:00.000Z');
   const iso = (offsetMs: number) => new Date(NOW + offsetMs).toISOString();
@@ -5308,6 +5348,116 @@ describe('quota repair route capacity', () => {
       readCodexHeadroom: async () => { throw new Error('gateway unavailable'); },
     })).resolves.toBe(false);
   });
+});
+
+describe('terminal no-task receipt recovery (EI-27965856278341910)', () => {
+  async function run(control = 'safe', receiptState = 'completed') {
+    const d = deps();
+    d.listScorecards.mockResolvedValue([card('EI-no-task-terminal')]);
+    const old = { deduped: true, launch: { launchState: receiptState, reconciliationRequired: receiptState !== 'completed',
+      opened: receiptState === 'completed' ? 0 : null, failed: receiptState === 'completed' ? 1 : null,
+      partial: receiptState === 'completed' ? false : null, expectedCount: 1, ownerIds: ['su-old-auditor'],
+      spawnAttempted: true, nativeSpawnAttempted: [0], processHandles: {},
+      memberResults: { '0': { status: 'starting', outcome: 'unknown' } },
+      targetMembers: [{ ownerId: 'su-old-auditor' }],
+      tasks: receiptState === 'completed'
+        ? [{ status: 'error', outcome: 'failed', logPath: '/tmp/no-task-terminal.log' }] : [] } };
+    if (control === 'incomplete-receipt') delete (old.launch as Partial<typeof old.launch>).ownerIds;
+    if (control === 'incomplete-owners') old.launch.expectedCount = 2;
+    d.launch.mockResolvedValueOnce(launchResult(old));
+    if (control === 'repeated-ambiguous') d.launch.mockResolvedValueOnce(launchResult(old));
+    if (control === 'settled-during-proof') d.confirmReservation.mockResolvedValueOnce(true).mockResolvedValueOnce(true)
+      .mockResolvedValueOnce(false);
+    d.listTasks.mockImplementation(async filter => filter?.coordOwnerId
+      ? (control === 'missing-task' ? [] : [{ taskId: 'task-lost-from-receipt',
+          state: control === 'running-task' ? 'running' : 'exited',
+          workspaceId: control === 'wrong-workspace' ? 'ws-other' : 'ws-test',
+          class: 'agent-session', detail: { coordOwnerId: control === 'wrong-owner' ? 'su-other' : 'su-old-auditor',
+            label: control === 'wrong-label' ? 'grading-audit:EI-other' : 'grading-audit:EI-no-task-terminal' },
+          confined: control !== 'unconfined-task', scopeUnit: 'pc-old.scope' }]) as unknown as Awaited<ReturnType<ListTasks>>
+      : []);
+    const scanAuditProcesses: NonNullable<DispatchPendingGradingAuditsDeps['scanAuditProcesses']> = async () => ({
+      processes: control === 'live-process' ? [{ cgroupPath: '/user/pc-old.scope' }] as never : [],
+      ownedRootAbs: '/sys/fs/cgroup/user/papercusp.slice', ownedRootExists: true, userManagerRoot: '/user',
+      ownedTruncated: control === 'incomplete-scan', foreignTruncated: control === 'foreign-truncated',
+      scanTimedOut: control === 'scan-timeout',
+      unlistedIdentityByPid: new Map(),
+    });
+    const inspectAuditScopes: NonNullable<DispatchPendingGradingAuditsDeps['inspectAuditScopes']> = async () =>
+      new Map([['pc-old.scope', { scopeUnit: 'pc-old.scope', capturedAt: '2026-11-05T00:00:00Z',
+        cgroupPath: null, invocationId: null, loadState: 'loaded',
+        activeState: control === 'live-scope' ? 'active' : 'inactive', serviceResult: null,
+        execMainCode: null, execMainStatus: null, memoryMaxBytes: null, peakMemoryBytes: null,
+        peakMemorySource: 'unknown' as const }]]);
+    const result = await dispatchPendingGradingAudits({ targetIds: ['EI-no-task-terminal'],
+      ctx: { ...ctx, gradingLaunch: { agent: 'codex', model: 'gpt-6.1-sol', effort: 'xhigh', account: 'auto' } } as DispatchPendingGradingAuditsInput['ctx'],
+    }, { ...d, scanAuditProcesses, inspectAuditScopes,
+      resolveOwnerLiveness: async () => control === 'unknown-owner' ? null :
+        { sessionState: control === 'live-owner' ? 'live' : 'ended' },
+      readLogTail: path => path === '/tmp/no-task-terminal.log' ? "You've hit your weekly limit · resets Sep 10, 7am (America/New_York)" : '',
+      terminalLogMaxRechecks: 0, providerCanServe: async () => true,
+    });
+    return { d, result };
+  }
+
+  it('recovers the failed receipt under the changed explicit profile with a stable tracked key', async () => {
+    const first = await run();
+    const repeat = await run();
+    expect(first.d.launch).toHaveBeenCalledTimes(2);
+    expect(first.result.receipts[0]).toMatchObject({ state: 'launched',
+      terminalRecovery: { retiredTaskIds: ['task-lost-from-receipt'] } });
+    const recovered = first.d.launch.mock.calls[1][0];
+    expect(recovered).toMatchObject({ independent: true, agent: 'codex', model: 'gpt-6.1-sol',
+      idempotencyKey: expect.stringContaining(':recovery:') });
+    expect(recovered.idempotencyKey).toBe(repeat.d.launch.mock.calls[1][0].idempotencyKey);
+    expect(first.d.release).not.toHaveBeenCalled();
+  });
+
+  it('reconciles a spawning receipt from exact terminal owner tasks and kernel absence without clearing its election', async () => {
+    const first = await run('safe', 'spawning');
+    const repeat = await run('safe', 'spawning');
+    expect(first.d.launch).toHaveBeenCalledTimes(2);
+    expect(first.result.receipts[0]).toMatchObject({ state: 'launched', terminalRecovery: {
+      retiredTaskIds: ['task-lost-from-receipt'], codes: ['task_receipt_not_live'],
+    } });
+    const recovered = first.d.launch.mock.calls[1][0];
+    expect(recovered).toMatchObject({ independent: true, agent: 'codex', model: 'gpt-6.1-sol',
+      idempotencyKey: expect.stringContaining(':recovery:') });
+    expect(recovered.idempotencyKey).toBe(repeat.d.launch.mock.calls[1][0].idempotencyKey);
+    expect(first.d.release).not.toHaveBeenCalled();
+  });
+
+  it('keeps the one-retry ceiling when the recovered launch also has an ambiguous receipt', async () => {
+    const { d, result } = await run('repeated-ambiguous', 'spawning');
+    expect(d.launch).toHaveBeenCalledTimes(2);
+    expect(result.receipts[0]).toMatchObject({ state: 'reconciliation-required' });
+    expect(d.release).not.toHaveBeenCalled();
+  });
+
+  it('rechecks the pending reservation after terminal spawning proof before launching a replacement', async () => {
+    const { d, result } = await run('settled-during-proof', 'spawning');
+    expect(d.launch).toHaveBeenCalledTimes(1);
+    expect(result.receipts[0]).toMatchObject({ state: 'skipped' });
+  });
+
+  it.each(['live-owner', 'unknown-owner', 'live-process', 'live-scope', 'incomplete-scan', 'incomplete-receipt',
+    'incomplete-owners', 'missing-task', 'running-task', 'unconfined-task', 'wrong-owner', 'wrong-label',
+    'wrong-workspace', 'foreign-truncated', 'scan-timeout'])(
+    'keeps an ambiguous spawning election fenced on %s', async control => {
+      const { d, result } = await run(control, 'spawning');
+      expect(d.launch).toHaveBeenCalledTimes(1);
+      expect(result.receipts[0]).toMatchObject({ state: 'reconciliation-required' });
+      expect(d.release).not.toHaveBeenCalled();
+    });
+
+  it.each(['live-owner', 'unknown-owner', 'live-process', 'live-scope', 'incomplete-scan', 'incomplete-receipt',
+    'incomplete-owners', 'missing-task', 'running-task', 'unconfined-task'])(
+    'retains the election and refuses recovery on %s', async control => {
+      const { d, result } = await run(control);
+      expect(d.launch).toHaveBeenCalledTimes(1);
+      expect(result.receipts[0]).toMatchObject({ state: 'reconciliation-required' });
+      expect(d.release).not.toHaveBeenCalled();
+    });
 });
 
 describe('terminal grading-audit failures record a reset-aware or generic backoff', () => {
@@ -5615,6 +5765,45 @@ describe('gradingAuditProviderCanServe — fallback model awareness', () => {
       gradingAuditProviderCanServe('claude', NOW, { readPoolVerdict: oneServiceable, readCodexHeadroom }),
     ).resolves.toBe(true);
     expect(readCodexHeadroom).not.toHaveBeenCalled();
+  });
+
+  it('Claude gateway health resolves an unmeasured account pool', async () => {
+    const readPoolVerdict = vi.fn(async () => ({ serviceable: 0, unknown: 11 }));
+    const readClaudeHeadroom = vi.fn(async () => ({ reachable: true, healthyAccounts: 12 }));
+    await expect(
+      gradingAuditProviderCanServe('claude', NOW, { readPoolVerdict, readClaudeHeadroom }),
+    ).resolves.toBe(true);
+    expect(readPoolVerdict).toHaveBeenCalledWith('claude', NOW);
+    expect(readClaudeHeadroom).toHaveBeenCalledTimes(1);
+  });
+
+  it('Claude requires unknown ledger rows and a positive reachable gateway count for the override', async () => {
+    const readClaudeHeadroom = vi.fn(async () => ({ reachable: true, healthyAccounts: 12 }));
+    await expect(
+      gradingAuditProviderCanServe('claude', NOW, {
+        readPoolVerdict: async () => ({ serviceable: 0, unknown: 0 }),
+        readClaudeHeadroom,
+      }),
+    ).resolves.toBe(false);
+    await expect(
+      gradingAuditProviderCanServe('claude', NOW, {
+        readPoolVerdict: async () => ({ serviceable: 0, unknown: 11 }),
+        readClaudeHeadroom: async () => ({ reachable: true, healthyAccounts: 0 }),
+      }),
+    ).resolves.toBe(false);
+    await expect(
+      gradingAuditProviderCanServe('claude', NOW, {
+        readPoolVerdict: async () => ({ serviceable: 0, unknown: 11 }),
+        readClaudeHeadroom: async () => ({ reachable: false, healthyAccounts: 12 }),
+      }),
+    ).resolves.toBe(false);
+    await expect(
+      gradingAuditProviderCanServe('claude', NOW, {
+        readPoolVerdict: async () => ({ serviceable: 0, unknown: 11 }),
+        readClaudeHeadroom: async () => { throw new Error('ECONNREFUSED'); },
+      }),
+    ).resolves.toBe(false);
+    expect(readClaudeHeadroom).not.toHaveBeenCalled();
   });
 
   it('a failed account-pool read still fails open (the pre-existing contract)', async () => {

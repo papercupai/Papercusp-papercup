@@ -412,7 +412,7 @@ describe('Codex managed replacement installed-client census', () => {
   // this parent only observes the final worker output. The verifier owns its
   // measured-progress watchdog, so allow a bounded 12-minute outer silence window.
   const workerOptions = isolatedTestFileWorkerOptions(process.env, 1,
-    { executeStallWindowMs: 12 * 60_000 });
+    { executeStallWindowMs: 12 * 60_000 }, 'runtime');
   it('retains the installed Codex removal, resume, wake and drift controls with their original runtime', async context => {
     let prepared: Awaited<ReturnType<typeof preparePrivateOperatorApiBundle>> | undefined;
     const runId = await recordIsolatedIntegrationProof({ root, filePath,
@@ -470,7 +470,7 @@ describe('Codex managed replacement installed-client census', () => {
         const line = result.output.split('\n').find(row => row.startsWith('CODEX_ADMITTED_LIFECYCLE '));
         if (line) await writeFile(join(evidenceDir, 'native-tool-surface.json'),
           line.slice('CODEX_ADMITTED_LIFECYCLE '.length) + '\n', { flag: 'wx' });
-        expect(result, isolatedWorkerFailureDetail(result.output)).toMatchObject({
+        expect(result, isolatedWorkerFailureDetail(result.output, result)).toMatchObject({
           code: 0, signal: null, timedOut: false, exitWaitTimedOut: false, stdioDrainTimedOut: false,
         });
         expect(result.output).toContain('TEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed');

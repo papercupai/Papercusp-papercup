@@ -48,8 +48,10 @@ import {
   PRECISION_BENCH_JEV_API_KEY_ENV,
   PRECISION_BENCH_JEV_GATE_ENV,
   PRECISION_BENCH_JEV_LEDGER_MARKER,
+  PRECISION_BENCH_PROGRESS_MARKER,
   PRECISION_BENCH_RESULT_MARKER,
   PRECISION_BENCH_WORKSPACE_ID_ENV,
+  type PrecisionBenchProgress,
 } from './precision-bench-core';
 import { PRECISION_BENCH_EMBEDDER_MODE_ENV } from './precision-bench-host';
 
@@ -65,9 +67,10 @@ export {
   PRECISION_BENCH_JEV_API_KEY_ENV,
   PRECISION_BENCH_WORKSPACE_ID_ENV,
   PRECISION_BENCH_JEV_LEDGER_MARKER,
+  PRECISION_BENCH_PROGRESS_MARKER,
   PRECISION_BENCH_RESULT_MARKER,
 } from './precision-bench-core';
-export type { JevGateFn, JevGateReplayStats } from './precision-bench-core';
+export type { JevGateFn, JevGateReplayStats, PrecisionBenchPhase, PrecisionBenchProgress, PrecisionBenchProgressReporter } from './precision-bench-core';
 
 export interface PrecisionBenchWorkerTarget {
   path: string;
@@ -104,6 +107,80 @@ export function precisionBenchWorkerInvocation(
 
 const PRECISION_BENCH_WORKER = resolvePrecisionBenchWorkerTarget();
 const DEFAULT_WORKER_TIMEOUT_MS = PRECISION_BENCH_WORKER_TIMEOUT_MS;
+const PRECISION_BENCH_PHASES = new Set<PrecisionBenchProgress['phase']>([
+  'load-fixtures',
+  'create-backend',
+  'seed-corpus',
+  'retrieve-gold-set',
+  'jev-gate',
+  'cleanup',
+]);
+const PRECISION_BENCH_PROGRESS_STATES = new Set<PrecisionBenchProgress['status']>([
+  'started',
+  'completed',
+  'failed',
+]);
+const WORKER_TIMEOUT_DIAGNOSTIC_TAIL_CHARS = 1_200;
+
+function nonnegativeCount(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
+}
+
+export function parsePrecisionBenchWorkerProgress(output: string): PrecisionBenchProgress | null {
+  let latest: PrecisionBenchProgress | null = null;
+  for (const line of output.split(/\r?\n/)) {
+    if (!line.startsWith(PRECISION_BENCH_PROGRESS_MARKER)) continue;
+    try {
+      const parsed = JSON.parse(line.slice(PRECISION_BENCH_PROGRESS_MARKER.length)) as Record<string, unknown>;
+      if (
+        typeof parsed.phase !== 'string' ||
+        !PRECISION_BENCH_PHASES.has(parsed.phase as PrecisionBenchProgress['phase']) ||
+        typeof parsed.status !== 'string' ||
+        !PRECISION_BENCH_PROGRESS_STATES.has(parsed.status as PrecisionBenchProgress['status']) ||
+        typeof parsed.at !== 'string'
+      ) continue;
+      const expectedRows = nonnegativeCount(parsed.expectedRows);
+      const verifiedRows = nonnegativeCount(parsed.verifiedRows);
+      const expectedQueries = nonnegativeCount(parsed.expectedQueries);
+      const completedQueries = nonnegativeCount(parsed.completedQueries);
+      latest = {
+        phase: parsed.phase as PrecisionBenchProgress['phase'],
+        status: parsed.status as PrecisionBenchProgress['status'],
+        at: parsed.at,
+        ...(expectedRows === undefined ? {} : { expectedRows }),
+        ...(verifiedRows === undefined ? {} : { verifiedRows }),
+        ...(expectedQueries === undefined ? {} : { expectedQueries }),
+        ...(completedQueries === undefined ? {} : { completedQueries }),
+      };
+    } catch {
+      // A partial or malformed progress line must not hide the last valid phase.
+    }
+  }
+  return latest;
+}
+
+function formatPrecisionBenchProgress(progress: PrecisionBenchProgress | null): string {
+  if (!progress) return 'unknown';
+  const counts = [
+    progress.expectedRows === undefined ? null : `expectedRows=${progress.expectedRows}`,
+    progress.verifiedRows === undefined ? null : `verifiedRows=${progress.verifiedRows}`,
+    progress.expectedQueries === undefined ? null : `expectedQueries=${progress.expectedQueries}`,
+    progress.completedQueries === undefined ? null : `completedQueries=${progress.completedQueries}`,
+  ].filter((value): value is string => value !== null);
+  return `${progress.phase}/${progress.status} at ${progress.at}${counts.length ? ` (${counts.join(', ')})` : ''}`;
+}
+
+function boundedWorkerOutputTail(output: string, secrets: readonly string[]): string {
+  let tail = output.slice(-WORKER_TIMEOUT_DIAGNOSTIC_TAIL_CHARS);
+  for (const secret of secrets) {
+    if (secret.length >= 4) tail = tail.replaceAll(secret, '[redacted]');
+  }
+  tail = tail.replace(/\b(?:sk-[A-Za-z0-9_-]{12,}|Bearer\s+[^\s]+)/gi, '[redacted]');
+  if (output.length > WORKER_TIMEOUT_DIAGNOSTIC_TAIL_CHARS) {
+    tail = `[... ${output.length - WORKER_TIMEOUT_DIAGNOSTIC_TAIL_CHARS} earlier chars omitted ...]\n${tail}`;
+  }
+  return tail.trim() || '<empty>';
+}
 
 /** How one bench run is asked to measure. */
 export interface PrecisionBenchRunOptions {
@@ -233,6 +310,7 @@ export async function runBenchInWorker(opts: {
 } = {}): Promise<MemoryPrecisionMetrics> {
   const spawnProcess = opts.spawnProcess ?? spawn;
   const timeoutMs = opts.timeoutMs ?? DEFAULT_WORKER_TIMEOUT_MS;
+  const diagnosticSecrets: string[] = [];
   let child: ChildProcess;
   try {
     const host = opts.embedderMode === undefined || !opts.resolveWorkerCredentials ? memoryHost() : undefined;
@@ -258,6 +336,11 @@ export async function runBenchInWorker(opts: {
     if (useJevGate) {
       env[PRECISION_BENCH_JEV_API_KEY_ENV] = jevApiKey!;
       env[PRECISION_BENCH_WORKSPACE_ID_ENV] = opts.workspaceId;
+    }
+    for (const [key, value] of Object.entries(env)) {
+      if (/(?:API_KEY|TOKEN|SECRET|PASSWORD)/i.test(key) && typeof value === 'string' && value.length >= 4) {
+        diagnosticSecrets.push(value);
+      }
     }
     child = spawnProcess(worker.command, worker.args, {
       cwd: process.cwd(),
@@ -315,13 +398,20 @@ export async function runBenchInWorker(opts: {
       void (async () => {
         try {
           const output = stdout.text();
+          const errorOutput = stderr.text();
           const ledgerEntries = parsePrecisionBenchWorkerLedgerEntries(output);
           if (ledgerEntries.length > 0) {
             if (!opts.workspaceId) throw new Error('precision bench worker emitted ledger entries without a workspace id');
             await persistPrecisionBenchWorkerLedgerEntries(ledgerEntries, opts.workspaceId);
           }
           if (timeoutTriggered) {
-            reject(new Error(`precision bench worker timed out after ${timeoutMs}ms`));
+            const progress = parsePrecisionBenchWorkerProgress(output);
+            reject(new Error([
+              `precision bench worker timed out after ${timeoutMs}ms`,
+              `last phase: ${formatPrecisionBenchProgress(progress)}`,
+              `stdout tail:\n${boundedWorkerOutputTail(output, diagnosticSecrets)}`,
+              `stderr tail:\n${boundedWorkerOutputTail(errorOutput, diagnosticSecrets)}`,
+            ].join('\n')));
             return;
           }
           if (childError) {
@@ -332,7 +422,7 @@ export async function runBenchInWorker(opts: {
             reject(
               new Error(
                 `precision bench worker exited with code ${code ?? 'null'}${signal ? ` (${signal})` : ''}` +
-                  (stderr.text().trim() ? `: ${stderr.text().trim().slice(-1_000)}` : ''),
+                  (errorOutput.trim() ? `: ${errorOutput.trim().slice(-1_000)}` : ''),
               ),
             );
             return;

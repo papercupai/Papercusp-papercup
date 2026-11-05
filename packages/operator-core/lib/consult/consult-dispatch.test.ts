@@ -232,6 +232,68 @@ function makeFakes(
 }
 
 describe('consult child runtime routing (EI-25158565040432475)', () => {
+  it('restores the persisted runtime on later cascades instead of accepting a new caller pin', async () => {
+    const db = await import('@papercusp/db-org');
+    const sql = vi.fn(async () => [{ policy: null, reviewer_model: null, native_consult: null,
+      launch_base: 'http://localhost:3170', launch_host: null }]);
+    const spy = vi.spyOn(db, 'getOrgPg');
+    mockOrgPgSql(spy, sql);
+    try {
+      const { deps } = makeFakes({ readReviewerModel: undefined });
+      const buildEnvelope = vi.fn(deps.buildConsoleEnvelope!);
+      deps.buildConsoleEnvelope = buildEnvelope;
+      const result = await makeConsultReachDispatcher({ ...CTX, launchOperatorBaseUrl: 'http://localhost:3271' }, deps)({
+        responder: OPTS.sourceOwnerId, conversationId: OPTS.conversationId,
+        summary: 'recover saved launch', body: 'same current contracts', evidence: OPTS.evidence,
+      });
+      expect(result.dispatch.dispatched).toBe(true);
+      expect(buildEnvelope).toHaveBeenCalledWith(expect.objectContaining({ agentMcpBaseUrl: 'http://localhost:3170' }));
+    } finally { spy.mockRestore(); }
+  });
+
+  it('refuses a saved loopback runtime belonging to another physical host', async () => {
+    const { deps } = makeFakes();
+    const buildEnvelope = vi.fn(deps.buildConsoleEnvelope!);
+    deps.buildConsoleEnvelope = buildEnvelope;
+    const result = await dispatchConsultResponder(OPTS, { ...CTX,
+      launchOperatorBaseUrl: 'http://localhost:3170', launchOperatorHost: 'a-different-physical-host' }, deps);
+    expect(result.dispatched).toBe(false);
+    expect(buildEnvelope).not.toHaveBeenCalled();
+  });
+
+  it('keeps a saved accepting runtime when a background host recovers dispatch', async () => {
+    const original = process.env.PAPERCUSP_HONO_PORT;
+    const desktop = process.env.OPERATOR_DEV_PORT;
+    try {
+      process.env.PAPERCUSP_HONO_PORT = '3271';
+      delete process.env.OPERATOR_DEV_PORT;
+      const { deps } = makeFakes();
+      const buildEnvelope = vi.fn(deps.buildConsoleEnvelope!);
+      deps.buildConsoleEnvelope = buildEnvelope;
+      const result = await dispatchConsultResponder(OPTS, { ...CTX,
+        launchOperatorBaseUrl: 'http://localhost:3170' }, deps);
+      expect(result.dispatched).toBe(true);
+      expect(buildEnvelope).toHaveBeenCalledWith(expect.objectContaining({
+        operatorBaseUrl: 'http://localhost:3170', agentMcpBaseUrl: 'http://localhost:3170',
+      }));
+    } finally {
+      if (original === undefined) delete process.env.PAPERCUSP_HONO_PORT;
+      else process.env.PAPERCUSP_HONO_PORT = original;
+      if (desktop === undefined) delete process.env.OPERATOR_DEV_PORT;
+      else process.env.OPERATOR_DEV_PORT = desktop;
+    }
+  });
+
+  it.each(['https://example.com', 'http://localhost:3170/api/mcp', 'http://name:secret@localhost:3170'])
+    ('refuses an invalid saved runtime %s before preparing a child', async launchOperatorBaseUrl => {
+      const { deps } = makeFakes();
+      const buildEnvelope = vi.fn(deps.buildConsoleEnvelope!);
+      deps.buildConsoleEnvelope = buildEnvelope;
+      const result = await dispatchConsultResponder(OPTS, { ...CTX, launchOperatorBaseUrl }, deps);
+      expect(result.dispatched).toBe(false);
+      expect(buildEnvelope).not.toHaveBeenCalled();
+    });
+
   it.each([
     { port: '3170', target: 'claude', operation: 'fork' },
     { port: '3170', target: 'codex', operation: 'convert' },

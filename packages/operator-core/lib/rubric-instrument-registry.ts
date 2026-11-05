@@ -47,6 +47,7 @@ import { join } from 'node:path';
 import { effectiveCriterionInstrumentKey } from './rubrics';
 import type { RubricCriterionCheck } from './agent-tools/plans/rubric-template';
 import { retainMeasurementProvenance } from './measurement-provenance';
+import { retainedReplaySourceIdentity } from './retained-replay-identity';
 import { parseRecordedMeasurementProvenance, type RecordedMeasurementProvenance } from '@papercusp/test-config/execution-details';
 import { HOLDER_BEHAVIOR_INSTRUMENT_KEYS } from './goal-holder-behavior-metrics';
 import { GOAL_MODE_INSTRUMENT_KEYS } from './goal-mode-computed-instruments';
@@ -1029,26 +1030,18 @@ export function defaultExec(
  * the caller asked to run something this module does not execute.
  */
 function commandProcedure(instrument: CommandInstrument) {
-  // These parsers and their closed-over configuration are local and deterministic.
-  // Imported evaluators are deliberately unavailable until their dependencies can
-  // be pinned too. A wrapper's toString alone misses changes in its helper.
+  // These parsers and their closed-over configuration are source-bound together.
+  // Imported evaluators remain unavailable until their dependencies are pinned.
   const replayable = APP_PERFORMANCE_INSTRUMENTS.some(entry => entry.key === instrument.key) ||
     instrument.key.startsWith('host:psi-') || [
       'host:cgroup-cpu-delta-cores', 'host:df-root-used-pct',
       'host:docker-test-container-max-age-s', 'host:loadavg1-not-authoritative',
     ].includes(instrument.key);
   return { kind: 'command', key: instrument.key, argv: instrument.argv,
-    parser: instrument.parse.toString(),
-    combine: instrument.sample?.combine.toString() ?? instrument.sampleStdout?.combine.toString() ?? null,
+    parser: instrument.key,
+    combine: instrument.sample ? 'numeric-samples' : instrument.sampleStdout ? 'stdout-samples' : null,
     intervalMs: instrument.sample?.intervalMs ?? instrument.sampleStdout?.intervalMs ?? null,
-    ...(replayable ? { replayDependencySha256: createHash('sha256').update(canonicalJson({
-      helpers: [psiValues, parsePsiAvg, parsePsiAvg10, parseMaxPsiAvg, parseDfMaxPercent,
-        parseHttpTimesP95Ms, budgetUtilisationPct, parseLoopProfileBudgetPct, parseAnonBudgetPct,
-        memoryPagingBudgetPct, parseSpaInitialJsBudgetPct, parseCgroupUsageUsec, parseDfPercent,
-        parseLoadavg1, parseOldestDockerAgeSec].map(fn => fn.toString()),
-      loopProfileName: LOOP_PROFILE_NAME.source, servingCpuPressureFiles: SERVING_CPU_PRESSURE_FILES,
-      servingAnonBudgets: SERVING_ANON_BUDGETS, healthTimeoutSeconds: HEALTH_TIMEOUT_S,
-    })).digest('hex') } : {}),
+    ...(replayable ? { replayDependencySha256: retainedReplaySourceIdentity() } : {}),
   };
 }
 

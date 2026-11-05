@@ -30,6 +30,7 @@ import {
   isAcceptanceGraderNoFirstTurnLivenessCandidate,
   classifyAcceptanceGraderParkedWithoutEmit,
   detectAcceptanceGraderTerminalFailure,
+  parseAcceptanceGraderGatewayRetryAfterMs,
   readAcceptanceGraderLogMtimeMs,
   readAcceptanceGraderLogTail,
   gradingLaunchProfile,
@@ -70,6 +71,8 @@ import {
 import { routeSourceGradingAudit } from './grading-audit-routing';
 import { bindAgentSessionTaskToLatestNativeSession, getTask, listTasks, markEndedUnobserved } from './task-manager/store';
 import { isTerminalState } from './task-manager/types';
+import { scanProcessesAsync } from './task-manager/scan';
+import { inspectTaskUnitTerminals } from './task-manager/scope-terminal-state';
 import type { TaskRow } from './task-manager/types';
 import { runWithWorkspaceIfConcrete } from './workspace-als';
 import { FOREGROUND_TIMEOUT_CEILING_MS } from './agent-tools/capability/foreground-transport-cap';
@@ -739,6 +742,9 @@ export interface DispatchPendingGradingAuditsDeps {
   readLogMtimeMs?: (path: string) => number | null;
   /** Resolve one auditor owner only after an old no-first-turn log candidate needs liveness corroboration. */
   resolveOwnerLiveness?: (ownerId: string) => Promise<Pick<LivenessVerdict, 'sessionState'> | null>;
+  /** Complete kernel and independent scope-release evidence for lost receipt task ids. */
+  scanAuditProcesses?: typeof scanProcessesAsync;
+  inspectAuditScopes?: typeof inspectTaskUnitTerminals;
   killTask?: typeof killTask;
   /** Persist independently confirmed collected scopes before replacing their auditor. */
   markEndedUnobserved?: typeof markEndedUnobserved;
@@ -1490,19 +1496,28 @@ export async function gradingAuditProviderCanServe(
   provider: string,
   nowMs = Date.now(),
   deps: {
-    readPoolVerdict?: (provider: string, nowMs: number) => Promise<{ serviceable: number } | undefined>;
+    readPoolVerdict?: (provider: string, nowMs: number) => Promise<{ serviceable: number; unknown?: number } | undefined>;
     readCodexHeadroom?: () => Promise<Pick<GatewayHeadroom, 'reachable' | 'serviceableByModel'>>;
+    readClaudeHeadroom?: () => Promise<Pick<GatewayHeadroom, 'reachable' | 'healthyAccounts'>>;
   } = {},
 ): Promise<boolean> {
-  let poolCanServe: boolean;
+  let verdict: { serviceable: number; unknown?: number } | undefined;
   try {
-    poolCanServe = gradingAuditFallbackVerdictCanServe(
-      await (deps.readPoolVerdict ?? readGradingAuditPoolVerdict)(provider, nowMs),
-    );
+    verdict = await (deps.readPoolVerdict ?? readGradingAuditPoolVerdict)(provider, nowMs);
   } catch {
     return true;
   }
-  if (!poolCanServe || provider !== GRADING_AUDIT_FALLBACK.agent) return poolCanServe;
+  const poolCanServe = gradingAuditFallbackVerdictCanServe(verdict);
+  if (!poolCanServe) {
+    // Claude API-key accounts can remain never-observed in the local rate ledger.
+    // Only a positive, live Claude gateway count can resolve that unknown pool;
+    // a measured zero or a missing/unreachable gateway remains unavailable.
+    if (provider !== 'claude' || !verdict || (verdict.unknown ?? 0) === 0) return false;
+    const headroom = await (deps.readClaudeHeadroom ?? (() => fetchGatewayHeadroom({ provider: 'claude' })))()
+      .catch(() => null);
+    return headroom?.reachable === true && (headroom.healthyAccounts ?? 0) > 0;
+  }
+  if (provider !== GRADING_AUDIT_FALLBACK.agent) return poolCanServe;
   const headroom = await (deps.readCodexHeadroom ?? (() => fetchGatewayHeadroom({ provider: 'codex' })))()
     .catch(() => null);
   return gradingAuditFallbackModelCanServe(headroom, GRADING_AUDIT_FALLBACK.model);
@@ -1511,7 +1526,7 @@ export async function gradingAuditProviderCanServe(
 async function readGradingAuditPoolVerdict(
   provider: string,
   nowMs: number,
-): Promise<{ serviceable: number } | undefined> {
+): Promise<{ serviceable: number; unknown?: number } | undefined> {
   const [{ accountStatus, poolVerdictByProvider }, { activeWorkspaceId }] = await Promise.all([
     import('./deployment/account-pool-store'),
     import('./workspace-registry'),
@@ -1627,11 +1642,18 @@ export async function resolveGradingAuditQuotaBackoff(input: {
 export function resolveGradingAuditFailureBackoff(input: {
   code: string;
   reason: string;
+  evidence?: string;
   nowMs?: number;
 }): GradingAuditDispatchBackoff {
   const nowMs = input.nowMs ?? Date.now();
+  const retryAfterMs = input.code === 'inference_gateway_error'
+    ? parseAcceptanceGraderGatewayRetryAfterMs(input.evidence ?? '')
+    : null;
+  const delayMs = retryAfterMs == null
+    ? GRADING_AUDIT_FAILURE_BACKOFF_MS
+    : Math.min(retryAfterMs, GRADING_AUDIT_QUOTA_BACKOFF_MAX_MS);
   return {
-    until: new Date(nowMs + GRADING_AUDIT_FAILURE_BACKOFF_MS).toISOString(),
+    until: new Date(nowMs + delayMs).toISOString(),
     source: 'retry-window',
     code: input.code,
     recordedAt: new Date(nowMs).toISOString(),
@@ -2873,6 +2895,7 @@ export async function dispatchPendingGradingAudits(
       return resolveGradingAuditFailureBackoff({
         code: failure.code,
         reason: `terminal ${failure.code}; suppressing re-dispatch for a bounded retry window`,
+        evidence: failure.evidence,
         ...(deps.now ? { nowMs: deps.now() } : {}),
       });
     };
@@ -2888,6 +2911,48 @@ export async function dispatchPendingGradingAudits(
         .digest('hex')
         .slice(0, 16);
       return `${idempotencyKey}:recovery:${retryIdentity}`;
+    };
+    const reconcileTerminalOwnerTasks = async (
+      failed: Record<string, unknown> | undefined,
+      requireTaskIdentity = false,
+    ): Promise<string[] | null> => {
+      const owners = Array.isArray(failed?.ownerIds) ? failed.ownerIds : [];
+      if (!owners.length || failed?.expectedCount !== owners.length ||
+          !owners.every(owner => typeof owner === 'string' && owner.trim()) ||
+          new Set(owners).size !== owners.length || !Array.isArray(failed.targetMembers) ||
+          failed.targetMembers.length !== owners.length ||
+          !failed.targetMembers.every(member => member && typeof member === 'object' &&
+            owners.includes((member as Record<string, unknown>).ownerId)) ||
+          new Set(failed.targetMembers.map(member => (member as Record<string, unknown>).ownerId)).size !== owners.length) {
+        return null;
+      }
+      try {
+        const rows: TaskRow[] = [];
+        for (const owner of owners as string[]) {
+          const verdict = await (deps.resolveOwnerLiveness ?? resolveGradingAuditorOwnerLiveness)(owner);
+          const tasks = await readTasks({ workspaceId, coordOwnerId: owner, includeEnded: true, limit: 10 });
+          if (verdict?.sessionState !== 'ended' || !tasks.length || tasks.length >= 10 ||
+              tasks.some(task => !task.confined || !task.scopeUnit || !isTerminalState(task.state) ||
+                (requireTaskIdentity && (task.workspaceId !== workspaceId || task.class !== 'agent-session' ||
+                  task.detail?.coordOwnerId !== owner || typeof task.detail?.label !== 'string' ||
+                  !(task.detail.label === idempotencyKey || task.detail.label.startsWith(`${idempotencyKey}:`)))))) {
+            return null;
+          }
+          rows.push(...tasks);
+        }
+        const scan = await (deps.scanAuditProcesses ?? scanProcessesAsync)();
+        const units = [...new Set(rows.map(row => row.scopeUnit!))];
+        const released = await (deps.inspectAuditScopes ?? inspectTaskUnitTerminals)(units);
+        if (scan.ownedRootExists !== true || !scan.userManagerRoot || scan.ownedTruncated ||
+            scan.foreignTruncated || scan.scanTimedOut || !units.every(unit => {
+              const state = released.get(unit)?.activeState;
+              return (state === 'inactive' || state === 'failed') &&
+                !scan.processes.some(process => process.cgroupPath.split('/').includes(unit));
+            })) return null;
+        return rows.map(row => row.taskId).sort();
+      } catch {
+        return null; // Missing owner, ledger or kernel proof cannot authorize a replacement.
+      }
     };
     try {
       if (generationBound) {
@@ -3535,6 +3600,7 @@ export async function dispatchPendingGradingAudits(
               launchState?: unknown;
               status?: unknown;
               reconciliationRequired?: unknown;
+              expectedCount?: unknown;
               spawnAttempted?: unknown;
               nativeSpawnAttempted?: unknown;
               ownerIds?: unknown;
@@ -3623,6 +3689,32 @@ export async function dispatchPendingGradingAudits(
 
         if (terminalFailure) {
           if (!taskId) {
+            // EI-27965856278341910: resolve a failed receipt's lost task ids
+            // through exact owners. opened:0 alone never proves process absence.
+            const failed = launchData as Record<string, unknown> | undefined;
+            const owners = Array.isArray(failed?.ownerIds) ? failed.ownerIds : [];
+            let recoveredIds: string[] | null = null;
+            if (result.data?.deduped === true && failed?.launchState === 'completed' &&
+                failed.reconciliationRequired === false && failed.opened === 0 &&
+                failed.partial === false && failed.failed === owners.length) {
+              recoveredIds = await reconcileTerminalOwnerTasks(failed);
+            }
+            if (recoveredIds && !(await confirmOwnedPendingReservation())) break;
+            if (recoveredIds && terminalFallbacks < GRADING_AUDIT_MAX_TERMINAL_FALLBACKS) {
+              terminalFallbacks += 1;
+              retiredTaskIds.push(...recoveredIds);
+              terminalCodes.push(terminalFailure.code);
+              launchBackend = await terminalRetryBackend(nativeProof?.nativeBackend ?? launchBackend, launchBackend);
+              currentIdempotencyKey = recoveryKeyFor(recoveredIds.join(','), terminalFailure.code);
+              continue;
+            }
+            if (!recoveredIds) {
+              receipt = { issueId, rubricRef: card.rubricRef, state: 'reconciliation-required',
+                idempotencyKey: currentIdempotencyKey, launch: result.data?.launch, phase,
+                reason: 'Terminal no-task receipt lacks complete no-live-process proof; retain the reservation and launch election',
+                ...recoveryFields() };
+              break;
+            }
             await releaseReservation(await terminalFailureBackoffFor(terminalFailure, logPath));
             receipt = {
               issueId,
@@ -3710,6 +3802,29 @@ export async function dispatchPendingGradingAudits(
             launchData.nativeSpawnAttempted.length === 0 &&
             isEmptyLaunchEvidenceRecord(launchData.processHandles) &&
             isEmptyLaunchEvidenceRecord(launchData.memberResults);
+          // EI-27982516462512273: a launcher can persist "spawning" and lose
+          // its receipt after creating the reviewer. A later sweep may already
+          // have retired that exact task. Reuse the terminal owner/task/kernel
+          // proof rather than deleting the ambiguous launch election or blindly
+          // replaying its base key forever. The original lease stays fenced.
+          const spawnedWithoutHandles = launchData.launchState === 'spawning' &&
+            launchData.spawnAttempted === true &&
+            Array.isArray(launchData.nativeSpawnAttempted) &&
+            launchData.nativeSpawnAttempted.length === launchData.expectedCount &&
+            launchData.nativeSpawnAttempted.every((index, position) => index === position) &&
+            isEmptyLaunchEvidenceRecord(launchData.processHandles);
+          if (spawnedWithoutHandles && terminalFallbacks < GRADING_AUDIT_MAX_TERMINAL_FALLBACKS) {
+            const recoveredIds = await reconcileTerminalOwnerTasks(launchData as Record<string, unknown>, true);
+            if (recoveredIds) {
+              if (!(await confirmOwnedPendingReservation())) break;
+              terminalFallbacks += 1;
+              retiredTaskIds.push(...recoveredIds);
+              terminalCodes.push('task_receipt_not_live');
+              launchBackend = await terminalRetryBackend(launchBackend, launchBackend);
+              currentIdempotencyKey = recoveryKeyFor(recoveredIds.join(','), 'task_receipt_not_live');
+              continue;
+            }
+          }
           const targetOwnerIds = Array.isArray(launchData.ownerIds)
             ? launchData.ownerIds.filter(
                 (ownerId): ownerId is string => typeof ownerId === 'string' && Boolean(ownerId.trim()),

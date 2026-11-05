@@ -1,0 +1,14 @@
+[
+  "packages/operator-core/lib/retained-replay-sources.json",
+  "packages/operator-core/lib/retained-replay-identity.ts",
+  "packages/operator-core/lib/continuity-probes.ts",
+  "packages/operator-core/lib/retained-sql.ts",
+  "packages/operator-core/lib/rubric-instrument-registry.ts",
+  "packages/operator-core/lib/measurement-provenance.ts",
+  "packages/operator-core/lib/sensitive-text.ts",
+  "libs/test-config/src/sensitive-text.ts",
+  "libs/test-config/src/execution-details.ts",
+  "libs/test-config/src/mutation-descriptor.ts",
+  "libs/generic/hash-chain/src/canonical-json.ts",
+  "package-lock.json"
+]

@@ -7,6 +7,7 @@ import {
   toolLatencyBudgetSignalsFromRows,
   toolLatencyBudgetsFromProjected,
   writeToolNames,
+  toolRequestLatencySignalsFromRows,
   type ToolLatencyBudget,
   type ToolLatencyRow,
 } from './tool-latency-budget';
@@ -19,6 +20,40 @@ const row = (tool_name: string, p95_ms: number | string | null, n: number | stri
   p95_ms,
   latest_at: '2026-10-02T23:00:00.000Z',
   earliest_at: '2026-10-02T01:00:00.000Z',
+});
+
+describe('interactive request latency, independent of mutation safety', () => {
+  const request = (peak_ms: number | string | null, p95_ms: number | null = 1_000, n = 25) => ({
+    ...row('work_items:complete', p95_ms, n), peak_ms, peak_invocation_id: '47039661',
+  });
+
+  it('catches the 55.8s successful request even when fast calls keep p95 low', () => {
+    const [signal] = toolRequestLatencySignalsFromRows([request(55_833)]);
+    expect(signal).toMatchObject({ key: 'tool-request-latency:work_items:complete', severity: 'major' });
+    expect(signal!.body).toContain('invocation 47039661');
+    expect(signal!.body).toContain('55833ms');
+  });
+
+  it('catches a severe first request without waiting for twenty samples', () => {
+    expect(toolRequestLatencySignalsFromRows([request('50000', null, 1)])).toHaveLength(1);
+    expect(toolRequestLatencySignalsFromRows([request(49_999, null, 1)])).toEqual([]);
+  });
+
+  it('detects chronic latency at twenty samples, including below the outlier threshold', () => {
+    expect(toolRequestLatencySignalsFromRows([request(25_000, 20_000, 20)])[0]?.severity).toBe('minor');
+    expect(toolRequestLatencySignalsFromRows([request(25_000, 20_000, 19)])).toEqual([]);
+    expect(toolRequestLatencySignalsFromRows([request(25_000, 19_999, 20)])).toEqual([]);
+  });
+
+  it('does not impose the completion SLO on intentionally long-running tools', () => {
+    expect(toolRequestLatencySignalsFromRows([{ ...request(120_000), tool_name: 'testing:run' }])).toEqual([]);
+  });
+
+  it('keeps missing or malformed measurements unknown', () => {
+    for (const peak of [null, 'NaN', -1]) {
+      expect(toolRequestLatencySignalsFromRows([request(peak, 60_000)])).toEqual([]);
+    }
+  });
 });
 
 describe('threshold calibration (budget = dispatcher default 60s → 48s line)', () => {

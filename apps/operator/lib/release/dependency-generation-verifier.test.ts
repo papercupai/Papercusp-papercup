@@ -83,7 +83,7 @@ function fixture(workspace = 'packages/cli') {
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 
 describe('D012 native generation closure', () => {
-  it.each(['source-stale', 'incomplete'])('rebuilds a %s exact-ref native closure with unchanged locks, then reuses it', defect => {
+  it.each(['source-stale', 'incomplete'])('rebuilds a %s exact-ref native closure with unchanged locks, then reuses it', async defect => {
     const f = fixture();
     if (defect === 'incomplete') rmSync(join(f.donor, 'packages/cli/dist/.papercusp-workspace-build.json'));
     const before = f.publish();
@@ -117,6 +117,11 @@ describe('D012 native generation closure', () => {
     expect(existsSync(join(f.store, '.leases')) ? readdirSync(join(f.store, '.leases')) : []).toEqual([]);
     const compatible = f.shell(f.snapshotHelper, ['preflight-generation', f.dest, f.dest]);
     expect(compatible.status, compatible.stderr).toBe(0);
+    // Another source with the same locks can republish its dependency selector
+    // without invalidating this frozen native source's closure or proof.
+    expect(f.publish()).toBe(before);
+    const republished = f.shell(f.snapshotHelper, ['preflight-generation', f.dest, f.dest]);
+    expect(republished.status, republished.stderr).toBe(0);
     const reused = f.shell(f.generationScript, args);
     expect(reused.status, reused.stderr).toBe(0);
     expect(reused.stdout).toContain('reused=true');
@@ -125,6 +130,35 @@ describe('D012 native generation closure', () => {
     expect(materialized.status, materialized.stderr).toBe(0);
     expect(spawnSync(process.execPath, [join(f.dest, 'node_modules/.bin/probe')], { encoding: 'utf8' }).stdout)
       .toBe('new-exact-source\n');
+    expect(readFileSync(join(f.dest, '.papercusp-pinned-deps'), 'utf8')).toMatch(/selector=native-[0-9a-f]{64}/);
+    vi.stubEnv('PAPERCUSP_DEPENDENCY_GENERATION_ROOT', f.store);
+    try {
+      const binding = await bindFrozenDependencyGeneration(f.dest, ref);
+      expect(binding.identity.dependencyGeneration).toBe(after.split('/').pop());
+      await binding.assertUnchanged();
+    } finally { vi.unstubAllEnvs(); }
+  }, 120_000);
+
+  it('refuses a corrupt native selector instead of falling back to a valid dependency selector', () => {
+    const f = fixture();
+    f.publish();
+    const ref = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: f.dest, encoding: 'utf8' }).trim();
+    const args = ['--integration', f.donor, '--generation-root', f.store,
+      '--ensure-ref', ref, '--verifier-source', f.dest];
+    const indexed = f.shell(f.generationScript, args);
+    expect(indexed.status, indexed.stderr).toBe(0);
+    const key = readdirSync(join(f.store, '.inputs')).find(name => name.startsWith('native-'))!;
+    expect(key).toMatch(/^native-[0-9a-f]{64}$/);
+    const selector = join(f.store, '.inputs', key);
+    writeFileSync(selector, readFileSync(selector, 'utf8').replace(/^token=.*$/m, 'token=v3:' + '0'.repeat(64)));
+    for (const [file, argv] of [[f.generationScript, args],
+      [f.snapshotHelper, ['preflight-generation', f.dest, f.dest]],
+      [f.snapshotHelper, ['snapshot-generation-locked', f.donor, f.dest]]] as const) {
+      const refused = f.shell(file, [...argv]);
+      expect(refused.status, refused.stderr).toBe(74);
+    }
+    expect(existsSync(join(f.dest, 'node_modules'))).toBe(false);
+    expect(existsSync(join(f.dest, '.papercusp-pinned-deps'))).toBe(false);
   }, 120_000);
 
   it('refuses dirty native source before publishing or changing the existing selector', () => {

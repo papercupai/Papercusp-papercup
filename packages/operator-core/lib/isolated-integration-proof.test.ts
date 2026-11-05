@@ -264,6 +264,61 @@ it('bounds supervised router startup despite repeated runtime lifetime receipts'
   });
 });
 
+it('starts buffered supervisor execution from runtime IPC without spending its bootstrap ceiling', async () => {
+  const direct = isolatedTestFileWorkerOptions({}, 1, {}, 'runtime');
+  const router = isolatedTestFileWorkerOptions({}, 1);
+  expect(direct).toEqual({ ...router, testFileExecutionFromStdout: false });
+  await withCapturedRouter({ ...direct,
+    phaseTimeouts: { bootstrapMs: 100, executeMs: 200, teardownMs: 30 },
+    killGraceMs: 10, drainGraceMs: 10 }, async (child, result) => {
+    await vi.advanceTimersByTimeAsync(90);
+    child.emit('message', { kind: 'isolated-runtime-start' });
+    // No nested TEST_FILE_PROGRESS reaches this parent while work executes.
+    await vi.advanceTimersByTimeAsync(199);
+    expect(child.kill).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(child.kill).toHaveBeenCalledWith('SIGTERM');
+    child.emit('close');
+    expect(await result).toMatchObject({ timedOut: true, timeoutPhase: 'execute' });
+  });
+});
+
+it.each([true, false])('lets a detached supervisor clean up before the bounded group fallback: cooperative=%s', async cooperative => {
+  const evidenceDir = mkdtempSync(join(tmpdir(), 'isolated-supervisor-stop-'));
+  const earlySignal = join(evidenceDir, 'descendant-signaled');
+  const cleaned = join(evidenceDir, 'cleanup-complete');
+  const script = `
+    const { spawn } = require('node:child_process');
+    const worker = spawn(process.execPath, ['-e', ${JSON.stringify(`
+      const { writeFileSync } = require('node:fs');
+      process.on('SIGTERM', () => writeFileSync(${JSON.stringify(earlySignal)}, 'early'));
+      process.on('message', () => { writeFileSync(${JSON.stringify(cleaned)}, 'tasks-before-database'); process.exit(0); });
+      process.send('ready'); setInterval(() => {}, 1000);
+    `)}], { stdio: ['ignore', 'inherit', 'inherit', 'ipc'] });
+    worker.on('message', () => process.send('ready'));
+    worker.on('close', () => process.exit(0));
+    process.on('SIGTERM', () => { if (${cooperative}) worker.send('cleanup'); });
+    setInterval(() => {}, 1000);
+  `;
+  const child = spawn(process.execPath, ['-e', script], {
+    detached: true, stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
+  });
+  try {
+    await once(child, 'message');
+    const result = await captureIsolatedWorker(child, evidenceDir,
+      { timeoutMs: 50, killGraceMs: 1000, drainGraceMs: 1000 });
+    expect(result).toMatchObject({ timedOut: true, timeoutPhase: 'bootstrap',
+      exitWaitTimedOut: false, stdioDrainTimedOut: false,
+      code: cooperative ? 0 : null, signal: cooperative ? null : 'SIGKILL' });
+    expect(existsSync(earlySignal)).toBe(false);
+    expect(existsSync(cleaned)).toBe(cooperative);
+  } finally {
+    try { process.kill(-child.pid!, 'SIGKILL'); } catch { /* owned group already reaped */ }
+    if (child.connected) child.disconnect();
+    rmSync(evidenceDir, { recursive: true, force: true });
+  }
+});
+
 it('bounds cleanup when a supervised router stops before test execution', async () => {
   await withCapturedRouter(routerPhaseOptions, async (child, result) => {
     child.emit('message', { kind: 'isolated-runtime-start' });

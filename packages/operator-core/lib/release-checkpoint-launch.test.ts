@@ -183,9 +183,8 @@ describe('WI-5377: ANSI escapes are stripped before the persisted log is written
 
 describe('buildCheckpointSystemdArgv', () => {
   // WI-6554700010042457 (Avi #2574): a manual main-greening run carries NO wall-clock deadline
-  // of its own. The launch time no longer anchors a cutoff; only a deadline the LAUNCHER itself
-  // inherited is forwarded (the earliest one, so a child can never outlive its caller's scope).
-  it('adds no deadline of its own and forwards only the earliest inherited one', () => {
+  // of its own, and its detached lifetime is independent of the launching request.
+  it('drops inherited request deadlines and clears any deadline in the service environment', () => {
     const key = 'PAPERCUSP_TASK_DEADLINE_EPOCH_MS';
     const deadlineArgs = (argv: string[]) => argv.filter(value => value.startsWith(`--setenv=${key}=`));
     vi.stubEnv(key, undefined);
@@ -195,10 +194,11 @@ describe('buildCheckpointSystemdArgv', () => {
       expect(deadlineArgs(buildCheckpointSystemdArgv(...args))).toEqual([]);
 
       vi.stubEnv(key, '9000000');
-      expect(deadlineArgs(buildCheckpointSystemdArgv(...args))).toEqual([`--setenv=${key}=9000000`]);
+      expect(deadlineArgs(buildCheckpointSystemdArgv(...args))).toEqual([]);
 
       args[11] = { [key]: '200000' };
-      expect(deadlineArgs(buildCheckpointSystemdArgv(...args))).toEqual([`--setenv=${key}=200000`]);
+      expect(deadlineArgs(buildCheckpointSystemdArgv(...args))).toEqual([]);
+      expect(buildCheckpointSystemdArgv(...args).at(-1)).toContain(`unset '${key}' &&`);
 
       // A garbage inherited value is ignored rather than becoming a deadline.
       vi.stubEnv(key, 'not-a-number');

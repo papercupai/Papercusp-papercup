@@ -56,6 +56,9 @@ describe('wake-executor — resume-headless exit observation (P0a)', () => {
       // Hermetic Channel 2 resume path: the production default performs the
       // atomic DB claim, but this unit test only exercises detached-exit wiring.
       claimResume: async () => true,
+      // Default-namespace carries resolve the subscriber tenant through PG.
+      // Keep the unit fixture hermetic; focused tenant tests override this seam.
+      workspaceForCoordOwnerFn: async () => null,
       // WI-10002854: the real accountant writes the ledger row and adv pid to PG.
       accountHeadlessResumeTurn: () => ({ pidRecorded: Promise.resolve(), finish: () => {} }),
       // The resume leg's harness fallback reads the live loop row. That blocked
@@ -408,6 +411,7 @@ describe('wake-executor — resume-headless exit observation (P0a)', () => {
       });
       const spawnDetached = vi.fn(() => 4242);
       const claimResume = vi.fn(async () => true);
+      const resolveWorkspace = vi.fn(async () => 'row-ws');
       const quarantine = vi.fn(async () => ({ poisoned: true, turns: 3 }));
       const { deps, s } = await exitedClaudeResumeDeps({
         getSessionLifecycle: async () => null,
@@ -416,6 +420,7 @@ describe('wake-executor — resume-headless exit observation (P0a)', () => {
         launchColdFreshSuccessor,
         spawnDetached,
         claimResume,
+        workspaceForCoordOwnerFn: resolveWorkspace,
         quarantineToolReferenceSession: quarantine as never,
       });
       deps.getSession = async () => ({

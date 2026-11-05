@@ -2437,7 +2437,6 @@ import { pluginSpawnImpl, secretImpl, makeSecretResolver } from '../../../plugin
 // implementation. Don't fork the SQL across transports.
 import {
   PROJECTED_DEPS,
-  flushPendingTelemetry,
   backfillResultDoorOutputRef,
   backfillToolInvocationMetadataByMcpRequestTraceId,
   wrapOperatorKernelSpawn,
@@ -3537,9 +3536,9 @@ async function resolveVisibleToolListings(extra: unknown, phases: PhaseTracker =
   const surfaceKey = spawnRes.kind === 'ok'
     ? sessionToolSurfaceKey(sessionKey, spawnRes.ctx.workspaceId) : null;
   if (!identityListings && spawnRes.kind === 'ok' && seed && sessionKey) {
-    // Invocation telemetry is batched off the response path. A later list is
-    // a read-after-dispatch boundary, just like the existing quota reader.
-    await phases.track('telemetryFlush', () => flushPendingTelemetry());
+    // Settled dispatch records tool use in this session's live surface before
+    // enqueuing telemetry. Restore durable history without joining the global
+    // writer: unrelated invocation persistence must not hold discovery open.
     await phases.track('restoreSessionTools', () => restoreSessionTools({ sessionKey: surfaceKey, seed,
       ownerId: transportOwnerId(spawnRes.ctx),
       workspaceId: spawnRes.ctx.workspaceId,
@@ -3761,7 +3760,6 @@ async function refreshSeededSessionSurfaceFromLedger(
   try {
     const spawn = await measure('spawnContext', () => tryBuildSpawnContext(extra));
     if (spawn.kind !== 'ok' || !spawn.ctx.uiClientId) return;
-    await measure('telemetryFlush', () => flushPendingTelemetry());
     const changed = await measure('restoreSessionTools', () => restoreSessionTools({
       sessionKey: sessionToolSurfaceKey(spawn.ctx.uiClientId, spawn.ctx.workspaceId),
       seed,
@@ -3811,8 +3809,8 @@ function withMcpSessionSurfaceRecheck<Req, Res>(
       const url = urlFromExtra(extra);
       const seed = parseToolsAllowlist(url?.searchParams.get('tools'));
       if (seed && sendNotification) {
-        // The result is already settled. Telemetry flush + ledger restoration
-        // are bookkeeping for the next tools/list, so keep them off this
+        // The result is already settled. Ledger restoration is bookkeeping
+        // for the next tools/list, so keep it off this
         // response path. Direct/nested dispatch records its current name in
         // memory before result shaping; this background pass reconciles other
         // uses (for example tools invoked inside code:run).
@@ -6328,13 +6326,38 @@ export function registerMcpHost(server: McpServer): void {
         const deliveryTool = nestedTargetToolName ?? toolName;
         if (!raced.deadlineFired && (deliveryTool === 'reports:get' || deliveryTool === 'capability:read')) {
           const { reportResultDeliveryMetadata } = await import('../../../report-result-delivery');
-          // Exact request correlation only: dispatch success precedes the result door.
-          await backfillToolInvocationMetadataByMcpRequestTraceId({
-            workspaceId: dispatchSpawnCtx.workspaceId,
-            toolName: deliveryTool,
-            mcpRequestTraceId: dispatchSpawnCtx.requestOrigin?.mcpRequestTraceId ?? null,
-            metadataJson: reportResultDeliveryMetadata(deliveryTool, raced.deliverySourceResult ?? finalResult, finalResult),
-          });
+          const deliveryMetadata = reportResultDeliveryMetadata(
+            deliveryTool,
+            raced.deliverySourceResult ?? finalResult,
+            finalResult,
+          );
+          if (deliveryTool === 'capability:read' && deliveryMetadata.scratchResultDelivery == null) {
+            // Inline reads have no scratch-delivery proof to persist. Calling the
+            // backfill with { scratchResultDelivery: null } still flushes the
+            // shared telemetry queue and opens a PG transaction on the response path.
+            trace('result_delivery_backfill', {
+              resultDeliveryBackfill: { toolName: deliveryTool, state: 'skipped', reason: 'no-scratch-result' },
+            });
+          } else {
+            const backfillStartedAt = performance.now();
+            trace('result_delivery_backfill', {
+              resultDeliveryBackfill: { toolName: deliveryTool, state: 'started' },
+            });
+            // Exact request correlation only: dispatch success precedes the result door.
+            await backfillToolInvocationMetadataByMcpRequestTraceId({
+              workspaceId: dispatchSpawnCtx.workspaceId,
+              toolName: deliveryTool,
+              mcpRequestTraceId: dispatchSpawnCtx.requestOrigin?.mcpRequestTraceId ?? null,
+              metadataJson: deliveryMetadata,
+            });
+            trace('result_delivery_backfill', {
+              resultDeliveryBackfill: {
+                toolName: deliveryTool,
+                state: 'settled',
+                durationMs: Math.max(0, performance.now() - backfillStartedAt),
+              },
+            });
+          }
         }
         return finalResult;
       }

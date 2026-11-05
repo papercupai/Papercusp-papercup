@@ -420,3 +420,37 @@ describe('tool-latency-budget against real PG (WI-10005730)', () => {
     expect(signals.filter((s) => s.findingClass === 'tool-latency-budget')).toEqual([]);
   });
 });
+
+describe('successful completion request latency (EI-27984315103577037)', () => {
+  it('detects the full request outlier despite a safe idempotent handler and a low p95', async () => {
+    const sql = db.adminSql;
+    await sql`DELETE FROM harness_shared.tool_invocations`;
+    const seed = async (workspace: string, dispatchMs: number, metadata: Record<string, unknown>) => {
+      const rows = await sql<{ id: string }[]>`
+        INSERT INTO harness_shared.tool_invocations
+          (workspace_id, harness_slug, plugin_name, tool_name, role, spawn_id, window_key,
+           status, duration_ms, invoked_at, metadata_json)
+        VALUES (${workspace}, '', '', 'work_items:complete', 'su', '', '', 'ok', ${dispatchMs}, now(),
+          ${JSON.stringify(metadata)}::jsonb) RETURNING id::text`;
+      return rows[0]!.id;
+    };
+    for (let i = 0; i < 24; i++) await seed('*', 100, {});
+    // The dispatch-only detector would see 31.2s; the caller actually waited 55.8s.
+    const slow = await seed('*', 31_233, { mcpRequestSettlement: { elapsedMs: 55_833 } });
+    await seed('another-workspace', 120_000, {});
+    const budgets = new Map([['work_items:complete', { timeoutSec: 120, effect: 'write', idempotent: true }]]);
+    const signals = await collectToolErrorSignals(sql, { toolLatencyBudgets: budgets }, 'latency-test');
+    const signal = signals.find(s => s.key === 'tool-request-latency:work_items:complete');
+    expect(signal?.severity).toBe('major');
+    expect(signal?.body).toContain(`invocation ${slow}`);
+    expect(signal?.body).toContain('55833ms');
+    expect(signals.some(s => s.key === 'tool-latency-budget:work_items:complete')).toBe(false);
+
+    await sql`DELETE FROM harness_shared.tool_invocations WHERE id = ${slow}::bigint`;
+    // Malformed telemetry falls back to dispatch; invalid calls and foreign
+    // workspaces must not manufacture a successful-request latency finding.
+    await seed('*', 100, { mcpRequestSettlement: { elapsedMs: 'not-a-number' } });
+    const clean = await collectToolErrorSignals(sql, { toolLatencyBudgets: budgets }, 'latency-test');
+    expect(clean.some(s => s.key === 'tool-request-latency:work_items:complete')).toBe(false);
+  });
+});

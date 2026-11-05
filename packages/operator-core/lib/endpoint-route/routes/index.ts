@@ -95,6 +95,7 @@ import harnessWorkingSet from './harness/working-set';
 import usersByGithubId from './users/by-github-id';
 import usersByLogin from './users/by-login';
 import usersViewer from './users/viewer';
+import reportSharing from './reports/sharing';
 import harnessPrs from './harness/prs';
 import harnessPrReviewerSettings from './harness/pr-reviewer-settings';
 import harnessProjectDocs from './harness/project-docs';
@@ -717,6 +718,7 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(usersByGithubId as AnyRoute[]),
   ...flatten(usersByLogin as AnyRoute[]),
   ...flatten(usersViewer as AnyRoute[]),
+  ...flatten(reportSharing as AnyRoute),
   ...flatten(harnessPrs as AnyRoute[]),
   ...flatten(harnessPrReviewerSettings as AnyRoute[]),
   ...flatten(harnessProjectDocs as AnyRoute[]),

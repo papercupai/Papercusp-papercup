@@ -172,6 +172,47 @@ describe('private PostgreSQL independent cleanup', () => {
     expect(prepare).toHaveBeenCalledOnce();
   });
 
+  it.each([false, true])('production wrapper reaps managed tasks before early PG release and memoizes the result (fails=%s)', async fails => {
+    const f = fixture();
+    try {
+      const source = readFileSync(resolve(import.meta.dirname, '../../../scripts/with-test-pg.mjs'), 'utf8');
+      const setup = source.slice(source.indexOf('const stopPrivatePg = createSingleFlightStop('),
+        source.indexOf('\nlet profileProcess ='));
+      const cleanup = source.match(/async function cleanupOwnedState\(\) \{[\s\S]*?\n\}/)![0];
+      let alive = true;
+      const order: string[] = [];
+      const pgStop = createSingleFlightStop(async () => { order.push('pg-stop'); alive = false; });
+      const control = runInNewContext(setup + '\n' + cleanup + '\n({ stop: stopPrivatePg, cleanup: cleanupOwnedState })', {
+        ...f.resources, createSingleFlightStop, cleanupOwnedTestState,
+        pg: { stop: pgStop, urls: { admin: 'postgres://private.invalid/test' } },
+        managedTasks: true, managedTaskCleanupEnv: {}, ownedDatabaseDir: f.resources.dataDir,
+        stopPrivateManagedTasks: async () => {
+          expect(alive).toBe(true);
+          order.push('managed-tasks');
+          if (fails) throw new Error('managed task cleanup unverified');
+        },
+        cleanupOwnedTestDatabases: async () => {
+          expect(alive).toBe(true);
+          order.push('databases');
+          return { complete: true, databases: [], errors: [] };
+        },
+        dropDatabaseOnDedicatedConnection: async () => {},
+        cleanupReceiptFailures: [], drainCleanupReceipts: async () => {},
+        process: { env: { PAPERCUSP_TEST_RUN_GROUP: 'early-release-regression' } }, console: { log() {} },
+      }) as { stop(): Promise<void>; cleanup(): Promise<void> };
+      if (fails) {
+        await expect(control.stop()).rejects.toThrow('managed task cleanup unverified');
+        await expect(control.cleanup()).rejects.toThrow('unverified resource stops');
+        expect(existsSync(f.resources.runtimeRoot)).toBe(true);
+      } else {
+        await control.stop();
+        await control.cleanup();
+        expect(existsSync(f.resources.runtimeRoot)).toBe(false);
+      }
+      expect(order).toEqual(['managed-tasks', 'databases', 'pg-stop']);
+    } finally { f.dispose(); }
+  });
+
   it.each([false, true])('fences detached managed tasks before private PG removal (fails=%s)', async fails => {
     const f = fixture();
     try {

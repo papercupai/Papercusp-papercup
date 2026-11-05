@@ -311,11 +311,13 @@ export function isolatedWorkerOptions(
 }
 
 export function isolatedTestFileWorkerOptions(env: NodeJS.ProcessEnv, fileCount: number,
-  phaseOverrides: WorkerPhaseOverrides = {}) {
+  phaseOverrides: WorkerPhaseOverrides = {}, executionStart: 'router' | 'runtime' = 'router') {
   const listMs = testFileListTimeoutMs(env);
   return { ...isolatedWorkerOptions(listMs + testFileRunTimeoutMs(env, fileCount) + TEST_FILE_KILL_GRACE_MS,
     env, listMs + MAX_TEST_FILE_RUN_TIMEOUT_MS + TEST_FILE_KILL_GRACE_MS, phaseOverrides),
-  testFileExecutionFromStdout: true };
+  // A direct supervisor may buffer its nested router's output until completion.
+  // Such callers start execution from the observed private-runtime IPC receipt.
+  testFileExecutionFromStdout: executionStart === 'router' };
 }
 
 /** Retain original output before termination can interrupt the fixture. A
@@ -352,7 +354,9 @@ export function captureIsolatedWorker(child: ChildProcess, evidenceDir: string, 
     } catch { /* child already exited; retain its observed exit */ }
   }
   const killWorker = (signal: NodeJS.Signals) => {
-    if (ownsProcessGroup && child.pid) {
+    // Let with-test-pg fence tasks and stop its database before terminating its
+    // descendants. The bounded hard-stop fallback still owns the whole group.
+    if (signal !== 'SIGTERM' && ownsProcessGroup && child.pid) {
       try { process.kill(-child.pid, signal); } catch { /* owned group already exited */ }
     } else child.kill(signal);
   };
@@ -604,6 +608,9 @@ export function captureIsolatedWorker(child: ChildProcess, evidenceDir: string, 
     };
     const stopDraining = () => {
       stdioDrainTimedOut = true;
+      // A supervisor can exit while a descendant still owns the pipes. Retire
+      // that owned group before detaching the bounded stream readers.
+      if (ownsProcessGroup) killWorker('SIGKILL');
       child.stdout?.destroy();
       child.stderr?.destroy();
       if (child.connected) child.disconnect();

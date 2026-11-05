@@ -65,9 +65,14 @@ export async function bindFrozenDependencyGeneration(root: string, sourceCommit:
   const dependencyInputSha256 = await shell(root, 'dependency_generation_input_fingerprint_ref "$1" "$2"', root, sourceCommit);
   if (!HEX.test(dependencyInputSha256)) throw new Error('invalid committed dependency input fingerprint');
   if (verifier && marker.get('input') !== dependencyInputSha256) throw new Error('frozen dependency input mismatch');
-  const selector = await readCustody(join(generationRoot, '.inputs', dependencyInputSha256));
+  const selectorKey = verifier ? marker.get('selector') ?? dependencyInputSha256 : dependencyInputSha256;
+  if (selectorKey !== dependencyInputSha256) {
+    if (!/^native-[0-9a-f]{64}$/.test(selectorKey) || selectorKey !== await shell(root,
+      'dependency_generation_verifier_selector_key "$1"', root)) throw new Error('frozen native selector/source mismatch');
+  }
+  const selector = await readCustody(join(generationRoot, '.inputs', selectorKey));
   const publication = await readCustody(join(generation, '.papercusp-dependency-generation'));
-  if (selector.get('input') !== dependencyInputSha256 || selector.get('identity') !== dependencyGeneration ||
+  if (selector.get('input') !== selectorKey || selector.get('identity') !== dependencyGeneration ||
       publication.get('identity') !== dependencyGeneration || publication.get('scope') !== 'full' ||
       (!verifier && marker.get('source') !== publication.get('source'))) throw new Error('frozen dependency input/generation mismatch');
   if (verifier && marker.get('token') !== selector.get('token')) throw new Error('frozen dependency token mismatch');

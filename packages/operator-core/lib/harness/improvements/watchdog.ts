@@ -86,6 +86,9 @@ import { isLoopArmOwnerRole } from '../routines/autoloop-chronic-failure';
 import { SESSION_END_MARKER } from '../../agent-tools/activity/lifecycle-markers';
 import {
   toolLatencyBudgetSignalsFromRows,
+  toolRequestLatencySignalsFromRows,
+  TOOL_REQUEST_LATENCY_LIMITS,
+  type ToolRequestLatencyRow,
   toolLatencyBudgetsFromProjected,
   writeToolNames,
   type ToolLatencyBudget,
@@ -2516,11 +2519,11 @@ export async function collectToolErrorSignals(sql: Sql, opts: CollectOptions = {
   try {
     const budgets = opts.toolLatencyBudgets ?? await loadProjectedToolLatencyBudgets();
     const writeTools = writeToolNames(budgets);
-    if (writeTools.length === 0) {
+    if (budgets.size === 0) {
       // An EMPTY registry is indistinguishable from "no slow tools" in the output — say so,
       // so a blind detector is a logged fact rather than a silent clean bill.
-      console.warn('[improvement-watchdog] tool-latency-budget skipped: no write tools in the projected registry');
-    } else {
+      console.warn('[improvement-watchdog] tool-latency-budget skipped: no tools in the projected registry');
+    } else if (writeTools.length > 0) {
       const latencyWindowHours = opts.toolLatencyWindowHours ?? 24;
       const latencyRows = await sql<ToolLatencyRow[]>`
         SELECT tool_name,
@@ -2549,11 +2552,37 @@ export async function collectToolErrorSignals(sql: Sql, opts: CollectOptions = {
       `[improvement-watchdog] tool-latency-budget unavailable: ${error instanceof Error ? error.message : String(error)}`,
     );
   }
+  // EI-27984315103577037: the late-write detector intentionally excludes
+  // idempotent tools. That says nothing about how long a ready answer waits.
+  // Reuse this collector/capture/repair lane, including successful requests and
+  // the pre-dispatch time already retained by the MCP settlement writer.
+  const requestLatencyRows = await sql<ToolRequestLatencyRow[]>`
+    WITH measured AS (
+      SELECT id, tool_name, invoked_at,
+             GREATEST(duration_ms,
+               CASE WHEN jsonb_typeof(metadata_json->'mcpRequestSettlement'->'elapsedMs') = 'number'
+                 THEN (metadata_json->'mcpRequestSettlement'->>'elapsedMs')::float8
+                 ELSE duration_ms END) AS observed_ms
+        FROM harness_shared.tool_invocations
+       WHERE invoked_at > now() - make_interval(hours => ${opts.toolLatencyWindowHours ?? 24})
+         AND tool_name = ANY(${Object.keys(TOOL_REQUEST_LATENCY_LIMITS)}::text[])
+         AND status IN ('ok', 'error', 'timeout')
+         AND duration_ms >= 0
+         AND ${scopes ? sql`workspace_id = ANY(${scopes}::text[])` : sql`TRUE`}
+         AND ${dispatchWrapperExclusionPredicate(sql)}
+    )
+    SELECT tool_name, count(*)::int AS n,
+           (percentile_cont(0.95) WITHIN GROUP (ORDER BY observed_ms))::float8 AS p95_ms,
+           max(observed_ms)::float8 AS peak_ms,
+           (array_agg(id::text ORDER BY observed_ms DESC, invoked_at DESC, id DESC))[1] AS peak_invocation_id,
+           max(invoked_at) AS latest_at, min(invoked_at) AS earliest_at
+      FROM measured GROUP BY tool_name`;
   return [
     ...toolErrorSignalsFromRows(rows, opts, sharedStall.correlatedToolNames),
     ...sharedStall.signals,
     ...softFailureSignalsFromRunRows(softRows, opts),
     ...toolLatencySignals,
+    ...toolRequestLatencySignalsFromRows(requestLatencyRows),
   ];
 }
 

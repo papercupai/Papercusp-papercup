@@ -85,7 +85,7 @@ export function classifyWorkRoot({ inUse, dependentArtifactPresent, marker, owne
  * see every process), 'private' (a child PID namespace such as a bwrap sandbox: host pids
  * are invisible or alias other processes), or 'none' (no /proc, so no PID namespaces).
  */
-export function pidNamespaceView(readLink?: typeof readlinkSync): "initial" | "private" | "none";
+export function pidNamespaceView(readLink?: typeof readlinkSync): "none" | "initial" | "private";
 /**
  * Whether a marker's owner pid (a HOST pid) is alive; null when this process cannot tell.
  * WI-6554700010019046: from a private PID namespace kill(2) answers about that namespace,

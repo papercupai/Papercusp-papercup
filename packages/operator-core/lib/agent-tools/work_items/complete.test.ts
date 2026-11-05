@@ -4628,6 +4628,17 @@ describe('work_items:complete (keyed-array)', () => {
       getWorkItem.mockResolvedValue({ ...item, assignee: 'su-tester' });
       const r = await one({ id: 'F-12', completion: { summary: 'noting it' } });
       expect(r.assigneeMismatchWarning).toBeUndefined();
+      expect(resolveAdoptedName).not.toHaveBeenCalled();
+    });
+
+    it('passes the resolved family to the fresh state writer', async () => {
+      getWorkItem.mockResolvedValue({ ...item, family: 'feature', assignee: 'su-tester' });
+      setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...item, state: 'passed' }));
+      const r = await one({ id: 'F-12', state: 'passed', completion: { summary: 'verified', tests: 'green' } });
+      expect(r.ok).toBe(true);
+      expect(setWorkItemStateWithAliasInfo).toHaveBeenCalledWith('F-12', 'passed',
+        expect.objectContaining({ family: 'feature' }));
+      expect(resolveAdoptedName).not.toHaveBeenCalled();
     });
 
     it("accepts the caller's adopted stable agent name as the current assignee", async () => {
@@ -4651,6 +4662,7 @@ describe('work_items:complete (keyed-array)', () => {
       getWorkItem.mockResolvedValue({ ...item, assignee: null });
       const r = await one({ id: 'F-12', completion: { summary: 'noting it' } });
       expect(r.assigneeMismatchWarning).toBeUndefined();
+      expect(resolveAdoptedName).not.toHaveBeenCalled();
     });
   });
 

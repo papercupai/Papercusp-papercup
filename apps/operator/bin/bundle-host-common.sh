@@ -98,30 +98,59 @@ bundle_host_prepare_esbuild() { # <repo root>
   BUNDLE_HOST_ESBUILD_PATH="$compiler"
 }
 
+# Reuse the shared compiler door for both host and desktop. The source-byte
+# witness is measured around the actual compile, never reconstructed at boot.
+bundle_host_replay_identity_define() { # <repo root>
+  local -a identity_node=("${COMMITTED_NODE[@]:-node}")
+  "${identity_node[@]}" --input-type=module - "$1" <<'NODE'
+import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+const root = process.argv[2];
+// Data only: the builder must not execute working-tree TypeScript under its
+// committed-source loader. The regression compares this with the runtime reader.
+const files = JSON.parse(readFileSync(resolve(root,
+  'packages/operator-core/lib/retained-replay-sources.json'), 'utf8'));
+const sources = files.map(path => [path,
+  createHash('sha256').update(readFileSync(resolve(root, path))).digest('hex')]);
+const identity = createHash('sha256').update(JSON.stringify({ version: 1, sources })).digest('hex');
+process.stdout.write('--define:__PAPERCUSP_RETAINED_REPLAY_SOURCE_SHA256__=' +
+  JSON.stringify(identity));
+NODE
+}
+
 bundle_host_esbuild() { # <repo root> [compiler args...]
   local repo_root="$1"
   shift
+  local replay_identity_define replay_identity_after compiler_rc=0
+  replay_identity_define="$(bundle_host_replay_identity_define "$repo_root")" || return 78
   if [[ -n "${BUNDLE_HOST_BG_BUILD_CONTEXT:-}" ]]; then
     # BG preparation supplies an ORIGINAL per-invocation record and a private
     # pinned compiler. Never fall through to npx on a custody refusal.
     local -a guarded_node=("${COMMITTED_NODE[@]:-node}")
     "${guarded_node[@]}" "$repo_root/scripts/source-preview.mjs" bg-compiler \
-      --context "$BUNDLE_HOST_BG_BUILD_CONTEXT" -- "$@"
-    return $?
+      --context "$BUNDLE_HOST_BG_BUILD_CONTEXT" -- "$@" "$replay_identity_define" || compiler_rc=$?
+  else
+    bundle_host_prepare_esbuild "$repo_root" || return 1
+    # Each use holds the maintained cache lease through version validation AND
+    # compilation. Cache cleanup between uses can remove the memoized path; that
+    # fails closed instead of substituting the installed (possibly newer) tool.
+    bundle_host_cached_package "$repo_root" bash -c '
+      compiler="$1"; shift
+      version="$("$compiler" --version)" || exit 78
+      if [[ "$version" != 0.25.0 ]]; then
+        echo "ERROR: host bundle requires esbuild 0.25.0; resolved $version" >&2
+        exit 78
+      fi
+      exec "$compiler" "$@"
+    ' bundle-host-esbuild "$BUNDLE_HOST_ESBUILD_PATH" "$@" "$replay_identity_define" || compiler_rc=$?
   fi
-  bundle_host_prepare_esbuild "$repo_root" || return 1
-  # Each use holds the maintained cache lease through version validation AND
-  # compilation. Cache cleanup between uses can remove the memoized path; that
-  # fails closed instead of substituting the installed (possibly newer) tool.
-  bundle_host_cached_package "$repo_root" bash -c '
-    compiler="$1"; shift
-    version="$("$compiler" --version)" || exit 78
-    if [[ "$version" != 0.25.0 ]]; then
-      echo "ERROR: host bundle requires esbuild 0.25.0; resolved $version" >&2
-      exit 78
-    fi
-    exec "$compiler" "$@"
-  ' bundle-host-esbuild "$BUNDLE_HOST_ESBUILD_PATH" "$@"
+  (( compiler_rc == 0 )) || return "$compiler_rc"
+  replay_identity_after="$(bundle_host_replay_identity_define "$repo_root")" || return 78
+  if [[ "$replay_identity_after" != "$replay_identity_define" ]]; then
+    echo 'ERROR: replay implementation sources changed during compilation; refusing the bundle' >&2
+    return 78
+  fi
 }
 
 # ESM output needs Node's CJS compatibility bindings. The dummy module keeps

@@ -77,6 +77,8 @@
   // An explicit list is also the honest surface: a glob would silently start
   // emitting declarations for every future script in the repo.
   "files": [
+    // Native generation tests import the maintained producer/verifier directly.
+    "apps/operator/bin/release/dependency-generation-verifier.mjs",
     // Native coverage reuses the maintained committed-root verifier for historical artifacts.
     "scripts/lint-as-committed.mjs",
     "scripts/mcp-call.mjs",

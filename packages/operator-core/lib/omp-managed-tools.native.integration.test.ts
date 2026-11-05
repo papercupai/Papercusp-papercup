@@ -19,7 +19,7 @@ import { preparePrivateOperatorApiBundle } from '../test/private-http-workspace-
 const root = resolve(import.meta.dirname, '../../..');
 const filePath = 'packages/operator-core/lib/omp-managed-tools.native.integration.test.ts';
 const privateMcpUrl = process.env.OMP_MANAGED_PRIVATE_MCP_URL;
-const workerOptions = isolatedTestFileWorkerOptions(process.env, 1);
+const workerOptions = isolatedTestFileWorkerOptions(process.env, 1, {}, 'runtime');
 const nativeTools = ['read', 'bash', 'edit', 'write', 'grep', 'glob', 'task', 'todo', 'web_search'];
 const admitted: CapabilityPolicyRequest = {
   client: 'omp', surface: 'launch', clientVersions: { omp: '18.0.3' }, ompNativeTools: nativeTools,
@@ -298,7 +298,7 @@ if (privateMcpUrl) {
         let result: Awaited<ReturnType<typeof captureIsolatedWorker>>;
         try { result = await captureIsolatedWorker(child, evidenceDir, workerOptions); }
         finally { await rm(join(evidenceDir, 'node_modules')); }
-        expect(result, isolatedWorkerFailureDetail(result.output)).toMatchObject({
+        expect(result, isolatedWorkerFailureDetail(result.output, result)).toMatchObject({
           code: 0, signal: null, timedOut: false, exitWaitTimedOut: false, stdioDrainTimedOut: false,
         });
         expect(result.output).toContain('OMP_PRODUCTION_MCP_VERIFIED');

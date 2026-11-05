@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import assert from 'node:assert/strict';
 import { judgeSamples, runSummaryCohort, validateSummary, mcpIdentityFixture, identityPreparation, identityPreparationProbe, identityRuntimePreparation, IdentityPreparationError, isolatedIdentityRuntimeContract, identityProcessGroupCensus, identityLoadedHealth, identitySelectedSource, identityExecutableFingerprint, identityFileMappings, identityMappedFileFingerprints, type IdentityRuntime, type Sample, type McpIdentityFixture } from './bench-work-items-get';
 import { AgentMcpConnectionError } from '../packages/operator-core/lib/agent-mcp-client';
 import { maybeBatchNudge } from '../packages/operator-core/lib/code-run-batch-nudge';
@@ -112,6 +113,30 @@ describe('retained isolated runtime preparation failures', () => {
       expect(JSON.parse(original)).toMatchObject({ stage: 'source-verification', diagnostic: { code: 'invalid-json' } });
       await expect(identityRuntimePreparation(dir, async stage => { stage('credential'); throw new Error('other'); })).rejects.toMatchObject({ code: 'EEXIST' });
       expect(readFileSync(path, 'utf8')).toBe(original);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+  it.each([
+    ['Original source receipt changed during build', 'Original source receipt changed during build'],
+    ['Retained source receipt changed during build', 'Retained source receipt changed during build'],
+    ['Original build inputs changed during build', 'Original build inputs changed during build'],
+    ['Materialized dependencies changed during build', 'Materialized dependencies changed during build'],
+    ['Observed build symlinks are not qualified', 'Observed build symlinks are not qualified'],
+    ['Unknown preparation assertion', 'unclassified-failure'],
+    ['Original build inputs changed during build SECRET_SUFFIX', 'unclassified-failure'],
+  ])('retains only an allowlisted post-build assertion name (%s)', async (message, code) => {
+    const dir = mkdtempSync(join(tmpdir(), 'identity-prepare-assertion-'));
+    try {
+      await expect(identityRuntimePreparation(dir, async stage => {
+        stage('bundle');
+        assert.deepEqual({ value: 'ACTUAL_SECRET' }, { value: 'EXPECTED_SECRET' }, message);
+      })).rejects.toThrow(message);
+      const bytes = readFileSync(join(dir, 'preparation-failure.json'), 'utf8');
+      expect(JSON.parse(bytes)).toEqual({ kind: 'unqualified-identity-runtime-preparation-failure',
+        acceptance: 'unknown', stage: 'bundle', diagnostic: { code }, artifacts: [], hostStarted: false });
+      expect(bytes).not.toContain('SECRET');
+      expect(bytes).not.toContain('actual');
+      expect(bytes).not.toContain('expected');
+      expect(bytes).not.toContain('stack');
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
   it('returns successful preparation without inventing a failure record', async () => {

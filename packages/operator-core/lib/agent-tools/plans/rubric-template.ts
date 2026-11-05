@@ -832,16 +832,11 @@ export function stripUnknownCriterionKeys(templateData: unknown): { data: unknow
 function stripUnknownRubricCheckKeys(check: unknown): { data: unknown; stripped: string[] } {
   if (!check || typeof check !== 'object' || Array.isArray(check)) return { data: check, stripped: [] };
   const record = check as Record<string, unknown>;
-  const fieldsByKind: Record<string, readonly string[]> = {
-    tests: ['kind', 'files', 'testName', 'cases'],
-    cargo: ['kind', 'manifestPath', 'sourceFiles', 'test'],
-    instrument: ['kind', 'instrumentKey', 'expect', 'ratingBands'],
-    probe: ['kind', 'probe', 'all', 'unit', 'ratingBands'],
-    coverage: ['kind', 'scope', 'floor'],
-    requirements: ['kind'],
-  };
-  const allowed = fieldsByKind[String(record.kind)];
-  if (!allowed) return { data: check, stripped: [] };
+  // Derive recognized fields from the write schema so compatibility cleanup
+  // cannot silently discard a policy that this build already understands.
+  const schema = rubricCriterionCheckSchema.options.find((option) => option.shape.kind.safeParse(record.kind).success);
+  if (!schema) return { data: check, stripped: [] };
+  const allowed = Object.keys(schema.shape);
 
   const stripped: string[] = [];
   const stripRecord = (value: unknown, keys: readonly string[], path: string): Record<string, unknown> | null => {

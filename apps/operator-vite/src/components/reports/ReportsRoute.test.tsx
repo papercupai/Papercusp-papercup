@@ -7,13 +7,13 @@ import { useEffect, useRef } from 'react';
 const fixture = vi.hoisted(() => ({ enabled: true, queries: [] as { queryName: string; args: Record<string, unknown>; enabled?: boolean; requestClass?: string }[],
   list: [] as Record<string, unknown>[], catalog: null as Record<string, unknown>[] | null,
   detail: [] as Record<string, unknown>[], previous: [] as Record<string, unknown>[] | null,
-  preferences: {} as Record<string, unknown>, history: [] as Record<string, unknown>[], error: null as Error | null }));
+  preferences: {} as Record<string, unknown>, sharing: [] as Record<string,unknown>[], history: [] as Record<string, unknown>[], error: null as Error | null }));
 vi.mock('@papercusp/flags/client', () => ({ useFlag: () => fixture.enabled }));
 vi.mock('@papercusp/sync', () => ({ useSyncQuery: (opts: { queryName: string; args: Record<string, unknown>; enabled?: boolean }) => {
   fixture.queries.push(opts);
   return { data: opts.queryName === 'reports.list' ? (Object.keys(opts.args || {}).length === 1 ? fixture.catalog ?? fixture.list : fixture.list)
     : opts.queryName === 'reports.get' ? (opts.args?.reportId === 'edition-1' && fixture.previous ? fixture.previous : fixture.detail)
-    : opts.queryName === 'userPreferences.current' ? [{ payload: fixture.preferences }] : fixture.history, loading: false,
+    : opts.queryName === 'reports.sharing' ? fixture.sharing : opts.queryName === 'userPreferences.current' ? [{ payload: fixture.preferences }] : fixture.history, loading: false,
     error: fixture.error, invalidate: vi.fn() };
 } }));
 vi.mock('@/app/_components/MarkdownEditor', () => ({ MarkdownPreview: ({ value, onParsed }: { value: string; onParsed?: (root: HTMLElement) => void }) => {
@@ -31,6 +31,7 @@ import { reportsClearFiltersExpression, reportsHistoryFilterExpression } from '.
 beforeEach(() => {
   fixture.enabled = true; fixture.queries = []; fixture.list = []; fixture.catalog = null; fixture.detail = []; fixture.previous = null;
   fixture.history = []; fixture.preferences = {}; fixture.error = null;
+  fixture.sharing = [{phase:'inactive',accountId:7,login:'alice'}];
   vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true }));
   vi.mocked(seedOperatorChatDraft).mockClear();
   HTMLElement.prototype.scrollIntoView = vi.fn();
@@ -44,6 +45,35 @@ const mount = (searchParams = '', onUrlUpdate = vi.fn()) => {
 };
 
 describe('Reports route', () => {
+  it('SHARE-UI publishes only the selected edition, copies its ready link and stops sharing',async()=>{
+    fixture.detail=[report];mount('?sel=edition-2');
+    const url='https://alice.github.io/papercusp-reports/#gist=alice%2F'+'a'.repeat(32);
+    const request=vi.mocked(fetch);request.mockResolvedValueOnce(new Response(JSON.stringify({ok:true,sharing:{phase:'ready',accountId:7,login:'alice',url}})));
+    fireEvent.click(screen.getByRole('button',{name:'Share'}));
+    await screen.findByRole('button',{name:'Copy shared link'});
+    const sharingRequest=request.mock.calls.find(call=>call[0]==='/api/reports/sharing');
+    const body=JSON.parse(String(sharingRequest?.[1]?.body));expect(body).toEqual({reportId:report.report_id,accountId:7,action:'share'});
+    const writeText=vi.fn(async()=>{});Object.defineProperty(navigator,'clipboard',{value:{writeText},configurable:true});
+    fireEvent.click(screen.getByRole('button',{name:'Copy shared link'}));await waitFor(()=>expect(writeText).toHaveBeenCalledWith(url));
+    request.mockResolvedValueOnce(new Response(JSON.stringify({ok:true,sharing:{phase:'inactive',accountId:7,login:'alice'}})));
+    fireEvent.click(screen.getByRole('button',{name:'Stop sharing'}));await waitFor(()=>expect(screen.queryByRole('button',{name:'Copy shared link'})).toBeNull());
+    expect(screen.getByText(/Previously saved copies/)).toBeTruthy();
+  });
+  it('shows Pages pending and clipboard failure with a selectable fallback link',async()=>{
+    fixture.detail=[report];mount('?sel=edition-2');const request=vi.mocked(fetch);
+    request.mockResolvedValueOnce(new Response(JSON.stringify({sharing:{phase:'pending',accountId:7,login:'alice',message:'Pages is preparing the reader.'}})));
+    fireEvent.click(screen.getByRole('button',{name:'Share'}));await screen.findByRole('button',{name:'Check sharing'});
+    expect(screen.queryByRole('button',{name:'Copy shared link'})).toBeNull();
+    const url='https://alice.github.io/papercusp-reports/#gist=example';request.mockResolvedValueOnce(new Response(JSON.stringify({sharing:{phase:'ready',accountId:7,login:'alice',url}})));
+    fireEvent.click(screen.getByRole('button',{name:'Check sharing'}));await screen.findByRole('button',{name:'Copy shared link'});
+    Object.defineProperty(navigator,'clipboard',{value:{writeText:vi.fn(async()=>{throw new Error('denied');})},configurable:true});
+    fireEvent.click(screen.getByRole('button',{name:'Copy shared link'}));await screen.findByText(/Clipboard access was denied/);
+    expect((screen.getByRole('textbox',{name:'Shared link'}) as HTMLInputElement).value).toBe(url);
+  });
+  it('shows actionable publication errors without claiming a ready URL',async()=>{
+    fixture.detail=[report];mount('?sel=edition-2');vi.mocked(fetch).mockResolvedValueOnce(new Response(JSON.stringify({error:'Check Gist permissions.'}),{status:403}));
+    fireEvent.click(screen.getByRole('button',{name:'Share'}));await screen.findByText('Check Gist permissions.');expect(screen.queryByRole('button',{name:'Copy shared link'})).toBeNull();
+  });
   it('keeps semantic tables in a single keyboard reachable region across repeated parsing and fullscreen', async () => {
     fixture.detail = [{ ...report, body_md: '## Table fixture' }];
     mount('?sel=edition-2');

@@ -94,15 +94,15 @@ export interface ScanOptions {
 
 /** Same failure semantics as CgroupFs, but no kernel IO on the request thread. */
 export interface AsyncCgroupFs {
-  readFile(path: string): Promise<string | null>;
-  readDir(path: string): Promise<string[]>;
+  readFile(path: string, signal?: AbortSignal): Promise<string | null>;
+  readDir(path: string, signal?: AbortSignal): Promise<string[]>;
   /** Directory-entry metadata avoids a separate stat for every cgroup control file. */
-  readDirEntries?(path: string): Promise<Array<{ name: string; isDirectory: boolean; isSymbolicLink: boolean }>>;
-  isDir(path: string): Promise<boolean>;
+  readDirEntries?(path: string, signal?: AbortSignal): Promise<Array<{ name: string; isDirectory: boolean; isSymbolicLink: boolean }>>;
+  isDir(path: string, signal?: AbortSignal): Promise<boolean>;
 }
 
 const nodeAsyncCgroupFs: AsyncCgroupFs = {
-  readFile: (path) => readFile(path, 'utf8').catch(() => null),
+  readFile: (path, signal) => readFile(path, { encoding: 'utf8', signal }).catch(() => null),
   readDir: (path) => readdir(path).catch(() => []),
   readDirEntries: (path) =>
     readdir(path, { withFileTypes: true })
@@ -114,6 +114,36 @@ const nodeAsyncCgroupFs: AsyncCgroupFs = {
       .catch(() => []),
   isDir: (path) => stat(path).then((s) => s.isDirectory(), () => false),
 };
+
+/** Race an async filesystem operation with the scan deadline. The signal lets
+ * cancellable Node reads stop at the OS boundary; it also prevents non-cancellable
+ * directory/stat operations from resuming the walker after the deadline. */
+function awaitAbortable<T>(start: () => Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) return Promise.reject(signal.reason ?? new Error('async process scan aborted'));
+
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(signal.reason ?? new Error('async process scan aborted'));
+    signal.addEventListener('abort', onAbort, { once: true });
+    let operation: Promise<T>;
+    try {
+      operation = start();
+    } catch (error) {
+      signal.removeEventListener('abort', onAbort);
+      reject(error);
+      return;
+    }
+    operation.then(
+      (value) => {
+        signal.removeEventListener('abort', onAbort);
+        resolve(value);
+      },
+      (error) => {
+        signal.removeEventListener('abort', onAbort);
+        reject(error);
+      },
+    );
+  });
+}
 
 interface AsyncScanProgress {
   userManagerRoot: string | null;
@@ -164,16 +194,21 @@ export async function scanProcessesAsync(opts: ScanOptions = {}): Promise<ScanRe
       : null,
     ownedRootExists: null,
   };
+  const controller = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<ScanResult>((resolve) => {
     timer = setTimeout(
-      () => resolve(incompleteAsyncScanResult(progress)),
+      () => {
+        // Settle the caller's timeout result before rejecting the losing scan.
+        resolve(incompleteAsyncScanResult(progress));
+        controller.abort(new Error('async process scan deadline exceeded'));
+      },
       Math.ceil(deadlineMs),
     );
   });
 
   try {
-    return await Promise.race([scanProcessesAsyncComplete(opts, progress), timeout]);
+    return await Promise.race([scanProcessesAsyncComplete(opts, progress, controller.signal), timeout]);
   } finally {
     if (timer) clearTimeout(timer);
   }
@@ -182,6 +217,7 @@ export async function scanProcessesAsync(opts: ScanOptions = {}): Promise<ScanRe
 async function scanProcessesAsyncComplete(
   opts: ScanOptions,
   progress: AsyncScanProgress,
+  signal: AbortSignal,
 ): Promise<ScanResult> {
   const source = opts.asyncFs ?? nodeAsyncCgroupFs;
   const root = opts.cgroupRoot ?? CGROUP_ROOT;
@@ -189,7 +225,7 @@ async function scanProcessesAsyncComplete(
   const files = new Map<string, string | null>();
   const directories = new Map<string, string[]>();
   const file = async (path: string): Promise<string | null> => {
-    const value = await source.readFile(path);
+    const value = await awaitAbortable(() => source.readFile(path, signal), signal);
     files.set(path, value);
     return value;
   };
@@ -206,13 +242,13 @@ async function scanProcessesAsyncComplete(
     const batch = pending.splice(0, 32).filter(({ dir }) => !visited.has(dir));
     for (const { dir } of batch) visited.add(dir);
     const nodes = await mapWithConcurrency(batch, 16, async ({ dir, depth }) => {
-      const dirExists = await source.isDir(dir);
+      const dirExists = await awaitAbortable(() => source.isDir(dir, signal), signal);
       if (dir === owned) progress.ownedRootExists = dirExists;
       if (!dirExists) return { dir, depth, children: [] as string[] };
       const [entries, content] = await Promise.all([
         source.readDirEntries
-          ? source.readDirEntries(dir)
-          : source.readDir(dir).then((names) => names.map((name) => ({
+          ? awaitAbortable(() => source.readDirEntries!(dir, signal), signal)
+          : awaitAbortable(() => source.readDir(dir, signal), signal).then((names) => names.map((name) => ({
               name,
               isDirectory: false,
               // Legacy test readers expose names only; stat those candidates to
@@ -230,7 +266,7 @@ async function scanProcessesAsyncComplete(
       const symlinkNames = entries.filter((entry) => entry.isSymbolicLink).map((entry) => entry.name);
       const symlinkDirectories = await mapWithConcurrency(symlinkNames, 16, async (name) => {
         const child = `${dir}/${name}`;
-        return (await source.isDir(child)) ? name : null;
+        return (await awaitAbortable(() => source.isDir(child, signal), signal)) ? name : null;
       });
       const children = [...directoryNames, ...symlinkDirectories.filter((x): x is string => x !== null)];
       directories.set(dir, children);

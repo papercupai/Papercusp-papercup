@@ -26,6 +26,7 @@ import type { CheckEntry } from './carry-note';
 import { CONTINUITY_PROBE_MAX_PER_WAKE, LIMITS } from './agent-tools/limits';
 import { assertSingleReadStatement, PG_READ_QUERY_HARD_MAX_ROWS, pgReadQuery } from './pg-read-query';
 import { compileRetainedSql, retainedSqlCaptureExpression, retainedSqlImplementationSha256, SQL_INPUT_COLUMN } from './retained-sql';
+import { retainedReplaySourceIdentity } from './retained-replay-identity';
 export { CONTINUITY_PROBE_MAX_PER_WAKE } from './agent-tools/limits';
 
 export const CONTINUITY_PROBE_MAX_BYTES = 12_000;
@@ -711,9 +712,7 @@ function observedScalar(value: unknown): unknown {
 export function retainedProbeProcedure(probe: ContinuityProbe, sqlInputs?: unknown) {
   return { ...continuityProbeShapeSchema.parse(probe),
     ...(sqlInputs === undefined ? {} : { sqlInputs, sqlReplayImplementation: retainedSqlImplementationSha256() }),
-    replayDependencySha256: createHash('sha256')
-    .update(canonicalJson({ version: 1, helpers: [predicatePath, valueAtPredicatePath,
-      evaluateContinuityPredicate, observedScalar].map(fn => fn.toString()) })).digest('hex') };
+    replayDependencySha256: retainedReplaySourceIdentity() };
 }
 
 type ReplayScalar = number | string | boolean | null;
@@ -751,7 +750,9 @@ export function replayRetainedProbe(input: {
   const { replayDependencySha256: _identity, sqlInputs, sqlReplayImplementation: _sqlIdentity, ...probe } = descriptor;
   const shape = continuityProbeShapeSchema.safeParse(probe);
   if (!shape.success || shape.data.schemaRevision === LIVE_SCHEMA_REVISION) return unavailable('Original typed probe descriptor is invalid.');
-  const encoded = canonicalJson(retainedProbeProcedure(shape.data, sqlInputs));
+  const current = retainedProbeProcedure(shape.data, sqlInputs);
+  if (!current.replayDependencySha256) return unavailable('The predicate implementation has no source identity witness.');
+  const encoded = canonicalJson(current);
   if (p.procedure.snapshot !== encoded || p.procedure.sha256 !== createHash('sha256').update(encoded).digest('hex')) {
     return unavailable('Original descriptor or registered predicate evaluator identity differs.');
   }

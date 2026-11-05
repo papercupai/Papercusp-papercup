@@ -197,6 +197,7 @@ export type RecipeContractDiagnosticCode =
 export interface RecipeContractDiagnostic {
   code: RecipeContractDiagnosticCode;
   message: string;
+  liftsWhen?: string;
   path?: string;
   capability?: string;
 }

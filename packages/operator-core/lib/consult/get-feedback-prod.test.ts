@@ -176,6 +176,52 @@ describe('getFeedbackProd expert-routing settings', () => {
 
   beforeEach(() => vi.clearAllMocks());
 
+  it('persists the server-selected accepting runtime before asynchronous routing', async () => {
+    const original = process.env.PAPERCUSP_HONO_PORT;
+    const desktop = process.env.OPERATOR_DEV_PORT;
+    try {
+      process.env.PAPERCUSP_HONO_PORT = '3170';
+      delete process.env.OPERATOR_DEV_PORT;
+      await acceptFeedbackRequestProd({ workspaceId: 'runtime-workspace', requesterId: 'requester',
+        question: 'review current contracts', requestKey: 'runtime-retry' }, { ownerId: 'requester' } as never);
+      const saved = h.acceptFeedbackRequestCore.mock.calls[0]![0];
+      expect(saved).toMatchObject({ launchOperatorBaseUrl: 'http://localhost:3170' });
+      await vi.waitFor(() => expect(h.continueFeedbackRequestCore).toHaveBeenCalled());
+    } finally {
+      if (original === undefined) delete process.env.PAPERCUSP_HONO_PORT;
+      else process.env.PAPERCUSP_HONO_PORT = original;
+      if (desktop === undefined) delete process.env.OPERATOR_DEV_PORT;
+      else process.env.OPERATOR_DEV_PORT = desktop;
+    }
+  });
+
+  it('restores the saved accepting runtime when another host recovers routing', async () => {
+    const original = process.env.PAPERCUSP_HONO_PORT;
+    const desktop = process.env.OPERATOR_DEV_PORT;
+    try {
+      process.env.PAPERCUSP_HONO_PORT = '3271';
+      delete process.env.OPERATOR_DEV_PORT;
+      await getFeedbackProd({ workspaceId: 'runtime-workspace', requesterId: 'requester',
+        question: 'review current contracts', launchOperatorBaseUrl: 'http://localhost:3170' },
+      { ownerId: 'requester' } as never, {
+        acceptedRequest: { conversation_id: 'runtime-conversation', thread_id: 'runtime-thread', leaseToken: 'lease' },
+      });
+      expect(h.makeConsultReachDispatcher.mock.calls.at(-1)![0]).toMatchObject({
+        launchOperatorBaseUrl: 'http://localhost:3170',
+      });
+      const deps = h.getFeedbackCore.mock.calls.at(-1)![1] as { resumeInitialDispatch: (id: string) => void };
+      deps.resumeInitialDispatch('runtime-conversation');
+      expect(h.continueCascadeDispatchProd.mock.calls.at(-1)![2]).toMatchObject({
+        launchOperatorBaseUrl: 'http://localhost:3170',
+      });
+    } finally {
+      if (original === undefined) delete process.env.PAPERCUSP_HONO_PORT;
+      else process.env.PAPERCUSP_HONO_PORT = original;
+      if (desktop === undefined) delete process.env.OPERATOR_DEV_PORT;
+      else process.env.OPERATOR_DEV_PORT = desktop;
+    }
+  });
+
   it('starts accepted initial delivery through the leased continuation under the saved requester', async () => {
     await getFeedbackProd({ workspaceId: 'saved-workspace', requesterId: 'saved-requester', question: 'saved question' },
       { ownerId: 'saved-requester' } as never, { harnessSlug: 'saved-harness',

@@ -73,6 +73,69 @@ describe('current measurement freshness', () => {
   });
 });
 
+describe('unknown resolution guidance', () => {
+  const criterion = { key: 'journey', check: { kind: 'probe', probe: probe(1), maxAgeMs: 60_000 } };
+  const measuredAt = '2026-10-13T02:00:00.000Z';
+  const grade = (result: Record<string, unknown>, extra: Partial<LatestRubricCheckResult> = {}, nowMs = Date.parse(measuredAt)) => {
+    const provenance = retainMeasurementProvenance({ procedure: { kind: 'sql', sql: 'SELECT measured_value' },
+      result: { rows: [result] }, startedAt: measuredAt, finishedAt: measuredAt });
+    const latest = row('journey:0', null, 'error', { provenance });
+    const out = fillRatingsFromLedger({ criteria: [criterion], callerRatings: {},
+      latest: new Map([['journey:0', { ...latest, ...extra }]]), nowMs });
+    if (!out.ok) throw new Error(out.detail);
+    return out.ratings.journey!;
+  };
+
+  it('directs a declared missing producer to implementation rather than unchanged retries', () => {
+    const entry = grade({ n: 0, measurement_status: 'instrument-unavailable: native journey producer must be implemented and verified' });
+    expect(entry).toMatchObject({ rating: 'unknown', unknownReason: 'instrument-unavailable', attribution: 'instrument' });
+    expect(entry.nextEvidenceAction).toContain('native journey producer');
+    expect(entry.nextEvidenceAction).toContain('Implement and verify');
+    expect(entry.nextEvidenceAction).toContain('Do not repeat');
+    expect(entry.ledgerResult?.testRunId).toBe(7);
+  });
+
+  it('distinguishes a missing valid cohort from an instrument failure', () => {
+    const entry = grade({ valid_n: 0, attempt_n: 3, distinct_run_n: 3 });
+    expect(entry).toMatchObject({ rating: 'unknown', unknownReason: 'not-exercised' });
+    expect(entry.nextEvidenceAction).toContain('valid_n=0');
+    expect(entry.nextEvidenceAction).toContain('producer');
+    expect(entry.nextEvidenceAction).toContain('build/run provenance');
+  });
+
+  it.each([0, 8])('describes the actual SQL activity delta %s without blaming the instrument', calls => {
+    const entry = grade({ calls_in_window: calls, reset_before: 'r1', reset_after: 'r1', dealloc_before: '4', dealloc_after: '4' });
+    expect(entry.unknownReason).toBe(calls === 0 ? 'idle' : 'not-exercised');
+    expect(entry.nextEvidenceAction).toContain(`calls_in_window=${calls}`);
+    expect(entry.nextEvidenceAction).toContain('minimum');
+    expect(entry.nextEvidenceAction).toContain('Do not repeat');
+  });
+
+  it('does not call an invalid counter window idle or a missing producer', () => {
+    const entry = grade({ calls_in_window: 0, reset_before: 'r1', reset_after: 'r2', dealloc_before: '4', dealloc_after: '4' });
+    expect(entry.unknownReason).toBe('instrument-unavailable');
+    expect(entry.nextEvidenceAction).toContain('counter');
+    expect(entry.nextEvidenceAction).not.toContain('Implement and verify');
+  });
+
+  it('treats expiry as fresh evidence to collect and invalid clocks as timestamps to repair', () => {
+    const stale = grade({}, {}, Date.parse(measuredAt) + 60_001);
+    expect(stale.unknownReason).toBe('not-exercised');
+    expect(stale.nextEvidenceAction).toContain('expired');
+    const invalid = grade({}, { finishedAt: 'invalid' });
+    expect(invalid.nextEvidenceAction).toContain('timestamp');
+    expect(invalid.nextEvidenceAction).not.toContain('expired');
+  });
+
+  it('preserves an unexplained failure and asks for diagnosis before a bounded retry', () => {
+    const entry = grade({});
+    expect(entry.unknownReason).toBe('instrument-unavailable');
+    expect(entry.nextEvidenceAction).toContain('test_runs:7');
+    expect(entry.nextEvidenceAction).toContain('Diagnose');
+    expect(entry.nextEvidenceAction).toContain('once');
+  });
+});
+
 it('preserves legacy scalar grades with explicit legacy-missing provenance', () => {
   const criterion = { key: 'disk', check: { kind: 'instrument', instrumentKey: 'host:df-root-used-pct', expect: { op: 'lt', value: 80 } } };
   const legacy = row('disk:instrument', 42, 'pass', { unit: '%' });

@@ -5218,7 +5218,9 @@ export async function setWorkItemStateWithAliasInfo(
   // Keep the pre-write row for transition-specific cleanup below. The row returned by
   // setWorkItemState is already post-transition, so it cannot tell us whether the
   // blocked auto-gate lease was the state that this call just left.
-  const priorWorkItem = await getWorkItem(id, opts.harness);
+  const priorWorkItem = opts.family === 'feature'
+    ? await getFeatureWorkItemOnly(id, opts.harness)
+    : await getWorkItem(id, opts.harness);
   const normalizedRequest = priorWorkItem
     ? normalizeWorkItemState(priorWorkItem.family, requestedState)
     : null;

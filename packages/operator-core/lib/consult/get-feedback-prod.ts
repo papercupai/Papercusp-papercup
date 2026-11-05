@@ -1,5 +1,7 @@
 /** Shared production binding for consult lifecycle consumers. No tool recursion. */
 import type { AgentIdentity } from '../agent-tools/coordination/identity';
+import { hostname } from 'node:os';
+import { resolveSpawnHostOperatorBaseUrl } from '../mcp-base-url';
 import { getBuildInfo } from '../build-info';
 import { recordExpertiseRoutingInvocation } from '../endpoint-route/telemetry';
 import { CONSULT_DEFAULT_POLICY, methodReviewTarget } from './selection-policies';
@@ -42,7 +44,8 @@ export async function acceptFeedbackRequestProd(
     ]);
     const sql = getOrgPg().sql;
     const payload = { ...request, harnessSlug: request.harnessSlug || options.harnessSlug || undefined,
-      allowDispatch: options.allowDispatch !== false };
+      allowDispatch: options.allowDispatch !== false,
+      launchOperatorBaseUrl: resolveSpawnHostOperatorBaseUrl(), launchOperatorHost: hostname() };
     const planRefusal = await validateBarCritiquePlanOrigin(payload, sql);
     if (planRefusal) return planRefusal;
 
@@ -123,6 +126,8 @@ export async function getFeedbackProd(
         workspaceId: request.workspaceId,
         harnessSlug: request.harnessSlug?.trim() || options.harnessSlug || null,
         launchedBy: identity.ownerId,
+        ...(request.launchOperatorBaseUrl ? { launchOperatorBaseUrl: request.launchOperatorBaseUrl,
+          launchOperatorHost: request.launchOperatorHost } : {}),
       }, { loadRanks: expertRouting.loadRanks }).catch(() => {});
     },
     getSql: () => getOrgPg().sql,
@@ -201,6 +206,8 @@ export async function getFeedbackProd(
           workspaceId: request.workspaceId,
           harnessSlug: request.harnessSlug?.trim() || options.harnessSlug || null,
           launchedBy: identity.ownerId,
+          ...(request.launchOperatorBaseUrl ? { launchOperatorBaseUrl: request.launchOperatorBaseUrl,
+            launchOperatorHost: request.launchOperatorHost } : {}),
           // P-005: the walk order is the PERSISTED allowlist (D-004), not the
           // hardcoded seed. loadExpertModelRanks returns null when nothing usable
           // is stored, which lets resolveExpertModelAllowlist fall back to the

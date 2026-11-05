@@ -13,7 +13,7 @@ import { checkpointLogDirFromEnv } from './release/checkpoint-log-dir';
  * Why DETACHED (mirrors release-deploy-launch.ts): the green-checkpoint suite runs the full
  * test battery under load for up to ~55 min — far past any MCP call budget — so an awaited
  * child would time out the tool. We launch it as a transient systemd unit with NO run-level
- * wall clock (WI-6554700010042457): no RuntimeMaxSec and no TASK_DEADLINE of its own, so a
+ * wall clock (WI-6554700010042457): no RuntimeMaxSec or inherited TASK_DEADLINE, so a
  * progressing main-greening run always reaches its verdict. The in-process self-watchdog's
  * IDLE (no-progress) budget is what stops a run that has genuinely gone silent.
  * The OUTCOME lands on /admin/git (the pipeline event the CLI emits), not this caller.
@@ -1947,14 +1947,11 @@ export function buildCheckpointSystemdArgv(
   candidateSource?: CheckpointCandidateSource | null,
   launchStartedAtMs = Date.now(),
 ): string[] {
-  const inheritedDeadlines = [extraEnv[TASK_DEADLINE_EPOCH_MS_ENV], process.env[TASK_DEADLINE_EPOCH_MS_ENV]]
-    .map(Number).filter(value => Number.isSafeInteger(value) && value > 0);
-  // WI-6554700010042457 (Avi #2574): a manual main-greening run has no wall-clock deadline of
-  // its own. Only a deadline the LAUNCHER itself inherited is forwarded (a child cannot outlive
-  // its scope). MANUAL_CHECKPOINT_WATCHDOG_MS below is the run's IDLE (no-progress) budget.
+  // WI-6554700010042457: this detached job owns its lifetime independently of the request
+  // that launches it. A request's inherited deadline must not become a full-suite cutoff.
+  // MANUAL_CHECKPOINT_WATCHDOG_MS below is the run's IDLE (no-progress) budget.
   // launchStartedAtMs no longer bounds anything; it stays in the signature for its callers.
   void launchStartedAtMs;
-  const callerDeadlineEpochMs = inheritedDeadlines.length ? Math.min(...inheritedDeadlines) : null;
   // Mirror the PERIODIC gate: the routine spawns green-checkpoint.ts with { ...process.env } so it
   // inherits PAPERCUSP_PARTIAL_GREEN_GATE (the longest-green-prefix FF). A MANUAL checkpoint runs via
   // `systemd-run --user`, which does NOT inherit the launching process env — so without this it always
@@ -1997,9 +1994,9 @@ export function buildCheckpointSystemdArgv(
   const target = runLogPath ?? logPath;
   const link = runLogPath ? `ln -sfn '${runLogPath}' '${logPath}' && ` : '';
   const validClearEnv = clearEnv.filter((key) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(key));
-  const clearEnvCommand = validClearEnv.length
+  const clearEnvCommand = (validClearEnv.length
     ? `unset ${validClearEnv.map((key) => shellQuote(key)).join(' ')} && `
-    : '';
+    : '') + `unset ${shellQuote(TASK_DEADLINE_EPOCH_MS_ENV)} && `;
   // WI-5377: this run is always detached (systemd-run, no interactive TTY ever reads it
   // live — it goes straight to a file), so stripping ANSI here can never lose the
   // "keep colour for an interactive TTY" case; that case belongs to a foreground/manual
@@ -2069,7 +2066,6 @@ export function buildCheckpointSystemdArgv(
     ...greenCheckpointDbTargetSetenvArgs(),
     `--setenv=${MANUAL_CHECKPOINT_WATCHDOG_ENV}=${MANUAL_CHECKPOINT_WATCHDOG_MS}`,
     ...routedEnv,
-    ...(callerDeadlineEpochMs === null ? [] : [`--setenv=${TASK_DEADLINE_EPOCH_MS_ENV}=${callerDeadlineEpochMs}`]),
     ...verdictEnv,
     ...qualificationEnv,
     ...gateFireEnv,

@@ -4,7 +4,10 @@
  * (bench → record → invalidate), the non-fatal failure paths, and (EI-10047)
  * the recall-drop baseline read + escalation wiring on top of it.
  */
-import { describe, it, expect } from 'vitest';
+import { EventEmitter } from 'node:events';
+import { PassThrough } from 'node:stream';
+
+import { describe, it, expect, vi } from 'vitest';
 import type { QueryOutcome } from '@papercusp/memory/bench';
 import { toDecisionLedgerEntry, type DecisionCallRecord } from '@papercusp/decision-model';
 import { JEV_MEMORY_ADMIT_THRESHOLD, type JevMemoryGateInput } from '../jev-memory-gate';
@@ -19,10 +22,12 @@ import {
   PRECISION_BENCH_JEV_CONSUMER,
   PRECISION_BENCH_JEV_GATE_ENV,
   PRECISION_BENCH_JEV_LEDGER_MARKER,
+  PRECISION_BENCH_PROGRESS_MARKER,
   PRECISION_BENCH_EMBEDDER_MODE_ENV,
   PRECISION_BENCH_RESULT_MARKER,
   PRECISION_BENCH_WORKSPACE_ID_ENV,
   precisionBenchWorkerInvocation,
+  parsePrecisionBenchWorkerProgress,
   resolvePrecisionBenchWorkerTarget,
   runBenchInWorker,
   runMemoryPrecisionMonitor,
@@ -356,6 +361,64 @@ describe('precision bench worker protocol', () => {
       `startup log\n${PRECISION_BENCH_RESULT_MARKER}${JSON.stringify(METRICS)}\n`,
     );
     expect(parsed).toEqual(METRICS);
+  });
+
+  it('reports the last worker phase and bounded, redacted output when the worker times out', async () => {
+    const childEmitter = new EventEmitter();
+    const stdout = new PassThrough();
+    const stderr = new PassThrough();
+    const secret = 'openai-secret-for-timeout-test';
+    const kill = vi.fn((_signal?: NodeJS.Signals) => {
+      setImmediate(() => {
+        stdout.end();
+        stderr.end();
+        childEmitter.emit('close', null, 'SIGTERM');
+      });
+      return true;
+    });
+    const child = Object.assign(childEmitter, { stdout, stderr, kill });
+    const spawnProcess = (() => {
+      process.nextTick(() => {
+        stdout.write(`${PRECISION_BENCH_PROGRESS_MARKER}${JSON.stringify({
+          phase: 'seed-corpus',
+          status: 'started',
+          at: '2026-11-05T19:00:00.000Z',
+          expectedRows: 114,
+        })}\n`);
+        stdout.write(`${'x'.repeat(1_600)}STDOUT_TAIL`);
+        stderr.write(`${'y'.repeat(1_600)}STDERR_TAIL ${secret}`);
+      });
+      return child;
+    }) as unknown as typeof import('node:child_process').spawn;
+
+    let failure: unknown;
+    try {
+      await runBenchInWorker({
+        spawnProcess,
+        timeoutMs: 20,
+        embedderMode: 'local',
+        resolveWorkerCredentials: async () => ({ openai_api_key: secret }),
+      });
+    } catch (error) {
+      failure = error;
+    }
+
+    expect(failure).toBeInstanceOf(Error);
+    const message = (failure as Error).message;
+    expect(message).toContain('precision bench worker timed out after 20ms');
+    expect(message).toContain('last phase: seed-corpus/started');
+    expect(message).toContain('expectedRows=114');
+    expect(message).toContain('stdout tail:');
+    expect(message).toContain('STDOUT_TAIL');
+    expect(message).toContain('stderr tail:');
+    expect(message).toContain('STDERR_TAIL');
+    expect(message).not.toContain(secret);
+    expect(message).not.toContain('x'.repeat(1_300));
+    expect(message.length).toBeLessThan(3_000);
+    expect(kill).toHaveBeenCalledWith('SIGTERM');
+    expect(parsePrecisionBenchWorkerProgress(
+      `${PRECISION_BENCH_PROGRESS_MARKER}{"phase":"seed-corpus","status":"started","at":"2026-11-05T19:00:00.000Z","expectedRows":114}`,
+    )).toMatchObject({ phase: 'seed-corpus', status: 'started', expectedRows: 114 });
   });
 
   it('fails loudly when the child exits without a result marker', () => {

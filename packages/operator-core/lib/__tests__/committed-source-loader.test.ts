@@ -92,6 +92,21 @@ beforeAll(() => {
   put(fixture, 'apps/operator/bin/sidecar.ts', "import { v } from './value';\nconsole.log(`SIDECAR=${v}`);\n");
   put(fixture, 'apps/operator/bin/value.ts', "export const v: string = 'HEAD';\n");
   put(fixture, 'apps/operator/cjs-bin/sidecar.ts', "const v: string = 'HEAD';\nconsole.log(`SIDECAR=${v}`);\n");
+  // Model the release fixture's exact alias layout, including its extensionless
+  // TS imports, relative scripts helper and installed dependency lookup.
+  for (const name of ['clean', 'dirty']) {
+    put(fixture, `apps/operator/lib/release/${name}-cli.ts`, [
+      `import { v } from './${name}-value';`,
+      "import { identity } from '../../../../scripts/lib/identity-leak-patterns.mjs';",
+      "import { d } from 'dep';",
+      'console.log(`RELEASE=${v}:${identity}:${d}`);',
+      '',
+    ].join('\n'));
+    put(fixture, `apps/operator/lib/release/${name}-value.ts`, "export const v: string = 'HEAD';\n");
+  }
+  put(fixture, 'scripts/lib/identity-leak-patterns.mjs', "export const identity = 'IDENTITY';\n");
+  put(fixture, 'apps/operator/lib/release/uncommitted-cli.ts',
+    "import './new-value';\nconsole.log('RELEASE-UNCOMMITTED-ENTRY-RAN');\n");
   put(fixture, 'cjs/package.json', '{ "type": "commonjs" }\n');
   put(fixture, 'cjs/[eval]-wrapper', "console.log('FILE-WRAPPER-RAN');\n");
   put(fixture, 'cjs/[stdin]-wrapper', "console.log('FILE-WRAPPER-RAN');\n");
@@ -125,6 +140,8 @@ beforeAll(() => {
   put(fixture, 'mod.mjs', "export const v = 'DIRTY';\n");
   put(fixture, 'ts/mod.ts', "export const v: string = 'DIRTY';\n");
   put(fixture, 'apps/operator/bin/value.ts', "export const v: string = 'DIRTY';\n");
+  put(fixture, 'apps/operator/lib/release/dirty-value.ts', "export const v: string = 'DIRTY';\n");
+  put(fixture, 'apps/operator/lib/release/new-value.ts', "console.log('RELEASE-NEW-RAN');\n");
   put(fixture, 'new.mjs', "console.log('NEW-RAN');\n");
   put(fixture, 'gen/out.mjs', "export const g = 'GEN';\n");
   put(fixture, 'node_modules/dep/package.json', '{ "name": "dep", "type": "module", "exports": "./index.mjs" }\n');
@@ -189,7 +206,100 @@ function readAudit(file: string): AuditRecord[] {
   return readFileSync(file, 'utf8').trim().split('\n').filter(Boolean).map((line) => JSON.parse(line) as AuditRecord);
 }
 
+/** The same temporary ESM scope and installed tsx command as the page fixture. */
+function runFixtureScopedRelease(sourceRoot: string, entry: string, args: string[] = [],
+  options: { auditFile?: string; guarded?: boolean; env?: NodeJS.ProcessEnv } = {}) {
+  const alias = mkdtempSync(join(scratch, 'release-esm-'));
+  put(alias, 'apps/operator/package.json', '{"type":"module"}\n');
+  mkdirSync(join(alias, 'apps/operator/lib'), { recursive: true });
+  mkdirSync(join(alias, 'scripts/lib'), { recursive: true });
+  symlinkSync(join(sourceRoot, 'apps/operator/lib/release'), join(alias, 'apps/operator/lib/release'), 'dir');
+  symlinkSync(join(sourceRoot, 'node_modules'), join(alias, 'node_modules'), 'dir');
+  symlinkSync(join(sourceRoot, 'scripts/lib/identity-leak-patterns.mjs'),
+    join(alias, 'scripts/lib/identity-leak-patterns.mjs'));
+  const env = { ...cleanEnv(), ...options.env };
+  if (options.guarded !== false) env.NODE_OPTIONS = `--import=${COMMITTED_SOURCE_LOADER}`;
+  const target = join(alias, 'apps/operator/lib/release', entry);
+  return { ...run([
+    join(dirname(TSX_LOADER), 'cli.mjs'), '--preserve-symlinks', '--preserve-symlinks-main', target, ...args,
+  ], env, options.auditFile), target };
+}
+
 describe('committed-source loader — a scratch checkout', () => {
+  it('runs the actual release gate through a fixture-scoped ESM symlink', () => {
+    const owned = mkdtempSync(join(scratch, 'release-gate-'));
+    put(owned, 'site/index.html', '<p>Release notes</p>\n');
+    mkdirSync(join(owned, 'home'));
+    const audit = join(owned, 'gate.audit');
+    const loaded = runFixtureScopedRelease(REPO, 'gate-release-site.ts', [join(owned, 'site')], {
+      auditFile: audit,
+      env: { HOME: join(owned, 'home'), PAPERCUSP_RELEASE_OWNER_NAME: 'Fixture Release Owner',
+        PAPERCUSP_RELEASE_OWNER_EMAIL: 'fixture@example.invalid',
+        PAPERCUSP_RELEASE_IDENTITY_ENV: join(owned, 'absent-identity.env') },
+    });
+    expect(loaded.status, loaded.stderr).toBe(0);
+    expect(loaded.stdout).toContain('[gate] CLEAN');
+    const records = readAudit(audit);
+    expect(records.find(record => record.rel === 'apps/operator/lib/release/gate-release-site.ts')).toMatchObject({
+      via: 'esm', kind: 'committed', file: loaded.target,
+    });
+    expect(records.filter(record => record.kind === 'substituted' || record.kind === 'uncommitted'
+      || record.refused)).toEqual([]);
+  }, 60_000);
+
+  it('judges fixture-scoped ESM symlink inputs as checkout bytes before transforming them', () => {
+    const audit = join(scratch, 'release-scope-clean.audit');
+    const loaded = runFixtureScopedRelease(fixture, 'clean-cli.ts', [], { auditFile: audit });
+    expect(loaded.status, loaded.stderr).toBe(0);
+    expect(loaded.stdout).toContain('RELEASE=HEAD:IDENTITY:DEP');
+    const records = readAudit(audit);
+    expect(records.find(record => record.rel === 'apps/operator/lib/release/clean-cli.ts')).toMatchObject({
+      via: 'esm', kind: 'committed', file: loaded.target,
+    });
+    expect(records.find(record => record.rel === 'apps/operator/lib/release/clean-value.ts')).toMatchObject({
+      via: 'esm', kind: 'committed', returnedSha256: sha256("export const v: string = 'HEAD';\n"),
+    });
+    expect(records.find(record => record.rel === 'scripts/lib/identity-leak-patterns.mjs')).toMatchObject({
+      via: 'esm', kind: 'committed',
+    });
+    expect(records.filter(record => record.kind === 'substituted' || record.kind === 'uncommitted'
+      || record.refused)).toEqual([]);
+  }, 60_000);
+
+  it('substitutes dirty realpath imports visibly through a fixture-scoped ESM symlink', () => {
+    const control = runFixtureScopedRelease(fixture, 'dirty-cli.ts', [], { guarded: false });
+    expect(control.status, control.stderr).toBe(0);
+    expect(control.stdout).toContain('RELEASE=DIRTY:IDENTITY:DEP');
+    const audit = join(scratch, 'release-scope-dirty.audit');
+    const loaded = runFixtureScopedRelease(fixture, 'dirty-cli.ts', [], { auditFile: audit });
+    expect(loaded.status, loaded.stderr).toBe(0);
+    expect(loaded.stdout).toContain('RELEASE=HEAD:IDENTITY:DEP');
+    expect(loaded.stdout).not.toContain('RELEASE=DIRTY');
+    expect(loaded.stderr).toContain('COMMITTED_SOURCE substituted apps/operator/lib/release/dirty-value.ts');
+    // The caller must reject this run as qualification, even though HEAD ran.
+    const selectedChanges = readAudit(audit).filter(record => record.kind === 'substituted'
+      || record.kind === 'uncommitted' || record.refused);
+    expect(selectedChanges).toEqual([expect.objectContaining({
+      via: 'esm', kind: 'substituted', rel: 'apps/operator/lib/release/dirty-value.ts',
+      returnedSha256: sha256("export const v: string = 'HEAD';\n"),
+    })]);
+  }, 60_000);
+
+  it('refuses uncommitted realpath imports through a fixture-scoped ESM symlink', () => {
+    const control = runFixtureScopedRelease(fixture, 'uncommitted-cli.ts', [], { guarded: false });
+    expect(control.status, control.stderr).toBe(0);
+    expect(control.stdout).toContain('RELEASE-NEW-RAN');
+    const audit = join(scratch, 'release-scope-uncommitted.audit');
+    const loaded = runFixtureScopedRelease(fixture, 'uncommitted-cli.ts', [], { auditFile: audit });
+    expect(loaded.status).not.toBe(0);
+    expect(loaded.stderr).toContain('COMMITTED_SOURCE refused apps/operator/lib/release/new-value.ts');
+    expect(loaded.stdout).not.toContain('RELEASE-NEW-RAN');
+    expect(loaded.stdout).not.toContain('RELEASE-UNCOMMITTED-ENTRY-RAN');
+    expect(readAudit(audit).find(record => record.rel === 'apps/operator/lib/release/new-value.ts')).toMatchObject({
+      via: 'esm', kind: 'uncommitted', returnedSha256: null,
+    });
+  }, 60_000);
+
   it.each([
     ['entry.mjs', [], 'V=DIRTY'],
     ['req-entry.mjs', ['./c-dirty.cjs'], 'CJS-DIRTY'],

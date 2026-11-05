@@ -317,6 +317,11 @@ export async function identityRuntimePreparation<T>(evidenceDir: string,
       'Observed build outputs must be independent of the source archive',
       'Observed build requires a fresh preparation directory', 'Pinned selected source receipt changed',
       'Observed selected source differs', 'Private operator dependencies violate their declared ranges:',
+      // complete() checks run after the shell builder succeeds. Keep their
+      // stable names without retaining assertion diffs or artifact contents.
+      'Original source receipt changed during build', 'Retained source receipt changed during build',
+      'Original build inputs changed during build', 'Materialized dependencies changed during build',
+      'Observed build symlinks are not qualified',
     ];
     const code = known.find(value => message === value || message.startsWith(`${value}\n`) ||
       (value.endsWith(':') && message.startsWith(`${value} `)));

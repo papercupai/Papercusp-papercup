@@ -308,18 +308,28 @@ let pg = null;
 // Early private-verifier release and terminal wrapper cleanup own the same
 // PG instance. Share one stop so the second path observes the first receipt.
 const stopPrivatePg = createSingleFlightStop(async () => { await pg?.stop(); }, async () => {
+  const failures = [];
+  // A verifier can release PG before terminal wrapper cleanup. Reap its
+  // ledger-owned scopes in this shared, memoized preparation while PG lives.
+  if (managedTasks && managedTaskCleanupEnv) {
+    try { await stopPrivateManagedTasks(); } catch (error) { failures.push(error); }
+  }
   const dir = ownedDatabaseDir;
-  if (!dir || !pg) return;
-  const runId = process.env.PAPERCUSP_TEST_RUN_GROUP;
-  if (!runId) throw new Error('owned private database cleanup requires a run group');
-  // The outer test router cannot DROP after this wrapper stops the cluster.
-  // Reuse its private registry while the exact owned endpoint is still alive.
-  const result = await cleanupOwnedTestDatabases({ dir, runId, adminUri: pg.urls.admin,
-    deadlineAtMs: Date.now() + 10_000, drop: dropDatabaseOnDedicatedConnection });
-  console.log('[with-test-pg] owned database cleanup ' + JSON.stringify({
-    complete: result.complete, databases: result.databases, errorCount: result.errors.length, errors: result.errors,
-  }));
-  if (!result.complete) throw new Error('private database cleanup remains unverified; see retained owned database receipts');
+  if (dir && pg) {
+    try {
+      const runId = process.env.PAPERCUSP_TEST_RUN_GROUP;
+      if (!runId) throw new Error('owned private database cleanup requires a run group');
+      // Both independent cleanup steps must run before stopping the endpoint.
+      const result = await cleanupOwnedTestDatabases({ dir, runId, adminUri: pg.urls.admin,
+        deadlineAtMs: Date.now() + 10_000, drop: dropDatabaseOnDedicatedConnection });
+      console.log('[with-test-pg] owned database cleanup ' + JSON.stringify({
+        complete: result.complete, databases: result.databases, errorCount: result.errors.length, errors: result.errors,
+      }));
+      if (!result.complete) throw new Error('private database cleanup remains unverified; see retained owned database receipts');
+    } catch (error) { failures.push(error); }
+  }
+  if (failures.length === 1) throw failures[0];
+  if (failures.length) throw new AggregateError(failures, 'private PG preparation has unverified cleanup');
 });
 let profileProcess = null;
 let profileLifetime = null;
@@ -434,8 +444,7 @@ async function cleanupOwnedState() {
   const ownedPg = pg ? { stop: stopPrivatePg, health: () => pg?.health?.() ?? null } : null;
   await cleanupOwnedTestState({ child, childLifetime, profileProcess, profileLifetime, pg: ownedPg,
     dataDir, runtimeRoot, isolatedRuntime, cleanupStage, observePrivatePgStop,
-    receiptFailures: cleanupReceiptFailures, drainReceipts: drainCleanupReceipts,
-    stopManagedTasks: managedTasks && managedTaskCleanupEnv ? stopPrivateManagedTasks : null });
+    receiptFailures: cleanupReceiptFailures, drainReceipts: drainCleanupReceipts });
 }
 
 async function stopPrivateManagedTasks() {

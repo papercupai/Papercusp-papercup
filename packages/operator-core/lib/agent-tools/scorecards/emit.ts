@@ -2977,6 +2977,7 @@ export async function emitScorecard(
           id: args.authorHandoffId, target: handoffTarget, actorId: input.createdBy, phase: 'pickup', authorize: handoffAuthorize,
         });
         if (!authorHandoff.ok) return { ok: false as const, code: 'author_handoff_pickup_refused',
+          liftsWhen: 'Use the current author handoff for this rubric revision and an actor authorized to pick it up; resolve the attached authorHandoff refusal before retrying.',
           error: 'The author obligation is obsolete or current authority refused pickup.', authorHandoff };
       }
       if (args.vettingWorkItem) {

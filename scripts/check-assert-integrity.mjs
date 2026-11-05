@@ -59,6 +59,7 @@
 import { readFileSync, readdirSync, realpathSync } from 'node:fs';
 import { resolve, dirname, relative } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import parseShell from 'shell-quote/parse.js';
 import { stripShellTrailingComment } from './lib/strip-comments-and-strings.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -347,6 +348,39 @@ function segmentFunctions(rawLines) {
 const REPORTING_CMD = /(?:^|[;&|]|\bthen\b|\{)\s*(?:echo|printf|rig_reading)\b/;
 const RETURN_STMT = /(?:^|[;&|]|\bthen\b|\{)\s*return\b/;
 
+function referencesOnlyInReports(line, variable) {
+  const marker = '__R7_MEASURED_REFERENCE__';
+  let tokens;
+  try {
+    // Preserve quoted separators and mark parameter expansions without reading
+    // the environment. A report elsewhere on the line cannot turn an earlier
+    // conditional reference into reporting-only consumption.
+    tokens = parseShell(line, (key) =>
+      key === variable || key.startsWith(`${variable}:`) ? marker : '');
+  } catch {
+    // Keep the previous classification for unsupported shell syntax.
+    return REPORTING_CMD.test(line);
+  }
+  let command = [];
+  let sawReference = false;
+  const reporting = () => {
+    const hasReference = command.some((token) =>
+      (typeof token === 'string' ? token : token.pattern ?? '').includes(marker));
+    if (!hasReference) return true;
+    sawReference = true;
+    const words = command.filter((token) => typeof token === 'string');
+    while (['then', 'else', 'do', '{'].includes(words[0])) words.shift();
+    return ['echo', 'printf', 'rig_reading'].includes(words[0]);
+  };
+  for (const token of tokens) {
+    if (typeof token === 'object' && token.op && token.op !== 'glob') {
+      if (!reporting()) return false;
+      command = [];
+    } else command.push(token);
+  }
+  return reporting() && (sawReference || REPORTING_CMD.test(line));
+}
+
 function hasBareArithmeticRef(line, variable) {
   // Bash arithmetic contexts accept bare identifiers (`(( expires <= now ))` and
   // `$((now + ttl))`).  Treat those as real logical consumption just like `$now`;
@@ -384,7 +418,8 @@ function discardedReadings(file, text) {
 
       // Diagnostic-only gate: if the value is ALSO consumed by logic, an
       // intervening return is legitimate control flow, not a discarded reading.
-      if (!refs.every((j) => REPORTING_CMD.test(body[j]))) continue;
+      if (!refs.every((j) => !hasBareArithmeticRef(body[j], v)
+        && referencesOnlyInReports(body[j], v))) continue;
 
       // Can a `return` pre-empt the FIRST place this value is reported?
       let preempt = -1;

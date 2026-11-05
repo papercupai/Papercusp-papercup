@@ -44,6 +44,7 @@ import {
 import { nonAssumptionKindAdvisory } from '../../agent-facts/assumptions';
 import type { StoredAssumptionDeclaration } from '../../coord-lifecycle/records';
 import { defineTool, type UnifiedToolContext } from '@papercusp/agent-mcp';
+import { pgAcquireTimingSnapshot, withPgAcquireDiagnostics } from '@papercusp/db-org/acquire-registry';
 import { resolveAgentIdentity, deriveFleetMembership, verifiedSpawnSessionAlias } from '../coordination/identity';
 import { getPresence } from '../coordination/presence';
 import { WORK_ITEM_LIFECYCLE_ROLES } from '../coordination/roles';
@@ -1325,6 +1326,7 @@ const TYPECHECK_BASENAME_PRUNED_DIRS = new Set([
   'build',
   'coverage',
   'dist',
+  'dist-verify',
   'node_modules',
   'out',
   'target',
@@ -3613,8 +3615,14 @@ export async function testRunLedgerRowsInWindow(
 }
 
 async function completeOne(
+  ...args: Parameters<typeof completeOneWithDiagnostics>
+): Promise<BulkItemResult> {
+  return withPgAcquireDiagnostics('work-items.complete', () => completeOneWithDiagnostics(...args));
+}
+
+async function completeOneWithDiagnostics(
   it: CompleteItem,
-  ident: { ownerId: string; ownerLabel?: string; adoptedName?: string | null },
+  ident: { ownerId: string; ownerLabel?: string; adoptedName?: () => Promise<string | null> },
   ctx: UnifiedToolContext,
   recoveredAttempt?: import('../../blueprint/operation-service').DeferredOperationCompletionFence & { invocationId: string },
 ): Promise<BulkItemResult> {
@@ -3628,6 +3636,7 @@ async function completeOne(
         traceId: ctx.requestOrigin?.mcpRequestTraceId ?? null,
         dispatchCallId: ctx.dispatchCallId ?? null,
         phases: phases.snapshot(),
+        poolAcquisitions: pgAcquireTimingSnapshot(),
       })}`);
     } catch { /* Observation must not change completion or authorize a retry. */ }
   };
@@ -3648,7 +3657,7 @@ async function completeOne(
 
 async function completeOneTracked(
   it: CompleteItem,
-  ident: { ownerId: string; ownerLabel?: string; adoptedName?: string | null },
+  ident: { ownerId: string; ownerLabel?: string; adoptedName?: () => Promise<string | null> },
   ctx: UnifiedToolContext,
   recoveredAttempt?: import('../../blueprint/operation-service').DeferredOperationCompletionFence & { invocationId: string },
 ): Promise<BulkItemResult> {
@@ -3700,7 +3709,7 @@ async function completeOneTracked(
     const heldIdHint = await (async (): Promise<string | undefined> => {
       try {
         const { listWorkItems } = await import('../../work-items');
-        const owners = [...new Set([ident.ownerId, ident.adoptedName].filter((owner): owner is string => Boolean(owner)))];
+        const owners = [...new Set([ident.ownerId, await ident.adoptedName?.()].filter((owner): owner is string => Boolean(owner)))];
         const rows = (
           await Promise.all(
             owners.map((assignee) =>
@@ -3824,7 +3833,7 @@ async function completeOneTracked(
   const callerOwnsAssignee =
     !existing.assignee ||
     existing.assignee === ident.ownerId ||
-    existing.assignee === ident.adoptedName ||
+    existing.assignee === await ident.adoptedName?.() ||
     (await holderIsCaller(existing.assignee, ident.ownerId, {
       workspaceId: ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId(),
       verifiedCallerAlias: ctx.principal?.authMethod === 'spawn-url' && ctx.principal.trust === 'trusted'
@@ -5769,6 +5778,8 @@ async function completeOneTracked(
         acquireWithContentionRetry(() =>
           setWorkItemStateWithAliasInfo(it.id, effectiveState, {
             harness: it.harness,
+            // Reuse family identity, but keep the writer's fresh state/owner reads.
+            family: existing.family,
             by: ident.ownerId,
             // NO `completionRef` — see the block comment above. The narrative is not
             // lost: `completionEvidenceToPersist` (EI-19319623239777505) carries the
@@ -7078,10 +7089,15 @@ const workItemsCompleteTool = defineTool({
   },
   async handler(args, ctx) {
     const ident = resolveAgentIdentity(ctx);
-    const adoptedName = ident.workspaceId
-      ? await resolveAdoptedName(ident.workspaceId, ident.ownerId).catch(() => null)
-      : null;
-    const completionIdent = { ...ident, adoptedName };
+    // Exact session owners need no alias lookup. Resolve aliases live only when
+    // needed, sharing the promise within this batch rather than across requests.
+    let adoptedName: Promise<string | null> | undefined;
+    const completionIdent = {
+      ...ident,
+      adoptedName: () => adoptedName ??= ident.workspaceId
+        ? resolveAdoptedName(ident.workspaceId, ident.ownerId).catch(() => null)
+        : Promise.resolve(null),
+    };
     const isBulkForm = Boolean(args.items?.length);
     // EI-18661904412177717: the batch path defaulted `harness` from the top level but SILENTLY
     // DROPPED the top-level `state` — so `{ state:'resolved', items:[…] }` recorded every

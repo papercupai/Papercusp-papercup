@@ -134,6 +134,47 @@ describe('scanProcessesAsync — inventory IO', () => {
     });
   });
 
+  it('stops a procfs read when the async deadline returns incomplete coverage', async () => {
+    const fs = box({ cgroups: {} });
+    let readSignal: AbortSignal | undefined;
+    let callerReturned = false;
+    let readContinuedAfterReturn = false;
+    let resolveReadFinished!: () => void;
+    const readFinished = new Promise<void>((resolve) => { resolveReadFinished = resolve; });
+    const actual = await scanProcessesAsync({
+      selfPid: 999,
+      asyncIoDeadlineMs: 10,
+      asyncFs: {
+        readFile: async (path, signal?: AbortSignal) => {
+          if (path === '/proc/999/cgroup') {
+            readSignal = signal;
+            return new Promise<string | null>((resolve) => {
+              const timer = setTimeout(() => {
+                if (callerReturned) readContinuedAfterReturn = true;
+                resolve(null);
+                resolveReadFinished();
+              }, 50);
+              signal?.addEventListener('abort', () => {
+                clearTimeout(timer);
+                resolve(null);
+                resolveReadFinished();
+              }, { once: true });
+            });
+          }
+          return fs.readFile(path);
+        },
+        readDir: async (path) => fs.readDir(path),
+        isDir: async (path) => fs.isDir(path),
+      },
+    });
+    callerReturned = true;
+    await readFinished;
+
+    expect(actual.scanTimedOut).toBe(true);
+    expect(readSignal?.aborted).toBe(true);
+    expect(readContinuedAfterReturn).toBe(false);
+  });
+
   it('leaves root presence unknown when the deadline precedes cgroup discovery', async () => {
     const fs = box({ cgroups: {} });
     const actual = await scanProcessesAsync({

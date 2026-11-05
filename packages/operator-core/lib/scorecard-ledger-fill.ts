@@ -229,6 +229,48 @@ function rateLedgerRow(
 /** How much of a row's measured detail ledger-filled evidence quotes. */
 export const LEDGER_EVIDENCE_DETAIL_CHARS = 600;
 
+/** Explain only what the retained measurement establishes; a NULL alone does not
+ * identify a broken instrument. Reuse the shared unknown vocabulary and action
+ * field rather than creating a second unknown-resolution store. */
+function unknownLedgerGuidance(
+  binding: LedgerCheckBinding,
+  row: LatestRubricCheckResult,
+  nowMs: number,
+): Pick<ObservationRatingEntry, 'unknownReason' | 'attribution' | 'nextEvidenceAction'> {
+  const ref = `test_runs:${row.testRunId}`;
+  const action = (unknownReason: ObservationRatingEntry['unknownReason'], nextEvidenceAction: string,
+    attribution: ObservationRatingEntry['attribution'] = 'instrument') => ({ unknownReason, attribution, nextEvidenceAction });
+  if (binding.maxAgeMs !== undefined) {
+    const ageMs = nowMs - Date.parse(row.finishedAt);
+    if (!Number.isFinite(ageMs) || ageMs < 0) {
+      return action('instrument-unavailable', `Repair the invalid or future measurement timestamp in ${ref} and verify the producer clock before running ${binding.id} once. Keep its value historical until a valid timestamp is recorded.`);
+    }
+    if (ageMs > binding.maxAgeMs) {
+      return action('not-exercised', `${ref} has expired (ageMs=${ageMs}, maxAgeMs=${binding.maxAgeMs}). Run ${binding.id} once for a fresh measurement, then re-emit with fromLedger. Keep the expired value as historical context only.`);
+    }
+  }
+  const diagnostics = new Map(row.check.provenance?.diagnostics.map(d => [d.path, d.value]) ?? []);
+  const field = (name: string) => diagnostics.get(`$["rows"]["0"][${JSON.stringify(name)}]`);
+  const status = field('measurement_status');
+  if (typeof status === 'string' && status.startsWith('instrument-unavailable:')) {
+    return action('instrument-unavailable', `${ref} declares ${status}. Implement and verify the named producer and its check binding under the criterion's remediation work-item before measuring again. Do not repeat an unchanged placeholder check; keep this criterion unknown until real evidence is recorded.`);
+  }
+  const countKey = typeof field('valid_n') === 'number' ? 'valid_n' : 'n';
+  const count = field(countKey);
+  if (typeof count === 'number' && Number.isFinite(count) && count >= 0 && row.check.value === null) {
+    return action('not-exercised', `${ref} has ${countKey}=${count} and no usable measurement. Verify that the registered producer records the required valid samples with matching build/run provenance; collect one bounded cohort meeting the criterion's minimum before re-emitting. Do not repeat unchanged rescores or lower the minimum to manufacture a grade.`);
+  }
+  const calls = field('calls_in_window');
+  if (typeof calls === 'number' && Number.isFinite(calls) && calls >= 0 && row.check.value === null) {
+    const stable = ['reset', 'dealloc'].every(key => field(`${key}_before`) != null && field(`${key}_before`) === field(`${key}_after`));
+    if (!stable) {
+      return action('instrument-unavailable', `${ref} has an invalid or unverified SQL counter window. Diagnose counter reset/deallocation continuity before collecting one new bounded window; do not infer inactivity from calls_in_window=${calls}.`);
+    }
+    return action(calls === 0 ? 'idle' : 'not-exercised', `${ref} recorded calls_in_window=${calls} with stable SQL counters but no usable value. Exercise the matching workload and meet the check's minimum activity in one bounded measurement window, then re-emit. Do not repeat the unchanged check while the required activity is absent.`, calls === 0 ? 'environment' : 'instrument');
+  }
+  return action('instrument-unavailable', `Diagnose ${binding.id} using the failure and retained diagnostics in ${ref}; a missing value alone does not establish its cause. Repair or verify the producer, then retry once and re-emit with fromLedger. If the same gap remains, keep it unknown and record the blocker on its remediation work-item instead of repeating unchanged retries.`);
+}
+
 function describeRow(binding: LedgerCheckBinding, row: LatestRubricCheckResult, verdict: Verdict, rating?: string): string {
   const unit = row.check.unit ? ` ${row.check.unit}` : '';
   const shown = typeof row.check.value === 'boolean'
@@ -380,10 +422,8 @@ export function fillRatingsFromLedger(input: {
       entry = deciding.verdict === 'error'
         ? {
             rating: 'unknown',
-            unknownReason: 'instrument-unavailable',
-            attribution: 'instrument',
+            ...unknownLedgerGuidance(deciding.binding, deciding.row, nowMs),
             evidence,
-            nextEvidenceAction: `Re-run ${deciding.binding.id}: its latest attempt failed, has expired, or has an invalid measurement timestamp. Preserve its previous value as historical context only.`,
             ...provenance,
           }
         : { rating: deciding.rating, evidence, ...provenance };

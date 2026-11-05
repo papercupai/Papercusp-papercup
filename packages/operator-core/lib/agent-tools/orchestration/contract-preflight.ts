@@ -139,6 +139,7 @@ function durableCapabilityFailure(
     executed: false,
     error: {
       code: 'capability_denied',
+      liftsWhen: `The authorized role administrator must grant the durable worker role ${role ?? '(unknown)'} capability "${requiredCapability}", or the script must use a tool that role is permitted to invoke; retry after the host loads the updated role grants.`,
       message:
         `durable worker principal for role ${role ?? '(unknown)'} ${reason} capability ` +
         `"${requiredCapability}" required by ${toolName}; durable execution does not inherit ` +
@@ -226,6 +227,9 @@ function unavailableRefFailure(code: 'capability_unavailable' | 'capability_deni
     executed: false,
     error: {
       code,
+      liftsWhen: code === 'capability_denied'
+        ? `Use a tool permitted by the current caller's role, or ask the authorized role administrator to grant access to ${ref} and retry after the host loads those grants.`
+        : `Install or restore the statically referenced tool ${ref}, or update the script to use an available tool, then retry.`,
       message:
         code === 'capability_denied'
           ? `current caller may not invoke ${ref}`

@@ -209,6 +209,29 @@ beforeEach(async () => {
   leaderDispatchAdmission.selfFiledFalloutAdmission.mockReset().mockReturnValue(false);
 });
 
+describe('known-family lifecycle reads (EI-27984315103577037)', () => {
+  it('skips both issue probes for a known feature while retaining fresh state reads', async () => {
+    const issues = await import('./issues-engineer');
+    const probe = vi.spyOn(issues, 'getIssue');
+    try {
+      await seedFeature('F-family-latency');
+      const known = await wi.setWorkItemStateWithAliasInfo('F-family-latency', 'wip', {
+        harness: H, family: 'feature',
+      });
+      expect(known.workItem?.state).toBe('wip');
+      expect(probe).not.toHaveBeenCalled();
+
+      // Positive control: the generic route still checks both families. The
+      // known route must not use a cached pre-write row to pass the first arm.
+      const generic = await wi.setWorkItemStateWithAliasInfo('F-family-latency', 'open', { harness: H });
+      expect(generic.workItem?.state).toBe('open');
+      expect(probe).toHaveBeenCalledTimes(2);
+    } finally {
+      probe.mockRestore();
+    }
+  });
+});
+
 describe('blueprint operation claim authority (real PostgreSQL)', () => {
   const operationRevision = 'c'.repeat(64);
   const launchRevision = { specificationRevision: 'a'.repeat(64), stateRevision: 'b'.repeat(64) };

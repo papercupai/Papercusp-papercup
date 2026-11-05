@@ -122,7 +122,8 @@ export function assertBackgroundActivityAuthority(principal: SessionUser): strin
   if (!workspace.trim() || workspace === '*' || principal.workspace_id !== workspace
     || !z.string().uuid().safeParse(principal.id).success
     || !principal.capabilities.some(capability => capability === '*' || capability === 'workspace:operate'))
-    throw Object.assign(new Error('Startup policy authority unavailable'), { code: 'startup_policy_forbidden' });
+    throw Object.assign(new Error('Startup policy authority unavailable'), { code: 'startup_policy_forbidden',
+      liftsWhen: 'Authenticate a valid workspace operator in the active concrete workspace with workspace:operate capability, then retry.' });
   return workspace;
 }
 
@@ -202,7 +203,8 @@ async function resolveBackgroundActivityFeature(featureId: string, workspace: st
   }
   if (!feature || feature.scope.kind !== 'workspace' || feature.scope.id !== workspace
     || requiredForControl)
-    throw Object.assign(new Error('Startup feature cannot be controlled here'), { code: 'startup_policy_forbidden' });
+    throw Object.assign(new Error('Startup feature cannot be controlled here'), { code: 'startup_policy_forbidden',
+      liftsWhen: 'Select a currently registered optional startup feature belonging to the active workspace; required control and recovery features cannot be disabled here.' });
   return { feature, row, matches };
 }
 

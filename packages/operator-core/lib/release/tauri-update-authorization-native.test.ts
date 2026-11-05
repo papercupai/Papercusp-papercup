@@ -9,6 +9,39 @@ import { encodeTauriUpdateAuthorization, type TauriUpdateAuthorization } from '.
 const archiveDependencies = ['fs2="0.4"', 'tar="=0.4.46"', 'flate2="=1.1.9"',
   'plist={version="=1.10.0",features=["enable_unstable_features_that_may_break_with_minor_version_bumps"]}'];
 
+function nativeCommand(command: string, args: string[], options: { timeout: number; env?: NodeJS.ProcessEnv }) {
+  const grouped = process.platform !== 'win32';
+  const result = spawnSync(command, args, { ...options, encoding: 'utf8', detached: grouped, killSignal: 'SIGKILL' });
+  // Cargo's compiler children can outlive a timed-out Cargo process. Stop the
+  // complete group before fixture cleanup, preserving the original diagnostic.
+  if (grouped && result.error && result.pid) {
+    try { process.kill(-result.pid, 'SIGKILL'); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error; }
+  }
+  return result;
+}
+
+function nativeCargo(args: string[], root: string) {
+  return nativeCommand('cargo', args, { timeout: 120_000, env: { ...process.env,
+    // Native VM acceptance may precompile dependencies into a run-owned target.
+    CARGO_TARGET_DIR: process.env.PC_NATIVE_TEST_CARGO_TARGET_DIR || join(root, 'target'),
+  } });
+}
+
+it.skipIf(process.platform === 'win32')('stops timed-out native descendants before cleanup and retains the timeout error', () => {
+  const root = mkdtempSync(join(tmpdir(), 'native-timeout-'));
+  try {
+    const ready = join(root, 'ready'); const late = join(root, 'late');
+    const result = nativeCommand('/bin/sh', ['-c',
+      '(sleep 2; printf late > "$2") & printf ready > "$1"; wait', '_', ready, late], { timeout: 1000 });
+    expect(readFileSync(ready, 'utf8')).toBe('ready');
+    expect((result.error as NodeJS.ErrnoException | undefined)?.code).toBe('ETIMEDOUT');
+    expect(nativeFailure(result)).toContain('ETIMEDOUT');
+    expect(spawnSync('/bin/sleep', ['3']).status).toBe(0);
+    expect(() => readFileSync(late)).toThrow();
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 // The results ledger bounds assertion messages from the front. Keep actual Rust
 // errors and test failures ahead of Cargo's long dependency-compilation prelude.
 function nativeFailure(result: { error?: Error; stderr: string; stdout: string }): string {
@@ -285,8 +318,7 @@ it('native consumer verifies real dual signatures, actual bytes, identities and 
     }
 }
 `);
-    const result = spawnSync('cargo', ['test', '--offline', '--manifest-path', join(root, 'Cargo.toml'), '--', '--nocapture'],
-      { encoding: 'utf8', timeout: 120_000, env: { ...process.env, CARGO_TARGET_DIR: join(root, 'target') } });
+    const result = nativeCargo(['test', '--offline', '--manifest-path', join(root, 'Cargo.toml'), '--', '--nocapture'], root);
     expect(result.status, nativeFailure(result)).toBe(0);
     expect(result.stdout).toContain('0 failed; 0 ignored');
     if (process.platform !== 'win32') {
@@ -323,8 +355,8 @@ it('extracts actual build inputs from a compiled native image and refuses decoys
 ${options.duplicate ? `#[link_section=${JSON.stringify(process.platform === 'darwin' ? '__DATA,.pcupd' : '__pcupd')}]\n#[used] static SECOND:[u8;${size}]=*include_bytes!(${JSON.stringify(data)});` : ''}
 fn main(){ std::hint::black_box(&INPUTS); ${options.duplicate ? 'std::hint::black_box(&SECOND);' : ''} }
 `);
-      const result = spawnSync('rustc', ['--edition=2021', '--crate-name', 'candidate_fixture', source, '-o', binary],
-        { encoding: 'utf8', timeout: 30_000 });
+      const result = nativeCommand('rustc', ['--edition=2021', '--crate-name', 'candidate_fixture', source, '-o', binary],
+        { timeout: 30_000 });
       expect(result.status, nativeFailure(result)).toBe(0);
       return binary;
     };
@@ -394,8 +426,7 @@ fn main(){ std::hint::black_box(&INPUTS); ${options.duplicate ? 'std::hint::blac
     }
 }
 `);
-    const result = spawnSync('cargo', ['test', '--offline', '--manifest-path', join(root, 'Cargo.toml'), 'actual_compiled_image_and_negative_containers', '--', '--nocapture'],
-      { encoding: 'utf8', timeout: 120_000, env: { ...process.env, CARGO_TARGET_DIR: join(root, 'target') } });
+    const result = nativeCargo(['test', '--offline', '--manifest-path', join(root, 'Cargo.toml'), 'actual_compiled_image_and_negative_containers', '--', '--nocapture'], root);
     expect(result.status, nativeFailure(result)).toBe(0);
     expect(result.stdout).toContain('native-extraction: actual compiled image and exact bytes');
     for (const [name] of variants) expect(result.stdout).toContain(`native-extraction-refused: ${JSON.stringify(name)}`);
@@ -934,8 +965,7 @@ process.stdout.write(JSON.stringify({trust:{rootEpoch:3,minRollbackCounter:0,min
     }
 }
 `);
-    const result = spawnSync('cargo', ['test', '--offline', '--manifest-path', join(root, 'Cargo.toml'), 'candidate_', '--', '--nocapture'],
-      { encoding: 'utf8', timeout: 120_000, env: { ...process.env, CARGO_TARGET_DIR: join(root, 'target') } });
+    const result = nativeCargo(['test', '--offline', '--manifest-path', join(root, 'Cargo.toml'), 'candidate_', '--', '--nocapture'], root);
     expect(result.status, nativeFailure(result)).toBe(0);
     expect(result.stdout).toContain('native-universal: both table widths, both targets, full artifact and all-slice refusal');
     expect(result.stdout).toContain('native-mac-archive: XML/binary plist, GNU long path, thin/universal, full archive binding');
@@ -949,6 +979,9 @@ process.stdout.write(JSON.stringify({trust:{rootEpoch:3,minRollbackCounter:0,min
       expect(result.stdout).toContain('native-mac-provision: actual first install and replacement');
       expect(result.stdout).toContain('native-mac-helper-approval: trusted baseline required');
       expect(result.stdout).toContain('native-mac-helper: fixed protected executable and bounded stalled pipe');
+    }
+    if (process.platform === 'darwin') {
+      expect(result.stdout).toContain('native-mac-acl: native deny-delete accepted, hidden grants refused, removal restores access');
     }
   } finally {
     rmSync(root, { recursive: true, force: true });
@@ -1085,14 +1118,14 @@ include!(concat!(env!("OUT_DIR"),"/update-build-inputs.rs"));
     }
 }
 `);
-    const triple = spawnSync('rustc', ['-vV'], { encoding: 'utf8', timeout: 30_000 });
+    const triple = nativeCommand('rustc', ['-vV'], { timeout: 30_000 });
     expect(triple.status, nativeFailure(triple)).toBe(0);
     const host = /^host: (.+)$/m.exec(triple.stdout)?.[1];
     expect(host).toBeTruthy();
-    const result = spawnSync('cargo', ['test', '--offline', '--manifest-path', join(root, 'Cargo.toml'),
+    const result = nativeCommand('cargo', ['test', '--offline', '--manifest-path', join(root, 'Cargo.toml'),
       'producer_effective_inputs_and_refusals', '--', '--nocapture', '--test-threads=1'], {
-      encoding: 'utf8', timeout: 240_000,
-      env: { ...process.env, CARGO_TARGET_DIR: join(root, 'target'), PRODUCER_TEST_TARGET: host,
+      timeout: 240_000,
+      env: { ...process.env, CARGO_TARGET_DIR: process.env.PC_NATIVE_TEST_CARGO_TARGET_DIR || join(root, 'target'), PRODUCER_TEST_TARGET: host,
         TAURI_CONFIG: JSON.stringify({ version: '1.2.5', app: {
           security: { csp: null }, windows: [{ label: 'main', title: 'runtime' }],
         } }), GIT_AUTHOR_NAME: 'not-an-authenticated-principal' },

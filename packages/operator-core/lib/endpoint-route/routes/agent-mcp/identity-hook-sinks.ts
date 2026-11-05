@@ -25,6 +25,8 @@
 
 import { defineTool } from '@papercusp/agent-mcp';
 import { withPriorityOrgPg } from '@papercusp/db-org';
+import { pgResultDiagnosticSnapshot } from '@papercusp/db-org/acquire-registry';
+import { withNamedQueryDiagnosticContext } from '../../../agent-tools/db-diagnostic-correlation-wiring';
 import { tagTurnForInjection } from '../../../turn-provenance/turn-provenance';
 import { checkPlanExecutionGuard, type PlanExecutionTimingObserver } from '../../../agent-tools/plans/plan-execution-guard';
 import {
@@ -94,6 +96,30 @@ async function boundedContextSinkText(input: { ownerId: string; workspaceId: str
 export function guardRefusalText(verdict: GuardVerdict): string {
   if (verdict.decision !== 'deny') return '';
   return `Refused by identity ${verdict.identityId} rule ${verdict.ruleId}: ${verdict.reason}`;
+}
+
+/** Same-request completed results only; neither timing is pure SQL or CPU time. */
+function toolGuardPgTimings(requestId: string) {
+  try {
+    return {
+      coverage: 'retained-completed-results-only',
+      preBuildTiming: 'first-query-handle-to-build-excludes-lazy-time',
+      timing: 'query-build-to-terminal-not-acquisition',
+      pools: ['org-admin-priority', 'org-app-priority'].map(pool => {
+        const snapshot = pgResultDiagnosticSnapshot(pool);
+        const matched = snapshot.results.filter(query => query.correlation?.requestId === requestId);
+        return {
+          pool, capacity: snapshot.capacity, poolDroppedResults: snapshot.dropped,
+          omittedMatched: Math.max(0, matched.length - 8),
+          queries: matched.slice(-8).map(({ connectionId, queryId, backendPid, queryFamily, elapsedMs, preBuildMs, status }) =>
+            ({ connectionId, queryId, backendPid, queryFamily, elapsedMs, preBuildMs, status })),
+        };
+      }),
+    };
+  } catch {
+    // Diagnostic collection must never replace the authority verdict.
+    return { coverage: 'unavailable' };
+  }
 }
 
 /**
@@ -170,16 +196,20 @@ const toolGuard = defineTool({
       identityStages[stage] = (identityStages[stage] ?? 0) + durationMs;
     };
     const observePlanTiming: PlanExecutionTimingObserver = ({ stage, durationMs }) => {
-      // A bounded vocabulary, with no owner, plan, input or verdict content.
-      if (!/^[a-z_]{1,32}$/.test(stage) || !Number.isFinite(durationMs) || durationMs < 0) return;
-      if (!(stage in planStages) && Object.keys(planStages).length >= 16) return;
+      // Keep the existing bounds plus the exact snapshot names with hyphens.
+      // These timing-only labels contain no owner, plan, input or verdict content.
+      if (!(/^[a-z_]{1,32}$/.test(stage) ||
+          /^start_gate_snapshot_(?:plan-items|work-contracts|lineage-parties)$/.test(stage)) ||
+          !Number.isFinite(durationMs) || durationMs < 0) return;
+      // The current guard emits 15 outer stages plus 10 snapshot source stages.
+      if (!(stage in planStages) && Object.keys(planStages).length >= 32) return;
       planStages[stage] = (planStages[stage] ?? 0) + durationMs;
     };
     const workspaceId = await resolveWorkspace(body);
     const setupMs = performance.now() - startedAt;
     let text;
     try {
-      text = await withPriorityOrgPg(() => toolGuardText({
+      const run = () => withPriorityOrgPg(() => toolGuardText({
         ownerId,
         workspaceId,
         call: {
@@ -189,6 +219,9 @@ const toolGuard = defineTool({
           ...(body.inputTruncated === true ? { inputTruncated: true } : {}),
         },
       }, readAppliedWornRules, (phase, durationMs) => { phases[phase] = durationMs; }, observePlanTiming, observeIdentityTiming));
+      text = guardRequestId
+        ? await withNamedQueryDiagnosticContext('native-tool-guard', run, guardRequestId)
+        : await run();
     } finally {
       const totalMs = performance.now() - startedAt;
       // Keep attribution after the client has aborted too. No tool inputs, plan
@@ -201,6 +234,7 @@ const toolGuard = defineTool({
         aborted: req.signal.aborted,
         ...(Object.keys(planStages).length ? { planStages } : {}),
         ...(Object.keys(identityStages).length ? { identityStages } : {}),
+        ...(guardRequestId ? { pgTimings: toolGuardPgTimings(guardRequestId) } : {}),
       }));
     }
     const timings = { guard: performance.now() - startedAt, setup: setupMs, ...phases,

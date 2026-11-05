@@ -196,6 +196,11 @@ describe('degradation watchdog on the real condition rail (R-2, R-8)', () => {
     const priorHomeSlug = process.env.PAPERCUSP_POT_HOME_SLUG;
     const forkSlug = `${operatorHomeHarnessSlug()}-fork-fixture`;
     const forkProcessTag = `gate-reuse:green-checkpoint:${forkSlug}`;
+    // Use a fixed observation time and a strictly later read bound. The reader
+    // uses [since, until), so a same-millisecond default `now` could exclude the
+    // last freshly written row and make this 20-decision assertion timing-sensitive.
+    const observedAt = new Date(Date.now() - 1000);
+    const windowNow = new Date(observedAt.getTime() + 1000);
     const observations: Array<{ processTag: string; accepted: boolean }> = [];
     const flushes: Array<Awaited<ReturnType<typeof flushFallbackObservations>>> = [];
     const writer = {
@@ -204,7 +209,7 @@ describe('degradation watchdog on the real condition rail (R-2, R-8)', () => {
         decision: Parameters<typeof observeFallback>[1],
         options: Parameters<typeof observeFallback>[2],
       ) => {
-        const accepted = observeFallback(mechanism, decision, options);
+        const accepted = observeFallback(mechanism, decision, { ...options, observedAt });
         observations.push({ processTag: options?.processTag ?? '<missing>', accepted });
         return accepted;
       },
@@ -227,10 +232,10 @@ describe('degradation watchdog on the real condition rail (R-2, R-8)', () => {
     }
 
     const forkWindows = await readFallbackWindowsByScope(MECHANISM, 60 * 60_000, {
-      sql: db.adminSql, workspaceId: 'default', processTag: forkProcessTag,
+      sql: db.adminSql, workspaceId: 'default', processTag: forkProcessTag, now: windowNow,
     });
     const homeWindows = await readFallbackWindowsByScope(MECHANISM, 60 * 60_000, {
-      sql: db.adminSql, workspaceId: 'default', processTag: GATE_REUSE_PROCESS_TAG,
+      sql: db.adminSql, workspaceId: 'default', processTag: GATE_REUSE_PROCESS_TAG, now: windowNow,
     });
     const persistedByTag = await db.adminSql<Array<{
       process_tag: string | null; samples: number; eligible: number; applied: number;

@@ -986,6 +986,30 @@ describe('immutable dependency generation', () => {
     expect(syntax.status, syntax.stderr).toBe(0);
   });
 
+  it.each([0, 23])('does not resume reading changed source after direct main (exit=%s)', exitCode => {
+    const root = mkdtempSync(join(tmpdir(), 'generation-eof-guard-')); roots.push(root);
+    const file = join(root, 'generation.sh');
+    const source = readFileSync(SCRIPT, 'utf8');
+    const call = '  dependency_generation_main "$@"';
+    const at = source.lastIndexOf(call);
+    expect(at).toBeGreaterThan(0);
+    // The real parsed entrypoint runs a bounded main which changes its own
+    // file. Without an exit inside the guard, Bash reads the appended syntax
+    // after main has already emitted a successful result.
+    const main = `  dependency_generation_main() {\n    printf '\\n)\\n' >> "$0"\n    printf 'MAIN_RESULT\\n'\n    return ${exitCode}\n  }\n`;
+    writeFileSync(file, source.slice(0, at) + main + source.slice(at));
+    const result = spawnSync('bash', [file], { encoding: 'utf8' });
+    expect(result.stdout).toContain('MAIN_RESULT');
+    expect(result.status, result.stderr).toBe(exitCode);
+    expect(result.stderr).not.toContain('syntax error');
+    // A sourceable library must continue its caller rather than exiting it.
+    writeFileSync(file, source);
+    const sourced = spawnSync('bash', ['-c', 'source "$1"; printf SOURCE_OK', 'source-test', file],
+      { encoding: 'utf8' });
+    expect(sourced.status, sourced.stderr).toBe(0);
+    expect(sourced.stdout).toBe('SOURCE_OK');
+  });
+
   it('publishes the whole product dependency set atomically and reuses its identity', () => {
     const integration = makeIntegration();
     const first = publish(integration);

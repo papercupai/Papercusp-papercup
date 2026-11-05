@@ -76,6 +76,12 @@ export function buildInputs(root) {
   return sourcePaths(root).map(path => identity(root, path));
 }
 
+// Use the producing build's census so distinct frozen sources can share
+// dependencies without replacing one another's native selector.
+export function verifierInputFingerprint(root) {
+  return digest(JSON.stringify(buildInputs(realpathSync(root))));
+}
+
 // A native publisher takes its source from an independently frozen checkout,
 // never the moving integration tree. Check both tracked and untracked inputs;
 // generated receipts and dependency/output directories are excluded by the same
@@ -249,6 +255,7 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   const [command, root, dest] = process.argv.slice(2);
   try {
     if (command === 'capture') console.log(JSON.stringify(captureClosure(root)));
+    else if (command === 'fingerprint') console.log(verifierInputFingerprint(root));
     else if (command === 'stage') stageClosure(root, dest);
     else if (command === 'verify' || command === 'copy' || command === 'verify-materialized')
       verifyClosure(root, dest, command === 'copy', command === 'verify-materialized');

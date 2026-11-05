@@ -2,8 +2,8 @@
  * Only one explicitly scoped base relation and deterministic SELECT/CTE expressions
  * are supported. Unsupported/oversized/redacted inputs never become a replay.
  */
-import { createHash } from 'node:crypto';
 import { astMapper, parse, toSql, type SelectFromStatement } from 'pgsql-ast-parser';
+import { retainedReplaySourceIdentity } from './retained-replay-identity';
 
 export const SQL_INPUT_COLUMN = '__papercusp_measurement_sql_inputs_v1';
 const MAX_ROWS = 32;
@@ -141,8 +141,6 @@ export function compileRetainedSql(sql: string, input: unknown, transactionAt: s
   return `WITH ${ident(sourceName)} AS (SELECT * FROM pg_catalog.jsonb_to_recordset(${literal(JSON.stringify(s.rows))}::pg_catalog.jsonb) AS __pc_values(${fields})) SELECT * FROM (${query}) __pc_replayed_query`;
 }
 
-export function retainedSqlImplementationSha256(): string {
-  return createHash('sha256').update(JSON.stringify({ parser: 'pgsql-ast-parser/12.0.2', version: 1,
-    helpers: [plan, retainedSqlCaptureExpression, compileRetainedSql, ident, literal].map(fn => fn.toString()),
-    pureCalls: [...pureCalls], types, castNames: [...castNames], MAX_ROWS, MAX_BYTES, sourceName })).digest('hex');
+export function retainedSqlImplementationSha256(): string | null {
+  return retainedReplaySourceIdentity();
 }

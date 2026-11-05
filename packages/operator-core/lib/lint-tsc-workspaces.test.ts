@@ -133,6 +133,17 @@ describe('discovery — a new gated package must not have to be remembered', () 
     });
     expect(discover(root, 0, root).map((p: { rel: string }) => p.rel)).toEqual(['packages/real']);
   });
+
+  it('excludes verification mirrors from both gated and invisible workspace discovery', () => {
+    const root = makeTree({
+      'packages/real': { typecheck: true, tsconfig: true },
+      'packages/uncovered': { tsconfig: true },
+      'apps/operator/dist-verify/build/gated': { typecheck: true, tsconfig: true },
+      'apps/operator/dist-verify/build/uncovered': { tsconfig: true },
+    });
+    expect(discover(root, 0, root).map((p: { rel: string }) => p.rel)).toEqual(['packages/real']);
+    expect(discoverInvisible(root, 0, root).map((p: { rel: string }) => p.rel)).toEqual(['packages/uncovered']);
+  });
 });
 
 describe('focused --files routing (EI-21491386096171610)', () => {

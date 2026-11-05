@@ -690,6 +690,8 @@ export interface CheckpointTreeRunnerOptions {
    * progress and `onFileResult` writes stay serialized in completion order.
    */
   fileConcurrency?: number;
+  /** Reuse successful preparation within this runner only, after rechecking exact clean source. */
+  reusePreparedTree?: boolean;
   /** Setup budget (default 20 min — dependency materialization can take minutes). */
   setupTimeoutMs?: number;
   /** Injectable for tests: is a gate run holding the checkpoint tree right now? */
@@ -1123,6 +1125,7 @@ export function createCheckpointTreeFixPrecheckRunner(opts: CheckpointTreeRunner
   const setupTimeoutMs = opts.setupTimeoutMs ?? ADMISSION_PRECHECK_SETUP_BUDGET_MS;
   const log = opts.log ?? (() => {});
   const logDir = opts.logDir ?? papercuspPath('checkpoint-logs');
+  let prepared: { commit: string; tree: string; root: string } | undefined;
   return async ({ commit, expectedTree, files, onProgress, onFileResult }) => {
     if (files.length > ADMISSION_PRECHECK_MAX_FILES)
       return { ran: false, reason: 'runner-failed', detail: `execution group exceeds ${ADMISSION_PRECHECK_MAX_FILES}-file bound` };
@@ -1259,8 +1262,25 @@ export function createCheckpointTreeFixPrecheckRunner(opts: CheckpointTreeRunner
         await reporting;
       }
     };
-    log(`[admission-precheck] materializing ${commit.slice(0, 12)} into ${precheckRoot}`);
-    const setup = await execWithProgress(
+    // Bounded groups share one operation-owned tree and fixture. Re-materializing the same
+    // tree for each group repeated ten minutes of setup in a measured 202-file precheck.
+    // A runner is never shared across operations; a changed/dirty/unreadable tree rebuilds.
+    let reuse = false;
+    if (opts.reusePreparedTree && expectedTree && prepared?.commit === commit &&
+      prepared.tree === expectedTree && prepared.root === precheckRoot) {
+      const head = await exec(['git', 'rev-parse', 'HEAD', 'HEAD^{tree}'],
+        { cwd: precheckRoot, timeoutMs: 10_000, logFile });
+      if (head.exitCode === 0 && head.output.trim() === `${commit}\n${expectedTree}`) {
+        const clean = await exec(['git', 'status', '--porcelain', '--untracked-files=normal', '--ignore-submodules=none'],
+          { cwd: precheckRoot, timeoutMs: 30_000, logFile });
+        reuse = clean.exitCode === 0 && clean.output.trim() === '';
+      }
+    }
+    prepared = undefined;
+    log(`[admission-precheck] ${reuse ? 'reusing clean preparation for' : 'materializing'} ${commit.slice(0, 12)} into ${precheckRoot}`);
+    const setup: ExecResult = reuse
+      ? { exitCode: 0, signal: null, timedOut: false, output: '', durationMs: 0 }
+      : await execWithProgress(
       [
         // The publisher brackets its snapshot with fingerprints, but those only
         // detect a concurrent install after the expensive copy. Use the same
@@ -1320,6 +1340,8 @@ export function createCheckpointTreeFixPrecheckRunner(opts: CheckpointTreeRunner
       if (tree.exitCode !== 0 || tree.output.trim() !== expectedTree)
         return { ran: false, reason: 'runner-failed', detail: `materialized tree differs from immutable pre-check identity; log=${logFile}` };
     }
+    if (opts.reusePreparedTree && expectedTree)
+      prepared = { commit, tree: expectedTree, root: precheckRoot };
     // A foreign Papercusp fork registers the aggregate gate command, which
     // deliberately rejects exact filenames. Resolve its existing file script
     // from the pinned checkout rather than running that aggregate once per file.

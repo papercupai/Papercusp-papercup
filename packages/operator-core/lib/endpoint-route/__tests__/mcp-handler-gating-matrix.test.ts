@@ -68,10 +68,14 @@ const h = vi.hoisted(() => {
     rows: null as Array<Record<string, unknown>> | null,
     launchRecord: null as { launch_spec: unknown; launch_spec_xmin: string } | null,
     migrationRead: null as null | (() => Promise<unknown[]>),
+    usedToolNames: null as string[] | null,
   };
   const fakeSql = Object.assign(async (...args: unknown[]) => {
     const template = args[0];
     const query = Array.isArray(template) ? template.join(' ') : typeof template === 'string' ? template : '';
+    if (kernelAuthority.usedToolNames && query.includes('SELECT DISTINCT tool_name')) {
+      return kernelAuthority.usedToolNames.map(tool_name => ({ tool_name }));
+    }
     if (kernelAuthority.launchRecord && query.includes('AS launch_spec, n.launch_spec_xmin')) {
       return [kernelAuthority.launchRecord];
     }
@@ -98,6 +102,7 @@ const h = vi.hoisted(() => {
     signingRows: null as null | Array<{ value_b64: string; rotated_at: string }>,
     fakeTx,
     fakeSql,
+    flushPendingTelemetry: vi.fn(async () => {}),
     kernelAuthority,
     nativeSessionBinding: 'unbound' as 'bound' | 'unbound' | 'foreign',
     nativeSessionRows: null as Map<string, Array<{ id: number; session_id: string | null; active: boolean }>> | null,
@@ -197,6 +202,7 @@ const h = vi.hoisted(() => {
         harnessSlug?: string;
         workspaceId?: string;
         uiClientId?: string | null;
+        advSessionId?: UnifiedToolContext['advSessionId'];
         isSuperuser?: boolean;
         transport?: string;
         principal?: UnifiedToolContext['principal'];
@@ -372,6 +378,7 @@ vi.mock('../../projected-tool-deps', async (importOriginal) => {
   const realDeps = actual.PROJECTED_DEPS as Record<string, unknown>;
   return {
     ...actual,
+    flushPendingTelemetry: h.flushPendingTelemetry,
     backfillToolInvocationMetadataByMcpRequestTraceId: async (input: (typeof h.deliveryBackfills)[number]) => {
       h.deliveryBackfills.push(input);
     },
@@ -1409,6 +1416,49 @@ describe('final report delivery through the MCP host', () => {
         expect(textOf(result).includes(body)).toBe(route !== 'projected' && route !== 'spill');
       } finally { tool.fn = original; }
     });
+
+  it.each([
+    { route: 'direct-inline', nested: false, scratch: false, trace: 'e57ef6b3-46ef-4cc5-8214-fec83b2c1461' },
+    { route: 'nested-scratch', nested: true, scratch: true, trace: 'e57ef6b3-46ef-4cc5-8214-fec83b2c1462' },
+  ])('backfills capability:read delivery metadata only for scratch pages ($route)', async ({ nested, scratch, trace }) => {
+    const tool = lookupByMcpName('capability:read');
+    if (!tool) throw new Error('Expected the production capability:read tool registration');
+    const original = tool.fn;
+    const scratchUri = 'papercusp://scratch/ws-test/capability-read/result.md';
+    tool.fn = async () => ({ content: [{ type: 'text', text: JSON.stringify({
+      ok: true,
+      file_path: scratch ? scratchUri : 'README.md',
+      encoding: 'base64',
+      data: 'YWJj',
+      byte_offset: 0,
+      byte_length: 3,
+      total_bytes: 3,
+      reference: { byteCount: 3, sha256: 'a'.repeat(64) },
+    }) }] });
+    try {
+      const args = { file_path: 'README.md' };
+      const result = await callTool(
+        nested ? 'tools:invoke' : 'capability:read',
+        nested ? { name: 'capability:read', args } : args,
+        superuserExtra(`&workspace=ws-test&client=su-read-delivery-${nested ? 'nested' : 'direct'}`, {
+          [MCP_REQUEST_TRACE_HEADER]: trace,
+        }),
+        { format: 'json' },
+      );
+      expect(result.isError).not.toBe(true);
+      const receipts = h.deliveryBackfills.filter(row =>
+        row.toolName === 'capability:read' && Object.hasOwn(row.metadataJson, 'scratchResultDelivery'));
+      if (scratch) {
+        expect(receipts).toHaveLength(1);
+        expect(receipts[0]).toMatchObject({
+          mcpRequestTraceId: trace,
+          metadataJson: { scratchResultDelivery: {
+            version: 1, uri: scratchUri, sha256: 'a'.repeat(64), totalBytes: 3, offset: 0, bytes: 3,
+          } },
+        });
+      } else expect(receipts).toHaveLength(0);
+    } finally { tool.fn = original; }
+  });
 });
 
 describe('tools/list schema cache preserves actual-use detail', () => {
@@ -2606,6 +2656,7 @@ beforeEach(() => {
   h.kernelAuthority.rows = null;
   h.kernelAuthority.launchRecord = null;
   h.kernelAuthority.migrationRead = null;
+  h.kernelAuthority.usedToolNames = null;
   seen.length = 0;
   h.resourceReads.length = 0;
   deltaRequested.length = 0;
@@ -5070,6 +5121,34 @@ describe('tools/list — strict-mode listing matrix', () => {
     u.searchParams.set('tools', 'gatingtest:scoped, definitely:not-registered');
     const res = await listTools(extraFor(u.toString()));
     expect(res.tools.map((t) => t.name)).toEqual(['gatingtest:scoped']);
+  });
+
+  it('seeded discovery and post-call refresh finish without joining unrelated telemetry persistence', async () => {
+    let release!: () => void;
+    const blocked = new Promise<void>(resolve => { release = resolve; });
+    h.flushPendingTelemetry.mockImplementation(() => blocked);
+    h.kernelAuthority.usedToolNames = ['gatingtest:engineer', 'gatingtest:scoped', 'retired:tool'];
+    const sendNotification = vi.fn(async () => {});
+    const extra = { ...superuserExtra('&workspace=ws-test&client=su-discovery-flush-stall&tools=tools:invoke') as object,
+      sendNotification };
+    try {
+      const listing = await listTools(extra);
+      const names = listing.tools.map(tool => tool.name);
+      expect(names).toContain('gatingtest:engineer');
+      expect(names).not.toContain('gatingtest:scoped');
+      expect(names).not.toContain('retired:tool');
+      h.kernelAuthority.usedToolNames.push('gatingtest:txless_scope');
+      const result = await callTool('gatingtest:engineer', {}, extra);
+      expect(result.isError).not.toBe(true);
+      expect(seen.map(call => call.tool)).toContain('gatingtest:engineer');
+      await vi.waitFor(() => expect(sendNotification).toHaveBeenCalledWith({
+        method: 'notifications/tools/list_changed', params: {},
+      }));
+      expect(h.flushPendingTelemetry).not.toHaveBeenCalled();
+      expect(listing.tools.every(tool => Boolean(tool._meta?.['papercusp/servingGeneration']))).toBe(true);
+    } finally {
+      release();
+    }
   });
 
   it('superuser listing is operator-role-filtered (call-time bypass does NOT widen the list)', async () => {
