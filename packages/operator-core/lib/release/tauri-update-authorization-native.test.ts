@@ -6,7 +6,7 @@ import { join, resolve } from 'node:path';
 import { expect, it } from 'vitest';
 import { encodeTauriUpdateAuthorization, type TauriUpdateAuthorization } from '../../../../libs/generic/tauri-release-kit/src/signature.mjs';
 
-const archiveDependencies = ['tar="=0.4.46"', 'flate2="=1.1.9"',
+const archiveDependencies = ['fs2="0.4"', 'tar="=0.4.46"', 'flate2="=1.1.9"',
   'plist={version="=1.10.0",features=["enable_unstable_features_that_may_break_with_minor_version_bumps"]}'];
 
 // Compile the actual portable native consumer, avoiding a dependency on a running
@@ -167,6 +167,103 @@ it('native consumer verifies real dual signatures, actual bytes, identities and 
             println!("native-vector: {}",v.name);
         }
     }
+    #[cfg(unix)] #[test] fn current_trust_activation_is_serialized_and_floors_survive_failure() {
+        use super::update_authorization::activate_test_update;
+        use std::fs::{self, File, Permissions};
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let vectors:Vec<Vector> = serde_json::from_str(include_str!(${JSON.stringify(fixtures)})).unwrap();
+        let v=&vectors[0]; let i=&v.candidate;
+        let candidate=|| Candidate { artifact:i.artifact.as_bytes(), policy:i.policy.as_bytes(),
+            configuration:i.configuration.as_bytes(), source_revision:&i.source_revision,
+            version:&i.version, product:&i.product, platform:&i.platform, author_ids:&i.author_ids };
+        let path=std::path::Path::new(${JSON.stringify(root)}).join("activation");
+        if std::env::var_os("PC_NATIVE_ACTIVATION_EXIT").is_some() {
+            let directory=File::open(&path).unwrap();
+            activate_test_update(&directory,&v.envelope,&candidate(),v.now,
+                || -> Result<(),String> { std::process::exit(73) }).unwrap();
+            panic!("install exit did not execute");
+        }
+        fs::create_dir(&path).unwrap();
+        fs::set_permissions(&path, Permissions::from_mode(0o700)).unwrap();
+        let directory=File::open(&path).unwrap();
+        let policy_path=path.join("managed-policy.json");
+        let policy=|| {
+            let mut trust=serde_json::to_value(&v.trust).unwrap();
+            trust["minRollbackCounter"]=0.into(); trust["minIssuedAt"]=0.into();
+            serde_json::json!({"version":1,"update_channel":"stable","updateAuthorization":trust})
+        };
+        let write=|p:&serde_json::Value| {
+            fs::write(&policy_path,serde_json::to_vec(p).unwrap()).unwrap();
+            fs::set_permissions(&policy_path,Permissions::from_mode(0o640)).unwrap();
+        };
+        let read=|| serde_json::from_slice::<serde_json::Value>(&fs::read(&policy_path).unwrap()).unwrap();
+        write(&policy());
+        let old=fs::metadata(&policy_path).unwrap().ino();
+        let effects=AtomicUsize::new(0);
+        let (locked_tx,locked_rx)=std::sync::mpsc::channel();
+        let (resume_tx,resume_rx)=std::sync::mpsc::channel();
+        std::thread::scope(|scope| {
+            let effects=&effects; let candidate=&candidate; let directory=&directory; let read=&read;
+            let first=scope.spawn(move || activate_test_update(directory,&v.envelope,&candidate(),v.now,|| {
+                effects.fetch_add(1,Ordering::SeqCst);
+                assert_eq!(read()["updateAuthorization"]["minRollbackCounter"],7);
+                assert_eq!(read()["updateAuthorization"]["minIssuedAt"],1000);
+                locked_tx.send(()).unwrap();
+                resume_rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
+                Err::<(),_>("simulated installer failure".into())
+            }));
+            locked_rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
+            let competing=activate_test_update(directory,&v.envelope,&candidate(),v.now,
+                || -> Result<(),String> { panic!("concurrent install ran") });
+            assert!(competing.unwrap_err().contains("busy"));
+            resume_tx.send(()).unwrap();
+            assert_eq!(first.join().unwrap().unwrap_err(),"simulated installer failure");
+        });
+        assert_eq!(effects.load(Ordering::SeqCst),1);
+        assert_ne!(fs::metadata(&policy_path).unwrap().ino(),old,"policy must replace atomically");
+        assert_eq!(fs::metadata(&policy_path).unwrap().mode() & 0o777,0o640);
+        let retained=read();
+        assert_eq!(retained["update_channel"],"stable");
+        assert_eq!(retained["updateAuthorization"]["minRollbackCounter"],7);
+        assert_eq!(retained["updateAuthorization"]["minIssuedAt"],1000);
+        assert_eq!(retained["updateAuthorization"]["approvers"],policy()["updateAuthorization"]["approvers"]);
+        let install=|| { effects.fetch_add(1,Ordering::SeqCst); Ok(()) };
+        // Releasing this transaction must unlock even while directory stays open.
+        activate_test_update(&directory,&v.envelope,&candidate(),v.now,install).unwrap();
+        for (field,value) in [("minRollbackCounter",8),("minIssuedAt",1001)] {
+            let mut p=retained.clone(); p["updateAuthorization"][field]=value.into(); write(&p);
+            assert!(activate_test_update(&directory,&v.envelope,&candidate(),v.now,install).is_err());
+        }
+        let mut revoked=retained.clone(); revoked["updateAuthorization"]["signers"][0]["revoked"]=true.into(); write(&revoked);
+        assert!(activate_test_update(&directory,&v.envelope,&candidate(),v.now,install).is_err());
+        write(&retained);
+        let changed=Candidate { artifact:b"tampered", ..candidate() };
+        assert!(activate_test_update(&directory,&v.envelope,&changed,v.now,install).is_err());
+        assert_eq!(effects.load(Ordering::SeqCst),2,"no refused candidate may reach install");
+        assert_eq!(read(),retained,"refusal must preserve trust and floors");
+        assert_eq!(fs::read_dir(&path).unwrap().count(),1,"no temporary policy debris");
+        // A real process exits during install, after persistence. Its lock must
+        // be released and the next process must observe the advanced floors.
+        write(&policy());
+        let exited=std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact","tests::current_trust_activation_is_serialized_and_floors_survive_failure"])
+            .env("PC_NATIVE_ACTIVATION_EXIT","1").output().unwrap();
+        assert_eq!(exited.status.code(),Some(73),"{:?}",exited);
+        assert_eq!(read()["updateAuthorization"]["minRollbackCounter"],7);
+        assert_eq!(read()["updateAuthorization"]["minIssuedAt"],1000);
+        activate_test_update(&directory,&v.envelope,&candidate(),v.now,install).unwrap();
+        if unsafe { libc::geteuid() } != 0 {
+            write(&policy());
+            fs::set_permissions(&path,Permissions::from_mode(0o500)).unwrap();
+            let refused=activate_test_update(&directory,&v.envelope,&candidate(),v.now,install);
+            fs::set_permissions(&path,Permissions::from_mode(0o700)).unwrap();
+            assert!(refused.unwrap_err().contains("cannot durably advance"));
+            assert_eq!(read()["updateAuthorization"]["minRollbackCounter"],0);
+            assert_eq!(effects.load(Ordering::SeqCst),3,"uncommitted floors must prevent install");
+        }
+        println!("native-activation: serialized install, current revocation and crash-conservative monotonic floors");
+    }
 }
 `);
     const result = spawnSync('cargo', ['test', '--offline', '--manifest-path', join(root, 'Cargo.toml'), '--', '--nocapture'],
@@ -174,6 +271,7 @@ it('native consumer verifies real dual signatures, actual bytes, identities and 
     expect(result.status, [result.error?.message, result.stderr, result.stdout].filter(Boolean).join('\n')).toBe(0);
     expect(result.stdout).toContain('0 failed; 0 ignored');
     if (process.platform !== 'win32') {
+      expect(result.stdout).toContain('native-activation: serialized install, current revocation and crash-conservative monotonic floors');
       expect(result.stdout).toContain('protected_policy_reloads_current_revocation_and_floors ... ok');
       expect(result.stdout).toContain('protected_policy_refuses_missing_symlink_hardlink_fifo_and_permissions ... ok');
       expect(result.stdout).toContain('protected_policy_rejects_unbounded_ambiguous_or_incomplete_input ... ok');

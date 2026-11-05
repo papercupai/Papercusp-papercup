@@ -5251,6 +5251,85 @@ describe('ADOPTION — a stale host hands the session to a fresh launcher instea
     25_000,
   );
 
+  it('keeps adoption pending past the diagnostic cap until the real predecessor exit notification arrives (EI-27747541848781655)', async () => {
+    const ownerId = `su-adopt-exit-fence-${process.pid}-${Math.floor(performance.now())}`;
+    const { captured, io } = fakeIo();
+    const delayedExits: Array<() => void> = [];
+    let exitsReleased = false;
+    let childPid = 0;
+    let spawns = 0;
+    let settled = false;
+    const reexecs: number[] = [];
+    const releaseExits = () => {
+      exitsReleased = true;
+      for (const notify of delayedExits.splice(0)) notify();
+    };
+    const done = hostThroughPty({
+      command: execPath,
+      args: ['-e', childCode],
+      cwd: '/tmp',
+      env: {
+        ...hermeticEnv(), PAPERCUSP_SID: ownerId, TERM: 'xterm-256color',
+        PAPERCUSP_PSU_REEXEC: '87', PAPERCUSP_PSU_REEXEC_PPID: String(process.ppid),
+      },
+      ownerId,
+      io,
+      bridgeTty: false,
+      hostCodeStalenessFn: () => ({ stale: true, loaded: 'a'.repeat(64), onDisk: 'b'.repeat(64) }),
+      mintRecycleArgs: (args: string[]) => ({ args, nativeId: null }),
+      onReexec: ({ code }: { code: number }) => { reexecs.push(code); },
+      spawnPty: (file, args, options, realSpawn) => {
+        const spawned = realSpawn(file, args, options);
+        childPid = spawned.pid;
+        spawns++;
+        const onExit = spawned.onExit.bind(spawned);
+        return new Proxy(spawned, {
+          get(target, property) {
+            if (property === 'onExit') {
+              return (handler: (event: { exitCode: number; signal: number }) => void) =>
+                onExit((event: { exitCode: number; signal: number }) => {
+                  if (exitsReleased) handler(event);
+                  else delayedExits.push(() => handler(event));
+                });
+            }
+            const value = Reflect.get(target, property, target);
+            return typeof value === 'function' ? value.bind(target) : value;
+          },
+        });
+      },
+    });
+    void done.then(() => { settled = true; });
+    try {
+      await vi.waitFor(() => expect(captured()).toContain('BOOT:'), { timeout: 5_000 });
+      await controlInject(socketPathFor(ownerId), 'recycle', '');
+      // Distinguish a delayed notification from a live, unkillable child: the
+      // real node-pty exit has happened, and this exact PID no longer exists.
+      await vi.waitFor(() => {
+        expect(delayedExits.length).toBeGreaterThan(0);
+        expect(readFileSync(eventLogPathForOwner(ownerId), 'utf8'))
+          .toContain('"kind":"pty-child-exit-unverified"');
+      }, { timeout: 5_000 });
+      expect(() => process.kill(childPid, 0)).toThrow(expect.objectContaining({ code: 'ESRCH' }));
+      expect(settled).toBe(false);
+      expect(reexecs).toEqual([]);
+      expect(spawns).toBe(1);
+      expect(existsSync(socketPathFor(ownerId))).toBe(true);
+      expect(existsSync(metaPathFor(ownerId))).toBe(true);
+
+      releaseExits();
+      expect(await done).toBe(87);
+      expect(reexecs).toEqual([87]);
+      expect(spawns).toBe(1);
+      expect(existsSync(socketPathFor(ownerId))).toBe(false);
+      expect(existsSync(metaPathFor(ownerId))).toBe(false);
+    } finally {
+      releaseExits();
+      await done;
+      const handoff = handoffPathFor(ownerId);
+      if (existsSync(handoff)) unlinkSync(handoff);
+    }
+  }, 15_000);
+
   it(
     'CONTROL: with no shim advertisement it respawns in place — a launcher nobody will re-run must never exit',
     async () => {

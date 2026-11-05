@@ -369,6 +369,14 @@ function requestFingerprint(req: GetFeedbackRequest): string {
   return createHash('sha256').update(JSON.stringify(canonical(req))).digest('hex');
 }
 
+/** Caller intent survives changes to inferred subjects or public-manual anchors.
+ * Keep the full fingerprint separately: the persisted execution payload must
+ * still pass its provenance check before it can be recovered or dispatched. */
+function requestInputFingerprint(req: GetFeedbackRequest): string {
+  const { resolvedSubjectRefs: _resolved, unresolvedSubjectRefs: _unresolved, ...input } = req;
+  return requestFingerprint(input);
+}
+
 /** Persist before embeddings or launches. Conversation-store creation and the
  * consult PK both converge on the same requester/workspace/key identity. */
 export async function acceptFeedbackRequestCore(
@@ -397,25 +405,28 @@ export async function acceptFeedbackRequestCore(
     WHERE workspace_id = ${req.workspaceId} AND conversation_id = ${opened.conversation_id}
       AND requester_id = ${req.requesterId}`;
   let row = rows[0];
-  if (!row || row.routing.request?.fingerprint !== fingerprint) return {
+  const stored = row?.routing.request;
+  if (!row || !stored?.payload || stored.fingerprint !== requestFingerprint(stored.payload) ||
+      requestInputFingerprint(stored.payload) !== requestInputFingerprint(req)) return {
     error: 'request_key_conflict', conversation_id: opened.conversation_id,
     hint: 'This request_key already names a different question or options. Reuse its original payload for recovery, or use a new key for a fresh consult.',
   };
   const previous = row.routing.request.result;
-  if (previous && 'verdict' in previous && previous.verdict === 'relevance_unmeasured' &&
-      requestFingerprint(row.routing.request.payload) === fingerprint) {
+  if (previous && 'verdict' in previous && previous.verdict === 'relevance_unmeasured') {
     const now = (deps.now?.() ?? new Date()).toISOString();
     // An explicit same-payload retry can recover an instrument outage. This is
     // preparation only: the existing continuation must acquire its CAS lease
     // and rerun the governed router before it can select or dispatch anyone.
     // Fence every trace of selection/delivery, including ambiguous launch work.
     // Comparing the whole request also prevents concurrent retries from erasing
-    // a newer outcome or appending the same history entry twice.
+    // a newer outcome or appending the same history entry twice. Refresh derived
+    // subjects only inside this fenced transition, never for a selected request.
     await sql`
       UPDATE harness_shared.consult_state cs
          SET state = 'routing', updated_at = ${now}::timestamptz,
              routing = jsonb_set(routing, '{request}',
                ((routing->'request') - 'result') || jsonb_build_object(
+                 'payload', ${sql.json(req as never)}, 'fingerprint', ${fingerprint}::text,
                  'recoveryHistory', COALESCE(routing #> '{request,recoveryHistory}', '[]'::jsonb) ||
                    jsonb_build_array(jsonb_build_object('at', ${now}::text,
                      'result', routing #> '{request,result}'))))

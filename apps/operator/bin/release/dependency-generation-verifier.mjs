@@ -52,7 +52,7 @@ function files(root, rel) {
 // Conservatively bind the whole source census, including submodules and dirty
 // files. A package build may bundle inputs outside its package (OMP does).
 // This intentionally prefers a rebuild to guessing a compiler's import graph.
-export function buildInputs(root) {
+function sourcePaths(root) {
   const result = new Set();
   function visit(repo, prefix = '') {
     const names = execFileSync('git', ['ls-files', '-z', '--cached', '--others', '--exclude-standard'],
@@ -69,7 +69,11 @@ export function buildInputs(root) {
     }
   }
   visit(root);
-  return [...result].sort().map(path => identity(root, path));
+  return [...result].sort();
+}
+
+export function buildInputs(root) {
+  return sourcePaths(root).map(path => identity(root, path));
 }
 
 export function buildWorkspace(root, packagePath, command) {
@@ -94,17 +98,10 @@ export function buildWorkspace(root, packagePath, command) {
 }
 
 function manifests(root) {
-  const result = [];
-  function walk(dir, prefix = '') {
-    for (const name of readdirSync(dir).sort()) {
-      if (['node_modules', 'dist', '.papercusp', '.git', '.next', 'target', 'resources', 'sidecar', 'env-sidecars'].includes(name)) continue;
-      const path = prefix + name, file = join(dir, name), stat = lstatSync(file);
-      if (stat.isDirectory()) walk(file, path + '/');
-      else if (name === 'package.json' && stat.isFile()) result.push(path);
-    }
-  }
-  walk(root);
-  return result;
+  // Requirements and producing inputs must describe the same source census.
+  // A retained, gitignored candidate contains package.json files too, but is
+  // output rather than another workspace requiring a native build receipt.
+  return sourcePaths(root).filter(path => path === 'package.json' || path.endsWith('/package.json'));
 }
 function checkInputs(root, inputs) {
   if (!Array.isArray(inputs) || !inputs.length) fail('missing-build-inputs');

@@ -52,6 +52,7 @@ import {
 } from "./npm-install-safe.mjs";
 import {
   PACKAGE_CACHE_MUTEX_NAME,
+  reconcileFsMutexStagingReaders,
   resolveFsMutexTimeoutMs,
   withFsMutex,
   withFsMutexRead,
@@ -1152,6 +1153,40 @@ test("fs-mutex admission reconciles abandoned staging readers", async (t) => {
       assert.equal(existsSync(orphan), false, "admission must reconcile an abandoned staging marker");
     }, { lockRootDir: root, timeoutMs: 100, retryMs: 5 });
   }
+});
+
+test("fs-mutex staging reconciliation preserves live, remote, denied and fresh malformed owners", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "install-safe-staging-controls-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  let identity;
+  await withFsMutex("identity", async () => {
+    identity = JSON.parse(readFileSync(join(root, "identity.lock", "owner.json"), "utf8"));
+  }, { lockRootDir: root });
+  const staging = join(root, "controls.readers-staging");
+  const create = (name, owner, old = false) => {
+    const dir = join(staging, `${name}.lock`);
+    mkdirSync(dir, { recursive: true });
+    if (owner) writeFileSync(join(dir, "owner.json"), JSON.stringify(owner));
+    if (old) utimesSync(dir, new Date(0), new Date(0));
+    return dir;
+  };
+  const oldOrphan = create("old-orphan", null, true);
+  const freshOrphan = create("fresh-orphan", null);
+  const live = create("live", identity, true);
+  const remote = create("remote", { ...identity, host: "another-host" }, true);
+  const child = spawnSync(process.execPath, ["-e", ""], { stdio: "ignore" });
+  assert.equal(child.status, 0);
+  const dead = create("dead", { ...identity, pid: child.pid });
+  const first = await reconcileFsMutexStagingReaders("controls", { lockRootDir: root });
+  assert.deepEqual(first.reclaimed.sort(), [oldOrphan, dead].sort());
+  assert.deepEqual(first.retained.sort(), [freshOrphan, live, remote].sort());
+  assert.equal(first.remaining, 0);
+  t.mock.method(process, "kill", () => { throw Object.assign(new Error("denied"), { code: "EPERM" }); });
+  const denied = await reconcileFsMutexStagingReaders("controls", { lockRootDir: root });
+  assert.deepEqual(denied.reclaimed, []);
+  assert.equal(existsSync(live), true);
+  assert.equal(existsSync(freshOrphan), true);
+  assert.equal(existsSync(remote), true);
 });
 
 test("fs-mutex reclaims a recycled reader PID but retains its matching live identity", async () => {

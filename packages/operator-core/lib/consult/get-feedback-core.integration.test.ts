@@ -1346,6 +1346,66 @@ describe('recoverable interactive feedback requests', () => {
     },
   );
 
+  it('refreshes derived subject metadata when the same unmeasured request recovers', async () => {
+    const fixture = makeDeps(routeOf([], { degraded: 'evidence-unavailable' }));
+    const request = { ...baseReq, requestKey: 'unmeasured-derived-subject',
+      resolvedSubjectRefs: ['plans:start'], unresolvedSubjectRefs: [] };
+    const accepted = await acceptFeedbackRequestCore(request, fixture.deps);
+    if ('error' in accepted) throw new Error(accepted.error);
+    const run = (execute: Parameters<typeof continueFeedbackRequestCore>[2]['execute']) =>
+      continueFeedbackRequestCore(WS, accepted.conversation_id, { getSql: () => rootSql, now: () => NOW, execute });
+    await run((payload, context) => getFeedbackCore(payload, { ...fixture.deps, acceptedRequest: context }));
+    const previous = (await stateRow(accepted.conversation_id)).routing;
+    const { resolvedSubjectRefs: _resolved, unresolvedSubjectRefs: _unresolved, ...corrected } = request;
+    for (const changed of [{ ...corrected, question: 'A different question?' },
+      { ...corrected, subjectRefs: ['explicit-new-subject'] }]) {
+      expect(await acceptFeedbackRequestCore(changed, fixture.deps)).toMatchObject({ error: 'request_key_conflict' });
+      expect((await stateRow(accepted.conversation_id)).routing).toEqual(previous);
+    }
+    const retries = await Promise.all([
+      acceptFeedbackRequestCore(corrected, fixture.deps), acceptFeedbackRequestCore(corrected, fixture.deps),
+    ]);
+    for (const retry of retries) expect(retry).toMatchObject({
+      conversation_id: accepted.conversation_id, state: 'routing', pending: true,
+    });
+    const routing = (await stateRow(accepted.conversation_id)).routing as {
+      request: { payload: GetFeedbackRequest; recoveryHistory: unknown[] };
+    };
+    expect(routing.request.payload).toEqual(corrected);
+    expect(routing.request.recoveryHistory).toHaveLength(1);
+    const recovered = makeDeps(routeOf([cand('correct-subject-expert')]));
+    expect(await run((payload, context) => {
+      expect(payload).toEqual(corrected);
+      return getFeedbackCore(payload, { ...recovered.deps, acceptedRequest: context });
+    })).toBe(true);
+    // A late retry with stale derived metadata must not undo selection or launch twice.
+    const before = await stateRow(accepted.conversation_id);
+    expect(await acceptFeedbackRequestCore(request, fixture.deps)).toMatchObject({
+      conversation_id: accepted.conversation_id, state: 'awaiting_responder', pending: false,
+    });
+    expect(await stateRow(accepted.conversation_id)).toEqual(before);
+    expect(recovered.reached).toHaveLength(1);
+  });
+
+  it('refuses recovery when the persisted derived payload fails its provenance check', async () => {
+    const fixture = makeDeps(routeOf([], { degraded: 'evidence-unavailable' }));
+    const request = { ...baseReq, requestKey: 'unmeasured-derived-subject-tampered',
+      resolvedSubjectRefs: ['original-subject'] };
+    const accepted = await acceptFeedbackRequestCore(request, fixture.deps);
+    if ('error' in accepted) throw new Error(accepted.error);
+    await continueFeedbackRequestCore(WS, accepted.conversation_id, { getSql: () => rootSql, now: () => NOW,
+      execute: (payload, context) => getFeedbackCore(payload, { ...fixture.deps, acceptedRequest: context }),
+    });
+    await rootSql`UPDATE harness_shared.consult_state
+      SET routing = jsonb_set(routing, '{request,payload,resolvedSubjectRefs}', '["tampered"]'::jsonb)
+      WHERE workspace_id = ${WS} AND conversation_id = ${accepted.conversation_id}`;
+    const before = await stateRow(accepted.conversation_id);
+    expect(await acceptFeedbackRequestCore({ ...request, resolvedSubjectRefs: ['corrected-subject'] }, fixture.deps))
+      .toMatchObject({ error: 'request_key_conflict' });
+    expect(await stateRow(accepted.conversation_id)).toEqual(before);
+    expect(fixture.reached).toHaveLength(0);
+  });
+
   it.each(['selected', 'responder', 'dispatch-attempt', 'pending-dispatch', 'wake', 'exchange',
     'cascade', 'closed', 'closed-conversation', 'reply', 'retrieval-only', 'unexpired-lease',
     'result-dispatch', 'result-wake', 'missing-selection'] as const)(
@@ -1388,6 +1448,8 @@ describe('recoverable interactive feedback requests', () => {
       expect(await acceptFeedbackRequestCore(request, fixture.deps)).toMatchObject({
         conversation_id: accepted.conversation_id, state: 'no_qualified_responder', pending: false,
       });
+      expect(await acceptFeedbackRequestCore({ ...request, resolvedSubjectRefs: ['corrected-subject'] }, fixture.deps))
+        .toMatchObject({ conversation_id: accepted.conversation_id, state: 'no_qualified_responder', pending: false });
       expect(await stateRow(accepted.conversation_id)).toEqual(before);
       expect(await continueFeedbackRequestCore(WS, accepted.conversation_id, {
         getSql: () => rootSql, execute: async () => { throw new Error('fenced request executed'); },

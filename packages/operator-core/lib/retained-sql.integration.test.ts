@@ -2,8 +2,11 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 import { createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
 import { pgReadQuery } from './pg-read-query';
 import { retainedSqlCaptureExpression, compileRetainedSql, SQL_INPUT_COLUMN } from './retained-sql';
-import { retainedProbeProcedure, replayRetainedSqlProbe, type ContinuityProbe } from './continuity-probes';
+import { continuityProbeRevision, retainedProbeProcedure, replayRetainedSqlProbe, runContinuityProbeBatch, type ContinuityProbe } from './continuity-probes';
 import { retainMeasurementProvenance } from './measurement-provenance';
+
+// The production runner validates the pinned projected contract before dispatch.
+await import('./agent-tools/dev/pg_query');
 
 let db: FreshPgDb;
 const clock = '2026-11-03T00:00:00.000Z';
@@ -13,6 +16,7 @@ const query = `SELECT count(*)::float8 n,max(id)::text largest,sum(duration_ms):
   AND measured_at>now()-interval '1 hour'`;
 
 beforeAll(async () => {
+  expect(continuityProbeRevision('dev:pg_query'), 'production SQL tool must be registered before probe execution').toBeTruthy();
   db = await createFreshPgDb('retained-sql');
   await db.sql`CREATE TABLE harness_shared.replay_rows
     (workspace_id text,id bigint,duration_ms float8,measured_at timestamptz)`;
@@ -35,6 +39,29 @@ async function capture(sql = query) {
 }
 
 describe('bounded historical SQL source replay (real PostgreSQL)', () => {
+  it('captures source rows through the production probe runner and replays after source mutation', async () => {
+    const probe: ContinuityProbe = { kind: 'sql', sql: query, maxRows: 5,
+      schemaRevision: continuityProbeRevision('dev:pg_query')!,
+      expect: { path: '$.rows[0].budget', op: 'lte', value: 25 } };
+    const batch = await runContinuityProbeBatch([{
+      source: { kind: 'work-item', id: 'WI-retained-sql-test', harness: 'papercusp' },
+      checkIndex: 0, check: { id: 'sql', claim: 'original budget', recheck: 'SQL', probe },
+    }], { retainMeasurement: true, dispatchTool: async (_name, args) => ({
+      data: await pgReadQuery(String(args.sql), { client: db.sql }),
+    }) });
+    const reading = batch.results[0]!;
+    expect(reading, JSON.stringify(reading.diagnostic)).toMatchObject({ status: 'fresh', observed: 20, provenance: { gaps: [] } });
+    expect(JSON.parse(reading.provenance!.procedure.snapshot)).toMatchObject({ sqlInputs: {
+      relation: '"harness_shared"."replay_rows"', truncated: false,
+      rows: [{ id: '9007199254740993' }, { id: '9007199254740994' }],
+    } });
+    expect(reading.provenance!.diagnostics.some(d => d.path.includes('__papercusp_measurement'))).toBe(false);
+    await db.sql`UPDATE harness_shared.replay_rows SET duration_ms=10000`;
+    expect(await replayRetainedSqlProbe({ value: 20, unit: 'ms', provenance: reading.provenance },
+      (sql, opts) => pgReadQuery(sql, { ...opts, client: db.sql })))
+      .toMatchObject({ scope: 'sql-query', status: 'reproduced', value: 20, verdict: 'pass' });
+  });
+
   it('recomputes from original scoped inputs after the live source is deleted', async () => {
     const captured = await capture();
     expect(captured.inputs).toMatchObject({ truncated: false, rows: [

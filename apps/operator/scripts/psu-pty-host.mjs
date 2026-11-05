@@ -17638,7 +17638,17 @@ export function hostThroughPty(o) {
           subscription?.dispose?.();
           resolve(observed);
         };
-        const timer = setTimeout(() => finish(false), RECYCLE_FORCE_KILL_WAIT_MS);
+        // For a continuation the cap is diagnostic, like the in-place recycle
+        // fence below. Ordinary teardown still has its bounded failure result.
+        // node-pty can report a real exit after it; settling false here abandons
+        // adoption forever even when the child is already gone. Keep discovery
+        // and the successor fence until the subscribed exit actually arrives.
+        const timer = setTimeout(() => {
+          if (!reexecRequested) { finish(false); return; }
+          appendHostEvent(ownerId, 'pty-child-exit-unverified', {
+            childPid: departingChild.pid, pending: true,
+          });
+        }, RECYCLE_FORCE_KILL_WAIT_MS);
         subscription = departingChild.onExit(() => finish(true));
       });
       // A PTY leader can exit before its descendants. Reap the group while its
@@ -17796,7 +17806,8 @@ export function hostThroughPty(o) {
         // custody boundary by embedding callers. Identity replacement also
         // requires the existing exact-PID absence check before spawning.
         const childExited = await childExit;
-        const callerExited = childExited && (reexecRequested?.callerExit ? await reexecRequested.callerExit : true);
+        const callerExited = childExited && (reexecRequested?.verifyCallerExit
+          ? reexecRequested.verifyCallerExit() : true);
         if (!childExited) {
           appendHostEvent(ownerId, 'pty-child-exit-unverified', { childPid: departingChild.pid });
         }
@@ -17854,16 +17865,13 @@ export function hostThroughPty(o) {
     };
     completeIdentityAssume = (orders) => {
       const departingChild = child;
-      const callerExit = new Promise((resolve) => {
-        const timer = setTimeout(() => resolve(false), RECYCLE_FORCE_KILL_WAIT_MS);
-        departingChild.onExit(() => {
-          clearTimeout(timer);
-          try { process.kill(departingChild.pid, 0); resolve(false); }
-          catch (error) { resolve(error?.code === 'ESRCH'); }
-        });
-      });
       reexecRequested = { code: orders.code,
-        callerExit,
+        // cleanup owns the exit subscription. Check exact-PID absence AFTER
+        // that observation instead of racing it with a second one-second cap.
+        verifyCallerExit: () => {
+          try { process.kill(departingChild.pid, 0); return false; }
+          catch (error) { return error?.code === 'ESRCH'; }
+        },
         go: () => onReexec({ ...orders, mode: 'identity-assume' }) };
       cleanup(0);
     };

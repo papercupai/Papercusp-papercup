@@ -97,6 +97,10 @@ export function retainMeasurementProvenance(input: {
     seen.add(value);
     const entries = Object.entries(value).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0);
     for (const [key, entry] of entries) {
+      // JSON omits optional object properties. Internal readers commonly return
+      // them as own undefined fields (e.g. pgReadQuery.positiveControl); they
+      // are not lost measurements. Undefined array elements still signal gaps.
+      if (entry === undefined && !Array.isArray(value)) continue;
       if (nodes >= 256 || diagnostics.length >= 64) { diagnosticsTruncated = true; break; }
       visit(entry, `${path}[${JSON.stringify(scrub(key))}]`, depth + 1, isSensitiveValueKey(key));
     }

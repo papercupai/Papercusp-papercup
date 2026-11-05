@@ -76,6 +76,23 @@ export function ensureFsMutexLockRoot(env?: NodeJS.ProcessEnv, options?: {
     io?: FsMutexIo;
 }): Promise<any>;
 /**
+ * Reconcile interrupted pre-publication readers without acquiring a dependency
+ * lease. Reuse the same owner/age policy as published leases; a fresh publisher,
+ * matching live owner, remote owner, or unproven process identity stays intact.
+ * Each pass is bounded so a large abandoned container cannot monopolize admission.
+ * @param {string} name
+ * @param {{ lockRootDir?: string, staleMs?: number, io?: FsMutexIo }} [opts]
+ */
+export function reconcileFsMutexStagingReaders(name: string, opts?: {
+    lockRootDir?: string;
+    staleMs?: number;
+    io?: FsMutexIo;
+}): Promise<{
+    reclaimed: any[];
+    retained: any[];
+    remaining: number;
+}>;
+/**
  * Run `fn` while holding an exclusive, cross-process, filesystem-local mutex
  * named `name`. Blocks (retrying every `retryMs`) until acquired, a stale/dead
  * holder is reclaimed, or `timeoutMs` elapses (throws). Always releases in a

@@ -14,6 +14,7 @@ import { PAYLOAD_TIER_HARD_CEILING_CHARS, PAYLOAD_TIER_RATCHET_CHARS } from '@pa
 import { DbCallDeadlineError } from '@papercusp/db-org';
 import { OrgTxnTimeoutError } from '../../pg-bounded-txn';
 import { PgReadQueryTimeoutError } from '../../pg-read-query';
+import * as pgReader from '../../pg-read-query';
 import type { SpecTestAdequacyRerunRecipe } from '../../harness/improvements/observation-types';
 import { currentStageDiagnosticContext, STAGE_STALL_LOG_MS } from '../../sync/hyperbee/stage-stall-log';
 
@@ -25,6 +26,10 @@ const { doorConstantsMock, gradingAuditRubricMock, recipeHeaderMock, buildInfoMo
 }));
 vi.mock('../../context-doors-config', () => ({ getDoorConstantsSync: doorConstantsMock }));
 vi.mock('../../build-info', () => ({ getBuildInfo: buildInfoMock }));
+vi.mock('../../pg-read-query', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../pg-read-query')>();
+  return { ...actual, pgReadQuery: vi.fn(actual.pgReadQuery) };
+});
 
 vi.mock('../../rubrics', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../rubrics')>();
@@ -150,6 +155,8 @@ describe('scorecards:get evidence-first projection', () => {
   it('requires an exact criterion and refuses paging for retained historical replay', () => {
     expect(scorecardGetArgs.safeParse({ issueId: 'EI-audited-card', replay: 'retained-measurement' }).success).toBe(false);
     expect(scorecardGetArgs.safeParse({ issueId: 'EI-audited-card', criterionKey: 'disk', replay: 'retained-measurement', evidenceOffset: 0 }).success).toBe(false);
+    expect(scorecardGetArgs.safeParse({ issueId: 'EI-audited-card', replay: 'retained-sql-query' }).success).toBe(false);
+    expect(scorecardGetArgs.safeParse({ issueId: 'EI-audited-card', criterionKey: 'sql', replay: 'retained-sql-query', indexOffset: 0 }).success).toBe(false);
   });
 
   it('recomputes the selected card retained measurement through the judge-readable tool', async () => {
@@ -205,6 +212,41 @@ describe('scorecards:get evidence-first projection', () => {
       scope: 'probe-predicate', status: 'reproduced', verdict: 'pass', value: '9007199254740993',
       transactionAt: '2026-10-23T00:00:00Z' } });
     expect(resultContract.safeParse(response.data).success).toBe(true);
+    expect(gradingAuditRubricMock).not.toHaveBeenCalled();
+    const selected = await getTool.handler({ issueId: scorecard.issueId, criterionKey: 'sql' }, makeDispatchContext());
+    if (!('data' in selected)) throw new Error('Expected a structured SQL evidence response');
+    expect(selected.data).toMatchObject({ retainedSqlReplay: {
+      tool: 'scorecards:get', args: { issueId: scorecard.issueId, criterionKey: 'sql', replay: 'retained-sql-query' },
+    } });
+  });
+
+  it('recomputes the selected SQL query through the judge reader without reading its live source', async () => {
+    const provenance = retainMeasurementProvenance({
+      procedure: retainedProbeProcedure({ kind: 'sql', sql: 'SELECT sum(n)::float8 n FROM private_scope.counters',
+        maxRows: 5, schemaRevision: 'original-schema', expect: { path: '$.rows[0].n', op: 'lte', value: 30 } }, {
+        version: 1, relation: '"private_scope"."counters"', columns: [{ name: 'n', typeOid: '23' }],
+        rows: [{ n: '10' }, { n: '20' }], truncated: false,
+      }),
+      result: { rows: [{ n: 30 }], truncated: false },
+      startedAt: '2026-10-23T00:00:00Z', finishedAt: '2026-10-23T00:00:01Z',
+      transactionAt: '2026-10-23T00:00:00Z', needsTransactionClock: true,
+    });
+    readScorecardEvidenceM.mockResolvedValue({ kind: 'found', scorecard: { ...scorecard, criteria: [{
+      key: 'sql', rating: 'pass', evidence: 'original source rows', ratedFrom: 'ledger',
+      ledgerResult: { testRunId: 789, value: 30, unit: 'ms', provenance },
+    }] } } as never);
+    const read = vi.mocked(pgReader.pgReadQuery);
+    read.mockResolvedValueOnce({ rows: [{ n: 30 }], rowCount: 1, fields: ['n'], truncated: false, elapsedMs: 1 });
+    const response = await getTool.handler({ issueId: scorecard.issueId, criterionKey: 'sql',
+      replay: 'retained-sql-query' }, makeDispatchContext());
+    if (!('data' in response)) throw new Error('Expected a structured SQL source replay response');
+    expect(response.data).toMatchObject({ ok: true, replay: { testRunId: 789,
+      scope: 'sql-query', status: 'reproduced', verdict: 'pass', value: 30,
+      transactionAt: '2026-10-23T00:00:00Z' } });
+    expect(resultContract.safeParse(response.data).success).toBe(true);
+    expect(read).toHaveBeenCalledTimes(1);
+    expect(read.mock.calls[0]![0]).toContain('pg_catalog.jsonb_to_recordset');
+    expect(read.mock.calls[0]![0]).not.toContain('private_scope');
     expect(gradingAuditRubricMock).not.toHaveBeenCalled();
   });
 

@@ -551,6 +551,10 @@ function boundedEvidenceRead(
     return { ok: false as const, error: 'invalid_evidence_offset' };
   }
   let count = Math.min(inlineBudgetChars, criterion.evidence.length - offset);
+  let hasSqlProcedure = false;
+  try {
+    hasSqlProcedure = JSON.parse(criterion.ledgerResult?.provenance?.procedure.snapshot ?? 'null')?.kind === 'sql';
+  } catch { /* Invalid historical descriptors remain unavailable to replay. */ }
   const page = () => {
     const nextOffset = offset + count;
     const complete = nextOffset === criterion.evidence.length;
@@ -559,6 +563,9 @@ function boundedEvidenceRead(
       scorecard: { ...scorecard, criteria: [{ ...criterion, evidence: criterion.evidence.slice(offset, nextOffset) }] },
       ...(criterion.ratedFrom === 'ledger' && criterion.ledgerResult ? {
         retainedMeasurementReplay: { tool: 'scorecards:get', args: { issueId, criterionKey: criterion.key, replay: 'retained-measurement' } },
+        ...(hasSqlProcedure ? {
+          retainedSqlReplay: { tool: 'scorecards:get', args: { issueId, criterionKey: criterion.key, replay: 'retained-sql-query' } },
+        } : {}),
       } : {}),
       ...recipeRead,
       evidenceRead: {
@@ -621,7 +628,7 @@ export default defineTool({
   name: 'scorecards:get',
   profile: 'engineer',
   description:
-    'Read one rubric scorecard by issueId (id is a compatibility alias; issueId wins). Small cards return exact criterion evidence; oversized cards return an index via evidenceRead and recipes via rerunRecipeRead; follow their cursors, and never treat an incomplete page or index as missing evidence. Select with criterionKey; resume with indexOffset, evidenceOffset or rerunRecipeOffset. Add replay:retained-measurement with criterionKey for historical command-input or probe-predicate replay without live execution. History-only payload is omitted.',
+    'Read one rubric scorecard by issueId (id is a compatibility alias; issueId wins). Small cards return exact criterion evidence; oversized cards return an index via evidenceRead and recipes via rerunRecipeRead; follow their cursors, and never treat an incomplete page or index as missing evidence. Select with criterionKey; resume with indexOffset, evidenceOffset or rerunRecipeOffset. Add replay:retained-measurement for historical command-input or probe-predicate replay, or replay:retained-sql-query to recompute supported SQL from retained source rows. Both require criterionKey. History-only payload is omitted.',
   guidance: {
     when: 'Audit one existing scorecard and re-run the probes its criterion evidence names. Take issueId from scorecards:list or a grading-audit reservation.',
     notWhen:
@@ -630,6 +637,7 @@ export default defineTool({
       'For grading-integrity audits, call dev:pipeline_position for this path and use the same exact serving route for both scorecards:get and plans:evaluate-spec-test-adequacy: the process serving scorecards:get owns its currentness comparison; cross-route calls may report different currentness. ' +
       'For a spec-test-adequacy card call plans:evaluate-spec-test-adequacy with { slug: rerunRecipe.args.slug, scorecardId: issueId }; this replays its exact bindings as of scorecard.createdAt. Verify historicalAuditOnly.asOf matches scorecard.createdAt. Do not compare a direct replay of rerunRecipe.args with the historical card: freshness can change after evidence changes. Use rerunRecipe.args only when measuring the present state (current-state measurement). ' +
       'For a ledger measurement use scorecards:get { issueId, criterionKey, replay:"retained-measurement" } or the selected criterion retainedMeasurementReplay call. It recomputes retained command inputs or re-evaluates an original retained scalar probe response. scope:probe-predicate does not reconstruct SQL source rows or query calculations; unavailable SQL/counter snapshots remain unavailable, never current measurements. ' +
+      'For original SQL query recomputation follow retainedSqlReplay or use replay:"retained-sql-query". scope:sql-query executes only a closed query over retained typed source rows at the original transaction clock. Unsupported, missing, redacted or truncated source snapshots return unavailable; there is no live-source fallback. ' +
       'Read independent criteria in small Promise.all groups; follow each criterion pages sequentially. Concatenate complete pages before grading. If a call returns papercusp.output-envelope/v1, recover it through capability:read before reading scorecard.criteria. Recover all evidence pages before grading; emit the audit last.',
     returns:
     'Returns `{ ok, scorecard, evidenceRead, rerunRecipeRead? }`. The scorecard includes `evidenceFingerprint` when recorded, `evaluatorBuildCurrentness` when the recipe pins an evaluator build, and an inline `rerunRecipe` or a recoverable rerunRecipeRead cursor. Recipe pages retain card identity and gradingAudit; chunks encode exact JSON with UTF-16 offset/totalChars/next. Full evidence reads contain every exact criterion; an oversized read contains criteria:[] plus a complete or paged criterion index. Index pages preserve metadata and report offset/totalCriteria/next; criterion pages retain full-card identity and nKeys/missingKeys and report offset/totalChars/next. Recover recipe, index and evidence pages before grading.',

@@ -826,6 +826,27 @@ async function listReaderLocks(readersDir) {
   }
 }
 
+/**
+ * Reconcile interrupted pre-publication readers without acquiring a dependency
+ * lease. Reuse the same owner/age policy as published leases; a fresh publisher,
+ * matching live owner, remote owner, or unproven process identity stays intact.
+ * Each pass is bounded so a large abandoned container cannot monopolize admission.
+ * @param {string} name
+ * @param {{ lockRootDir?: string, staleMs?: number, io?: FsMutexIo }} [opts]
+ */
+export async function reconcileFsMutexStagingReaders(name, opts = {}) {
+  const root = opts.lockRootDir ?? resolveFsMutexLockRoot();
+  const staleMs = opts.staleMs ?? intEnv("PAPERCUSP_FS_MUTEX_STALE_MS", DEFAULT_STALE_MS);
+  const markers = await listReaderLocks(join(root, `${safeName(name)}.readers-staging`));
+  const reclaimed = [];
+  const retained = [];
+  for (const marker of markers.slice(0, 256)) {
+    const removed = await reclaimAbandonedLock(marker, staleMs, opts.io ?? {});
+    (removed ? reclaimed : retained).push(marker);
+  }
+  return { reclaimed, retained, remaining: Math.max(0, markers.length - 256) };
+}
+
 async function waitForReaders(
   readersDir,
   {
@@ -938,6 +959,8 @@ export async function withFsMutex(name, fn, opts = {}) {
   // Nested under its own key rather than merged: a caller can then never shadow `pid` /
   // `host` / `startedAt`, which are the fields the reclaim path and every waiter trust.
   const intent = sanitizeIntent(opts.intent);
+  await measureAdmissionSubphase("staging-reader-reconcile", () =>
+    reconcileFsMutexStagingReaders(name, { lockRootDir: root, staleMs, io }));
   const owner = {
     pid: process.pid,
     ...processIdentity(process.pid),
@@ -1427,6 +1450,8 @@ export async function withFsMutexRead(name, fn, opts = {}) {
     opts.retryMs ?? intEnv("PAPERCUSP_FS_MUTEX_RETRY_MS", DEFAULT_RETRY_MS);
   const startedAt = Date.now();
   const readerMarkerName = `${process.pid}-${Date.now()}-${randomUUID()}.lock`;
+  await measureAdmissionSubphase("staging-reader-reconcile", () =>
+    reconcileFsMutexStagingReaders(name, { lockRootDir: root, staleMs, io }));
   const readerDir = join(readersDir, readerMarkerName);
   // Publish from a sibling path so a killed reader cannot leave an ownerless
   // directory inside the set that writers drain. The rename stays on the same

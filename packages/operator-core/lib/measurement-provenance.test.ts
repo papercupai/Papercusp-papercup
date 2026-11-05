@@ -4,6 +4,18 @@ import { fitMeasurementProvenance, retainMeasurementProvenance } from './measure
 
 const times = { startedAt: '2026-10-23T00:00:00Z', finishedAt: '2026-10-23T00:00:01Z' };
 describe('bounded original measurement retention', () => {
+  it('retains internal SQL reader results with absent optional object fields without false gaps', () => {
+    const p = retainMeasurementProvenance({ ...times, procedure: { kind: 'sql' }, result: {
+      rows: [{ n: '9007199254740993' }], fields: ['n'], rowCount: 1,
+      truncated: false, elapsedMs: 1, positiveControl: undefined,
+    } });
+    expect(p.gaps).toEqual([]);
+    expect(p.diagnostics).toContainEqual({ path: '$["rows"]["0"]["n"]', value: '9007199254740993' });
+    expect(p.diagnostics.some(d => d.path.includes('positiveControl'))).toBe(false);
+    expect(retainMeasurementProvenance({ ...times, procedure: {}, result: [undefined] }).gaps)
+      .toEqual(['diagnostics-truncated']);
+  });
+
   it('pins canonical descriptor hashing independently of object insertion order', () => {
     const a = retainMeasurementProvenance({ ...times, procedure: { kind: 'sql', args: { z: 1, a: 'x' } }, result: { count: 7 } });
     const b = retainMeasurementProvenance({ ...times, procedure: { args: { a: 'x', z: 1 }, kind: 'sql' }, result: { count: 7 } });
