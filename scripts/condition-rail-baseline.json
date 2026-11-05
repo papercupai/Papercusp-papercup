@@ -181,6 +181,28 @@
       "evidenceRef": "WI-6554700010016778: verified fail-closed branch and fresh lint reproduction"
     },
     {
+      "rowId": "log-only-fallback|apps/operator/scripts/ptool.mjs|main|4",
+      "author": "su-62ee053e-9db6-4051-be0e-fc8212de8735",
+      "reason": "interactive or developer CLI: the fallback is printed to the invoking caller, and there is no long-running mechanism whose rate can collapse unobserved",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "interactive or developer CLI: the fallback is printed to the invoking caller, and there is no long-running mechanism whose rate can collapse unobserved"
+      },
+      "evidenceRef": "WI-6554700010016568: ptool main line 5457 prints the error to the caller and exits 1; condition-rail lint reproduced 2026-11-05",
+      "reviewerRef": "thread-post:1213990"
+    },
+    {
+      "rowId": "health-flag-no-condition|packages/operator-core/lib/consult/consult-routing-health-primitives.ts|expertiseExecutionHealthFromRows|1",
+      "author": "su-62ee053e-9db6-4051-be0e-fc8212de8735",
+      "reason": "historical routing-receipt histogram initializes and counts the degraded outcome bucket; this pure read neither detects a runtime condition nor performs a fallback",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "historical routing-receipt histogram initializes and counts the degraded outcome bucket; this pure read neither detects a runtime condition nor performs a fallback"
+      },
+      "evidenceRef": "WI-6554700010016568: pure aggregator extracted to primitives in 38efe886f20146eda82bbd11f982ccfbe0d1d9fb; current row is outcomes.degraded",
+      "reviewerRef": "thread-post:1213990"
+    },
+    {
       "rowId": "log-only-fallback|packages/operator-core/lib/harness/routines/project-history-refresh-action.ts|runProjectHistoryRefreshAction|1",
       "author": "durable-spawn:launch:papercusp:release-fix:release-fixer:1792226770141",
       "reason": "explicit missing-CLI precondition refusal: records failed project history health and returns without running an ambient PATH lookup; no fallback is performed",

@@ -1,5 +1,6 @@
-import { readFileSync, readdirSync } from 'node:fs';
+import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
+import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { preparePlaywrightTempDirectory } from '../../../../scripts/ensure-playwright-browsers.mjs';
@@ -272,11 +273,38 @@ describe('default Playwright run never collects a profile-owned spec (WI-1000673
     // Verify the maintained helper's behavior before accepting a reader that
     // delegates to it. Merely importing it cannot excuse a hard-coded path.
     expect(release.home).toBe('/fixture/isolated-home');
+    const { readEngineeringJourneyConfig } = await import('../../e2e/_engineering-evidence-journey-config');
+    const fixtureDir = mkdtempSync(join(tmpdir(), 'playwright-home-config-'));
+    try {
+      const inputsPath = join(fixtureDir, 'journey.json');
+      writeFileSync(inputsPath, JSON.stringify({
+        workspaceId: 'fixture-workspace', clientId: 'fixture-client', buildSha: 'a'.repeat(40),
+        plan: 'fixture-plan', item: 'P-001', harness: 'papercusp',
+        symbol: { path: 'src/feature.ts', name: 'feature' }, spec: { id: 'EE-1', revision: 1 }, decisionId: 'D-001',
+        runId: 1, caseKey: 'fixture-case', occurrence: 1,
+        observation: { invocationId: 'fixture-invocation', traceId: 'b'.repeat(32), spanId: 'c'.repeat(16),
+          sourceFingerprint: 'd'.repeat(64), artifactFingerprint: 'e'.repeat(64), environmentFingerprint: 'f'.repeat(64) },
+        sourcePins: [{ path: 'src/feature.ts', sha256: 'd'.repeat(64) }],
+        stale: { plan: 'fixture-plan', item: 'P-002' }, unobserved: { plan: 'fixture-plan', item: 'P-003' },
+      }));
+      expect(readEngineeringJourneyConfig({
+        PAPERCUSP_ENGINEERING_PLANE: 'current-build', PAPERCUSP_ENGINEERING_JOURNEY_INPUTS: inputsPath,
+        PAPERCUSP_HOME: '/fixture/isolated-home',
+      }).home).toBe('/fixture/isolated-home');
+    } finally {
+      rmSync(fixtureDir, { recursive: true, force: true });
+    }
+    const delegatedReaders = [
+      { name: 'readPlanAuditReleaseConfig', module: '_plan-audit-release-config' },
+      { name: 'readEngineeringJourneyConfig', module: '_engineering-evidence-journey-config' },
+    ];
     const resolvesHome = (source: string) => {
       if (/process\.env\.PAPERCUSP_HOME/.test(source)) return true;
-      const imported = /import\s*\{[^}]*\breadPlanAuditReleaseConfig\b[^}]*\}\s*from\s*['"]\.\/_plan-audit-release-config['"]/.test(source);
-      const binding = /const\s+([A-Za-z_$][\w$]*)\s*=\s*readPlanAuditReleaseConfig\(\)/.exec(source);
-      return !!(imported && binding && new RegExp(`join\\(\\s*${binding[1].replace(/\$/g, '\\$')}\\.home\\s*,\\s*['"]superuser-token['"]`).test(source));
+      return delegatedReaders.some((reader) => {
+        const imported = new RegExp('import\\s*\\{[^}]*\\b' + reader.name + '\\b[^}]*\\}\\s*from\\s*[\'\"]\\./' + reader.module + '[\'\"]').test(source);
+        const binding = new RegExp('const\\s+([A-Za-z_$][\\w$]*)\\s*=\\s*' + reader.name + '\\(\\)').exec(source);
+        return !!(imported && binding && new RegExp(`join\\(\\s*${binding[1].replace(/\$/g, '\\$')}\\.home\\s*,\\s*['"]superuser-token['"]`).test(source));
+      });
     };
 
     // Control: the predicate flags the exact shape that was broken.
@@ -285,6 +313,10 @@ describe('default Playwright run never collects a profile-owned spec (WI-1000673
     const delegatedShape = "import { readPlanAuditReleaseConfig } from './_plan-audit-release-config'; const release = readPlanAuditReleaseConfig(); readFileSync(join(release.home, 'superuser-token'), 'utf8');";
     expect(readsSuToken(delegatedShape) && resolvesHome(delegatedShape)).toBe(true);
     expect(resolvesHome(delegatedShape.replace('join(release.home,', "join('/hard-coded',"))).toBe(false);
+    const engineeringShape = "import { readEngineeringJourneyConfig } from './_engineering-evidence-journey-config'; const config = readEngineeringJourneyConfig(); readFileSync(join(config.home, 'superuser-token'), 'utf8');";
+    expect(readsSuToken(engineeringShape) && resolvesHome(engineeringShape)).toBe(true);
+    expect(resolvesHome(engineeringShape.replace('join(config.home,', "join('/hard-coded',"))).toBe(false);
+    expect(resolvesHome(engineeringShape.replace('./_engineering-evidence-journey-config', './unverified-config'))).toBe(false);
 
     const specs = listFiles(E2E_DIR).filter((file) => file.endsWith('.ts'));
     const names = (list: string[]) => list.map((file) => file.slice(E2E_DIR.length + 1)).sort();

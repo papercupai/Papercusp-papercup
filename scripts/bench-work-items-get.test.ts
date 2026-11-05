@@ -1,20 +1,91 @@
 import { describe, expect, it } from 'vitest';
-import { judgeSamples, runSummaryCohort, validateSummary, mcpIdentityFixture, identityPreparation, identityPreparationProbe, IdentityPreparationError, isolatedIdentityRuntimeContract, identityProcessGroupCensus, identityLoadedHealth, identitySelectedSource, identityExecutableFingerprint, identityFileMappings, identityMappedFileFingerprints, type IdentityRuntime, type Sample, type McpIdentityFixture } from './bench-work-items-get';
+import { judgeSamples, runSummaryCohort, validateSummary, mcpIdentityFixture, identityPreparation, identityPreparationProbe, identityRuntimePreparation, IdentityPreparationError, isolatedIdentityRuntimeContract, identityProcessGroupCensus, identityLoadedHealth, identitySelectedSource, identityExecutableFingerprint, identityFileMappings, identityMappedFileFingerprints, type IdentityRuntime, type Sample, type McpIdentityFixture } from './bench-work-items-get';
 import { AgentMcpConnectionError } from '../packages/operator-core/lib/agent-mcp-client';
 import { maybeBatchNudge } from '../packages/operator-core/lib/code-run-batch-nudge';
 import type { PerfWorkloadManifest } from '../packages/operator-core/lib/system-health/perf-workload-run';
 import { createHash, randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { mkdtempSync, mkdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { open } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { verifierSourceFiles } from '../packages/operator-core/lib/verifier-source';
+// @ts-expect-error -- The maintained CLI preflight is JavaScript without declarations.
+import { assertPrivateIntegrationEvidence } from './test-files.mjs';
 
 const identity: McpIdentityFixture = { ownerId: 'su-fixture', ownerLabel: 'Fixture', source: 'test', workspaceId: 'test-workspace',
   userId: null, fleetSlug: null, fleetRole: null, inbox_wake_key: 'coord:inbox-wake:su-fixture' };
 const identityFixture = () => mcpIdentityFixture(identity, 'superuser=1&client=su-fixture&workspace=test-workspace&format=json');
+
+describe('retained isolated runtime preparation failures', () => {
+  it.each([
+    [{ PAPERCUSP_TEST_RUNS_DB_URL: '' }, 'PAPERCUSP_TEST_RUNS_DB_URL must not be blank'],
+    [{ PAPERCUSP_TEST_RUNS_DB_URL: 'https://secret@host.invalid/token' }, 'PAPERCUSP_TEST_RUNS_DB_URL must be a valid PostgreSQL URL'],
+    [{ PAPERCUSP_TEST_RUN_RECEIPT_FILE: '/tmp/receipt' }, 'PAPERCUSP_TEST_RUNS_DB_URL is required for durable isolated test receipts'],
+  ])('retains the actual pre-builder refusal without running the compiler (%j)', async (env, code) => {
+    const dir = mkdtempSync(join(tmpdir(), 'identity-prepare-failure-'));
+    let builderStarted = false;
+    try {
+      await expect(identityRuntimePreparation(dir, async stage => {
+        stage('bundle');
+        assertPrivateIntegrationEvidence(env);
+        builderStarted = true;
+      })).rejects.toThrow(code);
+      const path = join(dir, 'preparation-failure.json');
+      expect(JSON.parse(readFileSync(path, 'utf8'))).toEqual({ kind: 'unqualified-identity-runtime-preparation-failure',
+        acceptance: 'unknown', stage: 'bundle', diagnostic: { code }, artifacts: [], hostStarted: false });
+      expect(builderStarted).toBe(false);
+      expect(statSync(path).mode & 0o777).toBe(0o600);
+      expect(existsSync(join(dir, 'prepare'))).toBe(false);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+  it('keeps original artifact references and safe errno while omitting opaque credentials and causes', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'identity-prepare-failure-'));
+    const error = Object.assign(new Error('postgres://user:SECRET@localhost/db', { cause: 'Bearer SECRET' }), { code: 'EACCES' });
+    try {
+      mkdirSync(join(dir, 'prepare'));
+      const artifact = join(dir, 'prepare/operator-api-build.log');
+      writeFileSync(artifact, 'original compiler output');
+      await expect(identityRuntimePreparation(dir, async stage => { stage('bundle'); throw error; })).rejects.toBe(error);
+      const bytes = readFileSync(join(dir, 'preparation-failure.json'), 'utf8');
+      expect(JSON.parse(bytes)).toMatchObject({ diagnostic: { code: 'unclassified-failure', fsCode: 'EACCES' }, artifacts: [artifact] });
+      expect(bytes).not.toContain('SECRET');
+      expect(bytes).not.toContain('stack');
+      expect(readFileSync(artifact, 'utf8')).toBe('original compiler output');
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+  it('reports a known assertion without serializing its actual or expected values', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'identity-prepare-failure-'));
+    try {
+      await expect(identityRuntimePreparation(dir, async stage => {
+        stage('bundle');
+        throw new Error('Pinned selected source receipt changed\n+ actual SECRET\n- expected SECRET');
+      })).rejects.toThrow('Pinned selected');
+      const bytes = readFileSync(join(dir, 'preparation-failure.json'), 'utf8');
+      expect(JSON.parse(bytes).diagnostic).toEqual({ code: 'Pinned selected source receipt changed' });
+      expect(bytes).not.toContain('SECRET');
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+  it('retains source failures before later stages and refuses to overwrite prior failure evidence', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'identity-prepare-failure-'));
+    try {
+      await expect(identityRuntimePreparation(dir, async () => { throw new SyntaxError('SECRET'); })).rejects.toThrow('SECRET');
+      const path = join(dir, 'preparation-failure.json');
+      const original = readFileSync(path, 'utf8');
+      expect(JSON.parse(original)).toMatchObject({ stage: 'source-verification', diagnostic: { code: 'invalid-json' } });
+      await expect(identityRuntimePreparation(dir, async stage => { stage('credential'); throw new Error('other'); })).rejects.toMatchObject({ code: 'EEXIST' });
+      expect(readFileSync(path, 'utf8')).toBe(original);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+  it('returns successful preparation without inventing a failure record', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'identity-prepare-success-'));
+    try {
+      expect(await identityRuntimePreparation(dir, async stage => { stage('host-log'); return 'prepared'; })).toBe('prepared');
+      expect(existsSync(join(dir, 'preparation-failure.json'))).toBe(false);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+});
 
 describe('independently selected identity source archive', () => {
   function fixture() {

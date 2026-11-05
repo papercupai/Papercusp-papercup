@@ -674,12 +674,13 @@ interface PlanRevisionSnapshotDbRow {
  * are large. Historical rubric reads need the opposite contract: address one
  * exact sequence, never fall back to the current plan row, and expose a
  * fingerprint of the bytes actually read. Scope is resolved through the same
- * canonical plan resolver as the rest of this module.
+ * canonical plan resolver as the rest of this module. Quality readers request
+ * exactBody to exclude enriched receipts that share the canonical body hash.
  */
 export async function getPlanRevisionSnapshot(
   planSlug: string,
   seq: number | string,
-  opts: { harnessSlug?: string; workspaceId?: string } = {},
+  opts: { harnessSlug?: string; workspaceId?: string; exactBody?: boolean } = {},
 ): Promise<PlanRevisionSnapshot | null> {
   if (typeof seq === 'number' ? !Number.isInteger(seq) || seq <= 0 : !/^[a-f0-9]{64}$/.test(seq)) return null;
   const { workspaceId, harnessSlug } = await resolvePlanScope(opts);
@@ -691,6 +692,7 @@ export async function getPlanRevisionSnapshot(
          AND harness_slug = ${harnessSlug}
          AND plan_slug = ${planSlug}
          AND ${typeof seq === 'number' ? tx`seq = ${seq}` : tx`content_hash = ${seq}`}
+         AND ${opts.exactBody ? tx`content_snapshot_hash = content_hash` : tx`true`}
        ORDER BY seq DESC
        LIMIT 1
     `;

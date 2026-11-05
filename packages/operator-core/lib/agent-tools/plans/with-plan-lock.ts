@@ -33,7 +33,6 @@ import {
   type ActivationAuditEditNotice,
 } from '../../plan-audits';
 import { hashPlanContent } from './content-hash';
-import { initialChangeScopeProblems } from './initial-change-scope';
 import { readPlanItemAnchors, type PlanAnchorWrite } from '../../plan-items/anchor-store';
 import { preservePlanExecutionProgress } from './plan-execution-authority';
 import {
@@ -665,6 +664,7 @@ export async function withPlanLock<T>(
         }).map(item => item.id));
         for (const write of mutation.anchorWrites ?? []) changed.add(write.itemId);
         if (changed.size) {
+          const { initialChangeScopeProblems } = await import('./initial-change-scope');
           const anchors = await readPlanItemAnchors({ workspaceId, harnessSlug, planSlug: slug }, tx as unknown as TransactionSql);
           for (const write of mutation.anchorWrites ?? []) anchors[write.itemId] = write.anchors;
           const problems = initialChangeScopeProblems({ content: newBody,

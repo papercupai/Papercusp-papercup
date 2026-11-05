@@ -273,6 +273,45 @@ export function identityFailure(error: unknown): Record<string, unknown> {
   return { code: 'unclassified-failure', ...(typeof code === 'number' && Number.isSafeInteger(code) ? { mcpCode: code } : {}) };
 }
 
+type IdentityRuntimePreparationStage = 'source-verification' | 'preparation-module' | 'credential' |
+  'preparation-directory' | 'bundle' | 'runtime-configuration' | 'host-log';
+
+/** Keep pre-host failures outside the fresh build directory. Never serialize an
+ * assertion's actual/expected values, command output, stack or opaque message. */
+export async function identityRuntimePreparation<T>(evidenceDir: string,
+  prepare: (stage: (value: IdentityRuntimePreparationStage) => void) => Promise<T>): Promise<T> {
+  let stage: IdentityRuntimePreparationStage = 'source-verification';
+  try { return await prepare(value => { stage = value; }); }
+  catch (error) {
+    const message = error instanceof Error ? error.message : '';
+    const known = [
+      'independent selected source receipt required', 'exact selected source reference required',
+      'selected source reference differs', 'selected source receipt changed',
+      'PAPERCUSP_TEST_RUNS_DB_URL must not be blank',
+      'PAPERCUSP_TEST_RUNS_DB_URL must be a valid PostgreSQL URL',
+      'PAPERCUSP_TEST_RUNS_DB_URL is required for durable isolated test receipts',
+      'isolated shared-ledger runs require a nonblank caller workspace (PAPERCUSP_TEST_RUN_WORKSPACE, PAPERCUSP_WORKSPACE_ID or PAPERCUSP_WORKSPACE)',
+      'Observed build outputs must be independent of the source archive',
+      'Observed build requires a fresh preparation directory', 'Pinned selected source receipt changed',
+      'Observed selected source differs', 'Private operator dependencies violate their declared ranges:',
+    ];
+    const code = known.find(value => message === value || message.startsWith(`${value}\n`) ||
+      (value.endsWith(':') && message.startsWith(`${value} `)));
+    const errno = (error as NodeJS.ErrnoException | null)?.code;
+    const diagnostic = code ? { code } : identityFailure(error);
+    if (typeof errno === 'string' && ['ENOENT', 'EACCES', 'EEXIST', 'ENOSPC', 'EPERM', 'EROFS', 'ENOTDIR', 'ETIMEDOUT'].includes(errno))
+      diagnostic.fsCode = errno;
+    const artifacts = ['verifier-source.json', 'operator-api-inputs.json', 'operator-api-preflight.json',
+      'operator-api-build.log', 'operator-api-build-result.json', 'hono-host.mjs.build-steps.jsonl']
+      .map(name => resolve(evidenceDir, 'prepare', name)).filter(path => existsSync(path));
+    const failure = { kind: 'unqualified-identity-runtime-preparation-failure', acceptance: 'unknown',
+      stage, diagnostic, artifacts, hostStarted: false };
+    await writeFile(resolve(evidenceDir, 'preparation-failure.json'), JSON.stringify(failure, null, 2),
+      { flag: 'wx', mode: 0o600 });
+    throw error;
+  }
+}
+
 export class IdentityPreparationError extends Error {
   constructor(readonly failures: Array<{ stage: 'connect' | 'call' | 'validate' | 'close'; diagnostic: Record<string, unknown> }>) {
     super('identity-preparation-failed');
@@ -554,34 +593,45 @@ async function runIsolatedIdentity(flags: Record<string, string>) {
     throw new Error('isolated identity requires explicit client-id, evidence-dir and diagnostic stage; collection is not qualified');
   }
   const evidenceDir = resolve(flags['evidence-dir']);
-  // Refuse mixed/mutated source before allocating credentials or compiling.
-  const selectedSource = identitySelectedSource(ROOT, process.env);
   await mkdir(evidenceDir, { recursive: true });
-  process.env.PAPERCUSP_SID = flags['client-id'];
-  const { preparePrivateOperatorApiBundle, observeCommittedReaderLoadedSources,
-    privateBundleRuntimeEnv, waitForPrivateOperator, stopPrivateOperatorHost } =
-    await import('../packages/operator-core/test/private-http-workspace-preflight');
-  const { superuserTokenPath } = await import('../packages/operator-core/lib/superuser-token');
-  await writeFile(superuserTokenPath(), randomBytes(32).toString('base64url'), { mode: 0o600, flag: 'wx' });
-  console.error('IDENTITY_PRIVATE_PHASE build');
-  const preparationDir = resolve(evidenceDir, 'prepare');
-  await mkdir(preparationDir);
-  const bundle = await preparePrivateOperatorApiBundle(ROOT, preparationDir, {
-    builder: { timeoutMs: 240_000, maxMs: 420_000 },
-    ...(selectedSource ? { observedSource: { sourceReceiptPath: selectedSource.receipt.path,
-      sourceReceiptSha256: selectedSource.receipt.sha256, selectedCommit: selectedSource.sourceCommit } } : {}),
-  });
-  const traceOut = resolve(evidenceDir, 'identity-host-source.json');
-  const hostEnv = privateBundleRuntimeEnv(process.env, { traceOut, pinnedSources: [{
-    path: bundle.path, sha256: bundle.sha256, byteLength: (await stat(bundle.path)).size,
-  }] });
-  const configuration = captureConfigurationSnapshot(hostEnv);
-  const configurationBytes = JSON.stringify(configuration);
-  const configurationPath = resolve(evidenceDir, 'host-configuration-inputs.json');
-  await writeFile(configurationPath, configurationBytes, { flag: 'wx', mode: 0o600 });
-  // Allocate the retained log before the process: an existing/unwritable path
-  // must never strand a host outside the try/finally cleanup boundary.
-  const log = await open(resolve(evidenceDir, 'host.log'), 'wx', 0o600);
+  const { selectedSource, preparationDir, bundle, traceOut, hostEnv, configuration, configurationBytes, configurationPath,
+    log, observeCommittedReaderLoadedSources, waitForPrivateOperator, stopPrivateOperatorHost } =
+    await identityRuntimePreparation(evidenceDir, async stage => {
+      // Refuse mixed/mutated source before allocating credentials or compiling.
+      const selectedSource = identitySelectedSource(ROOT, process.env);
+      process.env.PAPERCUSP_SID = flags['client-id'];
+      stage('preparation-module');
+      const { preparePrivateOperatorApiBundle, observeCommittedReaderLoadedSources,
+        privateBundleRuntimeEnv, waitForPrivateOperator, stopPrivateOperatorHost } =
+        await import('../packages/operator-core/test/private-http-workspace-preflight');
+      const { superuserTokenPath } = await import('../packages/operator-core/lib/superuser-token');
+      stage('credential');
+      await writeFile(superuserTokenPath(), randomBytes(32).toString('base64url'), { mode: 0o600, flag: 'wx' });
+      console.error('IDENTITY_PRIVATE_PHASE build');
+      stage('preparation-directory');
+      const preparationDir = resolve(evidenceDir, 'prepare');
+      await mkdir(preparationDir);
+      stage('bundle');
+      const bundle = await preparePrivateOperatorApiBundle(ROOT, preparationDir, {
+        builder: { timeoutMs: 240_000, maxMs: 420_000 },
+        ...(selectedSource ? { observedSource: { sourceReceiptPath: selectedSource.receipt.path,
+          sourceReceiptSha256: selectedSource.receipt.sha256, selectedCommit: selectedSource.sourceCommit } } : {}),
+      });
+      stage('runtime-configuration');
+      const traceOut = resolve(evidenceDir, 'identity-host-source.json');
+      const hostEnv = privateBundleRuntimeEnv(process.env, { traceOut, pinnedSources: [{
+        path: bundle.path, sha256: bundle.sha256, byteLength: (await stat(bundle.path)).size,
+      }] });
+      const configuration = captureConfigurationSnapshot(hostEnv);
+      const configurationBytes = JSON.stringify(configuration);
+      const configurationPath = resolve(evidenceDir, 'host-configuration-inputs.json');
+      await writeFile(configurationPath, configurationBytes, { flag: 'wx', mode: 0o600 });
+      // An existing/unwritable log must never strand a host outside cleanup.
+      stage('host-log');
+      const log = await open(resolve(evidenceDir, 'host.log'), 'wx', 0o600);
+      return { selectedSource, preparationDir, bundle, traceOut, hostEnv, configuration, configurationBytes, configurationPath,
+        log, observeCommittedReaderLoadedSources, waitForPrivateOperator, stopPrivateOperatorHost };
+    });
   const hostStartedAtMs = Date.now();
   const host = spawn(process.execPath, [bundle.path], { cwd: ROOT, env: hostEnv, detached: true, stdio: ['ignore', log.fd, log.fd] });
   let hostError: Error | undefined;

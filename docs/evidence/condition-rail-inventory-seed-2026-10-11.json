@@ -3761,12 +3761,11 @@
     {
       "rowId": "health-flag-no-condition|packages/operator-core/lib/consult/consult-routing-health.ts|expertiseExecutionHealthFromRows|1",
       "change": {
-        "disposition": "not-applicable",
-        "reason": "historical routing-receipt histogram initializes and counts the degraded outcome bucket; this pure read neither detects a runtime condition nor performs a fallback"
+        "disposition": "removed"
       },
-      "reason": "Independent exact-site review distinguishes a receipt counter from an alarm-shaped health verdict; genuine routing producer coverage is separately tracked in EI-25769222848861661.",
-      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
-      "reviewerRef": "thread-post:1175978"
+      "reason": "The independently reviewed P-013 histogram helper was extracted to consult-routing-health-primitives.ts; the old source identity no longer exists. The live identity and unchanged pure-read classification are recorded in WI-6554700010016568.",
+      "author": "su-62ee053e-9db6-4051-be0e-fc8212de8735",
+      "reviewerRef": "thread-post:1213990"
     },
     {
       "rowId": "log-only-fallback|packages/agent-mcp/src/entity-resolvers-papercusp.ts|assertNotUnitTier|1",

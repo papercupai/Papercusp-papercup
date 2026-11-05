@@ -79,6 +79,7 @@ describe('immutable spec-quality replay (WI-10007284)', () => {
     }
     expect(reads.plan).not.toHaveBeenCalled();
     expect(reads.rubrics).not.toHaveBeenCalled();
+    expect(reads.snapshot).toHaveBeenCalledWith('quality-plan', oldHash, { exactBody: true });
   });
 
   it('retains the live hash refusal and never offers a draft for a newer set', async () => {
@@ -108,6 +109,8 @@ describe('immutable spec-quality replay (WI-10007284)', () => {
     const second = await call({ slug: 'quality-plan', harness: 'papercusp' });
     expect(first.ok).toBe(true);
     expect(first).toEqual(second);
+    expect(reads.snapshot).toHaveBeenCalledWith('quality-plan', hashPlanContent(newBody),
+      { workspaceId: undefined, exactBody: true });
     expect(Date.parse(first.replaySnapshot.clausesAsOf)).toBeGreaterThanOrEqual(Date.parse(newClause.acceptedAt));
     const replay = await call({ slug: 'quality-plan', harness: 'papercusp', classRef: first.classRef,
       expectedSpecSetHash: first.specSetHash, replaySnapshot: first.replaySnapshot });

@@ -5,7 +5,7 @@ import { RECORDED_TEST_LAYERS } from '@papercusp/test-config/execution-details';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { applyMigrationForTest, createFreshPgDb, type FreshPgDb } from '../../../test/_pg-helpers';
-import type { SpecClauseBarPin, SpecClauseRevision, SpecClauseWrite } from './spec-clauses-store';
+import type { SpecClauseBarPin, SpecClauseRevision, SpecClauseSql, SpecClauseWrite } from './spec-clauses-store';
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
 vi.mock('@papercusp/db-org', async (orig) => {
@@ -185,6 +185,8 @@ beforeAll(async () => {
       PRIMARY KEY (harness_slug, feature_id)
     );
   `);
+  await db.sql`CREATE EXTENSION IF NOT EXISTS pgcrypto`;
+  await applyMigrationForTest(db.sql, sqlMigration('1107-plan-revisions-content-snapshot-hash.sql'));
   await applyMigrationForTest(db.sql, MIGRATION_851);
   await applyMigrationForTest(db.sql, MIGRATION_852);
   // Idempotency is part of the migration contract, not just a comment.
@@ -201,6 +203,7 @@ beforeAll(async () => {
   await applyMigrationForTest(db.sql, MIGRATION_1174);
   await applyMigrationForTest(db.sql, MIGRATION_1175);
   await applyMigrationForTest(db.sql, MIGRATION_1176);
+  await applyMigrationForTest(db.sql, sqlMigration('1445-spec-evidence-independent-verification.sql'));
 }, 90_000);
 
 afterAll(async () => {
@@ -316,6 +319,31 @@ describe('first-class plan spec clauses', () => {
     expect(await getPlanRevisionSnapshot('reconnect-plan', hash, { harnessSlug: HARNESS })).toMatchObject({ seq: 7, contentSnapshot: body, contentSnapshotHash: hash });
     expect(await getPlanRevisionSnapshot('reconnect-plan', 'f'.repeat(64), { harnessSlug: HARNESS })).toBeNull();
     expect(await getPlanRevisionSnapshot('reconnect-plan', 7, { harnessSlug: HARNESS })).toMatchObject({ contentSnapshot: body });
+  });
+
+  it('finds the exact body behind newer same-hash receipts without changing enriched revision reads', async () => {
+    const { hashPlanContent } = await import('./content-hash');
+    const { getPlanRevisionSnapshot } = await import('./revisions');
+    const body = '---\ntitle: Exact quality body\n---\n## Items\n- **P-003** `todo` Contract';
+    const hash = hashPlanContent(body);
+    const receipt = JSON.stringify({ body, execution: { started: true } });
+    await db.sql`DELETE FROM harness_shared.plan_revisions`;
+    await db.sql`INSERT INTO harness_shared.plan_revisions (
+        workspace_id, harness_slug, plan_slug, seq, content_hash, content_snapshot, author_kind, author_id, created_at
+      ) VALUES (${WORKSPACE}, ${HARNESS}, 'reconnect-plan', 7, ${hash}, ${body}, 'test', 'fixture', 0),
+               (${WORKSPACE}, ${HARNESS}, 'reconnect-plan', 8, ${hash}, ${receipt}, 'test', 'fixture', 0),
+               (${WORKSPACE}, 'other', 'reconnect-plan', 9, ${hash}, ${body}, 'test', 'fixture', 0)`;
+
+    expect(await getPlanRevisionSnapshot('reconnect-plan', hash, { harnessSlug: HARNESS }))
+      .toMatchObject({ seq: 8, contentSnapshot: receipt });
+    expect(await getPlanRevisionSnapshot('reconnect-plan', 8, { harnessSlug: HARNESS }))
+      .toMatchObject({ seq: 8, contentSnapshot: receipt });
+    expect(await getPlanRevisionSnapshot('reconnect-plan', hash, { harnessSlug: HARNESS, exactBody: true }))
+      .toMatchObject({ seq: 7, contentSnapshot: body, contentSnapshotHash: hash });
+    expect(await getPlanRevisionSnapshot('reconnect-plan', 8, { harnessSlug: HARNESS, exactBody: true })).toBeNull();
+
+    await db.sql`DELETE FROM harness_shared.plan_revisions WHERE harness_slug = ${HARNESS} AND seq = 7`;
+    expect(await getPlanRevisionSnapshot('reconnect-plan', hash, { harnessSlug: HARNESS, exactBody: true })).toBeNull();
   });
 
   it('exposes create/current/history through the structured tools and never writes the retired VAL store (P-003)', async () => {
@@ -600,10 +628,14 @@ describe('first-class plan spec clauses', () => {
       revision: 1,
     });
 
-    const race = await Promise.all([
-      store.setSpecClause({ ...first, expectedRevision: 1, behavior: 'Variant A' }),
-      store.setSpecClause({ ...first, expectedRevision: 1, behavior: 'Variant B' }),
-    ]);
+    // Pin both competing transactions to the private fixture. Concurrent dynamic
+    // module resolution must never send either write through the live registry.
+    const race = await Promise.all(['Variant A', 'Variant B'].map(behavior =>
+      db.sql.begin(tx => store.setSpecClause({ ...first, expectedRevision: 1, behavior }, {
+        workspaceId: WORKSPACE, harnessSlug: HARNESS,
+        executor: tx as unknown as SpecClauseSql,
+      })),
+    ));
     expect(race.filter((r) => r.status === 'revised')).toHaveLength(1);
     expect(race.filter((r) => r.status === 'conflict')).toHaveLength(1);
 

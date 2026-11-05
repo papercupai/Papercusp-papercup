@@ -18,6 +18,18 @@ import { withPlanLock } from '../with-plan-lock';
 import { VALID_PLAN_SLUG } from '../source';
 import * as planSource from '../source';
 
+const scopeModuleLoaded = vi.hoisted(() => vi.fn());
+vi.mock('../initial-change-scope', async (original) => {
+  scopeModuleLoaded();
+  return original<typeof import('../initial-change-scope')>();
+});
+
+describe('withPlanLock — import boundary', () => {
+  it('does not load the scope validator while launcher dependencies initialize', () => {
+    expect(scopeModuleLoaded).not.toHaveBeenCalled();
+  });
+});
+
 // A mutator that must never run for a rejected slug.
 const neverMutator = vi.fn(async () => ({ newBody: null, value: null }));
 

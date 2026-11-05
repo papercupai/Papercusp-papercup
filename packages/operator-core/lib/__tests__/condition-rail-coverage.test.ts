@@ -10,6 +10,7 @@ import { RAIL_MIGRATION_CASES, RAIL_MIGRATION_COMPLETE_ITEMS } from '../degradat
 import { original, execute } from '../degradation/host-startup-migration-cases';
 
 const manifest = JSON.parse(readFileSync(fileURLToPath(new URL('../../../../docs/evidence/condition-rail-inventory-seed-2026-10-11.json', import.meta.url)), 'utf8'));
+const baseline = JSON.parse(readFileSync(fileURLToPath(new URL('../../../../scripts/condition-rail-baseline.json', import.meta.url)), 'utf8'));
 let currentTree: ReturnType<typeof inventoryTree> | undefined;
 function currentInventory(): ReturnType<typeof inventoryTree> {
   if (currentTree) return currentTree;
@@ -118,14 +119,35 @@ describe('condition-rail per-row executable coverage (P-017)', () => {
   });
 
   it('keeps the reviewed P-013 histogram and unit-tier refusal outside runtime degradation', () => {
-    const histogramId = 'health-flag-no-condition|packages/operator-core/lib/consult/consult-routing-health.ts|expertiseExecutionHealthFromRows|1';
+    const oldHistogramId = 'health-flag-no-condition|packages/operator-core/lib/consult/consult-routing-health.ts|expertiseExecutionHealthFromRows|1';
+    const histogramId = 'health-flag-no-condition|packages/operator-core/lib/consult/consult-routing-health-primitives.ts|expertiseExecutionHealthFromRows|1';
     const guardId = 'log-only-fallback|packages/agent-mcp/src/entity-resolvers-papercusp.ts|assertNotUnitTier|1';
-    for (const rowId of [histogramId, guardId]) {
-      expect(manifest.rows.find((row: { id: string }) => row.id === rowId)?.disposition).toBe('migrate');
-      expect(manifest.amendments.find((row: { rowId: string }) => row.rowId === rowId)).toMatchObject({
-        change: { disposition: 'not-applicable' }, reviewerRef: 'thread-post:1175978',
-      });
-    }
+    expect(manifest.rows.find((row: { id: string }) => row.id === oldHistogramId))
+      .toMatchObject({ disposition: 'migrate', item: 'P-013' });
+    expect(manifest.amendments.find((row: { rowId: string }) => row.rowId === oldHistogramId))
+      .toMatchObject({ change: { disposition: 'removed' }, reviewerRef: 'thread-post:1213990' });
+    expect(manifest.rows.some((row: { id: string }) => row.id === histogramId)).toBe(false);
+    const histogramReason = 'historical routing-receipt histogram initializes and counts the degraded outcome bucket; this pure read neither detects a runtime condition nor performs a fallback';
+    expect(baseline.amendments.find((row: { rowId: string }) => row.rowId === histogramId))
+      .toMatchObject({ change: { disposition: 'not-applicable', reason: histogramReason }, reviewerRef: 'thread-post:1213990' });
+    expect(currentInventory().rows.find((row: { id: string }) => row.id === histogramId)?.disposition)
+      .toEqual({ disposition: 'not-applicable', reason: histogramReason });
+
+    const ptoolId = 'log-only-fallback|apps/operator/scripts/ptool.mjs|main|4';
+    const cliReason = 'interactive or developer CLI: the fallback is printed to the invoking caller, and there is no long-running mechanism whose rate can collapse unobserved';
+    expect(baseline.amendments.find((row: { rowId: string }) => row.rowId === ptoolId))
+      .toMatchObject({ change: { disposition: 'not-applicable', reason: cliReason }, reviewerRef: 'thread-post:1213990' });
+    expect(currentInventory().rows.find((row: { id: string }) => row.id === ptoolId)?.disposition)
+      .toEqual({ disposition: 'not-applicable', reason: cliReason });
+
+    expect(currentInventory().staleDispositions).not.toContain(
+      'health-flag-no-condition|packages/operator-core/lib/consult/consult-routing-health.ts|degraded');
+    expect(currentInventory().staleDispositions).not.toContain(
+      'health-flag-no-condition|packages/operator-core/lib/system-health/goal-grading-backlog-sweep.ts|defaultWakeGrader|1');
+    expect(manifest.rows.find((row: { id: string }) => row.id === guardId)?.disposition).toBe('migrate');
+    expect(manifest.amendments.find((row: { rowId: string }) => row.rowId === guardId)).toMatchObject({
+      change: { disposition: 'not-applicable' }, reviewerRef: 'thread-post:1175978',
+    });
 
     const blockedBefore = readRealPgRailBlocks().blocked;
     const read = expertiseExecutionHealthFromRows(['returned', 'degraded', 'threw'].map((outcome) => ({

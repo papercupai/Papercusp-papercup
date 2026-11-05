@@ -111,7 +111,7 @@ export default defineTool({
     if (args.replaySnapshot) {
       try {
         const [snapshot, clauses] = await Promise.all([
-          getPlanRevisionSnapshot(args.slug, args.replaySnapshot.planContentHash, opts),
+          getPlanRevisionSnapshot(args.slug, args.replaySnapshot.planContentHash, { ...opts, exactBody: true }),
           listSpecClauses({ harnessSlug, planSlug: args.slug, asOf: cutoff }),
         ]);
         if (!snapshot || snapshot.contentSnapshotHash !== args.replaySnapshot.planContentHash) {
@@ -179,7 +179,7 @@ export default defineTool({
     }
     try {
       const snapshot = await getPlanRevisionSnapshot(args.slug, read.row.contentHash, {
-        ...opts, workspaceId: read.row.workspaceId,
+        ...opts, workspaceId: read.row.workspaceId, exactBody: true,
       });
       if (!snapshot || snapshot.contentSnapshotHash !== read.row.contentHash) {
         return snapshotFailure('plan_snapshot_unavailable', 'The current plan body has no exact immutable revision snapshot; repair its revision spine before grading.');

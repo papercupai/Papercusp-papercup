@@ -150,7 +150,7 @@ export const DISPOSITIONS = Object.freeze({
   'health-flag-no-condition|apps/operator-vite/src/components/adv/LearningInfraHealthChip.tsx': NA_UI,
   'health-flag-no-condition|apps/operator/app/harness/insights/SubstrateHealthPill.tsx': NA_UI,
   // Exact original row independently reviewed in thread-post:1175978; D-048.
-  'health-flag-no-condition|packages/operator-core/lib/consult/consult-routing-health.ts|degraded': na(
+  'health-flag-no-condition|packages/operator-core/lib/consult/consult-routing-health-primitives.ts|degraded': na(
     'historical routing-receipt histogram initializes and counts the degraded outcome bucket; this pure read neither detects a runtime condition nor performs a fallback',
   ),
   'health-flag-no-condition|packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts': migrate('P-014'),
@@ -180,7 +180,6 @@ export const DISPOSITIONS = Object.freeze({
   'health-flag-no-condition|packages/operator-core/lib/system-health/goal-edit-claim-watchdog.ts|defaultEmitEditClaim|1': NA_TYPE_ANNOTATION,
   'health-flag-no-condition|packages/operator-core/lib/system-health/goal-grading-backlog-sweep.ts|describeGrader|1': NA_TYPE_ANNOTATION,
   'health-flag-no-condition|packages/operator-core/lib/system-health/goal-grading-backlog-sweep.ts|defaultEscalate|1': NA_TYPE_ANNOTATION,
-  'health-flag-no-condition|packages/operator-core/lib/system-health/goal-grading-backlog-sweep.ts|defaultWakeGrader|1': NA_TYPE_ANNOTATION,
   'health-flag-no-condition|packages/operator-core/lib/system-health/goal-liveness-watchdog.ts|defaultEscalatePortfolioIdle|1': NA_TYPE_ANNOTATION,
   'health-flag-no-condition|packages/operator-core/lib/system-health/goal-liveness-watchdog.ts|defaultEscalate|1': NA_TYPE_ANNOTATION,
   'health-flag-no-condition|packages/operator-core/lib/system-health/goal-liveness-watchdog.ts|defaultEscalateReadiness|1': NA_TYPE_ANNOTATION,
