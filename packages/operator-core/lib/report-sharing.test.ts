@@ -12,7 +12,7 @@ function fixture() {
   const rows = new Map<string,ReportShare>(); const locks = new Set<string>();
   const store: ReportShareStore = { async locked(key, work) {
     if (locks.has(key)) throw new Error('already running'); locks.add(key);
-    try { return await work({get:async (w,r,a) => rows.get(JSON.stringify([w,r,a])) ?? null,
+    try { return await work({list:async(w,r)=>[...rows.values()].filter(row=>row.workspaceId===w && row.reportId===r),get:async (w,r,a) => rows.get(JSON.stringify([w,r,a])) ?? null,
       put:async share => { rows.set(JSON.stringify([share.workspaceId,share.reportId,share.accountId]),{...share}); }}); }
     finally { locks.delete(key); }
   }};
@@ -32,7 +32,7 @@ describe('selected-edition Gist sharing',()=>{
     expect(first).toEqual(second);expect(first.phase).toBe('ready');expect(new URL(first.url!).hash).toContain('gist=alice%2F');
     expect(f.github.create).toHaveBeenCalledTimes(1);expect(f.github.create).toHaveBeenCalledWith(expect.any(String),report.bodyMd);
     expect(f.rows.size).toBe(1);expect([...f.rows.values()][0]).toMatchObject({reportId:'old-edition',accountId:7,phase:'active'});
-    expect(f.github.prepareViewer).toHaveBeenLastCalledWith(expect.anything(),9);
+    expect(f.github.prepareViewer).toHaveBeenLastCalledWith(expect.anything(),9,undefined);
   });
   it('persists creating intent before a remote success with a lost response, then reconciles after restart',async()=>{
     const f=fixture();vi.mocked(f.github.create).mockImplementationOnce(async()=>{expect([...f.rows.values()][0].phase).toBe('creating');throw new Error('lost response');});
@@ -50,6 +50,30 @@ describe('selected-edition Gist sharing',()=>{
     vi.mocked(f.github.create).mockImplementationOnce(async()=>{await waiting;return f.gist;});
     const first=f.run();await vi.waitFor(()=>expect(f.github.create).toHaveBeenCalledTimes(1));
     await expect(f.run()).rejects.toThrow('already running');resume();await first;expect(f.github.create).toHaveBeenCalledTimes(1);
+  });
+  it('saves cancellation after zero recovery matches and never publishes again while cancellation is pending',async()=>{
+    const f=fixture();vi.mocked(f.github.create).mockRejectedValueOnce(new Error('lost response'));
+    await expect(f.run()).rejects.toThrow();vi.mocked(f.github.find).mockResolvedValueOnce([]);
+    expect((await f.run('stop')).phase).toBe('uncertain');expect([...f.rows.values()][0].phase).toBe('cancelling');
+    await expect(f.run()).rejects.toMatchObject({code:'removal_pending'});
+    expect((await f.run('stop')).phase).toBe('inactive');expect(f.github.remove).toHaveBeenCalledWith(id);
+    expect(f.github.create).toHaveBeenCalledTimes(1);
+  });
+  it('removes every owned matching ambiguous publication and validates the whole set before removal',async()=>{
+    const f=fixture();const second='b'.repeat(32);vi.mocked(f.github.create).mockRejectedValueOnce(new Error('lost response'));
+    await expect(f.run()).rejects.toThrow();vi.mocked(f.github.find).mockResolvedValue([id,second]);
+    vi.mocked(f.github.gist).mockImplementation(async key=>({...f.gist,id:key}));
+    expect((await f.run('stop')).phase).toBe('inactive');expect(f.github.remove).toHaveBeenCalledTimes(2);
+    const bad=fixture();vi.mocked(bad.github.create).mockRejectedValueOnce(new Error('lost response'));await expect(bad.run()).rejects.toThrow();
+    vi.mocked(bad.github.find).mockResolvedValue([id,second]);vi.mocked(bad.github.gist).mockResolvedValueOnce(bad.gist).mockResolvedValueOnce({...bad.gist,id:second,owner:{id:8}});
+    await expect(bad.run('stop')).rejects.toMatchObject({code:'ownership_mismatch'});expect(bad.github.remove).not.toHaveBeenCalled();
+  });
+  it('keeps another account disclosure visible and prevents sharing or a false stopped state after switching accounts',async()=>{
+    const f=fixture();await f.run();vi.mocked(f.github.user).mockResolvedValue({id:8,login:'bob'});
+    expect(await f.run('status',report,8)).toMatchObject({phase:'uncertain',message:expect.stringContaining('alice')});
+    await expect(f.run('share',report,8)).rejects.toMatchObject({code:'other_account_share'});
+    await expect(f.run('stop',report,8)).rejects.toMatchObject({code:'other_account_share'});
+    expect(f.github.create).toHaveBeenCalledTimes(1);expect(f.github.remove).not.toHaveBeenCalled();
   });
   it('refuses an account switch before any repository or Gist mutation',async()=>{
     const f=fixture();await expect(f.run('share',report,8)).rejects.toMatchObject({code:'account_changed'});
@@ -89,7 +113,7 @@ describe('reusable Pages bundle',()=>{
   it('builds only generic assets with a restrictive CSP and no report-specific inputs',async()=>{
     const assets=await buildReportViewer();expect(Object.keys(assets.files).sort()).toEqual(['.nojekyll','index.html','viewer.'+assets.version+'.css','viewer.'+assets.version+'.js','viewer.json']);
     const all=Object.values(assets.files).join('\n');expect(all).not.toContain(report.bodyMd);expect(all).not.toContain(id);
-    expect(assets.files['index.html']).toContain("connect-src https://gist.githubusercontent.com");
+    expect(assets.files['index.html']).toContain("connect-src https://api.github.com");
     expect(assets.files['index.html']).toContain('no-referrer');expect(assets.files['viewer.'+assets.version+'.js'].length).toBeGreaterThan(1000);
   },30000);
 });

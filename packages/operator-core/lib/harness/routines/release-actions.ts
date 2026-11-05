@@ -739,24 +739,10 @@ export function scheduledCheckpointScopeUnit(gateFireId: string): string {
   return `papercusp-checkpoint-${gateFireId}.scope`;
 }
 
-/**
- * EI-22129539141207312 — the systemd-enforced outer wall on a scoped checkpoint run.
- *
- * 4h, chosen to sit STRICTLY ABOVE the whole in-band chain green-checkpoint.ts documents
- * (suite timeout 115m < self-watchdog 180m < CHECKPOINT_LOCK_STALE_MS 190m). That ordering
- * is the point: every in-band mechanism keeps its full chance, and this only ever fires for
- * a run that has defeated ALL of them — so it can never preempt a healthy slow suite or
- * manufacture the pre-verdict kills the 55m→115m bump was made to stop.
- *
- * Measured motivation: one crashed run sat resident 29h with two ZOMBIE esbuild children
- * and no terminal marker, having outlived its 180m self-watchdog by an order of magnitude,
- * because its Node main thread was blocked in a synchronous native call and no JS timer
- * could run. When systemd stops the scope, the wrapper's EXIT trap DOES run and takes its
- * `checkpoint_reached_exit=0` branch, writing the `"killed":true` marker that branch already
- * exists for — so this one property also restores the missing terminal evidence and reaps
- * the tree, without any new cleanup code on a thread that may never execute again.
- */
-export const CHECKPOINT_SCOPE_RUNTIME_MAX_SEC = 4 * 60 * 60;
+/** Reservation review interval, not a process lifetime. Runner liveness and identity
+ * remain authoritative when this lease expires. WI-6554700010042457: the scheduled
+ * scope has no RuntimeMaxSec; an absolute wall would also kill progressing suites. */
+export const CHECKPOINT_RUNNER_LEASE_MS = 4 * 60 * 60_000;
 
 /** Keep the scheduled wrapper's evidence directory aligned with the CLI's release config. */
 function scheduledCheckpointLogDir(): string {
@@ -1261,9 +1247,9 @@ function runScript(
   root: string,
   relScript: string,
   args: string[],
-  /** Wall-clock kill budget. `null` = no run-level wall clock: no kill timer and no
-   *  deadline env, unless this process itself INHERITED a deadline (a child can never
-   *  outlive its scope). WI-6554700010042457: the green-checkpoint suite passes null. */
+  /** Wall-clock kill budget. `null` = no own run-level wall clock. An inherited
+   *  deadline is retained unless clearEnv removes it; the independent checkpoint
+   *  lifetime must not be bounded by the request that launched it. */
   timeoutMs: number | null,
   extraEnv: Record<string, string> = {},
   isolate?: { memoryMaxG: number; terminalContext?: ScheduledCheckpointTerminalContext },
@@ -1277,7 +1263,8 @@ function runScript(
 ): Promise<RunResult> {
   // One clock includes boot admission and fallback launches. A retry cannot
   // grant the same caller another complete suite budget.
-  const inheritedDeadline = Number(extraEnv[TASK_DEADLINE_EPOCH_MS_ENV] ?? process.env[TASK_DEADLINE_EPOCH_MS_ENV]);
+  const inheritedDeadline = Number(extraEnv[TASK_DEADLINE_EPOCH_MS_ENV] ??
+    (clearEnv.includes(TASK_DEADLINE_EPOCH_MS_ENV) ? undefined : process.env[TASK_DEADLINE_EPOCH_MS_ENV]));
   const ownDeadline = timeoutMs === null ? Infinity : Date.now() + timeoutMs;
   const boundedDeadline = Math.min(ownDeadline,
     Number.isSafeInteger(inheritedDeadline) && inheritedDeadline > 0 ? inheritedDeadline : Infinity);
@@ -1396,7 +1383,7 @@ function runScript(
             scopedPayload,
             isolate.memoryMaxG,
             'allow',
-            CHECKPOINT_SCOPE_RUNTIME_MAX_SEC,
+            null,
             isolate.terminalContext?.gateFireId
               ? scheduledCheckpointScopeUnit(isolate.terminalContext.gateFireId)
               : null,
@@ -3265,7 +3252,7 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
     attemptId: qualificationAttemptId,
     runnerId: gateFireId,
     ...(process.env.PAPERCUSP_CHECKPOINT_SCOPE !== '0' ? { unit: scheduledCheckpointScopeUnit(gateFireId) } : {}),
-    leaseDurationMs: CHECKPOINT_SCOPE_RUNTIME_MAX_SEC * 1_000,
+    leaseDurationMs: CHECKPOINT_RUNNER_LEASE_MS,
     started: false,
     evidenceRefs: [`gate-fire:${gateFireId}`],
   });
@@ -3321,8 +3308,9 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
     },
     // EI-20709645463022690: for a SUBJECT hive, drop the operator's inherited DATABASE_URL/PG*
     // so the pot's suite resolves its OWN database. EMPTY for operator-home, whose gate legs
-    // genuinely need that DSN — so papercusp's own pipeline is byte-identical (D-007).
-    routing.clearEnv,
+    // genuinely need that DSN (D-007). Both routes drop the launching request's clock:
+    // the independently owned checkpoint must be allowed to finish its suite.
+    [...routing.clearEnv, TASK_DEADLINE_EPOCH_MS_ENV],
     { buildSha: executorBuildSha, runId: gateFireId },
   );
   if (r.code !== 0) {

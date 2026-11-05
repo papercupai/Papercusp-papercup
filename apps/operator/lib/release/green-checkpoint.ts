@@ -4666,20 +4666,16 @@ export class CheckpointQualificationBoundaryError extends Error {
  * larger value. */
 export const QUALIFICATION_UNBOUNDED_SPAN_MS = 2 ** 31 - 1;
 
-/** WI-6554700010042457 (Avi #2574): a main-greening qualification has NO run-level wall
- * clock of its own. The only absolute bound it honours is a deadline a CALLER genuinely
- * holds and transports (TASK_DEADLINE_EPOCH_MS, e.g. an outer systemd RuntimeMax). Absent
- * one, the quantum and the orphan fuse are the timer-safe unbounded span, so a run that
- * keeps progressing qualifies to completion; wedges are the idle self-watchdog's job.
+/** WI-6554700010042457: a main-greening qualification owns its detached lifetime and
+ * ignores the launching request's deadline. Its quantum and orphan fuse retain the
+ * timer-safe unbounded span; explicit cancellation and idle detection remain independent.
  * Before this, the 115m suite budget was the quantum and the fallback caller deadline,
  * anchored at PROCESS start, so a long preparation (a 50m early typecheck) left the
  * suite too little budget and the run refused before executing anything. */
 export function checkpointQualificationBudgetFromEnv(startedAtMs: number,
-  environment: NodeJS.ProcessEnv = process.env) {
-  const inherited = Number(environment[TASK_DEADLINE_EPOCH_MS_ENV]);
-  const callerDeadline = Number.isSafeInteger(inherited) && inherited > 0 ? inherited : null;
+  _environment: NodeJS.ProcessEnv = process.env) {
   return resolveQualificationYieldBudget({ startedAtMs, quantumMs: QUALIFICATION_UNBOUNDED_SPAN_MS,
-    deadlineEpochMs: callerDeadline, orphanDeadlineEpochMs: startedAtMs + QUALIFICATION_UNBOUNDED_SPAN_MS });
+    deadlineEpochMs: null, orphanDeadlineEpochMs: startedAtMs + QUALIFICATION_UNBOUNDED_SPAN_MS });
 }
 
 /** One quantum owns the suite and its post-suite workers. Stop publication first,
@@ -10022,10 +10018,9 @@ export const ISOLATION_PHASE_RESERVE_MS = 15 * 60_000;
  * WI-6554700010042457 (Avi #2574): on the main-greening path nothing kills a run from its
  * start any more — the scheduled parent no longer group-kills at the suite budget, a manual
  * launch carries no RuntimeMaxSec, and the self-watchdog's budget is an IDLE (no-progress)
- * budget, not a clock from process start. So the only real killer left is a deadline a
- * caller transports in TASK_DEADLINE_EPOCH_MS (an older launcher's RuntimeMax scope): with
- * one the phase stops starting work the reserve before it; without one the phase is
- * unbounded (+Infinity, which attemptFlakeAbsorption and the salvage gate both accept).
+ * budget, not a clock from process start. A deadline inherited from a short-lived caller
+ * must not bound this detached job either. The phase is unbounded (+Infinity, which
+ * attemptFlakeAbsorption and the salvage gate both accept).
  *
  * WHY: the gate had a positive feedback loop between how red it is and whether it can
  * produce a verdict at all — a wide-but-<=ISOLATION_MAX_FILES red made the SERIAL isolation
@@ -10036,12 +10031,9 @@ export const ISOLATION_PHASE_RESERVE_MS = 15 * 60_000;
  * naming what was and was not confirmed) beats a cap kill that names nothing.
  */
 export function isolationPhaseDeadlineMs(
-  env: Readonly<Record<string, string | undefined>> = process.env,
+  _env: Readonly<Record<string, string | undefined>> = process.env,
 ): number {
-  const inherited = Number(env[TASK_DEADLINE_EPOCH_MS_ENV]);
-  return Number.isSafeInteger(inherited) && inherited > 0
-    ? inherited - ISOLATION_PHASE_RESERVE_MS
-    : Number.POSITIVE_INFINITY;
+  return Number.POSITIVE_INFINITY;
 }
 
 /**
@@ -11478,10 +11470,9 @@ export function buildGreenCheckpointEnv(
   // audit-only reruns. Pin the common environment for scheduled and detached
   // manual launches; the reuse validator still invalidates changed inputs.
   env.AFFECTED_TEST_REUSE_AUDIT_RATE = "0";
-  // This control value is the launcher's immutable ceiling, independent of test inputs.
-  const callerDeadline = Number(source[TASK_DEADLINE_EPOCH_MS_ENV]);
-  if (Number.isSafeInteger(callerDeadline) && callerDeadline > 0)
-    env[TASK_DEADLINE_EPOCH_MS_ENV] = String(callerDeadline);
+  // The suite belongs to the detached qualification, not the launching request's clock.
+  // Keep per-test timeouts and the progress watchdog; do not transport a full-run cutoff.
+  delete env[TASK_DEADLINE_EPOCH_MS_ENV];
   // Targeted repair tasks bypass affected-tests, so their Git reads need the same
   // optional-lock policy as the ordinary suite. A killed status must not strand index.lock.
   applyGitOptionalLocksDefault(env);

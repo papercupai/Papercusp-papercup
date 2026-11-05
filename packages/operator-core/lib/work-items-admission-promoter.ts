@@ -6731,12 +6731,13 @@ export async function runWorkItemAdmissionFailOpen(opts: {
       sloMs: DEFAULT_ADMISSION_REVIEW_SLO_MINUTES * 60_000,
     };
     const promotedToFirstClaim = await readPromotedToFirstClaimForLedger(sql, opts.workspaceId, opts.harnessSlug);
+    const heldCount = Object.values(heldByScope).reduce((total, count) => total + count, 0);
     await finishRun(sql, {
       runId,
       batchSize: autoPromoted.length,
-      promoted: 0,
+      promoted: autoPromoted.length,
       merged: 0,
-      held: 0,
+      held: heldCount,
       autoPromoted: autoPromoted.length,
       censusBefore: null,
       censusAfter: null,

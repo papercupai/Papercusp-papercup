@@ -123,6 +123,10 @@ export interface ResolvedQueryEmbedder {
  *  endpoint-route/routes/adv/sessions.ts; see WI-3922. */
 export interface QueryEmbedderAcquireOpts {
   acquireBudgetMs?: number;
+  /** Internal accepted-work lease: bounds inference by an absolute deadline.
+   * Omission preserves the sidecar's foreground timeout. Invalid/expired
+   * deadlines fail closed, including completed cache hits. */
+  embeddingDeadlineMs?: number;
   /** Request-local diagnostics; preserves the nullable API for search callers. */
   onAcquisition?: (outcome: QueryEmbedderAcquisition) => void;
   /** WI-3923: for an INTERACTIVE caller only. When true AND OpenAI embed is in
@@ -303,6 +307,10 @@ export async function buildQueryEmbedderResolved(
       budgetMs: (opts?.acquireBudgetMs ?? 0) > 0 ? opts!.acquireBudgetMs! : null });
   };
   try {
+    const sidecarOptions = opts?.embeddingDeadlineMs === undefined ? {} : {
+      timeoutMs: Number.isFinite(opts.embeddingDeadlineMs)
+        ? Math.max(0, opts.embeddingDeadlineMs - Date.now()) : 0,
+    };
     const acquire = deps.acquire ? deps.acquire() : resolveEmbedderWith({
       // P-015 harrier default flip: the QUERY side must keep ranking in the
       // gemma space where the vector(768) prose vectors live, not dims-guard
@@ -314,15 +322,15 @@ export async function buildQueryEmbedderResolved(
       buildOpenAi: buildAdmissionGovernedOpenAiEmbedder,
       // Sidecar-first local legs (P-004): shared warm model when the host
       // runs the embed sidecar, bit-identical in-process fallback otherwise.
-      buildLocal: () => buildSidecarAwareEmbedder('local', 'query'),
+      buildLocal: () => buildSidecarAwareEmbedder('local', 'query', undefined, sidecarOptions),
       // This is the QUERY embedder, so EmbeddingGemma gets the query prompt
       // (its dual-encoder is trained so query-prompt vectors match the
       // document-prompt vectors written on the storage side).
-      buildGemma: () => buildSidecarAwareEmbedder('gemma', 'query'),
+      buildGemma: () => buildSidecarAwareEmbedder('gemma', 'query', undefined, sidecarOptions),
       // harrier-oss (P-014, selectable only): queries carry the instruct
       // prefix; documents embed raw. Native 1024 — a vector(768) surface
       // must check `dims` before ranking against it.
-      buildHarrier: () => buildSidecarAwareEmbedder('harrier', 'query'),
+      buildHarrier: () => buildSidecarAwareEmbedder('harrier', 'query', undefined, sidecarOptions),
     });
     if (opts?.skipAcquisitionWhenCold && isOpenAiEmbedInCooldown() && !isLocalEmbedAcquisitionCheap()) {
       // Never surfaces as an unhandled rejection; it exists purely to warm the
@@ -351,12 +359,37 @@ export async function buildQueryEmbedderResolved(
     }
     // WI-4734: memoized per (mode, dims, query) — see queryEmbedCache above.
     const cachedEmbed = cachedQueryEmbed(resolved.profile.profileId, resolved.dims, resolved.embed);
+    const deadline = opts?.embeddingDeadlineMs;
+    const budgetedEmbed: Embedder = deadline === undefined ? cachedEmbed : async (text, signal) => {
+      signal?.throwIfAborted();
+      const remaining = Number.isFinite(deadline) ? deadline - Date.now() : 0;
+      const expired = () => Object.assign(new Error('query_embed_deadline_expired'), { code: 'ETIMEDOUT' });
+      if (remaining <= 0) throw expired();
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(expired()), Math.ceil(remaining));
+      const boundedSignal = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
+      let onAbort: (() => void) | undefined;
+      try {
+        // A cache hit can belong to a different, longer-lived caller. Bound
+        // this wait without cancelling that caller's shared provider work.
+        const cancelled = new Promise<never>((_resolve, reject) => {
+          onAbort = () => reject(boundedSignal.reason);
+          boundedSignal.addEventListener('abort', onAbort, { once: true });
+        });
+        const vector = await Promise.race([cachedEmbed(text, boundedSignal), cancelled]);
+        boundedSignal.throwIfAborted();
+        return vector;
+      } finally {
+        clearTimeout(timer);
+        if (onAbort) boundedSignal.removeEventListener('abort', onAbort);
+      }
+    };
     const embed: Embedder = resolved.mode === 'openai'
-      ? cachedEmbed
+      ? budgetedEmbed
       : async (text, signal) => {
           beginEmbedLatencyStage(signal, 'localInference');
           try {
-            return await cachedEmbed(text, signal);
+            return await budgetedEmbed(text, signal);
           } finally {
             finishEmbedLatencyStage(signal, 'localInference');
           }

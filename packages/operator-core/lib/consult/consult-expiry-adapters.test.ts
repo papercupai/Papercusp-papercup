@@ -37,7 +37,8 @@ import {
 import { requesterAlertForRow, reviewConsultKind, type DueConsultRow } from './consult-expiry-core';
 import { currentRequestWorkspaceId, runWithWorkspace } from '../workspace-als';
 import type { TaskRow } from '../task-manager/types';
-import type { ResumeTarget } from '../agent-launch-core';
+import type { ResolveResumeResult, ResumeTarget } from '../agent-launch-core';
+import { mockResolvedOnceTyped } from '../testing/typed-mock';
 
 /** A row workspace that could not be mistaken for an ambient/default one. */
 const ROW_WS = 'ws-row-7f3a';
@@ -232,10 +233,14 @@ describe('consultExpiryFindSilentResponders', () => {
   it('pins the native refusal reader to the tagged task incarnation and retains unknown bindings', async () => {
     const task = { class: 'agent-session', sessionId: 'native-exact', workspaceId: ROW_WS, logPath: '/exact.log',
       detail: { consultAnswer: { conversationId: 'conv', sourceOwnerId: 'source', answeringOwnerId: 'answerer' } } } as unknown as TaskRow;
-    const target = { ok: true, ownerId: 'answerer', workspaceId: ROW_WS, agent: 'claude', sessionId: 'native-exact',
-      binding: { coordOwnerId: 'answerer', sessionId: 'native-exact' } };
+    const target: ResumeTarget = {
+      sessionId: 'native-exact', ompThreadId: null, resumeId: 'native-exact', ownerId: 'answerer', workspaceId: ROW_WS,
+      harnessSlug: null, agent: 'claude', role: null, feature: null, cwd: null, model: null, modelSource: null, account: null,
+      endedAt: null, endedBy: null, live: false, advSessionId: 1,
+      binding: { coordOwnerId: 'answerer', sessionId: 'native-exact', startedAt: '2026-11-05T00:00:00Z' },
+    };
     const judge = vi.fn(async () => ({ status: 'pending' as const }));
-    const resolve = vi.fn(async () => target as never);
+    const resolve = vi.fn(async (_ref: { sessionId: string }): Promise<ResolveResumeResult> => ({ ok: true, ...target }));
     const checkTranscript = vi.fn(async (_target: ResumeTarget) => ({ available: true, transcriptPath: '/native.jsonl', detail: 'exact' }));
     const read = consultExpiryRejudgeAnsweringTask({ resolveResumeTarget: resolve, checkTranscript, rejudgeFirstTurn: judge });
     expect(await read(task)).toEqual({ status: 'pending' });
@@ -244,10 +249,10 @@ describe('consultExpiryFindSilentResponders', () => {
     judge.mockClear();
     for (const changed of [
       { ownerId: 'another-owner' }, { workspaceId: 'another-workspace' }, { sessionId: 'another-native' },
-      { binding: { coordOwnerId: 'answerer', sessionId: 'successor' } },
-      { binding: { coordOwnerId: 'another-owner', sessionId: 'native-exact' } }, { binding: null }, { agent: 'unsupported' },
+      { binding: { ...target.binding!, sessionId: 'successor' } },
+      { binding: { ...target.binding!, coordOwnerId: 'another-owner' } }, { binding: null }, { agent: 'unsupported' },
     ]) {
-      resolve.mockResolvedValueOnce({ ...target, ...changed } as never);
+      mockResolvedOnceTyped(resolve, { ok: true, ...target, ...changed });
       expect(await read(task)).toEqual({ status: 'unreadable' });
     }
     for (const changed of [{ sessionId: null }, { logPath: null }, { class: 'bash-job' }, { detail: {} }]) {

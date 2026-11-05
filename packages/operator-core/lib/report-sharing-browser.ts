@@ -20,17 +20,16 @@ export async function startReportViewer(doc: Document, deps: {
   const fail = (message: string) => { status.textContent = message; status.setAttribute('role', 'alert'); };
   const params = new URLSearchParams(win.location.hash.slice(1));
   const gist = params.get('gist') || '';
-  // The owner is part of the locator so we can use GitHub's CORS-enabled raw host
-  // without spending the browser's small anonymous REST API quota.
+  // Validate the fragment against GitHub's canonical Gist response.
   const match = /^([a-z\d](?:[a-z\d-]{0,38}))\/([a-f\d]{32})$/i.exec(gist);
   if (!match) { fail('This link is missing a valid shared report. Ask the sender for the complete link.'); return; }
   status.textContent = 'Loading shared report…';
   try {
     const request = deps.fetch ?? win.fetch.bind(win);
-    // GitHub's raw CDN can serve a deleted Gist for five minutes, even when
-    // fetch says no-store. A fresh cache key checks the provider on EVERY load.
+    // Raw CDN responses can outlive a deleted Gist. Never fall back to raw
+    // content: check the canonical resource with a fresh request cache key.
     const readNonce = [...win.crypto.getRandomValues(new Uint32Array(4))].join('-');
-    const response = await request('https://gist.githubusercontent.com/' + match[1] + '/' + match[2] + '/raw/report.md?read=' + readNonce, {
+    const response = await request('https://api.github.com/gists/' + match[2] + '?read=' + readNonce, {
       credentials: 'omit', cache: 'no-store', referrerPolicy: 'no-referrer',
       signal: AbortSignal.timeout(15_000),
     });
@@ -40,10 +39,16 @@ export async function startReportViewer(doc: Document, deps: {
         : 'GitHub could not load this report. Try again later.');
       return;
     }
-    const target = new URL(response.url || 'https://gist.githubusercontent.com/');
-    if (target.protocol !== 'https:' || target.hostname !== 'gist.githubusercontent.com') throw new Error('Unexpected response host');
-    if (Number(response.headers.get('content-length')) > 524288) throw new Error('Report is too large');
-    const source = await response.text();
+    const target = new URL(response.url || 'https://api.github.com/');
+    if (target.protocol !== 'https:' || target.hostname !== 'api.github.com') throw new Error('Unexpected response host');
+    if (Number(response.headers.get('content-length')) > 2097152) throw new Error('Report is too large');
+    const payload = await response.text();
+    if (new TextEncoder().encode(payload).length > 2097152) throw new Error('Report is too large');
+    const data = JSON.parse(payload) as {id?:string;public?:boolean;owner?:{login?:string};files?:Record<string,{content?:string;truncated?:boolean}>};
+    const file = data.files?.['report.md'];
+    if (data.id !== match[2] || data.public !== false || data.owner?.login?.toLowerCase() !== match[1].toLowerCase()
+        || !file || file.truncated || typeof file.content !== 'string') throw new Error('Unexpected report snapshot');
+    const source = file.content;
     if (new TextEncoder().encode(source).length > 524288) throw new Error('Report is too large');
     article.innerHTML = deps.sanitize(deps.markdown(source));
     // Markdown images are deliberately omitted: opening an unlisted report must

@@ -216,8 +216,8 @@ describe("green-gate timing chain (WI-6112)", () => {
    *
    * The phase deadline is derived from the ACTUAL killer. WI-6554700010042457 removed the
    * scheduled parent's suite-budget group-kill (the old SUITE_KILL_BUDGET_MIRROR_MS), so the
-   * only killer left is a deadline a caller transports; isolationPhaseDeadlineMs stops starting
-   * work this reserve before it (and is unbounded without one — pinned in green-checkpoint.test).
+   * detached job also ignores request deadlines. The bounded isolation helpers retain their
+   * cleanup reserve; the full phase remains unbounded (pinned in green-checkpoint.test).
    */
   it("the phase reserve covers one in-flight isolation attempt plus verdict-write margin (EI-20669541349219660)", () => {
     expect(ISOLATION_PHASE_RESERVE_MS).toBeGreaterThanOrEqual(

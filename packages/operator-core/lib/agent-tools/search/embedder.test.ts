@@ -139,6 +139,104 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+describe('accepted query inference lease', () => {
+  it('expires a shared in-flight cache wait without cancelling its foreground owner', async () => {
+    vi.useFakeTimers();
+    let finish!: (vector: number[]) => void;
+    const provider = vi.fn(() => new Promise<number[]>(resolve => { finish = resolve; }));
+    const acquire = async () => ({ mode: 'gemma' as const, dims: 768, profile: EMBEDDER_DIM_SPECS.gemma, embed: provider });
+    try {
+      const foreground = (await buildQueryEmbedderResolved(undefined, { acquire, observeFallback: vi.fn() }))!;
+      const shared = foreground.embed('shared exact query');
+      const accepted = (await buildQueryEmbedderResolved({ embeddingDeadlineMs: Date.now() + 120_000 }, {
+        acquire, observeFallback: vi.fn(),
+      }))!;
+      const pending = accepted.embed('shared exact query');
+      const rejected = expect(pending).rejects.toMatchObject({ code: 'ETIMEDOUT' });
+      await vi.advanceTimersByTimeAsync(120_000);
+      await rejected;
+      expect(provider).toHaveBeenCalledOnce();
+      finish([0.3]);
+      expect(await shared).toEqual([0.3]);
+      expect(await foreground.embed('shared exact query')).toEqual([0.3]);
+      expect(provider).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps exact text/profile and cancels at the remaining absolute lease after acquisition and retrieval', async () => {
+    vi.useFakeTimers();
+    const exactText = '  exact accepted question  ';
+    const calls: Array<{ text: string; signal?: AbortSignal }> = [];
+    const provider = vi.fn((text: string, signal?: AbortSignal) => {
+      calls.push({ text, signal });
+      return new Promise<number[]>((_resolve, reject) => {
+        signal!.addEventListener('abort', () => reject(signal!.reason), { once: true });
+      });
+    });
+    try {
+      const deadline = Date.now() + 120_000;
+      const resolved = (await buildQueryEmbedderResolved({ embeddingDeadlineMs: deadline }, {
+        acquire: async () => ({ mode: 'gemma', dims: 768, profile: EMBEDDER_DIM_SPECS.gemma, embed: provider }),
+        observeFallback: vi.fn(),
+      }))!;
+      expect(resolved.profile).toBe(EMBEDDER_DIM_SPECS.gemma);
+      expect(embedderProfileIdOf(resolved.embed)).toBe(EMBEDDER_DIM_SPECS.gemma.profileId);
+      await vi.advanceTimersByTimeAsync(30_000);
+      const pending = resolved.embed(exactText);
+      const rejected = expect(pending).rejects.toMatchObject({ code: 'ETIMEDOUT' });
+      await vi.advanceTimersByTimeAsync(15_001);
+      expect(calls).toHaveLength(1);
+      expect(calls[0]!.text).toBe(exactText);
+      expect(calls[0]!.signal!.aborted).toBe(false);
+      await vi.advanceTimersByTimeAsync(74_999);
+      await rejected;
+      expect(calls[0]!.signal!.aborted).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each([0, Number.NaN, Number.POSITIVE_INFINITY])('refuses expired/invalid lease %s before provider or cache use', async deadline => {
+    const provider = vi.fn(async () => [0.1]);
+    const acquire = async () => ({ mode: 'gemma' as const, dims: 768, profile: EMBEDDER_DIM_SPECS.gemma, embed: provider });
+    const warm = (await buildQueryEmbedderResolved(undefined, { acquire, observeFallback: vi.fn() }))!;
+    await warm.embed('cached accepted question');
+    const expired = (await buildQueryEmbedderResolved({ embeddingDeadlineMs: deadline }, { acquire, observeFallback: vi.fn() }))!;
+    await expect(expired.embed('cached accepted question')).rejects.toMatchObject({ code: 'ETIMEDOUT' });
+    expect(provider).toHaveBeenCalledOnce();
+  });
+
+  it('caller cancellation aborts accepted work and a later lease can retry the identical query', async () => {
+    const provider = vi.fn((_text: string, signal?: AbortSignal) => new Promise<number[]>((_resolve, reject) => {
+      signal!.addEventListener('abort', () => reject(signal!.reason), { once: true });
+    }));
+    const acquire = async () => ({ mode: 'gemma' as const, dims: 768, profile: EMBEDDER_DIM_SPECS.gemma, embed: provider });
+    const resolved = (await buildQueryEmbedderResolved({ embeddingDeadlineMs: Date.now() + 120_000 }, {
+      acquire, observeFallback: vi.fn(),
+    }))!;
+    const caller = new AbortController();
+    const reason = new Error('accepted request cancelled');
+    const pending = resolved.embed('same exact query', caller.signal);
+    caller.abort(reason);
+    await expect(pending).rejects.toBe(reason);
+    provider.mockImplementationOnce(async () => [0.2]);
+    expect(await resolved.embed('same exact query')).toEqual([0.2]);
+    expect(provider).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([undefined, 120_000])('passes the accepted remaining budget to the existing sidecar seam: %s', async remaining => {
+    mockResolvedTyped(vi.mocked(loadVoicePrefs), { ...DEFAULT_VOICE_PREFS, memoryEmbedderMode: 'local' });
+    vi.mocked(buildSidecarAwareEmbedder).mockResolvedValue(async () => [0.1]);
+    const started = Date.now();
+    await buildQueryEmbedderResolved(remaining === undefined ? undefined : { embeddingDeadlineMs: started + remaining });
+    const options = vi.mocked(buildSidecarAwareEmbedder).mock.calls[0]![3];
+    if (remaining === undefined) expect(options).toEqual({});
+    else expect(options!.timeoutMs).toBeGreaterThan(115_000);
+  });
+});
+
 describe('buildQueryEmbedder — OpenAI path', () => {
   it('forwards cancellation to the provider and rejects aborted cached callers', async () => {
     vi.mocked(readCredentials).mockResolvedValue({ openai_api_key: 'sk-stored' });

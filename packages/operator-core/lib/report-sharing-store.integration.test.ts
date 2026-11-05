@@ -22,6 +22,7 @@ describe('report sharing durable association',()=>{
     await expect(postgresReportShareStore(db.adminSql).locked('persistent-key',async store=>{await store.put(share);throw new Error('process interrupted');})).rejects.toThrow('process interrupted');
     await postgresReportShareStore(db.adminSql).locked('persistent-key',async store=>{
       expect(await store.get(workspace,reportId,7)).toEqual(share);expect(await store.get(workspace,reportId,8)).toBeNull();expect(await store.get('other',reportId,7)).toBeNull();
+      expect(await store.list(workspace,reportId)).toEqual([share]);expect(await store.list('other',reportId)).toEqual([]);
     });
   });
   it('refuses concurrent access while allowing the persisted intent to remain visible',async()=>{

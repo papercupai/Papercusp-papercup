@@ -1,13 +1,16 @@
 /** P-009 discovery from a real disposable operator, before profile approval. */
 import assert from 'node:assert/strict';
 import { spawn, type ChildProcess } from 'node:child_process';
-import { createHash, randomUUID } from 'node:crypto';
-import { appendFileSync, readFileSync, writeFileSync } from 'node:fs';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { getOrgPg } from '@papercusp/db-org';
 import { canonicalJson } from '@papercusp/hash-chain';
 import { readProcessIdentity } from '../lib/process-identity';
 import { loadImmutableTextArtifact } from '../lib/text-artifacts';
+import { isValidSuperuserBearer, readSuperuserToken, superuserTokenPath } from '../lib/superuser-token';
 import { verifyAuthenticatedRuntimeSecurityCensus } from '../lib/coverage-census/security-qualification';
 import { preparePrivateHttpWorkspaces, preparePrivateOperatorApiBundle } from './private-http-workspace-preflight';
 
@@ -41,8 +44,21 @@ async function main() {
   const url = new URL(base);
   assert.equal(url.hostname, '127.0.0.1');
   assert.ok(url.port && !['3070', '3170', '3271', '9071', '9171'].includes(url.port));
+  // Provision the normal MCP credential only inside this disposable HOME.
+  assert.equal(process.env.PAPERCUSP_HOME, join(process.env.HOME!, '.papercusp'));
+  assert.equal(superuserTokenPath(), join(process.env.PAPERCUSP_HOME!, 'superuser-token'));
+  mkdirSync(process.env.PAPERCUSP_HOME!, { recursive: true, mode: 0o700 });
+  if (!readSuperuserToken()) writeFileSync(superuserTokenPath(), randomBytes(32).toString('base64url'),
+    { mode: 0o600, flag: 'wx' });
+  const bearer = readSuperuserToken();
+  assert.ok(bearer && isValidSuperuserBearer(bearer), 'private MCP credential preparation required');
   console.log('VAULT_CENSUS_STAGE=bundle-start');
-  const prepared = preparePrivateOperatorApiBundle(root, evidenceDir);
+  // Renew preparation only for distinct completed build steps. The fixed
+  // synchronous deadline can interrupt a progressing full-input guard census.
+  const prepared = await preparePrivateOperatorApiBundle(root, evidenceDir, { builder: {
+    timeoutMs: 240_000, maxMs: 420_000,
+    onProgress: progress => console.log('VAULT_CENSUS_STAGE=build-' + progress.step),
+  } });
   const originalBundle = readFileSync(prepared.path);
   host = spawn(process.execPath, [prepared.path], { cwd: root, env: { ...process.env },
     stdio: ['ignore', 'pipe', 'pipe'] });
@@ -66,19 +82,37 @@ async function main() {
   console.log('VAULT_CENSUS_STAGE=runtime-capture');
   // The serving process chooses the population, signing key, actor and clock.
   // No fixture callback or caller-supplied rows can stand in for that capture.
-  const request = await fetch(base + '/api/agent-mcp/run-tool', { method: 'POST', headers,
+  const caller = 'su-' + randomUUID();
+  const denied = await fetch(base + '/api/agent-mcp/run-tool', { method: 'POST', headers,
     body: JSON.stringify({ name: 'dev:telemetry', args: { view: 'security-census', capture: true,
-      harness: workspace }, harness: workspace, callerSid: 'su-' + randomUUID(), confirmed: true }),
+      harness: workspace }, harness: workspace, callerSid: caller, confirmed: true }),
     signal: AbortSignal.timeout(120_000) });
-  const envelope = await request.json() as any;
-  writeFileSync(join(evidenceDir, 'capture-response.json'), JSON.stringify({ status: request.status, envelope }));
-  assert.equal(request.status, 200, JSON.stringify(envelope));
-  assert.equal(envelope.ok, true, JSON.stringify(envelope));
-  assert.notEqual(envelope.result?.isError, true, JSON.stringify(envelope));
-  const text = envelope.result?.content?.find((item: any) => item.type === 'text' && item.text?.trim().startsWith('{'));
-  const receipt = envelope.result?.structuredContent ?? (text ? JSON.parse(text.text) : envelope.result?.data);
-  assert.equal(receipt?.readbackVerified, true, JSON.stringify(envelope));
-  await verifyAuthenticatedRuntimeSecurityCensus(workspace, receipt);
+  const refusal = await denied.json() as any;
+  writeFileSync(join(evidenceDir, 'unauthenticated-response.json'), JSON.stringify(refusal));
+  assert.equal(refusal.result?.isError, true);
+  assert.match(JSON.stringify(refusal), /security_qualification_authenticated_actor_required/);
+  const client = new Client({ name: 'private-vault-census', version: '1' });
+  const requestOptions = { timeout: 120_000 };
+  const query = new URLSearchParams({ superuser: '1', client: caller, workspace,
+    harness: workspace, format: 'json', profile: 'engineer' });
+  let captured: any;
+  try {
+    await client.connect(new StreamableHTTPClientTransport(new URL(base + '/api/mcp?' + query),
+      { requestInit: { headers: { Authorization: 'Bearer ' + bearer } } }), requestOptions);
+    const catalog = await client.listTools(undefined, requestOptions);
+    const generation = catalog.tools.find(tool => tool.name === 'dev:telemetry')?._meta?.['papercusp/servingGeneration'];
+    assert.equal(typeof generation, 'string', 'serving tool contract baseline required');
+    captured = await client.callTool({ name: 'dev:telemetry',
+      arguments: { view: 'security-census', capture: true, harness: workspace },
+      _meta: { 'papercusp/servingGeneration': generation } }, undefined, requestOptions);
+  } finally { await client.close(); }
+  writeFileSync(join(evidenceDir, 'capture-response.json'), JSON.stringify({ transport: 'mcp', result: captured }));
+  assert.notEqual(captured.isError, true, JSON.stringify(captured));
+  const text = captured.content?.find((item: any) => item.type === 'text' && item.text?.trim().startsWith('{'));
+  const receipt = captured.structuredContent ?? (text ? JSON.parse(text.text) : captured.data);
+  assert.equal(receipt?.readbackVerified, true, JSON.stringify(captured));
+  const verified = await verifyAuthenticatedRuntimeSecurityCensus(workspace, receipt);
+  assert.equal(verified.receipt.actor, caller, 'authenticated MCP actor must own the signed receipt');
   const snapshotBytes = await loadImmutableTextArtifact(workspace, receipt.snapshotRef);
   const signedBytes = await loadImmutableTextArtifact(workspace, receipt.receiptRef);
   assert.ok(snapshotBytes && signedBytes);
@@ -115,6 +149,7 @@ async function main() {
   assert.deepEqual(readFileSync(prepared.path), originalBundle, 'loaded bundle changed during capture');
   await stopHost();
   console.log('VAULT_CENSUS_RECEIPT ' + JSON.stringify({ workspace, hostStopped: true,
+    transport: 'mcp', authenticatedActor: caller, unauthenticatedRejected: true,
     bundleSha256: digest(originalBundle), runtimeSnapshotSha256: receipt.snapshotRef,
     signedReceiptSha256: receipt.receiptRef, schemaSha256: digest(schemaBytes),
     runtimeRows: snapshot.rows.length, schemaColumns: columns.length, schemaConstraints: constraints.length,

@@ -24,8 +24,8 @@ describe('ingest exact recovery (real migrated PostgreSQL and files)', () => {
     const path = join(directory, 'old.jsonl'), bytes = 128 * 1024;
     await writeFile(path, 'x'.repeat(bytes - 1) + '\n');
     await db.adminSql`INSERT INTO harness_shared.session_ingest_state
-      (file_path, source_kind, byte_offset, updated_at)
-      VALUES (${path}, 'codex', 0, now() - interval '46 days')`;
+      (file_path, source_kind, byte_offset, byte_offset_changed_at, updated_at)
+      VALUES (${path}, 'codex', 0, now() - interval '46 days', now() - interval '46 days')`;
     const now = Date.now(), hour = 3600_000;
     expect(await readIngestBacklogRecovery('codex', path, hour, now)).toBe(false);
     expect(await readIngestBacklogRecovery('claude', path, hour, now)).toBeNull();
@@ -33,6 +33,39 @@ describe('ingest exact recovery (real migrated PostgreSQL and files)', () => {
     await db.adminSql`UPDATE harness_shared.session_ingest_state SET byte_offset = ${bytes}
       WHERE file_path = ${path} AND source_kind = 'codex'`;
     expect(await readIngestBacklogRecovery('codex', path, hour, now)).toBe(true);
+  });
+
+  it('keeps the migration marker tied to primary byte_offset changes', async () => {
+    const path = join(directory, 'marker.jsonl');
+    const stale = new Date(Date.now() - 6 * 60 * 60 * 1000).toISOString();
+    await db.adminSql`INSERT INTO harness_shared.session_ingest_state
+      (file_path, source_kind, byte_offset, byte_offset_changed_at, updated_at)
+      VALUES (${path}, 'codex', 0, ${stale}, ${stale})`;
+    const [before] = await db.adminSql`SELECT byte_offset_changed_at::text AS marker,
+      updated_at::text AS updated FROM harness_shared.session_ingest_state
+      WHERE file_path = ${path} AND source_kind = 'codex'`;
+    const beforeMarker = String((before as { marker: unknown }).marker);
+    const beforeUpdated = String((before as { updated: unknown }).updated);
+
+    await db.adminSql`UPDATE harness_shared.session_ingest_state
+      SET updated_at = now() + interval '1 day'
+      WHERE file_path = ${path} AND source_kind = 'codex'`;
+    const [afterAuxiliaryWrite] = await db.adminSql`SELECT byte_offset_changed_at::text AS marker,
+      updated_at::text AS updated FROM harness_shared.session_ingest_state
+      WHERE file_path = ${path} AND source_kind = 'codex'`;
+    expect(String((afterAuxiliaryWrite as { marker: unknown }).marker)).toBe(beforeMarker);
+    expect(Date.parse(String((afterAuxiliaryWrite as { updated: unknown }).updated)))
+      .toBeGreaterThan(Date.parse(beforeUpdated));
+
+    await db.adminSql`UPDATE harness_shared.session_ingest_state SET byte_offset = 1,
+      updated_at = now() + interval '2 days'
+      WHERE file_path = ${path} AND source_kind = 'codex'`;
+    const [afterByteProgress] = await db.adminSql`SELECT byte_offset_changed_at::text AS marker,
+      updated_at::text AS updated FROM harness_shared.session_ingest_state
+      WHERE file_path = ${path} AND source_kind = 'codex'`;
+    const advancedMarker = Date.parse(String((afterByteProgress as { marker: unknown }).marker));
+    expect(advancedMarker).toBeGreaterThan(Date.parse(beforeMarker));
+    expect(advancedMarker).toBeLessThan(Date.parse(String((afterByteProgress as { updated: unknown }).updated)));
   });
 
   it('distinguishes incomplete tails, rotated files and missing files from consumed work', async () => {

@@ -635,12 +635,14 @@ export function canDispatchWithoutCatalog(toolName: any, inputKind: any, error: 
 /** Explain the catalog-independent fallback on stderr without contaminating
  * scripted JSON output. The target tool still validates its own arguments. */
 export function formatToolCatalogBypass(requestedToolName: any, error: any): string;
-export function callToolWithPressureRetry(client: any, params: any, { maxAttempts, retryDelayMs, timeoutMs, sleep, schemaNeutral, }?: {
+export function callToolWithPressureRetry(client: any, params: any, { maxAttempts, retryDelayMs, timeoutMs, totalTimeoutMs, sleep, schemaNeutral, now, }?: {
     maxAttempts?: number | undefined;
     retryDelayMs?: number | undefined;
     timeoutMs?: number | undefined;
+    totalTimeoutMs?: number | undefined;
     sleep?: ((ms: any) => Promise<any>) | undefined;
     schemaNeutral?: boolean | undefined;
+    now?: typeof ptoolMonotonicNowMs | undefined;
 }): Promise<any>;
 /**
  * The MCP SDK uses these error codes for a request whose stream closed or whose

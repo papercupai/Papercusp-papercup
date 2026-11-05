@@ -19,6 +19,9 @@ const sourcePaths = [
   'packages/operator-core/lib/measurement-provenance.ts',
   'packages/operator-core/lib/rubric-instrument-registry.ts',
   'packages/operator-core/lib/retained-sql.ts',
+  'packages/operator-core/lib/retained-replay-identity.ts',
+  'packages/operator-core/lib/retained-replay-sources.json',
+  'apps/operator/bin/bundle-host-common.sh',
   'packages/operator-core/lib/pg-read-query.ts',
   'libs/test-config/src/execution-details.ts',
 ];
@@ -33,6 +36,7 @@ it('persists and replays original command and SQL measurements after private liv
         resolve(root, 'packages/operator-core/lib/measurement-replay-background.fixture.ts')], {
         cwd: root, detached: true, stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
         env: { ...process.env, PC_ISOLATED_RUNTIME_PROOF: '1',
+          MEASUREMENT_REPLAY_SOURCE_ROOT: root,
           MEASUREMENT_REPLAY_SOURCE_HASHES: JSON.stringify(hashes) },
       });
       observe(child);
@@ -48,6 +52,12 @@ it('persists and replays original command and SQL measurements after private liv
         expect(receipt).toMatchObject({ recorded: 3, command: { value: 120, replay: 120 },
           sql: { value: 20, replay: 20 }, scoped: { value: 20, replay: 20, sqlReplay: 'unavailable' },
           liveAfterMutation: { command: 0, sql: 500 } });
+        expect(receipt.crossRuntime).toMatchObject({
+          sourceToCompiled: { command: { status: 'reproduced', value: 120 }, sql: { status: 'reproduced', value: 20 } },
+          compiledToSource: { command: { status: 'reproduced', value: 0 }, sql: { status: 'reproduced', value: 500 } },
+          changedArgv: { command: { status: 'unavailable' }, sql: { status: 'reproduced' } },
+        });
+        expect(receipt.crossRuntime.bundleSha256).toMatch(/^[a-f0-9]{64}$/);
         console.info('MEASUREMENT_REPLAY_VERIFIED ' + JSON.stringify(receipt));
       } finally {
         if (child.exitCode === null && child.signalCode === null) child.kill('SIGTERM');

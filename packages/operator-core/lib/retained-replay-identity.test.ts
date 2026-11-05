@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { pathToFileURL } from 'node:url';
@@ -108,4 +108,47 @@ describe('retained replay source identity', () => {
       }
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
+
+  it('a valid changed SQL evaluator compiles with a different identity and different behavior', () => {
+    const copy = sourceCopy();
+    try {
+      // Reuse the maintained compiler/cache reader; only evaluator source is
+      // changed. These links supply tooling, never an invented revision define.
+      symlinkSync(join(root, 'scripts'), join(copy, 'scripts'), 'dir');
+      symlinkSync(join(root, 'node_modules'), join(copy, 'node_modules'), 'dir');
+      copyFileSync(join(root, 'package.json'), join(copy, 'package.json'));
+      const entry = join(copy, 'entry.ts');
+      writeFileSync(entry, `
+        import { compileRetainedSql, retainedSqlImplementationSha256 } from './packages/operator-core/lib/retained-sql';
+        const query = compileRetainedSql('SELECT avg(duration_ms) FROM harness_shared.measurement_replay_source', {
+          version: 1, relation: '"harness_shared"."measurement_replay_source"', truncated: false,
+          columns: [{ name: 'duration_ms', typeOid: '701' }],
+          rows: [{ duration_ms: '10' }, { duration_ms: '30' }],
+        }, '2026-11-05T12:00:00Z');
+        console.log(JSON.stringify({ identity: retainedSqlImplementationSha256(), query }));
+      `);
+      const compile = (name: string) => {
+        const outfile = join(copy, name + '.mjs');
+        const child = spawnSync('bash', ['-c',
+          'set -euo pipefail\nsource "$1"\nshift\nbundle_host_esbuild "$@"',
+          'retained-replay-changed-code', common, copy, entry,
+          '--bundle', '--platform=node', '--format=esm', '--target=node22', `--outfile=${outfile}`,
+          '--minify-whitespace', '--minify-syntax'],
+        { cwd: root, encoding: 'utf8', timeout: 60_000 });
+        expect(child.status, child.stdout + child.stderr).toBe(0);
+        return runNode('await import(process.argv[1]);', [pathToFileURL(outfile).href]);
+      };
+      const original = compile('original');
+      expect(original.identity).toBe(measureRetainedReplaySourceIdentity(root));
+      expect(original.query).toContain('jsonb_to_recordset');
+      const evaluator = join(copy, 'packages/operator-core/lib/retained-sql.ts');
+      const source = readFileSync(evaluator, 'utf8');
+      expect(source).toContain('const MAX_ROWS = 32;');
+      writeFileSync(evaluator, source.replace('const MAX_ROWS = 32;', 'const MAX_ROWS = 1;'));
+      const changed = compile('changed');
+      expect(changed.identity).toBe(measureRetainedReplaySourceIdentity(copy));
+      expect(changed.identity).not.toBe(original.identity);
+      expect(changed.query).toBeNull();
+    } finally { rmSync(copy, { recursive: true, force: true }); }
+  }, 150_000);
 });

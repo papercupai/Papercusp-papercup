@@ -137,7 +137,6 @@ import {
   terminalVerdictRecordOptions,
   MANUAL_SELF_WATCHDOG_ENV,
   MIN_MANUAL_SELF_WATCHDOG_MS,
-  ISOLATION_PHASE_RESERVE_MS,
   isolationPhaseDeadlineMs,
   writeFailingFilesMarker,
   readFailingFilesMarker,
@@ -11591,6 +11590,11 @@ describe("evaluateDeployStaleness (silent-drought alarm)", () => {
 // already tested above with stub deps; these cover the pure pieces of the heavy
 // path that don't need a real suite-run.
 describe("buildGreenCheckpointEnv (the gate measures COMMITTED defaults)", () => {
+  it.each(["1", "9000000000000"])("does not transport inherited full-run deadline %s into suite workers", deadline => {
+    expect(buildGreenCheckpointEnv(null, { PAPERCUSP_TASK_DEADLINE_EPOCH_MS: deadline }))
+      .not.toHaveProperty("PAPERCUSP_TASK_DEADLINE_EPOCH_MS");
+  });
+
   it("prevents optional Git index writes in repair tasks and preserves an explicit caller policy", () => {
     expect(buildGreenCheckpointEnv(null, {}).GIT_OPTIONAL_LOCKS).toBe("0");
     expect(buildGreenCheckpointEnv(null, { GIT_OPTIONAL_LOCKS: "" }).GIT_OPTIONAL_LOCKS).toBe("0");
@@ -13131,10 +13135,10 @@ describe("isolationPhaseDeadlineMs (EI-20669541349219660, WI-6554700010042457)",
   // The env name the launcher/scope transports (systemd-scope TASK_DEADLINE_EPOCH_MS_ENV).
   const TASK_DEADLINE_ENV = "PAPERCUSP_TASK_DEADLINE_EPOCH_MS";
 
-  it("a transported caller deadline is the only killer left: the phase stops starting work the reserve before it", () => {
+  it("a transported request deadline cannot cut short the detached isolation phase", () => {
     const callerDeadline = 50_000_000;
     expect(isolationPhaseDeadlineMs({ [TASK_DEADLINE_ENV]: String(callerDeadline) })).toBe(
-      callerDeadline - ISOLATION_PHASE_RESERVE_MS,
+      Number.POSITIVE_INFINITY,
     );
   });
 

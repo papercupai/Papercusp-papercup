@@ -1,9 +1,11 @@
 /** Private worker for measurement-replay-background.integration.test.ts. */
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
+import { execFile } from 'node:child_process';
 import { readFileSync } from 'node:fs';
-import { mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
+import { promisify } from 'node:util';
 import { getOrgPg } from '@papercusp/db-org';
 import { rescoreRubric } from './harness/routines/rubric-rescore-action';
 import { readLatestRubricCheckResults } from './check-results-ledger';
@@ -13,8 +15,9 @@ import { pgReadQuery } from './pg-read-query';
 import type { CheckedCriterion } from './rubrics-criterion-checks';
 import pgQuery from './agent-tools/dev/pg_query';
 import { flushPendingTelemetry } from './projected-tool-deps';
+import { retainedReplaySourceIdentity } from './retained-replay-identity';
 
-const root = resolve(import.meta.dirname, '../../..');
+const root = process.env.MEASUREMENT_REPLAY_SOURCE_ROOT ?? resolve(import.meta.dirname, '../../..');
 const workspaceId = process.env.PAPERCUSP_WORKSPACE_ID!;
 assert.match(workspaceId, /^test-runtime-/);
 assert.equal(process.env.PAPERCUSP_SKIP_PG_DISCOVERY, '1');
@@ -31,8 +34,53 @@ const sourceHashes = Object.fromEntries(Object.entries(expectedHashes).map(([pat
 }));
 const profileDir = join(process.env.PAPERCUSP_HOME!, 'loop-profiles');
 const sql = getOrgPg().sql;
+const query = `WITH samples AS (SELECT duration_ms FROM harness_shared.measurement_replay_source
+  WHERE workspace_id='${workspaceId}' AND measured_at > now()-interval '1 hour'),
+  measurement AS (SELECT avg(duration_ms)::float8 budget_pct FROM samples)
+  SELECT * FROM measurement`;
+const scopedQuery = `WITH original AS (${query}) SELECT budget_pct,repeat('advisory ',60) advisory FROM original`;
+const criterion = (key: string, query: string): CheckedCriterion => ({ key, check: { kind: 'probe', unit: '%',
+  probe: { kind: 'sql', sql: query, maxRows: 50, schemaRevision: continuityProbeRevision('dev:pg_query')!,
+    expect: { path: '$.rows[0].budget_pct', op: 'lte', value: 100 } } } });
+const criteria: CheckedCriterion[] = [
+  { key: 'command', check: { kind: 'instrument', instrumentKey: 'host:loop-profile-budget-pct',
+    expect: { op: 'lte', value: 100 } } },
+  criterion('sql', query), criterion('scoped', scopedQuery),
+];
+
+async function measure(rubricRef: string) {
+  const outcome = await rescoreRubric({ rubricRef, workspaceId, harnessSlug: null }, {
+    getRubric: async () => ({ rubricId: rubricRef, workspaceId, kind: 'standard', criteria }),
+  });
+  assert.equal(outcome.probeError, undefined);
+  assert.equal(outcome.executed, 3);
+  assert.equal(outcome.testRunIds.length, 3);
+  const latest = await readLatestRubricCheckResults({ rubricRef, workspaceId });
+  const checks = Object.fromEntries([...latest.values()].map(row => [row.check.criterionKey, row]));
+  const inputs = Object.fromEntries(Object.entries(checks).map(([key, row]) => [key, {
+    value: row.check.value!, unit: row.check.unit ?? null, provenance: row.check.provenance,
+  }]));
+  return { outcome, checks, inputs };
+}
+type Inputs = Awaited<ReturnType<typeof measure>>['inputs'];
+async function replay(inputs: Inputs) {
+  return { identity: retainedReplaySourceIdentity(),
+    command: replayRetainedInstrument(inputs.command!),
+    sql: await replayRetainedSqlProbe(inputs.sql!),
+    scoped: replayRetainedProbe(inputs.scoped!) };
+}
 
 try {
+  // The compiled child runs without tsx. Both directions use the real writer,
+  // ledger reader, parser and private PostgreSQL; no recorded value is injected.
+  const mode = process.env.MEASUREMENT_REPLAY_RUNTIME_MODE;
+  if (mode) {
+    const inputs = mode === 'write' ? (await measure('private-measurement-replay-compiled')).inputs
+      : JSON.parse(readFileSync(process.env.MEASUREMENT_REPLAY_INPUT!, 'utf8')) as Inputs;
+    const result = mode === 'write' ? { identity: retainedReplaySourceIdentity(), inputs }
+      : await replay(inputs);
+    await writeFile(process.env.MEASUREMENT_REPLAY_OUTPUT!, JSON.stringify(result));
+  } else {
   const [server] = await sql`SELECT inet_server_port() AS port`;
   assert.equal(String(server!.port), process.env.PAPERCUSP_PG_PORT);
   assert.equal(new URL(process.env.HARNESS_ADMIN_DATABASE_URL!).port, String(server!.port));
@@ -51,30 +99,9 @@ try {
   assert.equal(identity!.ready, true, 'mutable private fixture requires replica identity');
   await sql`INSERT INTO harness_shared.measurement_replay_source VALUES
     (${workspaceId},9007199254740993,10,now()),(${workspaceId},9007199254740994,30,now())`;
-  const query = `WITH samples AS (SELECT duration_ms FROM harness_shared.measurement_replay_source
-    WHERE workspace_id='${workspaceId}' AND measured_at > now()-interval '1 hour'),
-    measurement AS (SELECT avg(duration_ms)::float8 budget_pct FROM samples)
-    SELECT * FROM measurement`;
-  const scopedQuery = `WITH original AS (${query}) SELECT budget_pct,repeat('advisory ',60) advisory FROM original`;
-  const criterion = (key: string, query: string): CheckedCriterion => ({ key, check: { kind: 'probe', unit: '%',
-    probe: { kind: 'sql', sql: query, maxRows: 50, schemaRevision: continuityProbeRevision('dev:pg_query')!,
-      expect: { path: '$.rows[0].budget_pct', op: 'lte', value: 100 } } } });
-  const criteria: CheckedCriterion[] = [
-    { key: 'command', check: { kind: 'instrument', instrumentKey: 'host:loop-profile-budget-pct',
-      expect: { op: 'lte', value: 100 } } },
-    criterion('sql', query), criterion('scoped', scopedQuery),
-  ];
-  const rubricRef = 'private-measurement-replay';
   // Only rubric definition is a fixture. Execution, parser, ledger writer and
   // reader are the current production implementations, with no injected values.
-  const outcome = await rescoreRubric({ rubricRef, workspaceId, harnessSlug: null }, {
-    getRubric: async () => ({ rubricId: rubricRef, workspaceId, kind: 'standard', criteria }),
-  });
-  assert.equal(outcome.probeError, undefined);
-  assert.equal(outcome.executed, 3);
-  assert.equal(outcome.testRunIds.length, 3);
-  const latest = await readLatestRubricCheckResults({ rubricRef, workspaceId });
-  const checks = Object.fromEntries([...latest.values()].map(row => [row.check.criterionKey, row]));
+  const { outcome, checks, inputs } = await measure('private-measurement-replay');
   assert.equal(checks.command!.status, 'fail');
   assert.equal(checks.sql!.status, 'pass');
   assert.equal(checks.scoped!.status, 'pass');
@@ -109,12 +136,58 @@ try {
   const liveSql = await pgReadQuery(query);
   assert.equal(liveCommand.value, 0);
   assert.equal(liveSql.rows[0]!.budget_pct, 500);
+  const compiledDir = join(process.env.PAPERCUSP_HOME!, 'retained-replay-compiled');
+  await mkdir(compiledDir);
+  await symlink(join(root, 'node_modules'), join(compiledDir, 'node_modules'), 'dir');
+  const bundle = join(compiledDir, 'consumer.mjs');
+  const run = promisify(execFile);
+  const compileScript = [
+    'set -euo pipefail',
+    'source "$1/apps/operator/bin/bundle-host-common.sh"',
+    'root="$1"; shift',
+    'externals=("${HOST_COMMON_EXTERNALS[@]}" --external:@embedded-postgres/* --external:@papercusp/embedded-postgres-server)',
+    'for package in "${NATIVE_PKGS[@]}"; do externals+=("--external:$package"); done',
+    'bundle_host_esbuild "$root" "$@" --bundle --platform=node --format=esm --target=node22 ' +
+      '"--banner:js=$HOST_BANNER" "${HOST_BANNER_DEFINES[@]}" "${HOST_RELEASE_COMPACTION_ARGS[@]}" "${externals[@]}"',
+  ].join('\n');
+  await run('bash', ['-c', compileScript, 'measurement-replay-compile', root,
+    join(root, 'packages/operator-core/lib/measurement-replay-background.fixture.ts'), `--outfile=${bundle}`],
+  { cwd: root, timeout: 180_000, maxBuffer: 16_000_000 });
+  const inputFile = join(compiledDir, 'source-inputs.json');
+  await writeFile(inputFile, JSON.stringify(inputs));
+  const child = async (mode: string, home = process.env.PAPERCUSP_HOME!) => {
+    const output = join(compiledDir, `${mode}-${home === process.env.PAPERCUSP_HOME ? 'same' : 'changed'}.json`);
+    await run(process.execPath, [bundle], { cwd: root, timeout: 120_000, maxBuffer: 16_000_000,
+      env: { ...process.env, NODE_OPTIONS: '', PAPERCUSP_HOME: home,
+        MEASUREMENT_REPLAY_SOURCE_ROOT: root, MEASUREMENT_REPLAY_RUNTIME_MODE: mode,
+        MEASUREMENT_REPLAY_INPUT: inputFile, MEASUREMENT_REPLAY_OUTPUT: output } });
+    return JSON.parse(readFileSync(output, 'utf8'));
+  };
+  const sourceToCompiled = await child('read');
+  const compiledWrite = await child('write');
+  const compiledToSource = await replay(compiledWrite.inputs);
+  const changedArgv = await child('read', join(process.env.PAPERCUSP_HOME!, 'changed-config'));
+  assert.equal(sourceToCompiled.identity, retainedReplaySourceIdentity());
+  assert.equal(compiledWrite.identity, retainedReplaySourceIdentity());
+  for (const [result, values] of [[sourceToCompiled, [120, 20, 20]],
+    [compiledToSource, [0, 500, 500]]] as const) {
+    for (const [i, key] of ['command', 'sql', 'scoped'].entries()) {
+      assert.equal(result[key].status, 'reproduced', `${key}: ${result[key].reason}`);
+      assert.equal(result[key].value, values[i]);
+    }
+  }
+  assert.equal(changedArgv.identity, retainedReplaySourceIdentity());
+  assert.equal(changedArgv.command.status, 'unavailable', 'changed configured command argv must refuse replay');
+  assert.equal(changedArgv.sql.status, 'reproduced', 'the argv control must not invalidate unchanged SQL');
   console.log('MEASUREMENT_REPLAY_RECEIPT ' + JSON.stringify({ sourceHashes, workspaceId,
     pgPort: server!.port, recorded: outcome.testRunIds.length,
     command: { value: command.value, replay: commandReplay.value },
     sql: { value: originalSql.value, replay: sqlReplay.value },
     scoped: { value: scoped.value, replay: scopedReplay!.value, sqlReplay: scopedSqlReplay.status },
-    liveAfterMutation: { command: liveCommand.value, sql: liveSql.rows[0]!.budget_pct } }));
+    liveAfterMutation: { command: liveCommand.value, sql: liveSql.rows[0]!.budget_pct },
+    crossRuntime: { sourceToCompiled, compiledToSource, changedArgv,
+      bundleSha256: createHash('sha256').update(readFileSync(bundle)).digest('hex') } }));
+  }
 } finally {
   await flushPendingTelemetry();
   await sql.end({ timeout: 2 });

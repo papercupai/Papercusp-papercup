@@ -126,6 +126,34 @@ describe('toolGuardText (deny-only; unreadable fails open, unevaluable fails clo
     );
     expect(text).toMatch(/^Refused by identity safe-coder rule no-rm: tool input exceeds/);
   });
+
+  it('overlaps independent authority reads within the native guard wall and retains identity denial', async () => {
+    vi.useFakeTimers();
+    try {
+      planExecutionGuard.mockImplementation(() => new Promise(resolve => setTimeout(() => resolve(null), 1100)));
+      const read = vi.fn(() => new Promise<WornSyncRules>(resolve => setTimeout(() => resolve(noRmRules()), 600)));
+      let settled = false;
+      const pending = toolGuardText(input('rm -rf build'), read).then(text => { settled = true; return text; });
+      await vi.advanceTimersByTimeAsync(1100);
+      expect(settled).toBe(true);
+      expect(await pending).toBe('Refused by identity safe-coder rule no-rm: no recursive deletes');
+      expect(read).toHaveBeenCalledTimes(1);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('returns plan refusal without waiting for an independent identity read', async () => {
+    vi.useFakeTimers();
+    try {
+      planExecutionGuard.mockImplementation(() => new Promise(resolve => setTimeout(() => resolve({
+        code: 'plan_execution_not_ready', reason: 'plan not started',
+      }), 100)));
+      const read = vi.fn(() => new Promise<WornSyncRules>(() => {}));
+      const pending = toolGuardText(input('ls'), read);
+      await vi.advanceTimersByTimeAsync(100);
+      expect(await pending).toBe('plan_execution_not_ready: plan not started');
+      expect(read).toHaveBeenCalledTimes(1);
+    } finally { vi.useRealTimers(); }
+  });
 });
 
 describe('compactionSinkDue (D-024 §3)', () => {

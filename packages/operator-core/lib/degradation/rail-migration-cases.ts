@@ -570,10 +570,12 @@ const learningStoreCases: RailMigrationCase[] = [{
     const { expect } = await import('vitest');
     const path = 'packages/operator-core/lib/work-item-lock-release.ts';
     const observations: ScoutReadObservation[] = [];
+    const { acquireWithContentionRetry } = await import('../agent-tools/locks/contention-retry');
     let failRead = true, failRelease = false, empty = false;
     const releaseAttempts: string[] = [];
     const reclaim = execute(original(path, 'export async function releaseReclaimedWorkItemLocks', 'function'), {
       normalizeReclaimPaths: execute(original(path, 'export function normalizeReclaimPaths', 'function'), {}, 'normalizeReclaimPaths'),
+      acquireWithContentionRetry,
       ensureBootstrap: async () => {}, getTxPool: () => ({}),
       readQueue: async () => {
         if (failRead) throw new Error('lock store unavailable');
@@ -1569,6 +1571,7 @@ export const RAIL_MIGRATION_CASES: RailMigrationCase[] = [...HOST_STARTUP_MIGRAT
         expect(mechanism).toBe('compaction-force-respawn'); expect(options.workspaceId).toBe('fixture');
         expect(row.scope).toBe('fixture-owner'); observations.push(row); return true;
       },
+      sessionCarryPolicy: async () => undefined,
       noHostWarned: new Set(), FORCE_COMPACT_FRACTION: 1.3,
       compactionConditionKey: () => 'alarm:fixture-compaction', broadcastSevereEvent: async () => true,
       resolveSessionRefReconciled: async () => ({ agent, sessionId: 'fixture-session' }),

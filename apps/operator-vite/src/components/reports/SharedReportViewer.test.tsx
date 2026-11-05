@@ -6,23 +6,26 @@ import {sanitizeReportMarkup,startReportViewer} from '@papercusp/operator-core/l
 const gist='alice/'+'a'.repeat(32);
 beforeEach(()=>{document.body.innerHTML='<p id="status"></p><article id="report" hidden></article><nav id="outline"></nav>';
   history.replaceState(null,'','#'+new URLSearchParams({gist}));HTMLElement.prototype.scrollIntoView=vi.fn();});
-function render(source:string,status=200){
-  const request=vi.fn(async()=>new Response(source,{status}));const diagram=vi.fn(async()=>'<svg><text>Safe chart</text><script>bad()</script><foreignObject>bad</foreignObject></svg>');
+function render(source:string,status=200,override:Record<string,unknown>={}){
+  const request=vi.fn(async(_input:RequestInfo|URL,_init?:RequestInit)=>new Response(JSON.stringify({id:'a'.repeat(32),public:false,owner:{login:'alice'},files:{'report.md':{content:source}},...override}),{status}));const diagram=vi.fn(async()=>'<svg><text>Safe chart</text><script>bad()</script><foreignObject>bad</foreignObject></svg>');
   const done=startReportViewer(document,{markdown:s=>marked.parse(s,{async:false}),sanitize:(html,svg)=>sanitizeReportMarkup(DOMPurify,html,svg),diagram,fetch:request as typeof fetch});
   return {done,request,diagram};
 }
 describe('anonymous shared reader',()=>{
-  it('uses a fresh raw CDN cache key for each load so a deleted Gist cannot reuse an edge response',async()=>{
+  it('uses canonical Gist existence with a fresh cache key on every load and never falls back to raw data',async()=>{
     const first=render('# Snapshot');await first.done;const second=render('# Snapshot');await second.done;
     const a=new URL(String(first.request.mock.calls[0]?.[0]));const b=new URL(String(second.request.mock.calls[0]?.[0]));
-    expect(a.searchParams.get('read')).toBeTruthy();expect(a.searchParams.get('read')).not.toBe(b.searchParams.get('read'));
+    expect(a.hostname).toBe('api.github.com');expect(a.searchParams.get('read')).toBeTruthy();expect(a.searchParams.get('read')).not.toBe(b.searchParams.get('read'));
+  });
+  it.each([{public:true},{owner:{login:'other'}},{files:{'report.md':{truncated:true,content:'# truncated'}}}])('refuses unexpected or truncated Gist metadata %j',async override=>{
+    await render('# must not render',200,override).done;expect(document.querySelector('#report h1')).toBeNull();expect(document.getElementById('status')?.getAttribute('role')).toBe('alert');
   });
   it('SHARE-READER renders headings, tables, fenced code and sanitized diagram output',async()=>{
     const f=render('# A report\n\n## Findings\n\n| A | B |\n|---|---|\n| yes | done |\n\n```js\nconst a = 1\n```\n\n```mermaid\ngraph TD; A-->B\n```');await f.done;
     expect(document.querySelector('#report')?.getAttribute('hidden')).toBeNull();expect(document.querySelectorAll('table')).toHaveLength(1);
     expect(document.querySelector('.table-scroll')?.getAttribute('tabindex')).toBe('0');expect(document.querySelector('code.language-js')?.textContent).toContain('const a');
     expect(document.querySelector('.diagram svg')).toBeTruthy();expect(document.querySelector('script,foreignObject')).toBeNull();
-    expect(f.request).toHaveBeenCalledWith(expect.stringContaining('gist.githubusercontent.com/alice/'),expect.objectContaining({credentials:'omit',cache:'no-store',referrerPolicy:'no-referrer'}));
+    expect(f.request).toHaveBeenCalledWith(expect.stringContaining('api.github.com/gists/'),expect.objectContaining({credentials:'omit',cache:'no-store',referrerPolicy:'no-referrer'}));
   });
   it('SHARE-SIDEBAR preserves the locator while navigating duplicate and Unicode headings',async()=>{
     await render('# Café\n\n## Same\n\n## Same\n\n## 日本語').done;

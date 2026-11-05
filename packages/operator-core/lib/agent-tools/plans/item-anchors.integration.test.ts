@@ -6,6 +6,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 import { harnessRoot } from '@papercusp/harness/paths';
 import { DEFAULT_WORKSPACE_ID } from '../../workspace-registry';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
+import { mockResolvedTyped } from '../../testing/typed-mock';
 import { parsePushSnapshot, type PushSnapshot } from '../../code-intelligence/push-snapshot';
 import { buildSymbolSnapshot, relativeSymbolModule } from '../../../../../scripts/lib/code-intel-symbol-snapshot.mjs';
 import * as anchorStore from '../../plan-items/anchor-store';
@@ -162,8 +163,13 @@ describe('plan item anchors through the real plan tools', () => {
   async function start() {
     // Keep the production start gate, input decision and anchor persistence.
     // These unrelated acceptance/governance decisions are outside this fixture.
-    const a = vi.spyOn(lifecycle, 'readAndEvaluateAcceptanceBarLifecycle').mockResolvedValue({ satisfied: true, codes: [] } as never);
-    const b = vi.spyOn(admission, 'checkPlanAdmission').mockResolvedValue({ admitted: true } as never);
+    const a = vi.spyOn(lifecycle, 'readAndEvaluateAcceptanceBarLifecycle');
+    mockResolvedTyped(a, {
+      phase: 'pre-start', applicable: true, satisfied: true, codes: [], blockingBars: [], contractCodes: [],
+      codeAttribution: [], staleGradingScorecardId: null, nextRepair: null, message: null,
+    });
+    const b = vi.spyOn(admission, 'checkPlanAdmission');
+    mockResolvedTyped(b, { admitted: true, skipped: 'no-admission-policy' });
     try { return await checkPlanStartable(SLUG, { workspaceId: WS, harnessSlug: HARNESS }); }
     finally { a.mockRestore(); b.mockRestore(); }
   }

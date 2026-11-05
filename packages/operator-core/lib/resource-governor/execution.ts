@@ -160,23 +160,19 @@ export async function withGovernedExecution<T>(
   if (signal?.aborted) throw abortReason();
 
   let execution: GovernedExecution | null = null;
-  let preBeginCancellation: Promise<boolean> | null = null;
-  let executionCancellation: Promise<boolean> | null = null;
-  const cancelForAbort = (): Promise<boolean> => {
+  let preBeginCancellation: Promise<void> | null = null;
+  const cancelForAbort = (): Promise<void> => {
     if (execution) {
-      if (!executionCancellation) {
-        let current!: Promise<boolean>;
-        current = execution.cancel(abortMessage()).finally(() => {
-          if (executionCancellation === current) executionCancellation = null;
-        });
-        executionCancellation = current;
-      }
-      return executionCancellation;
+      // A failed cancellation write must not replace the caller's abort or
+      // silently strand its lease. Reuse the observed, exact-action retry
+      // lifecycle; repeated abort checkpoints share its first settlement.
+      settleGovernedExecutionInBackground(execution, { kind: 'cancel', reason: abortMessage() });
+      return Promise.resolve();
     }
     if (!preBeginCancellation) {
       preBeginCancellation = deps.governor.cancel(request.idempotencyKey, abortMessage()).then(
-        (result) => result.cancelled,
-        () => false,
+        () => undefined,
+        () => undefined,
       );
     }
     return preBeginCancellation;

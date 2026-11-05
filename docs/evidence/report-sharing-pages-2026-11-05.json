@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "kind": "report-sharing-public-lifecycle",
+  "scope": "public-pages-only-not-operator-shipment",
+  "testRunId": 23423274,
+  "testPath": "apps/operator/e2e/report-sharing.spec.ts",
+  "command": "PAPERCUSP_REPORT_SHARING_LIVE=1 ../../node_modules/.bin/playwright test --config playwright.report-sharing.config.mts",
+  "cwd": "apps/operator",
+  "verifiedAt": "2026-11-05T22:26:31.332Z",
+  "url": "https://papercupai.github.io/papercusp-reports/?v=d621fba0958b9edee9cde2c35d55276d8d8c1c17299d03bddf398102fbc45a29#gist=papercupai%2Fb701861afcedd902e97a0703113e0664",
+  "viewerVersion": "d621fba0958b9edee9cde2c35d55276d8d8c1c17299d03bddf398102fbc45a29",
+  "accountId": 279242982,
+  "login": "papercupai",
+  "repoId": 1447561040,
+  "reportId": "sharing-fixture-c935c170-eb16-45b6-8ff6-ceb6e6b6a1a8",
+  "gistId": "b701861afcedd902e97a0703113e0664",
+  "operationId": "096b7a91-c5e2-485b-ac4b-d6f3e50bae54",
+  "snapshotSha256": "036956c8375b3112e2eb7718586cd001875736f2e55dfb9413c4877c28287fc7",
+  "providerState": "removed",
+  "network": [
+    { "phase": "before", "url": "https://api.github.com/gists/b701861afcedd902e97a0703113e0664?read=2910393708-3118279728-3152997293-1837683900", "status": 200 },
+    { "phase": "after", "url": "https://api.github.com/gists/b701861afcedd902e97a0703113e0664?read=3206786543-212440718-178460996-2357773981", "status": 404 }
+  ],
+  "verified": ["fresh anonymous contexts", "exact viewer meta version", "headings", "tables", "code", "Mermaid SVG", "no credential headers", "no localhost or operator request", "fresh reader refuses deleted Gist"],
+  "notVerified": ["exact deployed operator artifact", "native desktop Share/Copy/Stop journey", "independent acceptance grading"],
+  "sourceEvidence": "apps/operator/test-results/report-sharing/report-sharing-SHARE-SHIPM-61558-reader-fails-after-deletion-chromium/fixture-recovery-state.json"
+}

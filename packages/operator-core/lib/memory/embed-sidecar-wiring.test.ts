@@ -222,6 +222,39 @@ describe('resolveProcessSidecarUrl', () => {
 });
 
 describe('buildSidecarAwareEmbedder', () => {
+  it.each([undefined, 120_000])('retains the foreground bound and forwards an accepted inference budget: %s', async timeoutMs => {
+    vi.useFakeTimers();
+    let signal: AbortSignal | null | undefined;
+    const fetchMock = vi.fn((_input: string | URL | Request, init?: RequestInit) => {
+      signal = init?.signal;
+      return new Promise<Response>((_resolve, reject) => {
+        signal!.addEventListener('abort', () => reject(signal!.reason), { once: true });
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      const embed = await buildSidecarAwareEmbedder('gemma', 'query', {
+        resolveUrl: () => 'http://127.0.0.1:3384', ensure: async () => null,
+        probeHealth: async () => CURRENT_HEALTH,
+      }, { timeoutMs });
+      const pending = embed('  exact query text  ');
+      const rejected = expect(pending).rejects.toThrow('sidecar_required_unavailable');
+      await vi.advanceTimersByTimeAsync(15_000);
+      expect(signal!.aborted).toBe(timeoutMs === undefined);
+      if (timeoutMs !== undefined) await vi.advanceTimersByTimeAsync(105_000);
+      await rejected;
+      expect(fetchMock).toHaveBeenCalledOnce();
+      expect(JSON.parse(fetchMock.mock.calls[0]![1]!.body as string)).toEqual({
+        model: 'gemma', kind: 'query', texts: ['  exact query text  '],
+      });
+    } finally {
+      log.mockRestore();
+      vi.unstubAllGlobals();
+      vi.useRealTimers();
+    }
+  });
+
   it('embeds through the sidecar when a URL resolves', async () => {
     const stub = await startStub();
     closers.push(stub.close);

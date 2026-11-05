@@ -18,7 +18,7 @@ import { buildCandidateSnapshot } from '../../release/candidate-snapshot';
 import {
   resolveIntegrationRoot,
   integrationRootEvidence,
-  CHECKPOINT_SCOPE_RUNTIME_MAX_SEC,
+  CHECKPOINT_RUNNER_LEASE_MS,
   buildCommittedCheckpointToolingCommand,
 } from './release-actions';
 import { GREEN_CHECKPOINT_RESULT_MARKER } from '../../release/checkpoint-log-tags';
@@ -2269,25 +2269,9 @@ describe('green-checkpoint scope isolation (2026-07-01 bg-host OOM blast-radius)
     expect(argv.slice(-2)).toEqual(['/x/tsx', '/x/suite.ts']);
   });
 
-  // ── EI-22129539141207312: the systemd-enforced outer wall ──────────────────
-  // A crashed run sat resident 29h with zombie children and no terminal marker,
-  // having outlived its own 180m self-watchdog, because every bound on it lived in
-  // a process that could die (or wedge) before firing. systemd owns none of those
-  // failure modes, which is why the wall belongs on the scope.
-  it('a scoped checkpoint run carries a systemd RuntimeMaxSec wall, above the whole in-band chain', () => {
-    const argv = buildIsolatedScopeArgv(['/x/tsx', '/x/suite.ts'], 16, 'allow', CHECKPOINT_SCOPE_RUNTIME_MAX_SEC);
-    expect(argv).toContain(`--property=RuntimeMaxSec=${CHECKPOINT_SCOPE_RUNTIME_MAX_SEC}`);
-
-    // ORDERING IS THE SAFETY PROPERTY, not the presence of the flag. A wall at or
-    // below the in-band chain would kill healthy slow suites pre-verdict — the exact
-    // regression the 55m→115m timeout bump was made to stop — so assert the wall sits
-    // STRICTLY above every bound green-checkpoint.ts documents.
-    const SUITE_TIMEOUT_SEC = 115 * 60;
-    const SELF_WATCHDOG_SEC = 180 * 60;
-    const LOCK_STALE_SEC = 190 * 60; // CHECKPOINT_LOCK_STALE_MS
-    expect(CHECKPOINT_SCOPE_RUNTIME_MAX_SEC).toBeGreaterThan(SUITE_TIMEOUT_SEC);
-    expect(CHECKPOINT_SCOPE_RUNTIME_MAX_SEC).toBeGreaterThan(SELF_WATCHDOG_SEC);
-    expect(CHECKPOINT_SCOPE_RUNTIME_MAX_SEC).toBeGreaterThan(LOCK_STALE_SEC);
+  it('keeps an explicitly bounded generic scope available to other callers', () => {
+    const argv = buildIsolatedScopeArgv(['/x/tsx', '/x/suite.ts'], 16, 'allow', 3600);
+    expect(argv).toContain('--property=RuntimeMaxSec=3600');
   });
 
   it('the wall is OPT-IN: a caller with its own supervision is unchanged (no RuntimeMaxSec)', () => {
@@ -2770,7 +2754,9 @@ describe('green-checkpoint scope isolation (2026-07-01 bg-host OOM blast-radius)
     const [cmd, args] = spawnMock.mock.calls[0] as [string, string[]];
     expect(cmd).toBe('systemd-run');
     expect(args).toContain('--scope');
-    const reservedRunner = reserveStoredQualificationRunner.mock.calls[0]?.[1] as { runnerId?: string; unit?: string };
+    expect(args.some(arg => arg.startsWith('--property=RuntimeMaxSec='))).toBe(false);
+    const reservedRunner = reserveStoredQualificationRunner.mock.calls[0]?.[1] as { runnerId?: string; unit?: string; leaseDurationMs?: number };
+    expect(reservedRunner.leaseDurationMs).toBe(CHECKPOINT_RUNNER_LEASE_MS);
     expect(reservedRunner?.unit).toBe(`papercusp-checkpoint-${reservedRunner.runnerId}.scope`);
     expect(args).toContain(`--unit=${reservedRunner.unit}`);
     expect(args.some((a) => /^--property=MemoryMax=\d+G$/.test(a))).toBe(true);
@@ -3162,10 +3148,13 @@ describe('green-checkpoint scope isolation (2026-07-01 bg-host OOM blast-radius)
     );
   });
 
-  it.each(['scope', 'direct', 'fallback'])('transports the original caller cutoff through the scheduled %s launch', async route => {
+  it.each([
+    ['scope', 120_000], ['direct', 120_000], ['fallback', 120_000],
+    ['scope', -120_000], ['direct', -120_000], ['fallback', -120_000],
+  ] as const)('drops the inherited caller cutoff through the scheduled %s launch (offset %i)', async (route, offset) => {
     const key = 'PAPERCUSP_TASK_DEADLINE_EPOCH_MS';
     const saved = process.env[key];
-    const cutoff = Date.now() + 120_000;
+    const cutoff = Date.now() + offset;
     process.env[key] = String(cutoff);
     try {
       if (route === 'direct') process.env.PAPERCUSP_CHECKPOINT_SCOPE = '0';
@@ -3177,7 +3166,7 @@ describe('green-checkpoint scope isolation (2026-07-01 bg-host OOM blast-radius)
       expect(spawnMock).toHaveBeenCalledTimes(route === 'fallback' ? 2 : 1);
       for (const call of spawnMock.mock.calls) {
         const options = call[2] as { env?: Record<string, string> };
-        expect(options.env?.[key]).toBe(String(cutoff));
+        expect(options.env?.[key]).toBeUndefined();
       }
     } finally {
       if (saved === undefined) delete process.env[key]; else process.env[key] = saved;
@@ -3185,7 +3174,7 @@ describe('green-checkpoint scope isolation (2026-07-01 bg-host OOM blast-radius)
   });
 
   // WI-6554700010042457 (Avi #2574): the scheduled main-greening run has no wall clock of its
-  // own. With nothing inherited, no route may hand the child a deadline: a deadline env is what
+  // own. No route may hand the child a caller deadline: a deadline env is what
   // made affected-tests refuse `deadline-insufficient` (192/192 UNDETERMINED, zero files run)
   // after a slow early typecheck, and the paired SIGTERM discarded runs still making progress.
   it.each(['scope', 'direct', 'fallback'])('adds no run-level deadline through the scheduled %s launch', async route => {

@@ -36,6 +36,6 @@ void start(document, {
   // GitHub Pages cannot set arbitrary response headers. A meta CSP plus a
   // referrer meta cover this static document without adding a hosted service.
   const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><meta name="robots" content="noindex,nofollow"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src https://gist.githubusercontent.com; img-src 'none'; font-src 'none'; base-uri 'none'; form-action 'none'; object-src 'none'"><meta name="papercusp-viewer-version" content="${version}"><title>Shared report</title><link rel="stylesheet" href="./viewer.${version}.css"></head><body><header><b>Shared report</b><p id="status" role="status" aria-live="polite"></p></header><main><article id="report" hidden></article><aside><details open><summary>On this page</summary><nav id="outline" aria-label="On this page"></nav></details></aside></main><script src="./viewer.${version}.js" defer></script></body></html>`;
-  return { version, files: { 'index.html': html, ['viewer.'+version+'.js']: js, ['viewer.'+version+'.css']: css,
+  return { version, files: { 'index.html': html.replace('connect-src https://gist.githubusercontent.com','connect-src https://api.github.com'), ['viewer.'+version+'.js']: js, ['viewer.'+version+'.css']: css,
     'viewer.json': JSON.stringify({ kind: REPORT_VIEWER_MARKER, version }), '.nojekyll': '' } };
 }

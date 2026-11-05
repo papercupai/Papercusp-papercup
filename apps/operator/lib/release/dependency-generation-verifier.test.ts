@@ -43,7 +43,15 @@ function fixture(workspace = 'packages/cli') {
   } }));
   write(donor, workspace + '/package.json', '{"name":"probe","bin":{"probe":"dist/cli.cjs"},"scripts":{"build":"node build.cjs"}}');
   write(donor, workspace + '/src/cli.cjs', 'console.log("frozen-workspace");\n');
-  write(donor, workspace + '/build.cjs', 'require("node:fs").mkdirSync("dist");require("node:fs").copyFileSync("src/cli.cjs","dist/cli.cjs");');
+  write(donor, workspace + '/build.cjs', `
+const fs = require('node:fs'), path = require('node:path');
+if (process.env.NATIVE_BUILD_PARENT) {
+  const relative = path.relative(process.env.NATIVE_BUILD_PARENT, process.cwd());
+  if (relative.startsWith('..') || path.isAbsolute(relative)) throw new Error('native rebuild left the immutable store filesystem');
+  fs.writeFileSync(process.env.NATIVE_BUILD_RECEIPT, process.cwd());
+}
+fs.mkdirSync('dist');fs.copyFileSync('src/cli.cjs','dist/cli.cjs');
+`);
   // Any attempted canonical reader is an immediate test failure.
   write(donor, 'scripts/npm-install-safe.mjs', 'process.stderr.write("DONOR_READ_FORBIDDEN");process.exit(93);');
   write(donor, 'papercusp-desktop/package.json', '{"name":"desktop"}');
@@ -102,8 +110,13 @@ describe('D012 native generation closure', () => {
 
     const args = ['--integration', f.donor, '--generation-root', f.store,
       '--ensure-ref', ref, '--verifier-source', f.dest, '--retain-as', 'native-exact-test'];
-    const rebuilt = f.shell(f.generationScript, args);
+    const buildReceipt = join(f.root, 'native-build-root');
+    const rebuilt = f.shell(f.generationScript, args, {
+      NATIVE_BUILD_PARENT: f.store, NATIVE_BUILD_RECEIPT: buildReceipt,
+    });
     expect(rebuilt.status, rebuilt.stderr).toBe(0);
+    expect(readFileSync(buildReceipt, 'utf8')
+      .startsWith(join(f.store, '.papercusp/dependency-exact-ref/native-'))).toBe(true);
     expect(rebuilt.stdout).toContain('reused=false');
     const after = rebuilt.stdout.match(/\bpath=([^\n]+)$/m)![1]!;
     expect(after).not.toBe(before);
@@ -114,6 +127,7 @@ describe('D012 native generation closure', () => {
     expect(existsSync(join(f.dest, 'node_modules'))).toBe(false);
     expect(existsSync(join(f.dest, 'packages/cli/dist'))).toBe(false);
     expect(readdirSync(join(f.donor, '.papercusp/dependency-exact-ref'))).toEqual([]);
+    expect(readdirSync(join(f.store, '.papercusp/dependency-exact-ref'))).toEqual([]);
     expect(existsSync(join(f.store, '.leases')) ? readdirSync(join(f.store, '.leases')) : []).toEqual([]);
     const compatible = f.shell(f.snapshotHelper, ['preflight-generation', f.dest, f.dest]);
     expect(compatible.status, compatible.stderr).toBe(0);

@@ -11,8 +11,15 @@ import {
 } from './session-ingest-lag-watchdog';
 import { evaluateInteractiveUsageFreshness } from '../interactive-usage/freshness';
 import { mockOrgPgSql } from '../testing/mock-org-pg';
+import { mockResolvedTyped } from '../testing/typed-mock';
 
-const filesystem = vi.hoisted(() => ({ stat: vi.fn(), open: vi.fn() }));
+type OpenReadHandle = {
+  read: (buffer: Buffer, offset: number, length: number) => Promise<{ bytesRead: number }>;
+  close: () => Promise<void>;
+};
+type OpenReadMock = (path: string, flags?: string) => Promise<OpenReadHandle>;
+
+const filesystem = vi.hoisted(() => ({ stat: vi.fn(), open: vi.fn<OpenReadMock>() }));
 // Native ESM namespaces are immutable; mock this boundary before the producer
 // imports it rather than attempting to redefine node:fs exports at runtime.
 vi.mock('node:fs/promises', async importOriginal => ({
@@ -195,13 +202,13 @@ describe('exact affected-file production reader', () => {
     const sql = vi.fn(async (_strings: TemplateStringsArray, ..._values: unknown[]) => [row]);
     stubOrgSql(sql);
     const stat = filesystem.stat.mockResolvedValue({ isFile: () => true, size: 2e6 });
-    filesystem.open.mockResolvedValue({
+    mockResolvedTyped(filesystem.open, {
       read: async (buffer: Buffer, _offset: number, length: number) => {
         buffer.fill(0x0a, 0, length);
         return { bytesRead: length };
       },
       close: async () => {},
-    } as never);
+    });
     return { row, sql, stat, read: () => readIngestBacklogRecovery('codex', '/fixture/rollout', hour, now) };
   }
   it('reads the exact source/file without the candidate limit and distinguishes stale from caught up', async () => {

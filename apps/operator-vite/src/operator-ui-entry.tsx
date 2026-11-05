@@ -19,16 +19,15 @@
  * import lives next to the other boot-critical side effects rather than beside a
  * component that might get lazy-loaded.
  */
-import { Link } from '@tanstack/react-router';
+import Link from '@/lib/router-compat/link';
 import { toast } from 'sonner';
 import { configureOperatorUi } from '@papercusp/operator-ui';
 
 configureOperatorUi({
   Link: ({ to, className, children }) => (
-    // `to` is typed as a plain string at the seam (the portal has no TanStack
-    // route tree to check it against), so it is cast back into TanStack's typed
-    // route union here — the one place that knows the route table.
-    <Link to={to as never} className={className}>{children}</Link>
+    // The seam carries complete hrefs. Reuse the path/search/hash adapter so
+    // a report's sel parameter reaches the Reports reader intact.
+    <Link href={to} className={className}>{children}</Link>
   ),
   toast: {
     success: (message) => void toast.success(message),

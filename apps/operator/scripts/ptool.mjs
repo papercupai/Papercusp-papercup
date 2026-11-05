@@ -3229,22 +3229,41 @@ export async function callToolWithPressureRetry(
     maxAttempts = 30,
     retryDelayMs = 1_000,
     timeoutMs = PTOOL_CALL_TOOL_TIMEOUT_MS,
+    totalTimeoutMs = 0,
     sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
     schemaNeutral = false,
+    now = ptoolMonotonicNowMs,
   } = {},
 ) {
+  // An optional caller deadline covers SDK setup, requests and admission waits.
+  // Keep the existing per-attempt timeout contract when no total is supplied.
+  const deadlineAt = totalTimeoutMs > 0 ? now() + totalTimeoutMs : null;
   let lastError;
+  const requestOptions = () => {
+    const remainingMs = deadlineAt === null ? null : deadlineAt - now();
+    if (remainingMs !== null && remainingMs <= 0) {
+      throw Object.assign(new Error(
+        `ptool tools/call exceeded its ${totalTimeoutMs}ms total deadline`,
+        { cause: lastError },
+      ), { code: 'PTOOL_CALL_TOOL_TOTAL_TIMEOUT' });
+    }
+    const effectiveTimeoutMs = remainingMs === null
+      ? timeoutMs
+      : (timeoutMs > 0 ? Math.min(timeoutMs, remainingMs) : remainingMs);
+    return effectiveTimeoutMs > 0
+      ? { timeout: effectiveTimeoutMs, maxTotalTimeout: effectiveTimeoutMs }
+      : undefined;
+  };
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     try {
-      const requestOptions = timeoutMs > 0
-        ? { timeout: timeoutMs, maxTotalTimeout: timeoutMs }
-        : undefined;
+      requestOptions();
       const projected = Boolean(
         params?.arguments &&
         typeof params.arguments === 'object' &&
         !Array.isArray(params.arguments) &&
         Object.hasOwn(params.arguments, 'projection'),
       );
+      let result;
       if (projected || schemaNeutral) {
         // EI-20335329169958057: Client.callTool() performs a SECOND semantic
         // validation using the outputSchema cached from tools/list. A
@@ -3259,20 +3278,27 @@ export async function callToolWithPressureRetry(
         // CallToolResult schema: wire-shape validation remains, while the
         // incompatible cached full-output-schema check is skipped.
         const { CallToolResultSchema } = await importSdkModuleWithInstallAwareness('@modelcontextprotocol/sdk/types.js');
-        return await client.request(
+        result = await client.request(
           { method: 'tools/call', params },
           CallToolResultSchema,
-          requestOptions,
+          requestOptions(),
         );
+      } else {
+        result = await client.callTool(params, undefined, requestOptions());
       }
-      return await client.callTool(params, undefined, requestOptions);
+      // A blocked event loop can deliver a response before its overdue timer.
+      requestOptions();
+      return result;
     } catch (error) {
       lastError = error;
       if (!isLoopPressureShed(error) || attempt === maxAttempts) throw error;
-      await sleep(Math.min(
+      const delayMs = Math.min(
         retryAfterMsFromError(error) ?? retryDelayMs,
         PTOOL_CALL_TOOL_TIMEOUT_MS,
-      ));
+      );
+      // Preserve the refusal when its retry hint cannot fit the caller budget.
+      if (deadlineAt !== null && delayMs >= deadlineAt - now()) throw error;
+      await sleep(delayMs);
     }
   }
   throw lastError;

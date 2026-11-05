@@ -13,6 +13,11 @@ export function postgresReportShareStore(sql: postgres.Sql): ReportShareStore {
         if (!held) throw new Error('A sharing operation is already running. Retry shortly.');
         // Autocommit persists intent BEFORE GitHub, even if the process dies.
         return await work({
+          async list(workspaceId, reportId) {
+            const rows = await connection<{ share: ReportShare }[]>`SELECT share FROM harness_shared.report_library_shares
+              WHERE workspace_id=${workspaceId} AND report_id=${reportId}`;
+            return rows.map(row => row.share);
+          },
           async get(workspaceId, reportId, accountId) {
             const [found] = await connection<{ share: ReportShare }[]>`
               SELECT share FROM harness_shared.report_library_shares

@@ -197,6 +197,22 @@ function sourceBytes(root: string, sha: string, path: string): Buffer {
   }
   return execFileSync('git', ['-C', root, 'show', sha + ':' + path], { timeout: 20_000, maxBuffer: 16 * 1024 * 1024 });
 }
+type CensusCandidate = { path: string; ref: string; blobSha?: string; externalEvidence?: string };
+function censusRow(candidate: CensusCandidate, bytes: Buffer): Source {
+  const excluded = /(?:^|\/)(?:test|tests|docs)\/|\.(?:test|spec)\.[cm]?[jt]sx?$|\.(?:md|mdx)$/.test(candidate.path);
+  const auditedBlob = createHash(candidate.blobSha?.length === 64 ? 'sha256' : 'sha1')
+    .update(`blob ${bytes.length}\0`).update(bytes).digest('hex');
+  // Historical tests remain in the census with both identities. Only production
+  // files enter the accepted population and must retain their accepted blob.
+  if (candidate.blobSha && !excluded) requireProof(auditedBlob === candidate.blobSha,
+    'recorded accepted blob differs from the completion audit: ' + candidate.path);
+  return { path: candidate.path, sha256: digest(bytes),
+    refs: [candidate.ref, 'audit-blob:' + auditedBlob,
+      ...(candidate.blobSha ? ['recorded-blob:' + candidate.blobSha] : [])],
+    classification: excluded ? 'excluded' : 'production',
+    ...(excluded ? { reason: 'Maintained test or documentation; not an executing production binding. '
+      + 'The digest identifies the audited copy; any historical recorded blob is retained separately in refs.' } : {}) };
+}
 function collectCensus(fixture: Fixture, started: string): Census {
   const proposed = tool('plans:audit', { slug: plan, harness: 'papercusp', phase: 'completion', dryRun: true, proposeCitations: true });
   requireProof(proposed.truncatedByLimit === false && proposed.unresolved?.length === 0, 'canonical citation producer is incomplete');
@@ -221,7 +237,7 @@ function collectCensus(fixture: Fixture, started: string): Census {
       AND created_at >= ${literal(parentItem.createdAt)}::timestamptz
       AND (summary LIKE '✎%' OR lower(tool_name) LIKE '%apply_patch') ORDER BY id LIMIT 10001) x`);
   requireProof(native.length < 10001, 'native edit census is truncated');
-  const candidates: Array<{ path: string; ref: string; blobSha?: string; externalEvidence?: string }> = [];
+  const candidates: CensusCandidate[] = [];
   for (const item of proposed.proposals ?? []) for (const citation of item.citations ?? [])
     candidates.push({ path: citation.path, blobSha: citation.blobSha,
       ref: 'proposal:' + item.itemId + ':' + (citation.workItemIds ?? []).join(',') });
@@ -248,14 +264,8 @@ function collectCensus(fixture: Fixture, started: string): Census {
       refs: [candidate.ref], classification: 'excluded' as const,
       reason: 'Native edit outside the harness repository (for example an isolated mutation fixture). The digest identifies its retained edit evidence, not an accepted production file.' };
     requireProof(normalized(candidate.path), 'native edit is outside the audited repository: ' + candidate.path);
-    const excluded = /(?:^|\/)(?:test|tests|docs)\/|\.(?:test|spec)\.[cm]?[jt]sx?$|\.(?:md|mdx)$/.test(candidate.path);
     const bytes = sourceBytes(fixture.root, audit.audited_sha, candidate.path);
-    if (candidate.blobSha) requireProof(createHash(candidate.blobSha.length === 64 ? 'sha256' : 'sha1')
-      .update(`blob ${bytes.length}\0`).update(bytes).digest('hex') === candidate.blobSha,
-    'recorded accepted blob differs from the completion audit: ' + candidate.path);
-    return { path: candidate.path, sha256: digest(bytes),
-      refs: [candidate.ref], classification: excluded ? 'excluded' as const : 'production' as const,
-      ...(excluded ? { reason: 'Maintained test or documentation; not an executing production binding.' } : {}) };
+    return censusRow(candidate, bytes);
   });
   const producerRefs = query<string[]>(`SELECT COALESCE(json_agg('tool-invocation:'||id::text ORDER BY id),'[]')
     FROM harness_shared.tool_invocations WHERE workspace_id='papercusp-workspace'
@@ -574,5 +584,20 @@ describe('EGM exact released artifact acceptance', () => {
     rejects(proof => { proof.census.rows.push({ ...proof.census.rows[0]!, classification: 'excluded' }); }, /unclassified census/);
     rejects(proof => { proof.census.rows.push({ ...proof.census.rows[0]!, sha256: 'd'.repeat(64) }); }, /conflicting path\/hash/);
     rejects(proof => { proof.census.rows = proof.census.rows.filter(row => row.path !== baseline[0]); }, /six-path baseline/);
+  });
+  it('retains changed excluded fixture identities while refusing changed accepted production blobs', () => {
+    const bytes = Buffer.from('current audited fixture');
+    const historicalBlob = 'e'.repeat(40);
+    const candidate = { path: 'packages/operator-core/lib/agent-tools/plans/item-anchors.integration.test.ts',
+      ref: 'completion:source-item', blobSha: historicalBlob };
+    const row = censusRow(candidate, bytes);
+    expect(row).toMatchObject({ classification: 'excluded', sha256: digest(bytes) });
+    expect(row.reason).toContain('audited copy');
+    expect(row.refs).toContain('recorded-blob:' + historicalBlob);
+    expect(row.refs).toContain('audit-blob:' + createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex'));
+    const proof = control();
+    proof.census.rows.push(row);
+    expect(population(proof.census)).toEqual(proof.frozen);
+    expect(() => censusRow({ ...candidate, path: baseline[0]! }, bytes)).toThrow(/recorded accepted blob differs/);
   });
 });

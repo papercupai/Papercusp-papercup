@@ -1647,6 +1647,11 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       return report ? [toReportFull(report)] : [];
     },
   },
+  'reports.sharing': {
+    backingTables: ['harness_shared.report_library_shares'],
+    argsSchema: z.object({ reportId: z.string().min(1).max(400) }).strict(),
+    resolve: async (args) => (await import('../endpoint-route/routes/reports/sharing')).reportSharingStatus((args as {reportId:string}).reportId),
+  },
   'goals.detail': {
     backingTables: [
       'harness_shared.goals',

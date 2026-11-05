@@ -95,16 +95,16 @@ describe('qualification production execution', () => {
     }
   });
 
-  it('honours only a deadline a caller transports, and preserves it', () => {
+  it('ignores future and expired request deadlines for the detached qualification', () => {
     const started = 1_000_000;
     const inherited = started + 400_000;
     const resolved = checkpointQualificationBudgetFromEnv(started + 50_000,
       { [TASK_DEADLINE_EPOCH_MS_ENV]: String(inherited) });
-    expect(resolved).toMatchObject({ status: 'ready', callerDeadlineEpochMs: inherited,
-      cleanupDeadlineEpochMs: inherited, executionCutoffEpochMs: inherited - 135_000,
-      yieldDeadlineEpochMs: inherited - 120_000 });
-    expect(checkpointQualificationBudgetFromEnv(inherited - 10_000,
-      { [TASK_DEADLINE_EPOCH_MS_ENV]: String(inherited) })).toMatchObject({ status: 'refused' });
+    expect(resolved).toMatchObject({ status: 'ready', callerDeadlineEpochMs: null,
+      cleanupDeadlineEpochMs: started + 50_000 + QUALIFICATION_UNBOUNDED_SPAN_MS });
+    expect(checkpointQualificationBudgetFromEnv(inherited + 10_000,
+      { [TASK_DEADLINE_EPOCH_MS_ENV]: String(inherited) }))
+      .toMatchObject({ status: 'ready', callerDeadlineEpochMs: null });
   });
 
   it('has no run-level wall clock without a transported deadline (WI-6554700010042457)', () => {

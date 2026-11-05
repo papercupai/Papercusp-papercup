@@ -3655,11 +3655,26 @@ describe('work-item admission promoter (real Postgres)', () => {
 
       expect(result.autoPromoted).toEqual(['WI-home']);
       expect(result.heldByScope).toEqual({ email: 1, [platformHome]: 1 });
-      const [run] = await db.sql<Array<{ misHomed: unknown; held: unknown }>>`
-        SELECT detail->'misHomedByScope' AS "misHomed", detail->'heldByScope' AS held
+      const [run] = await db.sql<Array<{
+        misHomed: unknown;
+        held: unknown;
+        promoted: number;
+        heldCount: number;
+        outcome: { successful: number; unchanged: number };
+      }>>`
+        SELECT detail->'misHomedByScope' AS "misHomed", detail->'heldByScope' AS held,
+               promoted, held AS "heldCount", detail->'outcome' AS outcome
           FROM harness_shared.admission_runs WHERE id = 'fail-open-mis-homed'`;
       // Control: `email` is held too, but it is another pot's harness, so it is NOT mis-homed.
-      expect(run).toEqual({ misHomed: { [platformHome]: 1 }, held: { email: 1, [platformHome]: 1 } });
+      expect(run).toMatchObject({
+        misHomed: { [platformHome]: 1 },
+        held: { email: 1, [platformHome]: 1 },
+        promoted: 1,
+        heldCount: 2,
+        outcome: { successful: 1, unchanged: 2 },
+      });
+      expect(run?.promoted).toBe(run?.outcome.successful);
+      expect(run?.heldCount).toBe(run?.outcome.unchanged);
       const notes = Object.fromEntries(h.scopeDecisions.map((d) => [d.harness ?? '', d.note ?? '']));
       expect(notes[platformHome]).toMatch(/^MIS-HOMED: 1 .*work_items:rehome/);
       expect(notes.email).toMatch(/deliberate hold/);

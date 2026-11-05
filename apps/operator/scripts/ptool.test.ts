@@ -2230,6 +2230,87 @@ describe('ptool tools/call failure diagnostics', () => {
     expect(callTool).toHaveBeenCalledTimes(2);
     expect(sleep).toHaveBeenCalledWith(2_000);
   });
+
+  it('deducts request time and admission backoff from one monotonic total budget', async () => {
+    let elapsed = 0;
+    const shed = new Error('loop_pressure_critical');
+    const result = { content: [] };
+    const callTool = vi.fn()
+      .mockImplementationOnce(async () => { elapsed += 100; throw shed; })
+      .mockImplementationOnce(async () => { elapsed += 50; return result; });
+    const sleep = vi.fn(async (ms: number) => { elapsed += ms; });
+
+    await expect(callToolWithPressureRetry({ callTool }, { name: 'sessions:digest' }, {
+      maxAttempts: 3, timeoutMs: 10_000, totalTimeoutMs: 1_000,
+      retryDelayMs: 200, sleep, now: () => elapsed,
+    })).resolves.toBe(result);
+    expect(callTool.mock.calls.map(call => call[2])).toEqual([
+      { timeout: 1_000, maxTotalTimeout: 1_000 },
+      { timeout: 700, maxTotalTimeout: 700 },
+    ]);
+    expect(sleep).toHaveBeenCalledExactlyOnceWith(200);
+    expect(elapsed).toBe(350);
+  });
+
+  it('preserves the final admission refusal without sleeping past the total deadline', async () => {
+    let elapsed = 0;
+    const shed = new Error('loop_pressure_critical');
+    const callTool = vi.fn(async () => { elapsed += 600; throw shed; });
+    const sleep = vi.fn(async () => {});
+
+    await expect(callToolWithPressureRetry({ callTool }, {}, {
+      maxAttempts: 30, totalTimeoutMs: 1_000, sleep, now: () => elapsed,
+    })).rejects.toBe(shed);
+    expect(callTool).toHaveBeenCalledTimes(1);
+    expect(sleep).not.toHaveBeenCalled();
+  });
+
+  it('does not dispatch another request when an admission wait overshoots the deadline', async () => {
+    let elapsed = 0;
+    const shed = new Error('loop_pressure_critical');
+    const callTool = vi.fn().mockRejectedValue(shed);
+    const sleep = vi.fn(async () => { elapsed = 1_001; });
+
+    await expect(callToolWithPressureRetry({ callTool }, {}, {
+      maxAttempts: 3, totalTimeoutMs: 1_000, retryDelayMs: 100, sleep, now: () => elapsed,
+    })).rejects.toMatchObject({ code: 'PTOOL_CALL_TOOL_TOTAL_TIMEOUT', cause: shed });
+    expect(callTool).toHaveBeenCalledTimes(1);
+    expect(sleep).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects a late response and bounds a request even when its per-attempt timeout is disabled', async () => {
+    let elapsed = 0;
+    const callTool = vi.fn(async () => { elapsed = 101; return { content: [] }; });
+
+    await expect(callToolWithPressureRetry({ callTool }, {}, {
+      timeoutMs: 0, totalTimeoutMs: 100, now: () => elapsed,
+    })).rejects.toMatchObject({ code: 'PTOOL_CALL_TOOL_TOTAL_TIMEOUT' });
+    expect(callTool).toHaveBeenCalledExactlyOnceWith({}, undefined, {
+      timeout: 100, maxTotalTimeout: 100,
+    });
+  });
+
+  it('does not retry a tool failure within the total budget', async () => {
+    const failure = new Error('tool failed after dispatch');
+    const callTool = vi.fn().mockRejectedValue(failure);
+    const sleep = vi.fn(async () => {});
+
+    await expect(callToolWithPressureRetry({ callTool }, {}, {
+      totalTimeoutMs: 100, sleep,
+    })).rejects.toBe(failure);
+    expect(callTool).toHaveBeenCalledTimes(1);
+    expect(sleep).not.toHaveBeenCalled();
+  });
+
+  it('retains the per-attempt timeout limit when the total budget is larger', async () => {
+    const callTool = vi.fn().mockResolvedValue({ content: [] });
+    await callToolWithPressureRetry({ callTool }, {}, {
+      timeoutMs: 20, totalTimeoutMs: 100, now: () => 0,
+    });
+    expect(callTool).toHaveBeenCalledExactlyOnceWith({}, undefined, {
+      timeout: 20, maxTotalTimeout: 20,
+    });
+  });
 });
 
 describe('ptool catalog-independent scripted dispatch', () => {

@@ -4130,8 +4130,12 @@ dependency_generation_ensure_verifier_ref() (
       dependency_generation_log 'FATAL: --verifier-source must precede dependency materialization'
       return 74
     }
-    parent="$(dependency_generation_exact_scratch_parent "$integration_root")"
+    # Native rebuilds mutate independent copies, unlike the install-equivalent
+    # hardlink path. Keep those copies beside their immutable donor so the
+    # existing strict CoW materializer can avoid two cross-filesystem copies.
+    parent="$(dependency_generation_exact_scratch_parent "$generation_root")"
     mkdir -p "$parent" || return 1
+    dependency_generation_sweep_exact_scratch "$parent"
     scratch="$(mktemp -d "$parent/native-${ref:0:16}.XXXXXX")" || return 1
     DEPENDENCY_GENERATION_EXACT_SCRATCH="$scratch"
     dependency_generation_ensure_store_root "$scratch" || return $?

@@ -135,22 +135,35 @@ export async function toolGuardText(
   observePlanTiming?: PlanExecutionTimingObserver,
   observeIdentityTiming?: IdentityRuleReadTimingObserver,
 ): Promise<string> {
-  const planStartedAt = performance.now();
-  let refused;
-  try {
-    refused = await checkPlanExecutionGuard({ ownerId: input.ownerId, workspaceId: input.workspaceId,
-      toolName: input.call.tool, args: input.call.input, observeTiming: observePlanTiming });
-  } finally {
-    recordTiming?.('plan', performance.now() - planStartedAt);
-  }
+  // These authoritative reads are independent. Serializing them adds their
+  // latencies against the native hook's fixed wall. Keep plan refusal first,
+  // without making it wait for a stalled identity read or caching either vote.
+  let planRefused = false;
+  const plan = (async () => {
+    const startedAt = performance.now();
+    try {
+      const refusal = await checkPlanExecutionGuard({ ownerId: input.ownerId, workspaceId: input.workspaceId,
+        toolName: input.call.tool, args: input.call.input, observeTiming: observePlanTiming });
+      planRefused = Boolean(refusal);
+      return refusal;
+    } finally { recordTiming?.('plan', performance.now() - startedAt); }
+  })();
+  // Settle the speculative read immediately, including rejection, so an early
+  // plan refusal cannot leave an unhandled identity failure behind.
+  const identityRead = Promise.allSettled([Promise.resolve().then(async () => {
+    // An already available refusal needs no speculative identity read.
+    if (planRefused) return '';
+    const startedAt = performance.now();
+    try {
+      return guardRefusalText(await evaluateToolGuard(input.call,
+        () => readWornRules(input.ownerId, input.workspaceId, observeIdentityTiming)));
+    } finally { recordTiming?.('identity', performance.now() - startedAt); }
+  })]);
+  const refused = await plan;
   if (refused) return `${refused.code}: ${refused.reason}`;
-  const identityStartedAt = performance.now();
-  try {
-    return guardRefusalText(await evaluateToolGuard(input.call,
-      () => readWornRules(input.ownerId, input.workspaceId, observeIdentityTiming)));
-  } finally {
-    recordTiming?.('identity', performance.now() - identityStartedAt);
-  }
+  const [identity] = await identityRead;
+  if (identity.status === 'rejected') throw identity.reason;
+  return identity.value;
 }
 
 /**

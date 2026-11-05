@@ -3,6 +3,7 @@
 import {test,expect} from '@playwright/test';
 import {createServer,type Server} from 'node:http';
 import {randomUUID} from 'node:crypto';
+import {writeFile} from 'node:fs/promises';
 import {buildReportViewer} from '@papercusp/operator-core/lib/report-sharing-viewer';
 import {changeReportSharing,reportSharingGithub,type ReportShareStore,type ReportShare} from '@papercusp/operator-core/lib/report-sharing';
 import type {ReportRecord} from '@papercusp/operator-core/lib/report-library';
@@ -26,7 +27,7 @@ test.afterAll(async()=>{await new Promise<void>((resolve,reject)=>server?.close(
 test('SHARE-READER actual bundled reader renders diagrams, tables and mobile outline without executing report markup',async({page},info)=>{
   const errors:string[]=[];page.on('pageerror',error=>errors.push(error.message));
   let tracker=0;await page.route('https://tracker.invalid/**',async route=>{tracker++;await route.abort();});
-  await page.route('https://gist.githubusercontent.com/**',route=>route.fulfill({body:markdown+'\n<script>globalThis.canary=1</script><img src="https://tracker.invalid/pixel" onerror="globalThis.canary=2"><iframe srcdoc="bad"></iframe>\n\n[unsafe](javascript:globalThis.canary=3)',contentType:'text/plain',headers:{'access-control-allow-origin':'*'}}));
+  await page.route('https://api.github.com/gists/**',route=>route.fulfill({body:JSON.stringify({id:'a'.repeat(32),public:false,owner:{login:'alice'},files:{'report.md':{content:markdown+'\n<script>globalThis.canary=1</script><img src="https://tracker.invalid/pixel" onerror="globalThis.canary=2"><iframe srcdoc="bad"></iframe>\n\n[unsafe](javascript:globalThis.canary=3)'}}}),contentType:'application/json',headers:{'access-control-allow-origin':'*'}}));
   await page.goto(origin+'/#'+new URLSearchParams({gist}));
   await expect(page.locator('#report')).toBeVisible();await expect(page.locator('.diagram svg')).toBeVisible();
   await expect(page.getByRole('table')).toContainText('browser');await expect(page.locator('code.language-js')).toContainText('const result');
@@ -44,30 +45,37 @@ if(process.env.PAPERCUSP_REPORT_SHARING_LIVE==='1') {
   test('SHARE-SHIPMENT actual secret Gist renders anonymously on Pages and a fresh reader fails after deletion',async({browser},info)=>{
     const github=await reportSharingGithub();const user=await github.user();
     const rows=new Map<string,ReportShare>();
-    const store:ReportShareStore={async locked(_key,work){return work({get:async(w,r,a)=>rows.get(JSON.stringify([w,r,a]))??null,
+    const store:ReportShareStore={async locked(_key,work){return work({list:async(w,r)=>[...rows.values()].filter(row=>row.workspaceId===w&&row.reportId===r),get:async(w,r,a)=>rows.get(JSON.stringify([w,r,a]))??null,
       put:async share=>{rows.set(JSON.stringify([share.workspaceId,share.reportId,share.accountId]),share);}});}};
     const now=new Date().toISOString();const reportId='sharing-fixture-'+randomUUID();
     const report:ReportRecord={workspaceId:'harmless-acceptance',reportId,title:'Harmless sharing acceptance',summary:'No private data',bodyMd:markdown,bodySha256:'',goalOwnerReport:null,kind:'other',subject:{kind:'none',ref:null,label:null},origin:{harnessSlug:null,authorOwnerId:null,authorSessionRef:null},visibility:'owner',supersedesReportId:null,lineageId:reportId,source:'owner',tags:[],publishedAt:now,updatedAt:now,retiredAt:null};
-    const input={report,accountId:user.id};let url='';
+    const input={report,accountId:user.id};let url='';const network:unknown[]=[];const version=(await buildReportViewer()).version;
     try {
       await expect.poll(async()=>{
         const status=await changeReportSharing({...input,action:'share'},{github,store});url=status.url||'';return status.phase;
       },{timeout:180000,intervals:[5000,10000]}).toBe('ready');
       const context=await browser.newContext({storageState:{cookies:[],origins:[]}});const page=await context.newPage();
       const requests:string[]=[];page.on('request',request=>{requests.push(request.url());expect(request.headers().authorization).toBeUndefined();});
-      await page.goto(url);await expect(page.locator('#report')).toBeVisible();await expect(page.locator('.diagram svg')).toBeVisible();
+      page.on('response',response=>{if(response.url().includes('github.com'))network.push({phase:'before',url:response.url(),status:response.status(),cache:response.headers()['x-cache']});});
+      await page.goto(url);await expect(page.locator('meta[name=papercusp-viewer-version]')).toHaveAttribute('content',version);
+      await expect(page.locator('#report')).toBeVisible();await expect(page.locator('.diagram svg')).toBeVisible();
       await expect(page.getByRole('table')).toContainText('browser');
       await info.attach('actual-pages-reader',{body:await page.screenshot({fullPage:true}),contentType:'image/png'});
       expect(requests.some(request=>/https?:\/\/(?:localhost|127\.0\.0\.1)/.test(request))).toBe(false);
       await context.close();
       await changeReportSharing({...input,action:'stop'},{github,store});
       const fresh=await browser.newContext({storageState:{cookies:[],origins:[]}});const removed=await fresh.newPage();
-      await removed.goto(url);await expect(removed.getByRole('alert')).toContainText(/unavailable|sharing has stopped/);
+      removed.on('response',response=>{if(response.url().includes('github.com'))network.push({phase:'after',url:response.url(),status:response.status(),cache:response.headers()['x-cache']});});
+      await removed.goto(url);await expect(removed.locator('meta[name=papercusp-viewer-version]')).toHaveAttribute('content',version);
+      await expect(removed.getByRole('alert')).toContainText(/unavailable|sharing has stopped/);
       await expect(removed.locator('#report')).toBeHidden();await fresh.close();
       await info.attach('actual-pages-lifecycle',{body:JSON.stringify({url,accountId:user.id,login:user.login,reportId,viewerVersion:(await buildReportViewer()).version,removed:true,verifiedAt:new Date().toISOString()}),contentType:'application/json'});
     } finally {
       try {await changeReportSharing({...input,action:'stop'},{github,store});}
-      finally {await info.attach('fixture-recovery-state',{body:JSON.stringify({url,accountId:user.id,login:user.login,reportId,shares:[...rows.values()],at:new Date().toISOString()}),contentType:'application/json'});}
+      finally {
+        const path=info.outputPath('fixture-recovery-state.json');await writeFile(path,JSON.stringify({url,version,network,accountId:user.id,login:user.login,reportId,shares:[...rows.values()],at:new Date().toISOString()},null,2));
+        await info.attach('fixture-recovery-state',{path,contentType:'application/json'});
+      }
     }
   });
 }

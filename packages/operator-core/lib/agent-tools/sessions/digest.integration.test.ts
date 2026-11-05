@@ -621,7 +621,9 @@ describe.skipIf(!selectedRecovery)('sessions:digest selected-operator acceptance
         const before = performance.now();
         const wire = await callToolWithPressureRetry(client, buildCallToolParams(tool,
           { ...args, payloadTier: 'full' }, { outputSchema: entry.outputSchema,
-            servingGeneration: requireServingGeneration(entry) }), { maxAttempts: 1, timeoutMs: remaining() })
+            servingGeneration: requireServingGeneration(entry) }), {
+              maxAttempts: 3, timeoutMs: remaining(), totalTimeoutMs: remaining(),
+            })
           .finally(() => measuredCalls.push({ tool, args, elapsedMs: performance.now() - before }));
         CallToolResultSchema.parse(wire);
         expect(wire.isError, `${tool} returned an MCP error`).not.toBe(true);

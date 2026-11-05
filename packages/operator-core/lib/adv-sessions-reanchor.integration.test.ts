@@ -257,6 +257,22 @@ describe('grant-bearing role receipt and activation (canonical PostgreSQL client
     expect(unchanged).toEqual({ session_id: FRESH_ID, role: 'worker' });
   });
 
+  it.each(['exact', 'owner'] as const)('retains the runtime provenance directory across launch refreshes: %s', async target => {
+    const id = await seedAdv({ coordOwnerId: OWNER });
+    const launch = { v: 1, agent: 'codex', workspaceId: WS,
+      turnProvenanceDir: '/trusted/runtime/turn-provenance' };
+    expect(await recordSuLaunchSpec(id, OWNER, launch)).toBe(true);
+    for (const next of [
+      { v: 1, agent: 'codex', workspaceId: WS, model: 'refreshed' },
+      { ...launch, model: 'refreshed', turnProvenanceDir: '/other/runtime/turn-provenance' },
+    ]) {
+      expect(await recordSuLaunchSpec(target === 'exact' ? id : null, OWNER, next)).toBe(true);
+      expect(await readSuLaunchSpecByOwner(OWNER)).toMatchObject({
+        model: 'refreshed', turnProvenanceDir: launch.turnProvenanceDir,
+      });
+    }
+  });
+
   it('persists a readable artifact before recording the launch activation', async () => {
     const id = await seedAdv({ coordOwnerId: OWNER });
     const revision = { specificationRevision: 'a'.repeat(64), stateRevision: 'b'.repeat(64) };

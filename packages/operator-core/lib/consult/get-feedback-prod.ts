@@ -114,6 +114,7 @@ export async function getFeedbackProd(
   const expertRouting = bindConsultExpertRoutingSettings(routingSettings);
   let embeddingAcquisition: QueryEmbedderAcquisition | undefined;
   const resolved = await buildQueryEmbedderResolved({ acquireBudgetMs: interactiveEmbedAcquireBudgetMs(),
+    embeddingDeadlineMs: options.acceptedRequest?.leaseUntilMs,
     onAcquisition: outcome => { embeddingAcquisition = outcome; } });
   const embed = resolved?.embed ?? null;
   const embeddingProfile = resolved

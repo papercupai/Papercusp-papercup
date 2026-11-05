@@ -227,9 +227,32 @@ describe('canaryDispatchContext', () => {
   });
 
   it('a 1 ms timeout alone does not force a timeout exit for a late-completing read', async () => {
-    const t = { ...tool(lateRead()), timeoutSec: 0.001 };
-    const r = await dispatchProjectedTool(t, 'graph:query', {}, ctxFor(t.capabilities), { readQuotaState: undefined, recordInvocation: undefined });
-    expect(r.ok).toBe(true);
+    // Hold the dispatcher timer until the handler has started. With a real 1 ms
+    // wall timer, async capability/dispatch setup can consume the whole budget
+    // before the handler runs, so the test intermittently measures startup time
+    // instead of late-read completion after abort.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      let markStarted!: () => void;
+      let releaseRead!: () => void;
+      const started = new Promise<void>(resolve => { markStarted = resolve; });
+      const blockedRead = new Promise<void>(resolve => { releaseRead = resolve; });
+      const fn = vi.fn(async () => {
+        markStarted();
+        await blockedRead;
+        return { content: [{ type: 'text' as const, text: 'late' }] };
+      });
+      const t = { ...tool(fn), timeoutSec: 0.001 };
+      const pending = dispatchProjectedTool(t, 'graph:query', {}, ctxFor(t.capabilities), { readQuotaState: undefined, recordInvocation: undefined });
+      await started;
+      await vi.advanceTimersByTimeAsync(1);
+      releaseRead();
+      const r = await pending;
+      expect(r.ok).toBe(true);
+      expect(fn).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('canaryTool forces the real timeout exit for a late-completing read', async () => {

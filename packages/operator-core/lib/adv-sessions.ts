@@ -13,6 +13,7 @@
  */
 
 import { createHash } from 'node:crypto';
+import { isAbsolute } from 'node:path';
 import { createDedicatedOrgPg, DbCallDeadlineError, getOrgPg, withWorkspace } from '@papercusp/db-org';
 import type { Sql, TransactionSql } from 'postgres';
 import { boundedOrgTxn, OrgTxnTimeoutError } from './pg-bounded-txn';
@@ -2371,6 +2372,10 @@ async function recordSuLaunchSpecInTransaction(
     delete (next as Record<string, unknown>).originalMemberLaunch;
     if (currentRecord?.originalMemberLaunch !== undefined)
       (next as Record<string, unknown>).originalMemberLaunch = currentRecord.originalMemberLaunch;
+    // The bootstrap receipt binds this native incarnation to its runtime's
+    // provenance ledger. A persona refresh cannot drop or redirect that pin.
+    if (typeof currentRecord?.turnProvenanceDir === 'string' && isAbsolute(currentRecord.turnProvenanceDir))
+      (next as Record<string, unknown>).turnProvenanceDir = currentRecord.turnProvenanceDir;
   }
   const retained = retainSuLaunchIdentityHistory(previous, next ?? row.launch_spec, row.applied);
   if (launchSpec === undefined && JSON.stringify(retained) === JSON.stringify(row.launch_spec)) return true;

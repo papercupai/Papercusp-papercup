@@ -1,5 +1,5 @@
 import { createHash, generateKeyPairSync, sign } from 'node:crypto';
-import { spawnSync } from 'node:child_process';
+import { spawnSync, type SpawnSyncOptionsWithStringEncoding } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -7,11 +7,17 @@ import { expect, it } from 'vitest';
 import { encodeTauriUpdateAuthorization, type TauriUpdateAuthorization } from '../../../../libs/generic/tauri-release-kit/src/signature.mjs';
 
 const archiveDependencies = ['fs2="0.4"', 'tar="=0.4.46"', 'flate2="=1.1.9"',
-  'plist={version="=1.10.0",features=["enable_unstable_features_that_may_break_with_minor_version_bumps"]}'];
+  'plist={version="=1.10.0",features=["enable_unstable_features_that_may_break_with_minor_version_bumps"]}',
+  "[target.'cfg(target_os = \"macos\")'.dependencies]", 'security-framework="=3.7.0"'];
 
 function nativeCommand(command: string, args: string[], options: { timeout: number; env?: NodeJS.ProcessEnv }) {
   const grouped = process.platform !== 'win32';
-  const result = spawnSync(command, args, { ...options, encoding: 'utf8', detached: grouped, killSignal: 'SIGKILL' });
+  // Node's synchronous runner accepts the libuv detached switch, although the
+  // synchronous option type omits it. The descendant-lifetime test covers it.
+  const launch: SpawnSyncOptionsWithStringEncoding & { detached: boolean } = {
+    ...options, encoding: 'utf8', detached: grouped, killSignal: 'SIGKILL',
+  };
+  const result = spawnSync(command, args, launch);
   // Cargo's compiler children can outlive a timed-out Cargo process. Stop the
   // complete group before fixture cleanup, preserving the original diagnostic.
   if (grouped && result.error && result.pid) {

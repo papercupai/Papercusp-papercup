@@ -17,6 +17,7 @@ import { PgReadQueryTimeoutError } from '../../pg-read-query';
 import * as pgReader from '../../pg-read-query';
 import type { SpecTestAdequacyRerunRecipe } from '../../harness/improvements/observation-types';
 import { currentStageDiagnosticContext, STAGE_STALL_LOG_MS } from '../../sync/hyperbee/stage-stall-log';
+import { mockResolvedTyped } from '../../testing/typed-mock';
 
 const { doorConstantsMock, gradingAuditRubricMock, recipeHeaderMock, buildInfoMock } = vi.hoisted(() => ({
   doorConstantsMock: vi.fn(),
@@ -186,10 +187,10 @@ describe('scorecards:get evidence-first projection', () => {
 
   it('recomputes the selected card retained measurement through the judge-readable tool', async () => {
     const reading = await runInstrument('host:df-max-used-pct', { exec: async () => 'Use%\n 96%\n', now: () => 1_700_000_000_000 });
-    readScorecardEvidenceM.mockResolvedValue({ kind: 'found', scorecard: { ...scorecard, criteria: [{
+    mockResolvedTyped(readScorecardEvidenceM, { kind: 'found', scorecard: { ...scorecard, criteria: [{
       key: 'disk', rating: 'fail', evidence: 'original measurement', ratedFrom: 'ledger',
       ledgerResult: { testRunId: 123, value: reading.value, unit: reading.unit, provenance: reading.provenance },
-    }] } } as never);
+    }] } });
     const result = await getTool.handler({ issueId: scorecard.issueId, criterionKey: 'disk', replay: 'retained-measurement' }, makeDispatchContext());
     if (!('data' in result)) throw new Error('Expected a structured replay response');
     expect(result.data).toMatchObject({ ok: true, replay: { issueId: scorecard.issueId, criterionKey: 'disk',
@@ -206,10 +207,10 @@ describe('scorecards:get evidence-first projection', () => {
   });
 
   it('preserves historical gaps and cannot select a measurement from another criterion', async () => {
-    readScorecardEvidenceM.mockResolvedValue({ kind: 'found', scorecard: { ...scorecard, criteria: [{
+    mockResolvedTyped(readScorecardEvidenceM, { kind: 'found', scorecard: { ...scorecard, criteria: [{
       key: 'disk', rating: 'fail', evidence: 'legacy scalar', ratedFrom: 'ledger',
       ledgerResult: { testRunId: 123, value: 96, unit: '%' },
-    }] } } as never);
+    }] } });
     const missing = await getTool.handler({ issueId: scorecard.issueId, criterionKey: 'foreign', replay: 'retained-measurement' }, makeDispatchContext());
     if (!('data' in missing)) throw new Error('Expected a structured refusal');
     expect(missing.data).toMatchObject({ ok: false, error: 'criterion_not_found' });
@@ -226,10 +227,10 @@ describe('scorecards:get evidence-first projection', () => {
       startedAt: '2026-10-23T00:00:00Z', finishedAt: '2026-10-23T00:00:01Z',
       transactionAt: '2026-10-23T00:00:00Z', needsTransactionClock: true,
     });
-    readScorecardEvidenceM.mockResolvedValue({ kind: 'found', scorecard: { ...scorecard, criteria: [{
+    mockResolvedTyped(readScorecardEvidenceM, { kind: 'found', scorecard: { ...scorecard, criteria: [{
       key: 'sql', rating: 'pass', evidence: 'original response', ratedFrom: 'ledger',
       ledgerResult: { testRunId: 456, value: '9007199254740993', unit: null, provenance },
-    }] } } as never);
+    }] } });
     const response = await getTool.handler({ issueId: scorecard.issueId, criterionKey: 'sql',
       replay: 'retained-measurement' }, makeDispatchContext());
     if (!('data' in response)) throw new Error('Expected a structured SQL predicate replay response');
@@ -256,10 +257,10 @@ describe('scorecards:get evidence-first projection', () => {
       startedAt: '2026-10-23T00:00:00Z', finishedAt: '2026-10-23T00:00:01Z',
       transactionAt: '2026-10-23T00:00:00Z', needsTransactionClock: true,
     });
-    readScorecardEvidenceM.mockResolvedValue({ kind: 'found', scorecard: { ...scorecard, criteria: [{
+    mockResolvedTyped(readScorecardEvidenceM, { kind: 'found', scorecard: { ...scorecard, criteria: [{
       key: 'sql', rating: 'pass', evidence: 'original source rows', ratedFrom: 'ledger',
       ledgerResult: { testRunId: 789, value: 30, unit: 'ms', provenance },
-    }] } } as never);
+    }] } });
     const read = vi.mocked(pgReader.pgReadQuery);
     read.mockResolvedValueOnce({ rows: [{ n: 30 }], rowCount: 1, fields: ['n'], truncated: false, elapsedMs: 1 });
     const response = await getTool.handler({ issueId: scorecard.issueId, criterionKey: 'sql',
@@ -275,7 +276,7 @@ describe('scorecards:get evidence-first projection', () => {
     expect(gradingAuditRubricMock).not.toHaveBeenCalled();
   });
 
-  it('distinguishes live adequacy freshness checks from creation-time grading audits', () => {
+  it('states the current replay boundary for historical audits and present measurement', () => {
     const prompt = getTool as unknown as {
       description: string;
       guidance: { when: string; notWhen: string; chaining: string };
@@ -289,15 +290,11 @@ describe('scorecards:get evidence-first projection', () => {
 
     expect(guidance).toContain('scorecardId');
     expect(guidance).toContain('historicalAuditOnly.asOf');
-    expect(guidance).toContain('current-state');
-    expect(guidance).toContain('freshness can change after evidence changes');
-    expect(guidance).toContain('same exact serving route for both scorecards:get and plans:evaluate-spec-test-adequacy');
-    expect(guidance).toContain('process serving scorecards:get');
-    expect(guidance).toContain('cross-route calls may report different currentness');
+    expect(guidance).toContain('scorecard.createdAt');
+    expect(guidance).toContain('Use rerunRecipe.args only for present-state measurement');
+    expect(guidance).toContain('same exact route for scorecards:get and plans:evaluate-spec-test-adequacy');
     expect(guidance).toContain('scorecardId: issueId');
-    expect(guidance).toContain('replays its exact bindings as of scorecard.createdAt');
-    expect(guidance).toContain('Do not compare a direct replay of rerunRecipe.args with the historical card');
-    expect(guidance).toContain('Use rerunRecipe.args only when measuring the present state');
+    expect(guidance).toContain('Unavailable SQL inputs remain unavailable; never substitute live data');
     expect(guidance).not.toContain('no scorecardId selector');
   });
 
@@ -834,11 +831,10 @@ describe('scorecards:get evidence-first projection', () => {
     const chaining = (tool as unknown as { guidance?: { chaining?: string } }).guidance?.chaining ?? '';
     expect(chaining).toContain('Promise.all');
     expect(chaining).toContain('small Promise.all groups');
-    expect(chaining).toContain('papercusp.output-envelope/v1');
-    expect(chaining).toContain('capability:read');
-    expect(chaining).toContain('before reading scorecard.criteria');
-    expect(chaining).toContain('pages sequentially');
-    expect(chaining).toContain('Concatenate complete pages');
+    expect(chaining).toContain('Recover envelopes via capability:read');
+    expect(chaining).toContain('complete recipe/index/evidence pages before grading');
+    expect(chaining).toContain('page sequentially');
+    expect(chaining).toContain('concatenate complete pages');
   });
 
   it('rejects unknown criterion keys and out-of-range offsets instead of returning empty evidence', async () => {

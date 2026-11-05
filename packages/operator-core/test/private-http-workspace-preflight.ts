@@ -707,8 +707,25 @@ function qualifyCommittedReaderInputs(root: string, sourceReceiptPath: string, s
 /** Receipt files are pinned separately. Every other retained output, including
  * logs and copied helpers, remains in the produced artifact census. */
 const retainedReceiptNames = ['operator-api-preflight.json', 'operator-api-inputs.json', 'verifier-source.json'];
-function preparedArtifactCensus(evidenceDir: string) {
-  return verifierSourceFiles(evidenceDir).filter(file =>
+function preparedArtifactCensus(evidenceDir: string, sourceRoot: string) {
+  // bundle-host.sh binds custom outputs to the already pinned dependency
+  // tree. Verify that exact binding separately; it is not a copied artifact.
+  // Custom outputs outside the source root require this binding even when
+  // consuming retained artifacts. Its removal must not fall back to an
+  // ancestor's dependencies. Never follow a foreign or independent tree.
+  const dependencyPath = join(evidenceDir, 'node_modules');
+  const dependencies = lstatSync(dependencyPath, { throwIfNoEntry: false });
+  assert.ok(dependencies?.isSymbolicLink()
+    && resolve(evidenceDir, readlinkSync(dependencyPath)) === resolve(sourceRoot, 'node_modules'),
+    'Prepared runtime dependency binding differs');
+  assert.equal(realpathSync(dependencyPath), realpathSync(join(sourceRoot, 'node_modules')),
+    'Prepared runtime dependency binding differs');
+  // Enumerate every other entry without following links, then reuse the
+  // maintained byte census and its strict symlink checks for that population.
+  const includedPaths = new Set(readdirSync(evidenceDir, { recursive: true, withFileTypes: true })
+    .map(entry => relative(evidenceDir, join(entry.parentPath, entry.name)).split(sep).join('/'))
+    .filter(path => path !== 'node_modules'));
+  return verifierSourceFiles(evidenceDir, { includedPaths }).filter(file =>
     !retainedReceiptNames.includes(file.path));
 }
 
@@ -940,7 +957,7 @@ function qualifyObservedPrivateApiBuild(o: CommittedReaderSourceOptions) {
   assert.equal(source.sourceCommit, o.selectedCommit, 'Archive differs from observed selected source');
   assert.deepEqual(verifierSourceFiles(join(o.root, 'node_modules'), { symlinkRoot: o.root }), receipt.dependencyFiles,
     'Observed materialized dependency census changed');
-  assert.deepEqual(preparedArtifactCensus(dirname(o.bundle)), receipt.artifactCensus, 'Observed artifact census changed');
+  assert.deepEqual(preparedArtifactCensus(dirname(o.bundle), o.root), receipt.artifactCensus, 'Observed artifact census changed');
   assert.ok(receipt.artifactCensus.length && receipt.artifactCensus.every(file => file.kind === 'file'),
     'Observed artifact census requires regular files');
   assert.deepEqual(receipt.artifacts, receipt.artifactCensus.map(file => ({
@@ -1222,7 +1239,7 @@ function qualifyCommittedReaderArtifacts(o: CommittedReaderSourceOptions, produc
       'Produced artifact census is required');
     assert.ok(closure.artifactCensus.every(file => file.kind === 'file'),
       'Produced symlink artifacts require independent qualification');
-    assert.deepEqual(preparedArtifactCensus(dirname(o.bundle)), closure.artifactCensus,
+    assert.deepEqual(preparedArtifactCensus(dirname(o.bundle), o.root), closure.artifactCensus,
       'Produced artifact census changed');
     assert.deepEqual([...artifactPaths].sort(), closure.artifactCensus.map(file => join(dirname(o.bundle), file.path)).sort(),
       'Produced artifact census lacks digest pins');
@@ -1577,7 +1594,7 @@ export function preparePrivateOperatorApiBundle(root: string, evidenceDir: strin
       readVerifierSourceReceiptSync(root, selected.sourceReceiptPath);
       assert.deepEqual(verifierSourceFiles(join(root, 'node_modules'), { symlinkRoot: root }), inputs.dependencyFiles,
         'Materialized dependencies changed during build');
-      const artifactCensus = preparedArtifactCensus(evidenceDir);
+      const artifactCensus = preparedArtifactCensus(evidenceDir, root);
       assert.ok(artifactCensus.every(file => file.kind === 'file'), 'Observed build symlinks are not qualified');
       const receipt = retain({ ...inputs, ...bundle, qualification: { status: 'pending' },
         metafileSha256: digestBytes(readFileSync(`${bundle.path}.meta.json`)), artifactCensus,
@@ -1642,7 +1659,7 @@ export function produceCommittedReaderPrivateApiBundle(root: string, evidenceDir
   unchanged();
   const { path, sha256 } = buildPrivateOperatorApiBundle(root, evidenceDir);
   unchanged();
-  const artifactCensus = preparedArtifactCensus(evidenceDir);
+  const artifactCensus = preparedArtifactCensus(evidenceDir, root);
   assert.ok(artifactCensus.every(file => file.kind === 'file'), 'Produced symlink artifacts require independent qualification');
   const artifacts = artifactCensus.map(file => ({ path: join(evidenceDir, file.path), sha256: file.sha256,
     ...(copies.has(file.path) ? { sourcePath: copies.get(file.path)! } : {}) }));

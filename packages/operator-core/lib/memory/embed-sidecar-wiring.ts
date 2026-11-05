@@ -276,6 +276,7 @@ export async function buildSidecarAwareEmbedder(
   model: 'gemma' | 'local' | 'harrier',
   kind: GemmaEmbedKind,
   deps: SidecarWiringDeps = defaultDeps,
+  options: { timeoutMs?: number } = {},
 ): Promise<EmbedFn> {
   // A test-fixture override wins over every engine, before any sidecar I/O.
   const overridden = engineOverride.embed?.(model, kind) ?? null;
@@ -285,6 +286,7 @@ export async function buildSidecarAwareEmbedder(
     model,
     kind,
     url,
+    timeoutMs: options.timeoutMs,
     ensure: localSidecarEnsure(deps, url, EMBED_SIDECAR_CAP_EMBED),
     // Same text the lib's own default emits — only the channel differs, and
     // only under a test runner. See reportSidecarTransition.
