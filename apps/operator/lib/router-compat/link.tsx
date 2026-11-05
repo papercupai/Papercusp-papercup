@@ -1,5 +1,6 @@
 import type { ComponentProps, ReactNode } from 'react';
 import { Link as TsrLink } from '@tanstack/react-router';
+import { navigationFromHref } from './href';
 
 /**
  * `<Link href="/foo">` → TanStack-Router `<Link to="/foo">`. Permanent home
@@ -31,5 +32,6 @@ export default function Link({
   as: _as,
   ...rest
 }: LinkProps) {
-  return <TsrLink to={href} {...rest} />;
+  const { to, search, hash } = navigationFromHref(href);
+  return <TsrLink to={to} search={search} hash={hash} {...rest} />;
 }

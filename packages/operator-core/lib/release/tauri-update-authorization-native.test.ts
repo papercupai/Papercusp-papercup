@@ -609,7 +609,7 @@ process.stdout.write(JSON.stringify({trust:{rootEpoch:3,minRollbackCounter:0,min
     }
     #[cfg(unix)] #[test] fn candidate_mac_activation_uses_downloaded_bytes_and_current_policy() {
         use super::update_authorization::{activate_test_macos_update, DownloadedUpdate, Metadata};
-        use super::update_authorization::macos_update_installer::{Request, install_test};
+        use super::update_authorization::macos_update_installer::{Request, install_test, serve, transact};
         use std::fs::{self,File,Permissions};
         use std::os::unix::fs::PermissionsExt;
         use std::io::Write;
@@ -743,6 +743,53 @@ process.stdout.write(JSON.stringify({trust:{rootEpoch:3,minRollbackCounter:0,min
         assert_eq!(fs::read(outside.join("keep")).unwrap(),b"untouched");
         assert_eq!(fs::read_dir(&apps).unwrap().count(),1,"completed swap removes the previous private tree");
         assert_eq!(read(),retained);
+        // Exercise the actual duplex protocol and filesystem effect together.
+        // The two threads have separate pipe ends, as do the GUI and root helper.
+        use std::os::unix::net::UnixStream;
+        use std::time::Duration;
+        for scenario in ["commit","cancel","revoked","disconnect","invalid-commit"] {
+            fs::write(target.join("before-handshake"),b"old").unwrap();
+            let captured=request();
+            if scenario=="revoked" { write(&revoked); } else { write(&policy); }
+            let (mut client,mut helper)=UnixStream::pair().unwrap();
+            for stream in [&client,&helper] {
+                stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+                stream.set_write_timeout(Some(Duration::from_secs(3))).unwrap();
+            }
+            std::thread::scope(|scope| {
+                let server=scope.spawn(|| serve(&mut helper,|request,ready|
+                    install_test(&directory,&applications,request,2000,ready)));
+                if scenario=="disconnect" || scenario=="invalid-commit" {
+                    use std::io::Read;
+                    captured.send(&mut client).unwrap();client.write_all(b"PCREQ01\\n").unwrap();
+                    let mut ready=[0;8];client.read_exact(&mut ready).unwrap();
+                    assert_eq!(&ready,b"PCRDY01\\n");assert_eq!(read(),retained);
+                    assert!(target.join("before-handshake").exists());
+                    if scenario=="invalid-commit" { client.write_all(b"INVALID\\n").unwrap(); }
+                    else {client.shutdown(std::net::Shutdown::Both).unwrap();}
+                    assert!(server.join().unwrap().is_err());
+                } else {
+                    let outcome=transact(&mut client,captured,|| {
+                        assert_ne!(scenario,"revoked","revoked CURRENT trust must refuse before teardown");
+                        assert_eq!(read(),retained);assert!(target.join("before-handshake").exists());
+                        assert!(activate_test_macos_update(&directory,&download,2000,|| -> Result<(),String> {panic!("lock bypass")}).is_err());
+                        if scenario=="cancel" {Err("GUI cancelled".into())} else {Ok(())}
+                    });
+                    let server_outcome=server.join().unwrap();
+                    if scenario=="commit" {outcome.unwrap();server_outcome.unwrap();}
+                    else {assert!(outcome.is_err());assert!(server_outcome.is_err());}
+                }
+            });
+            assert_eq!(target.join("before-handshake").exists(),scenario!="commit");
+            assert_eq!(fs::read(target.join("Contents/MacOS/Main")).unwrap(),main);
+            assert_eq!(fs::read(outside.join("keep")).unwrap(),b"untouched");
+            assert_eq!(fs::read_dir(&apps).unwrap().count(),1,"no abandoned staging tree");
+            if scenario=="revoked" {assert_eq!(read(),revoked);}else{assert_eq!(read(),retained);}
+            write(&retained);
+            // A failed/disconnected helper released the lock, so retry is possible.
+            activate_test_macos_update(&directory,&download,2000,||Ok(())).unwrap();
+        }
+        println!("native-mac-handshake: actual duplex READY before quiescence, COMMIT effect, cancellation, current revocation, disconnect and invalid commit with lock release");
         println!("native-mac-installer: owned framed bytes, fixed destination, current revocation, symlink/writable-directory refusal, READY cancellation, lock through exchange, exact installed bytes and external canary");
         println!("native-mac-activation: real dual signatures, selected identity, current policy and no-effect refusals");
     }
@@ -834,6 +881,10 @@ process.stdout.write(JSON.stringify({trust:{rootEpoch:3,minRollbackCounter:0,min
     expect(result.stdout).toContain('native-mac-bounds: entry/metadata size, count, truncation, CRC and trailing members');
     expect(result.stdout).toContain('native-mac-inflation: bound includes padding after tar end');
     if (process.platform !== 'win32') expect(result.stdout).toContain('native-mac-activation: real dual signatures, selected identity, current policy and no-effect refusals');
+    if (process.platform !== 'win32') {
+      expect(result.stdout).toContain('native-mac-handshake: actual duplex READY before quiescence');
+      expect(result.stdout).toContain('native-mac-helper: fixed protected executable and bounded stalled pipe');
+    }
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

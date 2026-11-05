@@ -7,6 +7,7 @@ import {
   redirect as tsrRedirect,
   notFound as tsrNotFound,
 } from '@tanstack/react-router';
+import { navigationFromHref } from './href';
 
 /**
  * Router compatibility hooks — TanStack-Router-backed implementations of the
@@ -43,10 +44,10 @@ export function useRouter(): AppRouterInstance {
   return useMemo<AppRouterInstance>(
     () => ({
       push: (href: string) => {
-        void navigate({ to: href });
+        void navigate(navigationFromHref(href));
       },
       replace: (href: string) => {
-        void navigate({ to: href, replace: true });
+        void navigate({ ...navigationFromHref(href), replace: true });
       },
       back: () => {
         window.history.back();
@@ -56,7 +57,7 @@ export function useRouter(): AppRouterInstance {
       },
       refresh: () => {
         // A navigate to the current URL forces TSR loaders to re-run.
-        void navigate({ to: window.location.pathname + window.location.search, replace: true });
+        void navigate({ ...navigationFromHref(window.location.pathname + window.location.search + window.location.hash), replace: true });
       },
       prefetch: () => {
         // no-op — TSR's <Link> handles prefetching; manual prefetch() is rare
@@ -81,7 +82,7 @@ export function useParams<T extends Record<string, string> = Record<string, stri
 
 /** `redirect(href)` — throws a TSR redirect. Must be thrown / never returns. */
 export function redirect(href: string): never {
-  throw tsrRedirect({ to: href });
+  throw tsrRedirect(navigationFromHref(href));
 }
 
 /** `notFound()` — throws a TSR not-found marker. */

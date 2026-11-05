@@ -39,6 +39,30 @@ async function capture(sql = query) {
 }
 
 describe('bounded historical SQL source replay (real PostgreSQL)', () => {
+  it('replays complete source inputs when an unrelated tool advisory is clipped', async () => {
+    const probe: ContinuityProbe = { kind: 'sql', sql: query, maxRows: 5,
+      schemaRevision: continuityProbeRevision('dev:pg_query')!,
+      expect: { path: '$.rows[0].budget', op: 'lte', value: 25 } };
+    const batch = await runContinuityProbeBatch([{
+      source: { kind: 'work-item', id: 'WI-retained-sql-test', harness: 'papercusp' },
+      checkIndex: 0, check: { id: 'sql', claim: 'original budget', recheck: 'SQL', probe },
+    }], { retainMeasurement: true, dispatchTool: async (_name, args) => ({
+      data: { ...await pgReadQuery(String(args.sql), { client: db.sql }), advisory: 'Context only. '.repeat(40) },
+    }) });
+    const provenance = batch.results[0]!.provenance!;
+    expect(provenance.gaps).toEqual(['diagnostics-truncated']);
+    expect(JSON.parse(provenance.procedure.snapshot).sqlInputs.truncated).toBe(false);
+    await db.sql`UPDATE harness_shared.replay_rows SET duration_ms=10000`;
+    const read: typeof pgReadQuery = (sql, opts) => pgReadQuery(sql, { ...opts, client: db.sql });
+    expect(await replayRetainedSqlProbe({ value: 20, unit: 'ms', provenance }, read))
+      .toMatchObject({ scope: 'sql-query', status: 'reproduced', value: 20, verdict: 'pass' });
+    const descriptor = JSON.parse(provenance.procedure.snapshot);
+    descriptor.sqlInputs.truncated = true;
+    const missing = retainMeasurementProvenance({ procedure: descriptor, result: { rows: [{ budget: 20 }] },
+      startedAt: provenance.startedAt, finishedAt: provenance.finishedAt, transactionAt: provenance.transactionAt });
+    expect(await replayRetainedSqlProbe({ value: 20, unit: 'ms', provenance: missing }, vi.fn()))
+      .toMatchObject({ scope: 'sql-query', status: 'unavailable' });
+  });
   it('captures source rows through the production probe runner and replays after source mutation', async () => {
     const probe: ContinuityProbe = { kind: 'sql', sql: query, maxRows: 5,
       schemaRevision: continuityProbeRevision('dev:pg_query')!,

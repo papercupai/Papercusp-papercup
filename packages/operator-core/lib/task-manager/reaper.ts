@@ -220,13 +220,14 @@ export interface ConsultStateRow {
   /** `routing.selection.selected` — per-cursor responder entries. */
   selected: unknown;
   /**
-   * The consult's `answer` / `decline` posts (`consult_post_meta`), oldest first.
+   * All typed consult posts (`consult_post_meta`), ordered by creation time and
+   * post id. Follow-ups/progress must remain visible to invalidate old answers.
    * Missing ⇒ not read; the answered rule is then off for this consult.
    */
   responses?: readonly ConsultResponsePost[];
 }
 
-/** One `answer` / `decline` post on a consult thread. */
+/** One typed post on a consult thread. */
 export interface ConsultResponsePost {
   authorId: string;
   kind: string;
@@ -338,7 +339,17 @@ export function consultSettlement(
     [facts.answeringOwnerId, facts.sourceOwnerId].filter((v): v is string => !!v),
   );
   let response: ConsultResponsePost | undefined;
-  for (const post of consult.responses ?? []) if (authors.has(post.authorId)) response = post;
+  for (const post of consult.responses ?? []) {
+    if (authors.has(post.authorId)) {
+      // A progress post or clarification after an answer reopens the exchange;
+      // it cannot authorize stopping the session using the old answer's clock.
+      response = post.kind === 'answer' || post.kind === 'decline' ? post : undefined;
+    } else if (post.kind === 'question' || post.kind === 'new_fact') {
+      // Requester follow-ups invalidate the answer even before the state writer
+      // reaches awaiting_responder, and while responder progress makes it active.
+      response = undefined;
+    }
+  }
   const awaitingThisSlot =
     consult.state === 'awaiting_responder' && (slot < 0 || slot === consult.cascadeCursor);
   if (response && !awaitingThisSlot) {

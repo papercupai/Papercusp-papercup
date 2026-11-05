@@ -8,6 +8,10 @@ const ROOT_SOURCE = readFileSync(
 );
 
 describe('root first-paint steering rail', () => {
+  it('retains sidebar layout at the shared root for every page navigation', () => {
+    expect(ROOT_SOURCE).toContain('search: { middlewares: [sidebarSearchMiddleware] }');
+  });
+
   it('imports the unconditional LeftSidebar shell eagerly', () => {
     expect(ROOT_SOURCE).toContain(
       "import LeftSidebar from '../components/left-sidebar/LeftSidebar';",

@@ -1,11 +1,24 @@
 'use client';
 
 import { startTransition, useCallback, useMemo } from 'react';
-import { useLocation, useRouter } from '@tanstack/react-router';
+import { retainSearchParams, useLocation, useRouter } from '@tanstack/react-router';
+import { OPERATOR_CHAT_OPEN_QUERY_KEY } from '@/app/_components/operator-chat-layout';
 import {
   unstable_createAdapterProvider as createAdapterProvider,
   type unstable_AdapterOptions as AdapterOptions,
 } from 'nuqs/adapters/custom';
+
+// These belong to the app shell, so page navigation keeps them. Page-specific
+// filters, selections and popups still leave with their page. Explicit search
+// values on a destination take precedence over the retained layout.
+const SIDEBAR_SEARCH_KEYS = [
+  'lsb', 'lst', OPERATOR_CHAT_OPEN_QUERY_KEY, 'opcv',
+  'devRail', 'devSec', 'members', 'pres',
+] as const;
+
+export const sidebarSearchMiddleware = retainSearchParams<Record<string, unknown>>([
+  ...SIDEBAR_SEARCH_KEYS,
+]);
 
 /**
  * Custom nuqs adapter for TanStack Router that preserves search params nuqs
@@ -128,7 +141,7 @@ export function searchObjectToParams(
 ): URLSearchParams {
   return new URLSearchParams(
     Object.entries(search)
-      .filter(([key]) => watchKeys === null || watchKeys.includes(key))
+      .filter(([key, value]) => value !== undefined && (watchKeys === null || watchKeys.includes(key)))
       .flatMap(([key, value]) => {
         if (Array.isArray(value))
           return value.map((v) => [key, String(v)] as [string, string]);
@@ -219,7 +232,17 @@ function useNuqsTanstackRouterAdapter(watchKeys: string[]) {
         startTransition(() => {
           navigate({
             to: currentPath,
-            search: () => composedSearchToObject(nuqsSearch),
+            search: () => {
+              const search = composedSearchToObject(nuqsSearch);
+              // nuqs removes default-valued keys (e.g. expanding chat clears
+              // ?chat=false). Mark removals explicitly so the root retention
+              // middleware cannot fill them back in from the old URL.
+              // TanStack omits undefined values when serializing the URL.
+              for (const key of SIDEBAR_SEARCH_KEYS) {
+                if (!nuqsSearch.has(key)) search[key] = undefined;
+              }
+              return search;
+            },
             replace: options.history === 'replace',
             resetScroll: options.scroll,
             hash: (prevHash) => prevHash ?? '',

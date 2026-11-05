@@ -559,7 +559,7 @@ async function reportAgentSessionProgress(ctx: SystemActionCtx): Promise<void> {
  * `routing.selection.selected`, bounded to recent consults; `consultSettlement`
  * decides whether such a match is unambiguous enough to act on.
  */
-async function readConsultStatesForReaper(
+export async function readConsultStatesForReaper(
   live: readonly TaskRow[],
 ): Promise<(ConsultStateRow & { workspaceId: string })[] | null> {
   const consultRows = live.flatMap((row) => {
@@ -600,8 +600,7 @@ async function readConsultStatesForReaper(
                        ORDER BY pm.created_at, pm.post_id)
                 FROM harness_shared.consult_post_meta pm
                WHERE pm.workspace_id = cs.workspace_id
-                 AND pm.conversation_id = cs.conversation_id
-                 AND pm.kind IN ('answer', 'decline')) AS responses
+                 AND pm.conversation_id = cs.conversation_id) AS responses
         FROM harness_shared.consult_state cs
        WHERE cs.workspace_id = ANY(${workspaceIds}::text[])
          AND (

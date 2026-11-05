@@ -800,7 +800,13 @@ export async function replayRetainedSqlProbe(input: {
   const unavailable = (reason: string): RetainedProbeReplay => ({ ...base, status: 'unavailable', reason });
   if (!predicate || predicate.status === 'unavailable') return unavailable(predicate?.reason ?? 'Original SQL inputs are unavailable.');
   const p = input.provenance!;
-  if (p.truncated || p.redacted || p.gaps.length) return unavailable('Original SQL inputs have retention gaps; scalar predicate evidence cannot establish query replay.');
+  // Source rows live in the independently hashed procedure. A clipped response
+  // advisory does not lose them; compileRetainedSql still validates every row.
+  // Missing/unsupported inputs never become replayable from a scalar witness.
+  if (p.redacted || p.gaps.some(gap => gap !== 'diagnostics-truncated') ||
+      (p.truncated && !p.gaps.includes('diagnostics-truncated'))) {
+    return unavailable('Original SQL inputs have retention gaps; scalar predicate evidence cannot establish query replay.');
+  }
   const descriptor = JSON.parse(p.procedure.snapshot);
   if (descriptor.kind !== 'sql' || !p.transactionAt) return unavailable('This measurement has no original SQL source snapshot.');
   const query = compileRetainedSql(descriptor.sql, descriptor.sqlInputs, p.transactionAt);

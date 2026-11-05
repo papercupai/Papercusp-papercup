@@ -450,6 +450,61 @@ describe('consult settlement without the answeringOwnerId stamp (EI-241068827955
     expect(s).toBeNull();
   });
 
+  it.each(['new_fact', 'clarifying_question'])('keeps an active responder alive after answer → requester follow-up → %s', (kind) => {
+    const state = consultState({
+      conversationId: 'conv-s', state: 'active', cascadeCursor: 0, selected: unstamped,
+      responses: [
+        { authorId: EXPERT, kind: 'answer', at: answeredAt },
+        { authorId: 'su-requester', kind: 'question', at: answeredAt },
+        { authorId: FORK, kind, at: answeredAt },
+      ],
+    });
+    expect(consultSettlement(facts(EXPERT), [state])).toBeNull();
+    const task = consultRow('followup', 'conv-s', FORK, 'fork', EXPERT);
+    expect(decide([task], {
+      mtimes: { '/logs/followup.log': NOW - 60_000 }, pids: { followup: 5 }, consults: [state],
+    }).reap).toEqual([]);
+  });
+
+  it('does not settle an old answer when a later requester new_fact remains unanswered', () => {
+    expect(consultSettlement(facts(EXPERT), [consultState({
+      conversationId: 'conv-s', state: 'active', cascadeCursor: 0, selected: unstamped,
+      responses: [
+        { authorId: EXPERT, kind: 'answer', at: answeredAt },
+        { authorId: 'su-requester', kind: 'new_fact', at: answeredAt },
+      ],
+    })])).toBeNull();
+  });
+
+  it('settles a completed follow-up from its new answer time, preserving the grace', () => {
+    const freshAnswer = new Date(NOW - 60_000).toISOString();
+    const state = consultState({
+      conversationId: 'conv-s', state: 'active', cascadeCursor: 0, selected: unstamped,
+      responses: [
+        { authorId: EXPERT, kind: 'answer', at: answeredAt },
+        { authorId: 'su-requester', kind: 'question', at: answeredAt },
+        { authorId: FORK, kind: 'new_fact', at: answeredAt },
+        { authorId: FORK, kind: 'answer', at: freshAnswer },
+      ],
+    });
+    expect(consultSettlement(facts(EXPERT), [state])?.settledAtMs).toBe(Date.parse(freshAnswer));
+  });
+
+  it('still reaps a quiet zombie with an unfinished follow-up through the independent backstop', () => {
+    const task = consultRow('quiet-followup', 'conv-s', FORK, 'fork', EXPERT);
+    const state = consultState({
+      conversationId: 'conv-s', state: 'active', cascadeCursor: 0, selected: unstamped,
+      responses: [
+        { authorId: EXPERT, kind: 'answer', at: answeredAt },
+        { authorId: FORK, kind: 'new_fact', at: answeredAt },
+      ],
+    });
+    expect(decide([task], {
+      mtimes: { '/logs/quiet-followup.log': NOW - 4 * HOUR },
+      pids: { 'quiet-followup': 5 }, consults: [state],
+    }).reap.map((r) => r.kind)).toEqual(['quiet-zombie']);
+  });
+
   it('CONTROL: awaiting with an unknown slot, another responder’s answer, or no answer yet ⇒ not settled', () => {
     const awaitingUnknown = consultState({
       conversationId: 'conv-s',

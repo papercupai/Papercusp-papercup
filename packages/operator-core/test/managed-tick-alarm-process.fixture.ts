@@ -4,22 +4,31 @@ import { getOrgPg, _resetForTests } from '@papercusp/db-org';
 import { installManagedTickAlarm } from '../lib/dbos/managed-tick-alarm';
 import { reconcileManagedTickAlarms } from '../lib/dbos/managed-tick-alarm-recovery';
 
+function phase(stage: string): void {
+  process.send?.({ kind: 'phase', stage, atMs: Date.now(), pid: process.pid });
+}
+
 async function main(): Promise<void> {
+  phase('imports-ready');
   if (process.argv[2] === 'idle-watch') {
+    phase('watcher-start');
     const recovery = (await import('../lib/dbos/managed-tick-alarm-recovery')).startManagedTickAlarmRecovery();
     process.on('message', () => {});
     await recovery.ready;
+    phase('initial-scan-complete');
     process.send?.({ kind: 'started', pid: process.pid });
     return;
   }
   if (process.argv[2] === 'restart') {
     // Exercise the real fireOnArm startup watcher, not a direct helper call.
     installManagedTickAlarm();
+    phase('watcher-installed');
     process.on('message', () => {});
     process.send?.({ kind: 'started', pid: process.pid });
     return;
   }
   if (process.argv[2] === 'raise') {
+    phase('producer-start');
     let now = 0;
     const callbacks: Array<() => void> = [];
     configureScheduledRegistry({ now: () => now,
@@ -27,7 +36,10 @@ async function main(): Promise<void> {
       clearIntervalImpl: () => {},
     });
     installManagedTickAlarm({ recentlyEscalated: async () => false,
-      notify: async input => { process.send?.({ kind: 'raised', data: input.data, pid: process.pid }); },
+      notify: async input => {
+        phase('alarm-persisted');
+        process.send?.({ kind: 'raised', data: input.data, pid: process.pid });
+      },
     });
     managedSetInterval('fresh-process-held', Number(process.argv[3] ?? 60_000), () => new Promise<void>(() => {}), {
       category: 'global-sweep', allowInTest: true,
@@ -40,8 +52,11 @@ async function main(): Promise<void> {
     process.on('message', () => {});
     return;
   }
+  phase('reconcile-start');
   const result = await reconcileManagedTickAlarms();
+  phase('reconcile-complete');
   await _resetForTests();
+  phase('clients-stopped');
   process.send?.({ kind: 'reconciled', result }, () => process.exit(0));
 }
 

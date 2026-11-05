@@ -1,0 +1,25 @@
+{
+  "schemaVersion": "durable-park-reconcile-v1",
+  "runId": "work-item-durable-park-audit:reconcile:tool:WI-6554700010037983:da4a8996563e7a2f71c2f898abbbba79",
+  "inputSha256": "da4a8996563e7a2f71c2f898abbbba795c40894ea0e1bb27c94b0aebb98e4273",
+  "workspaceId": "papercusp-workspace",
+  "harnessSlug": "papercusp",
+  "generatedAt": "2026-11-05T18:42:20.309Z",
+  "actor": "su-126cedd3-6292-4a64-9bb8-b95f804379e4",
+  "requested": 1,
+  "cleared": 1,
+  "unchanged": 0,
+  "rows": [
+    {
+      "id": "WI-6554700010037983",
+      "outcome": "cleared",
+      "expectedParkFingerprint": "c952dd6e3fc3fa047248cebe15a8037cf0ed694c959e2752b212cc6b41e30a7a",
+      "observedParkFingerprint": "c952dd6e3fc3fa047248cebe15a8037cf0ed694c959e2752b212cc6b41e30a7a",
+      "reasonCode": "operator-directed",
+      "evidence": "Bounded Personal Vault baseline node adoption only, under temporary claimed one-work-graph-structured-holds-2026-10-26 P008/WI-6554700010030915 and governing D011/D016. Avi's authenticated standing owner AUTO/self shipment authorization is recorded in Personal Vault D013/source session_turn:codex:01a19cbb-caa1-73d0-9fd4-c45567abef1e:1 and :6. Current canonical start auto-approved READY then admission promotion-lag solely because this exact existing P009 node is migration-parked. Release only conversion-owned migration:plan-line-work-item-nodes park on WI37983; preserve node identity, other holds, DAG and acceptance, no global P008 completion, implementation fleet or LIVE_GATE_OPS. This is an audited operator-directed scope repair, not proof that global migration is complete.",
+      "preservedLease": false,
+      "takenBy": null
+    }
+  ],
+  "artifactPath": "reports/durable-parks/work-item-durable-park-audit-reconcile-tool-WI-6554700010037983-da4a8996563e7a2f71c2f898abbbba79-reconcile.json"
+}

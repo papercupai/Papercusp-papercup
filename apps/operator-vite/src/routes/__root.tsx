@@ -10,7 +10,7 @@ import { Toaster } from 'sonner';
 // rebuilds the URL from only nuqs-watched keys, dropping TanStack-native typed
 // search params (?dock, ?switch) on every nuqs write. Ours merges over the full
 // current search. See ../lib/nuqs-tanstack-router-adapter.
-import { NuqsAdapter } from '../lib/nuqs-tanstack-router-adapter';
+import { NuqsAdapter, sidebarSearchMiddleware } from '../lib/nuqs-tanstack-router-adapter';
 import * as Tooltip from '@radix-ui/react-tooltip';
 import { RootSyncProvider } from '@/app/_components/RootSyncProvider';
 import { OperatorConversationProvider } from '@/app/_components/OperatorConversationProvider';
@@ -179,6 +179,7 @@ const DesktopPortalRoot = typeof __PAPERCUSP_DESKTOP_PORTAL__ !== 'undefined' &&
 // visible on every tab (owner request 2026-06-22).
 
 export const Route = createRootRoute({
+  search: { middlewares: [sidebarSearchMiddleware] },
   component: RootComponent,
   notFoundComponent: NotFound,
 });

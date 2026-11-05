@@ -1,20 +1,36 @@
 import { fork, type ChildProcess } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { once } from 'node:events';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 import { computeConditionStates } from '../agent-tools/coordination/condition-state';
 
 const WS = 'p005-managed-original-process';
 const children = new Set<ChildProcess>();
 let db: OrgTestDb;
-beforeAll(async () => { db = await createOrgTestDb(); }, 300_000);
-afterAll(async () => {
+function phase(stage: string, detail: Record<string, unknown> = {}) {
+  console.error('P005_PROCESS_PHASE ' + JSON.stringify({ stage, atMs: Date.now(), ...detail }));
+}
+async function stopChildren() {
   await Promise.all([...children].map(async child => {
     if (child.exitCode !== null || child.signalCode !== null) return;
     const ended = once(child, 'exit'); child.kill('SIGKILL'); await ended;
   }));
+  children.clear();
+}
+beforeAll(async () => {
+  phase('database-start');
+  db = await createOrgTestDb();
+  phase('database-ready');
+}, 300_000);
+// A failed short-cadence assertion must not leave its watcher competing with
+// the next case. Each case owns and observes the exit of its fresh processes.
+afterEach(stopChildren, 30_000);
+afterAll(async () => {
+  await stopChildren();
+  phase('database-cleanup-start');
   await db?.cleanup();
+  phase('database-cleanup-complete');
 }, 120_000);
 
 function launch(action: 'raise' | 'reconcile' | 'restart' | 'idle-watch', intervalMs = 60_000, workspace = WS) {
@@ -25,23 +41,38 @@ function launch(action: 'raise' | 'reconcile' | 'restart' | 'idle-watch', interv
   const child = fork(fileURLToPath(new URL('../../test/managed-tick-alarm-process.fixture.ts', import.meta.url)), [action, String(intervalMs)], {
     execArgv: ['--import', 'tsx'], env, stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
   });
+  phase('fork', { action, pid: child.pid });
   children.add(child);
   let diagnostics = '';
   child.stdout?.on('data', () => {});
   child.stderr?.on('data', chunk => { diagnostics = (diagnostics + String(chunk)).slice(-4000); });
+  child.on('message', value => {
+    if (value && typeof value === 'object' && 'kind' in value && value.kind === 'phase')
+      phase('child-phase', { action, pid: child.pid, detail: value });
+  });
+  child.once('exit', (code, signal) => { phase('exit', { action, pid: child.pid, code, signal }); });
   const message = new Promise<Record<string, unknown>>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`P005 ${action} child did not settle in 60s`)), 60_000);
+    const timer = setTimeout(() => reject(new Error(`P005 ${action} child did not settle in 60s: ${diagnostics}`)), 60_000);
     child.once('error', error => { clearTimeout(timer); reject(error); });
     child.once('exit', code => { clearTimeout(timer); reject(new Error(`P005 ${action} exited ${code}: ${diagnostics}`)); });
-    child.once('message', value => { clearTimeout(timer); resolve(value as Record<string, unknown>); });
+    const settled = (value: unknown) => {
+      if (value && typeof value === 'object' && 'kind' in value && value.kind === 'phase') return;
+      clearTimeout(timer);
+      child.off('message', settled);
+      phase('message', { action, pid: child.pid, kind: (value as Record<string, unknown>)?.kind });
+      resolve(value as Record<string, unknown>);
+    };
+    child.on('message', settled);
   });
   return { child, message };
 }
 
 async function envelopes(workspace = WS) {
+  const startedAt = Date.now();
   const rows = await db.adminSql<{ body: Record<string, unknown> }[]>`
     SELECT body FROM harness_shared.coord_event_log WHERE workspace_id = ${workspace}
       AND surface = 'messages' AND body->>'condition_key' LIKE 'alarm:managed-tick:%' ORDER BY id`;
+  if (Date.now() - startedAt >= 250) phase('condition-read', { workspace, elapsedMs: Date.now() - startedAt });
   return rows.map(row => row.body);
 }
 
@@ -67,6 +98,7 @@ describe('original managed tick recovery across fresh processes and the real con
     producer.child.kill('SIGKILL');
     await exited;
     const endedAt = Date.now();
+    phase('producer-dead', { pid: producer.child.pid, workspace });
     await expect.poll(async () => (await envelopes(workspace)).filter(row => row.resolves_condition === key).length,
       { timeout: 5000, interval: 25 }).toBe(1);
     expect(Date.now() - endedAt).toBeLessThanOrEqual(5000);

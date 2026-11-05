@@ -10,6 +10,7 @@
  */
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import type postgres from 'postgres';
@@ -67,6 +68,7 @@ const SPEC = 'AUTO-BAR-R-1-P-001';
 const EVIDENCE_REF = 'counterexample:acceptance-snapshot-reuse';
 const SOURCE_PATH = 'src/acceptance-snapshot.ts';
 const TEST_PATH = 'test/acceptance-snapshot.integration.test.ts';
+const CASE_TITLE = 'acceptance snapshot > rejects stale source proof';
 const OBSERVED_AT = '2026-09-07T12:00:00.000Z';
 
 const requirement = {
@@ -218,16 +220,41 @@ describe('acceptance BAR contract snapshot — real Postgres reuse preflight', (
       runGroupId: null, workspaceId: WORKSPACE, harnessSlug: HARNESS,
       testNamePattern: null, testLayer: 'integration', passed: 1, failed: 0,
       skipped: 0, collectionFailed: false, mutationPhase: null,
-      commitSha: null, worktreeDirty: false,
+      commitSha: null, worktreeDirty: false, passedCaseTitles: [CASE_TITLE],
     };
-    expect(parseTestRunExecutionDetails(execution)).toEqual(execution);
-    const [testRun] = await db.adminSql<{ id: number }[]>`
-      INSERT INTO harness_shared.test_runs
-        (workspace_id, harness_slug, file_path, framework, status, finished_at,
-         worktree_dirty, execution_details)
-      VALUES (${WORKSPACE}, ${HARNESS}, ${TEST_PATH}, 'vitest', 'pass', ${OBSERVED_AT},
-              false, ${JSON.stringify(execution)}::jsonb)
-      RETURNING id`;
+    const recordExecution = async (
+      status: 'pass' | 'fail' | 'running',
+      details: Record<string, unknown>,
+      source = 'local',
+    ) => {
+      expect(parseTestRunExecutionDetails(details)).toEqual(details);
+      const [run] = await db.adminSql<{ id: number }[]>`
+        INSERT INTO harness_shared.test_runs
+          (workspace_id, harness_slug, file_path, framework, source, status, finished_at,
+           worktree_dirty, execution_details)
+        VALUES (${WORKSPACE}, ${HARNESS}, ${TEST_PATH}, 'vitest', ${source}, ${status}, ${OBSERVED_AT},
+                false, ${JSON.stringify(details)}::jsonb)
+        RETURNING id`;
+      return Number(run!.id);
+    };
+    // A passing ordinary run is not a caught counterexample. Model the
+    // reporter's calibration/mutant pair, including its exact failed case.
+    const mutation = {
+      schemaVersion: 1, probeInvocationId: 'acceptance-snapshot-reuse-probe', mode: 'copy-out',
+      subjectPath: SOURCE_PATH, mutateExpression: 's/true/false/', againstCommit: null,
+      subjectBeforeSha256: createHash('sha256').update('export const acceptanceSnapshot = true;\n').digest('hex'),
+      subjectAfterSha256: createHash('sha256').update('export const acceptanceSnapshot = false;\n').digest('hex'),
+      mutantDiff: '-true\n+false\n', mutantDiffTruncated: false,
+      testCommandSha256: createHash('sha256').update('vitest run ' + TEST_PATH).digest('hex'),
+      testFileSha256: createHash('sha256').update('expect(acceptanceSnapshot).toBe(true);\n').digest('hex'),
+    };
+    await recordExecution('pass', {
+      ...execution, mutationPhase: 'baseline', mutation: { ...mutation, leg: 'baseline' },
+    }, 'mutation-probe');
+    const counterexampleRunId = await recordExecution('fail', {
+      ...execution, passed: 0, failed: 1, passedCaseTitles: [], failedCaseTitles: [CASE_TITLE],
+      mutationPhase: 'mutant', mutation: { ...mutation, leg: 'mutant' },
+    }, 'mutation-probe');
 
     const fingerprints = await measureRepoFilesEvidenceAtRoot(h.repoRoot, measurement);
     expect(fingerprints.fixtureFingerprint).toEqual(expect.any(String));
@@ -241,7 +268,7 @@ describe('acceptance BAR contract snapshot — real Postgres reuse preflight', (
       sourceFingerprint: fingerprints.sourceFingerprint,
       testFingerprint: fingerprints.testFingerprint,
       fixtureFingerprint: fingerprints.fixtureFingerprint,
-      testRunId: Number(testRun!.id),
+      testRunId: counterexampleRunId,
       details: {
         evidencePlane: 'tree',
         currentMeasurement: measurement,
@@ -254,8 +281,9 @@ describe('acceptance BAR contract snapshot — real Postgres reuse preflight', (
           collected: true,
           skipped: false,
           executed: true,
-          outcome: 'pass',
+          outcome: 'caught',
           targeted: SPEC.toLowerCase(),
+          testCases: [CASE_TITLE],
         },
       },
       observedAt: OBSERVED_AT,
@@ -347,7 +375,8 @@ describe('acceptance BAR contract snapshot — real Postgres reuse preflight', (
         // Evaluator rev 4 (SPEC_TEST_ADEQUACY_EVALUATOR_REVISION): a counterexample alone cannot
         // establish falsifiability — its canonical test file must ALSO be bound as a successful
         // current test on the same clause revision. The proof is still reused exactly (current,
-        // one row); only adequacy waits for that corroboration, which bindAttempt(2, 'pass')
+        // one row); adequacy also needs a positive test for the required evidence kind
+        // and path reachability. bindAttempt(2, 'pass') provides that corroboration
         // below supplies and the `selected` read asserts flips adequacy to pass.
         adequacy: {
           state: 'unknown',
@@ -355,7 +384,7 @@ describe('acceptance BAR contract snapshot — real Postgres reuse preflight', (
             specId: SPEC,
             revision: promotedRevision,
             verdict: 'unknown',
-            wouldBlock: ['falsifiability', 'plan-class-risk-floor'],
+            wouldBlock: ['falsifiability', 'correct-layer', 'plan-class-risk-floor'],
             evidenceRefs: [EVIDENCE_REF],
           }],
         },
@@ -383,7 +412,7 @@ describe('acceptance BAR contract snapshot — real Postgres reuse preflight', (
     ]);
     expect(current.bars[0]!.proof.history![0]!.details.adequacy).toMatchObject({
       targeted: SPEC.toLowerCase(),
-      outcome: 'pass',
+      outcome: 'caught',
       testLayer: 'integration',
     });
     expect(current.bars[0]!.proof.history![0]!.details.adequacy).not.toHaveProperty('coverageRungs');
@@ -410,7 +439,12 @@ describe('acceptance BAR contract snapshot — real Postgres reuse preflight', (
           testExecution: { schemaVersion: 1, phase: 'pending', originRunId: `attempt-${n}`, binding },
           adequacy: { testLayer: 'integration', outcome: 'pending', executed: false, collected: false } } };
       expect(await bindSpecEvidence(pending)).toMatchObject({ status: 'created' });
-      const settled = { ...pending, testRunId: Number(testRun!.id),
+      const testRunId = await recordExecution(outcome === 'pass' ? 'pass' : outcome === 'failed' ? 'fail' : 'running', {
+        ...execution, passed: outcome === 'pass' ? 1 : 0, failed: outcome === 'failed' ? 1 : 0,
+        passedCaseTitles: outcome === 'pass' ? [CASE_TITLE] : [],
+        ...(outcome === 'failed' ? { failedCaseTitles: [CASE_TITLE] } : {}),
+      });
+      const settled = { ...pending, testRunId,
         details: { ...pending.details, evidencePlane: 'tree',
           testExecution: { ...pending.details.testExecution, phase: 'settled' },
           adequacy: { ...bindingInput.details.adequacy, outcome } } };
@@ -420,7 +454,7 @@ describe('acceptance BAR contract snapshot — real Postgres reuse preflight', (
     const oldAttempt = await bindAttempt(1, 'unknown');
     await bindAttempt(2, 'pass');
     const selected = await readAcceptanceBarContractSnapshot(PLAN, {}, { harnessSlug: HARNESS });
-    expect(selected.bars[0]!.proof.adequacy?.state).toBe('pass');
+    expect(selected.bars[0]!.proof.adequacy?.state, JSON.stringify(selected.bars[0]!.proof.adequacy)).toBe('pass');
     expect(selected.bars[0]!.proof.history).toHaveLength(5);
     expect(selected.bars[0]!.proof.adequacy?.checks[0]?.evidenceRefs)
       .toEqual([EVIDENCE_REF, 'test-run-group:attempt-2:0'].sort());

@@ -938,7 +938,7 @@ function qualifyObservedPrivateApiBuild(o: CommittedReaderSourceOptions) {
     sourceCommit: o.selectedCommit, dependencyFiles: receipt.dependencyFiles });
   const source = readVerifierSourceReceiptSync(o.root, o.sourceReceiptPath);
   assert.equal(source.sourceCommit, o.selectedCommit, 'Archive differs from observed selected source');
-  assert.deepEqual(verifierSourceFiles(join(o.root, 'node_modules')), receipt.dependencyFiles,
+  assert.deepEqual(verifierSourceFiles(join(o.root, 'node_modules'), { symlinkRoot: o.root }), receipt.dependencyFiles,
     'Observed materialized dependency census changed');
   assert.deepEqual(preparedArtifactCensus(dirname(o.bundle)), receipt.artifactCensus, 'Observed artifact census changed');
   assert.ok(receipt.artifactCensus.length && receipt.artifactCensus.every(file => file.kind === 'file'),
