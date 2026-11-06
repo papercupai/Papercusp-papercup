@@ -724,6 +724,10 @@ pub enum AgentCtxMode {
     Mail,
     /// The agent's work items + declared plan + claims (fleet:assignments).
     Work,
+    /// Current GUI Orders projection (`agentOrders.byOwner`).
+    Orders,
+    /// Current GUI Activity dossier (`agentDetail.byOwner`).
+    Activity,
 }
 
 /// Which agents the wake-pane board shows (owner ask 2026-06-11): the dock's

@@ -3508,6 +3508,9 @@ pub struct AgentCtxData {
     pub mail: Option<BeeMailPayload>,
     /// Work mode: the agent's ranked work-list + plan linkage.
     pub assignment: Option<BeeAssignment>,
+    /// Same owner-scoped payloads consumed by the GUI session sidebars.
+    pub orders: Option<crate::agent_ctx::AgentOrders>,
+    pub activity: Option<crate::agent_ctx::AgentActivity>,
 }
 
 // ─── Hives tab (p2p swarm roster — pui-hives-tab-2026-06-07) ─────────────────
