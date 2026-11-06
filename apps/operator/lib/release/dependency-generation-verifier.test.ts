@@ -169,15 +169,15 @@ describe('D012 native generation closure', () => {
     writeFileSync(wrapper, [
       'set -euo pipefail',
       'source "$GENERATION_SCRIPT"',
-      'eval "$(declare -f dependency_generation_select_input_fingerprint | sed \'1s/dependency_generation_select_input_fingerprint/original_select_input_fingerprint/\')"',
-      'dependency_generation_select_input_fingerprint() {',
+      'eval "$(declare -f dependency_generation_select_prevalidated | sed \'1s/dependency_generation_select_prevalidated/original_select_prevalidated/\')"',
+      'dependency_generation_select_prevalidated() {',
       '  if [ -f "$NATIVE_BUILD_RECEIPT" ] && [ ! -f "$INTERLEAVED" ]; then',
       '    touch "$INTERLEAVED"',
       // A retired-store sweep admits zero recency roots. Only real process
       // leases or ref pins may preserve a generation across this handoff.
       '    dependency_generation_apply_retention "$STORE" "$DONOR" 0 || return $?',
       '  fi',
-      '  original_select_input_fingerprint "$@"',
+      '  original_select_prevalidated "$@"',
       '}',
       'dependency_generation_main "$@"',
     ].join('\n'));
@@ -190,6 +190,52 @@ describe('D012 native generation closure', () => {
     expect(result.status, result.stderr).toBe(0);
     const generation = result.stdout.match(/\bpath=([^\n]+)$/m)![1]!;
     expect(readFileSync(join(generation, 'tree/packages/cli/dist/cli.cjs'), 'utf8')).toContain('native-handoff');
+    expect(existsSync(join(f.store, '.leases')) ? readdirSync(join(f.store, '.leases')) : []).toEqual([]);
+    const sweep = f.shell(f.generationScript, ['--integration', f.donor, '--generation-root', f.store, '--prune-only']);
+    expect(sweep.status, sweep.stderr).toBe(0);
+    expect(existsSync(generation)).toBe(true);
+  }, 120_000);
+
+  it('keeps its published native identity when another source replaces the ordinary input selector', () => {
+    const f = fixture();
+    const before = f.publish();
+    write(f.dest, 'packages/cli/src/cli.cjs', 'console.log("native-selector-handoff");\n');
+    execFileSync('git', ['add', 'packages/cli/src/cli.cjs'], { cwd: f.dest });
+    execFileSync('git', ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
+      'commit', '-qm', 'native selector handoff source'], { cwd: f.dest });
+    const ref = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: f.dest, encoding: 'utf8' }).trim();
+    execFileSync('git', ['fetch', f.dest, ref], { cwd: f.donor });
+    const wrapper = join(f.root, 'native-selector-handoff.sh');
+    const interleaved = join(f.root, 'publisher-interleaved');
+    const buildReceipt = join(f.root, 'native-build-root');
+    writeFileSync(wrapper, [
+      'set -euo pipefail',
+      'source "$GENERATION_SCRIPT"',
+      'eval "$(declare -f dependency_generation_main | sed \'1s/dependency_generation_main/original_dependency_generation_main/\')"',
+      'dependency_generation_main() {',
+      '  original_dependency_generation_main "$@" || return $?',
+      '  if [ "$2" != "$DONOR" ] && [ -f "$NATIVE_BUILD_RECEIPT" ] && [ ! -f "$INTERLEAVED" ]; then',
+      // A separate publisher shares lock inputs but has older source/CLI bytes.
+      // Its shell must not overwrite the native publisher's identity globals.
+      '    bash "$GENERATION_SCRIPT" --integration "$DONOR" --generation-root "$STORE" > "$INTERLEAVED" || return $?',
+      '  fi',
+      '}',
+      'dependency_generation_main "$@"',
+    ].join('\n'));
+    const result = f.shell(wrapper, ['--integration', f.donor, '--generation-root', f.store,
+      '--ensure-ref', ref, '--verifier-source', f.dest, '--retain-as', 'native-selector-handoff-test'], {
+      GENERATION_SCRIPT: f.generationScript, STORE: f.store, DONOR: f.donor, INTERLEAVED: interleaved,
+      NATIVE_BUILD_PARENT: f.store, NATIVE_BUILD_RECEIPT: buildReceipt,
+    });
+    expect(existsSync(interleaved), result.stderr).toBe(true);
+    expect(readFileSync(interleaved, 'utf8')).toContain('path=' + before);
+    expect(result.status, result.stderr).toBe(0);
+    const generation = result.stdout.match(/\bpath=([^\n]+)$/m)![1]!;
+    expect(generation).not.toBe(before);
+    expect(readFileSync(join(generation, 'tree/packages/cli/dist/cli.cjs'), 'utf8'))
+      .toContain('native-selector-handoff');
+    const compatible = f.shell(f.snapshotHelper, ['preflight-generation', f.dest, f.dest]);
+    expect(compatible.status, compatible.stderr).toBe(0);
     expect(existsSync(join(f.store, '.leases')) ? readdirSync(join(f.store, '.leases')) : []).toEqual([]);
     const sweep = f.shell(f.generationScript, ['--integration', f.donor, '--generation-root', f.store, '--prune-only']);
     expect(sweep.status, sweep.stderr).toBe(0);
