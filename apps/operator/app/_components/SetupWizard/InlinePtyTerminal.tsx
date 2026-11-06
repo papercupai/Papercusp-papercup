@@ -15,6 +15,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { commands } from '@papercusp/operator-core/lib/tauri-bindings';
 import { isTauriNative } from '@papercusp/operator-core/lib/pty-tauri';
+import { TerminalLinksAddon } from '@/lib/terminal-links';
 
 type TauriListenFn = <T>(
   event: string,
@@ -168,6 +169,7 @@ export function InlinePtyTerminal(props: InlinePtyTerminalProps) {
       });
       const fit = new FitAddon();
       term.loadAddon(fit);
+      term.loadAddon(new TerminalLinksAddon());
       term.loadAddon(new WebLinksAddon((_, url) => window.open(url, '_blank')));
 
       if (cancelled) { term.dispose(); return; }

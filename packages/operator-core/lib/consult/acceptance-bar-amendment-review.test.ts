@@ -12,6 +12,7 @@ import {
   ACCEPTANCE_BAR_AMENDMENT_REVIEW_ACTOR,
   buildAmendmentReviewBrief,
   filterAmendmentReviewRoute,
+  inspectFreshAmendmentReviewer,
   launchFreshAmendmentReviewer,
   MAX_DEAD_REVIEWER_CHAIN,
   MAX_FRESH_REVIEWER_MODEL_ATTEMPTS,
@@ -1522,5 +1523,58 @@ describe('selectFreshReviewerModelForAccountSteer', () => {
       accounts: accounts.map((account) => ({ ...account, available: account.id !== 'codex-1' })),
       ranks,
     })).toThrow('no expert model has an available account permitted by the workspace account steer');
+  });
+});
+
+describe('inspectFreshAmendmentReviewer', () => {
+  const input = {
+    workspaceId: 'ws-review-recovery',
+    previewPostRef: 'thread-post:42',
+    reviewer: {
+      state: 'launched', taskId: 'reviewer-1', ownerId: 'reviewer-owner', nativeRef: '/retained/reviewer-1.jsonl',
+    },
+  };
+
+  it('reclaims a terminal reviewer only when its preview has no later post', async () => {
+    const analyzeTranscript = vi.fn(() => ({
+      trailingAccountWallTurns: 0,
+      trailingProviderErrorTurns: 1,
+      lastProviderErrorEvidence: 'provider rejected the last turn',
+    }));
+    const hasLaterPost = vi.fn(async () => false);
+    const result = await inspectFreshAmendmentReviewer(input, {
+      readTaskState: vi.fn(async () => 'exited' as const),
+      analyzeTranscript: analyzeTranscript as never,
+      hasLaterPost,
+    });
+
+    expect(result).toEqual({
+      state: 'reclaimable', taskId: 'reviewer-1', taskState: 'exited',
+      nativeRef: '/retained/reviewer-1.jsonl', reason: 'provider-error',
+      evidence: 'provider rejected the last turn',
+    });
+    expect(hasLaterPost).toHaveBeenCalledWith({ workspaceId: 'ws-review-recovery', previewPostRef: 'thread-post:42' });
+  });
+
+  it('does not reclaim a running reviewer whose live session has no failure evidence', async () => {
+    const resolveSessionStates = vi.fn(async () => new Map([['reviewer-owner', {
+      sessionState: 'live', selfWake: 'loop',
+    }]]));
+    const result = await inspectFreshAmendmentReviewer(input, {
+      readTaskState: vi.fn(async () => 'running' as const),
+      resolveSessionStates: resolveSessionStates as never,
+    });
+
+    expect(result).toMatchObject({ state: 'no-failure-observed', taskId: 'reviewer-1', taskState: 'running' });
+    expect(resolveSessionStates).toHaveBeenCalledWith([{ ownerId: 'reviewer-owner' }], { hydratePerId: true, selfWake: true });
+  });
+
+  it('refuses replacement when a later post appeared after the original preview', async () => {
+    const result = await inspectFreshAmendmentReviewer(input, {
+      readTaskState: vi.fn(async () => 'exited' as const),
+      hasLaterPost: vi.fn(async () => true),
+    });
+
+    expect(result).toMatchObject({ state: 'later-post', taskId: 'reviewer-1', reason: 'a post exists after the preview' });
   });
 });

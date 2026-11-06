@@ -1,0 +1,15 @@
+{
+  "schemaVersion": "luna-bg-private-compiler-preparation-v1",
+  "status": "completed",
+  "startedAtMs": 1793934716835,
+  "completedAtMs": 1793934924485,
+  "deadlineEpochMs": 1793935915255,
+  "sourceReceiptSha256": "105618afb29fc712adb3a9ff6cee4e6f1c8a959bbe32b8ac4829e7d795987c77",
+  "dependenciesSha256": "20f77502dd554f79f470ba4ac07172f108bef606f23160315b4bfb055d488c62",
+  "compiler": {
+    "package.json": "63c56f3176b0503f074a6a0c862c7c99d591b27139dde6d8b838824c988c5905",
+    "lib/main.js": "9425d36afcd1c8542950739bb5611c569f67ba45b4701b274c7ea2ae91f2902b",
+    "bin/esbuild": "98f635ee88526a7d9dd7a82c8a79f341c0247de8aa56d38158c0963892957829"
+  },
+  "version": "0.25.0"
+}

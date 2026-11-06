@@ -178,6 +178,10 @@ export function verifyDepsExtracted({ repoRoot, npmArgs, runNpm, probeSpecifiers
     env?: NodeJS.ProcessEnv;
     deps?: Record<string, any>;
 }): Promise<0 | 1>;
+/** Restore the root's committed patches after reify, while the install writer is held. */
+export function restoreInstalledPatchPostimages({ repoRoot, env }?: {
+    env?: NodeJS.ProcessEnv | undefined;
+}): Promise<0 | 1>;
 export function repoLockName(repoRoot?: string): string;
 /**
  * Hold a shared host-wide cache lease while a package manager may read/write

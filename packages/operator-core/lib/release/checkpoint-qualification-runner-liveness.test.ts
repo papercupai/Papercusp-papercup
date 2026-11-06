@@ -121,6 +121,32 @@ it('proves a scheduled CLI runner by PID boot/start identity, including recycled
   await expect(probeRunnerLiveness({ ...runner, pidIdentity: null })).resolves.toBe('unknown');
 });
 
+it.each([
+  ['dead', 'live', 'live'], ['dead', 'unknown', 'unknown'], ['dead', 'dead', 'dead'],
+  ['unknown', 'live', 'live'], ['unknown', 'dead', 'unknown'], ['unknown', 'unknown', 'unknown'],
+  ['live', 'dead', 'live'], ['live', 'unknown', 'live'], ['live', 'live', 'live'],
+] as const)('retains root scope custody after lease expiry: PID %s, scope %s => %s', async (pidState, scopeState, expected) => {
+  const current = runningWithRunner('root.scope');
+  const runner = { ...current.currentPhysicalRunner!, pid: 4242, pidIdentity: 'original-process' };
+  current.currentPhysicalRunner = runner;
+  const nowMs = runner.leaseExpiresAtMs! + 1;
+  const probes: Array<number | null> = [];
+  configureRunnerLivenessProber(candidate => {
+    probes.push(candidate.pid ?? null);
+    return candidate.pid == null ? scopeState : pidState;
+  });
+  try {
+    const liveness = await probeRunnerLiveness(runner, nowMs);
+    expect(liveness).toBe(expected);
+    expect(probes).toEqual([4242, null]);
+    const successor = reserveQualificationRunner(current, {
+      attemptId: 'attempt-1', runnerId: 'successor', leaseDurationMs: LEASE_MS,
+      incumbentLiveness: liveness, nowMs,
+    });
+    expect(successor.status).toBe(expected === 'dead' ? 'updated' : 'conflict');
+  } finally { configureRunnerLivenessProber(null); }
+});
+
 it('declares an UNBOUND launch reservation (no pid, no unit) dead only once it outlived the runner ceiling (WI-10004694)', async () => {
   // The prober would answer 'unknown' for this row; it must never be consulted past the ceiling.
   configureRunnerLivenessProber(() => 'unknown');

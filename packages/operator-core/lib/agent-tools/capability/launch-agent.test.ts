@@ -2763,7 +2763,7 @@ describe('resume + fork (D-004/D-007)', () => {
     expect(textOf(res)).toContain('failed to invalidate predecessor context pressure');
     expect(spawnHeadlessMock).not.toHaveBeenCalled();
     expect(releaseAgentLaunchClaimMock).toHaveBeenCalledWith({
-      workspaceId: 'ws-test', idempotencyKey: 'cold-wake:failed-clear',
+      workspaceId: 'ws-test', idempotencyKey: 'cold-wake:failed-clear', claimToken: expect.any(String),
     });
   });
 
@@ -2978,7 +2978,7 @@ describe('resume + fork (D-004/D-007)', () => {
       const noSpawn = () => {
         expect(spawnConsoleMock).not.toHaveBeenCalled();
         expect(spawnHeadlessMock).not.toHaveBeenCalled();
-        expect(releaseAgentLaunchClaimMock).toHaveBeenCalledWith({ workspaceId: 'ws-test', idempotencyKey: 'successor-cas' });
+        expect(releaseAgentLaunchClaimMock).toHaveBeenCalledWith({ workspaceId: 'ws-test', idempotencyKey: 'successor-cas', claimToken: expect.any(String) });
       };
 
       it('qualifies only the newest exact row when older terminal history exists', async () => {
@@ -3174,7 +3174,7 @@ describe('resume + fork (D-004/D-007)', () => {
       expect(textOf(res)).toContain('positive terminal evidence is required');
       expect(markAdvSessionEndedMock).not.toHaveBeenCalled();
       expect(spawnConsoleMock).not.toHaveBeenCalled();
-      expect(releaseAgentLaunchClaimMock).toHaveBeenCalledWith({ workspaceId: 'ws-test', idempotencyKey: 'successor-cas' });
+      expect(releaseAgentLaunchClaimMock).toHaveBeenCalledWith({ workspaceId: 'ws-test', idempotencyKey: 'successor-cas', claimToken: expect.any(String) });
     });
 
     it.each([null, dead.endedAt])('an active native Codex writer blocks a successor with endedAt=%s before terminal reconciliation', async (endedAt) => {
@@ -3207,7 +3207,7 @@ describe('resume + fork (D-004/D-007)', () => {
       expect(textOf(res)).toContain('active native Codex writer appeared');
       expect(markAdvSessionEndedMock).not.toHaveBeenCalled();
       expect(spawnConsoleMock).not.toHaveBeenCalled();
-      expect(releaseAgentLaunchClaimMock).toHaveBeenCalledWith({ workspaceId: 'ws-test', idempotencyKey: 'successor-cas' });
+      expect(releaseAgentLaunchClaimMock).toHaveBeenCalledWith({ workspaceId: 'ws-test', idempotencyKey: 'successor-cas', claimToken: expect.any(String) });
     });
 
     it.each([
@@ -4808,7 +4808,9 @@ describe('launch result after the dispatch deadline', () => {
 
   it('surfaces the cached multi-launch summary when the handler returns after timeout', async () => {
     const idempotencyKey = 'deadline-crossing-launch-test';
-    recordAgentLaunchResultMock.mockImplementationOnce(async () => {
+    recordAgentLaunchResultMock.mockImplementation(async (opts: unknown) => {
+      const summary = (opts as { summary?: { launchState?: string } }).summary;
+      if (summary?.launchState === 'spawning') return true;
       await new Promise<void>((resolve) => setTimeout(resolve, 100));
       return true;
     });
@@ -4836,7 +4838,9 @@ describe('launch result after the dispatch deadline', () => {
   }, 10_000);
 
   it('keeps the timeout when process openings have no confirmed durable summary', async () => {
-    recordAgentLaunchResultMock.mockImplementationOnce(async () => {
+    recordAgentLaunchResultMock.mockImplementation(async (opts: unknown) => {
+      const summary = (opts as { summary?: { launchState?: string } }).summary;
+      if (summary?.launchState === 'spawning') return true;
       await new Promise<void>((resolve) => setTimeout(resolve, 100));
       return false;
     });
@@ -4873,40 +4877,52 @@ describe('failure reporting', () => {
         priorLaunchedAt: null,
         priorLaunchedBy: null,
       });
-    spawnConsoleMock
-      .mockResolvedValueOnce({
-        status: 'error',
-        code: 503,
-        error: 'durable admission record could not be persisted',
-      })
-      .mockResolvedValueOnce({
-        status: 'ok',
-        pid: 4242,
-        terminal: 'xterm',
-        child: {} as never,
-        display: ':1',
-        desktopEnvResolvedVia: 'active-seat',
-      });
+    spawnGovernedAgentProcessMock.mockRejectedValueOnce(
+      new Error('durable admission record could not be persisted'),
+    );
+    spawnConsoleMock.mockResolvedValueOnce({
+      status: 'ok',
+      pid: 4242,
+      terminal: 'xterm',
+      child: {} as never,
+      display: ':1',
+      desktopEnvResolvedVia: 'active-seat',
+    });
 
     const first = await launchAgent.handler(
       { brief: 'retryable launch', idempotencyKey: 'retry-after-admission-failure' },
       ctx,
     );
     expect(isError(first)).toBe(true);
+    expect(spawnConsoleMock).not.toHaveBeenCalled();
     expect(textOf(first)).toContain('released idempotencyKey');
     expect(releaseAgentLaunchClaimMock).toHaveBeenCalledWith({
       workspaceId: 'ws-test',
       idempotencyKey: 'retry-after-admission-failure',
+      claimToken: expect.any(String),
     });
-    expect(recordAgentLaunchResultMock).not.toHaveBeenCalled();
+    expect(recordAgentLaunchResultMock).toHaveBeenCalledWith(expect.objectContaining({
+      idempotencyKey: 'retry-after-admission-failure',
+      summary: expect.objectContaining({
+        launchState: 'spawning',
+        spawnAttempted: false,
+        nativeSpawnAttempted: [],
+      }),
+    }));
+    expect(recordAgentLaunchResultMock.mock.invocationCallOrder[0]).toBeLessThan(
+      spawnGovernedAgentProcessMock.mock.invocationCallOrder[0],
+    );
 
     const retry = await launchAgent.handler(
       { brief: 'retryable launch', idempotencyKey: 'retry-after-admission-failure' },
       ctx,
     );
     expect(isError(retry)).toBe(false);
-    expect(spawnConsoleMock).toHaveBeenCalledTimes(2);
-    expect(recordAgentLaunchResultMock).toHaveBeenCalledTimes(1);
+    expect(spawnConsoleMock).toHaveBeenCalledTimes(1);
+    expect(recordAgentLaunchResultMock).toHaveBeenCalledWith(expect.objectContaining({
+      idempotencyKey: 'retry-after-admission-failure',
+      summary: expect.objectContaining({ opened: 1, failed: 0 }),
+    }));
   });
 
   it('releases a claimed key when governed admission rejects before the spawner is invoked', async () => {
@@ -4924,6 +4940,7 @@ describe('failure reporting', () => {
     expect(releaseAgentLaunchClaimMock).toHaveBeenCalledWith({
       workspaceId: 'ws-test',
       idempotencyKey: 'retry-after-governed-rejection',
+      claimToken: expect.any(String),
     });
     expect(textOf(res)).toContain('governed spawn failed: durable admission record could not be persisted');
   });
@@ -4955,7 +4972,7 @@ describe('failure reporting', () => {
     );
   });
 
-  it('preserves a retired headless kickoff receipt without reporting an opened task', async () => {
+  it('preserves a retired headless kickoff receipt without counting an opened agent', async () => {
     const kickoffProof = {
       persisted: false, nativeRef: null, reason: 'kickoff-not-submitted:role-mcp-unavailable',
     };
@@ -4966,7 +4983,12 @@ describe('failure reporting', () => {
     const result = await launchAgent.handler({ brief: 'grade', headless: true }, ctx);
     expect(isError(result)).toBe(true);
     expect(dataOf(result)?.launch).toMatchObject({
-      opened: 0, failed: 1, tasks: [],
+      opened: 0, failed: 1,
+      tasks: [
+        expect.objectContaining({
+          status: 'error', taskId: 'task-retired', logPath: '/tmp/retired-judge.log',
+        }),
+      ],
       failures: [{ taskId: 'task-retired', logPath: '/tmp/retired-judge.log', kickoffProof }],
     });
   });

@@ -81,6 +81,21 @@ export function isDirectHumanCapability(value: unknown): value is DirectHumanCap
   return typeof value === 'string' && DIRECT_HUMAN_CAPABILITIES.has(value as DirectHumanCapability);
 }
 
+/** Release legacy owner flags only when a human clear removes their last backing blocker.
+ * Shared by the public clear door and system settlement inside its row-locked transaction.
+ * A surviving human blocker, including a legacy ask, remains conservative evidence of a hold.
+ */
+export function ownerActionFlagsReleasedByClear(
+  payload: unknown,
+  remainingActive: ReadonlyArray<{ kind: string }>,
+  change: { kind: string; cleared: boolean },
+): Array<'needsOwnerAction' | 'needsHuman'> {
+  if (!change.cleared || change.kind !== 'human' || remainingActive.some((blocker) => blocker.kind === 'human')) return [];
+  const record = payload && typeof payload === 'object' && !Array.isArray(payload)
+    ? payload as Record<string, unknown> : {};
+  return (['needsOwnerAction', 'needsHuman'] as const).filter((key) => record[key] === true);
+}
+
 const CAPABILITY_POLICIES: Record<ExternalBlockerCapability, Omit<ExternalBlockerCapabilityPolicy, 'capability'>> = {
   'approval-auto-clearable': {
     autoClearable: true,

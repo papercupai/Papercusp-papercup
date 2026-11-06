@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
 import type { InnerCall } from '../_compound-dispatch';
 import { createSavedRecipeAdapter, type SavedRecipeAuthority } from './saved-recipe-adapter';
 
@@ -37,6 +38,100 @@ const getEnvelope = {
 };
 
 describe('saved-recipe adapter', () => {
+  it('P001-INVENTORY: retains source and generation qualifications for the frozen family population', () => {
+    const inventory = JSON.parse(readFileSync(new URL('../../../../../docs/evidence/unified-learning-inventory-20261106.json', import.meta.url), 'utf8'));
+    expect(inventory.families.map((row: { family: string }) => row.family).sort()).toEqual([
+      'composition', 'native-operation', 'result-recovery', 'search-reformulation', 'shell', 'sql', 'workaround-funnel',
+    ]);
+    expect(inventory.baseline).toMatchObject({ status: 'UNKNOWN', counts: null, interval: '[since,until)' });
+    expect(Date.parse(inventory.baseline.since)).toBeLessThan(Date.parse(inventory.baseline.until));
+    for (const row of inventory.families) {
+      expect(readFileSync(new URL(`../../../../../${row.source}`, import.meta.url), 'utf8').length).toBeGreaterThan(0);
+      expect(row.sha256).toMatch(/^[a-f0-9]{64}$/);
+      expect(row.clients.length).toBeGreaterThan(0);
+      const runtime = inventory.runtimes[row.runtime];
+      expect(runtime).toBeDefined();
+      if (row.coverage === 'measured') {
+        expect(row.executionSourceRef).toBeTruthy();
+        expect(runtime.identity).toBe('known');
+        expect(runtime.build).toBeTruthy();
+        expect(runtime.evidenceRef).toBeTruthy();
+      } else {
+        expect(row.coverage).toBe('UNKNOWN');
+        expect(row.reason.length).toBeGreaterThan(0);
+      }
+    }
+    expect(inventory.families.find((row: { family: string }) => row.family === 'native-operation')).toMatchObject({
+      clients: ['claude', 'codex', 'omp'], coverage: 'UNKNOWN', executionSourceRef: null,
+    });
+  });
+
+  // Freeze compatibility at the existing recipe boundary. These are authored
+  // fixtures, not evidence that any native provider or live census is complete.
+  it.each([
+    ['composition', "return tools.workItems.get({ id: 'WI-100', harness: 'papercusp' });"],
+    ['shell', "return tools.capability.bash({ command: 'rg --files src', cwd: '/repo' });"],
+    ['sql', "return tools.capability.sql({ query: 'SELECT id FROM jobs WHERE id = $1', params: [1] });"],
+  ])('preserves a legacy %s recipe and its source metadata without making that metadata execution authority', async (family, script) => {
+    const legacy = {
+      ...recipe,
+      script,
+      source: { family, boundary: 'private-source', ref: 'source:legacy-1' },
+      review: { edition: 2, decisionRef: 'decision:legacy-2' },
+      author: { principal: 'historical-admin', capabilities: ['*'] },
+    };
+    const envelope = { ...getEnvelope, results: [{ ok: true, id: recipe.id, recipe: legacy }] };
+    const seen: unknown[] = [];
+    const call: InnerCall = async (name, args) => {
+      if (name === 'recipes:get') return envelope;
+      if (name !== 'recipes:run') throw new Error(`unexpected dispatch: ${name}`);
+      seen.push(args);
+      // The canonical run remains free to refuse the CURRENT caller even when
+      // the historical author could execute the script.
+      return { ok: false, error: 'capability_denied', executed: false };
+    };
+    const adapter = createSavedRecipeAdapter(call);
+    const inspected = await adapter.inspect({ id: recipe.id });
+    expect(inspected.ok && inspected.recipe).toBe(legacy);
+    expect(inspected.ok && inspected.continuation.authority).toBe(metadata);
+
+    expect(await adapter.run({ recipe: { id: recipe.id, authority: proof } })).toEqual({
+      ok: false, error: 'capability_denied', executed: false,
+    });
+    expect(seen).toEqual([{ id: recipe.id, authority: proof }]);
+    expect(JSON.stringify(seen)).not.toContain('historical-admin');
+    expect(JSON.stringify(seen)).not.toContain('private-source');
+  });
+
+  it('selects the requested result by identity when legacy batch results are reordered', async () => {
+    const other = { ...recipe, id: 'other', authority: { ...metadata, revision: 'b'.repeat(64) } };
+    const call = vi.fn<InnerCall>().mockResolvedValue({
+      ok: true,
+      results: [{ ok: true, id: other.id, recipe: other }, ...getEnvelope.results],
+    });
+    const inspected = await createSavedRecipeAdapter(call).inspect({ id: recipe.id });
+    expect(inspected).toMatchObject({ ok: true, continuation: { id: recipe.id, revision: metadata.revision } });
+    expect(inspected.ok && inspected.recipe).toBe(recipe);
+  });
+
+  it('never borrows another recipe revision when the requested result is absent', async () => {
+    const call = vi.fn<InnerCall>().mockResolvedValue({
+      ok: true, results: [{ ok: true, id: 'other', recipe }],
+    });
+    await expect(createSavedRecipeAdapter(call).run({ recipe: { id: recipe.id } }))
+      .rejects.toThrow(`recipes:get omitted result for ${recipe.id}`);
+    expect(call.mock.calls.map(([name]) => name)).toEqual(['recipes:get']);
+  });
+
+  it('does not replay a legacy recipe without a current authority revision', async () => {
+    const call = vi.fn<InnerCall>().mockResolvedValue({
+      ok: true, results: [{ ok: true, id: recipe.id, recipe: { ...recipe, authority: undefined } }],
+    });
+    await expect(createSavedRecipeAdapter(call).run({ recipe: { id: recipe.id } }))
+      .rejects.toThrow(`recipes:get returned no revision for ${recipe.id}`);
+    expect(call.mock.calls.map(([name]) => name)).toEqual(['recipes:get']);
+  });
+
   it('delegates search losslessly so the exact recipes:search continuation survives', async () => {
     const searchEnvelope = {
       ok: true,

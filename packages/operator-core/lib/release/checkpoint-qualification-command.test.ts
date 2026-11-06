@@ -36,6 +36,52 @@ const setup = () => {
 afterEach(() => vi.useRealTimers());
 
 describe('qualification confined command custody', () => {
+  it.each(['900', '6000', 'invalid'])('owns lifetime beyond the old timer horizon despite request deadline %s', async requestDeadline => {
+    const { input, deps, child, calls } = setup();
+    input.deadlineEpochMs = null; input.env.PAPERCUSP_TASK_DEADLINE_EPOCH_MS = requestDeadline;
+    const pending = runQualificationCommand('npm', [], input, deps);
+    await vi.advanceTimersByTimeAsync(3 * (2 ** 31 - 1));
+    expect(deps.kill).not.toHaveBeenCalled();
+    expect(deps.spawn).toHaveBeenCalledWith('npm', [], expect.objectContaining({ runtimeMaxSec: 0 }),
+      expect.not.objectContaining({ deadlineEpochMs: expect.anything() }));
+    const launched = vi.mocked(deps.spawn).mock.calls[0]![3]!;
+    expect(launched.spawnOptions!.env).not.toHaveProperty('PAPERCUSP_TASK_DEADLINE_EPOCH_MS');
+    expect(launched.signal!.aborted).toBe(false);
+    child.emit('close', 0, null); await expect(pending).resolves.toMatchObject({ code: 0 });
+    expect(calls).toEqual(['enroll', 'fork', 'handoff-verified', 'kill', 'release']);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('keeps explicit cancellation and verified child release after multiple owned timer horizons', async () => {
+    const { input, deps, calls } = setup(); input.deadlineEpochMs = null;
+    const controller = new AbortController(); input.signal = controller.signal;
+    const pending = runQualificationCommand('npm', [], input, deps);
+    const rejected = expect(pending).rejects.toThrow('command-aborted');
+    await vi.advanceTimersByTimeAsync(2 * (2 ** 31 - 1)); controller.abort(); await rejected;
+    expect(calls).toEqual(['enroll', 'fork', 'kill', 'kill', 'release']);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it.each([false, true])('retains independent owned worker timeout (hard=%s)', async hard => {
+    const { input, deps } = setup(); input.deadlineEpochMs = null;
+    vi.setSystemTime(3 * (2 ** 31 - 1));
+    if (hard) input.hardTimeoutMs = 100; else input.timeoutMs = 100;
+    const pending = runQualificationCommand('npm', [], input, deps);
+    const rejected = expect(pending).rejects.toThrow(hard ? 'worker-hard-timeout' : 'worker-timeout');
+    await vi.advanceTimersByTimeAsync(100); await rejected;
+    expect(deps.record).toHaveBeenLastCalledWith(input.target, expect.objectContaining({ operation: 'release' }));
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('chunks a long explicit validation deadline while keeping its original cutoff', async () => {
+    const { input, deps } = setup(); input.deadlineEpochMs = Date.now() + 2 ** 31 - 1 + 10_000;
+    const pending = runQualificationCommand('npm', [], input, deps);
+    const rejected = expect(pending).rejects.toThrow('command-deadline');
+    await vi.advanceTimersByTimeAsync(2 ** 31 - 1); expect(deps.kill).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(10_000); await rejected;
+    expect(deps.record).toHaveBeenCalledTimes(1);
+  });
+
   it('rejects an expired inherited caller deadline before enrollment', async () => {
     const { input, deps } = setup(); input.env.PAPERCUSP_TASK_DEADLINE_EPOCH_MS = '900';
     await expect(runQualificationCommand('npm', [], input, deps)).rejects.toThrow('deadline-exhausted');

@@ -701,9 +701,12 @@ function prepareNativeProofPacket(directory, input) {
     objectRoot, syncNames, directoryPaths, progress };
 }
 
-function finishNativeProofPacket(prepared) {
+const NATIVE_PROOF_SYNC_OBJECT_LIMIT = 128;
+const NATIVE_PROOF_SYNC_CONCURRENCY = 8;
+
+function finishNativeProofPacket(prepared, syncMetrics = {}) {
   prepared.progress('sync-complete', {
-    completed: prepared.syncNames.length, total: prepared.syncNames.length,
+    completed: prepared.syncNames.length, total: prepared.syncNames.length, ...syncMetrics,
   });
   prepared.progress('verification-start');
   const verified = verifyNativeProofPacket(prepared.root, prepared.locator,
@@ -723,25 +726,51 @@ async function syncNativeProofPathAsync(path) {
 }
 
 function syncNativeProofPacket(prepared) {
+  if (prepared.syncNames.length > NATIVE_PROOF_SYNC_OBJECT_LIMIT) {
+    throw new Error(`native proof packet has ${prepared.syncNames.length} objects; ` +
+      `use retainNativeProofPacketAsync above ${NATIVE_PROOF_SYNC_OBJECT_LIMIT}`);
+  }
   for (const [index, name] of prepared.syncNames.entries()) {
     syncNativeProofPath(join(prepared.objectRoot, name));
     if ((index + 1) % 128 === 0) {
-      prepared.progress('sync-progress', { completed: index + 1, total: prepared.syncNames.length });
+      prepared.progress('sync-progress', {
+        completed: index + 1, total: prepared.syncNames.length, maxConcurrent: 1,
+      });
     }
   }
   for (const path of prepared.directoryPaths) syncNativeProofPath(path);
-  return finishNativeProofPacket(prepared);
+  return finishNativeProofPacket(prepared, { maxConcurrent: prepared.syncNames.length ? 1 : 0 });
 }
 
 async function syncNativeProofPacketAsync(prepared) {
-  for (const [index, name] of prepared.syncNames.entries()) {
-    await syncNativeProofPathAsync(join(prepared.objectRoot, name));
-    if ((index + 1) % 128 === 0) {
-      prepared.progress('sync-progress', { completed: index + 1, total: prepared.syncNames.length });
+  let next = 0, completed = 0, active = 0, maxConcurrent = 0, failed = false, failure;
+  const worker = async () => {
+    while (!failed) {
+      const index = next++;
+      if (index >= prepared.syncNames.length) return;
+      active++;
+      maxConcurrent = Math.max(maxConcurrent, active);
+      try {
+        await syncNativeProofPathAsync(join(prepared.objectRoot, prepared.syncNames[index]));
+      } catch (error) {
+        if (!failed) { failed = true; failure = error; }
+      } finally {
+        active--;
+      }
+      if (failed) return;
+      completed++;
+      if (completed % 128 === 0) {
+        prepared.progress('sync-progress', {
+          completed, total: prepared.syncNames.length, maxConcurrent,
+        });
+      }
     }
-  }
+  };
+  const workerCount = Math.min(NATIVE_PROOF_SYNC_CONCURRENCY, prepared.syncNames.length);
+  await Promise.all(Array.from({ length: workerCount }, () => worker()));
+  if (failed) throw failure;
   for (const path of prepared.directoryPaths) await syncNativeProofPathAsync(path);
-  return finishNativeProofPacket(prepared);
+  return finishNativeProofPacket(prepared, { maxConcurrent });
 }
 
 /** Synchronous custody path for isolated command-line consumers. */

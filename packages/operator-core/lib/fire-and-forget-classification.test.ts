@@ -266,6 +266,29 @@ console.log(JSON.stringify({ sites: censusSources({ 'src/app.ts': 'void notifyOw
     expect(validateClassifications(c, [classify(c)[0], ...inlineClassifications(c)])).toEqual([]);
   });
 
+  it.each([
+    'notifyPeer("first"); notifyPeer("second");',
+    'void (async () => { notifyOwner(); })();',
+  ])('matches multiple nearby declarations to their own exact sites: %s', (source) => {
+    const before = scan(source);
+    expect(before.sites).toHaveLength(2);
+    const records = classify(before).map((r, i) => ({ ...r, reason: `Reviewed consequence ${i}` }));
+    const annotations = [...records].reverse().map(r => `// notify-classification: ${JSON.stringify(r)}`);
+    const after = scan(`${annotations.join('\n')}\n${source}`);
+    expect(after.gaps).toEqual([]);
+    expect(after.sites.map(s => s.id)).toEqual(before.sites.map(s => s.id));
+    expect(inlineClassifications(after)).toEqual(records);
+    expect(validateClassifications(after, inlineClassifications(after))).toEqual([]);
+  });
+
+  it('prefers an exact declaration over an earlier unscoped declaration', () => {
+    const source = 'notifyOwner();';
+    const [record] = classify(scan(source));
+    const { id: _id, ...legacy } = { ...record, reason: 'Legacy fallback' };
+    const after = scan(`// notify-classification: ${JSON.stringify(legacy)}\n// notify-classification: ${JSON.stringify(record)}\n${source}`);
+    expect(inlineClassifications(after)).toEqual([record]);
+  });
+
   it('seeds requirements from a measured census without inventing verified delivery', () => {
     const c = scan('notifyOwner();');
     const sourceDigest = createHash('sha256').update(JSON.stringify(c.files)).digest('hex');

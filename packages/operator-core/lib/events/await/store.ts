@@ -3345,14 +3345,22 @@ export async function ackDelivery(input: { deliveryId: number; subscriberId: str
         `;
     return rows[0];
   };
+  // Older inbox fallback/ACK writers could settle the ledger while the host
+  // still owned the accepted delivery. Its exact pre-write receipt, rather
+  // than the ledger's terminal channel, decides whether cleanup is possible.
+  // Observed or already-superseded proof is never recalled.
+  const unconfirmedInboxWake = (state: OwnedDeliveryState | undefined): boolean =>
+    state?.status === 'delivered' &&
+    (state.channel === 'inbox' || state.channel === 'suppressed-redundant') &&
+    (state.turnProof == null || state.turnProof === 'awaiting');
   const recallableHostWake = (state: OwnedDeliveryState | undefined): boolean => {
     if (!state) return false;
     if (state.status === 'delivering') return true;
     if ((state.status === 'pending' || state.status === 'parked') &&
         isAcceptedPsuHostDelivery({ lastError: state.lastError ?? null })) return true;
-    return state.status === 'delivered' &&
+    return unconfirmedInboxWake(state) || (state.status === 'delivered' &&
       (state.channel === 'psu-socket-inject' || state.channel === 'pty-inject') &&
-      (state.turnProof == null || state.turnProof === 'awaiting');
+      (state.turnProof == null || state.turnProof === 'awaiting'));
   };
 
   let owned = await readOwnedState();
@@ -3391,7 +3399,8 @@ export async function ackDelivery(input: { deliveryId: number; subscriberId: str
     // Re-read rather than returning a stale snapshot.
     owned = await readOwnedState();
     if (await ackQueuedDelivery()) return { acked: true, alreadySettled: false };
-    if (owned && (owned.status === 'pending' || owned.status === 'parked' || owned.status === 'delivering' || owned.status === 'delivered')) {
+    if (owned && (owned.status === 'pending' || owned.status === 'parked' || owned.status === 'delivering' ||
+        (owned.status === 'delivered' && (!unconfirmedInboxWake(owned) || cancellation === 'requested')))) {
       return {
         acked: false,
         alreadySettled: false,

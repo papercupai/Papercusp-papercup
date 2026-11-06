@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from 'vitest';
 import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -14,6 +14,7 @@ import {
 import type { ResumeTurnExitRaw } from './resume-turn-outcome';
 import type { DeliveryWork, WakeOutcome } from './types';
 import { MultiSessionTestbed, makeDelivery, advSessionHandle, deadPid } from '../../../test/_multi-session-testbed';
+import { readRealPgRailBlocks } from '@papercusp/test-config/silenced-console-census';
 
 /**
  * P0a wiring: executeWake's `resume-headless` channel must forward the detached turn's
@@ -29,6 +30,11 @@ describe('wake-executor — resume-headless exit observation (P0a)', () => {
   afterEach(async () => {
     vi.unstubAllEnvs();
     await tb.destroy();
+  });
+
+  afterAll(() => {
+    const { blocked, callers } = readRealPgRailBlocks();
+    expect(blocked, `Unexpected real Postgres attempts: ${callers.join('; ')}`).toBe(0);
   });
 
   async function exitedClaudeResumeDeps(over: Partial<ExecuteWakeDeps> = {}): Promise<{
@@ -61,13 +67,34 @@ describe('wake-executor — resume-headless exit observation (P0a)', () => {
       workspaceForCoordOwnerFn: async () => null,
       // WI-10002854: the real accountant writes the ledger row and adv pid to PG.
       accountHeadlessResumeTurn: () => ({ pidRecorded: Promise.resolve(), finish: () => {} }),
-      // The resume leg's harness fallback reads the live loop row. That blocked
-      // real-PG attempt ran in every test here; model "no loop row" instead.
+      // executeWake's loop gate uses this production default, which reads PG.
+      // This suite does not test loop arming.
+      isLoopArmed: async () => false,
+      // The harness fallback has a separate status seam; model no loop row there too.
       getLoopStatusFn: (async () => null) as never,
       // EI-203843: executeWake's FIRST gate reads the owner's session lifecycle fail-closed.
       // Without a stub it hits real PG, throws, and parks every case as "custody unknown".
       // Model "no lifecycle row" (not shut down, not paused) so the resume ladder runs.
       getSessionLifecycle: async () => null,
+      // These executor defaults read PG in archive, recovery, account-pool, and
+      // grading-audit paths that this suite does not exercise. Case-specific tests
+      // override the seams they cover; keep all other branches hermetic.
+      collectSessionFiles: async () => [],
+      findArchivedSessionIdForAdv: async () => null,
+      rematerializeSession: async () => ({
+        ok: false, reason: 'not_archived', written: 0, skippedExisting: 0, conflicts: [],
+      }),
+      recoverToolReferenceDeath: async () => 'not-dead' as const,
+      resolveWakeRehome: async () => ({
+        action: 'keep', reason: 'unit fixture does not exercise account-pool routing',
+      }),
+      readGradingAuditTasks: async () => [],
+      // makeDelivery defaults to coord:inbox-wake, whose held-work reminder resolves
+      // the recipient workspace through live Postgres. This suite does not test reminders.
+      prepareInboxWakeHeldWorkReminder: null,
+      // executeWake also auto-arms inbox wake for active sessions on a separate path.
+      // This suite does not test that repair.
+      ensureInboxWakeArmedForActiveSession: async () => false,
       ...over,
     };
     // Hermetic owner election (WI-10008189): the handle reads not-alive, so executeWake elects

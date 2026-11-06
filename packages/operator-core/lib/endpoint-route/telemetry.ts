@@ -18,6 +18,86 @@ import type { RouteExecution } from './route-stack';
 import type { Sql } from 'postgres';
 import type { ExpertiseRoutingReceipt } from '../consult/relevance-router';
 import { pinModuleState } from '@papercusp/module-singleton';
+import type { IncomingMessage, Server, ServerResponse } from 'node:http';
+
+type GuardHttpStage = 'hono_enter' | 'middleware_enter' | 'route_start' | 'route_end' | 'hono_response' | 'headers_write';
+interface GuardHttpTrace {
+  requestId: string;
+  startedAt: number;
+  receivedAt: string;
+  stages: Partial<Record<GuardHttpStage, number>>;
+  outgoing: ServerResponse;
+  closed: boolean;
+  lateResponseLogged: boolean;
+}
+const guardHttpDiagnostics = pinModuleState('@papercusp/operator-core.guard-http-diagnostics', () => ({
+  incoming: new WeakMap<IncomingMessage, GuardHttpTrace>(),
+  requests: new WeakMap<Request, GuardHttpTrace>(),
+  servers: new WeakSet<Server>(),
+}));
+const guardUuid = (value: unknown): value is string => typeof value === 'string'
+  && /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+
+function emitGuardHttpTrace(trace: GuardHttpTrace, event: 'finish' | 'close' | 'late_response'): void {
+  try {
+    console.warn('[tool-guard-http-timing]', JSON.stringify({
+      guardRequestId: trace.requestId, receivedAt: trace.receivedAt, processId: process.pid,
+      event, elapsedMs: Math.round(performance.now() - trace.startedAt),
+      stagesMs: { ...trace.stages }, headersSent: trace.outgoing.headersSent,
+      writableFinished: trace.outgoing.writableFinished,
+    }));
+  } catch { /* Diagnostics must never affect a response or its disconnect cleanup. */ }
+}
+
+/** Observe parsed Node request arrival BEFORE the adapter runs, not TCP accept or
+ * persistence time. Only the guard's opaque UUID is copied; never read its body.
+ * Weak keys and at most two terminal snapshots bound memory/output per request.
+ */
+export function installGuardHttpDiagnostics(server: Server): void {
+  if (guardHttpDiagnostics.servers.has(server)) return;
+  guardHttpDiagnostics.servers.add(server);
+  server.prependListener('request', (incoming: IncomingMessage, outgoing: ServerResponse) => {
+    if (incoming.method !== 'POST' || incoming.url?.split('?')[0] !== '/api/agent-mcp/tool-guard') return;
+    const requestId = incoming.headers['x-papercusp-guard-request-id'];
+    if (!guardUuid(requestId)) return;
+    const trace: GuardHttpTrace = { requestId: requestId.toLowerCase(), startedAt: performance.now(),
+      receivedAt: new Date().toISOString(), stages: {}, outgoing, closed: false, lateResponseLogged: false };
+    guardHttpDiagnostics.incoming.set(incoming, trace);
+    const writeHead = outgoing.writeHead;
+    outgoing.writeHead = function (this: ServerResponse, ...args: Parameters<ServerResponse['writeHead']>) {
+      trace.stages.headers_write ??= Math.round(performance.now() - trace.startedAt);
+      return writeHead.apply(this, args);
+    } as ServerResponse['writeHead'];
+    outgoing.once('finish', () => {
+      trace.closed = true;
+      emitGuardHttpTrace(trace, 'finish');
+    });
+    outgoing.once('close', () => {
+      if (trace.closed) return;
+      trace.closed = true;
+      emitGuardHttpTrace(trace, 'close');
+    });
+  });
+}
+
+/** Bind the exact adapter request to its Web Request without a global UUID map. */
+export function enterGuardHttpRequest(req: Request, incoming?: IncomingMessage): void {
+  if (!incoming) return;
+  const trace = guardHttpDiagnostics.incoming.get(incoming);
+  if (!trace) return;
+  guardHttpDiagnostics.requests.set(req, trace);
+  markGuardHttpStage(req, 'hono_enter');
+}
+
+export function markGuardHttpStage(req: Request, stage: GuardHttpStage): void {
+  const trace = guardHttpDiagnostics.requests.get(req);
+  if (!trace) return;
+  trace.stages[stage] ??= Math.round(performance.now() - trace.startedAt);
+  if (stage === 'hono_response' && trace.closed && !trace.lateResponseLogged) {
+    trace.lateResponseLogged = true;
+    emitGuardHttpTrace(trace, 'late_response');
+  }
+}
 
 export const EXPERTISE_ROUTING_PATH = 'internal:expertise-routing';
 

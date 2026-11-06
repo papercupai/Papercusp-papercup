@@ -21,7 +21,7 @@ export default defineTool({
   name: 'work_items:completion_stats',
   profile: 'engineer',
   description:
-    "Completion-integrity and declared-outcome counts for one harness. genuineCompletions means terminal owner plus completion ref or authority judgement; it does NOT mean a new change landed. declaredWorkOutcomes counts exact self-declared introduced-change, verified-existing, duplicate, invalid-or-expected, other-no-new-change, and unknown legacy/omitted outcomes across terminal rows. gateJudged is evidence-gate coverage, not a compliance score.",
+    "All-time harness completion-integrity and declared-outcome counts; population explicitly has no fleet attribution. authorityRecordedCompletions counts terminal owner plus completion ref or authority judgement (legacy alias genuineCompletions); independentlyVerifiedNewChanges is null because this reader does not measure it. declaredWorkOutcomes counts exact self-declared introduced-change, verified-existing, duplicate, invalid-or-expected, other-no-new-change, and unknown legacy/omitted outcomes. gateJudged is evidence-gate coverage, not a compliance score.",
   guidance: {
     when:
       'Reporting harness completion-integrity coverage or the exact split of declared work outcomes; do not equate a committed authority judgement with a new change.',

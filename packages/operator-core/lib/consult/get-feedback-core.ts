@@ -43,6 +43,7 @@ import { consultCurrentReviewContext, consultResponderVerbMenu } from './respond
 import { sourceAuditCascadeMetaFromRouting, sourceAuditWakeCopy, goalTenureGradingWakeCopy, type SourceAuditCascadeMeta, type GoalTenureGradingCascadeMeta } from './grading-cascade';
 import { proseProfilePredicateSql } from '../search/prose-vector-dims';
 import { lineagePartyKeys } from '../acceptance-author-identity';
+import { withCurrentDiscovery } from '../plan-audits';
 
 /** P-006 archive-first retrieval floor: a closed_answered consult whose
  * question similarity clears this is served from the archive (create +
@@ -187,7 +188,8 @@ export type GetFeedbackError =
   | { error: 'parent_consult_not_found'; parent_consult_id: string; hint: string }
   | { error: 'consult_depth_exceeded'; depth: number; max_depth: number; hint: string }
   | { error: 'consult_cycle'; lineage: string[]; hint: string }
-  | { error: 'bar_critique_requires_plan'; hint: string };
+  | { error: 'bar_critique_requires_plan'; hint: string }
+  | { error: 'discovery_not_ready'; hint: string; discovery?: unknown };
 
 /** Bar critiques count only when their origin is the exact registered plan
  * key that plans:start will query in this workspace and harness. A non-empty
@@ -250,6 +252,8 @@ async function priorBarCritiqueLineageOwners(
 }
 
 export interface GetFeedbackDeps {
+  /** Test seam; production always uses the shared locked admission boundary. */
+  withCurrentDiscovery?: typeof withCurrentDiscovery;
   /** Internal recovery context, never an externally supplied conversation id. */
   acceptedRequest?: { conversation_id: string; thread_id: string; leaseToken: string; leaseUntilMs?: number };
   getSql: () => Sql;
@@ -386,6 +390,24 @@ function requestInputFingerprint(req: GetFeedbackRequest): string {
  * consult PK both converge on the same requester/workspace/key identity. */
 export async function acceptFeedbackRequestCore(
   req: GetFeedbackRequest,
+  deps: Pick<GetFeedbackDeps, 'getSql' | 'open' | 'now' | 'withCurrentDiscovery'>,
+): Promise<AcceptedFeedbackResult | GetFeedbackError | { error: 'request_key_conflict'; conversation_id: string; hint: string }> {
+  const origin = await validateBarCritiquePlanOrigin(req, deps.getSql());
+  if (origin) return origin;
+  return withBarCritiqueDiscovery(req, deps, async () => acceptReadyFeedbackRequestCore(req, deps));
+}
+
+async function withBarCritiqueDiscovery<T>(req: GetFeedbackRequest,
+  deps: Pick<GetFeedbackDeps, 'withCurrentDiscovery'>, accept: () => Promise<T>): Promise<T | GetFeedbackError> {
+  if (req.policy !== BAR_CRITIQUE_POLICY) return accept();
+  const admitted = await (deps.withCurrentDiscovery ?? withCurrentDiscovery)({ workspaceId: req.workspaceId,
+    harnessSlug: req.harnessSlug!, planSlug: req.originTaskRef!, createdBy: req.requesterId }, accept);
+  return admitted.ok ? admitted.result : { error: 'discovery_not_ready',
+    hint: 'nextAction' in admitted ? admitted.nextAction ?? admitted.error : admitted.error,
+    ...('discovery' in admitted ? { discovery: admitted.discovery } : {}) };
+}
+
+async function acceptReadyFeedbackRequestCore(req: GetFeedbackRequest,
   deps: Pick<GetFeedbackDeps, 'getSql' | 'open' | 'now'>,
 ): Promise<AcceptedFeedbackResult | { error: 'request_key_conflict'; conversation_id: string; hint: string }> {
   methodReviewTarget(req);
@@ -1245,16 +1267,16 @@ export async function getFeedbackCore(
   req: GetFeedbackRequest,
   deps: GetFeedbackDeps,
 ): Promise<GetFeedbackResult | GetFeedbackError> {
+  const origin = await validateBarCritiquePlanOrigin(req, deps.getSql());
+  if (origin) return origin;
+  return withBarCritiqueDiscovery(req, deps, async () => getReadyFeedbackCore(req, deps));
+}
+
+async function getReadyFeedbackCore(req: GetFeedbackRequest, deps: GetFeedbackDeps): Promise<GetFeedbackResult | GetFeedbackError> {
   const methodReviewRubricRef = methodReviewTarget(req);
   const sql = deps.getSql();
   const now = deps.now ? deps.now() : new Date();
   const latency: LatencyContract = req.latencyContract ?? 'proceed';
-
-  // P-007 / SPEC-P-007-CRITIQUE-REF: a present string is not enough. Check
-  // the exact workspace+harness plan key before routing, opening, or writing;
-  // this also rechecks durable requests recovered from before the preflight.
-  const planRefusal = await validateBarCritiquePlanOrigin(req, sql);
-  if (planRefusal) return planRefusal;
 
   // 0) Recursion lineage (P-005, D-005 / D-007 §7): a consult opened from
   //    within a consult carries parent depth+1 (structural refusal past the

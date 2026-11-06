@@ -34,6 +34,7 @@ import { resolveWakeMode } from './wake-mode';
 import { stagePendingWake } from './pending-wakes';
 import { ADMIN_COORD_UI_OWNER } from './identity';
 import { listPresence } from './presence';
+import { classifyDormantSchedule } from './presence-selfwake';
 import { resolveBestEffortAgainstRoster, isSelectorOrWildcard, knownOwnerIdSet } from './recipient-resolve';
 import { getLoopStatuses, type LoopStatus } from '../../harness/routines/loop';
 import { withBoundedTimeout } from '../../bounded-timeout';
@@ -643,25 +644,9 @@ export interface DormantScheduledInfo {
   parked: boolean;
 }
 
-/**
- * PURE: does this loop status turn an "idle" (no active wake-watcher) verdict
- * into "dormant-scheduled" (a real future delivery is already scheduled, no
- * respawn needed)? Only an ACTIVE, non-stalled loop counts — a stalled loop's
- * `nextFireAt` is not a promise anything will actually happen (WI-5975 sibling:
- * a broken dead-man's-switch must not be read as "fine, it'll fire").
- */
-export function classifyDormantSchedule(
-  loop: Pick<LoopStatus, 'active' | 'nextFireAt' | 'parked' | 'stalled'> | null | undefined,
-  nowMs: number = Date.now(),
-): { parked: boolean; nextFireAt: string | null } | null {
-  if (!loop || !loop.active || loop.stalled) return null;
-  if (loop.parked) return { parked: true, nextFireAt: null };
-  if (loop.nextFireAt) {
-    const t = Date.parse(loop.nextFireAt);
-    if (Number.isFinite(t) && t > nowMs) return { parked: false, nextFireAt: loop.nextFireAt };
-  }
-  return null;
-}
+// Preserve the public helper while liveness imports its pure implementation
+// directly, without loading this module's wake-dispatch dependencies.
+export { classifyDormantSchedule };
 
 export interface IdleRecipientReport {
   /** Concrete local recipients whose inject lands in an inbox NO live session is

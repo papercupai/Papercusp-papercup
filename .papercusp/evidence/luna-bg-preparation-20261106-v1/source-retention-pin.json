@@ -1,0 +1,10 @@
+{
+  "id": "2563e4f8-42f5-4533-ae2d-0e4c43a36082",
+  "owner": "work-item:WI-6554700010028547",
+  "reason": "P001 original independently accepted BG verifier source, immutable receipt and private dependency evidence; retain through compiler/runtime qualification",
+  "createdAt": "2026-11-06T02:28:03.593Z",
+  "expiresAt": "2026-11-07T02:28:03.593Z",
+  "paths": [
+    "/mnt/data/tmp/luna-bg-source-20261106-v1"
+  ]
+}

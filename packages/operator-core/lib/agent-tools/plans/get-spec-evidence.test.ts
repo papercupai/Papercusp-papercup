@@ -157,12 +157,34 @@ describe('criterion evidence applicability', () => {
     expect(Date.parse(result.applicability.criteria[0].evaluatedAt)).toBeGreaterThan(0);
     expect(result.applicability.criteria[0].nextEvidenceAction).toContain('bind');
   });
-  it('evidence-current and fingerprint-fields: retains every measured dimension and receipt identity', async () => {
+  it('evidence-current: admits measured matching evidence within its scope', async () => {
+    const result = await call({ slug: 'plan-a' });
+    expect(result.applicability.criteria[0]).toMatchObject({ state: 'current', target: { planSlug: 'plan-a' } });
+    expect(result.applicability.criteria[0].nextEvidenceAction).toContain('ordinary acceptance checks');
+  });
+  it('evidence-fingerprint-fields: retains every measured dimension and receipt identity', async () => {
     const result = await call({ slug: 'plan-a' });
     expect(result.applicability.criteria[0]).toMatchObject({ state: 'current', target: { planSlug: 'plan-a' },
       receipts: [{ bindingId: 1, evidencePlane: 'tree', fingerprints: binding(1, 'SPEC-A', 'current').fingerprints,
         currentness: { dimensions: { source: 'current', test: 'current', fixture: 'not-applicable',
           rubric: 'not-applicable', environment: 'not-applicable' } }, freshnessBasis: { status: 'measured' } }] });
+  });
+  it('evidence-missing: an empty selection never becomes a current evidence receipt', async () => {
+    listEvidence.mockResolvedValue([]);
+    const row = (await call({ slug: 'plan-a' })).applicability.criteria[0];
+    expect(row.state).toBe('missing');
+    expect(row.receipts).toEqual([]);
+    expect(row.reasons).toContain('no-bindings-in-requested-selection');
+  });
+  it('evidence-next-action: changes the action when an instrument becomes unavailable', async () => {
+    const current = (await call({ slug: 'plan-a' })).applicability.criteria[0];
+    const row = binding(1, 'SPEC-A', 'unknown');
+    row.serverMeasurement = { status: 'unavailable', reason: 'compiler-unavailable' };
+    listEvidence.mockResolvedValue([row]);
+    const unavailable = (await call({ slug: 'plan-a' })).applicability.criteria[0];
+    expect(unavailable.responsibleRole).toBe('evidence-producer');
+    expect(unavailable.nextEvidenceAction).toContain('Restore');
+    expect(unavailable.nextEvidenceAction).not.toBe(current.nextEvidenceAction);
   });
   it.each(['stale', 'unknown'] as const)('evidence-%s: cannot present an unresolved measurement as current', async state => {
     const row = binding(1, 'SPEC-A', state); row.details = { evidencePlane: 'tree' };

@@ -92,6 +92,8 @@
     // EI-24834079439388393: ptool's SDK-install race regression imports the
     // maintained mutex and install boundary directly; keep their types generated.
     "scripts/lib/fs-mutex.mjs",
+    // EI-27679449019086103: restart preflight derives install:safe's exact repo lock.
+    "scripts/lib/install-lock-name.mjs",
     "scripts/npm-install-safe.mjs",
     "scripts/lib/not-checked.mjs",
     // EI-26127632055157746: the native bootstrap imports the process-tree guard.

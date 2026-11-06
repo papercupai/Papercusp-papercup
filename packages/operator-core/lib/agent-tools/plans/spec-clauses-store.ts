@@ -259,6 +259,29 @@ function barPinIssueOf(value: SpecClauseWrite['sourceBar']): string | null {
   return null;
 }
 
+export type SpecClauseWriteIssue = Extract<SetSpecClauseResult, {
+  status: 'test_layers_invalid' | 'falsifier_invalid' | 'bar_pin_invalid';
+}>;
+
+/** Shared by immutable writes and candidate preflight; collect independent defects. */
+export function specClauseWriteIssues(input: SpecClauseWrite): SpecClauseWriteIssue[] {
+  const issues: SpecClauseWriteIssue[] = [];
+  const invalidTestLayers = [...new Set((input.requiredTestLayers ?? [])
+    .filter((layer) => !isRecordedTestLayer(layer)))].sort();
+  if (invalidTestLayers.length) {
+    issues.push({ status: 'test_layers_invalid', specId: input.specId, invalidTestLayers });
+  }
+  const falsifierIssue = falsifierIssueOf(input.falsifier);
+  if (falsifierIssue) {
+    issues.push({ status: 'falsifier_invalid', specId: input.specId, reason: falsifierIssue });
+  }
+  const barPinIssue = barPinIssueOf(input.sourceBar);
+  if (barPinIssue) {
+    issues.push({ status: 'bar_pin_invalid', specId: input.specId, reason: barPinIssue });
+  }
+  return issues;
+}
+
 function canonicalWrite(input: SpecClauseWrite) {
   const falsifier = normalizedFalsifier(input.falsifier);
   return {
@@ -393,18 +416,8 @@ export async function setSpecClause(
   // tool's Zod schema. Never persist an obligation the test ledger cannot record.
   // Historical reads stay exact: repairing a legacy label requires a deliberate
   // immutable revision that preserves its scenario and evidence obligations.
-  const invalidTestLayers = [...new Set((input.requiredTestLayers ?? []).filter((layer) => !isRecordedTestLayer(layer)))].sort();
-  if (invalidTestLayers.length > 0) {
-    return { status: 'test_layers_invalid', specId: input.specId, invalidTestLayers };
-  }
-  const falsifierIssue = falsifierIssueOf(input.falsifier);
-  if (falsifierIssue) {
-    return { status: 'falsifier_invalid', specId: input.specId, reason: falsifierIssue };
-  }
-  const barPinIssue = barPinIssueOf(input.sourceBar);
-  if (barPinIssue) {
-    return { status: 'bar_pin_invalid', specId: input.specId, reason: barPinIssue };
-  }
+  const issues = specClauseWriteIssues(input);
+  if (issues.length) return issues[0]!;
   const scope = transaction ?? (await resolvePlanScope({ harnessSlug: input.harnessSlug }));
   const normalized = canonicalWrite(input);
   const falsifier = normalizedFalsifier(input.falsifier);

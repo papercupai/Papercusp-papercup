@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parsePlan } from '@papercusp/plan-parser';
+import { formatOperationalProgressNote, parsePlan } from '@papercusp/plan-parser';
 import { deriveIndexFromContent } from './derive-index';
 import { renderPlanLines } from './plan-line-render';
 
@@ -11,6 +11,17 @@ describe('graph item rendering preserves the author document', () => {
     expect(rendered).toBe(body);
     expect(parsePlan(rendered).items.map((i) => i.id)).toEqual(['P-001']);
     expect(renderPlanLines(body, [{ ...items[0], text: 'updated' }])).toBe(body.replace('`todo` old', '`todo` updated'));
+  });
+  it('preserves classified progress notes when graph-owned item text is rendered', () => {
+    const note = formatOperationalProgressNote('Running the verification');
+    const body = '## Phase 1\n- **P-001** \x60todo\x60 Preserve findings' + note + '\n';
+    const item = deriveIndexFromContent(body).items[0]!;
+    expect(item.text).toBe('Preserve findings');
+    expect(renderPlanLines(body, [item])).toContain(note);
+    const updated = renderPlanLines(body, [{ ...item, text: 'Updated findings' }]);
+    expect(updated).toContain('Updated findings');
+    expect(updated).toContain(note);
+    expect(deriveIndexFromContent(updated).items[0]!.text).toBe('Updated findings');
   });
   it('projects graph order and metadata while retaining arbitrary prose and fenced examples', () => {
     const body = '# Plan\n\nAn introduction.\n\n## Phase 1\n\nBefore.\n- **P-001** `todo` stale\nAfter.\n\n```md\n- **P-099** `todo` example\n```\n\n## Decisions\n\n### D-001 — Why\nKeep this whole paragraph.\n';

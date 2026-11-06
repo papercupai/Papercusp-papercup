@@ -28,6 +28,9 @@ const h = vi.hoisted(() => {
     listLoopStanddownOwners: vi.fn(),
     openConversation: vi.fn(),
     routeConsult: vi.fn(async (_params: unknown, _deps: unknown) => ({ verdict: 'no_qualified_responder' })),
+    expertiseSubject: vi.fn((question: string) =>
+      question.match(/\b(?:existing|plan|campaign)\s+([a-z][a-z0-9-]*-\d{4}-\d{2}-\d{2})\b/i)?.[1] ?? null),
+    expandSubjectRefs: vi.fn(async (refs: string[]) => ({ refs, unresolvedDocuments: [] as string[] })),
     makeConsultReachDispatcher: vi.fn((_context: unknown, _deps: unknown) => async () => ({})),
     continueCascadeDispatchProd: vi.fn(async (_workspace: string, _conversation: string, _context: unknown, _options: unknown) => true),
     observeNativeConsultSource: vi.fn(async (_candidate: unknown, _constraint: unknown) => ({})),
@@ -46,7 +49,10 @@ vi.mock('./get-feedback-core', () => ({ getFeedbackCore: h.getFeedbackCore,
 vi.mock('../rubrics', () => ({ resolveAcceptanceBarApproverScreen: h.resolveAcceptanceBarApproverScreen }));
 // expertiseSubject: acceptFeedbackRequestProd reads it since f36b33ffd5; the mock
 // lacked it, so the acceptance test failed at HEAD.
-vi.mock('./relevance-router', () => ({ routeConsult: h.routeConsult, expertiseSubject: () => null }));
+vi.mock('./relevance-router', () => ({ routeConsult: h.routeConsult, expertiseSubject: h.expertiseSubject }));
+vi.mock('../agent-tools/docs/_public-manual', () => ({
+  publicManualSource: () => ({ expandSubjectRefs: h.expandSubjectRefs }),
+}));
 // WI-6554700010009982: the dispatchability filter is unit-tested on its own;
 // here it is a passthrough so routes stay hermetic, and its wiring is asserted.
 const filterDispatchableRoute = vi.hoisted(() => vi.fn(async (route: unknown, _probe?: unknown, _options?: unknown) => route));
@@ -255,6 +261,52 @@ describe('getFeedbackProd expert-routing settings', () => {
     expect(h.makeConsultReachDispatcher).not.toHaveBeenCalled();
     await vi.waitFor(() => expect(h.continueFeedbackRequestCore).toHaveBeenCalledWith(
       'workspace-1', 'accepted-conv', expect.objectContaining({ execute: expect.any(Function) })));
+  });
+
+  it('does not require prior transcript expertise for the new plan a BAR critique targets', async () => {
+    const planSlug = 'rubric-grading-diagnostics-evidence-and-author-handoff-2026-11-02';
+    const question = `Review plan ${planSlug} against its acceptance bars`;
+    const result = await acceptFeedbackRequestProd({ workspaceId: 'workspace-1', requesterId: 'requester',
+      question, policy: 'bar-critique', originTaskRef: planSlug }, { ownerId: 'requester' } as never,
+    { harnessSlug: 'papercusp', allowDispatch: false });
+
+    expect(result).toMatchObject({ verdict: 'accepted' });
+    expect(h.expertiseSubject).not.toHaveBeenCalled();
+    expect(h.expandSubjectRefs).not.toHaveBeenCalled();
+    expect(h.acceptFeedbackRequestCore.mock.calls[0]?.[0]).toMatchObject({
+      policy: 'bar-critique', originTaskRef: planSlug, resolvedSubjectRefs: [], unresolvedSubjectRefs: [],
+    });
+    await vi.waitFor(() => expect(h.continueFeedbackRequestCore).toHaveBeenCalled());
+  });
+
+  it('preserves explicit expertise source refs for BAR critiques', async () => {
+    const planSlug = 'rubric-grading-diagnostics-evidence-and-author-handoff-2026-11-02';
+    const subjectRefs = ['packages/operator-core/lib/agent-tools/plans/spec-quality.ts'];
+    const result = await acceptFeedbackRequestProd({ workspaceId: 'workspace-1', requesterId: 'requester',
+      question: `Review plan ${planSlug} against its acceptance bars`, policy: 'bar-critique',
+      originTaskRef: planSlug, subjectRefs }, { ownerId: 'requester' } as never,
+    { harnessSlug: 'papercusp', allowDispatch: false });
+
+    expect(result).toMatchObject({ verdict: 'accepted' });
+    expect(h.expertiseSubject).not.toHaveBeenCalled();
+    expect(h.expandSubjectRefs).toHaveBeenCalledWith(subjectRefs);
+    expect(h.acceptFeedbackRequestCore.mock.calls[0]?.[0]).toMatchObject({
+      subjectRefs, resolvedSubjectRefs: subjectRefs, unresolvedSubjectRefs: [],
+    });
+    await vi.waitFor(() => expect(h.continueFeedbackRequestCore).toHaveBeenCalled());
+  });
+
+  it('retains inferred source refs for other accepted consults', async () => {
+    const planSlug = 'rubric-grading-diagnostics-evidence-and-author-handoff-2026-11-02';
+    const question = `Review plan ${planSlug} for its diagnostic approach`;
+    const result = await acceptFeedbackRequestProd({ workspaceId: 'workspace-1', requesterId: 'requester', question },
+      { ownerId: 'requester' } as never, { harnessSlug: 'papercusp', allowDispatch: false });
+
+    expect(result).toMatchObject({ verdict: 'accepted' });
+    expect(h.expertiseSubject).toHaveBeenCalledWith(question);
+    expect(h.expandSubjectRefs).toHaveBeenCalledWith([planSlug]);
+    expect(h.acceptFeedbackRequestCore.mock.calls[0]?.[0]).toMatchObject({ resolvedSubjectRefs: [planSlug] });
+    await vi.waitFor(() => expect(h.continueFeedbackRequestCore).toHaveBeenCalled());
   });
 
   it('refuses an invalid bar-critique plan before acceptance persistence or dispatch', async () => {

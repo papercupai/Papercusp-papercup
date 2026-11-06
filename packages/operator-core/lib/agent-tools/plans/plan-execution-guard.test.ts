@@ -225,6 +225,15 @@ describe('activation freshness', () => {
       .replace('**State:** Ready', '**State:** Implementing').replace('**Next:** Build', '**Next:** Verify').replace('`todo`', '`wip`');
     expect(planExecutionMeaning(after)).toBe(planExecutionMeaning(original));
   });
+  it.each(['WI-6554700010045594', 'EI-123', 'F-456'])('keeps generated claim progress current for %s', ref => {
+    const claimed = original.replace('`todo`', '`wip`').replace('blocked-by: P-002', `blocked-by: P-002 — note: → ${ref}`);
+    expect(planExecutionMeaning(claimed)).toBe(planExecutionMeaning(original));
+    expect(planExecutionMeaning(claimed.replace(ref, 'WI-789'))).toBe(planExecutionMeaning(original));
+  });
+  it.each([' — needs a security review', ' extra scope', '\nAdditional requirement.'])('retains author scope after a generated claim receipt: %s', suffix => {
+    const claimed = original.replace('blocked-by: P-002', `blocked-by: P-002 — note: → WI-123${suffix}`);
+    expect(planExecutionMeaning(claimed)).not.toBe(planExecutionMeaning(original));
+  });
   const promoted = '\n## Promoted\n\n<!-- plan-pipeline: do not edit this block manually -->\n- [ ] WI-123 — Persist the queue <!-- P-001 -->\n';
   it('keeps activation current after first promotion and later receipt-only updates', () => {
     expect(planExecutionMeaning(original + promoted)).toBe(planExecutionMeaning(original));

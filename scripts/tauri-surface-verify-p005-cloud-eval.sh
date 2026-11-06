@@ -67,6 +67,47 @@ sleep 1.5
   && validate_screenshot "$OUT_DIR/eval-viz.png" \
   || fail "eval-viz: screenshot capture failed"
 
+# P008 benchmark modernization: the same registered native leg exercises the
+# real sync preflight on a fresh private database. No launch request, provider
+# credential or fabricated ready response is used. Shared-workspace smoke keeps
+# its existing read-only behavior; an isolated ready seed is required for this
+# empty-store scenario.
+if [ "${PAPERCUSP_VERIFY_TAURI_ISOLATED:-0}" = "1" ]; then
+  echo "=== Evaluation: unavailable protocol cannot authorize launch ==="
+  "$TOOL" eval --pid "$VERIFY_TAURI_PID" \
+    "Array.from(document.querySelectorAll('.pc-evals__subnav [role=tab]')).find(el => el.textContent.startsWith('Launch'))?.click()" >/dev/null
+  "$TOOL" wait --pid "$VERIFY_TAURI_PID" --selector '[aria-label="Committed protocol run ID"]' --timeout 30000 --json >/dev/null \
+    || fail "eval-viz: Launch controls did not render"
+  "$TOOL" eval --pid "$VERIFY_TAURI_PID" \
+    "(() => { const input = document.querySelector('[aria-label=\"Committed protocol run ID\"]'); if (!input) throw new Error('Protocol input missing'); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, 'native-unregistered-protocol'); input.dispatchEvent(new Event('input', { bubbles: true })); })()" >/dev/null
+  "$TOOL" wait --pid "$VERIFY_TAURI_PID" \
+    --eval "document.querySelector('.pc-evals')?.textContent.includes('No registered protocol in this benchmark workspace.')" \
+    --timeout 30000 --json >/dev/null \
+    || fail "eval-viz: real preflight did not refuse the unregistered protocol"
+  "$TOOL" check --pid "$VERIFY_TAURI_PID" \
+    --eval "document.querySelector('[aria-label=\"Committed protocol run ID\"]')?.value === 'native-unregistered-protocol' && document.querySelector('[aria-label=\"Launch benchmark run\"]')?.disabled === true && document.querySelector('.pc-evals')?.textContent.includes('No registered protocol in this benchmark workspace.') && !document.querySelector('[aria-label=\"Approve this spend\"]') && !document.querySelector('[aria-label=\"Approve this usage budget\"]')" \
+    --json | tee "$OUT_DIR/eval-launch-refusal-check.json" \
+    || fail "eval-viz: unavailable protocol exposed launch/approval"
+
+  echo "=== Evaluation: Compare then Launch remain usable ==="
+  "$TOOL" eval --pid "$VERIFY_TAURI_PID" \
+    "Array.from(document.querySelectorAll('.pc-evals__subnav [role=tab]')).find(el => el.textContent.startsWith('Compare'))?.click()" >/dev/null
+  "$TOOL" wait --pid "$VERIFY_TAURI_PID" --eval "document.querySelector('.pc-evals')?.textContent.includes('Need at least two runs to compare')" --timeout 30000 --json >/dev/null \
+    || fail "eval-viz: empty Compare view did not render"
+  "$TOOL" check --pid "$VERIFY_TAURI_PID" \
+    --eval "new URLSearchParams(location.search).get('evalView') === 'compare' && document.querySelector('.pc-evals')?.textContent.includes('Need at least two runs to compare')" \
+    --json | tee "$OUT_DIR/eval-compare-check.json" \
+    || fail "eval-viz: Compare transition failed"
+  "$TOOL" eval --pid "$VERIFY_TAURI_PID" \
+    "Array.from(document.querySelectorAll('.pc-evals__subnav [role=tab]')).find(el => el.textContent.startsWith('Launch'))?.click()" >/dev/null
+  "$TOOL" wait --pid "$VERIFY_TAURI_PID" --selector '[aria-label="Committed protocol run ID"]' --timeout 30000 --json >/dev/null \
+    || fail "eval-viz: returning to Launch lost its controls"
+  "$TOOL" check --pid "$VERIFY_TAURI_PID" \
+    --eval "new URLSearchParams(location.search).get('evalView') === 'launch' && !!document.querySelector('[aria-label=\"Benchmark arm\"]') && document.querySelector('[aria-label=\"Launch benchmark run\"]')?.disabled === true" \
+    --json | tee "$OUT_DIR/eval-launch-return-check.json" \
+    || fail "eval-viz: returning to Launch failed"
+fi
+
 echo "=== [3/3] /project-docs: confirm documented exclusion (D-006) — must 404, not silently render ==="
 "$TOOL" navigate --pid "$VERIFY_TAURI_PID" /project-docs --json >/dev/null
 sleep 1.5

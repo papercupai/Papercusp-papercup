@@ -146,7 +146,7 @@ const NON_STRIP: [(Tab, &str); 3] = [
     ),
     (
         Tab::AgentCtx,
-        "pane-only — `pui prompt-pane` | `mail-pane` | `work-pane` (main.rs pinned subcommand)",
+        "pane-only — `pui prompt-pane` | `mail-pane` | `work-pane` | `orders-pane` | `activity-pane` | `turns-pane` | `fleet-pane` (main.rs pinned subcommand)",
     ),
     (
         Tab::PlansBoard,

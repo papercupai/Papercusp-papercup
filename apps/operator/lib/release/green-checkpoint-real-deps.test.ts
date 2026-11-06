@@ -76,8 +76,6 @@ import {
   ISOLATION_RUN_TIMEOUT_MS,
   RESCUE_TEST_TIMEOUT_MS,
   WORKSPACE_RERUN_TIMEOUT_MS,
-  DEPENDENCY_GENERATION_IDLE_TIMEOUT_MS,
-  DEPENDENCY_GENERATION_HARD_TIMEOUT_MS,
   GREEN_CHECKPOINT_POST_SUITE_HEAP_MB,
   GREEN_CHECKPOINT_RESERVED_MAX_FORKS,
   GATE_ESCALATION_SOURCE,
@@ -4229,14 +4227,13 @@ describe("realCheckpointDeps.setupTree / push — real-path wiring (gap #10)", (
       preparedSource: true,
     });
     expectMutexGuardedGenerationSelector(calls[0]);
-    expect(calls[0].opts?.timeoutMs).toBeTypeOf("number");
+    expect(calls[0].opts?.timeoutMs).toBeUndefined();
     expect(calls[0].opts).toMatchObject({
-      timeoutMs: DEPENDENCY_GENERATION_IDLE_TIMEOUT_MS,
-      timeoutResetsOnProgress: true,
-      hardTimeoutMs: DEPENDENCY_GENERATION_HARD_TIMEOUT_MS,
       killProcessGroupOnTimeout: true,
     });
     expect(calls[0].opts?.onOutput).toBeTypeOf("function");
+    expect(calls[0].opts?.hardTimeoutMs).toBeUndefined();
+    expect(calls[0].opts?.timeoutResetsOnProgress).toBeUndefined();
     expect(calls[0].opts?.killProcessGroupOnTimeout).toBe(true);
     expect(calls[1].cmd).toBe("bash");
     expect(calls[1].args[0].endsWith("scripts/pc-heavy.sh")).toBe(true);
@@ -4271,7 +4268,9 @@ describe("realCheckpointDeps.setupTree / push — real-path wiring (gap #10)", (
       ]),
     );
     expect(calls[1].opts?.onOutput).toBeTypeOf("function");
-    expect(calls[1].opts?.timeoutMs).toBeTypeOf("number");
+    expect(calls[1].opts?.timeoutMs).toBeUndefined();
+    expect(calls[1].opts?.timeoutResetsOnProgress).toBeUndefined();
+    expect(calls[1].opts?.hardTimeoutMs).toBeUndefined();
     expect(calls[1].opts?.killProcessGroupOnTimeout).toBe(true);
     expect(calls[1].opts?.env?.PC_HEAVY_RELEASE_GATE).toBe("1");
     expect(setup).toEqual({
@@ -4415,6 +4414,25 @@ describe("realCheckpointDeps.setupTree / push — real-path wiring (gap #10)", (
 });
 
 describe("materialization phase heartbeat — EI-21357012876642589", () => {
+  it("WI-5610: keeps phase liveness after the old 120m maximum until its owner stops it", () => {
+    vi.useFakeTimers();
+    const lockDir = mkdtempSync(join(tmpdir(), "green-checkpoint-heartbeat-owned-"));
+    try {
+      writeCheckpointRunPhase(lockDir, "materializing");
+      const stop = startMaterializationHeartbeat(lockDir, { intervalMs: 30 * 60_000 });
+      vi.advanceTimersByTime(150 * 60_000);
+      const phase = JSON.parse(readFileSync(join(lockDir, "phase.json"), "utf8"));
+      expect(phase.at).toBe(new Date().toISOString());
+      stop();
+      vi.advanceTimersByTime(60 * 60_000);
+      expect(JSON.parse(readFileSync(join(lockDir, "phase.json"), "utf8"))).toEqual(phase);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+      rmSync(lockDir, { recursive: true, force: true });
+    }
+  });
+
   it("refreshes a silent phase marker, stops at the hard bound, and can be stopped early", () => {
     vi.useFakeTimers();
     const lockDirs: string[] = [];
@@ -4758,6 +4776,10 @@ describe("EI-19332206710686203: rescue re-runs carry an explicit per-test timeou
     expect(testRuns).toHaveLength(4);
     for (const run of testRuns) {
       expect(run.opts?.cwd).toBe(join(standaloneTree, "papercusp-desktop"));
+      expect(run.opts?.timeoutMs).toBeUndefined();
+      expect(run.opts?.timeoutResetsOnProgress).toBeUndefined();
+      expect(run.opts?.hardTimeoutMs).toBeUndefined();
+      expect(run.opts?.killProcessGroupOnTimeout).toBe(true);
       expect(run.args).not.toContain("--workspace");
       expect(run.args.slice(0, 3)).toEqual(["run", "test", "--"]);
     }

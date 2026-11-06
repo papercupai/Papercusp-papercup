@@ -14,7 +14,17 @@ const snapshotBody = () => '---\ntitle: Quality plan\nstatus: ready\n---\n## Ite
 const reads = vi.hoisted(() => ({
   items: [] as Array<{ id: string; storedStatus: string }>,
   clauses: [] as unknown[],
+  discoveryReady: true,
+  planReads: 0,
 }));
+
+vi.mock('../../plan-audits', async (original) => ({
+  ...(await original<typeof import('../../plan-audits')>()),
+  withCurrentDiscovery: async (_input: unknown, accept: () => Promise<unknown>) => reads.discoveryReady
+    ? { ok: true, result: await accept() }
+    : { ok: false, error: 'discovery_not_ready', nextAction: 'Finalize discovery.' },
+}));
+vi.mock('../coordination/identity', () => ({ resolveAgentIdentity: () => ({ ownerId: 'su-quality-test' }) }));
 
 vi.mock('../_harness-scope', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../_harness-scope')>()),
@@ -27,10 +37,10 @@ vi.mock('./_ctx-opts', async (importOriginal) => ({
 }));
 vi.mock('./source', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./source')>()),
-  readPlanBySlug: async () => ({
+  readPlanBySlug: async () => { reads.planReads++; return ({
     row: { items: reads.items, templateData: null, contentHash: hashPlanContent(snapshotBody()) },
     parsed: { items: reads.items },
-  }),
+  }); },
 }));
 vi.mock('./revisions', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./revisions')>()),
@@ -98,7 +108,17 @@ async function evaluate(): Promise<Graded> {
 
 describe('plans:evaluate-spec-quality and dropped plan items (WI-10006208)', () => {
   beforeEach(() => {
+    reads.discoveryReady = true;
+    reads.planReads = 0;
     reads.clauses = [clause('P-001')];
+  });
+
+  it('refuses live evaluation before reading/grading clauses when discovery is not ready', async () => {
+    reads.discoveryReady = false;
+    const result = await evaluate();
+    expect(result).toMatchObject({ ok: false, error: 'discovery_not_ready' });
+    expect(result).not.toHaveProperty('scorecardDraft');
+    expect(reads.planReads).toBe(0);
   });
 
   it('does not require a contract for a dropped item', async () => {

@@ -1,0 +1,15 @@
+{
+  "schemaVersion": "luna-bg-build-attempt-v1",
+  "startedAtMs": 1793935161015,
+  "deadlineEpochMs": 1793949556845,
+  "cleanupReserveMs": 120000,
+  "sourceReceiptSha256": "105618afb29fc712adb3a9ff6cee4e6f1c8a959bbe32b8ac4829e7d795987c77",
+  "dependenciesSha256": "20f77502dd554f79f470ba4ac07172f108bef606f23160315b4bfb055d488c62",
+  "selectedRecipeSha256": "ffeeeaef45bbb61e433ddaab2bbd06eb8f3edac194209e6c95a60bfb504ba494",
+  "bank": "/mnt/data/tmp/luna-bg-source-20261106-v1/apps/operator/dist-verify",
+  "stage": "/mnt/data/tmp/luna-bg-source-20261106-v1/apps/operator/dist-verify/luna-generation-20261106-v1",
+  "publicationLeaf": "luna-generation-20261106-v1.publication.json",
+  "profile": "release",
+  "builder": "/mnt/data/tmp/luna-bg-source-20261106-v1/apps/operator/bin/bundle-host.sh",
+  "controller": "maintained committed source-preview API; selected historical builder has no BG CLI"
+}

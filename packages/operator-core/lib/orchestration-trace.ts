@@ -7,7 +7,8 @@
  * references. The structural fingerprint excludes backend, outcomes, binding
  * values, ephemeral values, and output-reference identities.
  */
-import { createHash } from 'node:crypto';
+import { createHash, createHmac } from 'node:crypto';
+import { createRequire } from 'node:module';
 import {
   checkScript,
   ensureParseCheckReady,
@@ -16,8 +17,163 @@ import {
   type ProjectedTool,
 } from '@papercusp/tooldef';
 import { deriveRecipeAuthority, type RecipeAuthorityRefs } from './recipe-authority';
+import { type ReplayClass, type RecipeBindingSchemaV1, recipeBindingSchemaV1Schema } from './recipe-contract';
+import type { SqlIntentScope } from './bash-substitution/sql-intent-fingerprint';
+import { isSensitiveValueKey, redactSensitiveText } from './sensitive-text';
+
+// The shell-quote package has no bundled types. Keep the boundary typed in
+// every importing project, including script/test legs without our ambient .d.ts.
+type ShellToken = string | { op: string } | { comment: string };
+const parseShellArguments: (source: string, env?: (name: string) => string) => ShellToken[] =
+  createRequire(import.meta.url)('shell-quote').parse;
 
 export const ORCHESTRATION_TRACE_SCHEMA_VERSION = 1 as const;
+export const OPERATION_TRACE_SCHEMA_VERSION = 2 as const;
+
+export type OperationAdapterFamily = 'composition' | 'shell' | 'sql' | 'native-operation'
+  | 'search-reformulation' | 'result-recovery' | 'workaround-funnel';
+
+/** Only opaque identity and scoped references cross into the global recipe rail.
+ * Raw SQL, commands, environment values and credentials stay at their source.
+ * These references describe evidence; none convey the author's authority. */
+export interface OperationAdapterEvidence {
+  operationId: string;
+  family: OperationAdapterFamily;
+  adapterVersion: string;
+  semanticIdentity: {
+    version: string;
+    fingerprint: string;
+    workspaceId: string;
+    sourceBoundary: string;
+    epoch: string;
+  };
+  source: {
+    ref: string;
+    authorityRef: string;
+    observedAt: string;
+    expiresAt: string | null;
+    providerCallId?: string;
+    parentOperationId?: string;
+  };
+  outcome: {
+    status: 'success' | 'error' | 'refused' | 'preview' | 'running' | 'unknown';
+    final: boolean;
+    receiptRef?: string;
+  };
+  replayClass: ReplayClass;
+  bindingSchema?: RecipeBindingSchemaV1;
+  decisionRefs: string[];
+}
+
+export interface OperationDependency {
+  fromOperationId: string;
+  toOperationId: string;
+  kind: 'data' | 'control';
+  /** An observed binding/control receipt, never an edge inferred from source order. */
+  evidenceRef: string;
+}
+
+const OPAQUE_REF = /^[A-Za-z0-9][A-Za-z0-9_:/.@-]{0,399}$/;
+const opaqueRef = (value: unknown): value is string => typeof value === 'string' && OPAQUE_REF.test(value);
+const FAMILIES = new Set<OperationAdapterFamily>(['composition', 'shell', 'sql', 'native-operation',
+  'search-reformulation', 'result-recovery', 'workaround-funnel']);
+
+/** Current source authorization is repeated by every consumer; an observed or
+ * previously authorized reference is insufficient after revocation or expiry. */
+export function readableOperationEvidence(
+  trace: Pick<NormalizedExecutionTrace, 'operations'>,
+  context: { workspaceId: string; now: number; canRead: (source: OperationAdapterEvidence['source']) => boolean },
+): OperationAdapterEvidence[] {
+  if (!Number.isFinite(context.now)) return [];
+  return (trace.operations ?? []).filter(operation =>
+    operation.semanticIdentity.workspaceId === context.workspaceId
+    && (operation.source.expiresAt === null || Date.parse(operation.source.expiresAt) > context.now)
+    && context.canRead(operation.source));
+}
+
+/** A conservative shell-quote adapter. Unsupported expansion stays unknown rather
+ * than being mistaken for an equivalent command. The existing SQL adapter supplies
+ * its parser/HMAC identity directly through the same semanticIdentity contract. */
+export function fingerprintShellOperation(
+  input: { command: string; cwd: string; environment: Record<string, string | number | boolean>; effect: 'read' | 'write' | 'unknown' },
+  scope: SqlIntentScope,
+): { status: 'supported'; version: string; fingerprint: string } | { status: 'unknown'; version: string; reason: string } {
+  const version = 'shell-quote:operation-v1';
+  const unknown = (reason: string) => ({ status: 'unknown' as const, version, reason });
+  if (!scope?.workspaceId || !scope.sourceBoundary || !scope.epoch
+    || !(scope.key instanceof Uint8Array) || scope.key.byteLength < 32) return unknown('invalid-scope');
+  if (!input.command.trim() || input.command.length > 64_000 || !input.cwd) return unknown('incomplete-source');
+  // shell-quote is not a full bash AST. Do not silently erase substitution,
+  // expansion, line boundaries, grouping, here-doc or reserved-word semantics.
+  if (/[\r\n`]/.test(input.command) || /\$[({]|[(){}]|<<|\b(?:if|then|fi|for|while|case|do|done|function)\b/.test(input.command)
+    || input.command.includes('__RECIPE_ENV_REF__')) return unknown('unsupported-syntax');
+  const values = [input.command, input.cwd, ...Object.values(input.environment).map(String)];
+  if (Object.keys(input.environment).some(isSensitiveValueKey)
+    || values.some(value => redactSensitiveText(value, scope.knownSecrets) !== value)
+    || values.some(value => scope.knownSecrets?.some(secret => secret.length > 0 && value.includes(secret)))) {
+    return unknown('secret-bearing-source');
+  }
+  let tokens: ReturnType<typeof parseShellArguments>;
+  try { tokens = parseShellArguments(input.command, name => '__RECIPE_ENV_REF__' + name); }
+  catch { return unknown('parse-failed'); }
+  if (tokens.some(token => typeof token === 'object' && 'op' in token
+    && !['|', '||', '&&', ';', '&', '<', '>', '>>', '>&', '<&'].includes(token.op))) return unknown('unsupported-syntax');
+  tokens = tokens.filter(token => !(typeof token === 'object' && 'comment' in token));
+  if (!tokens.length) return unknown('empty');
+  const environment = Object.keys(input.environment).sort().map(name => [name, typeof input.environment[name], input.environment[name]]);
+  const fingerprint = createHmac('sha256', scope.key).update(JSON.stringify([
+    version, scope.workspaceId, scope.sourceBoundary, scope.epoch, tokens, input.cwd, environment, input.effect,
+  ])).digest('hex');
+  return { status: 'supported', version, fingerprint };
+}
+
+function copyOperationEvidence(operations: readonly OperationAdapterEvidence[]): OperationAdapterEvidence[] {
+  const ids = new Set<string>();
+  return operations.map(operation => {
+    const identity = operation.semanticIdentity;
+    const source = operation.source;
+    if (!opaqueRef(operation.operationId) || ids.has(operation.operationId) || !FAMILIES.has(operation.family)
+      || !opaqueRef(operation.adapterVersion) || !opaqueRef(identity.version) || !/^[a-f0-9]{64}$/.test(identity.fingerprint)
+      || ![identity.workspaceId, identity.sourceBoundary, identity.epoch, source.ref, source.authorityRef,
+        ...operation.decisionRefs, ...(source.providerCallId ? [source.providerCallId] : []),
+        ...(source.parentOperationId ? [source.parentOperationId] : []),
+        ...(operation.outcome.receiptRef ? [operation.outcome.receiptRef] : [])].every(opaqueRef)
+      || !Number.isFinite(Date.parse(source.observedAt))
+      || (source.expiresAt !== null && !Number.isFinite(Date.parse(source.expiresAt)))
+      || !['read-only', 'idempotent', 'checkpointed', 'non-replayable'].includes(operation.replayClass)
+      || !['success', 'error', 'refused', 'preview', 'running', 'unknown'].includes(operation.outcome.status)
+      || typeof operation.outcome.final !== 'boolean'
+      || (operation.outcome.status === 'running' && operation.outcome.final)) throw new Error('invalid_operation_evidence');
+    ids.add(operation.operationId);
+    // Select declared fields only: an adapter's raw input/author privilege cannot
+    // hitchhike on an otherwise valid runtime object.
+    return {
+      operationId: operation.operationId, family: operation.family, adapterVersion: operation.adapterVersion,
+      semanticIdentity: { version: identity.version, fingerprint: identity.fingerprint, workspaceId: identity.workspaceId,
+        sourceBoundary: identity.sourceBoundary, epoch: identity.epoch },
+      source: { ref: source.ref, authorityRef: source.authorityRef, observedAt: source.observedAt, expiresAt: source.expiresAt,
+        ...(source.providerCallId ? { providerCallId: source.providerCallId } : {}),
+        ...(source.parentOperationId ? { parentOperationId: source.parentOperationId } : {}) },
+      outcome: { status: operation.outcome.status, final: operation.outcome.final,
+        ...(operation.outcome.receiptRef ? { receiptRef: operation.outcome.receiptRef } : {}) },
+      replayClass: operation.replayClass,
+      ...(operation.bindingSchema ? { bindingSchema: recipeBindingSchemaV1Schema.parse(operation.bindingSchema) } : {}),
+      decisionRefs: [...operation.decisionRefs],
+    };
+  });
+}
+
+function copyDependencies(dependencies: readonly OperationDependency[], operations: readonly OperationAdapterEvidence[]): OperationDependency[] {
+  const seen = new Map<string, string[]>();
+  const ids = new Set(operations.map(operation => operation.operationId));
+  const reaches = (from: string, to: string): boolean => from === to || (seen.get(from) ?? []).some(next => reaches(next, to));
+  return dependencies.map(edge => {
+    if (!ids.has(edge.fromOperationId) || !ids.has(edge.toOperationId) || !opaqueRef(edge.evidenceRef)
+      || !['data', 'control'].includes(edge.kind) || reaches(edge.toOperationId, edge.fromOperationId)) throw new Error('invalid_operation_dependency');
+    seen.set(edge.fromOperationId, [...(seen.get(edge.fromOperationId) ?? []), edge.toOperationId]);
+    return { fromOperationId: edge.fromOperationId, toOperationId: edge.toOperationId, kind: edge.kind, evidenceRef: edge.evidenceRef };
+  });
+}
 
 export type OrchestrationTraceBackend = 'server' | 'client-compat';
 export type StableBindingKind = 'workspace' | 'fleet' | 'plan' | 'harness' | 'item' | 'resource';
@@ -62,7 +218,7 @@ export interface OrchestrationRuntimeCall {
 }
 
 export interface NormalizedExecutionTrace {
-  schemaVersion: typeof ORCHESTRATION_TRACE_SCHEMA_VERSION;
+  schemaVersion: typeof ORCHESTRATION_TRACE_SCHEMA_VERSION | typeof OPERATION_TRACE_SCHEMA_VERSION;
   backend: OrchestrationTraceBackend;
   requirements: {
     tools: string[];
@@ -84,6 +240,9 @@ export interface NormalizedExecutionTrace {
     ephemeralKinds: EphemeralValueKind[];
   };
   structuralFingerprint: string;
+  /** Absent on schema 1 traces; legacy families/history stay readable. */
+  operations?: OperationAdapterEvidence[];
+  dependencies?: OperationDependency[];
 }
 
 export interface NormalizeExecutionTraceInput {
@@ -92,6 +251,8 @@ export interface NormalizeExecutionTraceInput {
   tools: readonly ProjectedTool[];
   allowed?: ReadonlySet<string>;
   callRecords?: readonly OrchestrationCallRecord[];
+  operations?: readonly OperationAdapterEvidence[];
+  dependencies?: readonly OperationDependency[];
 }
 
 type BindingRefsKey = keyof RecipeAuthorityRefs;
@@ -326,12 +487,15 @@ export async function normalizeExecutionTrace(
   const ephemeralKinds = [...new Set(ephemeralValues.map((entry) => entry.kind))].sort() as EphemeralValueKind[];
   const stableBindings = [...state.bindingByIdentity.values()].sort((a, b) => a.parameter.localeCompare(b.parameter));
   const redactedSecretPaths = [...new Set(state.redactedSecretPaths)].sort();
+  const operations = copyOperationEvidence(input.operations ?? []);
+  const dependencies = copyDependencies(input.dependencies ?? [], operations);
+  const schemaVersion = operations.length ? OPERATION_TRACE_SCHEMA_VERSION : ORCHESTRATION_TRACE_SCHEMA_VERSION;
 
   // Deliberately excludes: backend, dispositions, binding VALUES, reference URI/hash/size,
   // and ephemeral values. Runtime-only tools are sorted because parallel dispatch order is
   // evidence, not structure; the full ordered runtimeCalls remain in the trace above.
   const fingerprintShape = {
-    schemaVersion: ORCHESTRATION_TRACE_SCHEMA_VERSION,
+    schemaVersion,
     requirements: { tools: toolNames, capabilities, premises: ['host:same'] },
     staticCalls: staticCalls.map((call) => ({
       tool: call.tool,
@@ -349,11 +513,18 @@ export async function normalizeExecutionTrace(
         audiences: [...new Set(call.outputReferences.map((reference) => reference.audience ?? 'unspecified'))].sort(),
       }))
       .sort((a, b) => a.tool.localeCompare(b.tool)),
+    ...(operations.length ? {
+      operations: operations.map(operation => ({ family: operation.family, adapterVersion: operation.adapterVersion,
+        semanticIdentity: operation.semanticIdentity, replayClass: operation.replayClass, bindingSchema: operation.bindingSchema })),
+      // Receipt IDs are provenance; dependency topology is semantic.
+      dependencies: dependencies.map(edge => ({ from: operations.findIndex(operation => operation.operationId === edge.fromOperationId),
+        to: operations.findIndex(operation => operation.operationId === edge.toOperationId), kind: edge.kind })),
+    } : {}),
   };
   const structuralFingerprint = createHash('sha256').update(JSON.stringify(fingerprintShape)).digest('hex');
 
   return {
-    schemaVersion: ORCHESTRATION_TRACE_SCHEMA_VERSION,
+    schemaVersion,
     backend,
     requirements: { tools: toolNames, capabilities, premises: ['host:same'] },
     toolGraph: { staticCalls, runtimeCalls },
@@ -366,5 +537,6 @@ export async function normalizeExecutionTrace(
       ephemeralKinds,
     },
     structuralFingerprint,
+    ...(operations.length ? { operations, dependencies } : {}),
   };
 }

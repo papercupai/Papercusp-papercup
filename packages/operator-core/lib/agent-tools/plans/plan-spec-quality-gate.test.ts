@@ -6,6 +6,27 @@ import { evaluatePlanSpecQuality, SPEC_QUALITY_RUBRIC_REF } from './spec-quality
 import { evaluatePlanSpecQualityGate } from './plan-spec-quality-gate';
 import type { PlanClassRubricRef } from './spec-test-adequacy';
 
+describe('quality protocol admission (EI-28010197882392568)', () => {
+  it.each([1, 2])('admits only a compatible protocol after independent settlement (protocol %s)', async version => {
+    const clauses = [clause()];
+    const saved = matchingCard(clauses);
+    saved.rerunRecipe = {
+      schemaVersion: 1, evaluator: 'plans:evaluate-spec-quality', specSetHashVersion: version,
+      evaluatorBuild: { sha: 'reviewed-build', version: '1' },
+      args: { slug: 'quality-plan', harness: 'papercusp', classRef: 'plan-class-feature-ship',
+        expectedSpecSetHash: evaluatePlanSpecQuality({ planSlug: 'quality-plan', harnessSlug: 'papercusp',
+          planItemIds: ['P-001'], clauses, classRef: 'plan-class-feature-ship' }).specSetHash,
+        specSetHashVersion: version, evaluatorBuild: { sha: 'reviewed-build', version: '1' },
+        replaySnapshot: { planContentHash: 'a'.repeat(64), clausesAsOf: '2026-08-20T00:02:00.000Z' } },
+    };
+    saved.evidenceFingerprint = scorecardEvidenceFingerprint({ rubricRef: saved.rubricRef,
+      ratings: saved.ratings, rerunRecipe: saved.rerunRecipe });
+    const result = await evaluatePlanSpecQualityGate({ harnessSlug: 'papercusp', planSlug: 'quality-plan',
+      planItemIds: ['P-001'] }, gateDeps({ listClauses: vi.fn(async () => clauses), listCards: vi.fn(async () => [saved]) }));
+    expect(result.satisfied).toBe(version === 2);
+  });
+});
+
 function clause(over: Partial<SpecClauseRevision> = {}): SpecClauseRevision {
   return {
     planSlug: 'quality-plan',

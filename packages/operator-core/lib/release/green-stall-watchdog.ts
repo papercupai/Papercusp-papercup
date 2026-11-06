@@ -1428,6 +1428,7 @@ interface AbandonedCheckpointAwaitWakeDeps {
   nowMs?: number;
   selfPid?: number;
   pidAlive?: (pid: number) => boolean | null;
+  probeQualificationRunner?: typeof import('./checkpoint-qualification-transaction').probeRunnerLiveness;
   recordLostRun?: typeof recordLostGateRun;
   clearIfUnchanged?: typeof clearInFlightCandidateIfUnchanged;
   dbosSql?: Sql;
@@ -1452,7 +1453,7 @@ interface AbandonedCheckpointAwaitWakeDeps {
  * pass to retry; a concurrent replacement run is never erased.
  */
 export async function wakeAbandonedCheckpointAwaits(
-  input: { installSlug: string; workspaceId: string; rawMarker: unknown },
+  input: { installSlug: string; workspaceId: string; rawMarker: unknown; rawQualification?: unknown },
   deps: AbandonedCheckpointAwaitWakeDeps = {},
 ): Promise<AbandonedCheckpointAwaitWakeResult> {
   const nowMs = deps.nowMs ?? Date.now();
@@ -1465,6 +1466,18 @@ export async function wakeAbandonedCheckpointAwaits(
     nowMs,
   });
   if (!verdict.abandoned) return { status: 'not-abandoned', reason: verdict.reason };
+
+  if (input.rawQualification != null) {
+    const { parseCheckpointQualificationTransaction, probeRunnerLiveness } =
+      await import('./checkpoint-qualification-transaction');
+    const qualification = parseCheckpointQualificationTransaction(input.rawQualification);
+    const liveness = qualification?.currentPhysicalRunner
+      ? await (deps.probeQualificationRunner ?? probeRunnerLiveness)(qualification.currentPhysicalRunner, nowMs)
+      : qualification?.phase === 'terminal' ? 'dead' : 'unknown';
+    // A missing launcher PID cannot release a detached payload's pin or publish
+    // its loss. Unknown/malformed custody retains both the marker and its waiters.
+    if (liveness !== 'dead') return { status: 'not-abandoned', reason: `qualification-custody-${liveness}` };
+  }
 
   const target = { installSlug: input.installSlug, workspaceId: input.workspaceId };
   const summary = describeAbandonedInFlightCandidate(verdict) ??
@@ -2146,6 +2159,7 @@ export async function checkGreenStall(
         workspace_id: string;
         last_fired_ms: string | number | null;
         last_verdict_ms: string | number | null;
+        qualification?: unknown;
         gh: {
           lastGreenAt?: number;
           watchdogAlerted?: boolean;
@@ -2177,6 +2191,7 @@ export async function checkGreenStall(
              r.workspace_id,
              extract(epoch from r.last_fired_at) * 1000 AS last_fired_ms,
              r.metadata->'gate_health' AS gh,
+             r.metadata->'qualificationTransaction' AS qualification,
              -- P-006 (WI-41755): when this install last recorded ANY verdict (green OR red),
              -- so "the gate is firing but recording nothing" is detectable. Deliberately a
              -- correlated subquery on the EXISTING sweep rather than a second round-trip:
@@ -2217,6 +2232,7 @@ export async function checkGreenStall(
         installSlug: row.install_slug,
         workspaceId: row.workspace_id,
         rawMarker: row.gh?.inFlightCandidate,
+        rawQualification: row.qualification,
       }, { dbosSql: sql });
       const checkpointRun = await readCheckpointRunState(row.install_slug, row.workspace_id);
       const verdict = evaluateGreenStall(

@@ -52,8 +52,7 @@
 
 import { getOrgPg } from '@papercusp/db-org';
 import type { Sql } from 'postgres';
-import { COORD_INBOX_WAKE_PREFIX, classifyDormantSchedule } from './inbox-wake';
-import { EXPLICIT_PARK_NOTE_MARKER } from '../../events/await/types';
+import { EXPLICIT_PARK_NOTE_MARKER, INBOX_WAKE_KEY_PREFIX as COORD_INBOX_WAKE_PREFIX } from '../../events/await/types';
 import type { LoopStatus } from '../../harness/routines/loop';
 
 /**
@@ -92,6 +91,24 @@ export function deriveSelfWake(input: {
 }
 
 /** The scheduled-fire pair a presence row carries (EI-22805550006169069). */
+/**
+ * Shared pure rule for liveness reads and the wake dispatcher. Keep it here:
+ * governor lease admission reads liveness before starting a test worker and
+ * must not evaluate the wake/cell dispatch graph in that launcher process.
+ */
+export function classifyDormantSchedule(
+  loop: Pick<LoopStatus, 'active' | 'nextFireAt' | 'parked' | 'stalled'> | null | undefined,
+  nowMs: number = Date.now(),
+): { parked: boolean; nextFireAt: string | null } | null {
+  if (!loop || !loop.active || loop.stalled) return null;
+  if (loop.parked) return { parked: true, nextFireAt: null };
+  if (loop.nextFireAt) {
+    const t = Date.parse(loop.nextFireAt);
+    if (Number.isFinite(t) && t > nowMs) return { parked: false, nextFireAt: loop.nextFireAt };
+  }
+  return null;
+}
+
 export interface DormantScheduleSignal {
   /** A self-wake is already scheduled. `null` = NOT MEASURED (a federated row, or
    *  the loop read degraded) — never collapse it to `false`, which would assert

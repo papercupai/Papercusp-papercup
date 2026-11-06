@@ -79,6 +79,10 @@ export async function estimateCurrentBenchLaunch(input: {
     const db = { ...scope, workspaceId };
     const prereg = await io.readPrereg({ runId: input.protocolRunId }, db);
     if (!prereg) throw new Error('No registered protocol in this benchmark workspace.');
+    if (!Array.isArray(prereg.suites) || prereg.suites.length !== 1 ||
+        typeof prereg.suites[0] !== 'string' || !prereg.suites[0].trim())
+      throw new Error('Select a protocol with a single registered suite before launch.');
+    const suite = prereg.suites[0];
     const protocol = currentBenchmarkProtocolSchema.parse(prereg.config);
     if (!protocol.sampling) throw new Error('The protocol lacks a frozen repository sampling policy.');
     const arm = protocol.arms.find(value => value.id === input.arm);
@@ -106,7 +110,7 @@ export async function estimateCurrentBenchLaunch(input: {
     if (host.length !== 1 || host[0].treeSha !== arm.runtime.sourceRevision ||
         io.measure(host, [host[0].unit]) !== arm.runtime.runtimeRevision)
       throw new Error('The loaded execution host differs from the frozen runtime; calibrate and register a new protocol.');
-    return { ready: true as const, arm: arm.id, taskCount: protocol.taskIds.length, perTaskUsd: arm.generationBudget.maxUsd,
+    return { ready: true as const, suite, arm: arm.id, taskCount: protocol.taskIds.length, perTaskUsd: arm.generationBudget.maxUsd,
       estCostUsd: Math.min(protocol.aggregateBudgetUsd, protocol.taskIds.length * arm.generationBudget.maxUsd),
       estWallMin: protocol.taskIds.length * arm.generationBudget.maxWallClockMs / 60000,
       aggregateBudgetUsd: protocol.aggregateBudgetUsd, model: arm.model, effort: arm.effort, account: arm.account,

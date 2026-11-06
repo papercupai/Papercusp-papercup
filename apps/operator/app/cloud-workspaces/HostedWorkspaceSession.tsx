@@ -9,6 +9,7 @@ import {
   Upload,
 } from "lucide-react";
 import { Button } from "@/app/harness/Button";
+import { TerminalLinksAddon } from "@/lib/terminal-links";
 import "@xterm/xterm/css/xterm.css";
 import styles from "./hosted-workspace-session.module.css";
 import {
@@ -428,6 +429,7 @@ export function HostedWorkspaceSession({
     });
     const fit = new FitAddon();
     terminal.loadAddon(fit);
+    terminal.loadAddon(new TerminalLinksAddon());
     terminal.loadAddon(
       new WebLinksAddon((_, url) => window.open(url, "_blank", "noopener")),
     );

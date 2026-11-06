@@ -45,6 +45,38 @@ import { declaredGoalOf } from '../../plan-items/claim-holder';
 import { ANY_FAMILY_TERMINAL_STATES } from '../../work-item-dispatch-states';
 import type { HolderGoalRecord } from '../../coord/holder-context';
 
+type GoalReadTimingObserver = (timing: { stage: string; durationMs: number }) => void;
+
+function recordGoalReadTiming(
+  observeTiming: GoalReadTimingObserver | undefined,
+  stage: string,
+  durationMs: number,
+): void {
+  try { observeTiming?.({ stage, durationMs }); } catch { /* diagnostics must not affect goal resolution */ }
+}
+
+/**
+ * The plan-write guard asks for measured goal reads. Reserve the same pool
+ * connection that runs the query so pool wait is separated from query time;
+ * ordinary goal readers keep their existing direct-query behavior.
+ */
+async function withMeasuredGoalConnection<T>(
+  sql: Sql,
+  leg: GoalResolverLeg,
+  observeTiming: GoalReadTimingObserver | undefined,
+  read: (connection: Sql) => Promise<T>,
+  shouldAcquire = true,
+): Promise<T> {
+  if (!observeTiming || !shouldAcquire) return read(sql);
+  const suffix = leg.replace(/-/g, '_');
+  const acquireStarted = performance.now();
+  const connection = await sql.reserve().finally(() => {
+    recordGoalReadTiming(observeTiming, `goal_pool_acquire_${suffix}`, performance.now() - acquireStarted);
+  });
+  try { return await read(connection); }
+  finally { connection.release(); }
+}
+
 /**
  * The reserved `agent_facts` key an agent authors to override its derived goal.
  *
@@ -153,6 +185,7 @@ export type GoalLens = 'self' | 'peer';
 async function readGoalLegs(
   ownerId: string,
   lens: GoalLens,
+  observeTiming?: GoalReadTimingObserver,
 ): Promise<{
   candidates: GoalCandidates;
   planItems: readonly HeldPlanItemRow[];
@@ -180,6 +213,7 @@ async function readGoalLegs(
     f: () => Promise<T>,
     fallback: T,
   ): Promise<{ value: T; diagnostic: GoalResolverDiagnostic | null }> => {
+    const startedAt = observeTiming ? performance.now() : 0;
     try {
       return { value: await f(), diagnostic: null };
     } catch (err) {
@@ -191,20 +225,30 @@ async function readGoalLegs(
           detail: err instanceof Error ? err.message : String(err),
         },
       };
+    } finally {
+      if (observeTiming) {
+        recordGoalReadTiming(observeTiming, `goal_leg_${leg.replace(/-/g, '_')}`, performance.now() - startedAt);
+      }
     }
   };
 
   const [workItemsRead, planItemsRead, fleetRead, overrideRead] = await Promise.all([
-    settle('work-items', () => readHeldWorkItems(sql, ws, owner), [] as HeldWorkItem[]),
-    settle('plan-items', () => readHeldPlanItems(sql, ws, owner, lens), [] as HeldPlanItemRow[]),
-    settle('fleet', () => readFleetMission(sql, ws, owner), null as HeldFleet | null),
-    settle('override', () => readGoalOverride(owner), null as GoalCandidates['override']),
+    settle('work-items', () => withMeasuredGoalConnection(sql, 'work-items', observeTiming,
+      connection => readHeldWorkItems(connection, ws, owner)), [] as HeldWorkItem[]),
+    settle('plan-items', () => withMeasuredGoalConnection(sql, 'plan-items', observeTiming,
+      connection => readHeldPlanItems(connection, ws, owner, lens)), [] as HeldPlanItemRow[]),
+    settle('fleet', () => withMeasuredGoalConnection(sql, 'fleet', observeTiming,
+      connection => readFleetMission(connection, ws, owner)), null as HeldFleet | null),
+    settle('override', () => withMeasuredGoalConnection(sql, 'override', observeTiming,
+      connection => readGoalOverride(owner, observeTiming ? connection : undefined)), null as GoalCandidates['override']),
   ]);
   const workItems = workItemsRead.value;
   const planItems = planItemsRead.value;
   const fleet = fleetRead.value;
   const override = overrideRead.value;
-  const linksRead = await settle('links', () => readImplementsLinks(sql, ws, workItems, planItems), [] as GoalLink[]);
+  const linksRead = await settle('links', () => withMeasuredGoalConnection(sql, 'links', observeTiming,
+    connection => readImplementsLinks(connection, ws, workItems, planItems),
+    workItems.length > 0 && planItems.length > 0), [] as GoalLink[]);
 
   return {
     candidates: {
@@ -343,12 +387,12 @@ async function readFleetMission(sql: Sql, ws: string, owner: string): Promise<He
  * that saw the superseded tail would serve the correction and the corrected value
  * as peers), plus retraction and expiry.
  */
-async function readGoalOverride(owner: string): Promise<GoalCandidates['override']> {
+async function readGoalOverride(owner: string, sql?: Sql): Promise<GoalCandidates['override']> {
   const facts = await foldFacts([{ scope: 'owner', scopeRef: owner }], {
     limitPerSelector: 1,
     keyPrefixes: [GOAL_OVERRIDE_FACT_KEY],
     audiences: 'all',
-  });
+  }, sql);
   const f = facts.find((x) => x.key === GOAL_OVERRIDE_FACT_KEY);
   if (!f?.body?.trim()) return null;
   return { ref: f.body.trim(), declaredAt: f.updatedAt ?? null };
@@ -417,13 +461,14 @@ export async function resolveOwnerGoal(ownerId: string, lens: GoalLens): Promise
 export async function resolveOwnerGoalWithAssessment(
   ownerId: string,
   lens: GoalLens,
+  observeTiming?: GoalReadTimingObserver,
 ): Promise<{
   goal: ResolvedGoal | null;
   assessment: AgentGoalAssessment | null;
   diagnostics: GoalResolverDiagnostic[];
 }> {
   try {
-    const read = await readGoalLegs(ownerId, lens);
+    const read = await readGoalLegs(ownerId, lens, observeTiming);
     const goal = resolveAgentGoal(read.candidates);
     return { goal, assessment: assessAgentGoal(goal, read.diagnostics), diagnostics: read.diagnostics };
   } catch (err) {

@@ -16,12 +16,17 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   preflightRestartTarget,
   prepareStagingSchemaForRestart,
+  withRestartTargetInstallReadLease,
   type StagingSchemaCommandOptions,
   type StagingSchemaCommandRunner,
   type StagingSchemaPreparationResult,
 } from './restart-preflight';
 import { RESTART_TARGET_UNITS } from './restart-target-units';
-import { preflightTreeAt, type LockTreeDriftCheck } from '../../boot-integrity-preflight';
+import {
+  CRITICAL_BOOT_MODULES,
+  preflightTreeAt,
+  type LockTreeDriftCheck,
+} from '../../boot-integrity-preflight';
 
 const cleanDrift = (): LockTreeDriftCheck => ({ ok: true, missing: [], extraneous: [], skipped: false });
 const okResolver = () => '/resolved';
@@ -37,14 +42,99 @@ describe('preflightRestartTarget — resolving the target tree', () => {
       extraneous: [],
       note: 'clean',
     }));
-    const r = await preflightRestartTarget('bg-host', {
+    const r = await preflightRestartTarget('dev', {
       readUnitProperty: async () => '/tree/apps/operator',
       preflight: preflight as unknown as typeof preflightTreeAt,
     });
     expect(preflight).toHaveBeenCalledWith({ rootDir: '/tree/apps/operator' });
-    expect(r.unit).toBe(RESTART_TARGET_UNITS['bg-host']);
+    expect(r.unit).toBe(RESTART_TARGET_UNITS.dev);
     expect(r.checked).toBe(true);
     expect(r.ok).toBe(true);
+  });
+
+  it('checks BG-host build-time modules alongside the normal boot modules', async () => {
+    const missingModules = new Set([
+      '@typescript-eslint/typescript-estree',
+      'shell-quote',
+    ]);
+    const resolved: string[] = [];
+    const resolve = (id: string) => {
+      resolved.push(id);
+      if (missingModules.has(id)) throw new Error('Cannot find required module ' + id);
+      return '/resolved/' + id;
+    };
+    const preflight = (options: Parameters<typeof preflightTreeAt>[0]) =>
+      preflightTreeAt({
+        ...options,
+        lockRootFor: () => '/tree',
+        driftCheck: cleanDrift,
+      });
+
+    const result = await preflightRestartTarget('bg-host', {
+      readUnitProperty: async () => '/tree/apps/operator',
+      preflight,
+      resolve,
+    });
+
+    expect(result).toMatchObject({
+      checked: true,
+      ok: false,
+      missing: ['@typescript-eslint/typescript-estree', 'shell-quote'],
+    });
+    expect(resolved).toEqual(expect.arrayContaining([
+      ...CRITICAL_BOOT_MODULES,
+      '@typescript-eslint/scope-manager',
+      '@typescript-eslint/typescript-estree',
+      '@typescript-eslint/visitor-keys',
+      'shell-quote',
+    ]));
+  });
+
+  it('holds the target install reader across preflight and restart work', async () => {
+    let readerHeld = false;
+    const readUnitProperty = vi.fn(async () => '/tree/apps/operator');
+    const withReadLease = async <T>(_name: string, run: () => Promise<T>): Promise<T> => {
+      readerHeld = true;
+      try {
+        return await run();
+      } finally {
+        readerHeld = false;
+      }
+    };
+    const preflight = (options: Parameters<typeof preflightTreeAt>[0]) => {
+      expect(readerHeld).toBe(true);
+      expect(options.rootDir).toBe('/tree/apps/operator');
+      return {
+        checked: true,
+        ok: true,
+        requestedRoot: options.rootDir,
+        lockRoot: '/tree',
+        missing: [],
+        extraneous: [],
+        note: 'clean',
+      };
+    };
+    const run = vi.fn(async (result: Awaited<ReturnType<typeof preflightRestartTarget>>) => {
+      expect(readerHeld).toBe(true);
+      expect(result.ok).toBe(true);
+      return 'restart observed';
+    });
+
+    const result = await withRestartTargetInstallReadLease('bg-host', run, {
+      readUnitProperty,
+      preflight,
+      resolve: okResolver,
+      lockNameForRoot: (root) => {
+        expect(root).toBe('/tree/apps/operator');
+        return 'npm-install-test-lock';
+      },
+      withReadLease,
+    });
+
+    expect(result).toBe('restart observed');
+    expect(readUnitProperty).toHaveBeenCalledWith(RESTART_TARGET_UNITS['bg-host'], 'WorkingDirectory');
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(readerHeld).toBe(false);
   });
 
   it('maps mcp-proxy to its supervised unit before preflighting the integration tree', async () => {

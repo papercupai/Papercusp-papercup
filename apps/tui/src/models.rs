@@ -3511,6 +3511,10 @@ pub struct AgentCtxData {
     /// Same owner-scoped payloads consumed by the GUI session sidebars.
     pub orders: Option<crate::agent_ctx::AgentOrders>,
     pub activity: Option<crate::agent_ctx::AgentActivity>,
+    pub turns: Option<crate::agent_ctx::AgentTurns>,
+    pub fleet_peers: Option<crate::agent_ctx::AgentFleet>,
+    /// The already-fetched native roster carries exact handles for peer navigation.
+    pub peer_sessions: Vec<RosterEntry>,
 }
 
 // ─── Hives tab (p2p swarm roster — pui-hives-tab-2026-06-07) ─────────────────

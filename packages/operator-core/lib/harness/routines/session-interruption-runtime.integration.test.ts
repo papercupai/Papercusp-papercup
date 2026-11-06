@@ -10,7 +10,8 @@ vi.mock('./loop', () => ({ getLoopStatuses: m.loops }));
 vi.mock('./psu-pty-host-events-ingest', () => ({ ingestPsuPtyHostEvents: async () => ({ ingestErrors: 0 }) }));
 vi.mock('../../agent-tools/capability/launch-agent', () => ({ default: { handler: m.launch },
   INTERNAL_INTERRUPTION_RECOVERY: Symbol.for('integration-interruption') }));
-import { interruptionFromEvent, sweepSessionInterruptions } from './session-interruption-runtime';
+import { interruptionFromEvent, runSessionInterruptionPass as sweepSessionInterruptions,
+  createSessionInterruptionRuntime } from './session-interruption-runtime';
 import { sessionRecoveryKey } from './session-interruption-recovery';
 let db: OrgTestDb;
 const ws = 'interruption-integration';
@@ -46,7 +47,8 @@ async function receipt() {
   return r?.marker;
 }
 async function reserveFixture(attempts: number, state = 'pending') {
-  const [row] = await db.adminSql`SELECT owner_id, payload, ts,
+  const [row] = await db.adminSql<Array<{ owner_id: string; payload: Record<string, unknown>;
+    ts: Date; session_id: string }>>`SELECT owner_id, payload, ts,
     payload->>'nativeSessionId' AS session_id FROM harness_shared.psu_pty_host_events
     WHERE owner_id = ${owner}`;
   const interruption = interruptionFromEvent(row)!;
@@ -56,6 +58,37 @@ async function reserveFixture(attempts: number, state = 'pending') {
     VALUES (${owner}, ${ws}, ${JSON.stringify({ lifecycle: { interruption: marker } })}::jsonb)`;
 }
 describe('production interruption SQL against migrated PostgreSQL', () => {
+  it('replays an already committed settlement without changing its deadline or accepting another result', async () => {
+    const runtime = await createSessionInterruptionRuntime(ctx);
+    const original = (await runtime.list())[0];
+    const key = sessionRecoveryKey(original.interruption!);
+    const claimed = (await runtime.claim(original, key))!;
+    const outcome = { verified: false, terminal: true, reason: 'uncertain-native-creation' };
+    expect(await runtime.finish(claimed, key, outcome)).toBe(true);
+    const committed = await receipt();
+    expect(await runtime.finish(claimed, key, outcome)).toBe(true);
+    expect(await receipt()).toEqual(committed);
+    expect(await runtime.finish(claimed, key, { verified: true, reason: 'different-result' })).toBe(false);
+    expect(await receipt()).toEqual(committed);
+  });
+  it('allows exactly one dispatch-intent writer and preserves the marker through held settlement', async () => {
+    const runtime = await createSessionInterruptionRuntime(ctx);
+    const original = (await runtime.list())[0];
+    const key = sessionRecoveryKey(original.interruption!);
+    const claimed = (await runtime.claim(original, key))!;
+    expect(claimed).toBeTruthy();
+    const results = await Promise.all(Array.from({ length: 3 }, () => runtime.markDispatch(claimed)));
+    expect(results.filter(Boolean)).toHaveLength(1);
+    const dispatched = await receipt();
+    expect(dispatched.dispatchStartedAt).toBeGreaterThan(0);
+    await db.adminSql`UPDATE harness_shared.session_briefs SET control_state =
+      jsonb_set(control_state, '{lifecycle,interruption,nextAttemptAt}', '0'::jsonb) WHERE owner_id = ${owner}`;
+    expect(await runtime.claim((await runtime.read(owner))!, key)).toBeNull();
+    expect(await runtime.finish(claimed, key, { verified: false, terminal: true, reason: 'uncertain-native-creation' })).toBe(true);
+    expect(await receipt()).toMatchObject({ state: 'blocked', attempts: 1,
+      dispatchStartedAt: dispatched.dispatchStartedAt, reason: 'uncertain-native-creation' });
+    expect(m.launch).not.toHaveBeenCalled();
+  });
   it('uses durable member lineage after presence teardown and honors a later explicit leave', async () => {
     await db.adminSql`INSERT INTO harness_shared.fleet_membership_events
       (workspace_id, owner_id, owner_label, fleet_slug, fleet_role, event, at)

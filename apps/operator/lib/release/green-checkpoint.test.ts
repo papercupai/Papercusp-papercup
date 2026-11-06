@@ -148,8 +148,6 @@ import {
   realCheckpointDeps,
   EARLY_TYPECHECK_PREFLIGHT_TIMEOUT_MS,
   foldPromotedLineageIntoStaging,
-  SETUP_TREE_TIMEOUT_MS,
-  SETUP_TREE_HARD_TIMEOUT_MS,
   formatGatePromotionTrailer,
   formatGateHeldByNote,
   formatGateFailureShapeNote,
@@ -7034,11 +7032,11 @@ describe("runGreenCheckpoint", () => {
     );
   });
 
-  it("EI-214116: child output resets the idle timeout while the hard ceiling stays independent", async () => {
+  it("WI-5610: quiet setup survives former idle/aggregate caps; explicit bounds still apply", async () => {
     // The test owns the clock. Real sleep gaps against a real idle timeout failed whenever one
     // gap overran under gate IO pressure (candidates 9f0a0776, ac843c61), at any margin. The
-    // child now waits for a go-file per stage, and each delivered chunk spends 80% of the idle
-    // window on the fake clock, so completing proves every chunk re-armed the idle timer.
+    // Child waits silently for a go-file while the fake clock passes every former
+    // default deadline. Separate call-site assertions bind this to setup policy.
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setImmediate", "clearImmediate"] });
     const dir = mkdtempSync(join(tmpdir(), "green-checkpoint-idle-reset-"));
     try {
@@ -7051,19 +7049,17 @@ describe("runGreenCheckpoint", () => {
           `printf 'stage=before\\n'; for s in ${stages.join(" ")}; do while [ ! -e ${dir}/$s ]; do sleep 0.02; done; printf "stage=$s\\n"; done`,
         ],
         {
-          timeoutMs: 1_000,
-          timeoutResetsOnProgress: true,
-          hardTimeoutMs: 20_000,
           killProcessGroupOnTimeout: true,
-          // A microtask runs after capture has re-armed the idle timer for this chunk.
+          // No child output occurs during this two-hour fake-clock interval.
           onOutput: () =>
             queueMicrotask(() => {
-              vi.advanceTimersByTime(800);
+              vi.advanceTimersByTime(120 * 60_000);
               if (released < stages.length) writeFileSync(join(dir, stages[released++]), "");
             }),
         },
       );
       expect(completed.stdout).toContain("stage=done");
+      expect(released * 120 * 60_000).toBeGreaterThan(90 * 60_000);
 
       // Every chunk spends 400ms: output must not re-arm the 1200ms hard ceiling, or this
       // endless child would never be stopped.
@@ -7087,6 +7083,23 @@ describe("runGreenCheckpoint", () => {
     } finally {
       vi.useRealTimers();
       rmSync(dir, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  it("WI-5610: a child that stops progressing still expires its renewable idle budget", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setImmediate", "clearImmediate"] });
+    try {
+      const error = await runCmd("bash", ["-c", "printf 'stage=stalled\\n'; sleep 20"], {
+        timeoutMs: 1_000,
+        timeoutResetsOnProgress: true,
+        killProcessGroupOnTimeout: true,
+        onOutput: () => queueMicrotask(() => vi.advanceTimersByTime(1_001)),
+      }).then(() => null, (caught: unknown) => caught);
+      expect(error).toBeInstanceOf(Error);
+      expect(String(error)).toContain("made no output progress for 1000ms");
+      expect(String(error)).toContain("stage=stalled");
+    } finally {
+      vi.useRealTimers();
     }
   }, 30_000);
 
@@ -12261,7 +12274,7 @@ describe("realCheckpointDeps.runChangedFileTypecheckPreflight — bounded round-
 });
 
 describe("realCheckpointDeps.setupTree — progress-aware materialization timeout", () => {
-  it("EI-21533144726892345: gives writer wait + copy a renewable idle budget under an independent hard ceiling", async () => {
+  it("WI-5610: quiet writer wait + copy has neither a silence-only nor aggregate cap", async () => {
     const generation = "v1-test-generation";
     const token = "1:2:3:4";
     let setupOpts: Parameters<CheckpointExec>[2];
@@ -12292,16 +12305,16 @@ describe("realCheckpointDeps.setupTree — progress-aware materialization timeou
       preparedSource: true,
     });
 
-    expect(setupOpts?.timeoutMs).toBe(SETUP_TREE_TIMEOUT_MS);
-    expect(setupOpts?.timeoutResetsOnProgress).toBe(true);
-    expect(setupOpts?.hardTimeoutMs).toBe(SETUP_TREE_HARD_TIMEOUT_MS);
+    expect(setupOpts?.timeoutMs).toBeUndefined();
+    expect(setupOpts?.timeoutResetsOnProgress).toBeUndefined();
+    expect(setupOpts?.hardTimeoutMs).toBeUndefined();
     expect(setupOpts?.killProcessGroupOnTimeout).toBe(true);
     expect(setupOpts?.onOutput).toBeTypeOf("function");
   });
 });
 
 describe("realCheckpointDeps.runGateAtRef — test-task rescue watchdog (EI-204898)", () => {
-  it("bounds test:* rescues with the batch watchdog and process-group kill, but leaves lint rescues unchanged", async () => {
+  it("retains rescue process-group cleanup without default aggregate or output-idle cancellation", async () => {
     let testOpts: Parameters<CheckpointExec>[2];
     let lintOpts: Parameters<CheckpointExec>[2];
     const exec: CheckpointExec = async (cmd, args, opts) => {
@@ -12320,8 +12333,7 @@ describe("realCheckpointDeps.runGateAtRef — test-task rescue watchdog (EI-2048
     ]);
 
     expect(result.pass).toBe(true);
-    expect(testOpts?.timeoutMs).toBeTypeOf("number");
-    expect(testOpts?.timeoutMs).toBeGreaterThan(0);
+    expect(testOpts?.timeoutMs).toBeUndefined();
     expect(testOpts?.killProcessGroupOnTimeout).toBe(true);
     expect(lintOpts?.timeoutMs).toBeUndefined();
     expect(lintOpts?.killProcessGroupOnTimeout).toBeUndefined();

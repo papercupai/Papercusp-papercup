@@ -444,6 +444,7 @@ export async function runReplyDeadlineSweepOnce(
       // is no recipient who could answer. Retire the deadline with a quiet
       // related-message marker; otherwise this row would alarm on every sweep.
       if (d.to.length === 0 && d.audience.length > 0) {
+        // notify-classification: {"id":"packages/operator-core/lib/agent-tools/coordination/reply-deadline-sweep.ts#<module>/runReplyDeadlineSweepOnce:e7c3401b4c208dfc7953:1","classification":"durable","reason":"The sender needs the zero-recipient explanation and the original related-message retirement marker; selecting the deadline again is not terminal delivery proof.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009 must prove the shared sendMessage inbox path retains and deduplicates this original-message consequence across restart","deliveryState":"unverified"}
         await sendMessage(RECONCILE_IDENTITY, {
           to: [d.from],
           summary:
@@ -479,6 +480,7 @@ export async function runReplyDeadlineSweepOnce(
         // forward themselves — alarming them about their own superseded ask
         // is exactly the false alarm this bug reports. related_msg_id still
         // lands so the idempotency NOT EXISTS check retires this deadline.
+        // notify-classification: {"id":"packages/operator-core/lib/agent-tools/coordination/reply-deadline-sweep.ts#<module>/runReplyDeadlineSweepOnce:a0c198eaa8ba460e1101:1","classification":"durable","reason":"The sender's superseding ask must retain its quiet deadline retirement notice keyed to the original message; the later ask alone is not proof of this consequence.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009 must prove the shared sendMessage inbox path retains and deduplicates this original-message consequence across restart","deliveryState":"unverified"}
         await sendMessage(RECONCILE_IDENTITY, {
           to: [d.from],
           summary:
@@ -515,6 +517,7 @@ export async function runReplyDeadlineSweepOnce(
         // Quiet + non-waking: the awaited recipient already answered, just not
         // by threading onto the exact ask. related_msg_id still lands as the
         // idempotency marker so this deadline retires permanently.
+        // notify-classification: {"id":"packages/operator-core/lib/agent-tools/coordination/reply-deadline-sweep.ts#<module>/runReplyDeadlineSweepOnce:a9b8b0e0da77008c58f2:1","classification":"durable","reason":"An unthreaded recipient reply retires the original deadline through this sender notice and related-message marker; reply discovery does not prove the notice committed.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009 must prove the shared sendMessage inbox path retains and deduplicates this original-message consequence across restart","deliveryState":"unverified"}
         await sendMessage(RECONCILE_IDENTITY, {
           to: [d.from],
           summary:
@@ -562,6 +565,7 @@ export async function runReplyDeadlineSweepOnce(
       if (directiveEffect) {
         const { actuation } = directiveEffect;
         const observedAtMs = actuation.observedAtMs;
+        // notify-classification: {"id":"packages/operator-core/lib/agent-tools/coordination/reply-deadline-sweep.ts#<module>/runReplyDeadlineSweepOnce:f04075c42708b34aea7e:1","classification":"durable","reason":"The satisfied directive effect still owes the sender its explanation and original-message deadline retirement marker; the effect and this delivery are distinct observations.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009 must prove the shared sendMessage inbox path retains and deduplicates this original-message consequence across restart","deliveryState":"unverified"}
         await sendMessage(RECONCILE_IDENTITY, {
           to: [d.from],
           summary:
@@ -603,6 +607,7 @@ export async function runReplyDeadlineSweepOnce(
         // coord reply — a "no reply" alarm here would be the false alarm this
         // bug reports. related_msg_id still lands so the idempotency NOT
         // EXISTS check retires this deadline permanently.
+        // notify-classification: {"id":"packages/operator-core/lib/agent-tools/coordination/reply-deadline-sweep.ts#<module>/runReplyDeadlineSweepOnce:38e155e94a017c0368bb:1","classification":"durable","reason":"Reply-equivalent work-item activity owes a retained pointer to the sender and a related-message retirement marker; finding the thread post does not deliver that pointer.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009 must prove the shared sendMessage inbox path retains and deduplicates this original-message consequence across restart","deliveryState":"unverified"}
         await sendMessage(RECONCILE_IDENTITY, {
           to: [d.from],
           summary:
@@ -621,6 +626,7 @@ export async function runReplyDeadlineSweepOnce(
         continue;
       }
 
+      // notify-classification: {"id":"packages/operator-core/lib/agent-tools/coordination/reply-deadline-sweep.ts#<module>/runReplyDeadlineSweepOnce:ece8ea654909cda124db:1","classification":"durable","reason":"The overdue sender nudge is the promised one-shot deadline consequence; the later best-effort wake must not substitute for persistent, deduplicated inbox delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009 must prove the shared sendMessage inbox path retains and deduplicates this original-message consequence across restart","deliveryState":"unverified"}
       await sendMessage(RECONCILE_IDENTITY, {
         to: [d.from],
         summary: `⏰ no reply by deadline (~${Math.round(d.overdueMinutes)}m overdue): ${d.summary ?? d.msgId}`,

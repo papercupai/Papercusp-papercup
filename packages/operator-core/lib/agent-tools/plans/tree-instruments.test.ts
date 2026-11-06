@@ -131,6 +131,50 @@ describe('provider-specific-census tree instrument', () => {
   });
 });
 
+describe('embedded-terminal-host-census tree instrument', () => {
+  const key = 'embedded-terminal-host-census' as const;
+
+  it('discovers committed runtime imports and excludes type imports, comments and test fixtures', async () => {
+    const commit = await put({
+      'apps/operator/app/dev/Terminal.tsx': "const { Terminal } = await import('@xterm/xterm');",
+      'apps/operator/lib/host.ts': "import { Terminal } from '@xterm/xterm';",
+      'packages/operator-ui/src/types.ts': "import type { Terminal } from '@xterm/xterm';",
+      'packages/operator-ui/src/named-types.ts': "import { type Terminal } from '@xterm/xterm';",
+      'apps/operator/app/example.tsx': "// import { Terminal } from '@xterm/xterm';",
+      'apps/operator/app/host.test.tsx': "import { Terminal } from '@xterm/xterm';",
+      'apps/operator/app/e2e/host.ts': "import { Terminal } from '@xterm/xterm';",
+    });
+    await writeFile(join(root, 'apps/operator/app/untracked.tsx'), "import { Terminal } from '@xterm/xterm';");
+    expect(await measureTreeInstrumentAtCommit(key, root, commit)).toEqual({ schemaVersion: 1, hosts: [
+      { path: 'apps/operator/app/dev/Terminal.tsx', sha256: expect.stringMatching(/^[a-f0-9]{64}$/) },
+      { path: 'apps/operator/lib/host.ts', sha256: expect.stringMatching(/^[a-f0-9]{64}$/) },
+    ] });
+  });
+
+  it('ignores unrelated edits and changes for extra, removed or modified hosts', async () => {
+    const before = await put({ 'apps/operator/app/host.tsx': "import '@xterm/xterm';" });
+    const base = await measureTreeInstrumentAtCommit(key, root, before);
+    const unrelated = await put({ 'apps/operator/app/other.tsx': 'export const value = 1;' });
+    expect(await measureTreeInstrumentAtCommit(key, root, unrelated)).toEqual(base);
+    const added = await put({ 'apps/operator/lib/new-host.ts': "await import('@xterm/xterm');" });
+    expect(await measureTreeInstrumentAtCommit(key, root, added)).not.toEqual(base);
+    const removed = await put({ 'apps/operator/lib/new-host.ts': 'export {};', 'apps/operator/app/host.tsx': 'export {};' });
+    expect(await measureTreeInstrumentAtCommit(key, root, removed)).toEqual({ schemaVersion: 1, hosts: [] });
+    const modified = await put({ 'apps/operator/app/host.tsx': "import '@xterm/xterm'; export const changed = true;" });
+    expect(await measureTreeInstrumentAtCommit(key, root, modified)).not.toEqual(base);
+  });
+
+  it('covers source populations larger than the ordinary glob cap', async () => {
+    const files = Object.fromEntries(Array.from({ length: 150 }, (_, i) => [
+      `apps/operator/app/ordinary-${i}.tsx`, 'export {};',
+    ]));
+    const commit = await put({ ...files, 'apps/operator/app/host.tsx': "import '@xterm/xterm';" });
+    expect(await measureTreeInstrumentAtCommit(key, root, commit)).toMatchObject({
+      hosts: [{ path: 'apps/operator/app/host.tsx' }],
+    });
+  });
+});
+
 describe('notification-classification-census tree instrument', () => {
   const key = 'notification-classification-census' as const;
 

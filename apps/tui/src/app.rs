@@ -174,6 +174,11 @@ pub enum Action {
     /// Re-read the canonical Context projection for the currently bound native
     /// session. Used by `g`; SSE invalidations also refresh it automatically.
     FetchContextProjection,
+    FetchAgentTurns {
+        owner: String,
+        request_id: u64,
+        cursor: Option<String>,
+    },
     /// Refresh the global Ctrl-S session switcher from the live/ended roster and
     /// owner-scoped indexed transcripts (`sessions:search`).
     FetchSessionSwitcher {
@@ -728,6 +733,10 @@ pub enum AgentCtxMode {
     Orders,
     /// Current GUI Activity dossier (`agentDetail.byOwner`).
     Activity,
+    /// GUI turn index over the canonical owner conversation projection.
+    Turns,
+    /// GUI fleet peers, including the HUD's state/ordering/warnings.
+    Fleet,
 }
 
 /// Which agents the wake-pane board shows (owner ask 2026-06-11): the dock's
@@ -2615,6 +2624,12 @@ pub struct App {
     pub agent_ctx: Option<Result<crate::models::AgentCtxData, String>>,
     /// Agent-context pane scroll offset (j/k).
     pub agent_ctx_scroll: u16,
+    pub agent_ctx_selected: usize,
+    pub agent_ctx_detail: bool,
+    /// Successfully displayed earlier page; None follows the current window.
+    pub agent_ctx_history_cursor: Option<String>,
+    pub agent_ctx_page_request: Option<(u64, Option<String>)>,
+    pub agent_ctx_request_id: u64,
     /// True only in the dock's chat-pane: drive the reactive agent stack (a
     /// watch pane per active bee + an interactive pane per new local launch).
     pub dock_agent_panes: bool,
@@ -3148,6 +3163,11 @@ impl App {
             agent_ctx_mode: AgentCtxMode::default(),
             agent_ctx: None,
             agent_ctx_scroll: 0,
+            agent_ctx_selected: 0,
+            agent_ctx_detail: false,
+            agent_ctx_history_cursor: None,
+            agent_ctx_page_request: None,
+            agent_ctx_request_id: 0,
             dock_agent_panes: false,
             hive_agent_tabs: false,
             paned_bees: std::collections::HashSet::new(),
@@ -12449,7 +12469,90 @@ impl App {
             Event::AgentCtx { result } => {
                 // Dock 4-pane split: an agent-context snapshot landed.
                 // Whole-snapshot replace, same shape as the wake board.
+                if self.agent_ctx_mode == AgentCtxMode::Turns
+                    && (self.agent_ctx_history_cursor.is_some()
+                        || self.agent_ctx_page_request.is_some())
+                {
+                    if let Err(error) = &result {
+                        self.chat_toast(
+                            "warning",
+                            format!("Live history refresh unavailable: {error}"),
+                        );
+                        return Action::Render;
+                    }
+                }
+                let selected_key = crate::agent_ctx::navigation_keys(self)
+                    .get(self.agent_ctx_selected)
+                    .cloned();
+                let owner_changed = self
+                    .agent_ctx
+                    .as_ref()
+                    .and_then(|r| r.as_ref().ok())
+                    .and_then(|d| d.owner.as_deref())
+                    != result.as_ref().ok().and_then(|d| d.owner.as_deref());
+                if owner_changed {
+                    self.agent_ctx_selected = 0;
+                    self.agent_ctx_scroll = 0;
+                    self.agent_ctx_detail = false;
+                    self.agent_ctx_history_cursor = None;
+                    self.agent_ctx_page_request = None;
+                } else if self.agent_ctx_mode == AgentCtxMode::Turns
+                    && (self.agent_ctx_history_cursor.is_some()
+                        || self.agent_ctx_page_request.is_some())
+                {
+                    // The live snapshot is the latest window, not the page the
+                    // reader requested. Keep that page until they return to latest.
+                    return Action::None;
+                }
                 self.agent_ctx = Some(result);
+                if !owner_changed {
+                    let keys = crate::agent_ctx::navigation_keys(self);
+                    let matches: Vec<_> = keys
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, key)| Some(*key) == selected_key.as_ref())
+                        .collect();
+                    if matches.len() == 1 {
+                        self.agent_ctx_selected = matches[0].0;
+                    } else {
+                        self.agent_ctx_selected = 0;
+                        self.agent_ctx_detail = false;
+                    }
+                }
+                Action::Render
+            }
+            Event::AgentTurnsPage {
+                owner,
+                request_id,
+                cursor,
+                result,
+            } => {
+                let current_owner = self
+                    .agent_ctx
+                    .as_ref()
+                    .and_then(|r| r.as_ref().ok())
+                    .and_then(|d| d.owner.as_deref());
+                if self.agent_ctx_mode != AgentCtxMode::Turns
+                    || current_owner != Some(owner.as_str())
+                    || self.agent_ctx_page_request.as_ref() != Some(&(request_id, cursor.clone()))
+                {
+                    return Action::None;
+                }
+                self.agent_ctx_page_request = None;
+                match result {
+                    Ok(page) => {
+                        if let Some(Ok(data)) = self.agent_ctx.as_mut() {
+                            data.turns = Some(page);
+                        }
+                        self.agent_ctx_history_cursor = cursor;
+                        self.agent_ctx_selected = 0;
+                        self.agent_ctx_scroll = 0;
+                        self.agent_ctx_detail = false;
+                    }
+                    Err(error) => {
+                        self.chat_toast("warning", format!("History unavailable: {error}"))
+                    }
+                }
                 Action::Render
             }
             Event::LexiconPack(payload) => {
@@ -13945,6 +14048,112 @@ impl App {
         // N opens the notifications history, everything else is swallowed
         // (no tab strip to navigate here either).
         if self.tab == Tab::AgentCtx {
+            if self.fleet_action_menu.is_some() {
+                return self.fleet_menu_key(code);
+            }
+            if matches!(
+                self.agent_ctx_mode,
+                AgentCtxMode::Turns | AgentCtxMode::Fleet
+            ) {
+                match code {
+                    KeyCode::Char('[') | KeyCode::Char(']')
+                        if self.agent_ctx_mode == AgentCtxMode::Turns =>
+                    {
+                        let cursor = if code == KeyCode::Char('[') {
+                            if self.agent_ctx_page_request.is_some() {
+                                return Action::None;
+                            }
+                            let page = self
+                                .agent_ctx
+                                .as_ref()
+                                .and_then(|r| r.as_ref().ok())
+                                .and_then(|d| d.turns.as_ref());
+                            let Some(page) = page.filter(|p| p.has_more == Some(true)) else {
+                                return Action::None;
+                            };
+                            let Some(cursor) = page.history_cursor.clone().filter(|c| {
+                                !c.is_empty() && Some(c) != self.agent_ctx_history_cursor.as_ref()
+                            }) else {
+                                return Action::None;
+                            };
+                            Some(cursor)
+                        } else {
+                            if self.agent_ctx_history_cursor.is_none()
+                                && self.agent_ctx_page_request.is_none()
+                            {
+                                return Action::None;
+                            }
+                            None
+                        };
+                        let Some(owner) = self
+                            .agent_ctx
+                            .as_ref()
+                            .and_then(|r| r.as_ref().ok())
+                            .and_then(|d| d.owner.clone())
+                        else {
+                            return Action::None;
+                        };
+                        self.agent_ctx_request_id = self.agent_ctx_request_id.wrapping_add(1);
+                        let request_id = self.agent_ctx_request_id;
+                        self.agent_ctx_page_request = Some((request_id, cursor.clone()));
+                        return Action::FetchAgentTurns {
+                            owner,
+                            request_id,
+                            cursor,
+                        };
+                    }
+                    KeyCode::Down | KeyCode::Up => {
+                        let max = crate::agent_ctx::navigation_len(self).saturating_sub(1);
+                        self.agent_ctx_selected = if code == KeyCode::Down {
+                            self.agent_ctx_selected.saturating_add(1).min(max)
+                        } else {
+                            self.agent_ctx_selected.saturating_sub(1)
+                        };
+                        self.agent_ctx_scroll = 0;
+                        return Action::Render;
+                    }
+                    KeyCode::Enter => {
+                        if self.agent_ctx_mode == AgentCtxMode::Turns {
+                            self.agent_ctx_detail = true;
+                            self.agent_ctx_scroll = 0;
+                            return Action::Render;
+                        }
+                        if let Some(owner) =
+                            crate::agent_ctx::selected_peer(self).map(|p| p.owner_id.clone())
+                        {
+                            if self
+                                .agent_ctx
+                                .as_ref()
+                                .and_then(|r| r.as_ref().ok())
+                                .and_then(|d| d.owner.as_deref())
+                                == Some(owner.as_str())
+                            {
+                                return Action::None;
+                            }
+                            let entry = self
+                                .agent_ctx
+                                .as_ref()
+                                .and_then(|r| r.as_ref().ok())
+                                .and_then(|d| d.peer_sessions.iter().find(|r| r.owner_id == owner))
+                                .cloned();
+                            if let Some(entry) = entry {
+                                return self.activate_session_entry(entry);
+                            }
+                            self.chat_toast(
+                                "warning",
+                                "Peer session is unavailable; refresh before opening".into(),
+                            );
+                        }
+                        return Action::Render;
+                    }
+                    KeyCode::Esc => {
+                        self.agent_ctx_detail = false;
+                        self.agent_ctx_scroll = 0;
+                        return Action::Render;
+                    }
+                    _ => {}
+                }
+            }
             return match code {
                 KeyCode::Char('j') | KeyCode::Down => {
                     self.agent_ctx_scroll = self.agent_ctx_scroll.saturating_add(1);
@@ -17592,6 +17801,280 @@ mod tests {
         let mut app = App::new();
         assert_eq!(app.update(Event::Resize(120, 40)), Action::Render);
         assert_eq!(app.viewport, (120, 40));
+    }
+
+    #[test]
+    fn turns_sidebar_selection_opens_answer_and_survives_push_reordering() {
+        let mut app = App::new();
+        app.tab = Tab::AgentCtx;
+        app.pinned = Some(Tab::AgentCtx);
+        app.agent_ctx_mode = AgentCtxMode::Turns;
+        let snapshot = |questions: &[&str]| crate::models::AgentCtxData {
+            owner: Some("su-exact".into()),
+            turns: Some(crate::agent_ctx::AgentTurns {
+                turns: Some(
+                    questions
+                        .iter()
+                        .map(|q| crate::agent_ctx::AgentTurn {
+                            question: (*q).into(),
+                            answer: Some(format!("answer to {q}")),
+                            answer_index: Some(1),
+                            ..Default::default()
+                        })
+                        .collect(),
+                ),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        app.update(Event::AgentCtx {
+            result: Ok(snapshot(&["one", "two"])),
+        });
+        app.update(Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)));
+        assert_eq!(app.agent_ctx_selected, 1);
+        app.update(Event::Key(KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::NONE,
+        )));
+        assert!(app.agent_ctx_detail);
+        app.update(Event::AgentCtx {
+            result: Ok(snapshot(&["earlier", "one", "two"])),
+        });
+        assert_eq!(
+            app.agent_ctx_selected, 2,
+            "push must retain the selected question"
+        );
+        assert!(app.agent_ctx_detail);
+        app.update(Event::AgentCtx {
+            result: Ok(snapshot(&["one", "two", "two"])),
+        });
+        assert_eq!(app.agent_ctx_selected, 0, "ambiguous identity fails closed");
+        assert!(!app.agent_ctx_detail);
+        app.update(Event::Key(KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::NONE,
+        )));
+        app.update(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
+        assert!(!app.agent_ctx_detail);
+    }
+
+    #[test]
+    fn turns_history_pages_preserve_the_reader_and_reject_late_or_foreign_replies() {
+        let mut app = App::new();
+        app.tab = Tab::AgentCtx;
+        app.pinned = Some(Tab::AgentCtx);
+        app.agent_ctx_mode = AgentCtxMode::Turns;
+        let page = |question: &str, cursor: Option<&str>| crate::agent_ctx::AgentTurns {
+            turns: Some(vec![crate::agent_ctx::AgentTurn {
+                question: question.into(),
+                ..Default::default()
+            }]),
+            has_more: Some(cursor.is_some()),
+            history_cursor: cursor.map(str::to_string),
+        };
+        let snapshot = |owner: &str, turns| crate::models::AgentCtxData {
+            owner: Some(owner.into()),
+            turns: Some(turns),
+            ..Default::default()
+        };
+        let question = |app: &App| {
+            app.agent_ctx
+                .as_ref()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .turns
+                .as_ref()
+                .unwrap()
+                .turns
+                .as_ref()
+                .unwrap()[0]
+                .question
+                .clone()
+        };
+        app.update(Event::AgentCtx {
+            result: Ok(snapshot("su-exact", page("latest", Some("c1")))),
+        });
+        assert_eq!(
+            app.update(key('[', KeyModifiers::NONE)),
+            Action::FetchAgentTurns {
+                owner: "su-exact".into(),
+                request_id: 1,
+                cursor: Some("c1".into()),
+            }
+        );
+        assert_eq!(
+            app.update(key('[', KeyModifiers::NONE)),
+            Action::None,
+            "no duplicate page request"
+        );
+        app.update(Event::AgentCtx {
+            result: Ok(snapshot("su-exact", page("new push", Some("c2")))),
+        });
+        assert_eq!(
+            question(&app),
+            "latest",
+            "a live refresh cannot race a page request"
+        );
+        app.update(Event::AgentTurnsPage {
+            owner: "su-other".into(),
+            request_id: 1,
+            cursor: Some("c1".into()),
+            result: Ok(page("foreign", None)),
+        });
+        assert!(app.agent_ctx_page_request.is_some());
+        assert_eq!(question(&app), "latest");
+
+        assert_eq!(
+            app.update(key(']', KeyModifiers::NONE)),
+            Action::FetchAgentTurns {
+                owner: "su-exact".into(),
+                request_id: 2,
+                cursor: None,
+            }
+        );
+        app.update(Event::AgentTurnsPage {
+            owner: "su-exact".into(),
+            request_id: 1,
+            cursor: Some("c1".into()),
+            result: Ok(page("late", None)),
+        });
+        assert_eq!(question(&app), "latest");
+        app.update(Event::AgentTurnsPage {
+            owner: "su-exact".into(),
+            request_id: 2,
+            cursor: None,
+            result: Ok(page("new latest", Some("c2"))),
+        });
+        assert_eq!(question(&app), "new latest");
+        assert!(app.agent_ctx_page_request.is_none());
+
+        app.update(key('[', KeyModifiers::NONE));
+        app.update(Event::AgentTurnsPage {
+            owner: "su-exact".into(),
+            request_id: 3,
+            cursor: Some("c2".into()),
+            result: Err("offline".into()),
+        });
+        assert_eq!(
+            question(&app),
+            "new latest",
+            "a failed page keeps readable history"
+        );
+        assert!(toast_text(&app).contains("History unavailable: offline"));
+        assert!(
+            app.agent_ctx_page_request.is_none(),
+            "failure permits retry"
+        );
+        app.update(key('[', KeyModifiers::NONE));
+        app.update(Event::AgentTurnsPage {
+            owner: "su-exact".into(),
+            request_id: 4,
+            cursor: Some("c2".into()),
+            result: Ok(page("earliest", None)),
+        });
+        assert_eq!(question(&app), "earliest");
+        assert_eq!(app.agent_ctx_history_cursor.as_deref(), Some("c2"));
+        assert_eq!(
+            app.update(key('[', KeyModifiers::NONE)),
+            Action::None,
+            "end of history is inert"
+        );
+        app.update(Event::AgentCtx {
+            result: Ok(snapshot("su-exact", page("new push", None))),
+        });
+        assert_eq!(question(&app), "earliest");
+        app.update(Event::AgentCtx {
+            result: Err("disconnected".into()),
+        });
+        assert_eq!(
+            question(&app),
+            "earliest",
+            "reconnect must not erase the page being read"
+        );
+        assert!(toast_text(&app).contains("Live history refresh unavailable"));
+        app.update(key(']', KeyModifiers::NONE));
+        app.update(Event::AgentCtx {
+            result: Ok(snapshot("su-other", page("other owner", None))),
+        });
+        app.update(Event::AgentTurnsPage {
+            owner: "su-exact".into(),
+            request_id: 5,
+            cursor: None,
+            result: Ok(page("stale owner", None)),
+        });
+        assert_eq!(question(&app), "other owner");
+        assert!(app.agent_ctx_history_cursor.is_none());
+        assert!(app.agent_ctx_page_request.is_none());
+    }
+
+    #[test]
+    fn fleet_sidebar_self_is_inert_and_foreign_peer_uses_existing_session_menu() {
+        let mut app = App::new();
+        app.tab = Tab::AgentCtx;
+        app.pinned = Some(Tab::AgentCtx);
+        app.agent_ctx_mode = AgentCtxMode::Fleet;
+        app.update(Event::AgentCtx {
+            result: Ok(crate::models::AgentCtxData {
+                owner: Some("su-exact".into()),
+                fleet_peers: Some(
+                    serde_json::from_value(json!({"unknownSession":false,"fleet":{
+                        "members":[{"ownerId":"su-exact"},{"ownerId":"su-peer"}]}
+                    }))
+                    .unwrap(),
+                ),
+                peer_sessions: vec![RosterEntry {
+                    owner_id: "su-peer".into(),
+                    label: "Peer".into(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }),
+        });
+        assert_eq!(
+            app.update(Event::Key(KeyEvent::new(
+                KeyCode::Enter,
+                KeyModifiers::NONE
+            ))),
+            Action::None
+        );
+        app.update(Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)));
+        app.update(Event::Key(KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::NONE,
+        )));
+        assert!(
+            app.fleet_action_menu.is_some(),
+            "use the shared route resolver, never a label-based launch"
+        );
+        app.update(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
+        assert!(
+            app.fleet_action_menu.is_none(),
+            "the shared menu remains operable in a pinned pane"
+        );
+        app.agent_ctx
+            .as_mut()
+            .unwrap()
+            .as_mut()
+            .unwrap()
+            .peer_sessions
+            .clear();
+        app.toast = None;
+        app.toast_is_ack = false;
+        assert_eq!(
+            app.update(Event::Key(KeyEvent::new(
+                KeyCode::Enter,
+                KeyModifiers::NONE
+            ))),
+            Action::Render
+        );
+        assert!(app.fleet_action_menu.is_none());
+        assert_eq!(app.toast.as_ref().unwrap().level, "warning");
+        assert_eq!(
+            toast_text(&app),
+            "Peer session is unavailable; refresh before opening"
+        );
+        assert!(app.toast_is_ack, "the peer action remains visible when muted");
     }
 
     fn key(c: char, mods: KeyModifiers) -> Event {

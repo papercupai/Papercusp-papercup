@@ -2,7 +2,7 @@
  * Operator wiring of the @papercusp/sync server-half invalidation bus.
  *
  * The generic mechanism (LISTEN fan-out, ring-buffer replay, source-side
- * dedupe, 32KB payload cap, PG-trigger → camelCase bridge) now lives in
+ * dedupe, UTF-8 payload shaping, PG-trigger → camelCase bridge) now lives in
  * `@papercusp/sync/server`. This module just injects the operator's
  * domain: the embedded-PG admin URL for the dedicated LISTEN connection,
  * the shared org pool for `pg_notify`, the `'sync_invalidate'` channel,
@@ -25,7 +25,12 @@ import {
   type SubscribeOptions as LibSubscribeOptions,
   type NotifyInvalidateOpts,
 } from '@papercusp/sync/server';
-import { createPgListenSource, createPgNotifySink, type PgSqlLike } from '@papercusp/sync/server/pg';
+import {
+  createPgListenSource,
+  createPgNotifySink,
+  PG_NOTIFY_SAFE_PAYLOAD_BYTES,
+  type PgSqlLike,
+} from '@papercusp/sync/server/pg';
 import { pinModuleState } from '@papercusp/module-singleton';
 import { getHarnessAdminUrl } from './embedded-pg-discovery';
 import { queryNamesForTriggerEvent } from './sync-resolver/table-to-query-names';
@@ -234,6 +239,9 @@ const bus = createInvalidationBus({
   // other writer manages (opening a fresh client per notify exhausted
   // max_connections when the watcher fired).
   notify: createPgNotifySink({ getSql: () => getOrgPg().sql, channel: CHANNEL }),
+  // PostgreSQL NOTIFY has an <8,000-byte payload ceiling; leave room below it
+  // and let the bus broaden oversized scoped invalidations instead of losing them.
+  payloadSizeLimit: PG_NOTIFY_SAFE_PAYLOAD_BYTES,
   // P-067: bridge raw PG-trigger `<schema>.<table>.changed` events to the
   // camelCase query names existing useSyncQuery consumers subscribe to.
   // caching-layer-tag-eca P-006: pass the trigger's `args` (workspace_id, op,

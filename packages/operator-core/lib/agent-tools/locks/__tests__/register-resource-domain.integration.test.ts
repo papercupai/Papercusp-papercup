@@ -52,19 +52,20 @@ vi.mock('../../dev/systemd-service-probe', () => ({
 // These names identify real host resources. Only the maintained disposable
 // runtime may exercise their registry publication; a private lock domain alone
 // does not isolate them from cross-domain discovery in the production DB.
-// The hermetic test setup deliberately removes the runtime workspace pin.
-// Keep its maintained private HOME boundary and verify the actual server below.
+// scripts/with-test-pg.mjs --isolated-runtime supplies the private HOME and the
+// disposable database URL. It deliberately removes HARNESS_* variables so those
+// cannot redirect test code away from its isolated Postgres.
 const isolated = Boolean(process.env.HOME?.includes('papercusp-test-runtime-') &&
-  process.env.HARNESS_ADMIN_DATABASE_URL);
+  process.env.PAPERCUSP_TEST_PG_ADMIN_URL && process.env.PAPERCUSP_PG_PORT);
 const owner = 'registration-domain-test';
 
 describe.skipIf(!isolated)('maintained host-resource domain publication in isolated PG', () => {
   beforeAll(async () => {
-    const pin = new URL(process.env.HARNESS_ADMIN_DATABASE_URL!);
+    const pin = new URL(process.env.PAPERCUSP_TEST_PG_ADMIN_URL!);
     expect(['localhost', '127.0.0.1']).toContain(pin.hostname);
-    expect(Number(pin.port)).toBeGreaterThan(0);
+    expect(Number(pin.port)).toBe(Number(process.env.PAPERCUSP_PG_PORT));
     expect(Number(pin.port)).not.toBe(5432);
-    const privateServer = postgres(process.env.HARNESS_ADMIN_DATABASE_URL!, { max: 1 });
+    const privateServer = postgres(process.env.PAPERCUSP_TEST_PG_ADMIN_URL!, { max: 1 });
     try {
       const [actual] = await privateServer`SHOW data_directory`;
       expect(actual.data_directory).toMatch(/\/papercusp-test-pg-[^/]+$/);
@@ -83,7 +84,7 @@ describe.skipIf(!isolated)('maintained host-resource domain publication in isola
     await _resetForTests();
   });
 
-  it.each(['staging-server', 'staging-server-cooldown'])(
+  it.each(['staging-server', 'staging-server-cooldown', 'mac-test-vm'])(
     'delivers the real registry declaration for %s without warming its diagnostic cache', async resource => {
       const registered = await registerTool.handler({ resource }, {
         isSuperuser: true, uiClientId: owner,

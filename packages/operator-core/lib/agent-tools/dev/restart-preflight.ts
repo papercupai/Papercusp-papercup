@@ -22,10 +22,21 @@
  * terms.
  */
 import { execFile } from 'node:child_process';
+import { createRequire } from 'node:module';
 import { promisify } from 'node:util';
-import { isAbsolute, resolve } from 'node:path';
+import { isAbsolute, join, resolve } from 'node:path';
 
-import { preflightTreeAt, type TreeIntegrityResult } from '../../boot-integrity-preflight';
+import { withFsMutexRead } from '../../../../../scripts/lib/fs-mutex.mjs';
+import {
+  installLockNameForRoot,
+  installLockRootForPath,
+} from '../../../../../scripts/lib/install-lock-name.mjs';
+import {
+  CRITICAL_BOOT_MODULES,
+  preflightTreeAt,
+  type ModuleResolver,
+  type TreeIntegrityResult,
+} from '../../boot-integrity-preflight';
 import { RESTART_TARGET_UNITS, type RestartTargetName } from './restart-target-units';
 
 let run: ((...args: any[]) => Promise<any>) | undefined;
@@ -42,6 +53,32 @@ const defaultReadUnitProperty: UnitPropertyReader = async (unit, property) => {
 export interface RestartPreflightResult extends TreeIntegrityResult {
   target: RestartTargetName;
   unit: string;
+}
+
+const BG_HOST_REQUIRED_BOOT_MODULES: readonly string[] = [
+  ...CRITICAL_BOOT_MODULES,
+  '@typescript-eslint/scope-manager',
+  '@typescript-eslint/typescript-estree',
+  '@typescript-eslint/visitor-keys',
+  'shell-quote',
+];
+
+function bgHostModuleResolver(treeRoot: string): ModuleResolver {
+  const resolvers = [
+    createRequire(join(treeRoot, 'package.json')).resolve,
+    createRequire(join(treeRoot, 'packages/operator-core/package.json')).resolve,
+  ];
+  return (id) => {
+    let lastError: unknown;
+    for (const resolveModule of resolvers) {
+      try {
+        return resolveModule(id);
+      } catch (error) {
+        lastError = error;
+      }
+    }
+    throw lastError instanceof Error ? lastError : new Error(String(lastError));
+  };
 }
 
 const STAGING_MIGRATION_RESULT_PREFIX = '__PAPERCUSP_STAGING_MIGRATION_RESULT__';
@@ -285,6 +322,7 @@ export async function preflightRestartTarget(
   opts?: {
     readUnitProperty?: UnitPropertyReader;
     preflight?: typeof preflightTreeAt;
+    resolve?: ModuleResolver;
   },
 ): Promise<RestartPreflightResult> {
   const unit = RESTART_TARGET_UNITS[target];
@@ -319,5 +357,71 @@ export async function preflightRestartTarget(
     };
   }
 
-  return { target, unit, ...preflight({ rootDir: workingDir }) };
+  let moduleResolver = opts?.resolve;
+  const modules = target === 'bg-host' ? BG_HOST_REQUIRED_BOOT_MODULES : undefined;
+  if (!moduleResolver && target === 'bg-host') {
+    try {
+      moduleResolver = bgHostModuleResolver(installLockRootForPath(workingDir));
+    } catch {
+      // preflightTreeAt still resolves against its discovered target lock root.
+    }
+  }
+  return {
+    target,
+    unit,
+    ...preflight({
+      rootDir: workingDir,
+      ...(modules ? { modules } : {}),
+      ...(moduleResolver ? { resolve: moduleResolver } : {}),
+    }),
+  };
+}
+
+/**
+ * Hold the install:safe repo reader from the authoritative target preflight
+ * through the caller's restart and readiness work. The callback result is
+ * computed while the same lock used by install:safe is held.
+ */
+export async function withRestartTargetInstallReadLease<T>(
+  target: RestartTargetName,
+  run: (preflight: RestartPreflightResult) => Promise<T>,
+  opts?: {
+    readUnitProperty?: UnitPropertyReader;
+    preflight?: typeof preflightTreeAt;
+    resolve?: ModuleResolver;
+    withReadLease?: typeof withFsMutexRead;
+    lockNameForRoot?: (repoRoot: string) => string;
+  },
+): Promise<T> {
+  const unit = RESTART_TARGET_UNITS[target];
+  const readUnitProperty = opts?.readUnitProperty ?? defaultReadUnitProperty;
+  let workingDir = '';
+  let readFailed = false;
+  let readError: unknown;
+  try {
+    workingDir = await readUnitProperty(unit, 'WorkingDirectory');
+  } catch (error) {
+    readFailed = true;
+    readError = error;
+  }
+
+  const fixedReader: UnitPropertyReader = async () => {
+    if (readFailed) throw readError;
+    return workingDir;
+  };
+  const preflightTarget = () =>
+    preflightRestartTarget(target, {
+      readUnitProperty: fixedReader,
+      ...(opts?.preflight ? { preflight: opts.preflight } : {}),
+      ...(opts?.resolve ? { resolve: opts.resolve } : {}),
+    });
+  const runWithPreflight = async () => run(await preflightTarget());
+
+  if (!workingDir || workingDir === '[not set]' || !isAbsolute(workingDir)) {
+    return runWithPreflight();
+  }
+
+  const lockName = (opts?.lockNameForRoot ?? installLockNameForRoot)(workingDir);
+  const withReadLease = opts?.withReadLease ?? withFsMutexRead;
+  return withReadLease(lockName, runWithPreflight);
 }

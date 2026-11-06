@@ -5,6 +5,8 @@ import type { Sql } from 'postgres';
 import { applyMigrationForTest, createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
 import { applyMissionEvent, applyMissionEventInTransaction, readSessionMission, updateMissionOutboxInTransaction } from './session-brief-mission';
 import type { MissionParent, MissionEvent } from './mission-continuity';
+import { applySessionTaskOp, readSessionTasks, type SessionTaskOpArgs } from './session-tasks';
+import { commitMissionTaskTransition } from './mission-continuity-task-acceptance';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const migrations = resolve(here, '../../../libs/papercusp/libs/db/sql');
@@ -32,9 +34,131 @@ async function seed(ownerId: string) {
 beforeAll(async () => {
   db = await createFreshPgDb('mission-continuity');
   await applyMigrationForTest(db.sql, resolve(migrations, '322-session-briefs-ei1742.sql'));
-  await applyMigrationForTest(db.sql, resolve(migrations, '1618-session-brief-mission-continuity.sql.DRAFT'));
+  await applyMigrationForTest(db.sql, resolve(migrations, '1618-session-brief-mission-continuity.sql'));
+  await applyMigrationForTest(db.sql, resolve(migrations, '981-session-task-engine.sql'));
+  await applyMigrationForTest(db.sql, resolve(migrations, '982-session-task-work-item-links.sql'));
+  await db.sql.unsafe(`
+    CREATE TABLE harness_shared.owner_directives(id bigint PRIMARY KEY,workspace_id text,
+      source_turn_ref text,captured_by_hook boolean,disposition_status text);
+    CREATE TABLE harness_shared.work_items(feature_id text,harness_slug text,workspace_id text,
+      source_plan_slug text,taken_by text,taken_at timestamptz,status text,directive_ref bigint,goal_id text);
+    CREATE TABLE harness_shared.harness_plans(workspace_id text,harness_slug text,plan_slug text,
+      status text,op_status text,execution_start_revision_seq integer);
+    CREATE TABLE harness_shared.plan_revisions(workspace_id text,harness_slug text,plan_slug text,
+      seq integer,content_snapshot text);
+  `).simple();
+  await db.sql`INSERT INTO harness_shared.owner_directives VALUES(31,'mission-test','owner-turn:31',true,null)`;
+  await db.sql`INSERT INTO harness_shared.harness_plans VALUES('mission-test','eng','root','ready','started',7)`;
+  await db.sql`INSERT INTO harness_shared.plan_revisions VALUES('mission-test','eng','root',7,
+    ${JSON.stringify({schema:'plan-execution-start-v1',scope:{workspaceId:'mission-test',harnessSlug:'eng',planSlug:'root'},body:'accepted mission'})})`;
 }, 90_000);
 afterAll(async () => db?.cleanup());
+
+
+
+async function seedTaskAuthority(ownerId: string, id: string, plan = 'root') {
+  await db.sql`INSERT INTO harness_shared.work_items VALUES(${id},'eng','mission-test',${plan},${ownerId},
+    '2026-11-06T00:00:00Z','open',31,null)`;
+}
+async function taskOp(ownerId: string, args: SessionTaskOpArgs, workItemId?: string, crash = false) {
+  return db.sql.begin(async transaction => {
+    const tx = transaction as unknown as Sql;
+    return applySessionTaskOp(tx, { ...args,workspaceId:'mission-test',sessionId:ownerId,
+      idFactory:()=>{throw new Error('test task ids must be explicit');},now:'2026-11-06T00:00:00.000Z',
+      bridge:{
+        seedWorkItem:workItemId?{workItemId,workItemHarness:'eng',relation:'for'}:null,
+        async commitTransition(port,before,result) {
+          await commitMissionTaskTransition(port,scope(ownerId),ownerId,before,result,1_000);
+          if(crash) throw new Error('injected acceptance commit crash');
+        },
+      },
+    });
+  });
+}
+async function mission(ownerId:string) {
+  const result=await readSessionMission(scope(ownerId),db.sql);
+  if(result.availability!=='available') throw new Error('missing mission');
+  return result.envelope;
+}
+async function initTask(ownerId:string,id:string,workItemId:string) {
+  await seedTaskAuthority(ownerId,workItemId);
+  await taskOp(ownerId,{op:'append',tasks:[{id,content:'canonical step'}]},workItemId);
+}
+
+describe('canonical accepted task operations compose with retained mission state',()=>{
+  it('binds automatically at acceptance and keeps the plan open after a child completes',async()=>{
+    const owner='su-task-root';
+    await initTask(owner,'a','WI-task-a');
+    await initTask(owner,'b','WI-task-b');
+    expect((await readSessionMission(scope(owner),db.sql)).availability).toBe('absent');
+    await taskOp(owner,{op:'start',taskId:'a'});
+    const first=await mission(owner);
+    expect(first.state.binding).toMatchObject({assignmentRef:'plan:eng:root',ownerDirectiveRef:'order:31',
+      assignmentRevision:7,accountableOwner:owner,completionCriteriaRefs:['plan:eng:root#Requirements']});
+    expect(first.state.currentWorkRef).toBe('session-task:'+owner+':a');
+    await taskOp(owner,{op:'done',taskId:'a'});
+    expect((await mission(owner)).state.disposition).toBe('ready');
+    await taskOp(owner,{op:'start',taskId:'b'});
+    const second=await mission(owner);
+    expect(second.state.binding?.assignmentRef).toBe('plan:eng:root');
+    expect(second.state.selectionRevision).toBeGreaterThan(first.state.selectionRevision);
+    expect(second.state.frames).toEqual([]);
+    const revision=second.revision;
+    await Promise.all([taskOp(owner,{op:'start',taskId:'b'}),taskOp(owner,{op:'start',taskId:'b'})]);
+    expect((await mission(owner)).revision).toBe(revision);
+  });
+
+  it('rolls back both accepted focus and binding when continuation persistence fails',async()=>{
+    const owner='su-task-rollback';
+    await initTask(owner,'a','WI-task-rollback');
+    await expect(taskOp(owner,{op:'start',taskId:'a'},undefined,true)).rejects.toThrow('acceptance commit crash');
+    expect((await readSessionTasks(db.sql,'mission-test',owner))[0].status).toBe('pending');
+    expect((await readSessionMission(scope(owner),db.sql)).availability).toBe('absent');
+    await taskOp(owner,{op:'start',taskId:'a'});
+    expect((await mission(owner)).state.currentWorkRef).toBe('session-task:'+owner+':a');
+  });
+
+  it('keeps ambiguous displacement unknown and can accept later same-root progress at the same clock',async()=>{
+    const owner='su-task-unknown';
+    await initTask(owner,'a','WI-task-known');
+    await taskOp(owner,{op:'append',tasks:[{id:'unlinked',content:'unrecorded purpose'}]});
+    await taskOp(owner,{op:'start',taskId:'a'});
+    await taskOp(owner,{op:'start',taskId:'unlinked'});
+    const unknown=await mission(owner);
+    expect(unknown.state.stateAvailability).toBe('unknown');
+    expect(unknown.state.binding?.assignmentRef).toBe('plan:eng:root');
+    expect(unknown.state.frames).toEqual([]);
+    await taskOp(owner,{op:'start',taskId:'a'});
+    const restored=await mission(owner);
+    expect(restored.state.stateAvailability).toBe('available');
+    expect(restored.state.selectionRevision).toBeGreaterThan(unknown.state.selectionRevision);
+    expect(new Set(restored.state.processedEvents).size).toBe(restored.state.processedEvents.length);
+  });
+
+  it('invalidates stale return authority after an actual custody transfer',async()=>{
+    const owner='su-task-transfer';
+    await initTask(owner,'a','WI-task-transfer');
+    await taskOp(owner,{op:'start',taskId:'a'});
+    await db.sql`UPDATE harness_shared.work_items SET taken_by='su-peer',taken_at=now() WHERE feature_id='WI-task-transfer'`;
+    await taskOp(owner,{op:'done',taskId:'a'});
+    const transferred=await mission(owner);
+    expect(transferred.state.disposition).toBe('transferred');
+    expect(transferred.state.nextActionRef).toBeNull();
+    expect(transferred.outbox).toEqual([]);
+  });
+
+  it('does not turn an agent-authored directive into owner authority',async()=>{
+    const owner='su-task-untrusted';
+    await initTask(owner,'a','WI-task-untrusted');
+    await db.sql`INSERT INTO harness_shared.owner_directives VALUES(32,'mission-test','agent-turn:32',false,null)`;
+    await db.sql`UPDATE harness_shared.work_items SET directive_ref=32 WHERE feature_id='WI-task-untrusted'`;
+    await taskOp(owner,{op:'start',taskId:'a'});
+    const unknown=await mission(owner);
+    expect(unknown.state.binding).toBeNull();
+    expect(unknown.state.stateAvailability).toBe('unknown');
+  });
+});
+
 
 describe('retained mission state and atomic consequence intent on Postgres', () => {
   it('retains the root and deadlines across recovery and current-activity changes', async () => {

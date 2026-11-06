@@ -5,17 +5,19 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import test from 'node:test';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import {
   checkInstalledPatchPostimages,
   parsePatchPostimages,
 } from './check-installed-patch-postimages.mjs';
-import { publishDependencyGeneration } from './npm-install-safe.mjs';
+import { publishDependencyGeneration, verifyDepsExtracted } from './npm-install-safe.mjs';
 
 function makeFixture(t) {
   const repoRoot = mkdtempSync(join(tmpdir(), 'papercusp-patch-postimage-'));
@@ -100,6 +102,50 @@ function makeFixture(t) {
 
   return { repoRoot, patchFile, patchPath, patchSource, targetFile, targetPath };
 }
+
+for (const alteredSource of [false, true]) {
+  test(`scoped ignore-scripts reify restores only committed patches (altered source: ${alteredSource})`, async (t) => {
+    const fixture = makeFixture(t);
+    writeFileSync(join(fixture.repoRoot, 'package.json'), JSON.stringify({
+      name: 'patch-reify-fixture', version: '1.0.0', private: true,
+      dependencies: { example: '1.0.0' },
+    }));
+    writeFileSync(join(fixture.repoRoot, 'node_modules/example/package.json'), JSON.stringify({
+      name: 'example', version: '1.0.0', main: 'index.js',
+    }));
+    symlinkSync(join(dirname(fileURLToPath(import.meta.url)), '../node_modules/patch-package'),
+      join(fixture.repoRoot, 'node_modules/patch-package'), 'dir');
+    // A successful npm reify replaces the package with its original bytes.
+    writeFileSync(fixture.targetFile, 'before\n');
+    if (alteredSource) writeFileSync(fixture.patchFile, fixture.patchSource.replace('+after', '+local'));
+
+    const status = await verifyDepsExtracted({
+      repoRoot: fixture.repoRoot, npmArgs: ['install', '--ignore-scripts'],
+      probeSpecifiers: [], deps: { sleep: async () => {} },
+      runNpm: () => { throw new Error('the installed graph needs no second npm install'); },
+    });
+    assert.equal(status, alteredSource ? 1 : 0);
+    assert.equal(readFileSync(fixture.targetFile, 'utf8'), alteredSource ? 'before\n' : 'after\n');
+    if (!alteredSource) {
+      assert.equal(checkInstalledPatchPostimages({ repoRoot: fixture.repoRoot }).ok, true);
+      let published = false;
+      assert.equal(await publishDependencyGeneration({
+        repoRoot: fixture.repoRoot, env: {},
+        runPublisher: () => { published = true; return { status: 0 }; },
+      }), 0);
+      assert.equal(published, true);
+    }
+  });
+}
+
+test('source-only patch verification validates committed inputs independently of installed bytes', (t) => {
+  const fixture = makeFixture(t);
+  writeFileSync(fixture.targetFile, 'before\n');
+  assert.equal(checkInstalledPatchPostimages({ repoRoot: fixture.repoRoot }).ok, false);
+  assert.equal(checkInstalledPatchPostimages({ repoRoot: fixture.repoRoot, sourcesOnly: true }).ok, true);
+  writeFileSync(fixture.patchFile, fixture.patchSource.replace('+after', '+local'));
+  assert.equal(checkInstalledPatchPostimages({ repoRoot: fixture.repoRoot, sourcesOnly: true }).ok, false);
+});
 
 for (const installedState of ['matching', 'stale', 'missing', 'modified-patch']) {
   test(`generation publication validates patch postimages before a cache hit (${installedState})`, async (t) => {

@@ -76,6 +76,30 @@ describe('operator release artifact provenance', () => {
     expect(measureBootOperatorArtifact(f.entry, f.sourceSha.slice(0, 10))).toEqual(written);
     expect(await f.write()).toEqual(written); // same deterministic artifact is immutable and reusable
   });
+  it('binds an external private artifact only under its explicit output root', async () => {
+    const f = fixture();
+    const artifactRoot = mkdtempSync(join(tmpdir(), 'operator-private-artifact-')); roots.push(artifactRoot);
+    const entry = join(artifactRoot, 'hono-host.mjs');
+    writeFileSync(entry, readFileSync(f.entry));
+    writeFileSync(entry + '.meta.json', readFileSync(f.entry + '.meta.json'));
+    const input = { root: f.root, entry, sourceSha: f.sourceSha };
+    await expect(writeOperatorArtifactManifest(input, f.git)).rejects.toThrow('source-moved');
+    const written = await writeOperatorArtifactManifest({ ...input, artifactRoot }, f.git);
+    expect(written).toMatchObject({ status: 'measured', sourceSha: f.sourceSha,
+      sourceBlobs: { [f.rel]: f.sourceBlob } });
+    expect(measureBootOperatorArtifact(entry, f.sourceSha.slice(0, 10))).toEqual(written);
+    expect(measureBootOperatorArtifact(f.entry, f.sourceSha).status).toBe('unknown');
+    // Output relocation cannot make a changed compiler input attributable.
+    writeFileSync(join(f.root, f.rel), 'changed after compilation');
+    await expect(writeOperatorArtifactManifest({ ...input, artifactRoot }, f.git)).rejects.toThrow('input-mismatch');
+  });
+  it('refuses an external private artifact outside its root or through a symlink root', async () => {
+    const f = fixture();
+    const artifactRoot = mkdtempSync(join(tmpdir(), 'operator-private-artifact-')); roots.push(artifactRoot);
+    await expect(writeOperatorArtifactManifest({ ...f, artifactRoot }, f.git)).rejects.toThrow('source-moved');
+    const link = join(f.root, 'output-link'); symlinkSync(artifactRoot, link);
+    await expect(writeOperatorArtifactManifest({ ...f, artifactRoot: link }, f.git)).rejects.toThrow('output-root-invalid');
+  });
   it('keeps the event loop available while a Git read is pending', async () => {
     const f = fixture();
     let release!: () => void;

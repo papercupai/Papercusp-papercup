@@ -153,11 +153,13 @@ export function currentSuNativeRetainedArtifacts(managedCarry: boolean): string[
  * process-group kill also stops helper services (tsx's esbuild), so the worker's
  * last uncaught error is a consequence of the deadline, never its cause. */
 export function isolatedWorkerFailureDetail(output: string,
-  capture?: { timedOut?: boolean; timeoutPhase?: string | null; signal?: string | null }): string {
+  capture?: { timedOut?: boolean; aborted?: boolean; abortReason?: string | null;
+    timeoutPhase?: string | null; signal?: string | null }): string {
   // Full streams remain in worker.log. Connection phase clocks are useful for
   // liveness, but must not displace the tool's actual refusal in this display.
   const lines = output.split('\n').filter(line => !line.startsWith('ptool: connection trace '));
-  const deadline = capture?.timedOut ? `ISOLATED_WORKER_DEADLINE phase=${capture.timeoutPhase ?? 'unknown'} ` +
+  const deadline = capture?.aborted ? `ISOLATED_WORKER_ABORT reason=${capture.abortReason ?? 'unknown'}\n`
+    : capture?.timedOut ? `ISOLATED_WORKER_DEADLINE phase=${capture.timeoutPhase ?? 'unknown'} ` +
     `signal=${capture.signal ?? 'none'} lastStage=${[...lines].reverse().find(line =>
       /^[A-Z][A-Z0-9_]*_STAGE=/.test(line))?.slice(0, 200) ?? 'none'} (any error below followed the harness kill)\n` : '';
   const failures = lines.filter(line => /^[A-Z][A-Z0-9_]*_FAILURE /.test(line));
@@ -279,7 +281,9 @@ export function isolatedWorkerOptions(
   env: NodeJS.ProcessEnv = process.env,
   executeMaxMs = executeMs,
   phaseOverrides: WorkerPhaseOverrides = {},
+  preparationMs = 0,
 ) {
+  assert.ok(Number.isSafeInteger(preparationMs) && preparationMs >= 0, 'preparation allowance must be nonnegative');
   const listMs = testFileListTimeoutMs(env);
   const teardownMs = TEST_FILE_SCOPE_STOP_TIMEOUT_SEC * 1000 + 5_000 + 30_000;
   // The caller may widen its encompassing file watchdog to fit these phases.
@@ -306,7 +310,7 @@ export function isolatedWorkerOptions(
     teardownMaxMs,
   };
   return { phaseTimeouts, killGraceMs: teardownMs, drainGraceMs: 5_000,
-    testTimeoutMs: phaseTimeouts.bootstrapMaxMs! + phaseTimeouts.executeMaxMs! + phaseTimeouts.finalizeMaxMs! +
+    testTimeoutMs: preparationMs + phaseTimeouts.bootstrapMaxMs! + phaseTimeouts.executeMaxMs! + phaseTimeouts.finalizeMaxMs! +
       phaseTimeouts.teardownMaxMs! + teardownMs + 20_000 };
 }
 
@@ -326,6 +330,8 @@ export function isolatedTestFileWorkerOptions(env: NodeJS.ProcessEnv, fileCount:
  */
 export function captureIsolatedWorker(child: ChildProcess, evidenceDir: string, options: {
   timeoutMs?: number; phaseTimeouts?: WorkerDeadlines; killGraceMs?: number; drainGraceMs?: number;
+  /** Caller cancellation still waits for the original supervisor's bounded cleanup. */
+  signal?: AbortSignal;
   /** Throttle observed progress relayed to the encompassing file watchdog. */
   progressIntervalMs?: number;
   cleanupFromStdout?: boolean;
@@ -365,11 +371,14 @@ export function captureIsolatedWorker(child: ChildProcess, evidenceDir: string, 
   const drainGrace = options.drainGraceMs ?? options.killGraceMs ?? 5_000;
   let output = '';
   let timedOut = false;
+  let aborted = false;
+  let abortReason: string | null = null;
   let phase: WorkerPhase = 'bootstrap';
   let timeoutPhase: WorkerPhase | null = null;
   let exitWaitTimedOut = false;
   let stdioDrainTimedOut = false;
   return new Promise<{ code: number | null; signal: NodeJS.Signals | null; timedOut: boolean;
+    aborted: boolean; abortReason: string | null;
     timeoutPhase: WorkerPhase | null; exitWaitTimedOut: boolean; stdioDrainTimedOut: boolean; output: string }>((resolve, reject) => {
     let settled = false;
     let timeout: ReturnType<typeof setTimeout> | undefined;
@@ -403,9 +412,9 @@ export function captureIsolatedWorker(child: ChildProcess, evidenceDir: string, 
       // execution start can leave bootstrap. Never restart an active phase or
       // revive execution after timeout/cleanup. This is a deadline signal, not
       // private-runtime lifecycle or successful-test evidence.
-      if (options.testFileExecutionFromStdout === true && deadlines && !timedOut && phase === 'bootstrap' &&
+      if (options.testFileExecutionFromStdout === true && deadlines && !timedOut && !aborted && phase === 'bootstrap' &&
           /^TEST_FILE_PROGRESS state=started(?: |$)/.test(line)) armPhase('execute');
-      if (options.testFileExecutionFromStdout && deadlines && !timedOut &&
+      if (options.testFileExecutionFromStdout && deadlines && !timedOut && !aborted &&
           line.startsWith('TEST_FILE_FINALIZATION ')) {
         try {
           const value = JSON.parse(line.slice('TEST_FILE_FINALIZATION '.length));
@@ -426,7 +435,9 @@ export function captureIsolatedWorker(child: ChildProcess, evidenceDir: string, 
               provenanceTotal = value.totalFiles;
               provenanceFiles = value.completedFiles;
               progressWatchdog?.noteProgress();
-              relayProgress('provenance-files');
+              // A parent must distinguish actual census advances from a
+              // replayed stage without seeing private source paths/output.
+              relayProgress('provenance-files-' + provenanceFiles);
             }
           }
         } catch { /* malformed finalization output cannot alter a deadline */ }
@@ -439,7 +450,7 @@ export function captureIsolatedWorker(child: ChildProcess, evidenceDir: string, 
       }
       if (typeof line !== 'string') return;
       const nestedProgressPrefix = 'ISOLATED_WORKER_PROGRESS ';
-      if (options.testFileExecutionFromStdout && deadlines && !timedOut && line.startsWith(nestedProgressPrefix)) {
+      if (options.testFileExecutionFromStdout && deadlines && !timedOut && !aborted && line.startsWith(nestedProgressPrefix)) {
         try {
           const value = JSON.parse(line.slice(nestedProgressPrefix.length));
           if (!Number.isSafeInteger(value.pid) || value.pid <= 0 ||
@@ -453,6 +464,7 @@ export function captureIsolatedWorker(child: ChildProcess, evidenceDir: string, 
             // this outer worker; without it, the outer bootstrap clock can
             // reap a test that has already entered execution.
             if (phase === 'bootstrap' && value.phase !== 'bootstrap') armPhase('execute');
+            else if (phase === 'execute' && value.phase === 'finalize' && deadlines.finalizeMs) armPhase('finalize');
             else progressWatchdog?.noteProgress();
             relayProgress('nested-worker-' + value.phase);
           }
@@ -471,7 +483,7 @@ export function captureIsolatedWorker(child: ChildProcess, evidenceDir: string, 
           const value = JSON.parse(line.slice('TEST_FILE_CASE_TRACE '.length));
           if (!['started', 'finished'].includes(value.event) || typeof value.file !== 'string' ||
               typeof value.name !== 'string') return;
-          if (options.testFileExecutionFromStdout === 'case' && deadlines && !timedOut &&
+          if (options.testFileExecutionFromStdout === 'case' && deadlines && !timedOut && !aborted &&
               phase === 'bootstrap' && value.event === 'started') armPhase('execute');
           const key = JSON.stringify([value.event, value.file, value.name]);
           if (!caseProgress.has(key) && caseProgress.size < 4096) {
@@ -488,7 +500,7 @@ export function captureIsolatedWorker(child: ChildProcess, evidenceDir: string, 
       const progressLines = progressLine.split('\n');
       progressLine = progressLines.pop()!.slice(-16_384);
       for (const line of progressLines) relayTestProgress(line);
-      if (options.cleanupFromStdout && deadlines) {
+      if (options.cleanupFromStdout && deadlines && !timedOut && !aborted) {
         cleanupLine += chunk;
         const lines = cleanupLine.split('\n');
         cleanupLine = lines.pop()!;
@@ -530,7 +542,7 @@ export function captureIsolatedWorker(child: ChildProcess, evidenceDir: string, 
     };
     const message = (value: unknown) => {
       appendFileSync(join(evidenceDir, 'runtime-events.ndjson'), JSON.stringify(value) + '\n');
-      if (!deadlines || timedOut || !value || typeof value !== 'object') return;
+      if (!deadlines || timedOut || aborted || !value || typeof value !== 'object') return;
       const kind = (value as { kind?: string }).kind;
       const stage = (value as { stage?: unknown }).stage;
       if (phase === 'bootstrap' && kind === 'isolated-runtime-bootstrap-progress' && typeof stage === 'string' &&
@@ -582,14 +594,16 @@ export function captureIsolatedWorker(child: ChildProcess, evidenceDir: string, 
       child.off('exit', onExit);
       child.off('close', onClose);
       child.off('error', onError);
+      options.signal?.removeEventListener('abort', onAbort);
       closeSync(fd);
-      const result = { code: child.exitCode, signal: child.signalCode, timedOut, timeoutPhase, exitWaitTimedOut, stdioDrainTimedOut };
+      const result = { code: child.exitCode, signal: child.signalCode, timedOut, aborted, abortReason,
+        timeoutPhase, exitWaitTimedOut, stdioDrainTimedOut };
       writeFileSync(join(evidenceDir, 'worker-result.json'), JSON.stringify({ ...result,
         pendingStage: isolatedWorkerPendingStage(evidenceDir), error: error?.message ?? null }), { flag: 'wx' });
       // Callers remove evidenceDir in finally, and their assertion often prints
       // only a cleanup-heavy tail. Preserve the first failure bytes before that
       // removal and put its immutable reference at the end of the diagnostic.
-      if (error || result.code !== 0 || result.signal || timedOut || exitWaitTimedOut || stdioDrainTimedOut) {
+      if (error || result.code !== 0 || result.signal || timedOut || aborted || exitWaitTimedOut || stdioDrainTimedOut) {
         try {
           const archive = createNativeArtifactPersister(process.env.PAPERCUSP_TEST_ARTIFACT_DIR
             ? join(process.env.PAPERCUSP_TEST_ARTIFACT_DIR, 'isolated-worker-failures')
@@ -622,10 +636,14 @@ export function captureIsolatedWorker(child: ChildProcess, evidenceDir: string, 
     };
     const onClose = () => finish();
     const onError = (error: Error) => finish(error);
-    const terminate = () => {
-      if (timedOut || settled) return;
-      timedOut = true;
-      timeoutPhase = phase;
+    const stop = (callerAbort: boolean) => {
+      if (timedOut || aborted || settled) return;
+      aborted = callerAbort;
+      abortReason = callerAbort ? String(options.signal?.reason ?? 'Caller cancelled isolated worker') : null;
+      timedOut = !callerAbort;
+      timeoutPhase = callerAbort ? null : phase;
+      clearTimeout(timeout);
+      progressWatchdog?.stop();
       killWorker('SIGTERM');
       forceTimer = setTimeout(() => {
         if (child.exitCode === null && child.signalCode === null) killWorker('SIGKILL');
@@ -638,6 +656,8 @@ export function captureIsolatedWorker(child: ChildProcess, evidenceDir: string, 
         }, TEST_FILE_SCOPE_STOP_TIMEOUT_SEC * 1000);
       }, grace);
     };
+    const terminate = () => stop(false);
+    const onAbort = () => stop(true);
     child.stdout?.setEncoding('utf8');
     child.stderr?.setEncoding('utf8');
     child.stdout?.on('data', capture);
@@ -646,7 +666,9 @@ export function captureIsolatedWorker(child: ChildProcess, evidenceDir: string, 
     child.once('exit', onExit);
     child.once('close', onClose);
     child.once('error', onError);
-    if (deadlines) armPhase('bootstrap');
+    options.signal?.addEventListener('abort', onAbort, { once: true });
+    if (options.signal?.aborted) onAbort();
+    else if (deadlines) armPhase('bootstrap');
     else timeout = setTimeout(terminate, options.timeoutMs);
   });
 }
@@ -831,6 +853,7 @@ export function isolatedIntegrationProofSourcePaths(filePath: string, sourcePath
 
 export async function recordIsolatedIntegrationProof(options: {
   root: string; filePath: string; sourcePaths: string[];
+  signal?: AbortSignal;
   /** Explicit encompassing allowance for multi-process proofs; validated before allocation. */
   minimumFileRunTimeoutMs?: number;
   /** Required original receipts, relative to the run directory. Missing files fail retention. */
@@ -839,6 +862,7 @@ export async function recordIsolatedIntegrationProof(options: {
   requiredPreparation?: CommittedReaderObservationIdentity;
   execute: (observe: (child: ChildProcess) => void, evidenceDir: string) => Promise<void>;
 }): Promise<string> {
+  options.signal?.throwIfAborted();
   if (options.minimumFileRunTimeoutMs !== undefined)
     assertIsolatedFileRunBudget(options.minimumFileRunTimeoutMs);
   const { root, filePath } = options;
@@ -868,6 +892,7 @@ export async function recordIsolatedIntegrationProof(options: {
     retainedArtifacts,
     runPhase: async ctx => {
       if (ctx.phase === 'prepare') {
+        options.signal?.throwIfAborted();
         const progress = (stage: string) => {
           ctx.markStep(stage);
           retainIsolatedWorkerProgress(ctx.evidenceDir, stage);
@@ -914,6 +939,7 @@ export async function recordIsolatedIntegrationProof(options: {
           assert.equal(handoff, undefined, 'Original preparation handoff requires an explicit original identity');
         }
       } else if (ctx.phase === 'execute') {
+        options.signal?.throwIfAborted();
         recheckPreparation();
         try {
           await options.execute(child => {

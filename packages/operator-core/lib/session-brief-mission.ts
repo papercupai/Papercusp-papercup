@@ -132,6 +132,26 @@ export async function applyMissionEvent(
   return sql.begin(tx => applyMissionEventInTransaction(tx as unknown as Sql, identity, event, readParent, options.nowMs ?? Date.now()));
 }
 
+/** The row lock owns selection order; timestamps are never receipt counters. */
+export async function acceptMissionActivityInTransaction(
+  tx: Sql, identity: MissionSessionIdentity,
+  activity: Omit<Extract<MissionEvent, { kind: 'activity-accepted' }>['activity'],
+    'selectionRevision' | 'acceptedOperationRef'>,
+  readParent: ReadMissionParent, nowMs: number,
+) {
+  const rows = await tx<{ mission_continuity: unknown }[]>`
+    SELECT mission_continuity FROM harness_shared.session_briefs
+     WHERE owner_id=${identity.ownerId} AND workspace_id=${identity.workspaceId} FOR UPDATE`;
+  const before = parseSessionMission(rows[0]?.mission_continuity);
+  if (!before?.state.binding) throw new Error('mission-acceptance-without-binding');
+  const revision = Math.max(before.revision, before.state.selectionRevision) + 1;
+  const receipt = `mission-selection:${identity.ownerId}:${before.state.binding.custodyGeneration}:${revision}`;
+  return applyMissionEventInTransaction(tx, identity, {
+    id: receipt, kind: 'activity-accepted',
+    activity: { ...activity, selectionRevision: revision, acceptedOperationRef: receipt },
+  }, readParent, nowMs);
+}
+
 /** A late enqueue acknowledgement cannot overwrite a terminal effect receipt. */
 export async function updateMissionOutboxInTransaction(
   tx: Sql, identity: MissionSessionIdentity, consequenceId: string,

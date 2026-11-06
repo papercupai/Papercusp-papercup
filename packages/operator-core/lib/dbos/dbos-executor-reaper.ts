@@ -33,7 +33,7 @@ import { ROUTINE_TICK_OVERLAP_STALE_MS } from './routine-tick-overlap-guard';
 
 /**
  * Release a green-checkpoint routineFire as soon as its own checkpoint marker is proven
- * abandoned. This supplements, rather than narrows, the 185m no-output fallback below.
+ * abandoned. Qualification custody is checked separately from DBOS step output below.
  */
 export async function clearAbandonedCheckpointRoutineFire(
   sql: Pick<Sql, 'unsafe'>,
@@ -94,7 +94,10 @@ const DEFAULT_STALE_SCHEDULER_MS = 90 * 1000;
  *  already ignored by the guard, so reaping it costs nothing. bghost-watchdog reads
  *  routinesTick only, so this window does not interact with its freeze threshold. */
 const DEFAULT_STALE_SWEEP_TICK_MS = ROUTINE_TICK_OVERLAP_STALE_MS;
-/** A routineFire may be inside its first DBOS step; operation_outputs is written
+/** Legacy routineFire fallback for workflows without living qualification custody.
+ *  Managed qualifications are independently probed before EVERY generic cancel path;
+ *  this window cannot limit a live or unmeasured root/child payload.
+ *  A routineFire may be inside its first DBOS step; operation_outputs is written
  *  when that step checkpoints, not when it starts. The longest legit no-output
  *  first step is the GREEN-CHECKPOINT suite: its action (release-actions.ts) does a
  *  single up-to-120-min `await runScript(...)` over the test suite with NO intermediate
@@ -292,6 +295,34 @@ export async function reapDeadExecutorWorkflows(
     // passes its own float. Do not remove in favour of a caller-side floor.
     const processStartedAtMsParam = Math.floor(processStartedAtMs ?? 0);
 
+    // A detached qualification outlives its DBOS executor and records no completed
+    // DBOS step while its payload is running. Neither age, a deadline, nor an
+    // executor restart proves that payload dead. Reuse the qualification's root
+    // and child-scope probe, including launch grace and unknown custody.
+    const checkpointWorkflows = await sql<{ workflow_uuid: string; qualification: unknown }[]>`
+      SELECT w.workflow_uuid, r.metadata->'qualificationTransaction' AS qualification
+        FROM dbos.workflow_status w
+        JOIN harness_shared.routines r ON w.deduplication_id = 'routine:' || r.id
+       WHERE w.name = 'routineFire'
+         AND w.status IN ('PENDING', 'ENQUEUED')
+         AND r.target_role = 'system:green-checkpoint'
+         AND r.metadata ? 'qualificationTransaction'`;
+    const protectedWorkflowIds: string[] = [];
+    if (checkpointWorkflows.length > 0) {
+      const { parseCheckpointQualificationTransaction, probeRunnerLiveness } =
+        await import('../release/checkpoint-qualification-transaction');
+      for (const row of checkpointWorkflows) {
+        const qualification = parseCheckpointQualificationTransaction(row.qualification);
+        // An unreadable record cannot authorize surrendering custody. A terminal
+        // record can still own children during final cleanup, so probe its runner too.
+        if (!qualification || (qualification.currentPhysicalRunner
+          ? await probeRunnerLiveness(qualification.currentPhysicalRunner, now) !== 'dead'
+          : qualification.phase !== 'terminal')) {
+          protectedWorkflowIds.push(row.workflow_uuid);
+        }
+      }
+    }
+
     // Dead executors: stale (no workflow_status update in the window) AND still
     // holding at least one non-terminal workflow worth reaping.
     const dead = await sql<{ executor_id: string }[]>`
@@ -309,7 +340,8 @@ export async function reapDeadExecutorWorkflows(
         UPDATE dbos.workflow_status
            SET deduplication_id = NULL, status = 'CANCELLED'
          WHERE executor_id = ANY(${deadIds})
-           AND status IN ('PENDING', 'ENQUEUED')`;
+           AND status IN ('PENDING', 'ENQUEUED')
+           AND NOT (workflow_uuid = ANY(${protectedWorkflowIds}))`;
       cancelled += cancelRes.count;
 
     }
@@ -396,6 +428,7 @@ export async function reapDeadExecutorWorkflows(
              END AS requeue_routine_id
         FROM dbos.workflow_status
        WHERE status IN ('PENDING', 'ENQUEUED')
+         AND NOT (workflow_uuid = ANY(${protectedWorkflowIds}))
          AND (
            (
              -- WI-10000846: the sweeps run in their own scheduled tick; the same
@@ -488,7 +521,8 @@ export async function reapDeadExecutorWorkflows(
           UPDATE dbos.workflow_status
              SET deduplication_id = NULL, status = 'CANCELLED'
            WHERE workflow_uuid = ANY(${staleIds})
-             AND status IN ('PENDING', 'ENQUEUED')`;
+             AND status IN ('PENDING', 'ENQUEUED')
+             AND NOT (workflow_uuid = ANY(${protectedWorkflowIds}))`;
         if (requeueRoutineIds.length > 0) {
           // WI-1416: `reaped_count` counts CONSECUTIVE reaps — a completed fire resets
           // it (git-sync's recordOutcome, and the clear below drops it) — so persistent

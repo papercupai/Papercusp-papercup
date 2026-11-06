@@ -22,7 +22,13 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Sql } from 'postgres';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
-import { reapDeadExecutorWorkflows } from './dbos-executor-reaper';
+import { reapDeadExecutorWorkflows, DEFAULT_STALE_ROUTINE_FIRE_NO_OUTPUT_MS } from './dbos-executor-reaper';
+import {
+  beginQualificationTransaction,
+  configureRunnerLivenessProber,
+  parseCheckpointQualificationTransaction,
+  reserveQualificationRunner,
+} from '../release/checkpoint-qualification-transaction';
 
 let org: OrgTestDb;
 let sql: Sql;
@@ -53,6 +59,8 @@ beforeAll(async () => {
       updated_at BIGINT NOT NULL,
       deduplication_id TEXT,
       queue_name TEXT,
+      -- The installed routineFire telemetry trigger reads the SDK input column.
+      inputs TEXT,
       workflow_deadline_epoch_ms BIGINT
     )`;
   await sql`
@@ -132,6 +140,59 @@ async function routineMeta(id: string): Promise<Record<string, unknown> | null> 
     SELECT metadata FROM harness_shared.routines WHERE id = ${id}`;
   return r[0]?.metadata ?? null;
 }
+
+describe('qualification custody survives generic DBOS reaping (WI-6554700010045612, real PG)', () => {
+  const causes = ['no-output', 'dead-executor', 'deadline', 'restart', 'orphan'] as const;
+  it.each(causes.flatMap(cause => (['live', 'unknown', 'dead'] as const).map(liveness => ({ cause, liveness }))))(
+    'checks confined payload custody before $cause reaping: $liveness', async ({ cause, liveness }) => {
+      const id = 'rt-checkpoint-custody';
+      const uuid = 'wf-checkpoint-custody';
+      const old = Date.now() - DEFAULT_STALE_ROUTINE_FIRE_NO_OUTPUT_MS - 60_000;
+      const begun = beginQualificationTransaction(null, { attemptId: 'custody-attempt', nowMs: old }).transaction;
+      const reserved = reserveQualificationRunner(begun, {
+        attemptId: begun.attemptId, runnerId: 'custody-runner',
+        unit: 'checkpoint-root.scope', leaseDurationMs: 60_000, nowMs: old,
+      }).transaction;
+      reserved.currentPhysicalRunner!.childScopeUnits = ['pc-child123.scope'];
+      reserved.currentPhysicalRunner!.childScopeReservedAtMs = old;
+      if (liveness === 'live') reserved.currentPhysicalRunner!.heartbeatAtMs = Date.now();
+      expect(parseCheckpointQualificationTransaction(reserved)).not.toBeNull();
+      await seedRoutine(id);
+      await sql`UPDATE harness_shared.routines
+                   SET target_role = 'system:green-checkpoint',
+                       metadata = ${JSON.stringify({ qualificationTransaction: reserved })}::jsonb
+                 WHERE id = ${id}`;
+      const status = cause === 'orphan' ? 'ENQUEUED' : 'PENDING';
+      await seedWf({ uuid, status, queue: 'q-checkpoint',
+        createdAgoMs: cause === 'no-output' ? Date.now() - old : 15 * 60_000,
+        updatedAgoMs: cause === 'dead-executor' ? 10 * 60_000 : 0,
+        deadlineInMs: cause === 'deadline' ? -60_000 : null, dedup: `routine:${id}` });
+      if (cause === 'restart') {
+        await sql`UPDATE dbos.workflow_status SET executor_id = 'local' WHERE workflow_uuid = ${uuid}`;
+      }
+      // The launcher and its lease are gone, but its child can still own work.
+      // Exercise each generic predicate independently so no earlier branch masks it.
+      const probe = vi.fn(runner => runner.unit === 'pc-child123.scope' ? liveness : 'dead');
+      configureRunnerLivenessProber(probe);
+      try {
+        const result = await reapDeadExecutorWorkflows(sql, LIVENESS_MS, SCHEDULER_MS,
+          DEFAULT_STALE_ROUTINE_FIRE_NO_OUTPUT_MS, ORPHAN_MS, cause === 'restart' ? Date.now() : undefined);
+        expect(probe).toHaveBeenCalled();
+        const rows = await sql<{ status: string; deduplication_id: string | null }[]>`
+          SELECT status, deduplication_id FROM dbos.workflow_status WHERE workflow_uuid = ${uuid}`;
+        expect(rows[0]).toEqual(liveness === 'dead'
+          ? { status: 'CANCELLED', deduplication_id: null }
+          : { status, deduplication_id: `routine:${id}` });
+        expect(result.cancelled).toBe(liveness === 'dead' ? 1 : 0);
+        if (liveness !== 'dead') expect((await routineMeta(id))?.reaped_count).toBeUndefined();
+        if (liveness === 'dead' && cause !== 'dead-executor') {
+          expect(result.staleWorkflowIds).toContain(uuid);
+          expect((await routineMeta(id))?.reaped_count).toBe(cause === 'deadline' ? undefined : 1);
+        }
+      } finally { configureRunnerLivenessProber(null); }
+    },
+  );
+});
 
 describe('routinesTick staleness is judged by step progress, not updated_at (EI-25221129396992808, real PG)', () => {
   // DBOS bumps workflow_status.updated_at only on a status transition, so a live

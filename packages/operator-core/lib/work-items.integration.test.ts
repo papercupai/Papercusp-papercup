@@ -1586,6 +1586,9 @@ describe('WI-1405 — genuine-completions metric (getCompletionIntegrityStats)',
     const stats = await wi.getCompletionIntegrityStats('empty-harness');
     expect(stats).toEqual({
       harness: 'empty-harness',
+      population: { kind: 'harness', harness: 'empty-harness', window: 'all-time', fleetAttribution: 'none' },
+      authorityRecordedCompletions: 0,
+      independentlyVerifiedNewChanges: null,
       terminalTotal: 0,
       genuineCompletions: 0,
       dedupOrUnverified: 0,
@@ -1625,6 +1628,9 @@ describe('WI-1405 — genuine-completions metric (getCompletionIntegrityStats)',
     const stats = await wi.getCompletionIntegrityStats(harness);
     expect(stats).toEqual({
       harness,
+      population: { kind: 'harness', harness, window: 'all-time', fleetAttribution: 'none' },
+      authorityRecordedCompletions: 2,
+      independentlyVerifiedNewChanges: null,
       terminalTotal: 4,
       genuineCompletions: 2,
       dedupOrUnverified: 2,
@@ -1686,6 +1692,9 @@ describe('WI-1405 — genuine-completions metric (getCompletionIntegrityStats)',
     const stats = await wi.getCompletionIntegrityStats('papercup');
     expect(stats).toEqual({
       harness: 'papercup',
+      population: { kind: 'harness', harness: 'papercup', window: 'all-time', fleetAttribution: 'none' },
+      authorityRecordedCompletions: 0,
+      independentlyVerifiedNewChanges: null,
       terminalTotal: 0,
       genuineCompletions: 0,
       dedupOrUnverified: 0,
@@ -1696,6 +1705,9 @@ describe('WI-1405 — genuine-completions metric (getCompletionIntegrityStats)',
     const otherStats = await wi.getCompletionIntegrityStats('other-harness');
     expect(otherStats).toEqual({
       harness: 'other-harness',
+      population: { kind: 'harness', harness: 'other-harness', window: 'all-time', fleetAttribution: 'none' },
+      authorityRecordedCompletions: 1,
+      independentlyVerifiedNewChanges: null,
       terminalTotal: 1,
       genuineCompletions: 1,
       dedupOrUnverified: 0,
@@ -1728,7 +1740,13 @@ describe('WI-1405 — genuine-completions metric (getCompletionIntegrityStats)',
     const legacy = await wi.createWorkItem({ kind: 'bug', title: 'legacy close', harness, createdBy: 'agA' });
     await wi.setWorkItemState(legacy.id, 'resolved', { harness, by: 'agA', completionRef: 'legacy evidence' });
 
-    expect((await wi.getCompletionIntegrityStats(harness)).declaredWorkOutcomes).toEqual({
+    const stats = await wi.getCompletionIntegrityStats(harness);
+    // Six authority-recorded closes contain only one DECLARED introduced change.
+    // No independent verification or fleet attribution is inferred from either.
+    expect(stats.population).toEqual({ kind: 'harness', harness, window: 'all-time', fleetAttribution: 'none' });
+    expect(stats.authorityRecordedCompletions).toBe(6);
+    expect(stats.independentlyVerifiedNewChanges).toBeNull();
+    expect(stats.declaredWorkOutcomes).toEqual({
       introducedChange: 1,
       verifiedExisting: 1,
       duplicate: 1,

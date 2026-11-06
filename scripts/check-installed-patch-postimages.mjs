@@ -147,6 +147,7 @@ export function verifyPostimages({
   modifiedPatchPaths = [],
   untrackedPatchPaths = [],
   nonPatchPackagePaths = [],
+  sourcesOnly = false,
 }) {
   const errors = [];
   let checked = 0;
@@ -197,6 +198,7 @@ export function verifyPostimages({
       }
       seenTargets.add(postimage.path);
       checked += 1;
+      if (sourcesOnly) continue;
 
       let actualHash;
       try {
@@ -235,7 +237,7 @@ export function verifyPostimages({
   return { ok: errors.length === 0, checked, errors };
 }
 
-export function checkInstalledPatchPostimages({ repoRoot = REPO_ROOT } = {}) {
+export function checkInstalledPatchPostimages({ repoRoot = REPO_ROOT, sourcesOnly = false } = {}) {
   const allTrackedPatchPaths = runGit(repoRoot, [
     'ls-tree',
     '-r',
@@ -290,6 +292,7 @@ export function checkInstalledPatchPostimages({ repoRoot = REPO_ROOT } = {}) {
   }
 
   return verifyPostimages({
+    sourcesOnly,
     patches: committedPatches,
     modifiedPatchPaths,
     untrackedPatchPaths,

@@ -15,6 +15,9 @@ export interface SessionInterruption {
   nextAttemptAt: number;
   state: 'pending' | 'recovering' | 'restored' | 'blocked';
   leaseKey?: string;
+  /** A committed process-dispatch intent survives a lost launch response. */
+  dispatchStartedAt?: number | null;
+  actionId?: string;
 }
 
 export interface SessionRecoveryEvidence {

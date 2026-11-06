@@ -2,8 +2,13 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SpecClauseRevision } from './spec-clauses-store';
 import { hashPlanContent } from './content-hash';
 import { evaluatePlanSpecQuality } from './spec-quality';
+import { computeSpecSetHash, SPEC_SET_HASH_VERSION } from './spec-clause-compiler';
+import { getBuildInfo } from '../../build-info';
 
-const reads = vi.hoisted(() => ({ plan: vi.fn(), clauses: vi.fn(), snapshot: vi.fn(), rubrics: vi.fn() }));
+const reads = vi.hoisted(() => ({ plan: vi.fn(), clauses: vi.fn(), snapshot: vi.fn(), rubrics: vi.fn(), discovery: vi.fn() }));
+vi.mock('../../plan-audits', async original => ({ ...await original<typeof import('../../plan-audits')>(),
+  withCurrentDiscovery: reads.discovery }));
+vi.mock('../coordination/identity', () => ({ resolveAgentIdentity: () => ({ ownerId: 'su-replay-test' }) }));
 vi.mock('./source', async (original) => ({ ...await original<typeof import('./source')>(), readPlanBySlug: reads.plan }));
 vi.mock('./revisions', async (original) => ({ ...await original<typeof import('./revisions')>(), getPlanRevisionSnapshot: reads.snapshot }));
 vi.mock('./spec-clauses-store', async (original) => ({ ...await original<typeof import('./spec-clauses-store')>(), listSpecClauses: reads.clauses }));
@@ -39,6 +44,7 @@ const call = async (args: Record<string, unknown>) => {
 
 beforeEach(() => {
   vi.resetAllMocks();
+  reads.discovery.mockImplementation(async (_input: unknown, accept: () => Promise<unknown>) => ({ ok: true, result: await accept() }));
   reads.plan.mockResolvedValue({ row: { items: [{ id: 'P-001' }, { id: 'P-002' }], template: null,
     templateData: null, inputSchema: null, contentHash: hashPlanContent(newBody) }, parsed: { items: [] } });
   reads.rubrics.mockResolvedValue([{ classRef: 'plan-class-feature-ship' }]);
@@ -48,6 +54,49 @@ beforeEach(() => {
 });
 
 describe('immutable spec-quality replay (WI-10007284)', () => {
+  it('binds the executable quality recipe to the serving evaluator and hash protocol', async () => {
+    const result = await call({ slug: 'quality-plan', harness: 'papercusp' });
+    expect(result.scorecardDraft.rerunRecipe).toMatchObject({
+      evaluator: 'plans:evaluate-spec-quality', evaluatorBuild: getBuildInfo(),
+      specSetHashVersion: SPEC_SET_HASH_VERSION,
+      args: { expectedSpecSetHash: result.specSetHash, evaluatorBuild: getBuildInfo(),
+        specSetHashVersion: SPEC_SET_HASH_VERSION, replaySnapshot: result.replaySnapshot },
+    });
+    expect((await call(result.scorecardDraft.rerunRecipe.args)).ratings).toEqual(result.ratings);
+  });
+
+  it.each([
+    { specSetHashVersion: 1 },
+    { evaluatorBuild: { sha: 'older-evaluator', version: '0.0.0' } },
+    { evaluatorBuild: { sha: null, version: '0.0.0' } },
+  ])('refuses an incompatible evaluator before any snapshot or clause read: %j', async pin => {
+    const result = await call({ ...replayArgs, ...pin });
+    expect(result).toMatchObject({ ok: false, code: 'spec_quality_evaluator_mismatch' });
+    expect(result).not.toHaveProperty('scorecardDraft');
+    expect(reads.snapshot).not.toHaveBeenCalled();
+    expect(reads.clauses).not.toHaveBeenCalled();
+  });
+
+  it('the same clauses reproduce the old hash only when falsifiers are omitted, never by replaying v1 on v2', async () => {
+    const falsifier = { observation: 'A valid request returns a rejection', probeMethod: 'Send a valid event' };
+    const clauses = [{ ...oldClause, falsifier }];
+    const legacyHash = computeSpecSetHash(clauses.map(({ falsifier: _ignored, ...row }) => row));
+    const currentHash = computeSpecSetHash(clauses);
+    expect(currentHash).not.toBe(legacyHash);
+    expect(computeSpecSetHash(clauses)).toBe(currentHash);
+    reads.clauses.mockResolvedValue(clauses);
+    const incompatible = await call({ ...replayArgs, expectedSpecSetHash: legacyHash, specSetHashVersion: 1 });
+    expect(incompatible).toMatchObject({ ok: false, code: 'spec_quality_evaluator_mismatch' });
+    expect(reads.clauses).not.toHaveBeenCalled();
+    expect(computeSpecSetHash([{ ...clauses[0]!, falsifier: { ...falsifier, probeMethod: 'Send a valid event twice' } }]))
+      .not.toBe(currentHash);
+  });
+
+  it('preserves historical reflection without requiring live discovery or recruiting a reviewer', async () => {
+    reads.discovery.mockResolvedValue({ ok: false, error: 'discovery_not_ready' });
+    expect(await call(replayArgs)).toMatchObject({ ok: true, specSetHash: oldEvaluation.specSetHash });
+    expect(reads.discovery).not.toHaveBeenCalled();
+  });
   it('reproduces all eight historical findings after both the clause and live item population change', async () => {
     const replay = await call(replayArgs);
     expect(replay).toMatchObject({ ok: true, verdict: 'pass', specSetHash: oldEvaluation.specSetHash, planItemCount: 1 });

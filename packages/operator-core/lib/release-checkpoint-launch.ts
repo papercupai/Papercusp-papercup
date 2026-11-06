@@ -132,10 +132,10 @@ export const CHECKPOINT_SYSTEMCTL_PROBE_TIMEOUT_MS = 5_000;
 
 /** Internal env transport from the detached MANUAL launcher to green-checkpoint.ts.
  *
- * The scheduled path owns a parent-side suite timeout followed by a SIGKILL grace, while
- * this detached path has no such parent and previously inherited only the 3h orphan
- * backstop. Stamp the equivalent full kill window into the transient unit so a wedged manual
- * run terminates on the same schedule. The 3h systemd cap remains the final launch backstop.
+ * Both scheduled and detached main-greening paths have no parent execution-age
+ * cutoff or systemd runtime fuse. The manual launcher transports this compatibility
+ * duration as an idle/no-progress budget; advancing work keeps its owned lifetime.
+ * Explicit bounded validation retains its separately supplied fixed cutoff.
  *
  * This used to be a hand-typed COPY of that window, because importing release-actions.ts
  * here registers routine actions as a module-load side effect, and the cross-file timing

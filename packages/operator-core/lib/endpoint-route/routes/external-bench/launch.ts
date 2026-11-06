@@ -33,6 +33,7 @@ const launch = defineTool({
       arm?: string;
       taskSetId?: string;
       taskIds?: string[];
+      suite?: string;
       model?: string;
       cap?: number;
       maxUsdPerTask?: number;
@@ -53,6 +54,7 @@ const launch = defineTool({
         arm: body.arm,
         taskSetId: body.taskSetId,
         taskIds: body.taskIds,
+        suite: body.suite,
         model: body.model,
         cap: body.cap,
         maxUsdPerTask: body.maxUsdPerTask,

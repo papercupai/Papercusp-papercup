@@ -419,6 +419,9 @@ describe('startEventLoopSentinel', () => {
       signal: result.signal,
       stderr: result.stderr,
       files: readdirSync(dir).filter(f => f.startsWith('stall-') && f.endsWith('.cpuprofile')),
+      diagnostics: readdirSync(dir)
+        .filter(f => f.startsWith('stall-') && f.endsWith('.diagnostic.json'))
+        .map(f => JSON.parse(readFileSync(join(dir, f), 'utf8'))),
     };
   }
 
@@ -444,6 +447,36 @@ describe('startEventLoopSentinel', () => {
     const failed = result.stderr.split('\n').find(l => l.includes('STALL profile capture failed'));
     expect(failed, result.stderr).toBeDefined();
     expect(failed).toContain('mainThreadState: S');
+    expect(failed).toContain('stallDiagnosticFile:');
+    expect(result.diagnostics).toHaveLength(1);
+    expect(result.diagnostics[0]).toMatchObject({
+      schema: 'sentinel-stall-diagnostic-v1',
+      mainThreadState: 'S',
+      cpuProfile: null,
+    });
+    expect(result.diagnostics[0].kernelStack.status).toMatch(/^(available|unavailable)$/);
+  }, 30_000);
+
+  it.skipIf(process.platform !== 'linux')('EI-27982591239117924: preserves D-state evidence when Profiler.enable cannot answer', () => {
+    const result = runParkedDiagnosticTrial('blocked', 'observe', `
+      inspectorPost = async () => { throw new Error('Profiler.enable not answered within 3000ms'); };
+      readMainThreadStat = () => ({ state: 'D', ticks: 0 });
+      readMainThreadWchan = () => 'rq_qos_wait';
+      readMainThreadKernelStack = () => ({ status: 'unavailable', error: 'EACCES fixture' });
+    `);
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stderr).toContain('sentinel-alive:true');
+    expect(result.files).toEqual([]);
+    expect(result.diagnostics).toHaveLength(1);
+    expect(result.diagnostics[0]).toMatchObject({
+      schema: 'sentinel-stall-diagnostic-v1',
+      mainThreadState: 'D',
+      mainThreadWchan: 'rq_qos_wait',
+      mainThreadInspectorResponse: 'not-answered',
+      kernelStack: { status: 'unavailable', error: 'EACCES fixture' },
+      cpuProfile: null,
+      cpuProfileUnavailableReason: 'Error: Profiler.enable not answered within 3000ms',
+    });
   }, 30_000);
 
   it.skipIf(process.platform !== 'linux')('WI-10005529: discards a probe answered only after heartbeat recovery', () => {

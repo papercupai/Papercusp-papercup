@@ -45,6 +45,7 @@ import {
   resolveWorkerMemoryMb,
   retainReporterEvaluatorArtifacts,
   retainNativeProofPacket,
+  retainNativeProofPacketAsync,
   verifyNativeProofPacket,
   runBudgetedTaskShards,
   runBudgetedTasks,
@@ -107,7 +108,9 @@ describe('private native proof custody (P002)', () => {
     const contract = { identity, expected };
     const save = () => retainNativeProofPacket(directory, { ...contract, observations,
       execution: { state: 'failed' }, cleanup: { complete: false } });
-    return { root, producer, directory, contract, observations, save };
+    const saveAsync = () => retainNativeProofPacketAsync(directory, { ...contract, observations,
+      execution: { state: 'failed' }, cleanup: { complete: false } });
+    return { root, producer, directory, contract, observations, save, saveAsync };
   }
 
   function consumeRetained(f: ReturnType<typeof fixture>, locator: ReturnType<typeof f.save>['locator'], contract = f.contract) {
@@ -130,14 +133,14 @@ describe('private native proof custody (P002)', () => {
     return result;
   }
 
-  it('reports bounded custody phases through synchronization and verification without trusting the observer', () => {
+  it('reports bounded custody phases through concurrent synchronization and verification without trusting the observer', async () => {
     const f = fixture();
     // Enough distinct files to cross the synchronization heartbeat boundary.
     for (let index = 0; index < 300; index++) {
       writeFileSync(join(f.contract.expected[0].out + '.modules', `extra-${index}.js`), `export const n = ${index};`);
     }
-    const phases: Array<{ phase: string; elapsedMs: number; completed?: number; total?: number }> = [];
-    const result = retainNativeProofPacket(f.directory, { ...f.contract, observations: f.observations,
+    const phases: Array<{ phase: string; elapsedMs: number; completed?: number; total?: number; maxConcurrent?: number }> = [];
+    const result = await retainNativeProofPacketAsync(f.directory, { ...f.contract, observations: f.observations,
       onProgress: record => {
         phases.push(record);
         if (record.phase === 'sync-progress') throw new Error('diagnostic sink unavailable');
@@ -151,11 +154,29 @@ describe('private native proof custody (P002)', () => {
     expect(names.indexOf('metadata-complete')).toBeLessThan(names.indexOf('sync-start'));
     const heartbeats = phases.filter(record => record.phase === 'sync-progress');
     const synced = phases.find(record => record.phase === 'sync-complete')!;
+    expect(synced.maxConcurrent).toBeGreaterThan(1);
+    expect(synced.maxConcurrent).toBeLessThanOrEqual(8);
     expect(heartbeats.length).toBe(Math.floor(synced.total! / 128));
     expect(heartbeats.map(record => record.completed)).toEqual([128, 256]);
     expect(synced.completed).toBe(synced.total);
     expect(phases.every((record, index) => record.elapsedMs >= 0 &&
       (index === 0 || record.elapsedMs >= phases[index - 1].elapsedMs))).toBe(true);
+  });
+
+  it('refuses oversized synchronous custody before its serial fsync loop', () => {
+    const f = fixture();
+    const group = f.contract.expected[0]!;
+    for (let index = 0; index < 130; index++) {
+      const path = join(f.producer, `large-sync-${index}.bin`);
+      writeFileSync(path, `unique-sync-object-${index}`);
+      group.auxiliary.push({ role: `large-sync-${index}`, path, state: 'produced' as const });
+    }
+    const phases: Array<{ phase: string; elapsedMs: number; total?: number }> = [];
+    expect(() => retainNativeProofPacket(f.directory, { ...f.contract, observations: f.observations,
+      onProgress: record => phases.push(record),
+    })).toThrow(/use retainNativeProofPacketAsync/);
+    expect(phases.find(record => record.phase === 'sync-start')?.total).toBeGreaterThan(128);
+    expect(phases.some(record => record.phase === 'sync-progress')).toBe(false);
   });
 
   it('P003 reconciles independent raw-byte pins and private modes for two primaries and a detail after retirement', () => {
@@ -200,7 +221,7 @@ describe('private native proof custody (P002)', () => {
     expect(verifyNativeProofPacket(f.directory, saved.locator, f.contract).status).toBe('complete');
   });
 
-  it('retains evaluator references across the segment object boundary and preserves historical partial packets', () => {
+  it('retains evaluator references across the segment object boundary and preserves historical partial packets', async () => {
     const f = fixture(), group = f.contract.expected[0]!, modules = group.out! + '.modules';
     rmSync(modules, { recursive: true });
     mkdirSync(modules);
@@ -215,7 +236,7 @@ describe('private native proof custody (P002)', () => {
     payload.rows = [{ moduleEvaluations: { ...payload.rows[0].moduleEvaluations, entries: pins, vmInputs: [] } }];
     payload.diagnostics = []; payload.nativeRun.files = [];
     writeFileSync(group.out!, JSON.stringify(payload));
-    const saved = f.save();
+    const saved = await f.saveAsync();
     expect(saved.status).toBe('complete');
     expect(saved.manifest.groups[0]!.referenceArtifacts).toEqual(pins);
     expect(saved.manifest.groups[0]!.referenceGaps).toEqual([]);
@@ -1491,7 +1512,7 @@ describe('native affected-task parent receipt transport', () => {
       const start = SCHEDULER_SRC.indexOf('const comparisonHash =');
       const end = SCHEDULER_SRC.indexOf('export function prepareBudgetedTaskComparison');
       const writer = new Script(`(() => {${SCHEDULER_SRC.slice(start, end)
-        .replaceAll('export function ', 'function ')}\nreturn writeBudgetedTaskNativeExecutionReceipt;})()`)
+        .replaceAll(/export (async )?function /g, '$1function ')}\nreturn writeBudgetedTaskNativeExecutionReceipt;})()`)
         .runInNewContext({ ...fs, Buffer, createHash, basename, dirname, isAbsolute, join,
           relative, resolve, structuredClone,
           openSync: (file: string, flags: number) => {

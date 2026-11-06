@@ -32,6 +32,28 @@ describe('completion reflection execution meaning (WI-6554700010045479)', () => 
     expect(planExecutionMeaning(replaced.newBody)).toBe(planExecutionMeaning(original));
   });
 
+  it('excludes only explicitly classified progress notes from execution and graph scope', () => {
+    const note = 'Operational update blocked-by: P-999 importance: high deliverable: code D-999';
+    const progress = flipStatusInBody(original, 'P-001', 'wip', note, 'progress');
+    expect(progress.found).toBe(true);
+    expect(progress.newBody).toContain(note);
+    expect(planExecutionMeaning(progress.newBody)).toBe(planExecutionMeaning(original));
+    const before = deriveIndexFromContent(original).items[0]!;
+    const after = deriveIndexFromContent(progress.newBody).items[0]!;
+    expect(after.text).toBe(before.text);
+    expect(after.blockedBy).toEqual(before.blockedBy);
+    expect(after.importance).toBe(before.importance);
+    expect(after.deliverable).toBe(before.deliverable);
+    expect(after.decisionRefs).toEqual(before.decisionRefs);
+  });
+
+  it('keeps unclassified author notes material and graph-visible', () => {
+    const author = flipStatusInBody(original, 'P-001', 'wip', 'Author explanation');
+    expect(planExecutionMeaning(author.newBody)).not.toBe(planExecutionMeaning(original));
+    expect(deriveIndexFromContent(author.newBody).items[0]!.text)
+      .not.toBe(deriveIndexFromContent(original).items[0]!.text);
+  });
+
   it.each([
     ['author scope', 'Preserve findings blocked-by:', 'Discard findings blocked-by:'],
     ['dependency', 'blocked-by: P-002', 'blocked-by: P-003'],

@@ -19,6 +19,8 @@
  */
 'use client';
 
+import { TerminalLinksAddon } from '@/lib/terminal-links';
+
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { createResilientEventSource } from '@papercusp/sse';
 import { useLexicon } from '@/lib/useLexicon';
@@ -96,6 +98,7 @@ export default function TerminalTab(): React.JSX.Element {
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
+    term.loadAddon(new TerminalLinksAddon());
     if (!containerRef.current) return;
     term.open(containerRef.current);
     try { fit.fit(); } catch { /* ignore */ }

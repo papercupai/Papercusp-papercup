@@ -22,7 +22,10 @@ vi.mock('../coordination/presence', async (importOriginal) => ({
 
 vi.mock('../../modes/store', () => ({ getModes: vi.fn() }));
 vi.mock('./drain-flow', () => ({ readDrainFlow: vi.fn() }));
-vi.mock('../../issue-occurrence-ledger', () => ({ readIssueOccurrenceCounts: vi.fn() }));
+vi.mock('../../issue-occurrence-ledger', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../issue-occurrence-ledger')>()),
+  readIssueOccurrenceCounts: vi.fn(),
+}));
 vi.mock('../fleet/fleet-metrics-scope', async (importOriginal) => ({
   ...(await importOriginal<object>()),
   resolveFleetMetricScope: vi.fn(),
@@ -53,7 +56,7 @@ import {
   NON_TERMINAL_CENSUS_CEILING,
 } from './burn_down';
 import { shapeBurnDown } from './burn_down-shape';
-import { shapeLeaderBrief } from '../fleet/leader-brief-shape';
+import { compactLeaderBriefForResultDoor, shapeLeaderBrief } from '../fleet/leader-brief-shape';
 import { computeAgentReviewService } from '../../harness/improvements/flow-metrics';
 import { updateExternalBlockerHistory } from '../../external-blockers';
 import { P2P_LANE_EXCLUSION_TERMS, P2P_LANE_REJECTED_ANTI_TERMS } from '../../scheduler/p2p-lane-fence';
@@ -991,6 +994,66 @@ describe('work_items:burn_down', () => {
         inFlight: { shown: 10, total: 2000, truncated: true },
       }),
     }));
+  });
+
+  it('reports complete status partitions and overlapping scheduler causes through default and emergency transport', async () => {
+    const resolution = fleetResolution('current-spec');
+    resolution.claimSpec.current.view.filter = { field: 'kind', op: '=', value: 'bug' };
+    const rows = Array.from({ length: 2001 }, (_, n) => item({ id: `WI-ready-${n}`, kind: 'bug', assignee: null }));
+    rows.push(
+      item({ id: 'WI-blocked', kind: 'bug', state: 'blocked', assignee: null, payload: {
+        externalBlockers: [{ kind: 'event', status: 'active', ref: 'real-dependency', summary: 'Await dependency' }],
+      } }),
+      item({ id: 'WI-stale-human', kind: 'bug', state: 'needs-human', assignee: null, payload: { needsOwnerAction: true } }),
+      item({ id: 'WI-review', kind: 'bug', assignee: null, payload: { agentReview: { status: 'pending' } } }),
+      item({ id: 'WI-admission', kind: 'bug', assignee: null }),
+      item({ id: 'WI-unknown', kind: 'bug', assignee: null }),
+      item({ id: 'WI-overlap', kind: 'bug', assignee: null, payload: { _claimHold: true,
+        agentReview: { status: 'revision-requested' } } }),
+    );
+    const reasons: Record<string, string[]> = {
+      'WI-blocked': ['not-claimable-status', 'external-blocker'],
+      'WI-stale-human': ['not-claimable-status', 'needs-owner-action'],
+      'WI-review': ['agent-review'], 'WI-admission': ['admission-pending'],
+      'WI-overlap': ['admission-pending', 'agent-review', 'claim-hold'],
+    };
+    const result = await buildFleetMetricsResult(resolution, rows, {
+      sourceCapExhausted: false, issueOccurrences: issueOccurrenceCounts,
+      explainFloors: async (_h, ids, options) => {
+        expect(options?.includeAllFloors).toBe(true);
+        expect(ids).toHaveLength(2007);
+        return ids.filter(id => id !== 'WI-unknown').map(id => ({ id,
+          admissible: !reasons[id], refusedBy: reasons[id]?.[0] ?? null,
+          failedFloors: reasons[id] ?? [], detail: null,
+        }));
+      },
+    });
+    expect(result.ok).toBe(true); if (!result.ok) return;
+    const categories = result.snapshot.remaining.categorization!;
+    expect(result.snapshot.remaining.total).toBe(2007);
+    expect(categories.stateCounts).toEqual({ open: 2005, blocked: 1, 'needs-human': 1 });
+    expect(categories.primaryReasons).toEqual({ claimable: 2001, 'not-claimable-status': 2,
+      'agent-review': 1, 'admission-pending': 2, unknown: 1 });
+    expect(categories.exclusionCounts).toMatchObject({ 'agent-review': 2, 'admission-pending': 2,
+      'claim-hold': 1, 'external-blocker': 1, 'needs-owner-action': 1 });
+    expect(categories.exclusionsOverlap).toBe(true);
+    expect(categories.floorCoverage).toEqual({ measured: 2006, unknown: 1 });
+    expect(categories.exclusionCoverage).toEqual({ complete: 2006, firstReasonOnly: 0, unknown: 1 });
+    expect(categories.evidenceGaps).toEqual({ humanWithoutStrictAsk: 1, blockedWithoutRecordedGate: 0 });
+    expect(categories.explanation).toContain('2007 remaining; 2001 scheduler-claimable');
+    expect(categories.explanation).toContain('2 agent review, 2 admission pending');
+    const source = { ok: true, fleetMetrics: result };
+    for (const shaped of [shapeLeaderBrief(source, 'trimmed'), shapeBurnDown(source, 'trimmed'),
+      compactLeaderBriefForResultDoor(source)]) {
+      expect(shaped).toMatchObject({ fleetMetrics: { snapshot: { remaining: { categorization: categories } } } });
+    }
+    const corrupt = (patch: object) => fleetMetricsResultSchema.safeParse({ ...result,
+      snapshot: { ...result.snapshot, remaining: { ...result.snapshot.remaining,
+        categorization: { ...categories, ...patch } } } }).success;
+    expect(corrupt({ stateCounts: { open: 2007, blocked: 1 } })).toBe(false);
+    expect(corrupt({ primaryReasons: { claimable: 2007, unknown: 1 } })).toBe(false);
+    expect(corrupt({ floorCoverage: { measured: 2006, unknown: 0 } })).toBe(false);
+    expect(corrupt({ exclusionCounts: { 'agent-review': 2008 } })).toBe(false);
   });
 
   it('keeps full-population stage waits, overlapping controls and release actions through leader shaping', async () => {

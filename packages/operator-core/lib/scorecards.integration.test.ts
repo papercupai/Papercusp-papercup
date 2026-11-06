@@ -51,6 +51,7 @@ const {
   listScorecardPage,
   listScorecards,
   readScorecardEvidence,
+  readScorecardRecipeHeader,
   recordGradingAudit,
   scorecardTotalCountsByRubric,
   scorecardTrend,
@@ -567,13 +568,14 @@ describe('listScorecards (P-013) — real PG', () => {
     expect(second.hasMore).toBe(false);
   });
 
-  it('fills the settled limit past diagnostics, legacy partial, provisional and unaudited history, retaining finalized failure', async () => {
-    const rubricRef = 'test-finalized-mixed-history';
+  it.each(['mixed-history-before-limit', 'legacy-partial-excluded', 'finalized-failure-included',
+    'explicit-diagnostic-history'] as const)('%s: preserves the requested finalized or diagnostic history', async scenario => {
+    const rubricRef = `test-finalized-${scenario}`;
     await proposeRubric({ rubricId: rubricRef, characteristic: 'hive-coordination',
       title: 'Finalized history fixture', criteria: CRITERIA, status: 'active', by: 'su-test' });
     const ratings = Object.fromEntries(CRITERIA.map(criterion => [criterion.key,
       { rating: 'broken', evidence: 'A confirmed finalized failure remains visible.' }]));
-    const hive = 'mixed-finalized-history';
+    const hive = `finalized-history-${scenario}`;
     const passed = await fileScorecard(db, { id: 'settled-pass', rubricRef, sourceHive: hive, finalized: true,
       ratings: Object.fromEntries(CRITERIA.map(criterion => [criterion.key,
         { rating: 'healthy', evidence: 'An independently confirmed prior pass.' }])), createdAt: '2026-09-01T00:00:00.000Z' });
@@ -594,9 +596,27 @@ describe('listScorecards (P-013) — real PG', () => {
       await fileScorecard(db, { id: `unsettled-${index}`, rubricRef, sourceHive: hive,
         ratings, observationExtra, createdAt: `2026-10-0${index + 2}T00:00:00.000Z` });
     }
+    if (scenario === 'explicit-diagnostic-history') {
+      const explicit = await listScorecards({ rubricRef, sourceHive: hive, includeDiagnostics: true });
+      expect(explicit).toHaveLength(9);
+      expect(explicit.find(row => row.purpose === 'diagnostic')).toMatchObject({
+        purpose: 'diagnostic', exclusionReasons: expect.arrayContaining(['diagnostic']),
+      });
+      expect(explicit.find(row => row.missingKeys.length > 0)).toMatchObject({
+        exclusionReasons: expect.arrayContaining(['incomplete']),
+      });
+      return;
+    }
+    if (scenario === 'legacy-partial-excluded') {
+      const finalizedRows = await listScorecards({ rubricRef, sourceHive: hive, finalizedOnly: true });
+      expect(finalizedRows.map(row => row.issueId)).toEqual([finalized, passed]);
+      expect(finalizedRows.every(row => row.missingKeys.length === 0)).toBe(true);
+      return;
+    }
     const page = await listScorecardPage({ rubricRef, sourceHive: hive, finalizedOnly: true, limit: 1 });
     expect(page.rows.map(row => row.issueId)).toEqual([finalized]);
     expect(page.rows[0].ratings).toEqual(ratings);
+    if (scenario === 'finalized-failure-included') return;
     expect(page.hasMore).toBe(true);
     expect(page.selection?.excludedCounts).toEqual({ diagnostic: 1, incomplete: 1, provisional: 1,
       'grading-audit-pending': 1, 'grading-audit-missing': 1, 'grading-audit-stale': 1, 'grading-audit-failed': 1 });
@@ -1072,6 +1092,51 @@ describe('readScorecardEvidence audit-target status (EI-24583166035391772) — r
 
   afterAll(async () => {
     await db?.cleanup();
+  });
+
+  describe.each([
+    ['evidence', readScorecardEvidence],
+    ['recipe-header', readScorecardRecipeHeader],
+  ] as const)('%s diagnostic identity', (readerName, read) => {
+    it.each([
+      { name: 'diagnostic BAR', purpose: 'diagnostic', barSetHash: 'b'.repeat(64) },
+      { name: 'diagnostic without BAR', purpose: 'diagnostic', barSetHash: null },
+      { name: 'ordinary regrade', purpose: 'grading', barSetHash: null },
+      { name: 'legacy', purpose: undefined, barSetHash: undefined },
+    ] as const)('preserves $name identity and audit eligibility', async ({ name, purpose, barSetHash }) => {
+      const issueId = `EI-reader-identity-${readerName}-${name.replaceAll(' ', '-')}`;
+      const subject = { kind: 'plan', ref: 'reader-identity-plan',
+        windowStart: '2026-11-01T00:00:00.000Z', windowEnd: '2026-11-02T00:00:00.000Z' };
+      const identity = { rubricRef: 'reader-identity-rubric', rubricRevision: 3,
+        rubricMeaningRevision: 2, criteriaHash: 'a'.repeat(64), sourceHive: 'papercusp', subject };
+      const lineage = purpose === 'grading'
+        ? { baselineRef: 'EI-reader-baseline' }
+        : purpose === 'diagnostic' ? { supersedes: 'EI-reader-misreading' } : {};
+      const observation = { ...identity, ...lineage,
+        ...(purpose ? { purpose } : {}), ...(barSetHash !== undefined ? { barSetHash } : {}),
+        ratings: { measured: { rating: 'unknown', evidence: 'Required probe has not run.',
+          unknownReason: 'not-exercised', nextEvidenceAction: 'Run the named probe.' } } };
+      await db.adminSql`
+        INSERT INTO harness_shared.engineer_issues
+          (workspace_id, issue_id, kind, scope, title, body, severity, source,
+           state, payload, created_by, signal_origin)
+        VALUES (${issuesScopeWorkspace()}, ${issueId}, 'change', 'harness:papercusp',
+          ${name}, '', 'minor', 'test', 'done',
+          ${JSON.stringify({ observation })}::text::jsonb, 'su-test', 'organic')`;
+
+      const result = await read(issueId);
+      expect(result.kind).toBe('found');
+      if (result.kind !== 'found') throw new Error(`Missing ${readerName} identity fixture`);
+      expect(result.scorecard).toMatchObject({ ...identity, ...lineage });
+      expect(result.scorecard.purpose).toBe(purpose);
+      expect(Object.hasOwn(result.scorecard, 'barSetHash')).toBe(barSetHash !== undefined);
+      if (barSetHash !== undefined) expect(result.scorecard.barSetHash).toBe(barSetHash);
+      expect(result.scorecard.auditTarget).toMatchObject({ current: purpose !== 'diagnostic' });
+      if (purpose) expect(result.scorecard.auditTarget.purpose).toBe(purpose);
+      if ('criteria' in result.scorecard) {
+        expect(result.scorecard.criteria).toEqual([{ key: 'measured', ...observation.ratings.measured }]);
+      }
+    });
   });
 
   // EI-24583166035391772: the grading-audit dispatch brief tells the auditor to

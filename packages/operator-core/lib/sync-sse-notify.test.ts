@@ -7,7 +7,7 @@
  * sync_invalidate SSE bus (sync-sse.ts). The resilience that's unit-testable
  * here is the SOURCE side — notifySyncInvalidate's dedupe (prevents the
  * notify-storm/flicker when a reconnect cascade or the 60s reconcile sweep
- * fires identical invalidations) and the >32KB payload-strip (a big voice
+ * fires identical invalidations) and the transport byte-cap fallback (a big voice
  * state-snapshot degrades to invalidate-then-refetch instead of blowing the
  * frame).
  *
@@ -52,12 +52,21 @@ describe('notifySyncInvalidate — payload shaping', () => {
     expect(payloadOf()).toEqual({ name: 'voiceState.p010b', args: { workspaceId: 'w1' }, data: [{ row: 1 }] });
   });
 
-  it('strips an oversized (>32KB) data payload — client falls back to refetch', async () => {
+  it('strips an oversized data payload — client falls back to refetch', async () => {
     const big = [{ blob: 'x'.repeat(40_000) }];
     await notifySyncInvalidate('voiceState.p010c', { workspaceId: 'w1' }, big);
     const p = payloadOf();
     expect(p).toEqual({ name: 'voiceState.p010c', args: { workspaceId: 'w1' } });
     expect(p.data).toBeUndefined();
+  });
+
+  it('keeps oversized UTF-8 args under PostgreSQL’s limit and preserves a name-only invalidation', async () => {
+    await notifySyncInvalidate('voiceState.p010h', { identity: 'é'.repeat(5_000) });
+
+    expect(sql).toHaveBeenCalledTimes(1);
+    const payloadJson = String(sql.mock.calls[0][2]);
+    expect(new TextEncoder().encode(payloadJson).byteLength).toBeLessThan(8_000);
+    expect(JSON.parse(payloadJson)).toEqual({ name: 'voiceState.p010h' });
   });
 });
 

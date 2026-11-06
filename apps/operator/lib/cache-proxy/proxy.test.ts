@@ -7,10 +7,14 @@
  *
  * Run: npm run test:file -- apps/operator/lib/cache-proxy/proxy.test.ts
  */
+import { spawn } from 'node:child_process';
 import { readFileSync } from 'node:fs';
+import { once } from 'node:events';
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { afterEach, describe, expect, it } from 'vitest';
+import { fileURLToPath } from 'node:url';
+import { createTextCollector } from '@papercusp/operator-core/lib/child-output';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createCacheProxy, isCacheableAnthropicPath } from './proxy';
 import { CACHE_POLICY_VERSION } from '@papercusp/operator-core/lib/inference-gateway/cache-policy';
 
@@ -216,6 +220,35 @@ describe('cache-proxy — per-tool deferral fires AT THE PROXY BOUNDARY (P-002)'
       off.tools!.filter((t) => t.defer_loading).length,
     );
   });
+});
+
+describe('cache-proxy — TSX service entrypoint', () => {
+  it('starts the real service entry across the CommonJS/ESM boundary', async () => {
+    const root = fileURLToPath(new URL('../../', import.meta.url));
+    const env: NodeJS.ProcessEnv = {
+      ...process.env,
+      PAPERCUSP_CACHE_PROXY_PORT: '0',
+      PAPERCUSP_CACHE_PROXY_HOST: '127.0.0.1',
+    };
+    delete env.NODE_OPTIONS;
+    const child = spawn(process.execPath, ['--import', 'tsx', 'bin/cache-proxy.ts'], {
+      cwd: root,
+      env,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    const output = createTextCollector(child.stdout);
+    output.attach(child.stderr);
+    const closed = once(child, 'close');
+    try {
+      await vi.waitFor(() => {
+        expect(child.exitCode, output.peek()).toBeNull();
+        expect(output.peek()).toContain('[cache-proxy] listening on http://127.0.0.1:0');
+      }, { timeout: 10_000 });
+    } finally {
+      child.kill('SIGTERM');
+      await closed;
+    }
+  }, 15_000);
 });
 
 describe('cache-proxy — credential passthrough (D-005: NOT an account substitution)', () => {

@@ -9,6 +9,8 @@ import {
 } from '@papercusp/operator-core/lib/cross-boundary-event-contracts';
 import { STREAM_SILENCE_STALE_MS, type TransportStatus } from '../_components/chat/stream-freshness';
 import { TONE } from './theme';
+import { groupEntriesIntoTurns, type Turn } from './session-timeline-turns';
+export { groupEntriesIntoTurns, type Turn } from './session-timeline-turns';
 
 /**
  * Shared live "thinking" stream primitives for a Now-running agent — the
@@ -351,40 +353,6 @@ export function ThinkingDot({ size = 7, color = TONE.good, title = 'thinking' }:
       <style>{`@keyframes pcThinkPulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.35;transform:scale(.66)}}`}</style>
     </span>
   );
-}
-
-/** One TURN — a wake/prompt and the agent's activity in response to it. Entries
- *  before the first prompt form a leading partial turn (prompt: null). */
-export interface Turn {
-  seq: number;
-  prompt: TimelineEntry | null;
-  entries: TimelineEntry[];
-  startTs?: string;
-  endTs?: string;
-}
-
-/**
- * Group a flat timeline into TURNS on `prompt` (wake) boundaries — each real
- * user/wake message starts a new turn; the entries after it are that turn's
- * activity. Entries before the first prompt become a leading partial turn.
- * Chronological (the pane reverses it for newest-first display). Pure — for tests.
- */
-export function groupEntriesIntoTurns(entries: readonly TimelineEntry[]): Turn[] {
-  const turns: Turn[] = [];
-  for (const e of entries) {
-    if (e.kind === 'prompt') {
-      turns.push({ seq: turns.length, prompt: e, entries: [], startTs: e.ts, endTs: e.ts });
-      continue;
-    }
-    let cur = turns[turns.length - 1];
-    if (!cur) {
-      cur = { seq: 0, prompt: null, entries: [], startTs: e.ts, endTs: e.ts };
-      turns.push(cur);
-    }
-    cur.entries.push(e);
-    if (e.ts) cur.endTs = e.ts;
-  }
-  return turns;
 }
 
 /**

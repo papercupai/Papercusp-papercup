@@ -780,7 +780,7 @@ describe("EI-25270951515189161 — frozen host bundle import smoke runs before T
   const smokeSource = src.slice(smokeStartIdx, smokeEndIdx);
 
   function runSmoke(bundleSource: string, timeoutSec: number | string | null = 3, arenaCap?: string,
-    configuredBudget?: string, inheritedEnv: NodeJS.ProcessEnv = hermeticSpawnEnv()) {
+    configuredBudget?: string, inheritedEnv: NodeJS.ProcessEnv = { ...hermeticSpawnEnv(), NODE_OPTIONS: undefined }) {
     const fixture = mkdtempSync(resolve(tmpdir(), "verifier-host-import-smoke-"));
     const bundle = resolve(fixture, "hono-host.mjs");
     writeFileSync(bundle, bundleSource);
@@ -801,10 +801,9 @@ describe("EI-25270951515189161 — frozen host bundle import smoke runs before T
           timeout: 8_000,
           env: {
             ...inheritedEnv,
-            // These standalone .mjs fixtures are outside the selected checkout.
-            // Test-runner preloads can execute before the smoke's own preload,
-            // changing both the failure cause and the timed import budget.
-            NODE_OPTIONS: undefined,
+            // Keep explicitly supplied preloads: production must isolate the
+            // compiled host itself, rather than relying on this fixture to do it.
+            NODE_OPTIONS: inheritedEnv.NODE_OPTIONS,
             MALLOC_ARENA_MAX: arenaCap,
             HOST_IMPORT_TIMEOUT: undefined,
             VERIFY_TAURI_HOST_IMPORT_TIMEOUT: configuredBudget,

@@ -1,0 +1,10 @@
+{
+  "schemaVersion": "luna-bg-dependency-attempt-v1",
+  "startedAtMs": 1793931793080,
+  "deadlineEpochMs": 1793932993080,
+  "clockOrigin": "new-independent-dependency-task-before-effects",
+  "sourceReceiptSha256": "105618afb29fc712adb3a9ff6cee4e6f1c8a959bbe32b8ac4829e7d795987c77",
+  "sourceRoot": "/mnt/data/tmp/luna-bg-source-20261106-v1",
+  "donor": "/home/marsh-office/papercupai-workspace/papercusp",
+  "cleanupReserveMs": 120000
+}

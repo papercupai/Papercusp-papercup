@@ -59,7 +59,8 @@ import { clampDemandScore as clamp01, logDemandScore, linearDemandScore, explain
 //     BREADTH_SATURATION = 5 (≥5 distinct agents ⇒ saturated).
 //   • W_SUCCESS = 0.20 — success-rate / stability: a flaky recipe shouldn't
 //     graduate into a tool other agents depend on. successScore = successRate
-//     (success_count / run_count); a recipe with 0 runs scores 0 (no evidence).
+//     (eligible settled replay successes / eligible settled replay outcomes).
+//     Parent counters measure successful-use popularity, not reliability.
 //   • W_COHESION = 0.20 — tool-set cohesion: a recipe that BATCHES ≥2 distinct
 //     tools is the genuine "wrapper worth a tool" case (D-016: bundles); a 1-tool
 //     recipe is a thin wrapper that adds little over calling the tool directly, so
@@ -120,10 +121,11 @@ export interface RecipeSignal {
   description: string;
   status: string;
   runCount: number;
-  /** COUNT(DISTINCT agent_owner) over code_recipe_runs (the reuse-breadth signal). */
+  /** Distinct attributable agents with settled committing demand receipts. */
   distinctAgents: number;
-  /** success_count / run_count, 0 when never run. */
+  /** Eligible settled saved-replay success fraction; 0 with state unknown if unmeasured. */
   successRate: number;
+  usage: RecipeUsageSummary;
   lastRunAt: string | null;
   toolsUsed: string[];
   toolCount: number;
@@ -142,8 +144,21 @@ export interface PromoteCandidate {
   runCount: number;
   distinctAgents: number;
   successRate: number;
+  usage: RecipeUsageSummary;
   toolsUsed: string[];
   promotionScore: number;
+}
+
+export interface RecipeUsageSummary {
+  unit: 'execution-rows';
+  observations: number;
+  authored: number;
+  automaticMatches: number;
+  savedReplays: number;
+  previews: number;
+  unknown: number;
+  agentDemand: number;
+  reliability: { state: 'measured' | 'unknown'; successes: number; errors: number; refused: number; denominator: number };
 }
 
 export interface MergeCluster {
@@ -259,17 +274,40 @@ export async function recipeCandidates(
   const log = deps.log ?? (() => {});
 
   // ── 1. Per-recipe signals from code_recipes ⨝ code_recipe_runs ───────────────
-  // run_count/success_count/last_run_at live denormalized on code_recipes (cheap);
-  // distinct_agents is the only thing that NEEDS the side-table, so a single
-  // LEFT JOIN + GROUP BY computes COUNT(DISTINCT agent_owner) alongside. We trust
-  // the denormalized run_count for the frequency signal (it's the source of truth
-  // for the counter; the side-table is the source for distinct-agent breadth).
-  const rows = await sql<(RecipeRow & { distinct_agents: number | string })[]>`
+  // The legacy parent counters retain popularity semantics. Reliability and
+  // agent demand come from typed execution receipts, never from `reused` or a
+  // role/name guess. Missing historical provenance remains explicitly unknown.
+  const rows = await sql<(RecipeRow & Record<'distinct_agents' | 'observations' | 'authored'
+    | 'automatic_matches' | 'saved_replays' | 'previews' | 'unknown' | 'agent_demand'
+    | 'replay_successes' | 'replay_errors' | 'replay_refused', number | string>)[]>`
+        WITH observed AS (
+          SELECT *, execution_trace->'usage' AS usage
+            FROM harness_shared.code_recipe_runs
+        ), classified AS (
+          SELECT *, COALESCE(
+            usage->>'version' = '1'
+            AND usage->>'selection' IN ('authored', 'automatic-match', 'saved-replay')
+            AND usage->>'choice' IN ('agent', 'hook', 'system', 'unknown')
+            AND usage->>'mode' IN ('commit', 'preview')
+            AND usage->>'settled' = 'true'
+            AND usage->>'outcome' IN ('success', 'error', 'refused'), false) AS known
+            FROM observed
+        )
       SELECT r.id, r.title, r.description, r.status, r.tools_used,
              r.run_count, r.success_count, r.last_run_at, r.promoted_tool, r.merged_into,
-             COUNT(DISTINCT run.agent_owner) AS distinct_agents
+             COUNT(run.id) AS observations,
+             COUNT(*) FILTER (WHERE run.known AND usage->>'selection' = 'authored') AS authored,
+             COUNT(*) FILTER (WHERE run.known AND usage->>'selection' = 'automatic-match') AS automatic_matches,
+             COUNT(*) FILTER (WHERE run.known AND usage->>'selection' = 'saved-replay') AS saved_replays,
+             COUNT(*) FILTER (WHERE usage->>'mode' = 'preview') AS previews,
+             COUNT(*) FILTER (WHERE run.id IS NOT NULL AND (NOT run.known OR usage->>'choice' = 'unknown')) AS unknown,
+             COUNT(*) FILTER (WHERE run.known AND usage->>'mode' = 'commit' AND usage->>'choice' = 'agent') AS agent_demand,
+             COUNT(DISTINCT run.agent_owner) FILTER (WHERE run.known AND usage->>'mode' = 'commit' AND usage->>'choice' = 'agent') AS distinct_agents,
+             COUNT(*) FILTER (WHERE run.known AND usage->>'mode' = 'commit' AND usage->>'selection' = 'saved-replay' AND usage->>'choice' = 'agent' AND usage->>'outcome' = 'success') AS replay_successes,
+             COUNT(*) FILTER (WHERE run.known AND usage->>'mode' = 'commit' AND usage->>'selection' = 'saved-replay' AND usage->>'choice' = 'agent' AND usage->>'outcome' = 'error') AS replay_errors,
+             COUNT(*) FILTER (WHERE run.known AND usage->>'mode' = 'commit' AND usage->>'selection' = 'saved-replay' AND usage->>'choice' = 'agent' AND usage->>'outcome' = 'refused') AS replay_refused
         FROM harness_shared.code_recipes r
-   LEFT JOIN harness_shared.code_recipe_runs run
+   LEFT JOIN classified run
           ON run.recipe_id = r.id
        WHERE r.status = 'active'
          AND r.run_count >= ${minRunCount}
@@ -286,11 +324,20 @@ export async function recipeCandidates(
   const signals: RecipeSignal[] = [];
   for (const r of rows) {
     const runCount = asInt(r.run_count);
-    const successCount = asInt(r.success_count);
     const distinctAgents = asInt(r.distinct_agents);
     const toolsUsed = r.tools_used ?? [];
     const toolCount = toolsUsed.length;
-    const successRate = runCount > 0 ? clamp01(successCount / runCount) : 0;
+    const successes = asInt(r.replay_successes);
+    const errors = asInt(r.replay_errors);
+    const refused = asInt(r.replay_refused);
+    const denominator = successes + errors + refused;
+    const successRate = denominator > 0 ? clamp01(successes / denominator) : 0;
+    const usage: RecipeUsageSummary = {
+      unit: 'execution-rows', observations: asInt(r.observations), authored: asInt(r.authored),
+      automaticMatches: asInt(r.automatic_matches), savedReplays: asInt(r.saved_replays),
+      previews: asInt(r.previews), unknown: asInt(r.unknown), agentDemand: asInt(r.agent_demand),
+      reliability: { state: denominator > 0 ? 'measured' : 'unknown', successes, errors, refused, denominator },
+    };
 
     // Redundancy (excludes from promote candidates):
     //   • TRIVIAL — toolCount ≤ 1: a 1-tool wrapper isn't batch-worthy.
@@ -320,7 +367,7 @@ export async function recipeCandidates(
     }
 
     // Redundancy damp: trivial / name-collision ⇒ 0 (excluded); else passthrough.
-    const promotionScore = recipePromotionScore({ runCount, distinctAgents, successRate, toolCount, redundant }, cooccurrence);
+    const promotionScore = recipePromotionScore({ runCount: usage.agentDemand, distinctAgents, successRate, toolCount, redundant }, cooccurrence);
 
     signals.push({
       id: r.id,
@@ -330,6 +377,7 @@ export async function recipeCandidates(
       runCount,
       distinctAgents,
       successRate,
+      usage,
       lastRunAt: asIsoOrNull(r.last_run_at),
       toolsUsed,
       toolCount,
@@ -347,11 +395,12 @@ export async function recipeCandidates(
     .filter(
       (s) =>
         !s.redundant &&
+        s.usage.reliability.state === 'measured' &&
         !(alreadyPromoted.get(s.id) ?? false) &&
         s.promotionScore >= PROMOTE_THRESHOLD &&
         // Reuse FLOOR: proven reuse, not just a high intrinsic score — a single
         // multi-tool run can clear the threshold on success+cohesion alone.
-        (s.distinctAgents >= MIN_PROMOTE_DISTINCT_AGENTS || s.runCount >= MIN_PROMOTE_RUN_COUNT),
+        (s.distinctAgents >= MIN_PROMOTE_DISTINCT_AGENTS || s.usage.agentDemand >= MIN_PROMOTE_RUN_COUNT),
     )
     .sort((a, b) => compareDemandRank({ score: a.promotionScore, id: a.id }, { score: b.promotionScore, id: b.id }))
     .slice(0, limit)
@@ -362,6 +411,7 @@ export async function recipeCandidates(
       runCount: s.runCount,
       distinctAgents: s.distinctAgents,
       successRate: s.successRate,
+      usage: s.usage,
       toolsUsed: s.toolsUsed,
       promotionScore: s.promotionScore,
     }));

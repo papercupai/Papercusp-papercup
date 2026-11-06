@@ -33941,7 +33941,7 @@
           "POST"
         ]
       },
-      "description": "Native checks execute and record directly: planTerminalCensus:{slug}, gitScratchPlacement:{ref}, syncBatchCoverageAccounting:{} (see each arg). Register completed non-Vitest runs in test_runs; bind returned IDs with plans:bind-spec-evidence. Evidence-file mode records an already-completed check; archivedMutation never reruns it. Commit docs/evidence/*.json with schemaVersion:1, kind:\"operational-test-evidence\", command, timestamps, exitCode, summary, and assertions; pass expectedSha256. Mutation probes require exact MUTATION_PROBE_EVIDENCE_JSON records; shared .papercusp/scratch is refused. archivedMutation restores failed-case identities from a committed raw log after validating its hash and scoped receipt; rawLogCommit pins redacted logs. Legacy NULL-execution receipts restore only when scope, outcome, timestamps, and committed bytes match. Evidence limit: 262144 bytes; pin bulky logs by SHA-256. Verdict uses exitCode + assertions; idempotent by artifact hash.",
+      "description": "Native checks execute and record directly: planTerminalCensus:{slug}, gitScratchPlacement:{ref}, syncBatchCoverageAccounting:{} (see each arg). Register completed non-Vitest runs in test_runs; bind returned IDs with plans:bind-spec-evidence. Evidence-file mode records an already-completed check; archivedMutation and deferredMutation never rerun it. deferredMutation recovers a settled failed reporter INSERT from committed hash-pinned JSONL/logs, verifies original source/test hashes and excludes an active backend or conflicting ledger row. Commit docs/evidence/*.json with schemaVersion:1, kind:\"operational-test-evidence\", command, timestamps, exitCode, summary, and assertions; pass expectedSha256. Mutation probes require exact MUTATION_PROBE_EVIDENCE_JSON records; shared .papercusp/scratch is refused. archivedMutation restores failed-case identities from a committed raw log after validating its hash and scoped receipt; rawLogCommit pins redacted logs. Legacy NULL-execution receipts restore only when scope, outcome, timestamps, and committed bytes match. Evidence limit: 262144 bytes; pin bulky logs by SHA-256. Verdict uses exitCode + assertions; idempotent by artifact hash.",
       "capabilities": [
         "testing:run"
       ],
@@ -36313,7 +36313,7 @@
           "POST"
         ]
       },
-      "description": "Completion-integrity and declared-outcome counts for one harness. genuineCompletions means terminal owner plus completion ref or authority judgement; it does NOT mean a new change landed. declaredWorkOutcomes counts exact self-declared introduced-change, verified-existing, duplicate, invalid-or-expected, other-no-new-change, and unknown legacy/omitted outcomes across terminal rows. gateJudged is evidence-gate coverage, not a compliance score.",
+      "description": "All-time harness completion-integrity and declared-outcome counts; population explicitly has no fleet attribution. authorityRecordedCompletions counts terminal owner plus completion ref or authority judgement (legacy alias genuineCompletions); independentlyVerifiedNewChanges is null because this reader does not measure it. declaredWorkOutcomes counts exact self-declared introduced-change, verified-existing, duplicate, invalid-or-expected, other-no-new-change, and unknown legacy/omitted outcomes. gateJudged is evidence-gate coverage, not a compliance score.",
       "capabilities": [
         "work_items:read"
       ],

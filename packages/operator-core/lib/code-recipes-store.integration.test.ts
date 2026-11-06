@@ -31,6 +31,7 @@ import { pinPackageInput } from '@papercusp/orchestrator/blueprint';
 import { EMBEDDER_DIM_SPECS } from '@papercusp/memory';
 import { blueprintPackageProvisioners } from './blueprint/compile-packages';
 import { resolveProseProfileSelection } from './search/prose-vector-dims';
+import { normalizeExecutionTrace, readableOperationEvidence, type NormalizedExecutionTrace, type OperationAdapterEvidence } from './orchestration-trace';
 
 const { createOrgTestDb } = await import('../test/_org-test-db');
 const here = dirname(fileURLToPath(import.meta.url));
@@ -490,6 +491,38 @@ describe('code_recipes store (real PG)', () => {
     });
     expect(traceRows[1].recipe_id).toBe('previewed');
     expect(await getRecipe(db.adminSql, 'previewed')).toMatchObject({ runCount: 0, successCount: 0, lastRunAt: null });
+  });
+
+  it('P002: round-trips scoped operation contracts in the existing run store and rechecks revoked/expired evidence', async () => {
+    const workspaceId = 'ws-cr-operation-contract';
+    const operations: OperationAdapterEvidence[] = (['composition', 'shell', 'sql'] as const).map((family, index) => ({
+      operationId: `invocation:${index}`, family, adapterVersion: `${family}:adapter-v1`,
+      semanticIdentity: { version: `${family}:intent-v1`, fingerprint: String(index + 1).repeat(64),
+        workspaceId, sourceBoundary: 'private-source:1', epoch: 'key-epoch:1' },
+      source: { ref: `source:${index}`, authorityRef: `acl:${index}`, observedAt: '2026-11-05T00:00:00Z',
+        expiresAt: '2026-11-07T00:00:00Z', providerCallId: `call:${index}` },
+      outcome: { status: 'success', final: true, receiptRef: `result:${index}` }, replayClass: 'read-only',
+      bindingSchema: { version: 1, additionalProperties: false,
+        properties: { tenant: { type: 'resource-ref', lifetime: { kind: 'resolved-ref', refKind: 'resource', resolution: 'each-run' } } } },
+      decisionRefs: ['review:original-edition'],
+    }));
+    const trace = await normalizeExecutionTrace({ script: 'return 1;', tools: [], operations,
+      dependencies: [{ fromOperationId: 'invocation:0', toOperationId: 'invocation:1', kind: 'data', evidenceRef: 'binding-receipt:1' }] });
+    await recordRecipeRun(db.adminSql, { workspaceId, potSlug: 'alpha', executionTrace: trace, success: true });
+    const rows = await db.adminSql<{ execution_trace: NormalizedExecutionTrace; structural_fingerprint: string }[]>`
+      SELECT execution_trace, structural_fingerprint FROM harness_shared.code_recipe_runs WHERE workspace_id = ${workspaceId}`;
+    expect(rows).toHaveLength(1);
+    expect(rows[0].execution_trace).toEqual(trace);
+    expect(rows[0].structural_fingerprint).toBe(trace.structuralFingerprint);
+    const readable = (now: string, canRead: (source: OperationAdapterEvidence['source']) => boolean, workspace = workspaceId) =>
+      readableOperationEvidence(rows[0].execution_trace, { workspaceId: workspace, now: Date.parse(now), canRead });
+    expect(readable('2026-11-06T00:00:00Z', () => true)).toHaveLength(3);
+    expect(readable('2026-11-06T00:00:00Z', source => source.authorityRef !== 'acl:1').map(row => row.family)).toEqual(['composition', 'sql']);
+    expect(readable('2026-11-06T00:00:00Z', () => false)).toEqual([]);
+    expect(readable('2026-11-07T00:00:00Z', () => true)).toEqual([]);
+    expect(readable('2026-11-06T00:00:00Z', () => true, 'another-workspace')).toEqual([]);
+    // Revocation removes eligibility, while retained audit/decision history survives.
+    expect(rows[0].execution_trace.operations?.map(row => row.decisionRefs)).toEqual(operations.map(row => row.decisionRefs));
   });
 
   it('finds the most established active recipe for an exact structural fingerprint', async () => {

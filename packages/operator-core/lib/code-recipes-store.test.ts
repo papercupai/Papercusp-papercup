@@ -6,7 +6,16 @@
  * and the default `recipes:list` — with no PG.
  */
 import { describe, expect, it } from 'vitest';
-import { isLowValueRecipe } from './code-recipes-store';
+import { isLowValueRecipe, recipeRunChoice } from './code-recipes-store';
+
+it('keeps system/hook choice separate from verified agent choice and unknown attribution', () => {
+  expect(recipeRunChoice({ source: 'event-reaction', ownerId: 'agent-trigger' })).toBe('system');
+  expect(recipeRunChoice({ source: 'omp-hook-session', ownerId: 'system:sweep' })).toBe('system');
+  expect(recipeRunChoice({ source: 'omp-hook-session', ownerId: 'hook:collector' })).toBe('hook');
+  expect(recipeRunChoice({ source: 'omp-hook-session', ownerId: 'agent-session' })).toBe('agent');
+  expect(recipeRunChoice({ source: 'static-client', ownerId: 'remembered-agent-name' })).toBe('unknown');
+  expect(recipeRunChoice({})).toBe('unknown');
+});
 
 describe('isLowValueRecipe', () => {
   it('flags ≤1-tool recipes (thin wrappers over the primitive)', () => {

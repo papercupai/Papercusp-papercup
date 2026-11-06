@@ -2942,6 +2942,7 @@ export async function dispatchPendingGradingAudits(
       }
       try {
         const rows: TaskRow[] = [];
+        const receiptPids = new Set<number>();
         for (const owner of owners as string[]) {
           const verdict = await (deps.resolveOwnerLiveness ?? resolveGradingAuditorOwnerLiveness)(owner);
           const tasks = await readTasks({ workspaceId, coordOwnerId: owner, includeEnded: true, limit: 10 });
@@ -2952,13 +2953,44 @@ export async function dispatchPendingGradingAudits(
                   !(task.detail.label === idempotencyKey || task.detail.label.startsWith(`${idempotencyKey}:`)))))) {
             return null;
           }
+          if (requireTaskIdentity) {
+            for (const field of ['processHandles', 'memberResults'] as const) {
+              const record = failed?.[field];
+              if (!record || typeof record !== 'object' || Array.isArray(record)) return null;
+              for (const [index, value] of Object.entries(record)) {
+                if (!/^(0|[1-9]\d*)$/.test(index) || Number(index) >= owners.length ||
+                    !value || typeof value !== 'object' || Array.isArray(value)) return null;
+                if (owners[Number(index)] !== owner) continue;
+                const handle = value as Record<string, unknown>;
+                if (handle.ownerId != null && handle.ownerId !== owner) return null;
+                if (handle.memberIndex != null && handle.memberIndex !== Number(index)) return null;
+                if (handle.label != null && handle.label !== idempotencyKey &&
+                    !(typeof handle.label === 'string' && handle.label.startsWith(`${idempotencyKey}:`))) return null;
+                const task = typeof handle.taskId === 'string' ? tasks.find(row => row.taskId === handle.taskId) : null;
+                if (!task) {
+                  // A status-only member observation carries no process identity.
+                  // Every populated process handle must bind to its exact task.
+                  if (field === 'processHandles' || handle.taskId != null || handle.pid != null ||
+                      handle.terminalPid != null || handle.logPath != null || handle.normalizedLogPath != null) return null;
+                  continue;
+                }
+                if (handle.pid != null && (!Number.isSafeInteger(handle.pid) || handle.pid !== task.pid)) return null;
+                if (handle.logPath != null && handle.logPath !== task.logPath) return null;
+                for (const pid of [handle.pid, handle.terminalPid]) {
+                  if (pid == null) continue;
+                  if (typeof pid !== 'number' || !Number.isSafeInteger(pid) || pid <= 0) return null;
+                  receiptPids.add(pid);
+                }
+              }
+            }
+          }
           rows.push(...tasks);
         }
         const scan = await (deps.scanAuditProcesses ?? scanProcessesAsync)();
         const units = [...new Set(rows.map(row => row.scopeUnit!))];
         const released = await (deps.inspectAuditScopes ?? inspectTaskUnitTerminals)(units);
         if (scan.ownedRootExists !== true || !scan.userManagerRoot || scan.ownedTruncated ||
-            scan.foreignTruncated || scan.scanTimedOut || !units.every(unit => {
+            scan.foreignTruncated || scan.scanTimedOut || scan.processes.some(process => receiptPids.has(process.pid)) || !units.every(unit => {
               const state = released.get(unit)?.activeState;
               return (state === 'inactive' || state === 'failed') &&
                 !scan.processes.some(process => process.cgroupPath.split('/').includes(unit));
@@ -3821,13 +3853,12 @@ export async function dispatchPendingGradingAudits(
           // have retired that exact task. Reuse the terminal owner/task/kernel
           // proof rather than deleting the ambiguous launch election or blindly
           // replaying its base key forever. The original lease stays fenced.
-          const spawnedWithoutHandles = launchData.launchState === 'spawning' &&
+          const spawnedAwaitingReconciliation = launchData.launchState === 'spawning' &&
             launchData.spawnAttempted === true &&
             Array.isArray(launchData.nativeSpawnAttempted) &&
             launchData.nativeSpawnAttempted.length === launchData.expectedCount &&
-            launchData.nativeSpawnAttempted.every((index, position) => index === position) &&
-            isEmptyLaunchEvidenceRecord(launchData.processHandles);
-          if (spawnedWithoutHandles && terminalFallbacks < GRADING_AUDIT_MAX_TERMINAL_FALLBACKS) {
+            launchData.nativeSpawnAttempted.every((index, position) => index === position);
+          if (spawnedAwaitingReconciliation && terminalFallbacks < GRADING_AUDIT_MAX_TERMINAL_FALLBACKS) {
             const recoveredIds = await reconcileTerminalOwnerTasks(launchData as Record<string, unknown>, true);
             if (recoveredIds) {
               if (!(await confirmOwnedPendingReservation())) break;

@@ -9,14 +9,21 @@ import { resolveAgentIdentity } from '../coordination/identity';
 // workspace precedence, the optional layer + sinceHours→sinceMs spread, and the
 // { workspaceId, summary } envelope (B-13 / P-113).
 vi.mock('../../decision-ledger/read', () => ({ readDecisionLedger: vi.fn(), summarizeDecisionLedger: vi.fn() }));
-vi.mock('../../work-items', () => ({ getCompletionIntegrityStats: vi.fn() }));
-vi.mock('../../workspace-registry', () => ({
+vi.mock('../../work-items', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../work-items')>(),
+  getCompletionIntegrityStats: vi.fn(),
+}));
+vi.mock('../../workspace-registry', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../workspace-registry')>(),
   activeWorkspaceId: vi.fn(() => 'ws-active'),
   resolveConcreteWorkspaceId: vi.fn((...candidates: Array<string | null | undefined>) =>
     candidates.find((candidate) => typeof candidate === 'string' && candidate.trim() && candidate.trim() !== '*')?.trim() ?? 'ws-active',
   ),
 }));
-vi.mock('../coordination/identity', () => ({ resolveAgentIdentity: vi.fn() }));
+vi.mock('../coordination/identity', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../coordination/identity')>(),
+  resolveAgentIdentity: vi.fn(),
+}));
 
 const mockSummarize = vi.mocked(summarizeDecisionLedger);
 const mockCompletionStats = vi.mocked(getCompletionIntegrityStats);
@@ -44,6 +51,9 @@ describe('decision_ledger:summary tool', () => {
     mockSummarize.mockResolvedValue(SUMMARY as unknown as Awaited<ReturnType<typeof summarizeDecisionLedger>>);
     mockCompletionStats.mockResolvedValue({
       harness: 'papercusp',
+      population: { kind: 'harness', harness: 'papercusp', window: 'all-time', fleetAttribution: 'none' },
+      authorityRecordedCompletions: 6,
+      independentlyVerifiedNewChanges: null,
       terminalTotal: 9,
       genuineCompletions: 6,
       dedupOrUnverified: 3,
@@ -76,6 +86,9 @@ describe('decision_ledger:summary tool', () => {
       summary: SUMMARY,
       completionStats: {
         harness: 'papercusp',
+        population: { kind: 'harness', harness: 'papercusp', window: 'all-time', fleetAttribution: 'none' },
+        authorityRecordedCompletions: 6,
+        independentlyVerifiedNewChanges: null,
         terminalTotal: 9,
         genuineCompletions: 6,
         dedupOrUnverified: 3,

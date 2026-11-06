@@ -33,7 +33,7 @@
  * it a top-level PG side effect) by accident. `source.ts` re-exports these four
  * names, so every existing importer is unaffected.
  */
-import { parsePlan, type PlanStatus } from './parser';
+import { parsePlan, stripOperationalProgressNoteSuffix, type PlanStatus } from './parser';
 import { deriveOwnerGateMarkers } from './owner-gate-marker';
 import { parsePromotePolicy, type ParsePromoteResult } from './promote-policy';
 
@@ -97,7 +97,11 @@ export interface PlanIndex {
 export function deriveIndexFromContent(content: string): PlanIndex {
   const p = parsePlan(content);
   const fm = p.frontmatter;
-  const ownerGateMarkers = deriveOwnerGateMarkers(p.items, p.now?.raw, p.decisions);
+  const indexItems = p.items.map((item) => ({
+    ...item,
+    text: stripOperationalProgressNoteSuffix(item.text),
+  }));
+  const ownerGateMarkers = deriveOwnerGateMarkers(indexItems, p.now?.raw, p.decisions);
   return {
     title: fm.title ?? null,
     status: fm.status ?? null,
@@ -111,7 +115,7 @@ export function deriveIndexFromContent(content: string): PlanIndex {
     supersedes: fm.supersedes ?? [],
     supersededBy: fm.supersededBy ?? null,
     isLegacy: p.isLegacy,
-    items: p.items.map((i) => ({
+    items: indexItems.map((i) => ({
       id: i.id,
       status: i.storedStatus,
       text: i.text,

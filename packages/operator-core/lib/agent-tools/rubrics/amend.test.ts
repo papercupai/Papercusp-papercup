@@ -10,6 +10,7 @@ import { applyResultDoor } from '../../result-door';
 import { parseScratchReference } from '../../scratch-reference';
 import { safeScratchFilesystemPath } from '../../scratch-uri';
 import { readProcessIdentity } from '../../process-identity';
+import { AcceptanceBarCandidateError } from '../../acceptance-bar-projection';
 
 const doorConstants = vi.hoisted(() => vi.fn());
 vi.mock('../../context-doors-config', () => ({ getDoorConstantsSync: doorConstants }));
@@ -25,7 +26,10 @@ const rubricsMocks = vi.hoisted(() => ({
   findAmendmentDecisionByKey: vi.fn(),
 }));
 
-const reviewMocks = vi.hoisted(() => ({ openAcceptanceBarAmendmentReview: vi.fn() }));
+const reviewMocks = vi.hoisted(() => ({
+  inspectFreshAmendmentReviewer: vi.fn(),
+  openAcceptanceBarAmendmentReview: vi.fn(),
+}));
 const planMocks = vi.hoisted(() => ({ getPlanRow: vi.fn() }));
 const runtimeMocks = vi.hoisted(() => ({
   hostIdentity: vi.fn(() => 'pid-test'),
@@ -87,6 +91,28 @@ const receiptDb = vi.hoisted(() => {
         progressControl.afterWrite?.();
         return [];
       }
+      if (query.includes("SET state = 'running'") && query.includes("AND (state = 'failed'")) {
+        const [initialResult, workspace, rubric, key, inspected, taskId, nativeRef, previewPostRef] = values;
+        const row = rows.get(`${workspace}:${rubric}:${key}`);
+        const review = row?.result_json?.review as Record<string, unknown> | undefined;
+        const reviewer = review?.freshReviewer as Record<string, unknown> | undefined;
+        const failed = row?.state === 'failed';
+        const unstaffed = row?.state === 'previewed'
+          && review?.state === 'no-eligible-reviewer' && reviewer?.state !== 'launched';
+        const inspectedReviewer = row?.state === 'previewed' && inspected === true
+          && review?.state === 'no-eligible-reviewer' && reviewer?.state === 'launched'
+          && reviewer.taskId === taskId && (reviewer.nativeRef ?? null) === nativeRef
+          && review?.previewPostRef === previewPostRef;
+        if (row && (failed || unstaffed || inspectedReviewer)) {
+          row.state = 'running';
+          row.result_json = initialResult ? JSON.parse(String(initialResult)) : null;
+          row.error = null;
+          row.started_at = new Date();
+          row.finished_at = null;
+          return [{ idempotency_key: key }];
+        }
+        return [];
+      }
       const failed = query.includes("SET state = 'failed'");
       if (query.includes('SET state =')) await runtimeMocks.terminalWrite?.();
       const [workspace, rubric, key] = values.slice(failed ? 2 : 3) as string[];
@@ -119,6 +145,7 @@ vi.mock('../coordination/identity', () => ({
   resolveAgentIdentity: () => ({ ownerId: 'amend-test', workspaceId: 'ws-amend-test' }),
 }));
 vi.mock('../../consult/acceptance-bar-amendment-review', () => ({
+  inspectFreshAmendmentReviewer: reviewMocks.inspectFreshAmendmentReviewer,
   openAcceptanceBarAmendmentReview: reviewMocks.openAcceptanceBarAmendmentReview,
 }));
 vi.mock('../../work-items', async (importOriginal) => ({
@@ -162,6 +189,7 @@ afterEach(() => workItemMocks.commentWorkItem.mockReset());
 
 beforeEach(() => {
   vi.clearAllMocks();
+  reviewMocks.inspectFreshAmendmentReviewer.mockReset().mockResolvedValue({ state: 'unknown' });
   runtimeMocks.hostIdentity.mockReturnValue('pid-test');
   runtimeMocks.held.clear();
   runtimeMocks.terminalWrite = undefined;
@@ -451,6 +479,38 @@ describe('rubrics:amend complete acceptance criteria input', () => {
       idempotencyKey: 'unrelated-apply-error',
       criteria: [criterion],
     })).rejects.toThrow('unexpected apply failure');
+  });
+
+  it('dispatches no review for a failed whole candidate and dispatches once after correction', async () => {
+    const invalid = new AcceptanceBarCandidateError({ criteria: [criterion] }, [
+      'AUTO-BAR-R-1-P-001.falsifier: observation_empty',
+      'criteria.0.check.cases: invalid case',
+      'criteria.0.requiredScope: invalid scope',
+    ]);
+    rubricsMocks.previewAcceptanceBarAmendment.mockRejectedValueOnce(invalid);
+    const request = {
+      rubricRef: 'acceptance-whole-candidate', dryRun: true, criteria: [criterion],
+      requestReview: { workItemId: 'WI-9', harness: 'papercusp' },
+    };
+    expect(await body(request)).toMatchObject({
+      ok: false, dryRun: true, code: 'acceptance_bar_candidate_invalid',
+      candidateValidation: invalid.candidateValidation,
+    });
+    expect(workItemMocks.commentWorkItem).not.toHaveBeenCalled();
+    expect(reviewMocks.openAcceptanceBarAmendmentReview).not.toHaveBeenCalled();
+
+    const corrected = { ...criterion, driftMarkers: 'The canonical BAR is missing.' };
+    const preview = {
+      approvalRequired: true, approval: { schemaVersion: 1, rubricRef: request.rubricRef, bars: [] },
+      candidateValidation: { candidateHash: 'a'.repeat(64), generatedSpecCount: 1 },
+    };
+    rubricsMocks.previewAcceptanceBarAmendment.mockResolvedValueOnce(preview);
+    workItemMocks.commentWorkItem.mockResolvedValueOnce({ id: 901 });
+    reviewMocks.openAcceptanceBarAmendmentReview.mockResolvedValueOnce({ state: 'routed', previewPostRef: 'thread-post:901' });
+    expect(await body({ ...request, criteria: [corrected] })).toMatchObject({ ok: true, preview });
+    expect(reviewMocks.openAcceptanceBarAmendmentReview).toHaveBeenCalledTimes(1);
+    expect(workItemMocks.commentWorkItem).toHaveBeenCalledTimes(1);
+    expect(reviewMocks.openAcceptanceBarAmendmentReview.mock.calls[0]![0]).toMatchObject({ preview });
   });
 
   it('returns acceptance BAR contract validation failures as structured refusals', async () => {
@@ -1279,6 +1339,34 @@ describe('rubrics:amend routed review (P-006, RR-P-006-amend-opens-routed-review
     expect(result.review.next).toContain('no owner exception is needed');
     expect(result.review.next).toContain('requestReview');
     expect(reviewMocks.openAcceptanceBarAmendmentReview).not.toHaveBeenCalled();
+  });
+
+  it('reclaims a failed retained reviewer without reposting its original approval', async () => {
+    rubricsMocks.previewAcceptanceBarAmendment.mockResolvedValue(approvalRequired);
+    workItemMocks.commentWorkItem.mockResolvedValue({ id: 77 });
+    reviewMocks.openAcceptanceBarAmendmentReview
+      .mockResolvedValueOnce({ state: 'no-eligible-reviewer', previewPostRef: 'thread-post:77',
+        freshReviewer: { state: 'launched', taskId: 'reviewer-old', ownerId: 'reviewer-1', nativeRef: '/retained/reviewer-old.jsonl' } })
+      .mockResolvedValueOnce({ state: 'no-eligible-reviewer', previewPostRef: 'thread-post:77',
+        freshReviewer: { state: 'launched', taskId: 'reviewer-new', ownerId: 'reviewer-2', nativeRef: '/retained/reviewer-new.jsonl' } });
+    reviewMocks.inspectFreshAmendmentReviewer.mockResolvedValue({
+      state: 'reclaimable', taskId: 'reviewer-old', nativeRef: '/retained/reviewer-old.jsonl',
+    });
+    const args = { ...patchArgs, requestReview: { workItemId: 'WI-9', harness: 'papercusp' } };
+
+    const first = await body(args);
+    const retried = await body(args);
+
+    expect(first.review).toMatchObject({ previewPostRef: 'thread-post:77', freshReviewer: { taskId: 'reviewer-old' } });
+    expect(retried.review).toMatchObject({ previewPostRef: 'thread-post:77', freshReviewer: { taskId: 'reviewer-new' } });
+    expect(reviewMocks.inspectFreshAmendmentReviewer).toHaveBeenCalledWith({
+      workspaceId: 'ws-amend-test',
+      previewPostRef: 'thread-post:77',
+      reviewer: expect.objectContaining({ taskId: 'reviewer-old', nativeRef: '/retained/reviewer-old.jsonl' }),
+    });
+    expect(workItemMocks.commentWorkItem).toHaveBeenCalledTimes(1);
+    expect(reviewMocks.openAcceptanceBarAmendmentReview).toHaveBeenNthCalledWith(2,
+      expect.objectContaining({ previewPostRef: 'thread-post:77' }));
   });
 
   it('a dry run that needs no approval carries no review', async () => {

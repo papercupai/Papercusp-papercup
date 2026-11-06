@@ -283,14 +283,16 @@ describe('rubric amend receipts in shared Postgres', () => {
     expect(executions).toBe(2);
   });
 
-  it('re-runs a launched-reviewer preview once its task ended with no answer, but replays it while live or answered (WI-6554700010010527)', async () => {
+  it('reclaims a launched-reviewer preview only after inspection and preserves its post identity', async () => {
     const ws = activeWorkspaceId();
     const rubric = 'acceptance-receipt-dead-reviewer';
     const thread = 'issue-thread-WI-dead-reviewer';
     await h.sql`INSERT INTO harness_shared.coord_thread_posts (id, thread_id, workspace_id) VALUES (990001, ${thread}, ${ws})`;
     const preview = (taskId: string) => ({
       ok: true, dryRun: true, preview: { approvalRequired: true },
-      review: { state: 'no-eligible-reviewer', previewPostRef: 'thread-post:990001', freshReviewer: { state: 'launched', taskId } },
+      review: { state: 'no-eligible-reviewer', previewPostRef: 'thread-post:990001', freshReviewer: {
+        state: 'launched', taskId, ownerId: `owner-${taskId}`, nativeRef: `/retained/${taskId}.jsonl`,
+      } },
     });
     const ledger = (taskId: string, state: string) => h.sql`
       INSERT INTO harness_shared.task_ledger (task_id, workspace_id, root_task_id, class, title, launched_by, state)
@@ -303,16 +305,35 @@ describe('rubric amend receipts in shared Postgres', () => {
     await ledger('rev-live', 'running');
     await runWith('live', preview('rev-live'));
     expect(await runWith('live', { ok: false, error: 'duplicate reviewer' })).toEqual(preview('rev-live'));
-    // Dead reviewer, nothing posted after the preview: the next same-key call RE-RUNS.
+    // A terminal task row alone is insufficient evidence to replace a reviewer.
     await ledger('rev-dead', 'ended_unobserved');
     await runWith('dead', preview('rev-dead'));
-    expect(await runWith('dead', preview('rev-new'))).toEqual(preview('rev-new'));
-    expect(await getAmendReceipt(rubric, 'dead')).toMatchObject({ state: 'previewed', result: preview('rev-new') });
+    expect(await runWith('dead', preview('rev-new'))).toEqual(preview('rev-dead'));
+    expect(await getAmendReceipt(rubric, 'dead')).toMatchObject({ state: 'previewed', result: preview('rev-dead') });
+    let recoveredReview: unknown;
+    const recovery = {
+      taskId: 'rev-dead', nativeRef: '/retained/rev-dead.jsonl', previewPostRef: 'thread-post:990001',
+    };
+    expect(await trackAmendRun('dead', rubric, async (_onPhase, recovered) => {
+      executions++;
+      recoveredReview = recovered;
+      return preview('rev-replacement');
+    }, { reclaimPreviewedReview: async result => {
+      expect(result).toEqual(preview('rev-dead'));
+      return recovery;
+    } })).toEqual(preview('rev-replacement'));
+    expect(recoveredReview).toEqual(recovery);
+    expect(await getAmendReceipt(rubric, 'dead')).toMatchObject({ state: 'previewed', result: preview('rev-replacement') });
     // Dead reviewer that DID answer (a later post on the thread): replayed.
     await ledger('rev-answered', 'exited');
     await runWith('answered', preview('rev-answered'));
     await h.sql`INSERT INTO harness_shared.coord_thread_posts (id, thread_id, workspace_id) VALUES (990002, ${thread}, ${ws})`;
-    expect(await runWith('answered', { ok: false, error: 'duplicate reviewer' })).toEqual(preview('rev-answered'));
+    expect(await trackAmendRun('answered', rubric, async () => {
+      executions++;
+      return { ok: false, error: 'duplicate reviewer' };
+    }, { reclaimPreviewedReview: async () => ({
+      taskId: 'rev-answered', nativeRef: '/retained/rev-answered.jsonl', previewPostRef: 'thread-post:990001',
+    }) })).toEqual(preview('rev-answered'));
     expect(executions).toBe(4);
   });
 

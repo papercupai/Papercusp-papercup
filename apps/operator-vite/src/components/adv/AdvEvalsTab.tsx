@@ -288,6 +288,7 @@ interface BenchRunLive {
 
 interface LaunchRunArgs {
   arm: string;
+  suite?: string;
   taskSetId: string;
   taskIds?: string[];
   model?: string;
@@ -492,7 +493,7 @@ export default function AdvEvalsTab() {
             onClick={() => void setEvalView('preserved')}
           >
             <Archive size={13} aria-hidden />
-            <span>Preserved runs<em>real graded runs</em></span>
+            <span>Preserved runs<em>recorded outcomes</em></span>
           </button>
           <button
             type="button"
@@ -1080,6 +1081,7 @@ const fieldStyle: CSSProperties = {
 
 interface LaunchEstimate {
   ready?: boolean;
+  suite?: string;
   arm?: string;
   error?: string;
   taskCount: number;
@@ -1091,6 +1093,8 @@ interface LaunchEstimate {
   model?: string;
   effort?: string;
   account?: string;
+  payer?: 'api-key' | 'subscription';
+  costBasis?: 'metered' | 'list-price-equivalent';
   current?: LaunchRunArgs['current'];
 }
 
@@ -1125,7 +1129,12 @@ function LaunchRunView() {
 
   // A previous query result cannot authorize a newly typed protocol/seed.
   const selection = estimate?.current;
-  const ready = estimate?.ready === true && estimate.arm === arm && selection?.workspaceId === workspaceId &&
+  const subscription = estimate?.payer === 'subscription';
+  const knownPayer = subscription ? estimate?.costBasis === 'list-price-equivalent'
+    : estimate?.payer === 'api-key' && estimate.costBasis === 'metered';
+  const ready = estimate?.ready === true && Boolean(estimate.suite?.trim()) &&
+    knownPayer &&
+    estimate.arm === arm && selection?.workspaceId === workspaceId &&
     selection.protocolRunId === protocolRunId && selection.seed === seed &&
     !estimateSync.loading && !estimateSync.fetching && !estimateSync.error;
   const needsConfirm = (estimate?.aggregateBudgetUsd ?? 0) >= OWNER_CONFIRM_USD;
@@ -1136,7 +1145,7 @@ function LaunchRunView() {
     setError(null);
     try {
       if (!canLaunch || !selection) throw new Error('The selected committed protocol is not ready.');
-      const body: LaunchRunArgs = { arm, taskSetId: 'custom', current: selection };
+      const body: LaunchRunArgs = { arm, suite: estimate!.suite, taskSetId: 'custom', current: selection };
       const json = await launchRun(body);
       if (!json.ok || !json.runId) {
         setError(json.error || 'launch failed');
@@ -1195,6 +1204,7 @@ function LaunchRunView() {
               <span className="pc-evals__suitelabel">model</span>
               <strong>{ready ? estimate?.model : 'From committed protocol'}</strong>
               {ready ? <span>{estimate?.effort} · {estimate?.account}</span> : null}
+              {ready ? <span aria-label="Budget payer">{subscription ? 'ChatGPT subscription' : 'OpenAI API'}</span> : null}
             </div>
 
             <label className="pc-evals__suitepick">
@@ -1217,7 +1227,7 @@ function LaunchRunView() {
           {ready && estimate ? (
             <div className="pc-evals__scoreboard pc-launch__estimate" aria-label="Run cost estimate">
               <div className="pc-evals__stat">
-                <span className="pc-evals__statlabel"><DollarSign size={12} aria-hidden /> generation ceiling</span>
+                <span className="pc-evals__statlabel"><DollarSign size={12} aria-hidden /> {subscription ? 'list-price-equivalent ceiling' : 'generation ceiling'}</span>
                 <span className="pc-evals__statvalue">≤ ${estimate.estCostUsd.toFixed(2)}</span>
                 <span className="pc-evals__statsub">{estimate.basis}</span>
               </div>
@@ -1229,7 +1239,7 @@ function LaunchRunView() {
               <div className="pc-evals__stat">
                 <span className="pc-evals__statlabel">tasks</span>
                 <span className="pc-evals__statvalue">{estimate.taskCount}</span>
-                <span className="pc-evals__statsub">{fmtUsd(estimate.perTaskUsd)} / task</span>
+                <span className="pc-evals__statsub">{fmtUsd(estimate.perTaskUsd)}{subscription ? ' equivalent' : ''} / task</span>
               </div>
             </div>
           ) : (
@@ -1238,10 +1248,11 @@ function LaunchRunView() {
 
           {ready && needsConfirm ? (
             <label className="pc-evals__confirm">
-              <Checkbox checked={confirmed} onChange={setConfirmed} ariaLabel="Approve this spend" />
+              <Checkbox checked={confirmed} onChange={setConfirmed}
+                ariaLabel={subscription ? 'Approve this usage budget' : 'Approve this spend'} />
               <span>
-                This protocol permits up to <strong>${estimate?.aggregateBudgetUsd?.toFixed(2)}</strong> across
-                its assignments. Confirm to unlock launch.
+                This protocol permits up to <strong>${estimate?.aggregateBudgetUsd?.toFixed(2)}{subscription ? ' list-price-equivalent usage' : ''}</strong> across
+                its assignments. {subscription ? 'This is not money spent. ' : ''}Confirm to unlock launch.
               </span>
             </label>
           ) : null}

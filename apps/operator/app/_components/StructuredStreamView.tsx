@@ -1,5 +1,7 @@
 'use client';
 
+import { TerminalLinksAddon } from '@/lib/terminal-links';
+
 /**
  * StructuredStreamView — render a one-directional structured event stream as
  * STRUCTURE, not opaque terminal bytes.
@@ -112,6 +114,7 @@ function RawLogDrawer({ lines, rows }: { lines: string[]; rows: number }) {
       }) as unknown as typeof term;
       fit = new FitAddon() as unknown as typeof fit;
       term!.loadAddon(fit);
+      term!.loadAddon(new TerminalLinksAddon());
       term!.open(containerRef.current);
       fit!.fit();
       termRef.current = term as unknown as { write: (s: string) => void; dispose: () => void };

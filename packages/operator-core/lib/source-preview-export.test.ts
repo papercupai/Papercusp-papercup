@@ -761,7 +761,34 @@ describe('verifier dependency staging preparation boundary', () => {
     },
   );
 
-  it.each(['input.mjs', 'node_modules.pinned-deps-tmp/source.mjs',
+  it('resumes completed dependency and workspace-output trees while fencing unfinished staging after the helper', async () => {
+    const { dest, receipt } = fixture();
+    const retained = ['node_modules/dependency/index.js',
+      'apps/operator/node_modules/dependency/index.js', 'packages/omp-plugin/dist/cli.js'];
+    for (const path of retained) write(dest, path, 'retained dependency bytes');
+    await fsPromises.mkdir(join(dest, 'apps/operator/node_modules.pinned-deps-tmp.12345'));
+    const phases: string[] = [];
+    await expect(prepareVerifierDependencies({ donor: dest, dest, receipt,
+      runPhase: async (phase, operation) => { phases.push(phase); return operation(); } }))
+      .rejects.toThrow('unexpected dependency staging');
+    expect(phases).toEqual(['deps.source.before', 'deps.source.after-runtime-assets',
+      'deps.snapshot', 'deps.source.after-snapshot']);
+    for (const path of retained) expect(readFileSync(join(dest, path), 'utf8')).toBe('retained dependency bytes');
+  });
+
+  it('refuses unrelated added source before resuming retained dependencies', async () => {
+    const { dest, receipt } = fixture();
+    write(dest, 'node_modules/dependency/index.js', 'retained dependency bytes');
+    write(dest, 'apps/operator/unexpected.mjs', 'unaccepted source');
+    const phases: string[] = [];
+    await expect(prepareVerifierDependencies({ donor: dest, dest, receipt,
+      runPhase: async (phase, operation) => { phases.push(phase); return operation(); } }))
+      .rejects.toThrow('added apps/operator/unexpected.mjs');
+    expect(phases).toEqual(['deps.source.before']);
+  });
+
+  it.each(['input.mjs', 'node_modules/source.mjs', 'apps/operator/node_modules/source.mjs',
+    'packages/omp-plugin/dist/source.mjs', 'node_modules.pinned-deps-tmp/source.mjs',
     'node_modules.pinned-deps-tmp.12345/source.mjs', 'apps/operator/node_modules.pinned-deps-tmp/source.mjs'])(
     'never exempts changed recorded source at %s', async input => {
       const { dest, receipt } = fixture(input === 'input.mjs' ? undefined : dirname(input));
@@ -1526,16 +1553,26 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
       stallWindowMs: 400, extensionMs: 300 })).rejects.toThrow('absolute-ceiling');
   });
 
-  it.each([
+  it.for([
     { rootDonor: false, generationHelper: false },
     { rootDonor: true, generationHelper: false },
     { rootDonor: true, generationHelper: true },
-  ])('freezes materialized committed source without cloning on root (root donor=$rootDonor, generation helper=$generationHelper)', async ({ rootDonor, generationHelper }) => {
+  ])('freezes materialized committed source without cloning on root (root donor=$rootDonor, generation helper=$generationHelper)', async ({ rootDonor, generationHelper }, context) => {
     const caseId = `${rootDonor}-${generationHelper}`;
+    const startedAt = performance.now();
+    const trace = (stage: string) => {
+      process.stderr.write('VERIFIER_MATERIALIZED_FIXTURE ' + JSON.stringify({ caseId, stage,
+        observedAt: new Date().toISOString(), elapsedMs: Math.round(performance.now() - startedAt),
+        aborted: context.signal.aborted }) + '\n');
+      context.signal.throwIfAborted();
+    };
+    trace('fixture-parent-start');
     const fixtureParent = process.platform === 'linux'
       ? mkdtempSync(rootDonor ? '/var/tmp/source-preview-root-donor-' : '/mnt/data/tmp/source-preview-data-donor-') : tmp;
     try {
+    trace('superproject-start');
     const fixture = makeSuperproject(join(fixtureParent, 'verifier-materialized-dependencies-' + caseId));
+    trace('superproject-complete');
     const copiesDependencies = process.platform === 'linux' && statSync(fixture.repo).dev === statSync('/').dev;
     git(fixture.repo, ['rm', '-r', '--', 'node_modules', 'apps/operator/node_modules']);
     const script = 'scripts/source-preview.mjs';
@@ -1562,27 +1599,35 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     git(fixture.repo, ['add', script, helper, '.gitignore', DEPENDENCY_POLICY_PATH]);
     git(fixture.repo, ['commit', '-qm', 'materialized dependency donor fixture']);
     const sha = git(fixture.repo, ['rev-parse', 'HEAD']).trim();
+    trace('source-commit-complete');
     write(fixture.repo, 'node_modules/.bin/probe', '#!/bin/sh\n');
     write(fixture.repo, 'node_modules/@native-proof/runtime/package.json', JSON.stringify({
       name: '@native-proof/runtime', type: 'module', exports: './index.mjs' }));
     write(fixture.repo, 'node_modules/@native-proof/runtime/index.mjs', "export default 'private-snapshot';\n");
+    trace('loader-install-start');
     installVerifierTsx(fixture.repo);
+    trace('loader-install-complete');
     const materialized = join(tmp, 'materialized-dependency-source-' + caseId);
+    trace('materialize-start');
     git(fixture.repo, ['clone', '--local', '--shared', '--recurse-submodules', fixture.repo, materialized]);
+    trace('materialize-complete');
     const shadow = await import(new URL('../../../scripts/lint-as-committed.mjs', import.meta.url).href);
     write(materialized, shadow.OWNER_MARKER, JSON.stringify({ sha, sourceRepoRoot: fixture.repo }));
     shadow.linkNodeModulesShadow(join(fixture.repo, 'node_modules'), join(materialized, 'node_modules'), fixture.repo, materialized);
+    trace('dependency-shadow-complete');
     expect((await fsPromises.lstat(join(materialized, 'node_modules/.bin'))).isSymbolicLink()).toBe(true);
     const receiptPath = join(tmp, 'materialized-dependency-source-receipt-' + caseId + '.json');
     const options = { repo: materialized, ref: sha, inputs: [script], receiptPath,
-      command: [process.execPath, script, 'verifier-measure'] };
+      command: [process.execPath, script, 'verifier-measure'], signal: context.signal };
     // The donor must pass the ignored-source-scratch guard, not accidentally
     // be admitted because both fixture repositories are beneath OS tmpdir.
     const restrictedTemp = join(tmp, 'materialized-source-only-temp-' + caseId);
     await fsPromises.mkdir(restrictedTemp);
     vi.stubEnv('TMPDIR', restrictedTemp);
     try {
+      trace('verifier-command-start');
       expect(await runVerifierCommand(options)).toBe(0);
+      trace('verifier-command-complete');
     } finally { vi.unstubAllEnvs(); }
     expect(JSON.parse(readFileSync(receiptPath, 'utf8')).sourceCommit).toBe(sha);
     const dependencyReceipt = JSON.parse(readFileSync(`${receiptPath}.dependencies.json`, 'utf8'));
@@ -1597,9 +1642,16 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     write(materialized, shadow.OWNER_MARKER, JSON.stringify({ sha: '0'.repeat(40), sourceRepoRoot: fixture.repo }));
     await expect(runVerifierCommand({ ...options, receiptPath: join(tmp, 'refused-donor-receipt-' + caseId + '.json') }))
       .rejects.toThrow('retained source commit does not match');
+    trace('negative-control-complete');
     expect(existsSync(join(tmp, 'refused-donor-receipt-' + caseId + '.json'))).toBe(false);
     } finally {
+      process.stderr.write('VERIFIER_MATERIALIZED_FIXTURE ' + JSON.stringify({ caseId, stage: 'cleanup-start',
+        observedAt: new Date().toISOString(), elapsedMs: Math.round(performance.now() - startedAt),
+        aborted: context.signal.aborted }) + '\n');
       if (fixtureParent !== tmp) rmSync(fixtureParent, { recursive: true, force: true });
+      process.stderr.write('VERIFIER_MATERIALIZED_FIXTURE ' + JSON.stringify({ caseId, stage: 'cleanup-complete',
+        observedAt: new Date().toISOString(), elapsedMs: Math.round(performance.now() - startedAt),
+        aborted: context.signal.aborted }) + '\n');
     }
   });
 
@@ -1686,31 +1738,49 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     }
   }, 120_000);
 
-  it.each(['automatic', 'explicit'] as const)('checks %s generation custody against selected source before dependencies or PG', async selection => {
+  it.each([
+    { selection: 'automatic', layout: 'superproject' },
+    { selection: 'explicit', layout: 'superproject' },
+    { selection: 'automatic', layout: 'submodule' },
+    { selection: 'explicit', layout: 'submodule' },
+  ] as const)('checks $selection generation custody against selected source before dependencies or PG ($layout helper)', async ({ selection, layout }) => {
     const parent = process.platform === 'linux' ? mkdtempSync('/var/tmp/source-preview-generation-preflight-') : tmp;
     try {
-      const fixture = makeSuperproject(join(parent, 'generation-' + selection));
+      const fixture = makeSuperproject(join(parent, 'generation-' + selection + '-' + layout));
       const usesAutomaticGeneration = process.platform === 'linux' &&
         statSync(fixture.repo).dev === statSync('/').dev;
       if (selection === 'automatic' && !usesAutomaticGeneration) return;
       const helper = 'papercusp-desktop/bin/lib/pinned-deps.sh';
-      write(fixture.repo, helper, [
+      const helperSource = [
         '#!/bin/bash', 'set -eu', 'case "$1" in',
         '  preflight-generation)',
         '    test "$(cat "$3/selected-source.txt")" = committed-candidate || { echo "checked moving source" >&2; exit 95; }',
         '    echo "missing verifier closure" >&2; exit 74 ;;',
         '  snapshot-generation-locked) echo "snapshot must not start" >&2; exit 93 ;;',
         '  *) exit 94 ;;', 'esac', '',
-      ].join('\n'));
+      ].join('\n');
+      if (layout === 'submodule') {
+        git(fixture.repo, ['rm', '-r', '--', 'papercusp-desktop']);
+        const desktop = join(parent, 'desktop-' + selection);
+        mkdirSync(desktop, { recursive: true });
+        git(desktop, ['init', '-q', '-b', 'main']);
+        write(desktop, 'bin/lib/pinned-deps.sh', helperSource);
+        git(desktop, ['add', '-A']);
+        git(desktop, ['commit', '-qm', 'pinned generation helper']);
+        git(fixture.repo, ['submodule', 'add', '-q', desktop, 'papercusp-desktop']);
+      } else write(fixture.repo, helper, helperSource);
       write(fixture.repo, 'selected-source.txt', 'committed-candidate');
-      git(fixture.repo, ['add', helper, 'selected-source.txt']);
+      git(fixture.repo, ['add', 'papercusp-desktop', 'selected-source.txt']);
       git(fixture.repo, ['commit', '-qm', 'generation admission fixture']);
       const ref = git(fixture.repo, ['rev-parse', 'HEAD']).trim();
       write(fixture.repo, 'selected-source.txt', 'unrelated-live-change');
+      // The selected gitlink's contract must survive a mutable helper rewrite.
+      if (layout === 'submodule') write(fixture.repo, helper, '#!/bin/bash\nexit 0\n');
       const prepareChildEnv = vi.fn(async () => { throw new Error('PG must not start'); });
-      const receiptPath = join(tmp, 'generation-preflight-' + selection + '.json');
+      const receiptPath = join(tmp, 'generation-preflight-' + selection + '-' + layout + '.json');
       await expect(runVerifierCommand({ repo: fixture.repo,
-        ref, receiptPath, prepareChildEnv, inputs: [helper],
+        ref, receiptPath, prepareChildEnv,
+        inputs: [layout === 'submodule' ? 'apps/operator/src/index.ts' : helper],
         env: { ...childEnv(), PAPERCUSP_DEPENDENCY_GENERATION_ROOT: selection === 'explicit' ? join(parent, 'store') : '' },
         command: [process.execPath, '-e', 'throw Error("provider must not start")'],
       })).rejects.toThrow('verifier generation preflight failed: missing verifier closure');
@@ -2051,7 +2121,18 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
       }
     });
 
-  it.each(['hung', 'descendant', 'signal-race', 'unverified', 'completed', 'no-deadline'] as const)(
+  it('refuses an aborted verifier before source lookup or allocation', async () => {
+    const receiptPath = join(tmp, 'verifier-aborted-before-launch.json');
+    const controller = new AbortController();
+    controller.abort();
+    await expect(runVerifierCommand({ repo: join(tmp, 'absent-aborted-repo'), ref: 'HEAD', receiptPath,
+      command: [process.execPath, '-e', 'process.exit(0)'], signal: controller.signal }))
+      .rejects.toMatchObject({ message: 'verifier command canceled before launch', exitCode: 143 });
+    expect(existsSync(receiptPath)).toBe(false);
+    expect(existsSync(receiptPath + '.task.json')).toBe(false);
+  });
+
+  it.each(['hung', 'descendant', 'signal-race', 'caller-abort', 'unverified', 'completed', 'no-deadline'] as const)(
     'enforces the cleanup-reserve cutoff through the owned process group (%s)', async mode => {
       const fixture = makeSuperproject(join(tmp, 'verifier-cutoff-' + mode));
       git(fixture.repo, ['rm', '-r', '--', 'node_modules', 'apps/operator/node_modules']);
@@ -2096,9 +2177,11 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
       };
       const env = childEnv({ PAPERCUSP_TASK_DEADLINE_EPOCH_MS: String(deadline) });
       if (mode === 'no-deadline') delete env.PAPERCUSP_TASK_DEADLINE_EPOCH_MS;
+      const controller = new AbortController();
+      const removeAbortListener = vi.spyOn(controller.signal, 'removeEventListener');
       const listeners = [process.listenerCount('SIGINT'), process.listenerCount('SIGTERM'), process.listenerCount('SIGHUP')];
       const result = runVerifierCommand({ repo: fixture.repo, ref, receiptPath, inputs: [provider],
-        command: [process.execPath, provider], env, clock })
+        command: [process.execPath, provider], env, clock, signal: controller.signal })
         .then(code => ({ code, error: null }), error => ({ code: null, error }));
       let owned: string | undefined, peer: string | undefined, group: number | undefined;
       const kill = process.kill.bind(process);
@@ -2127,7 +2210,9 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
             killSpy = vi.spyOn(process, 'kill').mockImplementation((pid, signal) =>
               pid === -group! && signal !== 0 ? true : kill(pid, signal));
           }
-          now++; fire();
+          now++;
+          if (mode === 'caller-abort') controller.abort();
+          else fire();
           if (mode === 'signal-race') {
             // The shared lifetime's process-shutdown handler also schedules a
             // final group sweep. Join that observed callback before this test
@@ -2158,11 +2243,11 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
         } else {
           expect(outcome.error).toBeInstanceOf(Error);
           expect(outcome.error.message).toContain(mode === 'unverified' ? 'exit unverified'
-            : mode === 'signal-race' ? 'canceled by SIGTERM' : 'VERIFIER_CHILD_DEADLINE_CUTOFF');
-          expect(task.budget.cutoffTriggeredAtMs).toBe(deadline - 120_000);
+            : mode === 'signal-race' || mode === 'caller-abort' ? 'canceled by SIGTERM' : 'VERIFIER_CHILD_DEADLINE_CUTOFF');
+          expect(task.budget.cutoffTriggeredAtMs).toBe(mode === 'caller-abort' ? null : deadline - 120_000);
           expect(task.budget.childExitVerifiedAtMs).toBe(mode === 'unverified' ? null : now);
-          expect(outcome.error.exitCode).toBe(mode === 'unverified' ? undefined : mode === 'signal-race' ? 143 : 2);
-          if (mode === 'signal-race') expect(task.cancellationSignal).toBe('SIGTERM');
+          expect(outcome.error.exitCode).toBe(mode === 'unverified' ? undefined : mode === 'signal-race' || mode === 'caller-abort' ? 143 : 2);
+          if (mode === 'signal-race' || mode === 'caller-abort') expect(task.cancellationSignal).toBe('SIGTERM');
           if (mode !== 'unverified' && existsSync(`/proc/${child.descendant}/stat`))
             expect(readFileSync(`/proc/${child.descendant}/stat`, 'utf8').split(') ')[1]![0]).toMatch(/[ZX]/);
         }
@@ -2170,6 +2255,7 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
         expect(existsSync(owned!)).toBe(mode === 'unverified');
         expect(readFileSync(join(peer, 'peer-owned'), 'utf8')).toBe('must survive');
         expect(pending.size).toBe(0);
+        expect(removeAbortListener).toHaveBeenCalledWith('abort', expect.any(Function));
         expect([process.listenerCount('SIGINT'), process.listenerCount('SIGTERM'), process.listenerCount('SIGHUP')]).toEqual(listeners);
         const phases = readFileSync(receiptPath + '.phases.jsonl', 'utf8').trim().split('\n').map(line => JSON.parse(line));
         expect(phases.find(row => row.phase === 'child.admission' && row.event === 'completed').budget)
@@ -2177,6 +2263,7 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
         if (!successful) expect(phases.some(row => row.phase === 'deps.postverify')).toBe(false);
         if (mode !== 'unverified') expect(phases.at(-1)).toMatchObject({ phase: 'cleanup', event: 'completed' });
       } finally {
+        removeAbortListener.mockRestore();
         killSpy?.mockRestore();
         if (group) { try { kill(-group, 'SIGKILL'); } catch (error) {
           if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error;

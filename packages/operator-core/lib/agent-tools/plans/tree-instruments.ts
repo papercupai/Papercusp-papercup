@@ -23,6 +23,7 @@ import { createHash } from 'node:crypto';
 import { lstat, realpath } from 'node:fs/promises';
 import { join, posix } from 'node:path';
 import { z } from 'zod';
+import ts from 'typescript';
 import { pinModuleState } from '@papercusp/module-singleton';
 import {
   APP_ROOTS,
@@ -45,7 +46,7 @@ import {
   type KindBranchFinding,
 } from '../../plan-types/kind-branch-census';
 
-export const TREE_INSTRUMENT_KEYS = ['provider-specific-census', 'deliverable-kind-branch-census', 'notification-classification-census'] as const;
+export const TREE_INSTRUMENT_KEYS = ['provider-specific-census', 'deliverable-kind-branch-census', 'notification-classification-census', 'embedded-terminal-host-census'] as const;
 export const treeInstrumentKeySchema = z.enum(TREE_INSTRUMENT_KEYS);
 export type TreeInstrumentKey = z.infer<typeof treeInstrumentKeySchema>;
 
@@ -301,10 +302,46 @@ async function notificationCensusAtCommit(root: string, commit: string, deps: Co
   };
 }
 
+/** The terminal population is small even though the searched source tree is large.
+ * Measure its exact identities and bytes, rather than broad globs whose unrelated
+ * edits continuously invalidate the proof or exceed the normal file-set bound. */
+async function embeddedTerminalCensusAtCommit(root: string, commit: string, deps: CommittedTreeDeps): Promise<unknown> {
+  const roots = ['apps/operator/app', 'apps/operator/lib', 'packages/operator-ui/src'];
+  const reaches = (path: string) => roots.some(prefix => path.startsWith(`${prefix}/`))
+    && !/\/(?:__tests__|test|e2e)\//.test(path) && !/\.test\.[^/]+$/.test(path);
+  const files = (await listCommittedFilesUnder(root, commit, roots, reaches, deps))
+    .filter(file => reaches(file.path) && /\.tsx?$/.test(file.path));
+  const hosts: Array<{ path: string; sha256: string }> = [];
+  await forEachCommittedBody(root, files, (file, body) => {
+    // Avoid parsing ordinary files; AST matching still rejects strings/comments
+    // and type-only imports that merely mention the package.
+    if (!body.includes('@xterm/xterm')) return;
+    const source = ts.createSourceFile(file.path, body, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+    let runtime = false;
+    const visit = (node: ts.Node) => {
+      if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword
+        && node.arguments.some(arg => ts.isStringLiteral(arg) && arg.text === '@xterm/xterm')) runtime = true;
+      if (ts.isImportDeclaration(node) && ts.isStringLiteral(node.moduleSpecifier)
+        && node.moduleSpecifier.text === '@xterm/xterm' && !node.importClause?.isTypeOnly) {
+        const clause = node.importClause;
+        const bindings = clause?.namedBindings;
+        const onlyTypes = !clause?.name && bindings && ts.isNamedImports(bindings)
+          && bindings.elements.length > 0 && bindings.elements.every(binding => binding.isTypeOnly);
+        if (!onlyTypes) runtime = true;
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(source);
+    if (runtime) hosts.push({ path: file.path, sha256: createHash('sha256').update(body).digest('hex') });
+  }, deps);
+  return { schemaVersion: 1, hosts };
+}
+
 const TREE_INSTRUMENTS: Record<TreeInstrumentKey, (root: string, commit: string, deps: CommittedTreeDeps) => Promise<unknown>> = {
   'provider-specific-census': providerCensusAtCommit,
   'deliverable-kind-branch-census': kindBranchCensusAtCommit,
   'notification-classification-census': notificationCensusAtCommit,
+  'embedded-terminal-host-census': embeddedTerminalCensusAtCommit,
 };
 
 /**

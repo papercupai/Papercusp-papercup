@@ -13,7 +13,12 @@
  *   PAPERCUSP_CACHE_POLICY=0             disable the rewrite entirely (pure passthrough)
  *   PAPERCUSP_CACHE_TOOLS_BREAKPOINT=0   ttl-only mode (no shared tools-span breakpoint)
  */
-import { startCacheProxy } from '../lib/cache-proxy/proxy';
+import { createRequire } from 'node:module';
+
+const requireFromEntry = createRequire(import.meta.url);
+const proxyModule =
+  requireFromEntry('../lib/cache-proxy/proxy') as typeof import('../lib/cache-proxy/proxy');
+const { startCacheProxy } = proxyModule;
 
 const port = Number(process.env.PAPERCUSP_CACHE_PROXY_PORT ?? 9073);
 const host = process.env.PAPERCUSP_CACHE_PROXY_HOST ?? '127.0.0.1';

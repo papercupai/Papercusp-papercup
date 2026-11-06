@@ -18,8 +18,11 @@ import { OrgTxnTimeoutError } from './pg-bounded-txn';
 import { acquirePlanAdvisoryLock, planAdvisoryLockKey, PLAN_ADVISORY_LOCK_NAMESPACE } from './agent-tools/plans/plan-lock-key';
 import { rubricTemplateDataAuthoringSchema } from './agent-tools/plans/rubric-template';
 import { normalizeBarMappingDelta } from './acceptance-bar-amendment-requirements-drift';
+import { AcceptanceBarCandidateError, acceptanceBarCandidateHash } from './acceptance-bar-projection';
+import { specBehaviorNonAtomicReason, specBehaviorNonFalsifiableReason } from './agent-tools/plans/spec-clause-compiler';
 import {
   setSpecClause,
+  specClauseWriteIssues,
   specClauseContentHash,
   type SpecClauseSql,
   type SpecClauseWrite,
@@ -550,6 +553,90 @@ export async function resolveAcceptanceBarApproval(
   };
 }
 
+type ProjectedAcceptanceClause = {
+  spec_id: string;
+  source_val_id: string | null;
+  current_revision: number | string;
+  source_bar_key: string | null;
+  source_bar_hash: string | null;
+  plan_item_id: string;
+  behavior: string;
+  behavior_class: SpecClauseWrite['behaviorClass'];
+  falsifier: SpecClauseWrite['falsifier'];
+  required_evidence: string[];
+  required_test_layers: string[];
+  mutation_required: boolean;
+  lifecycle_status: SpecClauseWrite['lifecycleStatus'];
+  supersedes_spec_id: string | null;
+  supersedes_revision: number | null;
+  exemption: Record<string, unknown> | null;
+};
+type ProjectionCriterion = z.infer<typeof rubricTemplateDataAuthoringSchema>['criteria'][number];
+
+/** Preview and apply derive the same payload, including retained atomic refinements. */
+async function acceptanceBarClauseWrite(args: {
+  subjectPlan: string; rubricSlug: string; rubricRevision: number; barSetHash: string;
+  barKey: string; planItemId: string; criterion: ProjectionCriterion;
+  prior?: ProjectionCriterion; clause?: ProjectedAcceptanceClause; actorId: string;
+}): Promise<SpecClauseWrite> {
+  const { acceptanceBarBehaviorClass, acceptanceBarProjectedBehavior } = await import('./acceptance-bar-seed');
+  const { criterion, prior, clause, barKey } = args;
+  const pin = {
+    barKey, barHash: criterion.barHash!, barSetHash: args.barSetHash,
+    rubricSlug: args.rubricSlug, rubricRevision: args.rubricRevision,
+    evidencePlane: criterion.evidencePlane!,
+  };
+  const common = {
+    planSlug: args.subjectPlan, planItemId: args.planItemId,
+    acceptanceRef: `${args.rubricSlug}@${args.rubricRevision}:${barKey}`,
+    sourceBar: pin, actorId: args.actorId,
+  };
+  if (!clause) return {
+    ...common, specId: `AUTO-BAR-${barKey}-${args.planItemId}`, expectedRevision: 0,
+    behavior: acceptanceBarProjectedBehavior(criterion),
+    behaviorClass: acceptanceBarBehaviorClass(criterion.evidencePlane!, criterion.requiredTestLayers, criterion.check),
+    requiredEvidence: [criterion.evidencePlane!],
+    ...(criterion.requiredTestLayers ? { requiredTestLayers: criterion.requiredTestLayers } : {}),
+    lifecycleStatus: 'draft', falsifier: { observation: criterion.driftMarkers! },
+  };
+  const { computeAcceptanceBarHash } = await import('./rubrics');
+  const unchangedBar = clause.source_bar_hash === criterion.barHash;
+  const layersOnly = !unchangedBar && prior?.barHash === clause.source_bar_hash &&
+    computeAcceptanceBarHash({ ...criterion, requiredTestLayers: prior.requiredTestLayers, check: prior.check })
+      === clause.source_bar_hash;
+  const preserveRefinements = unchangedBar || layersOnly;
+  // Keep atomic-only proof layers; remove a parent's explicitly dropped layers.
+  const projectedFromPrior = prior !== undefined && prior.barHash === clause.source_bar_hash;
+  const requiredTestLayers = unchangedBar ? clause.required_test_layers : projectedFromPrior
+    ? [...new Set([
+        ...clause.required_test_layers.filter((layer) => !prior!.requiredTestLayers?.includes(layer)),
+        ...(criterion.requiredTestLayers ?? []),
+      ])]
+    : criterion.requiredTestLayers ?? clause.required_test_layers;
+  return {
+    ...common, specId: clause.spec_id, sourceValId: clause.source_val_id,
+    expectedRevision: Number(clause.current_revision),
+    behavior: preserveRefinements ? clause.behavior : acceptanceBarProjectedBehavior(criterion),
+    // Preserve exemptions and authored risk classes, including mutation obligations.
+    behaviorClass: clause.lifecycle_status === 'exempt' && isNonAutomatedBehaviorClass(clause.behavior_class)
+      ? NON_AUTOMATED_BEHAVIOR_CLASS
+      : preserveRefinements && clause.behavior_class !== 'happy-path' &&
+        !isNonAutomatedBehaviorClass(clause.behavior_class)
+      ? clause.behavior_class
+      : clause.mutation_required ? 'happy-path'
+        : acceptanceBarBehaviorClass(criterion.evidencePlane!, requiredTestLayers, criterion.check),
+    requiredEvidence: preserveRefinements ? clause.required_evidence
+      : clause.required_evidence.map((value) => ['tree', 'deployed', 'live'].includes(value) ? criterion.evidencePlane! : value),
+    requiredTestLayers, mutationRequired: clause.mutation_required,
+    lifecycleStatus: clause.lifecycle_status === 'superseded' || clause.lifecycle_status === 'retired'
+      ? 'draft' : clause.lifecycle_status,
+    exemption: clause.exemption,
+    supersedes: clause.supersedes_spec_id && clause.supersedes_revision
+      ? { specId: clause.supersedes_spec_id, revision: clause.supersedes_revision } : null,
+    falsifier: preserveRefinements ? clause.falsifier : { observation: criterion.driftMarkers! },
+  };
+}
+
 /** Refresh execution projections from the canonical rubric, never from its old
  * Requirements seed. Called inside the transaction that writes that rubric. */
 export async function synchronizeAcceptanceBarRevision(
@@ -587,8 +674,8 @@ export async function synchronizeAcceptanceBarRevision(
        AND plan_slug = ${subjectPlan} FOR UPDATE`;
   if (!subjects.length) throw new Error('acceptance_bar_revision_subject_missing');
   const subject = subjects[0]!;
-  const { acceptanceBarBehaviorClass, acceptanceBarProjectedBehavior, parseRequirementBars, parseBarMappings } = await import('./acceptance-bar-seed');
-  const { computeAcceptanceBarHash, inspectRubricRevisionSnapshot } = await import('./rubrics');
+  const { parseRequirementBars, parseBarMappings } = await import('./acceptance-bar-seed');
+  const { inspectRubricRevisionSnapshot } = await import('./rubrics');
   const byKey = new Map(data.criteria.map((criterion) => [criterion.barKey ?? criterion.key, criterion]));
   const requirements = parseRequirementBars(subject.content);
   if (!requirements.ok) {
@@ -635,23 +722,7 @@ export async function synchronizeAcceptanceBarRevision(
     }),
   );
   const ownedSpecIds = [...barKeyBySpecId.keys()];
-  type ProjectedClause = {
-    spec_id: string;
-    source_val_id: string | null;
-    current_revision: number | string;
-    source_bar_key: string | null;
-    source_bar_hash: string | null;
-    plan_item_id: string;
-    behavior: string;
-    behavior_class: SpecClauseWrite['behaviorClass'];
-    falsifier: SpecClauseWrite['falsifier'];
-    required_evidence: string[];
-    required_test_layers: string[];
-    mutation_required: boolean;
-    lifecycle_status: SpecClauseWrite['lifecycleStatus'];
-    supersedes_spec_id: string | null;
-    supersedes_revision: number | null;
-    exemption: Record<string, unknown> | null;
+  type ProjectedClause = ProjectedAcceptanceClause & {
     // P-001: the stored revision's own hash and rubric-wide provenance, so a
     // re-projection whose MEANING is unchanged can be recognised and skipped.
     content_hash?: string | null;
@@ -734,28 +805,9 @@ export async function synchronizeAcceptanceBarRevision(
       }
       const specId = `AUTO-BAR-${barKey}-${planItemId}`;
       const result = await setSpecClause(
-        {
-          planSlug: subjectPlan,
-          specId,
-          expectedRevision: 0,
-          planItemId,
-          behavior: acceptanceBarProjectedBehavior(criterion),
-          behaviorClass: acceptanceBarBehaviorClass(criterion.evidencePlane, criterion.requiredTestLayers, criterion.check),
-          requiredEvidence: [criterion.evidencePlane],
-          ...(criterion.requiredTestLayers ? { requiredTestLayers: criterion.requiredTestLayers } : {}),
-          lifecycleStatus: 'draft',
-          falsifier: { observation: criterion.driftMarkers! },
-          acceptanceRef: `${args.rubricSlug}@${args.rubricRevision}:${barKey}`,
-          sourceBar: {
-            barKey,
-            barHash: criterion.barHash,
-            barSetHash: data.barSetHash,
-            rubricSlug: args.rubricSlug,
-            rubricRevision: args.rubricRevision,
-            evidencePlane: criterion.evidencePlane,
-          },
-          actorId: args.actorId,
-        },
+        await acceptanceBarClauseWrite({
+          ...args, subjectPlan, barSetHash: data.barSetHash, barKey, planItemId, criterion,
+        }),
         { executor: sql, workspaceId: args.workspaceId, harnessSlug: args.harnessSlug },
       );
       if (result.status === 'created' || result.status === 'revised' || result.status === 'unchanged') {
@@ -900,63 +952,10 @@ export async function synchronizeAcceptanceBarRevision(
     // scenarios and causal pairs whenever an approved amendment changed proof depth
     // (EI-22755746610403259), and restoring only the layers still erased them when
     // the same amendment added the `check` the ship gate requires (WI-10002563).
-    const unchangedBar = clause.source_bar_hash === criterion.barHash;
-    const prior = previousByKey.get(effectiveBarKey);
-    const layersOnly = !unchangedBar && prior?.barHash === clause.source_bar_hash &&
-      computeAcceptanceBarHash({ ...criterion, requiredTestLayers: prior.requiredTestLayers, check: prior.check })
-        === clause.source_bar_hash;
-    const preserveRefinements = unchangedBar || layersOnly;
-    // Replace the parent's layer requirements while retaining any extra layers
-    // authored on this atomic clause. This also respects an approved removal, on
-    // EVERY re-projection from the prior BAR, not only a layers-only change: an
-    // amendment that rewords a BAR and also drops its layers must not carry the
-    // dropped layers forward through the `??` fallback below. That kept an
-    // explicitly-manual BAR "owing automated proof" (WI-6554700010009658).
-    // layersOnly implies projectedFromPrior, so the layers-only path is unchanged.
-    const projectedFromPrior = prior !== undefined && prior.barHash === clause.source_bar_hash;
-    const requiredTestLayers = unchangedBar ? clause.required_test_layers : projectedFromPrior
-      ? [...new Set([
-          ...clause.required_test_layers.filter((layer) => !prior!.requiredTestLayers?.includes(layer)),
-          ...(criterion.requiredTestLayers ?? []),
-        ])]
-      : criterion.requiredTestLayers ?? clause.required_test_layers;
-    const next: SpecClauseWrite = {
-      planSlug: subjectPlan, specId: clause.spec_id, sourceValId: clause.source_val_id,
-      expectedRevision: Number(clause.current_revision), planItemId: clause.plan_item_id,
-      behavior: preserveRefinements ? clause.behavior : acceptanceBarProjectedBehavior(criterion),
-      // Recompute neutral classes from the effective proof contract, including
-      // approved check/layer changes and old incorrectly automated manual rows.
-      // Authored risk refinements and mutation obligations remain stronger.
-      // An exempt clause keeps 'non-automated': its lifecycle and exemption are carried
-      // forward below, and spec quality accepts an exemption only on a non-automated
-      // clause, so recomputing the class from the BAR's automated proof contract
-      // invalidated the carried exemption on every amendment (WI-6554700010017078).
-      behaviorClass: clause.lifecycle_status === 'exempt' && isNonAutomatedBehaviorClass(clause.behavior_class)
-        ? NON_AUTOMATED_BEHAVIOR_CLASS
-        : preserveRefinements && clause.behavior_class !== 'happy-path' &&
-          !isNonAutomatedBehaviorClass(clause.behavior_class)
-        ? clause.behavior_class
-        : clause.mutation_required ? 'happy-path'
-          : acceptanceBarBehaviorClass(criterion.evidencePlane, requiredTestLayers, criterion.check),
-      requiredEvidence: preserveRefinements ? clause.required_evidence
-        : clause.required_evidence.map((value) => ['tree', 'deployed', 'live'].includes(value) ? criterion.evidencePlane! : value),
-      requiredTestLayers, mutationRequired: clause.mutation_required,
-      // A terminal clause whose pair is current has been re-added to the approved map.
-      // Re-project it into the draft activation pipeline instead of preserving a
-      // terminal lifecycle that would make the restored BAR silently unenforceable.
-      lifecycleStatus: currentPair &&
-        (clause.lifecycle_status === 'superseded' || clause.lifecycle_status === 'retired')
-        ? 'draft' : clause.lifecycle_status,
-      exemption: clause.exemption,
-      supersedes: clause.supersedes_spec_id && clause.supersedes_revision
-        ? { specId: clause.supersedes_spec_id, revision: clause.supersedes_revision } : null,
-      falsifier: preserveRefinements ? clause.falsifier : { observation: criterion.driftMarkers! },
-      acceptanceRef: `${args.rubricSlug}@${args.rubricRevision}:${effectiveBarKey}`,
-      sourceBar: { barKey: effectiveBarKey, barHash: criterion.barHash,
-        barSetHash: data.barSetHash, rubricSlug: args.rubricSlug,
-        rubricRevision: args.rubricRevision, evidencePlane: criterion.evidencePlane },
-      actorId: args.actorId,
-    };
+    const next = await acceptanceBarClauseWrite({
+      ...args, subjectPlan, barSetHash: data.barSetHash, barKey: effectiveBarKey,
+      planItemId: clause.plan_item_id, criterion, prior: previousByKey.get(effectiveBarKey), clause,
+    });
     // P-001 stable clause identity: a clause is keyed to ITS OWN meaning, not to the
     // rubric-wide BAR set. When the only difference from the stored revision is the
     // rubric-wide provenance (set hash, rubric revision, the revision inside
@@ -1015,7 +1014,7 @@ export async function validateAcceptanceBarRevisionProjectionPreview(
      * not the stored one a retirement is about to rewrite. Omitted: read the stored subject. */
     subjectContent?: string;
   },
-): Promise<void> {
+): Promise<{ candidateHash: string; generatedSpecCount: number } | undefined> {
   const parsed = rubricTemplateDataAuthoringSchema.safeParse(args.templateData);
   if (!parsed.success || parsed.data.kind !== 'acceptance' || !parsed.data.barContract || !parsed.data.subjectPlan) {
     return;
@@ -1072,15 +1071,12 @@ export async function validateAcceptanceBarRevisionProjectionPreview(
     }),
   );
   const ownedSpecIds = [...barKeyBySpecId.keys()];
-  type ProjectionClause = {
-    spec_id: string;
-    current_revision: number | string;
-    source_bar_key: string | null;
-    plan_item_id: string;
-    lifecycle_status: string;
-  };
+  type ProjectionClause = ProjectedAcceptanceClause;
   const clauses = await sql<ProjectionClause[]>`
-    SELECT c.spec_id, c.current_revision, r.source_bar_key, r.plan_item_id, r.lifecycle_status
+    SELECT c.spec_id, c.source_val_id, c.current_revision, r.source_bar_key, r.source_bar_hash,
+           r.plan_item_id, r.behavior, r.behavior_class, r.falsifier, r.required_evidence,
+           r.required_test_layers, r.mutation_required, r.lifecycle_status,
+           r.supersedes_spec_id, r.supersedes_revision, r.exemption
       FROM harness_shared.plan_spec_clauses c
       JOIN harness_shared.plan_spec_clause_revisions r
         ON r.workspace_id = c.workspace_id AND r.harness_slug = c.harness_slug
@@ -1103,6 +1099,7 @@ export async function validateAcceptanceBarRevisionProjectionPreview(
       ))
       .map((planItemId) => ({ criterion, barKey: mapping.barKey, planItemId }));
   });
+  const candidateWrites: SpecClauseWrite[] = [];
   for (const { criterion, barKey, planItemId } of missingMappings) {
     if (!criterion.barHash || !criterion.evidencePlane || !data.barSetHash) {
       throw new Error(`acceptance_bar_revision_mapping_missing:${barKey}`);
@@ -1114,6 +1111,9 @@ export async function validateAcceptanceBarRevisionProjectionPreview(
         `acceptance_bar_revision_projection_conflict:${specId}:conflict:expected=0:actual=${Number(existing.current_revision)}`,
       );
     }
+    candidateWrites.push(await acceptanceBarClauseWrite({
+      ...args, subjectPlan, barSetHash: data.barSetHash, barKey, planItemId, criterion, actorId: 'preview',
+    }));
   }
 
   for (const clause of clauses) {
@@ -1136,7 +1136,33 @@ export async function validateAcceptanceBarRevisionProjectionPreview(
     }
     if (!criterion && effectiveBarKey && previousByKey.has(effectiveBarKey)) continue;
     if (!criterion) throw new Error(`acceptance_bar_revision_projection_unmapped:${clause.spec_id}`);
+    // A removed generated mapping is retired by apply, not re-projected.
+    if (generatedIdentity && !currentPair) continue;
+    candidateWrites.push(await acceptanceBarClauseWrite({
+      ...args, subjectPlan, barSetHash: data.barSetHash!, barKey: effectiveBarKey!,
+      planItemId: clause.plan_item_id, criterion, prior: previousByKey.get(effectiveBarKey!),
+      clause, actorId: 'preview',
+    }));
   }
+  const candidate = {
+    workspaceId: args.workspaceId, harnessSlug: args.harnessSlug,
+    rubricSlug: args.rubricSlug, rubricRevision: args.rubricRevision,
+    templateData: parsed.data, subjectContent, generatedSpecifications: candidateWrites,
+  };
+  const issues = candidateWrites.flatMap((write) => [
+    ...specClauseWriteIssues(write).map((issue) => JSON.stringify(issue)),
+    ...[
+      ['behavior.atomicity', specBehaviorNonAtomicReason(write.behavior)],
+      ['behavior.falsifiability', specBehaviorNonFalsifiableReason(write.behavior)],
+    ].flatMap(([field, reason]) => reason ? [`${write.specId}.${field}: ${reason}`] : []),
+  ]);
+  if (issues.length) {
+    throw new AcceptanceBarCandidateError(candidate, issues);
+  }
+  return {
+    candidateHash: acceptanceBarCandidateHash(candidate),
+    generatedSpecCount: candidateWrites.length,
+  };
 }
 
 /**

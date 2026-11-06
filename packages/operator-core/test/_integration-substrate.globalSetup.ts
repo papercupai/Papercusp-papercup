@@ -21,6 +21,8 @@ const NO_SHARED_PG_TESTS = new Set([
   // Actual OMP engine owns a private migrated native PG and offline provider.
   '../lib/su-session-omp-authority.integration.test.ts',
   '../lib/agent-tools/capability/vm-copy-authority-bridge.integration.test.ts',
+  // Live operator MCP and session-ledger calls do not require shared PostgreSQL.
+  '../lib/agent-tools/sessions/digest.selected-operator.integration.test.ts',
   // Isolated repository fixtures and the provisioned syntax parser; no SQL or PG runtime.
   '../lib/agent-tools/plans/plan-native-declarations.integration.test.ts',
   // Disposable tracked Git repositories and notification AST classification; no database.

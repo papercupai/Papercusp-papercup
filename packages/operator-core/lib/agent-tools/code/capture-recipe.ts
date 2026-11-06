@@ -183,6 +183,8 @@ export interface CaptureRecipeInput {
   ownerId: string | null;
   /** The acting agent's role. */
   role: string | null;
+  /** Server-derived choice provenance; an absent receipt stays unknown. */
+  choice?: 'agent' | 'hook' | 'system' | 'unknown';
   /** Agent-supplied title/description (optional — derived when absent). */
   title?: string;
   description?: string;
@@ -396,6 +398,8 @@ export async function captureRecipe(
       success: true,
       reused: target.disposition !== 'created',
       executionTrace: input.executionTrace,
+      usage: { version: 1, selection: target.disposition === 'created' ? 'authored' : 'automatic-match',
+        choice: input.choice ?? 'unknown', mode: 'commit', outcome: 'success', settled: true },
     });
 
     // P-004: don't SURFACE the selected target (already represented by

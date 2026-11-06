@@ -181,7 +181,16 @@ export async function probeRunnerLiveness(
   }
   if (childUnknown) return 'unknown';
   if (unboundReservationOutlivedCeiling(runner, nowMs)) return 'dead';
-  const observed = await runnerLivenessProber(runner);
+  let observed = await runnerLivenessProber(runner);
+  if (runner.pid != null && runner.unit?.trim()) {
+    // The root PID may exit or be recycled while descendants still occupy its
+    // managed unit. Reclaim only after BOTH identities are positively dead;
+    // an unreadable scope retains custody even when the PID is gone.
+    const scope = await runnerLivenessProber({ ...runner, pid: null, pidIdentity: null,
+      childScopeUnits: [] });
+    observed = observed === 'live' || scope === 'live' ? 'live'
+      : observed === 'dead' && scope === 'dead' ? 'dead' : 'unknown';
+  }
   // A scope name is reserved in the DB before systemd-run creates it. Its temporary absence
   // cannot authorize a second physical run during that launch interval.
   return observed === 'dead' && launchReservationInGrace(runner, nowMs) ? 'unknown' : observed;

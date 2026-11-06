@@ -1,0 +1,33 @@
+{
+  "schemaVersion": "luna-bg-source-custody-v1",
+  "startedAt": "2026-11-06T02:18:45.759Z",
+  "completedAt": "2026-11-06T02:20:46.520Z",
+  "inputReader": "/tmp/pcv/papercusp-lint-as-committed-72959875a3-nPPBj3",
+  "root": "/mnt/data/tmp/luna-bg-source-20261106-v1",
+  "sourceCommit": "72959875a3b38694f1f7ebaf78eb7b0782d954ab",
+  "acceptedManifest": {
+    "path": "/home/marsh-office/papercupai-workspace/papercusp/.papercusp/evidence/luna-bg-preparation-20261106-v1/accepted-source-expectation.json",
+    "sha256": "e949fa2644022319e80b1abd1b4769a58f8c1037062a9d873c1473cfc4468731"
+  },
+  "sourceReceiptSha256": "105618afb29fc712adb3a9ff6cee4e6f1c8a959bbe32b8ac4829e7d795987c77",
+  "preparedReceiptSha256": "5315ae2506f5ac7d25528499fbe6ddbf4a960c7dd1a80e976507890f815506e2",
+  "testedInputs": [
+    {
+      "path": "packages/operator-core/lib/dbos/routines-workflow.ts",
+      "sha256": "2959316721171c028fef5d8ca83201f849c6f583c3a079178de51ddf843b9348"
+    },
+    {
+      "path": "packages/operator-core/lib/endpoint-route/routes/agent-mcp/bootstrap-su.ts",
+      "sha256": "2c1a0a3fe64d0f03832c88f18cfd0ee0207c3032539982016211c895690b033b"
+    },
+    {
+      "path": "packages/operator-core/lib/harness/routines/loop-turn-start-stamp.ts",
+      "sha256": "4e8edba73d6e6b3ee9e1ec6f5fcd02ee6a39c7258bf161728b92769c9ce2f98e"
+    }
+  ],
+  "limitations": [
+    "Source authority only; original matching boot artifact and runtime authority remain UNKNOWN.",
+    "No original fire24 settlement, rollback, teardown, P001 acceptance or Luna shipment is established.",
+    "No member was selected by current HEAD, compiler output, candidate or nine-member integration cohort."
+  ]
+}

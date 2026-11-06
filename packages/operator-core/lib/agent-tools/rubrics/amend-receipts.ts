@@ -3,7 +3,6 @@ import { hostname } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../../workspace-registry';
-import { TERMINAL_TASK_STATES } from '../../task-manager/types';
 import { readProcessIdentity } from '../../process-identity';
 import { observeFallback } from '../../degradation/fallback-observations';
 
@@ -146,16 +145,26 @@ function reviewLaunchFailure(result: Record<string, unknown>): string | undefine
  * own Amendment-Id replay check, so running again is always safe. The claim is
  * an atomic `failed -> running` UPDATE, so concurrent retries still run once.
  * EI-25444129715658415: an ok:true dry-run can still fail to start its review.
- * Reclaim legacy previewed rows with that exact outcome as well; a routed or
- * launched reviewer remains replayable and must never be duplicated.
+ * Reclaim legacy previewed rows with that exact outcome as well. A launched
+ * reviewer can be reclaimed only after the caller positively inspects its task
+ * and thread, then wins the receipt compare-and-set for those exact identities.
  */
+interface PreviewedReviewReclaim {
+  taskId: string;
+  nativeRef?: string;
+  previewPostRef: string;
+}
+
 export async function trackAmendRun(
   idempotencyKey: string,
   rubricRef: string,
-  run: (onPhase: (phase: string) => void) => Promise<Record<string, unknown>>,
+  run: (onPhase: (phase: string) => void, recoveredReview?: PreviewedReviewReclaim) => Promise<Record<string, unknown>>,
   options: {
     onRegistered?: () => void;
     omittedReviewRecovery?: OmittedReviewRecovery;
+    /** Confirm a retained fresh reviewer failed before reclaiming its preview receipt. */
+    reclaimPreviewedReview?: (result: Record<string, unknown>) =>
+      Promise<PreviewedReviewReclaim | null>;
     /** Persist phase changes in the receipt; only enable when a phase may use an independent SQL connection. */
     persistPhaseProgress?: boolean;
     /** Apply supplies an allowlist so no progress write acquires a connection under its plan locks. */
@@ -212,6 +221,17 @@ export async function trackAmendRun(
   const leaseSeconds = Math.round(AMEND_RECEIPT_RUNNING_LEASE_MS / 1000);
   const existing = inserted.length === 0 ? await getAmendReceipt(rubricRef, idempotencyKey) : undefined;
   const orphaned = existing?.state === 'running' && isRunningReceiptOrphaned(existing) ? existing : undefined;
+  const existingReview = existing?.result?.review;
+  const existingFreshReviewer = existingReview && typeof existingReview === 'object'
+    ? (existingReview as Record<string, unknown>).freshReviewer
+    : undefined;
+  const previewedReviewReclaim = existing?.state === 'previewed'
+    && existing.result?.ok === true
+    && existing.result?.dryRun === true
+    && (existingReview as Record<string, unknown> | undefined)?.state === 'no-eligible-reviewer'
+    && (existingFreshReviewer as Record<string, unknown> | undefined)?.state === 'launched'
+    ? await options.reclaimPreviewedReview?.(existing.result)
+    : undefined;
   let reclaimed: Array<{ idempotency_key: string }>;
   if (inserted.length > 0) {
     reclaimed = [];
@@ -238,16 +258,15 @@ export async function trackAmendRun(
            AND result_json->>'ok' = 'true' AND result_json->>'dryRun' = 'true'
            AND result_json #>> '{review,state}' = 'no-eligible-reviewer'
            AND result_json #>> '{review,freshReviewer,state}' IS DISTINCT FROM 'launched')
-         -- WI-6554700010010527: a launched reviewer whose task ENDED with nothing
-         -- posted after the preview is dead, not pending. Replaying it stranded the
-         -- review until the receipt aged out; re-running reaches the launcher, which
-         -- re-keys past the dead task.
-         OR (state = 'previewed'
+         OR (${Boolean(previewedReviewReclaim)}::boolean
+           AND state = 'previewed'
+           AND result_json->>'ok' = 'true' AND result_json->>'dryRun' = 'true'
+           AND result_json #>> '{review,state}' = 'no-eligible-reviewer'
            AND result_json #>> '{review,freshReviewer,state}' = 'launched'
-           AND EXISTS (
-             SELECT 1 FROM harness_shared.task_ledger tl
-              WHERE tl.task_id = result_json #>> '{review,freshReviewer,taskId}'
-                AND tl.state = ANY(${[...TERMINAL_TASK_STATES]}::text[]))
+           AND result_json #>> '{review,freshReviewer,taskId}' = ${previewedReviewReclaim?.taskId ?? ''}
+           AND result_json #>> '{review,freshReviewer,nativeRef}' IS NOT DISTINCT FROM ${previewedReviewReclaim?.nativeRef ?? null}::text
+           AND result_json #>> '{review,previewPostRef}' = ${previewedReviewReclaim?.previewPostRef ?? ''}
+           AND result_json #>> '{review,previewPostRef}' ~ '^thread-post:[1-9][0-9]*$'
            AND NOT EXISTS (
              SELECT 1 FROM harness_shared.coord_thread_posts pv
                JOIN harness_shared.coord_thread_posts p
@@ -259,7 +278,9 @@ export async function trackAmendRun(
     `;
   }
   if (inserted.length === 0 && reclaimed.length === 0) {
-    const current = existing ?? await getAmendReceipt(rubricRef, idempotencyKey);
+    // Re-read after a failed compare-and-set: another worker may have reclaimed
+    // this receipt while this caller was inspecting the retained reviewer.
+    const current = await getAmendReceipt(rubricRef, idempotencyKey);
     if (!current) throw new Error('rubric amend receipt disappeared during same-key retry');
     options.onRegistered?.();
     if (current.result) return current.result;
@@ -332,7 +353,7 @@ export async function trackAmendRun(
   }, { sql, workspaceId, correlationId, processTag: `rubrics-amend:p${executor.pid}` });
   let result: Record<string, unknown>;
   try {
-    result = await run(onPhase);
+    result = await run(onPhase, reclaimed.length > 0 ? previewedReviewReclaim : undefined);
   } catch (error) {
     closeProgress();
     const message = error instanceof Error ? error.message : String(error);

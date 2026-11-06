@@ -46,6 +46,8 @@ vi.mock('../../plan-audits', async (orig) => {
     getLatestActivationAudit: vi.fn(),
     repoCitationContextForHarness: vi.fn(),
     recordPlanAudit: vi.fn(),
+    recordCurrentDiscoveryAudit: vi.fn(),
+    withCurrentDiscovery: vi.fn(),
     recordCurrentActivationAudit: vi.fn(),
     previewCurrentActivationAudit: vi.fn(),
     // P-003: the real loader reads report_library / work_items / … through getOrgPg.
@@ -118,6 +120,8 @@ import {
   getPlanItemStatuses,
   loadGenericCitationLookupForWorkspace,
   recordCurrentActivationAudit,
+  recordCurrentDiscoveryAudit,
+  withCurrentDiscovery,
   previewCurrentActivationAudit,
   recordPlanAudit,
   repoCitationContextForHarness,
@@ -149,6 +153,7 @@ const mockContext = vi.mocked(repoCitationContextForHarness);
 const mockRecord = vi.mocked(recordPlanAudit);
 const mockRecordActivation = vi.mocked(recordCurrentActivationAudit);
 const mockPreviewActivation = vi.mocked(previewCurrentActivationAudit);
+const mockRecordDiscovery = vi.mocked(recordCurrentDiscoveryAudit);
 const mockResolveSourceRefs = vi.mocked(resolveSessionTurnRefs);
 const mockRepairFiling = vi.mocked(ensureActivationAuditRepairFiling);
 const mockGetPlanRow = vi.mocked(getPlanRow);
@@ -169,11 +174,42 @@ const ctx = {
   tx: vi.fn(),
 } as never;
 
+describe('non-activating discovery finalization', () => {
+  it('refuses activation before repair, audit, clause, or event effects when discovery is stale', async () => {
+    vi.mocked(withCurrentDiscovery).mockResolvedValueOnce({ ok: false, error: 'discovery_not_ready',
+      nextAction: 'Reconcile the changed finding.' } as never);
+    const result = await tool.handler({ slug: 'draft', harness: 'papercusp', phase: 'activation',
+      unresolvedBlockers: ['must not file a repair'] } as never, ctx);
+    expect('data' in result && result.data).toMatchObject({ ok: false, error: 'discovery_not_ready' });
+    for (const effect of [mockRepairFiling, mockRecordActivation, mockRecord, mockSetSpecClause, mockEmitPlanEvent])
+      expect(effect).not.toHaveBeenCalled();
+  });
+  it('requires only slug and phase; derives readiness without activation or completion side effects', async () => {
+    vi.clearAllMocks();
+    mockRecordDiscovery.mockResolvedValue({ ok: true, preview: true, dryRun: true,
+      discovery: { readiness: { ready: false, state: 'blocked', nextAction: 'Answer Q-1' } },
+      auditedPlanRevision: { id: 12, seq: 3, contentHash: 'a'.repeat(64) } } as never);
+    const args = tool.args.parse({ harness: 'papercusp', slug: 'draft', phase: 'discovery', dryRun: true });
+    const reply = await tool.handler(args, ctx);
+    expect('data' in reply && reply.data).toMatchObject({ phase: 'discovery', readiness: { ready: false }, dryRun: true });
+    expect(mockRecordDiscovery).toHaveBeenCalledWith(expect.objectContaining({ planSlug: 'draft', dryRun: true }));
+    expect(mockRecordActivation).not.toHaveBeenCalled();
+    expect(mockRecord).not.toHaveBeenCalled();
+    expect(mockSetSpecClause).not.toHaveBeenCalled();
+    expect(mockEmitPlanEvent).not.toHaveBeenCalled();
+    for (const field of ['summary', 'items', 'findings', 'mappings', 'classRef']) {
+      expect(tool.args.safeParse({ slug: 'draft', phase: 'discovery', [field]: field === 'summary' ? 'copied status' : [] }).success).toBe(false);
+    }
+  });
+});
+
 const body = async (items: Array<Record<string, unknown>>, over: Record<string, unknown> = {}) =>
   ((await tool.handler({ slug: 'plan-a', harness: 'papercusp', items, ...over } as never, ctx)) as { data: any }).data;
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.mocked(withCurrentDiscovery).mockImplementation(async (_input, accept) =>
+    ({ ok: true, result: await accept({} as never, {} as never) }));
   mockReuseResolvers.mockReturnValue({});
   mockAcceptanceRubrics.mockResolvedValue([]);
   mockListScorecards.mockResolvedValue([]);

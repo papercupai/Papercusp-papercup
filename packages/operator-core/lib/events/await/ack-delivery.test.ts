@@ -336,6 +336,81 @@ describe('ackDelivery for a pump-claimed row', () => {
     expect(sqlState.calls.some((call) => call.text.includes("channel = 'suppressed-redundant'"))).toBe(false);
   });
 
+  it.each(['inbox', 'suppressed-redundant'])(
+    'recalls a legacy terminal %s wake only after the exact host confirms zero bytes written',
+    async (channel) => {
+      schema.setTurnProofColumnsReadyForTests(true);
+      sqlState.respond = (text) => {
+        if (text.includes('pg_attribute')) return [{ n: schema.TURN_PROOF_COLUMNS.length }];
+        if (text.includes('SELECT status, channel')) return [{ status: 'delivered', channel, turnProof: null }];
+        if (text.includes("channel = 'suppressed-redundant'")) return [{ id: 7 }];
+        return [];
+      };
+      vi.mocked(pty.injectIntoHostWithConfirmation).mockImplementation(async () => {
+        sqlState.order.push({ kind: 'host' });
+        return { ok: true, confirmation: 'acked', reason: 'cancelled-before-write' } as never;
+      });
+
+      await expect(store.ackDelivery({ deliveryId: 7, subscriberId: 'su-ack' })).resolves.toEqual({
+        acked: true, alreadySettled: false,
+      });
+      expect(pty.injectIntoHostWithConfirmation).toHaveBeenCalledWith('/test/host.sock', {
+        mode: 'delivery-cancel', data: '', ownerId: 'su-ack', deliveryId: '7',
+      });
+      const hostIndex = sqlState.order.findIndex((entry) => entry.kind === 'host');
+      const suppressionIndex = sqlState.order.findIndex((entry) =>
+        entry.kind === 'sql' && entry.text?.includes("channel = 'suppressed-redundant'"));
+      expect(hostIndex).toBeGreaterThan(-1);
+      expect(suppressionIndex).toBeGreaterThan(hostIndex);
+      expect(sqlState.calls.find((call) => call.text.includes("channel = 'suppressed-redundant'"))?.text)
+        .toContain("turn_proof = 'superseded'");
+    },
+  );
+
+  it.each([
+    ['cancel-requested', false, { cancellationRequested: true }],
+    ['delivery-unknown', true, {}],
+    ['delivery-already-committed', true, {}],
+  ])('preserves legacy terminal state for the host receipt %s', async (reason, alreadySettled, extra) => {
+    schema.setTurnProofColumnsReadyForTests(true);
+    sqlState.respond = (text) => {
+      if (text.includes('pg_attribute')) return [{ n: schema.TURN_PROOF_COLUMNS.length }];
+      if (text.includes('SELECT status, channel')) return [{ status: 'delivered', channel: 'inbox', turnProof: null }];
+      return [];
+    };
+    mockResolvedTyped(vi.mocked(pty.injectIntoHostWithConfirmation), {
+      ok: reason === 'cancel-requested', confirmation: 'acked', reason,
+    });
+    await expect(store.ackDelivery({ deliveryId: 7, subscriberId: 'su-ack' })).resolves.toEqual({
+      acked: false, alreadySettled, status: 'delivered', ...extra,
+    });
+    expect(sqlState.calls.some((call) => call.text.includes("channel = 'suppressed-redundant'"))).toBe(false);
+  });
+
+  it.each(['observed', 'superseded'])(
+    'does not recall a terminal inbox wake with %s proof', async (turnProof) => {
+      schema.setTurnProofColumnsReadyForTests(true);
+      sqlState.respond = (text) => {
+        if (text.includes('pg_attribute')) return [{ n: schema.TURN_PROOF_COLUMNS.length }];
+        if (text.includes('SELECT status, channel')) return [{ status: 'delivered', channel: 'inbox', turnProof }];
+        return [];
+      };
+      await expect(store.ackDelivery({ deliveryId: 7, subscriberId: 'su-ack' })).resolves.toEqual({
+        acked: false, alreadySettled: true, status: 'delivered',
+      });
+      expect(pty.injectIntoHostWithConfirmation).not.toHaveBeenCalled();
+    },
+  );
+
+  it('does not send a cancellation for a missing or foreign delivery', async () => {
+    schema.setTurnProofColumnsReadyForTests(true);
+    sqlState.respond = () => [];
+    await expect(store.ackDelivery({ deliveryId: 7, subscriberId: 'su-ack' })).resolves.toEqual({
+      acked: false, alreadySettled: false,
+    });
+    expect(pty.injectIntoHostWithConfirmation).not.toHaveBeenCalled();
+  });
+
   it('bulk turn-end settlement recalls delivered unconfirmed socket wakes', async () => {
     schema.setTurnProofColumnsReadyForTests(true);
     sqlState.respond = (text) => {

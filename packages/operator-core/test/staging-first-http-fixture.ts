@@ -11,7 +11,7 @@ import { loadHarnessRegistry, saveHarnessRegistry } from '../lib/harness-registr
 import { readProcessIdentity } from '../lib/process-identity';
 import { resolvePlanScope } from '../lib/agent-tools/plans/source';
 import { buildPrivateOperatorApiBundle, privateBundleRuntimeEnv, privateNativeDockerHost, waitForPrivateOperator, stopPrivateOperatorHost, qualifyCommittedReaderSource, observeCommittedReaderLoadedSources, resolvePreparedCommittedReaderSource, resolvePreparedPrivateApiBundle } from './private-http-workspace-preflight';
-import { captureIsolatedWorker, isolatedTestFileWorkerOptions, retainIsolatedWorkerProgress } from './isolated-integration-proof';
+import { captureIsolatedWorker, isolatedTestFileWorkerOptions, isolatedWorkerOptions, retainIsolatedWorkerProgress } from './isolated-integration-proof';
 import { measurePrivateUnrelatedCheckpointScenario } from './private-unrelated-write-http-scenario';
 
 let host: ChildProcess | undefined;
@@ -295,7 +295,12 @@ async function main() {
       ['packages/operator-core/lib/' + backend + '-managed-tools.native.integration.test.ts'],
       { cwd: root, env, execArgv: ['--import', './scripts/lib/committed-source-loader.mjs'],
         stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
-    const result = await captureIsolatedWorker(child, censusDir, isolatedTestFileWorkerOptions(env, 1));
+    // OMP has one bounded 180s assertion case. Collection and source verification
+    // must not consume that allowance or inherit the enclosing proof's budget.
+    const censusOptions = isOmpManagedTools
+      ? { ...isolatedWorkerOptions(180_000, env), testFileExecutionFromStdout: 'case' as const }
+      : isolatedTestFileWorkerOptions(env, 1);
+    const result = await captureIsolatedWorker(child, censusDir, censusOptions);
     assert.equal(result.code, 0, result.output.slice(-12000));
     assert.equal(result.signal, null);
     assert.equal(result.timedOut, false);

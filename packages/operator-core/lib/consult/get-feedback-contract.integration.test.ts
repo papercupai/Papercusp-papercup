@@ -73,6 +73,7 @@ describe('registered consult contract and persisted recovery', () => {
       // attribution so the minimal consult fixture never queries product work.
       const original = { ...request(`acquisition-${failure}`), originTaskRef: null };
       const accepted = await acceptFeedbackRequestCore(original, deps);
+      if ('error' in accepted) throw new Error(`unexpected acceptance refusal: ${accepted.error}`);
       let acquisition: QueryEmbedderAcquisition | undefined;
       const profile = EMBEDDER_DIM_SPECS.gemma;
       const resolved = await buildQueryEmbedderResolved({ acquireBudgetMs: 5,
@@ -102,7 +103,9 @@ describe('registered consult contract and persisted recovery', () => {
         ? { stage: 'inference', cause: 'ETIMEDOUT' }
         : { stage: 'acquisition', cause: failure === 'timeout' ? 'acquisition-budget-exhausted' : 'ECONNREFUSED' });
       expect(JSON.stringify(stored.routing)).not.toContain('private');
-      expect((await acceptFeedbackRequestCore(original, deps)).conversation_id).toBe(accepted.conversation_id);
+      const retried = await acceptFeedbackRequestCore(original, deps);
+      if ('error' in retried) throw new Error(`unexpected acceptance refusal: ${retried.error}`);
+      expect(retried.conversation_id).toBe(accepted.conversation_id);
       const [count] = await db.sql`SELECT count(*)::int AS n FROM harness_shared.consult_state
         WHERE workspace_id = ${WS} AND conversation_id = ${accepted.conversation_id}`;
       expect(count.n).toBe(1);
@@ -118,6 +121,7 @@ describe('registered consult contract and persisted recovery', () => {
     // The remaining public workflow can still accept a request with no reporting
     // step, using the actual consult schema and store beneath that catalog.
     const accepted = await acceptFeedbackRequestCore(request('retired-reporting-catalog'), deps);
+    if ('error' in accepted) throw new Error(`unexpected acceptance refusal: ${accepted.error}`);
     expect(accepted).toMatchObject({ verdict: 'accepted', pending: true });
     const [stored] = await db.sql`SELECT requester_id, routing FROM harness_shared.consult_state
       WHERE workspace_id = ${WS} AND conversation_id = ${accepted.conversation_id}`;
@@ -136,6 +140,7 @@ describe('registered consult contract and persisted recovery', () => {
     expect(projected!.description).toContain('request_key');
     const input = request('x'.repeat(200));
     const accepted = await acceptFeedbackRequestCore(input, deps);
+    if ('error' in accepted) throw new Error(`unexpected acceptance refusal: ${accepted.error}`);
     const retry = await acceptFeedbackRequestCore(request(input.requestKey!), deps);
     expect(accepted).toMatchObject({ verdict: 'accepted', state: 'routing', pending: true });
     expect(retry.conversation_id).toBe(accepted.conversation_id);
@@ -158,12 +163,15 @@ describe('registered consult contract and persisted recovery', () => {
   it('the persisted key-conflict remedy recovers the original payload or accepts a fresh key', async () => {
     const original = request('remedy-original');
     const accepted = await acceptFeedbackRequestCore(original, deps);
+    if ('error' in accepted) throw new Error(`unexpected acceptance refusal: ${accepted.error}`);
     const conflicting = await acceptFeedbackRequestCore(request('remedy-original', 'Changed question'), deps);
     expect(conflicting).toMatchObject({ error: 'request_key_conflict', conversation_id: accepted.conversation_id });
     expect(conflicting.hint).toContain('Reuse its original payload for recovery');
     expect(conflicting.hint).toContain('use a new key for a fresh consult');
     const recovered = await acceptFeedbackRequestCore(original, deps);
+    if ('error' in recovered) throw new Error(`unexpected acceptance refusal: ${recovered.error}`);
     const fresh = await acceptFeedbackRequestCore(request('remedy-fresh', 'Changed question'), deps);
+    if ('error' in fresh) throw new Error(`unexpected acceptance refusal: ${fresh.error}`);
     expect(recovered.conversation_id).toBe(accepted.conversation_id);
     expect(fresh).toMatchObject({ verdict: 'accepted', pending: true });
     expect(fresh.conversation_id).not.toBe(accepted.conversation_id);
@@ -199,6 +207,7 @@ describe('source preflight and persisted dispatch attempts', () => {
           VALUES (${kind === 'unreadable' ? 'foreign-consult-contract' : WS},
             'claude', ${sourceSessionId}, 1, 'assistant', 'exact source answer')`;
         const accepted = await acceptFeedbackRequestCore(request(`preflight-${kind}`), deps);
+        if ('error' in accepted) throw new Error(`unexpected acceptance refusal: ${accepted.error}`);
         const conversationId = accepted.conversation_id!;
         // Acceptance is initially routing. Simulate the completed routing
         // transition before exercising the independent dispatcher boundary.

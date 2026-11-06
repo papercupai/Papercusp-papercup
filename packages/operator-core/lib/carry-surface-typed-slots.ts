@@ -111,6 +111,13 @@ const AGENT_SUBJECT_RE = /\b(?:su|claude)-[0-9a-f]{4,}(?:-[0-9a-f]{4,})*\b/i;
  * event emitter" (EI-21392657495371064). */
 const PEER_OWNER_SUBJECT_RE = /\b(?:peer|item|work[-\s]?item)\s+owner\b/i;
 
+/** An explicit qualification reply from a named runtime owner is a peer
+ *  dependency, even when the prose begins "wait for owner answer". Keep the
+ *  exemption narrow and adjacent to that trigger so it cannot mask an
+ *  independent human approval question later in the clause. */
+const SOURCE_BOUND_RUNTIME_OWNER_REPLY_RE =
+  /^\s+answer\s+from\s+(?:a|the)\s+source-bound\s+qualification\s+reply\s+from\s+named\s+runtime\s+owner\s+(?:su|claude)-[0-9a-f]{4,}(?:-[0-9a-f]{4,})*\b/i;
+
 /** A conditional procedure describes a possible owner wait, not the writer's
  *  current question. Keep this clause-scoped so a real ask later on the same
  *  line is still examined (EI-27165070964574205). */
@@ -165,6 +172,7 @@ function isSuppressedMatch(line: string, match: RegExpExecArray): boolean {
   const matchIndex = match.index;
   const afterMatch = line.slice(matchIndex + match[0].length);
   if (EXPLICIT_EMPTY_STATUS_RE.test(afterMatch)) return true;
+  if (SOURCE_BOUND_RUNTIME_OWNER_REPLY_RE.test(afterMatch)) return true;
   const clauseStart = clauseStartBefore(line, matchIndex);
   const clauseBefore = line.slice(clauseStart, matchIndex);
   const clauseThroughMatch = line.slice(clauseStart, matchIndex + match[0].length);

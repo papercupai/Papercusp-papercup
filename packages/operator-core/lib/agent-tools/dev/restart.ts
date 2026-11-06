@@ -86,7 +86,12 @@ import { acquireWithContentionRetry } from '../locks/contention-retry';
 import { workspaceTxnOptionsForExclusiveWait } from '../locks/resource-acquire-wait';
 import { probeServiceStart, probeSystemdDaemonReloadNeed, type ServiceStartInfo } from './systemd-service-probe';
 import { RESTART_TARGET_UNITS } from './restart-target-units';
-import { preflightRestartTarget, prepareStagingSchemaForRestart } from './restart-preflight';
+import {
+  preflightRestartTarget,
+  prepareStagingSchemaForRestart,
+  withRestartTargetInstallReadLease,
+  type RestartPreflightResult,
+} from './restart-preflight';
 import { peerInFlightEditsNote, readPeerInFlightEdits, type PeerInFlightEdits } from './restart-peer-edits';
 import {
   checkBgHostQuiesce,
@@ -1632,7 +1637,10 @@ export default defineTool({
   async handler(args, ctx) {
     const target: RestartTarget = args.target ?? 'dev';
     const cfg = RESTART_TARGETS[target];
-    const runRestart = async () => {
+    const runRestart = async (
+      installReadLeaseHeld = false,
+      lockedBootIntegrity?: RestartPreflightResult,
+    ): Promise<ReturnType<typeof json>> => {
     // ⚠ This IS a raw `systemctl --user restart` — the coordination this tool adds
     // (drain + coalesce + audit + cooldown) is real, but it is ALL lock-shaped: the
     // drain acquires exclusive(<target>-server), i.e. it drains AGENTS USING the
@@ -1846,7 +1854,14 @@ export default defineTool({
     // Soft block, mirroring override_gate_collision: a genuinely wedged host whose remedy
     // IS the restart must stay restartable via override_boot_integrity. Fails OPEN — an
     // unreadable tree reports checked:false and proceeds, and is NEVER treated as clean.
-    const bootIntegrity = target === 'desktop-dev' ? null : await preflightRestartTarget(target);
+    if (target === 'bg-host' && !installReadLeaseHeld) {
+      // The checks above this boundary are read-only. Re-enter once under the
+      // shared install reader so the authoritative preflight, drain, and observed
+      // startup cannot race an install:safe writer changing the target tree.
+      return withRestartTargetInstallReadLease(target, (preflight) => runRestart(true, preflight));
+    }
+    const bootIntegrity =
+      target === 'desktop-dev' ? null : lockedBootIntegrity ?? (await preflightRestartTarget(target));
     // D-012: this is an execution-boundary fence, not a restart-health override.
     // It runs before any target-specific preparation, lock, drain, or restart,
     // and its refusal cannot be overridden by override_boot_integrity.

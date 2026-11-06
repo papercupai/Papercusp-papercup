@@ -281,6 +281,51 @@ describe('capability:bash — start once and yield the same durable job (P-002)'
     RESPONSE_WINDOW_MS + 10_000,
   );
 
+  it('does not start a shell when the caller aborts during provenance preflight', async () => {
+    type Provenance = Awaited<ReturnType<typeof taskProvenance.resolveCapabilityBashTaskProvenance>>;
+    const controller = new AbortController();
+    let resolveProvenance!: (value: Provenance) => void;
+    const pendingProvenance = new Promise<Provenance>((resolve) => {
+      resolveProvenance = resolve;
+    });
+    const provenanceValue: Provenance = {
+      launchedBy: 'owner', sessionId: 'owner', harnessSlug: 'papercusp', workItemId: null,
+      planSlug: null, goalRef: null,
+    };
+    const provenance = vi.spyOn(taskProvenance, 'resolveCapabilityBashTaskProvenance').mockImplementation(
+      () => pendingProvenance,
+    );
+    const launch = vi.spyOn(bashJobs, 'startBackground').mockImplementation(() => {
+      throw new Error('startBackground must not be called after request abort');
+    });
+    let resultPromise: Promise<ToolResult> | undefined;
+    try {
+      resultPromise = bash.handler(
+        { command: 'printf MUST-NOT-RUN', timeout: 5_000 },
+        makeCtx({ signal: controller.signal, codeMode: true }),
+      );
+      await vi.waitFor(() => expect(provenance).toHaveBeenCalledOnce(), { timeout: 5_000 });
+      controller.abort();
+      resolveProvenance(provenanceValue);
+
+      const result = await resultPromise;
+      expect(result.isError).toBe(true);
+      expect(jsonPayload(result)).toMatchObject({
+        ok: false,
+        status: 'cancelled',
+        reason: 'request_aborted',
+        command_started: false,
+      });
+      expect(result.structuredContent).toMatchObject({ command_started: false, reason: 'request_aborted' });
+      expect(launch).not.toHaveBeenCalled();
+    } finally {
+      resolveProvenance(provenanceValue);
+      provenance.mockRestore();
+      launch.mockRestore();
+      await resultPromise?.catch(() => {});
+    }
+  });
+
   it('treats caller abort as cancellation of that same whole process tree', async () => {
     const orphanMarker = join(STATE, `abort-orphan-${crypto.randomUUID()}.txt`);
     const releaseMarker = join(STATE, `abort-release-${crypto.randomUUID()}.txt`);

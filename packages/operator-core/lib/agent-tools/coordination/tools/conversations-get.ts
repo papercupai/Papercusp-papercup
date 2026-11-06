@@ -185,6 +185,8 @@ export default defineTool({
                   wakes_used: consult.wakes_used,
                   session_cost: consult.session_cost,
                   ...(consult.outcome ? { outcome: consult.outcome } : {}),
+                  // The store extracts typed findings/dispositions from outcome.
+                  ...(consult.review ? { review: consult.review } : {}),
                   // The initial router result remains available for audit, but
                   // terminal advice comes from the authoritative close outcome.
                   ...(consult.request_result ? { routing_receipt: consult.request_result } : {}),

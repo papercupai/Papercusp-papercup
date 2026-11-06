@@ -1872,9 +1872,21 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
 
   // agentDetail.byOwner — Tier-3 dossier detail for the selected Sessions agent.
   'agentDetail.byOwner': {
-    argsSchema: z.object({ ownerId: z.string().min(1) }),
+    argsSchema: z.object({
+      ownerId: z.string().min(1),
+      view: z.enum(['activity', 'turns', 'fleet']).optional(),
+      workspaceId: z.string().min(1).optional(),
+      historyCursor: z.string().max(800).optional(),
+    }),
     resolve: async (args) => {
-      const { ownerId } = args as { ownerId: string };
+      const { ownerId, view, ...opts } = args as {
+        ownerId: string; view?: 'activity' | 'turns' | 'fleet';
+        workspaceId?: string; historyCursor?: string;
+      };
+      if (view === 'turns' || view === 'fleet') {
+        const { readAgentSidebar } = await import('../owner-sessions/sidebar');
+        return [await readAgentSidebar(ownerId, view, opts)];
+      }
       const { getAgentDetail } = await import('../adv-agent-detail');
       return [await getAgentDetail(ownerId)];
     },

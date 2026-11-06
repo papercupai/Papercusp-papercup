@@ -2637,6 +2637,15 @@ impl OperatorClient {
         owner: &str,
     ) -> Result<T> {
         let args = serde_json::json!({ "ownerId": owner });
+        self.agent_sidebar_query_args(name, owner, args).await
+    }
+
+    async fn agent_sidebar_query_args<T: serde::de::DeserializeOwned>(
+        &self,
+        name: &str,
+        owner: &str,
+        args: serde_json::Value,
+    ) -> Result<T> {
         let payload = self
             .get_json(&format!(
                 "/api/zero-harness/rest-query?name={}&args={}",
@@ -2653,6 +2662,28 @@ impl OperatorClient {
 
     pub async fn agent_activity(&self, owner: &str) -> Result<crate::agent_ctx::AgentActivity> {
         self.agent_sidebar_query("agentDetail.byOwner", owner).await
+    }
+
+    pub async fn agent_turns(
+        &self,
+        owner: &str,
+        cursor: Option<&str>,
+    ) -> Result<crate::agent_ctx::AgentTurns> {
+        let mut args = serde_json::json!({"ownerId":owner,"view":"turns"});
+        if let Some(cursor) = cursor {
+            args["historyCursor"] = serde_json::json!(cursor);
+        }
+        self.agent_sidebar_query_args("agentDetail.byOwner", owner, args)
+            .await
+    }
+
+    pub async fn agent_fleet(&self, owner: &str) -> Result<crate::agent_ctx::AgentFleet> {
+        self.agent_sidebar_query_args(
+            "agentDetail.byOwner",
+            owner,
+            serde_json::json!({"ownerId":owner,"view":"fleet"}),
+        )
+        .await
     }
 
     /// The prompt an agent runs on (`GET /api/fleet/agent-prompt`, dock
@@ -3840,7 +3871,13 @@ mod tests {
             selection_source: "test".into(),
         };
         let server = tokio::spawn(async move {
-            for name in ["agentOrders.byOwner", "agentDetail.byOwner"] {
+            for (name, view, cursor) in [
+                ("agentOrders.byOwner", None, None),
+                ("agentDetail.byOwner", None, None),
+                ("agentDetail.byOwner", Some("turns"), None),
+                ("agentDetail.byOwner", Some("turns"), Some("opaque+/=& cursor")),
+                ("agentDetail.byOwner", Some("fleet"), None),
+            ] {
                 let (mut socket, _) = listener.accept().await.unwrap();
                 let mut bytes = Vec::new();
                 loop {
@@ -3848,22 +3885,78 @@ mod tests {
                     let count = socket.read(&mut chunk).await.unwrap();
                     assert!(count > 0);
                     bytes.extend_from_slice(&chunk[..count]);
-                    if bytes.windows(4).any(|w| w == b"\r\n\r\n") { break; }
+                    if bytes.windows(4).any(|w| w == b"\r\n\r\n") {
+                        break;
+                    }
                 }
                 let request = String::from_utf8(bytes).unwrap();
-                let target = request.lines().next().unwrap().split_whitespace().nth(1).unwrap();
+                let target = request
+                    .lines()
+                    .next()
+                    .unwrap()
+                    .split_whitespace()
+                    .nth(1)
+                    .unwrap();
                 let url = reqwest::Url::parse(&format!("http://fixture{target}")).unwrap();
                 assert_eq!(url.path(), "/api/zero-harness/rest-query");
                 let params: std::collections::HashMap<_, _> = url.query_pairs().collect();
                 assert_eq!(params.get("name").unwrap(), name);
-                assert_eq!(serde_json::from_str::<serde_json::Value>(params.get("args").unwrap()).unwrap(), json!({"ownerId":"su-selected & exact"}));
-                assert!(request.to_ascii_lowercase().contains("authorization: bearer fixture-token"));
-                let body = json!({"rows":[{"ownerId":"su-selected & exact","directives":[],"locks":{"held":[]}}],"version":"fixture"}).to_string();
+                let mut expected = json!({"ownerId":"su-selected & exact"});
+                if let Some(view) = view {
+                    expected["view"] = json!(view);
+                }
+                if let Some(cursor) = cursor {
+                    expected["historyCursor"] = json!(cursor);
+                }
+                assert_eq!(
+                    serde_json::from_str::<serde_json::Value>(params.get("args").unwrap()).unwrap(),
+                    expected
+                );
+                assert!(request
+                    .to_ascii_lowercase()
+                    .contains("authorization: bearer fixture-token"));
+                let body = json!({"rows":[{"ownerId":"su-selected & exact","directives":[],"locks":{"held":[]},"turns":[],"unknownSession":false,"fleet":null}],"version":"fixture"}).to_string();
                 socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
             }
         });
-        assert!(client.agent_orders("su-selected & exact").await.unwrap().directives.unwrap().is_empty());
-        assert!(client.agent_activity("su-selected & exact").await.unwrap().locks.unwrap().held.unwrap().is_empty());
+        assert!(client
+            .agent_orders("su-selected & exact")
+            .await
+            .unwrap()
+            .directives
+            .unwrap()
+            .is_empty());
+        assert!(client
+            .agent_activity("su-selected & exact")
+            .await
+            .unwrap()
+            .locks
+            .unwrap()
+            .held
+            .unwrap()
+            .is_empty());
+        assert!(client
+            .agent_turns("su-selected & exact", None)
+            .await
+            .unwrap()
+            .turns
+            .unwrap()
+            .is_empty());
+        assert!(client
+            .agent_turns("su-selected & exact", Some("opaque+/=& cursor"))
+            .await
+            .unwrap()
+            .turns
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            client
+                .agent_fleet("su-selected & exact")
+                .await
+                .unwrap()
+                .unknown_session,
+            Some(false)
+        );
         server.await.unwrap();
     }
 

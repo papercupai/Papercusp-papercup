@@ -39,8 +39,9 @@ import { requirementCriterionInputSchema, requirementAmendmentSchema } from '../
 import { resolveAgentWorkspaceRoot } from '../capability/base-dir';
 import { lintAcceptanceMethods } from '../../rubrics-method-lint';
 import { runtimeVettingFindings } from '../../acceptance-runtime-citation';
-import { openAcceptanceBarAmendmentReview } from '../../consult/acceptance-bar-amendment-review';
+import { inspectFreshAmendmentReviewer, openAcceptanceBarAmendmentReview } from '../../consult/acceptance-bar-amendment-review';
 import { acceptanceBarMappingDeltaEntrySchema } from '../../acceptance-bar-amendment';
+import { AcceptanceBarCandidateError } from '../../acceptance-bar-projection';
 import { hostIdentity } from '../../serving-host-identity';
 import { readIdentity, type IdentityCtx } from '../locks/identity';
 import { resourceLockDomain } from '../locks/coordination-domain';
@@ -178,7 +179,15 @@ function acceptanceBarContractRefusal(error: unknown): {
   code: string;
   error: string;
   next: string;
+  candidateValidation?: AcceptanceBarCandidateError['candidateValidation'];
 } | null {
+  if (error instanceof AcceptanceBarCandidateError) return {
+    ok: false,
+    code: 'acceptance_bar_candidate_invalid',
+    error: error.message,
+    candidateValidation: error.candidateValidation,
+    next: 'Correct every listed candidate defect, then run a fresh preview of the complete candidate before requesting review.',
+  };
   const message = error instanceof Error ? error.message : String(error);
   const match = message.match(
     /^(acceptance_bar_amendment_(?:test_layers_missing|test_layer_unrecordable|check_layer_mismatch)):/,
@@ -746,7 +755,7 @@ export default defineTool({
         ...(includeProgress && progress ? { progress: { ...progress, observedAt: Date.now() } } : {}),
       });
       // notify-classification: {"classification":"durable","reason":"Tracked amendment preview can request an independent review; preserve that terminal handoff obligation through this wrapper.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
-      const run = guardAmendRun(ctx, () => trackAmendRun(receiptKey, args.rubricRef, async (onPhase): Promise<Record<string, unknown>> => {
+      const run = guardAmendRun(ctx, () => trackAmendRun(receiptKey, args.rubricRef, async (onPhase, recoveredReview): Promise<Record<string, unknown>> => {
         const reportPhase = (phase: string) => {
           onPhase(phase);
           progress = { phase, phaseStartedAt: Date.now() };
@@ -789,7 +798,9 @@ export default defineTool({
         if (!identity.workspaceId) {
           throw new Error('acceptance_bar_amendment_review_unscoped: a routed review needs a concrete workspace identity');
         }
-        let previewPostRef = args.reviewPreviewPost;
+        // An inspected same-key recovery must reuse its original immutable
+        // approval post; posting a new one would split the reviewer identity.
+        let previewPostRef = recoveredReview?.previewPostRef ?? args.reviewPreviewPost;
         if (!previewPostRef && args.requestReview) {
           reportPhase('preview-post-approval');
           const posted = await postPreviewApproval(args.requestReview, preview.approval, identity, receiptKey);
@@ -823,6 +834,27 @@ export default defineTool({
         onRegistered: () => { registered = true; },
         persistPhaseProgress: true,
         omittedReviewRecovery: { ownerId: identity.ownerId, retryArgs: { ...args } },
+        reclaimPreviewedReview: async (result) => {
+          const review = result.review && typeof result.review === 'object'
+            ? result.review as Record<string, unknown>
+            : undefined;
+          const freshReviewer = review?.freshReviewer && typeof review.freshReviewer === 'object'
+            ? review.freshReviewer as Record<string, unknown>
+            : undefined;
+          const previewPostRef = typeof review?.previewPostRef === 'string' ? review.previewPostRef : undefined;
+          if (!identity.workspaceId || !previewPostRef || !freshReviewer) return null;
+          const health = await inspectFreshAmendmentReviewer({
+            workspaceId: identity.workspaceId,
+            previewPostRef,
+            reviewer: freshReviewer,
+          });
+          if (health.state !== 'reclaimable' || !health.taskId) return null;
+          return {
+            taskId: health.taskId,
+            ...(health.nativeRef ? { nativeRef: health.nativeRef } : {}),
+            previewPostRef,
+          };
+        },
       }));
       const settled = await settleWithin(run, remainingBudget(), ctx.signal);
       if (settled.kind === 'rejected') {

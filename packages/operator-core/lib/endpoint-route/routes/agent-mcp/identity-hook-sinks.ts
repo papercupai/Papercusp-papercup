@@ -214,8 +214,9 @@ const toolGuard = defineTool({
       if (!(/^[a-z_]{1,32}$/.test(stage) ||
           /^start_gate_snapshot_(?:plan-items|work-contracts|lineage-parties)$/.test(stage)) ||
           !Number.isFinite(durationMs) || durationMs < 0) return;
-      // The current guard emits 15 outer stages plus 10 snapshot source stages.
-      if (!(stage in planStages) && Object.keys(planStages).length >= 32) return;
+      // Preserve the 41 guard, snapshot, goal and canonical-reader phases,
+      // including late revision rechecks; keep future labels bounded at 48.
+      if (!(stage in planStages) && Object.keys(planStages).length >= 48) return;
       planStages[stage] = (planStages[stage] ?? 0) + durationMs;
     };
     const workspaceId = await resolveWorkspace(body);

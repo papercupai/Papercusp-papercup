@@ -51,7 +51,7 @@ LEGS=(
   "quick-panel:0:scripts/tauri-surface-verify-p003-quick-panel.sh"
   "rubrics-wiki:0:scripts/tauri-surface-verify-p004-rubrics-wiki.sh"
   "gym:1:scripts/tauri-surface-verify-p004-gym.sh"
-  "cloud-eval:0:scripts/tauri-surface-verify-p005-cloud-eval.sh"
+  "cloud-eval:1:scripts/tauri-surface-verify-p005-cloud-eval.sh"
   "prompt-studio:0:scripts/tauri-surface-verify-p006-prompt-studio.sh"
   "login:0:scripts/tauri-surface-verify-p007-login.sh"
   "settings:0:scripts/tauri-surface-verify-p007-settings.sh"
@@ -123,6 +123,14 @@ for entry in "${LEGS[@]}"; do
       VERIFY_TAURI_REQUIRE_BUILT='apps/operator/app/dao/DaoLaunchWorkspace.tsx apps/operator/app/dao/dao-launch.css' \
       VERIFY_TAURI_ASSERT_SNAPSHOT_CONTAINS='dao-workspace-container' \
       "$VERIFIER" -- bash "$script" >>"$log_file" 2>&1
+  elif [ "$leg" = "cloud-eval" ]; then
+    # Benchmark launch refusal and Compare transitions require an empty private
+    # store; seed only onboarding so the actual Evaluation route is reachable.
+    VERIFY_TAURI_ISOLATED_DB=1 \
+      VERIFY_TAURI_ISOLATED_SEED=ready \
+      VERIFY_TAURI_REQUIRE_BUILT='apps/operator-vite/src/components/adv/AdvEvalsTab.tsx' \
+      VERIFY_TAURI_ASSERT_SNAPSHOT_CONTAINS='list-price-equivalent ceiling' \
+      "$VERIFIER" -- bash "$script" >"$log_file" 2>&1
   elif [ "$leg" = "reporter-status" ]; then
     node --import tsx "$script" --check-imports >"$log_file" 2>&1 && \
       VERIFY_TAURI_ISOLATED_DB=1 VERIFY_TAURI_ISOLATED_SEED=ready \

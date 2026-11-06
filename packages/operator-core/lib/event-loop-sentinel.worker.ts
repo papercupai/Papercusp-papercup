@@ -461,11 +461,30 @@ function inspectorPost(
   });
 }
 
-/** Keep the newest `retain` stall profiles. Only `stall-*.cpuprofile` is touched. */
+/** Read at most 8 KiB without requiring the blocked main thread to answer. */
+function readMainThreadKernelStack(): Record<string, string | boolean> {
+  let fd: number | null = null;
+  try {
+    fd = openSync(`/proc/${pid}/task/${pid}/stack`, 'r');
+    const bytes = new Uint8Array(8193);
+    const count = readSync(fd, bytes, 0, bytes.length, null);
+    return {
+      status: 'available',
+      text: new TextDecoder().decode(bytes.subarray(0, Math.min(count, 8192))),
+      truncated: count > 8192,
+    };
+  } catch (err) {
+    return { status: 'unavailable', error: String(err).slice(0, 200) };
+  } finally {
+    if (fd != null) try { closeSync(fd); } catch { /* best effort */ }
+  }
+}
+
+/** Keep the newest `retain` profiles and inspector-unanswered diagnostics. */
 function pruneStallProfiles(dir: string, retain: number): void {
   try {
     const files = readdirSync(dir)
-      .filter((f) => f.startsWith('stall-') && f.endsWith('.cpuprofile'))
+      .filter((f) => f.startsWith('stall-') && (f.endsWith('.cpuprofile') || f.endsWith('.diagnostic.json')))
       .sort();
     for (let i = 0; i < files.length - Math.max(0, retain); i++) {
       rmSync(join(dir, files[i]), { force: true });
@@ -585,12 +604,42 @@ async function captureStallProfile(
       mainThreadInspectorResponse === 'not-answered' || mainThreadEventLoopResponse === 'not-answered'
         ? describeUnansweredMainThread()
         : {};
+    const diagnostic: Record<string, string> = {};
+    if (mainThreadInspectorResponse === 'not-answered' || mainThreadEventLoopResponse === 'not-answered') {
+      const file = join(cfg.dir, `stall-${startedAtMs}-pid${pid}.diagnostic.json`);
+      try {
+        const snapshot = {
+          schema: 'sentinel-stall-diagnostic-v1',
+          startedAtMs,
+          capturedAtMs: Date.now(),
+          pid,
+          stalenessAtStartMs,
+          mainThreadActivity: cpuKind,
+          ...stallProfileField(),
+          ...blockedIn,
+          ...lastKnownLag(),
+          mainThreadChildren: readMainThreadChildren(),
+          kernelStack: readMainThreadKernelStack(),
+          cpuProfile: null,
+          cpuProfileUnavailableReason: String(err).slice(0, 200),
+        };
+        mkdirSync(cfg.dir, { recursive: true });
+        pruneStallProfiles(cfg.dir, cfg.maxProfiles - 1);
+        writeFileSync(`${file}.tmp`, JSON.stringify(snapshot));
+        renameSync(`${file}.tmp`, file);
+        diagnostic.stallDiagnosticFile = file;
+      } catch (writeErr) {
+        diagnostic.stallDiagnosticError = String(writeErr).slice(0, 200);
+        try { rmSync(`${file}.tmp`, { force: true }); } catch { /* best effort */ }
+      }
+    }
     emit('STALL profile capture failed — sentinel unaffected', {
       pid,
       stalenessAtStartMs,
       mainThreadActivity: cpuKind,
       ...stallProfileField(),
       ...blockedIn,
+      ...diagnostic,
       error: String(err).slice(0, 200),
     });
   } finally {

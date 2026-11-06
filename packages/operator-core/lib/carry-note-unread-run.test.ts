@@ -287,6 +287,34 @@ describe('describeUnreadRun', () => {
     expect(naiveUnreadRun(body, 0)).not.toBeNull();
   });
 
+  it('ignores a negated start request while preserving an affirmative request in flight', () => {
+    const negated = 'No existing start request in flight and no shell sessions/locks; ' +
+      'artifacts /tmp/security-lane3-corpus-executed.json and /tmp/security-lane3-audit-repair.json.';
+    expect(describeUnreadRun(negated, 0)).toBeNull();
+
+    const affirmative = 'A separate test request is in flight; output at /tmp/current-start-request.log.';
+    expect(describeUnreadRun(affirmative, 0)?.signals.inFlight).toEqual(['in flight']);
+    expect(describeUnreadRun(affirmative, 0)?.signals.runRefs).toContain('/tmp/current-start-request.log');
+  });
+
+  it('does not pair completed SQLite-home binding evidence with a separate pending custody job', () => {
+    const body = 'Read the completed setup bash output /tmp/pcv/papercusp-capability/scratch/bash-e500f6fb-1f8.log and restored SQLite bindings at /tmp/papercusp-codex-sqlite-homes/session-54397/config.toml and /tmp/papercusp-codex-sqlite-homes/session-54391/config.toml and /tmp/papercusp-codex-sqlite-homes/session-54708/config.toml and /tmp/pcv/papercusp-codex-sqlite-homes/session-sameADV/config.toml and the separate native-custody verification job was launched and is still running, marked pending.';
+
+    expect(describeUnreadRun(body, 0)).toBeNull();
+
+    const withCurrentOutput = body.replace(
+      'is still running, marked pending.',
+      'is still running at /tmp/native-custody.log.',
+    );
+    expect(describeUnreadRun(withCurrentOutput, 0)).toMatchObject({
+      flagged: true,
+      signals: {
+        inFlight: expect.arrayContaining(['still running']),
+        runRefs: ['/tmp/native-custody.log'],
+      },
+    });
+  });
+
   it('keeps actual unread admissions in Next and after hypothetical or negated clauses', () => {
     for (const body of [
       '## Next\nRead /tmp/active.log: the current suite is still running.',

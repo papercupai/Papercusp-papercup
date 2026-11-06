@@ -394,7 +394,7 @@ describe('commitAttributedGroups (P-004 + WI-38594 diff subjects)', () => {
     const casIdx = calls.findIndex((c) => c[0] === 'update-ref');
     expect(calls[casIdx]!.slice(-3)).toEqual(['HEAD', 'new-commit', 'base-commit']);
     const resetIdx = calls.findIndex((c) => c[0] === 'reset');
-    expect(calls[resetIdx]).toEqual(['reset', '-q', 'new-commit', '--', 'a.ts']);
+    expect(calls[resetIdx]).toEqual(['reset', '-q', 'new-commit', '--no-refresh', '--', 'a.ts']);
     expect(envs[resetIdx]?.GIT_INDEX_FILE).toBeUndefined();
     expect(envs[resetIdx]?.GIT_LITERAL_PATHSPECS).toBe('1');
     expect(resetIdx).toBeGreaterThan(-1);
@@ -595,6 +595,56 @@ describe('commitAttributedGroups (P-004 + WI-38594 diff subjects)', () => {
 });
 
 describe('commitAttributedGroups private index (WI-10006705)', () => {
+  it('publishes exact path entries without refreshing unrelated working-tree stats (real git, EI-280018)', async () => {
+    const repo = await seededRepo('gs-attr-no-refresh-');
+    const source = 'source [literal].ts';
+    await writeFile(join(repo, 'base.ts'), 'peer staged version\n');
+    await git(repo, 'add', 'base.ts');
+    const peerBlob = await git(repo, 'rev-parse', ':base.ts');
+    await writeFile(join(repo, 'base.ts'), 'peer unstaged version\n');
+    await writeFile(join(repo, source), 'export const accepted = true;\n');
+    const controlTrace = join(repo, '.git', 'refresh-control.json');
+    const publicationTrace = join(repo, '.git', 'refresh-publication.json');
+    // Positive control: even a path reset that changes nothing scans the index by default.
+    const control = await realRunGit(['reset', '-q', 'HEAD', '--', source], repo, {
+      env: { GIT_LITERAL_PATHSPECS: '1', GIT_TRACE2_EVENT: controlTrace },
+    });
+    expect(control.code).toBe(0);
+    const refreshes = async (path: string) => (await readFile(path, 'utf8')).trim().split('\n')
+      .map((line) => JSON.parse(line))
+      .filter((event) => event.event === 'region_enter' && event.category === 'index' && event.label === 'refresh');
+    expect((await refreshes(controlTrace)).length).toBeGreaterThan(0);
+    let resets = 0;
+    let publications = 0;
+    const tracedGit: RunGit = async (args, cwd, options) => {
+      if (args[0] === 'reset' && !options?.env?.GIT_INDEX_FILE) {
+        resets++;
+        return realRunGit(args, cwd, { env: { ...options?.env, GIT_TRACE2_EVENT: publicationTrace } });
+      }
+      if (args[0] === 'update-ref' && args.includes('HEAD')) {
+        publications++;
+        // Shared entries must follow the prospective commit BEFORE its HEAD CAS.
+        const commit = args[args.indexOf('HEAD') + 1];
+        expect(await git(repo, 'rev-parse', ':' + source)).toBe(await git(repo, 'rev-parse', commit + ':' + source));
+        expect(await git(repo, 'rev-parse', ':base.ts')).toBe(peerBlob);
+      }
+      return realRunGit(args, cwd, options);
+    };
+    const result = await commitAttributedGroups(tracedGit, repo, new Map([
+      [source, { agent: 'author', intent: 'accepted source' }],
+    ]), ['base.ts'], MSG);
+    expect(result.error).toBeUndefined();
+    expect(result.committedCount).toBe(1);
+    expect(resets).toBe(1);
+    expect(publications).toBe(1);
+    expect(await git(repo, 'show', 'HEAD:' + source)).toBe('export const accepted = true;');
+    expect(await git(repo, 'rev-parse', ':base.ts')).toBe(peerBlob);
+    expect(await readFile(join(repo, 'base.ts'), 'utf8')).toBe('peer unstaged version\n');
+    expect(await git(repo, 'show', 'HEAD:base.ts')).toBe('export const base = 0;');
+    expect(await git(repo, 'diff', '--cached', '--name-only')).toBe('base.ts');
+    expect(await refreshes(publicationTrace)).toEqual([]);
+  });
+
   it('refuses the phase, touching no index, when the runner drops GIT_INDEX_FILE', async () => {
     const { runGit, calls } = fakeGit({ porcelain: ' M a.ts\0', ignoreEnv: true });
     const attribution = new Map<string, FileAttribution>([['a.ts', { agent: 'ag1', intent: 'x' }]]);

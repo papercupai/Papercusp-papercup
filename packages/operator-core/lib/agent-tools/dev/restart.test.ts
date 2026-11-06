@@ -97,6 +97,7 @@ vi.mock('../../task-manager/cgroup-read', async (importOriginal) => {
 vi.mock('./restart-preflight', () => ({
   preflightRestartTarget: vi.fn(),
   prepareStagingSchemaForRestart: vi.fn(),
+  withRestartTargetInstallReadLease: vi.fn(),
 }));
 vi.mock('../../harness/routines/restricted-tree-skip', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../harness/routines/restricted-tree-skip')>();
@@ -154,6 +155,7 @@ import { readProcessCgroupPath } from '../../task-manager/cgroup-read';
 import {
   preflightRestartTarget,
   prepareStagingSchemaForRestart,
+  withRestartTargetInstallReadLease,
   type StagingSchemaPreparationResult,
 } from './restart-preflight';
 import { resolveDesktopDevListener, restartDesktopDev } from './desktop-dev-restart';
@@ -183,6 +185,7 @@ const integrationTreeRootsM = vi.mocked(integrationTreeRoots);
 const restrictedTreeHoldRefusalM = vi.mocked(restrictedTreeHoldRefusal);
 const preflightM = vi.mocked(preflightRestartTarget);
 const stagingSchemaPreparationM = vi.mocked(prepareStagingSchemaForRestart);
+const installReadLeaseM = vi.mocked(withRestartTargetInstallReadLease);
 const desktopResolveM = vi.mocked(resolveDesktopDevListener);
 const desktopRestartM = vi.mocked(restartDesktopDev);
 /** A boot-integrity verdict. Defaults to an inspected, clean tree. */
@@ -459,6 +462,7 @@ beforeEach(() => {
   integrationTreeRootsM.mockReturnValue(['/tree']);
   restrictedTreeHoldRefusalM.mockResolvedValue(null);
   preflightM.mockResolvedValue(bootVerdict());
+  installReadLeaseM.mockImplementation(async (target, run) => run(await preflightM(target)));
   stagingSchemaPreparationM.mockResolvedValue(preparedStagingSchema());
   desktopResolveM.mockResolvedValue({ ok: true, pid: 327001, note: 'verified desktop-dev listener' });
   desktopRestartM.mockResolvedValue({ ok: true, pid: 327001, note: 'verified desktop-dev listener' });
@@ -946,6 +950,52 @@ describe('dev:restart boot-integrity preflight', () => {
     preflightM.mockResolvedValue(inconsistent);
     await call({ confirm: true, authorize: true, target: 'bg-host', reason: 'x' });
     expect(preflightM).toHaveBeenCalledWith('bg-host');
+  });
+
+  it('holds the BG-host install reader through preflight and restart readiness', async () => {
+    let readerHeld = false;
+    installReadLeaseM.mockImplementation(async (target, run) => {
+      expect(target).toBe('bg-host');
+      readerHeld = true;
+      try {
+        return await run(await preflightM(target));
+      } finally {
+        readerHeld = false;
+      }
+    });
+    preflightM.mockResolvedValue(bootVerdict({ target: 'bg-host' }));
+    mockResolvedTyped(acquireM, {
+      ok: true,
+      mode: 'exclusive',
+      status: 'held',
+      lock_id: 'COOL-BG-INSTALL-READER',
+      expires_ts: new Date(),
+      shared_holders: [],
+      fence_seq: 1,
+    });
+    mockImplementationTyped(guardM, runGuard(fenceOk(1)));
+    mockResolvedTyped(probeM, { ok: true, mainPid: 4321, secondsSinceStart: 900, nRestarts: 2 });
+    bgHostRestartReadinessM.mockImplementationOnce(async (before) => {
+      expect(readerHeld).toBe(true);
+      return {
+        ready: true,
+        observed: true,
+        outcome: 'ready',
+        pidChanged: true,
+        observedPid: (before.mainPid ?? 0) + 1,
+        activeState: 'active',
+        result: 'success',
+        waitedMs: 5,
+      };
+    });
+
+    const b = body(await call({ confirm: true, authorize: true, target: 'bg-host', reason: 'reader lease regression' }));
+
+    expect(b).toMatchObject({ ok: true, target: 'bg-host', restarted: true });
+    expect(installReadLeaseM).toHaveBeenCalledTimes(1);
+    expect(preflightM).toHaveBeenCalledTimes(1);
+    expect(bgHostRestartReadinessM).toHaveBeenCalledTimes(1);
+    expect(readerHeld).toBe(false);
   });
 
   // The mirror of the refusal test above: reaching guardResource IS the proof that the

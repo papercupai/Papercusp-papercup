@@ -4242,6 +4242,17 @@ describe('applyResultDoor', () => {
       )).toBe(input);
     });
 
+    it('does not treat marker-like source code as structured truncation metadata', () => {
+      const text = 'const options = { inputTruncated: true };';
+      const input: DoorableResult = { content: [{ type: 'text' as const, text }] };
+
+      expect(Buffer.byteLength(text, 'utf8')).toBeLessThan(BUDGET_CHARS);
+      expect(applyResultDoor(
+        input,
+        { toolName: 'capability:read', workspaceId: 'ws-1', runId: RUN_ID },
+      )).toBe(input);
+    });
+
     it.each([
       ['direct work_items:get', 'work_items:get', undefined],
       ['nested work_items:get', 'tools:invoke', 'work_items:get'],
@@ -4552,9 +4563,9 @@ describe('applyResultDoor', () => {
   // truncated an individual FIELD inside its own body (coord:inbox's per-entry
   // `body_truncated`) — the door has no structured signal for this (each tool
   // bakes its own field-level cutoff into the serialized body), so it must detect
-  // the generic `"<name>_truncated": true` shape textually and stop telling the
+  // the generic `"<name>_truncated": true` structured field and stop telling the
   // reader to page a spill that can never contain what the tool never serialized.
-  describe('tool-internal field truncation (no _meta marker — detected in the body text)', () => {
+  describe('tool-internal field truncation (no _meta marker — detected in structured bodies)', () => {
     /** Prepends a small JSON snippet carrying the marker, then pads with `longText`
      *  past the door budget so the door actually spills (detection only matters
      *  on the over-budget path). */
@@ -4598,10 +4609,11 @@ describe('applyResultDoor', () => {
     });
 
     it('camelCase *Truncated markers from build:typecheck TOON output are detected with recovery guidance', () => {
-      const text = withMarker(
-        'errorsTruncated: true\nbyFileTruncated: true\n',
-        BUDGET_CHARS * 3,
-      );
+      const text = 'format: toon\n' + encode({
+        errorsTruncated: true,
+        byFileTruncated: true,
+        padding: 'P'.repeat(BUDGET_CHARS * 3),
+      }, 'toon');
       const doored = applyResultDoor(
         { content: [{ type: 'text' as const, text }] },
         { toolName: 'build:typecheck', workspaceId: 'ws-1', runId: RUN_ID },

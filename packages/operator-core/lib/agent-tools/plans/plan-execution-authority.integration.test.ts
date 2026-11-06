@@ -29,7 +29,8 @@ vi.mock('./plan-start-gate', () => ({ checkPlanStartable: async () => ['initial_
 vi.mock('./plan-spec-quality-gate', () => ({ evaluatePlanSpecQualityGate: async () => ({
   satisfied: gates.blocker !== 'spec_quality_not_current', applicable: true, mode: 'enforced', code: 'spec_quality_not_current',
 }) }));
-vi.mock('./plan-start-critique-gate', () => ({ evaluatePlanStartBarCritique: async () => ({
+vi.mock('./plan-start-critique-gate', () => ({ isPlanStartBarCritiqueInCohort: () => true,
+  evaluatePlanStartBarCritique: async () => ({
   mode: 'enforced', verdict: { satisfied: gates.blocker !== 'critique_missing', code: 'critique_missing' },
 }) }));
 vi.mock('../../acceptance-bar-lifecycle-evaluator', () => ({ readAndEvaluateAcceptanceBarLifecycle: async () => ({
@@ -55,7 +56,12 @@ vi.mock('./source', async original => ({
 
 import { preservePlanExecutionProgress, readExecutionPlanRow, readPlanExecutionStart,
   recordPlanExecutionStart } from './plan-execution-authority';
-import { checkExecutionPlan, checkPlanExecutionGuard } from './plan-execution-guard';
+import {
+  checkExecutionPlan,
+  checkPlanExecutionGuard,
+  checkPlanExecutionReadiness,
+  readExecutionPlanBindings,
+} from './plan-execution-guard';
 import { gcOldPlanRevisions } from './revisions-gc';
 
 let db: FreshPgDb;
@@ -79,6 +85,7 @@ beforeAll(async () => {
     CREATE TABLE harness_shared.harness_plans (workspace_id text, harness_slug text, plan_slug text,
       content text, content_hash text, status text, op_status text, template_data jsonb, input_schema jsonb,
       archived boolean DEFAULT false, version integer DEFAULT 1, now_note jsonb, updated_at timestamptz,
+      created_at timestamptz DEFAULT now(),
       _search text GENERATED ALWAYS AS (lower(content)) STORED,
       PRIMARY KEY(workspace_id,harness_slug,plan_slug));
     ALTER TABLE harness_shared.harness_plans
@@ -100,13 +107,22 @@ beforeAll(async () => {
       audit_kind text,audit_seq integer,audited_plan_content_hash text,audited_plan_revision_id bigint);
     CREATE TABLE harness_shared.session_briefs (owner_id text, workspace_id text,current_plan_slug text,harness_slug text,control_state jsonb);
     CREATE TABLE harness_shared.adv_sessions (coord_owner_id text,workspace_id text,plan_slug text,ended_at timestamptz);
-    CREATE TABLE harness_shared.plan_item_claims (owner text,workspace_id text,harness_slug text,plan_slug text);
+    CREATE TABLE harness_shared.plan_item_claims (owner text,workspace_id text,harness_slug text,plan_slug text,item_id text);
     CREATE TABLE harness_shared.work_items (taken_by text,workspace_id text,harness_slug text,source_plan_slug text,status text,
       feature_id text,item_kind text,plan_slug text,plan_line_id text,plan_line_text text,plan_importance text,
-      plan_phase text,plan_decision_refs text[],plan_deliverable text,plan_owner_gate_marker text,plan_seq integer);
+      plan_phase text,plan_decision_refs text[],plan_deliverable text,plan_owner_gate_marker text,plan_seq integer,
+      title text,summary text,closed_ts bigint,updated_ts bigint,origin text);
     CREATE TABLE harness_shared.work_item_deps (workspace_id text,dep_type text,blocked_kind text,blocked_ref text,blocker_kind text,blocker_ref text);
   `);
   await db.sql.unsafe(await readFile(new URL('../../../../../libs/papercusp/libs/db/sql/1613-plan-execution-start-revision.sql', import.meta.url), 'utf8'));
+  // Fail at fixture setup if the authority census or readiness readers drift
+  // beyond this migrated-PG schema. Otherwise their callers collapse a SQL
+  // shape error into `plan_authority_unavailable`, obscuring the missing column.
+  await db.sql`INSERT INTO harness_shared.harness_plans
+    (workspace_id,harness_slug,plan_slug,content,content_hash,status)
+    VALUES (${scope.workspaceId},${scope.harnessSlug},${scope.planSlug},${body},${hashPlanContent(body)},'ready')`;
+  expect(await readExecutionPlanBindings(identity.ownerId, scope.workspaceId)).toEqual([]);
+  await expect(checkPlanExecutionReadiness(binding, scope.workspaceId)).resolves.toEqual([]);
 }, 120_000);
 afterAll(async () => { connection.sql = null; await db?.cleanup(); });
 beforeEach(async () => {
@@ -205,6 +221,11 @@ describe('canonical successful-start revision authority (real PG)', () => {
   it('refuses fully ready never-started plans and permits native write admission only after a strict receipt, without op_status', async () => {
     await db.sql`INSERT INTO harness_shared.session_briefs VALUES (${identity.ownerId},${scope.workspaceId},'feature','project',NULL)`;
     const input = { ownerId: identity.ownerId, workspaceId: scope.workspaceId, toolName: 'apply_patch', args: {} };
+    // Exercise the real census query explicitly so fixture/schema drift reports
+    // its SQL error instead of only the guard's intentionally opaque refusal.
+    await expect(readExecutionPlanBindings(identity.ownerId, scope.workspaceId)).resolves.toEqual([
+      { planSlug: scope.planSlug, harnessSlug: scope.harnessSlug, source: 'session-brief', sourceRef: scope.planSlug },
+    ]);
     expect(await checkPlanExecutionGuard(input)).toMatchObject({ blockers: ['plan_not_started'] });
     const receipt = await issue();
     expect(receipt.seq).toBe(1);
@@ -251,6 +272,72 @@ describe('canonical successful-start revision authority (real PG)', () => {
       await expect(recordPlanExecutionStart(scope, identity, expected)).rejects.toThrow('plan_changed');
     }
     expect(await db.sql`SELECT seq FROM harness_shared.plan_revisions`).toHaveLength(0);
+  });
+
+  it('preserves the issued receipt across generated claim progress and rejects added author scope', async () => {
+    await seedLine('P-001');
+    const original = body + '\n## Phase 1\n- **P-001** `todo` Preserve findings\n';
+    await db.sql`UPDATE harness_shared.harness_plans SET content=${original},content_hash=${hashPlanContent(original)}`;
+    const receipt = await issue();
+    const claimed = original.replace('`todo`', '`wip`')
+      .replace('Preserve findings\n', 'Preserve findings — note: → WI-6554700010045594\n');
+    await db.sql.begin(async tx => {
+      await preservePlanExecutionProgress(tx, scope, original, claimed, hashPlanContent(original), hashPlanContent(claimed));
+      await tx`UPDATE harness_shared.harness_plans SET content=${claimed},content_hash=${hashPlanContent(claimed)}`;
+      await tx`UPDATE harness_shared.work_items SET status='wip' WHERE plan_line_id='P-001'`;
+    });
+    expect((await readExecutionPlanRow(scope))?.execution_start_revision_seq).toBe(receipt.seq);
+    expect(await readPlanExecutionStart(binding, scope.workspaceId)).toEqual([]);
+    const changed = claimed.replace('WI-6554700010045594', 'WI-6554700010045594 — also discard findings');
+    await db.sql.begin(async tx => {
+      await preservePlanExecutionProgress(tx, scope, claimed, changed, hashPlanContent(claimed), hashPlanContent(changed));
+      await tx`UPDATE harness_shared.harness_plans SET content=${changed},content_hash=${hashPlanContent(changed)}`;
+    });
+    expect(await readPlanExecutionStart(binding, scope.workspaceId)).toEqual(['plan_not_started']);
+  });
+
+  it('preserves execution authority for a typed progress note through the plan-line graph writer', async () => {
+    await seedLine('P-001');
+    await db.sql`UPDATE harness_shared.work_items SET plan_phase='Phase 1',plan_deliverable='code' WHERE plan_line_id='P-001'`;
+    const original = body + '\n## Phase 1\n- **P-001** \x60todo\x60 Preserve findings deliverable: code\n';
+    await db.sql`UPDATE harness_shared.harness_plans SET content=${original},content_hash=${hashPlanContent(original)}`;
+    const receipt = await issue();
+    const { deriveIndexFromContent } = await import('./derive-index');
+    const { readPlanLineNodes, writePlanLineNodes } = await import('./plan-line-graph');
+    const { formatOperationalProgressNote } = await import('@papercusp/plan-parser');
+    const graphScope = { workspaceId: scope.workspaceId, harnessSlug: scope.harnessSlug, slug: scope.planSlug };
+    const note = 'Operational update blocked-by: P-999 importance: high deliverable: code D-999';
+    const noteSuffix = formatOperationalProgressNote(note);
+    const progress = original
+      .replace('Preserve findings deliverable: code\n', 'Preserve findings deliverable: code' + noteSuffix + '\n')
+      .replace('\x60todo\x60', '\x60wip\x60');
+    const beforeNodes = await readPlanLineNodes(db.sql, graphScope);
+    const progressMutations = await db.sql.begin(async tx => {
+      await preservePlanExecutionProgress(
+        tx, scope, original, progress, hashPlanContent(original), hashPlanContent(progress),
+      );
+      await tx`UPDATE harness_shared.harness_plans SET content=${progress},content_hash=${hashPlanContent(progress)}`;
+      return writePlanLineNodes(tx, graphScope, beforeNodes, deriveIndexFromContent(progress).items);
+    });
+    expect(progressMutations).toEqual([]);
+    expect((await readExecutionPlanRow(scope))?.execution_start_revision_seq).toBe(receipt.seq);
+    expect(await readPlanExecutionStart(binding, scope.workspaceId)).toEqual([]);
+    const progressNodes = await readPlanLineNodes(db.sql, graphScope);
+    expect(progressNodes[0]).toMatchObject({
+      text: 'Preserve findings', status: 'wip', blockedBy: [], deliverable: 'code', phase: 'Phase 1',
+    });
+
+    const author = progress.replace(noteSuffix, ' — note: Author explanation');
+    const authorMutations = await db.sql.begin(async tx => {
+      await preservePlanExecutionProgress(
+        tx, scope, progress, author, hashPlanContent(progress), hashPlanContent(author),
+      );
+      await tx`UPDATE harness_shared.harness_plans SET content=${author},content_hash=${hashPlanContent(author)}`;
+      return writePlanLineNodes(tx, graphScope, progressNodes, deriveIndexFromContent(author).items);
+    });
+    expect(authorMutations).toEqual([]);
+    expect((await readExecutionPlanRow(scope))?.execution_start_revision_seq).toBeNull();
+    expect(await readPlanExecutionStart(binding, scope.workspaceId)).toEqual(['plan_not_started']);
   });
 
   it('preserves Now-only writes but atomically invalidates edit-then-revert and structured changes', async () => {

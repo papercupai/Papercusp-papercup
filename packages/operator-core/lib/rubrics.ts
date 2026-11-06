@@ -90,7 +90,7 @@ import {
   type BarMappingDeltaEntry,
 } from './acceptance-bar-amendment-requirements-drift';
 import { assertRubricRatingVocabulary } from './rubric-rating-vocabulary';
-import { assertChangedAcceptanceBarProjectionsAtomic } from './acceptance-bar-projection';
+import { AcceptanceBarCandidateError, assertChangedAcceptanceBarProjectionsAtomic } from './acceptance-bar-projection';
 
 // Structured criterion grading-window (EI-12146): schema + the pure resolver live in
 // rubric-template.ts (dependency-free, so instruments can import them without this
@@ -4357,6 +4357,8 @@ export interface AcceptanceBarAmendmentPreview {
     reviewedBars: Array<{ barKey: string; reason: string }>;
   };
   sourceSnapshotHash: string;
+  /** Exact normalized candidate and generated-spec validation, recomputed before dispatch. */
+  candidateValidation?: { candidateHash: string; generatedSpecCount: number };
   changes: import('./acceptance-bar-contract-snapshot').AcceptanceBarContractDiff['changes'];
   /** Absent only on historical previews; retained in the existing preview
    * receipt and the routed review's durable brief. */
@@ -5151,11 +5153,28 @@ async function amendAcceptanceBarRubric(
 
       const amended = applyRubricAmendment(stored, input);
       amended.criteria = migrateLegacyCriterionProbeRevisions(amended.criteria).map(normalizeAcceptanceBarCriterion);
-      assertChangedAcceptanceBarProjectionsAtomic(
-        amended.criteria,
-        stored.criteria.map(normalizeAcceptanceBarCriterion),
-      );
-      const built = buildRubricTemplateData(amended);
+      const candidateFailures: string[] = [];
+      try {
+        assertChangedAcceptanceBarProjectionsAtomic(
+          amended.criteria,
+          stored.criteria.map(normalizeAcceptanceBarCriterion),
+        );
+      } catch (error) {
+        candidateFailures.push(error instanceof Error ? error.message : String(error));
+      }
+      let built: BuiltRubricTemplateData | undefined;
+      try {
+        built = buildRubricTemplateData(amended);
+      } catch (error) {
+        candidateFailures.push(error instanceof Error ? error.message : String(error));
+      }
+      if (!built || candidateFailures.length) {
+        throw new AcceptanceBarCandidateError({
+          workspaceId: subjectScope.workspaceId, harnessSlug: subjectScope.harnessSlug,
+          rubricSlug: input.rubricId, rubricRevision: Number(rubricRow.version) + 1,
+          subjectContent: subjectRow.content, amendment: amended,
+        }, candidateFailures);
+      }
       // The stored acceptance BAR can contain continuity probes pinned to a
       // projected-tool revision that has since rolled forward. Rebuilding the
       // old snapshot through the current writer schema here made the amendment
@@ -5723,8 +5742,7 @@ async function amendAcceptanceBarRubric(
       };
 
       if (preview) {
-        if (changedBars.length > 0 || mappingDelta.length > 0) {
-          await validateAcceptanceBarRevisionProjectionPreview(tx as never, {
+        const candidateValidation = await validateAcceptanceBarRevisionProjectionPreview(tx as never, {
             workspaceId: subjectScope.workspaceId,
             harnessSlug: subjectScope.harnessSlug,
             rubricSlug: input.rubricId,
@@ -5733,7 +5751,6 @@ async function amendAcceptanceBarRubric(
             previousTemplateData: rubricRow.template_data,
             subjectContent: requirementsRerender.content,
           });
-        }
         const changes = diffAcceptanceBarContractSnapshots(snapshot, candidate, 'amend').changes;
         const open = changedBars.length
           ? await tx<Array<{ work_item_id: string }>>`
@@ -5858,6 +5875,7 @@ async function amendAcceptanceBarRubric(
             },
             sourceSnapshotHash: snapshot.contentHash,
             changes,
+            ...(candidateValidation ? { candidateValidation } : {}),
             criterionChanges: acceptanceBarAmendmentCriterionChanges(
               stored.criteria, nextCriteria, changes.map((change) => change.barKey),
             ),

@@ -18,6 +18,7 @@
  */
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { createResilientEventSource } from '@papercusp/sse';
+import { TerminalLinksAddon } from '@/lib/terminal-links';
 import { useQueryState, parseAsBoolean } from 'nuqs';
 import '@xterm/xterm/css/xterm.css';
 import { Loader2 } from 'lucide-react';
@@ -351,6 +352,7 @@ export default function PiPanel({ slug, laneId, command, args, panelId }: PiPane
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
+    term.loadAddon(new TerminalLinksAddon());
     term.loadAddon(new WebLinksAddon());
     // Search addon — Ctrl+Shift+F opens find-in-scrollback. Common
     // terminal-product feature; xterm.js's official addon, ~25 KB.

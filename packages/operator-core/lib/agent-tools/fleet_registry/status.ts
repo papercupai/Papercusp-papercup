@@ -498,7 +498,7 @@ export default defineTool({
       .max(80)
       .optional()
       .describe(
-        'Optional harness slug for progress reporting. When provided, the result includes `completionStats` so genuine completions are separated from dedup/unverified terminal rows.',
+        'Optional harness slug for all-time harness completion authority/outcome reporting. completionStats.population has no fleet attribution; these counts are not this fleet\'s verified new fixes. Use fleetMetrics for fleet-scoped progress.',
       ),
     workspace: z
       .string()

@@ -3,6 +3,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 vi.mock('./wake-mode', () => ({ resolveWakeMode: vi.fn() }));
 vi.mock('./pending-wakes', () => ({ stagePendingWake: vi.fn() }));
 vi.mock('../../events/await/engine', () => ({ emitAwaitedEvent: vi.fn() }));
+// Listener recovery has its own persistence boundary. These dispatcher unit
+// tests must not fall through to that boundary using their query-only SQL mock.
+vi.mock('../../events/await/store', () => ({ listActiveAwaitsForKey: vi.fn() }));
+vi.mock('../../events/await/inbox-wake-arm', () => ({ ensureInboxWakeArmedForActiveSession: vi.fn() }));
 vi.mock('./wake-fanout-pacing', async (orig) => {
   const m = await orig<typeof import('./wake-fanout-pacing')>();
   return { ...m, reserveWakeFanout: vi.fn(async (count: number, workspaceId = 'ws-1') =>
@@ -43,6 +47,8 @@ import type { EmitResult } from '../../events/await/engine';
 import { resolveWakeMode } from './wake-mode';
 import { stagePendingWake } from './pending-wakes';
 import { emitAwaitedEvent } from '../../events/await/engine';
+import { listActiveAwaitsForKey } from '../../events/await/store';
+import { ensureInboxWakeArmedForActiveSession } from '../../events/await/inbox-wake-arm';
 import { knownOwnerIdSet, resolveBestEffortAgainstRoster } from './recipient-resolve';
 import { getOrgPg } from '@papercusp/db-org';
 import { reserveWakeFanout, readWakeFanoutPacing } from './wake-fanout-pacing';
@@ -52,6 +58,8 @@ const sqlMock = vi.fn(async (..._args: unknown[]) => []);
 beforeEach(() => {
   vi.mocked(resolveWakeMode).mockResolvedValue('auto' as never);
   vi.mocked(stagePendingWake).mockResolvedValue(undefined as never);
+  vi.mocked(listActiveAwaitsForKey).mockResolvedValue([{ id: 1 }] as never);
+  vi.mocked(ensureInboxWakeArmedForActiveSession).mockResolvedValue(undefined as never);
   vi.mocked(emitAwaitedEvent).mockImplementation(async (opts) => {
     const deferred = (readWakeFanoutPacing(opts.payload)?.notBeforeMs ?? 0) > Date.now() ? 1 : 0;
     return { woken: 1 - deferred, deferred } as EmitResult;
@@ -72,6 +80,22 @@ describe('wakeRecipients wake-mode gate (hive-agent-tabs D-005, graduated by sta
     expect(stagePendingWake).not.toHaveBeenCalled();
     expect(r.woken).toBe(2);
     expect(r.staged).toBe(0);
+  });
+
+  it('recovers a missing listener before dispatching the recipient wake', async () => {
+    vi.mocked(listActiveAwaitsForKey).mockResolvedValueOnce([]);
+
+    const result = await wakeRecipients(['s-recover'], { workspaceId: 'ws-1' });
+
+    expect(listActiveAwaitsForKey).toHaveBeenCalledWith('coord:inbox-wake:s-recover');
+    expect(ensureInboxWakeArmedForActiveSession).toHaveBeenCalledWith({
+      ownerId: 's-recover',
+      forceRecheck: true,
+      workspaceId: 'ws-1',
+    });
+    expect(ensureInboxWakeArmedForActiveSession).toHaveBeenCalledBefore(vi.mocked(emitAwaitedEvent));
+    expect(emitAwaitedEvent).toHaveBeenCalledWith(expect.objectContaining({ key: 'coord:inbox-wake:s-recover' }));
+    expect(result.woken).toBe(1);
   });
 
   it('required wake records each completed fire outcome in one batched ledger write', async () => {

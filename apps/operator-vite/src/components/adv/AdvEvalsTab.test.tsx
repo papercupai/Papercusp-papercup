@@ -15,7 +15,7 @@
  * nuqs is a per-key store the tests seed; @papercusp/sync dispatches by queryName.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { ReactNode } from 'react';
 import { buildSuiteReport, type TaskRunResult } from '@papercusp/bench-metrics';
 
@@ -292,6 +292,11 @@ describe('<AdvEvalsTab> shell + routing', () => {
 // store via the @papercusp/sync resolvers evals.benchRuns + evals.benchRun
 // (benchmark-evaluation-ui-2026-06-16 P-003), not the old REST evalApi.
 describe('<AdvEvalsTab> runs subtab (evals.benchRuns / evals.benchRun)', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
   const RUN_LIST = [
     {
       id: 'm3-realqueen-2026-06-16',
@@ -350,6 +355,85 @@ describe('<AdvEvalsTab> runs subtab (evals.benchRuns / evals.benchRun)', () => {
     expect(screen.getByTestId('viz-throughput')).toBeTruthy();
     expect(screen.getByTestId('viz-mast')).toBeTruthy();
   });
+
+  it('keeps incomplete assigned outcomes visible on the current run detail screen', () => {
+    nuqsState.evalView = 'preserved';
+    H.results['evals.benchRuns'] = { ...blank(), data: [{ ...RUN_LIST[0], source: 'native' }] };
+    H.results['evals.benchRun'] = { ...blank(), data: [{ ...RUN_DETAIL, source: 'native',
+      config: { current: {}, protocol: {} },
+      summary: { ...RUN_DETAIL.summary, taskCount: 3, resolvedPct: null,
+        conditionalResolvedPct: 0.5, missingGradeCount: 1 },
+    }] };
+    render(<AdvEvalsTab />);
+    expect(screen.getByLabelText('Benchmark evidence class').textContent).toContain('Incomplete current evidence');
+    expect(screen.getByLabelText('Benchmark evidence class').textContent).toContain('1 assigned attempts are absent.');
+    expect(screen.getByText('1/3 assigned tasks resolved')).toBeTruthy();
+    expect(screen.getByText('1/2 graded submissions · conditional quality')).toBeTruthy();
+    expect(screen.getByLabelText(/1 submissions await official grades; primary score is inconclusive/)).toBeTruthy();
+  });
+
+  it('keeps synthetic provenance visible on the run detail screen', () => {
+    nuqsState.evalView = 'preserved';
+    H.results['evals.benchRuns'] = { ...blank(), data: RUN_LIST };
+    H.results['evals.benchRun'] = { ...blank(), data: [{ ...RUN_DETAIL, config: { synthetic: true } }] };
+    render(<AdvEvalsTab />);
+    expect(screen.getByLabelText('Benchmark evidence class').textContent).toContain('Synthetic fixture evidence');
+    expect(screen.getByLabelText('Benchmark evidence class').textContent).toContain('do not measure current product performance');
+  });
+
+  it('downloads the selected run export with the exact predictions and reproduction instructions', async () => {
+    nuqsState.evalView = 'preserved';
+    nuqsState.evalRun = RUN_DETAIL.id;
+    H.results['evals.benchRuns'] = { ...blank(), data: RUN_LIST };
+    H.results['evals.benchRun'] = { ...blank(), data: [RUN_DETAIL] };
+    const predictions = [{ instance_id: 'instance_a', model_patch: 'diff --git a/a b/a\n+fixed' }];
+    const readme = '# Reproduce this run\nUse the pinned official grader.\n';
+    const fetchExport = vi.fn(async () => ({ ok: true,
+      json: async () => ({ ok: true, predictions, readme }),
+    }));
+    vi.stubGlobal('fetch', fetchExport);
+    const blobs: Blob[] = [];
+    const revoked: string[] = [];
+    vi.stubGlobal('URL', class extends URL {
+      static createObjectURL(blob: Blob) { blobs.push(blob); return `blob:export-${blobs.length}`; }
+      static revokeObjectURL(url: string) { revoked.push(url); }
+    });
+    const downloads: string[] = [];
+    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (this: HTMLAnchorElement) {
+      downloads.push(this.download);
+    });
+    render(<AdvEvalsTab />);
+    fireEvent.click(screen.getByLabelText('Export this run for third-party reproduction'));
+    await waitFor(() => expect(downloads).toEqual([
+      `${RUN_DETAIL.id}-predictions.json`, `${RUN_DETAIL.id}-README.md`,
+    ]));
+    expect(fetchExport).toHaveBeenCalledWith(`/api/external-bench/runs/${RUN_DETAIL.id}/export`);
+    const contents = await Promise.all(blobs.map(blob => new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result));
+      reader.onerror = () => reject(reader.error);
+      reader.readAsText(blob);
+    })));
+    expect(JSON.parse(contents[0])).toEqual(predictions);
+    expect(contents[1]).toBe(readme);
+    expect(blobs.map(blob => blob.type)).toEqual(['application/json', 'text/markdown']);
+    expect(revoked).toEqual(['blob:export-1', 'blob:export-2']);
+  });
+
+  it('shows a refused export without downloading substitute predictions', async () => {
+    nuqsState.evalView = 'preserved';
+    nuqsState.evalRun = RUN_DETAIL.id;
+    H.results['evals.benchRuns'] = { ...blank(), data: RUN_LIST };
+    H.results['evals.benchRun'] = { ...blank(), data: [RUN_DETAIL] };
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: false, status: 409,
+      json: async () => ({ ok: false, error: 'Official reproduction bundle unavailable.' }),
+    })));
+    const download = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+    render(<AdvEvalsTab />);
+    fireEvent.click(screen.getByLabelText('Export this run for third-party reproduction'));
+    expect((await screen.findByRole('alert')).textContent).toContain('Official reproduction bundle unavailable.');
+    expect(download).not.toHaveBeenCalled();
+  });
 });
 
 // The Launch subtab (P-006) posts to the managed engine launcher; it reads the
@@ -382,12 +466,14 @@ describe('<AdvEvalsTab> launch subtab (P-006)', () => {
     expect((screen.getByLabelText('Launch benchmark run') as HTMLButtonElement).disabled).toBe(true);
   });
 
-  it('submits verified protocol controls and refuses a stale result after the seed changes', async () => {
+  it.each(['swe-bench-pro', 'frontier-swe', 'hive-backlog', 'minecraft'])(
+    'submits the verified %s suite and refuses stale protocol controls after the seed changes', async suite => {
     nuqsState.evalView = 'launch';
     const current = { workspaceId: 'benchmarks', protocolRunId: 'study', preregHash: 'a'.repeat(64), seed: 1,
       observation: { runtimeWorkspaceId: 'host', workerUnit: 'staging-api', gatewayUnit: 'staging-api' } };
-    H.results['evals.benchEstimate'] = { ...blank(), data: [{ ready: true, arm: 'papercusp', current,
+    H.results['evals.benchEstimate'] = { ...blank(), data: [{ ready: true, arm: 'papercusp', suite, current,
       taskCount: 3, estCostUsd: 9, estWallMin: 15, perTaskUsd: 3, aggregateBudgetUsd: 60,
+      payer: 'api-key', costBasis: 'metered',
       model: 'frozen-model', effort: 'high', account: 'api', basis: 'Frozen caps' }] };
     render(<AdvEvalsTab />);
     expect((screen.getByLabelText('Launch benchmark run') as HTMLButtonElement).disabled).toBe(true);
@@ -399,9 +485,67 @@ describe('<AdvEvalsTab> launch subtab (P-006)', () => {
     // state after the asynchronous mutation rather than a replacement spy.
     await vi.waitFor(() => expect(nuqsState.evalRun).toBe('current-study-result'));
     const [, init] = vi.mocked(fetch).mock.calls[0];
-    expect(JSON.parse(String(init?.body))).toEqual({ arm: 'papercusp', taskSetId: 'custom', current });
+    expect(JSON.parse(String(init?.body))).toEqual({ arm: 'papercusp', suite, taskSetId: 'custom', current });
     fireEvent.change(screen.getByLabelText('Registered seed'), { target: { value: '2' } });
     expect((screen.getByLabelText('Launch benchmark run') as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('withholds launch when cached preflight lacks a registered suite', () => {
+    nuqsState.evalView = 'launch';
+    const current = { workspaceId: 'benchmarks', protocolRunId: 'study', preregHash: 'a'.repeat(64), seed: 1,
+      observation: { runtimeWorkspaceId: 'host', workerUnit: 'staging-api', gatewayUnit: 'staging-api' } };
+    H.results['evals.benchEstimate'] = { ...blank(), data: [{ ready: true, arm: 'papercusp', current,
+      taskCount: 3, estCostUsd: 9, estWallMin: 15, perTaskUsd: 3, aggregateBudgetUsd: 9,
+      payer: 'api-key', costBasis: 'metered',
+      model: 'frozen-model', effort: 'high', account: 'api', basis: 'Frozen caps' }] };
+    render(<AdvEvalsTab />);
+    fireEvent.change(screen.getByLabelText('Committed protocol run ID'), { target: { value: 'study' } });
+    expect((screen.getByLabelText('Launch benchmark run') as HTMLButtonElement).disabled).toBe(true);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it.each(['api-key', 'subscription'] as const)('shows the %s budget basis before approving launch', payer => {
+    nuqsState.evalView = 'launch';
+    const current = { workspaceId: 'benchmarks', protocolRunId: 'study', preregHash: 'a'.repeat(64), seed: 1,
+      observation: { runtimeWorkspaceId: 'host', workerUnit: 'staging-api', gatewayUnit: 'staging-api' } };
+    H.results['evals.benchEstimate'] = { ...blank(), data: [{ ready: true, arm: 'papercusp', suite: 'minecraft', current,
+      taskCount: 3, estCostUsd: 9, estWallMin: 15, perTaskUsd: 3, aggregateBudgetUsd: 60,
+      payer, costBasis: payer === 'subscription' ? 'list-price-equivalent' : 'metered',
+      model: 'frozen-model', effort: 'high', account: 'selected-account', basis: 'Frozen caps' }] };
+    render(<AdvEvalsTab />);
+    fireEvent.change(screen.getByLabelText('Committed protocol run ID'), { target: { value: 'study' } });
+    const subscription = payer === 'subscription';
+    expect(screen.getByLabelText('Budget payer').textContent).toContain(subscription ? 'ChatGPT subscription' : 'OpenAI API');
+    expect(screen.getByText(subscription ? 'list-price-equivalent ceiling' : 'generation ceiling')).toBeTruthy();
+    const approval = screen.getByLabelText(subscription ? 'Approve this usage budget' : 'Approve this spend');
+    if (subscription) {
+      expect(screen.getByText(/\$60\.00 list-price-equivalent usage/)).toBeTruthy();
+      expect(screen.getByText(/This is not money spent/)).toBeTruthy();
+      expect(screen.queryByLabelText('Approve this spend')).toBeNull();
+    }
+    expect((screen.getByLabelText('Launch benchmark run') as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(approval);
+    expect((screen.getByLabelText('Launch benchmark run') as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(approval);
+    expect((screen.getByLabelText('Launch benchmark run') as HTMLButtonElement).disabled).toBe(true);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { payer: undefined, costBasis: undefined },
+    { payer: 'subscription', costBasis: 'metered' },
+    { payer: 'api-key', costBasis: 'list-price-equivalent' },
+  ])('withholds launch when cached payer metadata is $payer/$costBasis', metadata => {
+    nuqsState.evalView = 'launch';
+    const current = { workspaceId: 'benchmarks', protocolRunId: 'study', preregHash: 'a'.repeat(64), seed: 1,
+      observation: { runtimeWorkspaceId: 'host', workerUnit: 'staging-api', gatewayUnit: 'staging-api' } };
+    H.results['evals.benchEstimate'] = { ...blank(), data: [{ ready: true, arm: 'papercusp', suite: 'minecraft', current,
+      taskCount: 3, estCostUsd: 9, estWallMin: 15, perTaskUsd: 3, aggregateBudgetUsd: 9,
+      ...metadata, model: 'frozen-model', effort: 'high', account: 'selected-account', basis: 'Frozen caps' }] };
+    render(<AdvEvalsTab />);
+    fireEvent.change(screen.getByLabelText('Committed protocol run ID'), { target: { value: 'study' } });
+    expect((screen.getByLabelText('Launch benchmark run') as HTMLButtonElement).disabled).toBe(true);
+    expect(fetch).not.toHaveBeenCalled();
   });
 
   it('disables launch + shows the in-flight banner when a run is already running', () => {

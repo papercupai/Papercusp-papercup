@@ -32,6 +32,7 @@ import {
   maskFences,
   parsePlan,
   NOTE_SUFFIX_RE,
+  OPERATIONAL_PROGRESS_NOTE_MARKER,
   type Importance,
   type TerminalPlanChildMutation,
 } from './parser';
@@ -104,12 +105,17 @@ const TYPE_EVIDENCE = CompletionVerificationEvidenceSchema.pick({
 const NOTE = softText(8000).describe(
   'Optional SHORT comment appended inline to the item line — REQUIRED when status is `dropped` unless a nonblank `rationale` is supplied. REPLACES any note this same tool previously injected on the item (a repeat call to fix a typo overwrites, never stacks; EI-384). Anything beyond ~1000 chars is TRUNCATED inline (with a `…` marker + a noteTruncated flag), never rejected. For a longer explanation of WHY the status changed, use `rationale` instead — it is stored on the plan revision, not spliced into the item line.',
 );
+const NOTE_KIND = z.enum(['author', 'progress']).describe(
+  'Classify the inline note. Omit or use author to keep it material to execution and graph scope; use progress only for operational narration.',
+);
+type NoteKind = z.infer<typeof NOTE_KIND>;
 
 const itemSpec = z.object({
   slug: z.string().min(1),
   item: z.string().regex(/^P-\d{3,}$/, 'P-NNN form required'),
   status: STATUS.optional().describe('per-item status (else the batch `status`)'),
   note: NOTE.optional(),
+  noteKind: NOTE_KIND.optional(),
   harness: harnessArg.describe('per-item harness (else the batch `harness` default)'),
   rationale: z
     .string()
@@ -137,6 +143,7 @@ const argsSchema = z
       .optional(),
     status: STATUS.optional(),
     note: NOTE.optional(),
+    noteKind: NOTE_KIND.optional(),
     itemIds: z
       .array(z.string().regex(/^P-\d{3,}$/, 'P-NNN form required'))
       .min(1)
@@ -212,6 +219,7 @@ interface StatusItem {
   itemId: string;
   status: string;
   note?: string;
+  noteKind?: NoteKind;
   harness?: string;
   rationale?: string;
   /** Skip (don't flip) when the item is ALREADY terminal and this flip is non-terminal —
@@ -820,6 +828,7 @@ export function flipStatusInBody(
   itemId: string,
   newStatus: string,
   note?: string,
+  noteKind: NoteKind = 'author',
 ): { newBody: string; found: boolean; oldStatus: string | null } {
   // Match a specific item id by anchoring on it.
   const re = new RegExp(
@@ -859,6 +868,7 @@ export function flipStatusInBody(
 
   const oldStatus = m[2] ?? '';
   let rest = m[3] ?? '';
+  if (note && noteKind === 'progress') note = OPERATIONAL_PROGRESS_NOTE_MARKER + ' ' + note;
   if (note) {
     // EI-384: two bugs in the old `rest = \`${rest} (${note.replace(/[()]/g, '')})\``
     // form — (1) it silently stripped parens from the caller's OWN note text
@@ -1454,7 +1464,7 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
       if (current === null) {
         return { newBody: null, value: { ok: false, code: 'not_found' } };
       }
-      const { newBody, found, oldStatus } = flipStatusInBody(current, it.itemId, it.status, inlineNote);
+      const { newBody, found, oldStatus } = flipStatusInBody(current, it.itemId, it.status, inlineNote, it.noteKind);
       if (!found) {
         return { newBody: null, value: { ok: false, code: 'item_not_found' } };
       }
@@ -2242,6 +2252,7 @@ export default defineTool({
           itemId: it.item,
           status: (it.status ?? args.status) as string,
           note: it.note ?? args.note,
+          noteKind: it.noteKind ?? args.noteKind,
           harness: it.harness ?? args.harness,
           rationale: it.rationale ?? args.rationale,
           onlyIfNotTerminal: it.onlyIfNotTerminal ?? args.onlyIfNotTerminal,
@@ -2258,6 +2269,7 @@ export default defineTool({
             itemId,
             status: args.status as string,
             note: args.note,
+            noteKind: args.noteKind,
             harness: args.harness,
             rationale: args.rationale,
             onlyIfNotTerminal: args.onlyIfNotTerminal,
@@ -2274,6 +2286,7 @@ export default defineTool({
               itemId: args.item as string,
               status: args.status as string,
               note: args.note,
+              noteKind: args.noteKind,
               harness: args.harness,
               rationale: args.rationale,
               onlyIfNotTerminal: args.onlyIfNotTerminal,

@@ -31,6 +31,8 @@ import {
   inspectPlanTerminalCensus,
   verifyOperationalCheckDefinitionAtCommit,
   recoverArchivedMutationFailures,
+  recoverDeferredMutationReceipt,
+  recordDeferredMutation,
   verifyOriginalOperationalEvidence,
   type ArchivedMutationRun,
   type CommittedOperationalEvidence,
@@ -864,6 +866,131 @@ describe('archived mutation identity recovery (EI-25248905256718690)', () => {
     const receipt = { ...original, execution_details: { ...(original.execution_details as object),
       failedCaseTitles: archivedMutationFixture().titles } };
     expect(() => recoverArchivedMutationFailures({ ...evidence, archiveLog: change(evidence.archiveLog!) }, receipt, scope)).toThrow();
+  });
+});
+
+describe('deferred mutation receipt recovery', () => {
+  function fixture() {
+    const { evidence, original, scope, titles } = archivedMutationFixture();
+    const probe = { ...evidence.artifact.mutationProbes![0], result: {
+      ...evidence.artifact.mutationProbes![0].result, verdict: 'caught-ledger-unconfirmed' as const, guardExit: 2,
+    } };
+    const mutation = { schemaVersion: 1, probeInvocationId: '12345678-1234-4123-8123-123456789012',
+      mode: 'copy-out', leg: 'mutant', subjectPath: 'src/example.ts', mutateExpression: 's/good/bad/',
+      subjectBeforeSha256: 'a'.repeat(64), subjectAfterSha256: 'b'.repeat(64), mutantDiff: 'a diff',
+      mutantDiffTruncated: false, againstCommit: null, testCommand: 'npm test',
+      testCommandSha256: createHash('sha256').update('npm test').digest('hex'), testFileSha256: 'c'.repeat(64) };
+    probe.argv = ['--file', mutation.subjectPath, '--mutate', mutation.mutateExpression, '--test', mutation.testCommand];
+    const row = { receiptId: 'receipt-1', receiptAttempt: 0, framework: 'vitest', status: 'fail',
+      filePath: original.file_path, commitSha: original.commit_sha, worktreeDirty: false, isScratchConfig: false,
+      startedAt: ARTIFACT.startedAt, finishedAt: ARTIFACT.finishedAt,
+      durationMs: Date.parse(ARTIFACT.finishedAt) - Date.parse(ARTIFACT.startedAt),
+      executionDetails: { ...(original.execution_details as object), ...scope, runGroupId: 'original-group', mutation,
+        failedCaseTitles: titles } };
+    const receipt = { receiptId: row.receiptId, attempt: 0, filePath: row.filePath, status: 'fail', row,
+      outcome: 'failed', errorCode: 'CONNECTION_DESTROYED', replayable: false,
+      insertDiagnostics: { schemaVersion: 1, backendPid: 123, startedAt: ARTIFACT.finishedAt,
+        settledAt: '2026-09-08T02:05:27.000Z' } };
+    const recovered: CommittedOperationalEvidence = { ...evidence,
+      artifact: { ...evidence.artifact, archivedMutation: undefined, mutationProbes: [probe],
+        deferredMutation: { receiptFile: 'docs/evidence/receipt.jsonl', receiptSha256: 'c'.repeat(64),
+          rawLogFile: 'docs/evidence/mutation.log', rawLogSha256: 'd'.repeat(64) } },
+      deferredReceipt: JSON.stringify(receipt), archiveLog: evidence.archiveLog!
+        .replace(/MUTATION_PROBE_EVIDENCE_JSON=.*/, `MUTATION_PROBE_EVIDENCE_JSON=${JSON.stringify(probe)}`)
+        .concat('\nTEST_FILE_LEDGER_RECEIPT_MISSING requested=1 missing=1 status=not-measured') };
+    return { evidence: recovered, scope, receipt, titles };
+  }
+
+  it('recovers exact original assertion identities and timing without executing tests', () => {
+    const { evidence, scope, receipt, titles } = fixture();
+    const result = recoverDeferredMutationReceipt(evidence, scope);
+    expect(result.detail.failedCaseTitles).toEqual(titles);
+    expect(result.startedAt.toISOString()).toBe(receipt.row.startedAt);
+    expect(result.finishedAt.toISOString()).toBe(receipt.row.finishedAt);
+    expect(result.backendPid).toBe(123);
+    expect(result.receiptId).toBe('receipt-1');
+  });
+
+  it.each([
+    ['foreign scope', (r: ReturnType<typeof fixture>['receipt']) => { r.row.executionDetails.harnessSlug = 'foreign'; }],
+    ['unsettled write', (r: ReturnType<typeof fixture>['receipt']) => { r.insertDiagnostics.settledAt = ''; }],
+    ['successful run', (r: ReturnType<typeof fixture>['receipt']) => { r.row.status = 'pass'; }],
+    ['dirty source', (r: ReturnType<typeof fixture>['receipt']) => { r.row.worktreeDirty = true; }],
+    ['wrong command', (r: ReturnType<typeof fixture>['receipt']) => { r.row.executionDetails.mutation.testCommand = 'another'; }],
+    ['missing assertion', (r: ReturnType<typeof fixture>['receipt']) => { r.row.executionDetails.failedCaseTitles = ['invented']; }],
+  ])('refuses %s', (_name, change) => {
+    const { evidence, scope, receipt } = fixture();
+    change(receipt);
+    evidence.deferredReceipt = JSON.stringify(receipt);
+    expect(() => recoverDeferredMutationReceipt(evidence, scope)).toThrow();
+  });
+
+  it('refuses a receipt history with an acknowledged insert or changed original measurement', () => {
+    const { evidence, scope, receipt } = fixture();
+    evidence.deferredReceipt += '\n' + JSON.stringify({ ...receipt, outcome: 'inserted', id: 42 });
+    expect(() => recoverDeferredMutationReceipt(evidence, scope)).toThrow();
+  });
+
+  it('resolves flat runner display titles only when the canonical case identity is unique', () => {
+    const { evidence, scope, titles } = fixture();
+    evidence.archiveLog = evidence.archiveLog!.replaceAll(JSON.stringify(titles[0]), JSON.stringify(titles[0].split(' > ').join(' ')));
+    expect(recoverDeferredMutationReceipt(evidence, scope).detail.failedCaseTitles).toEqual(titles);
+  });
+
+  function replayFixture() {
+    const f = fixture();
+    const source = Buffer.from('original source');
+    const digest = createHash('sha256').update(source).digest('hex');
+    f.receipt.row.executionDetails.mutation.subjectBeforeSha256 = digest;
+    f.receipt.row.executionDetails.mutation.testFileSha256 = digest;
+    f.evidence.deferredReceipt = JSON.stringify(f.receipt);
+    let existing: Array<Record<string, unknown>> = [];
+    let active = false;
+    const sql = vi.fn(async (parts: TemplateStringsArray) => {
+      const query = parts.join('?');
+      if (query.includes('pg_stat_activity')) return active ? [{ pid: 123 }] : [];
+      if (query.includes('FROM harness_shared.test_runs')) return existing;
+      return [];
+    });
+    type Deps = NonNullable<Parameters<typeof recordDeferredMutation>[3]>;
+    const persist = vi.fn<Deps['persist']>(async params => {
+      existing = [{ id: 99, status: 'fail', commit_sha: params.commit,
+        execution_details: f.receipt.row.executionDetails }];
+      return { written: 1, ids: [99] };
+    });
+    const d: Deps = { git: vi.fn(async () => source), persist,
+      transact: (async callback => callback(sql as never)) as Deps['transact'] };
+    return { ...f, d, sql, persist, active: () => { active = true; },
+      conflict: () => { existing = [{ id: 88, status: 'pass' }]; } };
+  }
+
+  it('serializes replay, preserves the original mutation and returns the same row on retry', async () => {
+    const { evidence, scope, d, sql, persist } = replayFixture();
+    expect(await recordDeferredMutation(evidence, scope, '/repo', d)).toMatchObject({
+      alreadyRecorded: false, testRunIds: [99], status: 'fail',
+    });
+    expect(sql.mock.calls[0][0].join('')).toContain('pg_advisory_xact_lock');
+    expect(persist.mock.calls[0][0]).toMatchObject({ source: 'mutation-probe', worktreeDirty: false,
+      rows: [{ execution: { mutation: { leg: 'mutant' } }, outputTail: expect.stringContaining('No new test execution.') }] });
+    expect(await recordDeferredMutation(evidence, scope, '/repo', d)).toMatchObject({
+      alreadyRecorded: true, testRunIds: [99],
+    });
+    expect(persist).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['active', 'conflict'] as const)('refuses %s original database state without replaying', async state => {
+    const f = replayFixture();
+    f[state]();
+    await expect(recordDeferredMutation(f.evidence, f.scope, '/repo', f.d)).rejects.toThrow();
+    expect(f.persist).not.toHaveBeenCalled();
+  });
+
+  it('refuses a source/test hash mismatch before opening a replay transaction', async () => {
+    const f = replayFixture();
+    f.d.git = vi.fn(async () => Buffer.from('different source'));
+    await expect(recordDeferredMutation(f.evidence, f.scope, '/repo', f.d)).rejects.toThrow('source_mismatch');
+    expect(f.sql).not.toHaveBeenCalled();
+    expect(f.persist).not.toHaveBeenCalled();
   });
 });
 

@@ -219,11 +219,13 @@ describe('readCell — the happy path', () => {
         value: null,
         nullTerminated: true,
       });
-      expect(r.assessment?.evidence[0]).toMatchObject({
-        path: 'gate.candidateFailures.stillBrokenNeedsRunCount',
-        value: null,
-        nullTerminated: true,
-      });
+      expect(r.assessment?.evidence).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          path: 'gate.candidateFailures.stillBrokenNeedsRunCount',
+          value: null,
+          nullTerminated: true,
+        }),
+      ]));
     }
   });
 });
@@ -864,25 +866,47 @@ describe('D-039 — every nullable BUILTIN cell reaches a reader with its hoist'
       registerCell(s);
       const hoistKey = s.unknownHoist as string;
       const path = (s.changeSignal as { path: string }).path;
-      dispatchReadOnlyTool.mockResolvedValue(
-        payloadAtPaths([
-          [path, null], // the nullable headline, degraded — the case that matters
-          [hoistKey, 'measured-unknown-reason'],
-        ]),
-      );
+      // Some resolvers return an object containing the hoist (checkpoint.unknown).
+      // Writing that child after a null parent would silently replace our fixture.
+      const nestedHoist = hoistKey.startsWith(`${path}.`);
+      const resolverValue = nestedHoist
+        ? payloadAtPaths([[hoistKey.slice(path.length + 1), 'measured-unknown-reason']])
+        : null;
+      const entries: Array<readonly [string, unknown]> = [[path, resolverValue]];
+      if (!nestedHoist) entries.push([hoistKey, 'measured-unknown-reason']);
+      dispatchReadOnlyTool.mockResolvedValue(payloadAtPaths(entries));
 
       const subject = s.callerRelativity.kind === 'parameter' ? 'a-subject' : undefined;
       const r = await readCell(s.cell, READER, ENV, subject);
 
       expect(r.status).toBe('value');
       if (r.status === 'value') {
-        expect(r.value).toBeNull();
+        expect(r.value).toEqual(resolverValue);
         // The assertion the bug would have failed: PRESENT, and keyed by what the
         // spec declares rather than by a name this test hard-codes.
         expect(r.unknownHoist).toBeDefined();
         expect(r.unknownHoist?.key).toBe(hoistKey);
         expect(r.unknownHoist?.value).toBe('measured-unknown-reason');
         expect(r.unknownHoist?.drifted).toBeUndefined();
+      }
+    },
+  );
+
+  it.each(nullableBuiltins.map((s) => [s.cell, s] as const))(
+    '%s preserves an explicit null resolver value, including a nested hoist',
+    async (_cell, s) => {
+      registerCell(s);
+      const path = (s.changeSignal as { path: string }).path;
+      dispatchReadOnlyTool.mockResolvedValue(payloadAtPaths([[path, null]]));
+
+      const subject = s.callerRelativity.kind === 'parameter' ? 'a-subject' : undefined;
+      const r = await readCell(s.cell, READER, ENV, subject);
+
+      expect(r).toMatchObject({ status: 'value', value: null });
+      if (s.unknownHoist!.startsWith(`${path}.`)) {
+        expect(r).toMatchObject({
+          unknownHoist: { key: s.unknownHoist, value: null, nullTerminated: true },
+        });
       }
     },
   );

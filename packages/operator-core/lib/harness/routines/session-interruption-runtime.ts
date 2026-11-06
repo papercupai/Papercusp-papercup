@@ -13,8 +13,17 @@ import { getLoopStatuses } from './loop';
 import { ingestPsuPtyHostEvents } from './psu-pty-host-events-ingest';
 import { recoverInterruptedSessions, sessionRecoveryKey, SESSION_RECOVERY_LEASE_MS,
   SESSION_RECOVERY_MAX_ATTEMPTS, classifySessionInterruption,
-  type SessionInterruption, type SessionRecoveryEvidence } from './session-interruption-recovery';
+  type SessionInterruption, type SessionRecoveryEvidence, type SessionRecoveryDeps, type SessionRecoveryDecision } from './session-interruption-recovery';
 import type { SystemActionCtx } from './system-actions';
+
+export type RecoveryOutcome = { verified: boolean; reason: string; terminal?: boolean };
+export interface SessionInterruptionRuntime extends SessionRecoveryDeps {
+  read(ownerId: string): Promise<SessionRecoveryEvidence | null>;
+  verify(candidate: SessionRecoveryEvidence): Promise<RecoveryOutcome>;
+  markDispatch(candidate: SessionRecoveryEvidence): Promise<boolean>;
+  finish(candidate: SessionRecoveryEvidence, key: string, result: RecoveryOutcome): Promise<boolean>;
+  protectedOwnerIds: Set<string>;
+}
 
 interface SourceRow {
   owner_id: string; session_id: string; retired_at: unknown; pid: number | null;
@@ -40,12 +49,17 @@ export function interruptionFromEvent(row: Pick<SourceRow, 'owner_id' | 'session
     capturedAt: new Date(row.ts).getTime(), attempts: 0, nextAttemptAt: 0, state: 'pending' };
 }
 
-export async function sweepSessionInterruptions(ctx: SystemActionCtx, dryRun = false,
-  options: { fleetSlug?: string } = {}) {
+export async function createSessionInterruptionRuntime(ctx: SystemActionCtx, dryRun = false,
+  options: { fleetSlug?: string; initialize?: boolean; actionId?: string;
+    /** Canonical process tests substitute only the final native creation. */
+    nativeLaunch?: (args: { candidate: SessionRecoveryEvidence;
+      decision: Exclude<SessionRecoveryDecision, { action: 'hold' }>; key: string;
+      beforeNativeCreate: () => Promise<void> }) => Promise<RecoveryOutcome>;
+  } = {}): Promise<SessionInterruptionRuntime> {
   const sql = getOrgPg().sql;
   const protectedOwnerIds = new Set<string>();
   // Make the host WAL durable before reading it; reuse its bounded, fair ingest.
-  if (!dryRun) {
+  if (!dryRun && options.initialize !== false) {
     const ingested = await ingestPsuPtyHostEvents({ workspaceId: ctx.workspaceId });
     if (ingested.ingestErrors) throw new Error(`interruption witness ingest failed: ${ingested.firstIngestError}`);
     // A dead launcher may never publish its final result. Its uncertain attempt
@@ -87,7 +101,7 @@ export async function sweepSessionInterruptions(ctx: SystemActionCtx, dryRun = f
              AND member.fleet_role IS NOT DISTINCT FROM 'member'
             FROM harness_shared.coord_presence member
            WHERE member.owner_id = a.coord_owner_id AND member.workspace_id = a.workspace_id), false)` : sql`true`}
-       AND (${Boolean(options.fleetSlug)} OR NOT (COALESCE(b.control_state #>> '{lifecycle,interruption,state}', '') IN ('restored', 'blocked')
+       AND (${Boolean(owner || options.fleetSlug)} OR NOT (COALESCE(b.control_state #>> '{lifecycle,interruption,state}', '') IN ('restored', 'blocked')
          AND b.control_state #>> '{lifecycle,interruption,hostPid}' = e.payload->>'hostPid'
          AND b.control_state #>> '{lifecycle,interruption,hostStartedAt}' = e.payload->>'hostStartedAt'
          AND b.control_state #>> '{lifecycle,interruption,nativeSessionId}' = e.payload->>'nativeSessionId'))
@@ -129,7 +143,34 @@ export async function sweepSessionInterruptions(ctx: SystemActionCtx, dryRun = f
       loop: loop ? { active: loop.active, goal: loop.goal,
         nextFireAt: loop.nextFireAt ? Date.parse(loop.nextFireAt) : null } : null };
   };
-  const result = await recoverInterruptedSessions({
+  const deps: SessionInterruptionRuntime = {
+    protectedOwnerIds,
+    read: async owner => {
+      const row = (await readRows(owner))[0];
+      return row ? evidence(row) : null;
+    },
+    verify: async candidate => {
+      const host = await findLiveHostAsync(candidate.ownerId);
+      const original = candidate.interruption;
+      const verified = !!host && !!original && host.ownerId === candidate.ownerId &&
+        host.nativeSessionId === candidate.nativeSessionId && host.startedAt > original.hostStartedAt &&
+        host.pid !== original.hostPid;
+      return { verified, reason: verified ? 'exact-native-host-verified' : host ? 'native-host-identity-unconfirmed' : 'native-host-not-observed' };
+    },
+    markDispatch: async candidate => {
+      const s = candidate.interruption;
+      if (dryRun || !s?.leaseKey) return false;
+      const rows = await sql`UPDATE harness_shared.session_briefs SET control_state = jsonb_set(control_state,
+        '{lifecycle,interruption,dispatchStartedAt}', to_jsonb(${Date.now()}::bigint))
+        WHERE owner_id = ${candidate.ownerId} AND workspace_id = ${ctx.workspaceId}
+          AND control_state #>> '{lifecycle,interruption,key}' = ${sessionRecoveryKey(s)}
+          AND control_state #>> '{lifecycle,interruption,leaseKey}' = ${s.leaseKey}
+          AND control_state #>> '{lifecycle,interruption,state}' = 'recovering'
+          AND (control_state #>> '{lifecycle,interruption,nextAttemptAt}')::bigint > ${Date.now()}
+          AND control_state #>> '{lifecycle,interruption,dispatchStartedAt}' IS NULL
+        RETURNING owner_id`;
+      return rows.length === 1;
+    },
     list: async () => {
       const candidates = await Promise.all((await readRows()).map(evidence));
       if (options.fleetSlug) for (const candidate of candidates) {
@@ -147,9 +188,10 @@ export async function sweepSessionInterruptions(ctx: SystemActionCtx, dryRun = f
       return candidates;
     },
     claim: async (candidate, key) => {
-      if (dryRun || !candidate.interruption) return null;
+      if (dryRun || !candidate.interruption || candidate.interruption.dispatchStartedAt != null) return null;
       const s = candidate.interruption;
-      const next = { ...s, key, leaseKey: `${key}:${randomUUID()}`, state: 'recovering', attempts: s.attempts + 1,
+      const next = { ...s, key, dispatchStartedAt: null, leaseKey: `${key}:${randomUUID()}`, state: 'recovering', attempts: s.attempts + 1,
+        ...(options.actionId ? { actionId: options.actionId } : {}),
         nextAttemptAt: Date.now() + SESSION_RECOVERY_LEASE_MS };
       const rows = await sql`
         INSERT INTO harness_shared.session_briefs (owner_id, workspace_id, control_state)
@@ -162,6 +204,7 @@ export async function sweepSessionInterruptions(ctx: SystemActionCtx, dryRun = f
         WHERE session_briefs.workspace_id = ${ctx.workspaceId} AND (
           session_briefs.control_state #>> '{lifecycle,interruption,key}' IS DISTINCT FROM ${key}
           OR (session_briefs.control_state #>> '{lifecycle,interruption,state}' NOT IN ('restored', 'blocked')
+            AND session_briefs.control_state #>> '{lifecycle,interruption,dispatchStartedAt}' IS NULL
             AND (session_briefs.control_state #>> '{lifecycle,interruption,attempts}')::int = ${s.attempts}
             AND (session_briefs.control_state #>> '{lifecycle,interruption,nextAttemptAt}')::bigint <= ${Date.now()}))
         RETURNING owner_id`;
@@ -189,6 +232,7 @@ export async function sweepSessionInterruptions(ctx: SystemActionCtx, dryRun = f
           throw new Error('interruption-wake-boundary-changed');
       };
       await beforeNativeCreate();
+      if (options.nativeLaunch) return options.nativeLaunch({ candidate, decision, key, beforeNativeCreate });
       const { default: tool, INTERNAL_INTERRUPTION_RECOVERY } = await import('../../agent-tools/capability/launch-agent');
       const response = await tool.handler({ resume: { agentId: candidate.ownerId }, fork: false,
         headless: decision.headless,
@@ -205,18 +249,56 @@ export async function sweepSessionInterruptions(ctx: SystemActionCtx, dryRun = f
     },
     finish: async (candidate, key, result) => {
       const s = candidate.interruption!;
-      const marker = { ...s, key, leaseKey: null, state: result.verified ? 'restored' : s.attempts >= SESSION_RECOVERY_MAX_ATTEMPTS ? 'blocked' : 'pending',
+      const marker = { ...s, key, leaseKey: null, settledLeaseKey: s.leaseKey,
+        state: result.verified ? 'restored' : result.terminal || s.attempts >= SESSION_RECOVERY_MAX_ATTEMPTS ? 'blocked' : 'pending',
         nextAttemptAt: Date.now() + Math.max(1, s.attempts) * SESSION_RECOVERY_LEASE_MS, reason: result.reason };
       const rows = await sql`UPDATE harness_shared.session_briefs SET control_state = jsonb_set(control_state,
-        '{lifecycle,interruption}', ${JSON.stringify(marker)}::jsonb)
+        '{lifecycle,interruption}', ${JSON.stringify(marker)}::jsonb || jsonb_build_object(
+          'dispatchStartedAt', control_state #> '{lifecycle,interruption,dispatchStartedAt}'))
         WHERE owner_id = ${candidate.ownerId} AND workspace_id = ${ctx.workspaceId}
           AND control_state #>> '{lifecycle,interruption,key}' = ${key}
           AND control_state #>> '{lifecycle,interruption,leaseKey}' = ${s.leaseKey!}
           AND (control_state #>> '{lifecycle,interruption,attempts}')::int = ${s.attempts}
           AND control_state #>> '{lifecycle,interruption,state}' = 'recovering'
         RETURNING owner_id`;
-      return rows.length > 0;
+      if (rows.length) return true;
+      // SQL can commit before DBOS checkpoints the settlement result. Reconcile
+      // only this exact lease/outcome, without rewriting the absolute deadline.
+      const settled = await sql`SELECT owner_id FROM harness_shared.session_briefs
+        WHERE owner_id = ${candidate.ownerId} AND workspace_id = ${ctx.workspaceId}
+          AND control_state #>> '{lifecycle,interruption,key}' = ${key}
+          AND control_state #>> '{lifecycle,interruption,settledLeaseKey}' = ${s.leaseKey!}
+          AND (control_state #>> '{lifecycle,interruption,attempts}')::int = ${s.attempts}
+          AND control_state #>> '{lifecycle,interruption,state}' = ${marker.state}
+          AND control_state #>> '{lifecycle,interruption,reason}' = ${result.reason}`;
+      return settled.length === 1;
     },
-  });
-  return { ...result, protectedOwnerIds: [...protectedOwnerIds] };
+  };
+  return deps;
+}
+
+/** SQL/native-host adapter proof, independent of the DBOS controller. */
+export async function runSessionInterruptionPass(ctx: SystemActionCtx, dryRun = false,
+  options: { fleetSlug?: string } = {}) {
+  const runtime = await createSessionInterruptionRuntime(ctx, dryRun, options);
+  const result = await recoverInterruptedSessions(runtime);
+  return { ...result, protectedOwnerIds: [...runtime.protectedOwnerIds] };
+}
+
+/** Re-derivable census. Empty or ineligible scans create no action workflows. */
+export async function sweepSessionInterruptions(ctx: SystemActionCtx, dryRun = false,
+  options: { fleetSlug?: string } = {}) {
+  const runtime = await createSessionInterruptionRuntime(ctx, dryRun, options);
+  const result = { checked: 0, attempted: [] as string[], restored: [] as string[], held: {} as Record<string, string> };
+  for (const candidate of await runtime.list()) {
+    result.checked += 1;
+    const decision = classifySessionInterruption(candidate, Date.now());
+    if (decision.action === 'hold') { result.held[candidate.ownerId] = decision.reason; continue; }
+    if (dryRun || result.attempted.length >= 5) continue;
+    const { enqueueSessionInterruption } = await import('../../dbos/session-interruption-workflow');
+    await enqueueSessionInterruption({ workspaceId: ctx.workspaceId, installSlug: ctx.installSlug,
+      ownerId: candidate.ownerId, key: sessionRecoveryKey(candidate.interruption!) });
+    result.attempted.push(candidate.ownerId);
+  }
+  return { ...result, protectedOwnerIds: [...runtime.protectedOwnerIds] };
 }

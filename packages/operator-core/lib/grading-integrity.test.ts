@@ -5398,7 +5398,7 @@ describe('terminal no-task receipt recovery (EI-27965856278341910)', () => {
   async function run(control = 'safe', receiptState = 'completed') {
     const d = deps();
     d.listScorecards.mockResolvedValue([card('EI-no-task-terminal')]);
-    const old = { deduped: true, launch: { launchState: receiptState, reconciliationRequired: receiptState !== 'completed',
+    const old = { deduped: true, launch: { launchState: receiptState.startsWith('spawning') ? 'spawning' : receiptState, reconciliationRequired: receiptState !== 'completed',
       opened: receiptState === 'completed' ? 0 : null, failed: receiptState === 'completed' ? 1 : null,
       partial: receiptState === 'completed' ? false : null, expectedCount: 1, ownerIds: ['su-old-auditor'],
       spawnAttempted: true, nativeSpawnAttempted: [0], processHandles: {},
@@ -5406,6 +5406,17 @@ describe('terminal no-task receipt recovery (EI-27965856278341910)', () => {
       targetMembers: [{ ownerId: 'su-old-auditor' }],
       tasks: receiptState === 'completed'
         ? [{ status: 'error', outcome: 'failed', logPath: '/tmp/no-task-terminal.log' }] : [] } };
+    if (receiptState === 'spawning-handles') {
+      const handle = { taskId: control === 'handle-task-mismatch' ? 'foreign-task' : 'task-lost-from-receipt',
+        ownerId: control === 'handle-owner-mismatch' ? 'su-foreign' : 'su-old-auditor',
+        memberIndex: 0, pid: control === 'handle-pid-mismatch' ? 999 : 123,
+        logPath: control === 'handle-log-mismatch' ? '/tmp/foreign.log' : '/tmp/no-task-terminal.log' };
+      if (control === 'handle-without-task') delete (handle as Partial<typeof handle>).taskId;
+      old.launch.processHandles = { [control === 'handle-index-mismatch' ? '1' : '0']: handle };
+      Object.assign(old.launch.memberResults['0'], handle,
+        control === 'member-task-mismatch' ? { taskId: 'foreign-task' } : {});
+      if (control === 'malformed-handles') old.launch.processHandles = [];
+    }
     if (control === 'incomplete-receipt') delete (old.launch as Partial<typeof old.launch>).ownerIds;
     if (control === 'incomplete-owners') old.launch.expectedCount = 2;
     d.launch.mockResolvedValueOnce(launchResult(old));
@@ -5418,6 +5429,7 @@ describe('terminal no-task receipt recovery (EI-27965856278341910)', () => {
           workspaceId: control === 'wrong-workspace' ? 'ws-other' : 'ws-test',
           class: 'agent-session', detail: { coordOwnerId: control === 'wrong-owner' ? 'su-other' : 'su-old-auditor',
             label: control === 'wrong-label' ? 'grading-audit:EI-other' : 'grading-audit:EI-no-task-terminal' },
+          pid: 123, logPath: '/tmp/no-task-terminal.log',
           confined: control !== 'unconfined-task', scopeUnit: 'pc-old.scope' }]) as unknown as Awaited<ReturnType<ListTasks>>
       : []);
     const scanAuditProcesses: NonNullable<DispatchPendingGradingAuditsDeps['scanAuditProcesses']> = async () => ({
@@ -5471,6 +5483,23 @@ describe('terminal no-task receipt recovery (EI-27965856278341910)', () => {
     expect(first.d.release).not.toHaveBeenCalled();
   });
 
+  it('recovers populated spawning handles only after exact terminal task/owner/kernel reconciliation', async () => {
+    const { d, result } = await run('safe', 'spawning-handles');
+    expect(d.launch).toHaveBeenCalledTimes(2);
+    expect(result.receipts[0]).toMatchObject({ state: 'launched', terminalRecovery: {
+      retiredTaskIds: ['task-lost-from-receipt'], codes: ['task_receipt_not_live'],
+    } });
+    expect(d.release).not.toHaveBeenCalled();
+  });
+  it.each(['handle-task-mismatch', 'handle-owner-mismatch', 'handle-pid-mismatch', 'handle-log-mismatch',
+    'handle-index-mismatch', 'handle-without-task', 'malformed-handles', 'member-task-mismatch',
+    'running-task', 'live-owner', 'live-process', 'live-scope', 'incomplete-scan', 'scan-timeout', 'foreign-truncated'])(
+    'retains the spawning election when populated handles fail %s proof', async control => {
+      const { d, result } = await run(control, 'spawning-handles');
+      expect(d.launch).toHaveBeenCalledTimes(1);
+      expect(result.receipts[0]).toMatchObject({ state: 'reconciliation-required' });
+      expect(d.release).not.toHaveBeenCalled();
+    });
   it('keeps the one-retry ceiling when the recovered launch also has an ambiguous receipt', async () => {
     const { d, result } = await run('repeated-ambiguous', 'spawning');
     expect(d.launch).toHaveBeenCalledTimes(2);

@@ -57,13 +57,9 @@ export async function setupPlanPgFixture(options: { isolated?: boolean } = {}): 
   const privateDb = options.isolated ? await createOrgTestDb() : undefined;
   const dsn = privateDb?.adminDsn ?? inject('baselineSchemaDsn');
 
-  // EI-2627: globalSetup's own health check (EI-2433) ran once, potentially
-  // minutes before this beforeAll — long enough on a heavily-loaded fleet box
-  // for a transient startup blip, or (rarer) real reaping/recycling of the
-  // shared baseline container. Confirm reachability with a bounded retry
-  // before repointing env vars, so a genuine failure surfaces as an actionable
-  // "this is known local-environment churn" error instead of a cryptic raw
-  // "no such database: papercusp_it" deep inside a later query.
+  // Check the actual selected database before changing process routing. An
+  // isolated clone uses getTestPg's server, which can differ from the injected
+  // baseline server; a connection error alone does not identify its cause.
   try {
     await assertPgReachable(dsn, 'setupPlanPgFixture');
   } catch (error) {

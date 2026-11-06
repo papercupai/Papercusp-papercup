@@ -12,10 +12,18 @@ import { resolvePersistedClassRef } from './plan-spec-quality-gate';
 import { getAcceptanceRubricsForPlan } from '../../rubrics';
 import { getPlanRevisionSnapshot } from './revisions';
 import { parsePlan } from './parser';
+import { withCurrentDiscovery } from '../../plan-audits';
+import { activeWorkspaceId } from '../../workspace-registry';
+import { resolveAgentIdentity } from '../coordination/identity';
+import { getBuildInfo } from '../../build-info';
+import { SPEC_SET_HASH_VERSION } from './spec-clause-compiler';
+import { specQualityEvaluatorBuildSchema, specQualityIdentityRefusal } from './spec-quality-identity';
 
 const argsSchema = z.object({
   harness: harnessArg,
   slug: z.string().min(1),
+  evaluatorBuild: specQualityEvaluatorBuildSchema.optional(),
+  specSetHashVersion: z.number().int().positive().optional(),
   expectedSpecSetHash: z.string().regex(/^[a-f0-9]{64}$/).optional().describe(
     'Optional fail-closed replay guard. When supplied, the current clauses must hash to this exact value; a mismatch returns ok:false with a blocker and no scorecard draft.',
   ),
@@ -84,6 +92,12 @@ export default defineTool({
   async handler(args, ctx) {
     const sctx = harnessScopedCtx(args.harness, ctx);
     const harnessSlug = resolveEffectiveHarnessSlug(sctx);
+    const identity = { evaluatorBuild: getBuildInfo(), specSetHashVersion: SPEC_SET_HASH_VERSION };
+    const mismatch = specQualityIdentityRefusal(args, identity.evaluatorBuild);
+    if (mismatch) return { data: {
+      ok: false, ...mismatch, slug: args.slug, harnessSlug, ...identity,
+      blockers: [{ check: 'clauses', state: 'blocked', ...mismatch }], wouldBlock: [mismatch.code],
+    } };
     const opts = await ctxToPlanSourceOpts(sctx);
     const cutoff = args.replaySnapshot?.clausesAsOf ?? new Date().toISOString();
     const snapshotFailure = (code: string, message: string) => ({ data: {
@@ -106,7 +120,7 @@ export default defineTool({
           wouldBlock: ['spec_set_hash_mismatch'],
         } };
       }
-      return { data: { ok: true, slug: args.slug, harnessSlug, replaySnapshot, ...evaluation } };
+      return { data: { ok: true, slug: args.slug, harnessSlug, replaySnapshot, ...identity, ...evaluation } };
     };
     if (args.replaySnapshot) {
       try {
@@ -123,6 +137,8 @@ export default defineTool({
         return snapshotFailure('spec_snapshot_read_unavailable', error instanceof Error ? error.message : String(error));
       }
     }
+    const admitted = await withCurrentDiscovery({ workspaceId: sctx.workspaceId ?? activeWorkspaceId(),
+      harnessSlug, planSlug: args.slug, createdBy: resolveAgentIdentity(sctx).ownerId }, async () => {
     // Discover independent failures together, before evaluation or producing a
     // draft. Promise callbacks also capture synchronous IO failures in adapters.
     const [planRead, clauseRead, rubricRead] = await Promise.allSettled([
@@ -210,5 +226,7 @@ export default defineTool({
     } catch (error) {
       return snapshotFailure('spec_snapshot_read_unavailable', error instanceof Error ? error.message : String(error));
     }
+    });
+    return admitted.ok ? admitted.result : { data: { ...admitted, slug: args.slug, harnessSlug } };
   },
 });

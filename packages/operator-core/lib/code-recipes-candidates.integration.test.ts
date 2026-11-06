@@ -20,7 +20,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { OrgTestDb } from '../test/_org-test-db';
 import type postgres from 'postgres';
 import { EMBEDDER_DIM_SPECS } from '@papercusp/memory';
-import { upsertRecipe, recordRecipeRun } from './code-recipes-store';
+import { getRecipe, upsertRecipe, recordRecipeRun } from './code-recipes-store';
 import { recipeCandidates } from './code-recipes-candidates';
 import { PROSE_VECTOR_DIMS, resolveProseProfileSelection } from './search/prose-vector-dims';
 
@@ -51,6 +51,8 @@ async function seedRuns(
       agentOwner: opts.agents[i % opts.agents.length],
       agentRole: 'cup',
       success: i < successes,
+      usage: { version: 1, selection: 'saved-replay', choice: 'agent', mode: 'commit',
+        outcome: i < successes ? 'success' : 'error', settled: true },
     });
   }
 }
@@ -180,6 +182,63 @@ describe('recipeCandidates deterministic signals (real PG)', () => {
 
     const { signals } = await recipeCandidates(db.adminSql, { minRunCount: 5 });
     expect(signals.find((s) => s.id === 'rarely-run')).toBeUndefined();
+  });
+
+  it('P003-RELIABILITY: a settled failed replay lowers reliability without changing successful-use popularity', async () => {
+    const id = 'truthful-replay-reliability';
+    await upsertRecipe(db.adminSql, {
+      id, potSlug: null, title: 'Measure replay outcomes', description: 'Keep failed replay evidence',
+      script: 'return 1;', toolsUsed: ['work_items:list', 'work_items:comment'],
+    });
+    const run = async (success: boolean) => {
+      await recordRecipeRun(db.adminSql, {
+        recipeId: id, workspaceId: 'ws-reliability', potSlug: 'alpha',
+        agentOwner: 'replay-agent', success, reused: true,
+        countTowardRecipe: success,
+        usage: { version: 1, selection: 'saved-replay', choice: 'agent', mode: 'commit',
+          outcome: success ? 'success' : 'error', settled: true },
+      });
+    };
+    await run(true);
+    const before = (await recipeCandidates(db.adminSql, { minRunCount: 1 })).signals.find(row => row.id === id)!;
+    expect(before.successRate).toBe(1);
+    await run(false);
+    const after = (await recipeCandidates(db.adminSql, { minRunCount: 1 })).signals.find(row => row.id === id)!;
+    expect(after.successRate).toBe(.5);
+    expect(after.promotionScore).toBeLessThan(before.promotionScore);
+    expect(await getRecipe(db.adminSql, id)).toMatchObject({ runCount: 1, successCount: 1 });
+    expect(after.usage.reliability).toEqual({ state: 'measured', successes: 1, errors: 1, refused: 0, denominator: 2 });
+
+    // Previews and machine choices remain visible but cannot repair a failed
+    // agent replay's reliability or inflate its demand/breadth.
+    for (const [choice, mode] of [['agent', 'preview'], ['hook', 'commit'], ['system', 'commit']] as const) {
+      await recordRecipeRun(db.adminSql, {
+        recipeId: id, workspaceId: 'ws-reliability', potSlug: 'alpha', agentOwner: choice,
+        success: true, reused: true, countTowardRecipe: false,
+        usage: { version: 1, selection: 'saved-replay', choice, mode, outcome: 'success', settled: true },
+      });
+    }
+    // A legacy reused boolean provides no proof of selection or preview mode.
+    await recordRecipeRun(db.adminSql, { recipeId: id, workspaceId: 'ws-reliability', potSlug: 'alpha',
+      agentOwner: 'legacy', success: true, reused: true, countTowardRecipe: false });
+    const final = (await recipeCandidates(db.adminSql, { minRunCount: 1 })).signals.find(row => row.id === id)!;
+    expect(final.successRate).toBe(.5);
+    expect(final.distinctAgents).toBe(1);
+    expect(final.usage).toMatchObject({ observations: 6, savedReplays: 5, previews: 1, unknown: 1, agentDemand: 2 });
+    expect(final.usage.reliability).toEqual(after.usage.reliability);
+  });
+
+  it('P003-UNKNOWN: legacy popularity cannot certify measured replay reliability', async () => {
+    await upsertRecipe(db.adminSql, { id: 'legacy-popularity', potSlug: null, title: 'Historical capture',
+      description: 'No receipt provenance', script: 'return 1;', toolsUsed: ['work_items:list', 'work_items:comment'] });
+    await recordRecipeRun(db.adminSql, { recipeId: 'legacy-popularity', workspaceId: 'ws-reliability',
+      potSlug: 'alpha', agentOwner: 'legacy', success: true });
+    const result = await recipeCandidates(db.adminSql, { minRunCount: 1 });
+    expect(result.signals.find(row => row.id === 'legacy-popularity')).toMatchObject({
+      runCount: 1, distinctAgents: 0, successRate: 0,
+      usage: { unknown: 1, reliability: { state: 'unknown', denominator: 0 } },
+    });
+    expect(result.promoteCandidates.some(row => row.id === 'legacy-popularity')).toBe(false);
   });
 
   it('uses the global recipe corpus across hives', async () => {

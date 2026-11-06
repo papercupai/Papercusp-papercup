@@ -943,7 +943,10 @@ export async function verifyDepsExtracted({
   };
 
   const first = await inspect();
-  if (healthy(first)) return verifyNativeExtensions();
+  if (healthy(first)) {
+    if (verifyNativeExtensions() !== 0) return 1;
+    return restoreInstalledPatchPostimages({ repoRoot, env });
+  }
 
   report(first);
   // A prefix reifies an independent package tree. Keep the full-root verdict,
@@ -1081,6 +1084,7 @@ export async function verifyDepsExtracted({
   const second = await inspect();
   if (healthy(second)) {
     if (verifyNativeExtensions() !== 0) return 1;
+    if (await restoreInstalledPatchPostimages({ repoRoot, env }) !== 0) return 1;
     console.log(
       "NPM_INSTALL_SAFE repaired: dependency directories, package-local manifests and versions, executable links, and critical runtime imports are healthy",
     );
@@ -1091,6 +1095,45 @@ export async function verifyDepsExtracted({
     'NPM_INSTALL_SAFE_FATAL: dependencies are STILL incomplete after a repair install — this is not a race. Do not treat a downstream "cannot find module" as a code bug until this is clear.',
   );
   return 1;
+}
+
+/** Restore the root's committed patches after reify, while the install writer is held. */
+export async function restoreInstalledPatchPostimages({ repoRoot, env = process.env } = {}) {
+  if (!existsSync(join(repoRoot, "patches"))) return 0;
+  const { checkInstalledPatchPostimages } = await import("./check-installed-patch-postimages.mjs");
+  const check = (sourcesOnly = false) => checkInstalledPatchPostimages({ repoRoot, sourcesOnly });
+  const initial = check();
+  if (initial.ok) return 0;
+
+  // Reuse the committed-input validator before executing patch-package: a
+  // dirty, untracked or malformed patch must never become a repair input.
+  const sources = check(true);
+  if (!sources.ok) {
+    console.error("NPM_INSTALL_SAFE_FATAL: committed patch sources are unverified: " + sources.errors.join("\n"));
+    return 1;
+  }
+  const runner = join(repoRoot, "node_modules", "patch-package", "index.js");
+  if (!existsSync(runner)) {
+    console.error("NPM_INSTALL_SAFE_FATAL: local patch-package is missing; committed patches cannot be restored after reify.");
+    return 1;
+  }
+  // Execute only the existing local patch tool, without npm lifecycle hooks or
+  // a package-runner download. Publication still verifies the exact postimages.
+  console.error("NPM_INSTALL_SAFE restoring committed package patches after reify (install writer held)");
+  const result = spawnSync(process.execPath, [runner, "--error-on-fail"], {
+    cwd: repoRoot, stdio: "inherit", env,
+  });
+  if (result.error || result.signal || result.status !== 0) {
+    console.error("NPM_INSTALL_SAFE_FATAL: committed patch restoration failed: " +
+      (result.error?.message ?? result.signal ?? result.status));
+    return 1;
+  }
+  const restored = check();
+  if (!restored.ok) {
+    console.error("NPM_INSTALL_SAFE_FATAL: restored patch postimages are unverified: " + restored.errors.join("\n"));
+    return 1;
+  }
+  return 0;
 }
 
 export function repoLockName(repoRoot = DEFAULT_REPO_ROOT) {

@@ -1,9 +1,12 @@
 import { request } from 'node:http';
-import { afterEach, describe, expect, it } from 'vitest';
-import { serve } from '@hono/node-server';
+import { once } from 'node:events';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { createAdaptorServer, serve } from '@hono/node-server';
 import { captureOperatorHttpSecurityPopulation, handler } from './host-handler';
 import { captureRuntimeSecurityCensus, readRuntimeSecurityCensus } from '@papercusp/operator-core/lib/observability/runtime';
 import { _injectPluginHostForTests, _resetPluginHostForTests } from '@papercusp/operator-core/lib/plugin-host-runtime';
+import { registerReactionRule, unregisterReactionRule } from '@papercusp/operator-core/lib/events/registry';
+import { enterGuardHttpRequest, installGuardHttpDiagnostics, markGuardHttpStage } from '@papercusp/operator-core/lib/endpoint-route/telemetry';
 
 const servers: Array<ReturnType<typeof serve>> = [];
 const ENV_KEYS = [
@@ -33,6 +36,112 @@ afterEach(async () => {
     if (value === undefined) delete process.env[key];
     else process.env[key] = value;
   }
+  vi.restoreAllMocks();
+});
+
+const GUARD_ID = '550e8400-e29b-41d4-a716-446655440000';
+const PRIVATE_GUARD_INPUT = 'private-guard-input-never-emit';
+
+async function startGuardServer(fetch: Parameters<typeof createAdaptorServer>[0]['fetch'] = handler) {
+  const server = createAdaptorServer({ fetch });
+  installGuardHttpDiagnostics(server as import('node:http').Server);
+  // Repeated setup must not duplicate request observers or output.
+  installGuardHttpDiagnostics(server as import('node:http').Server);
+  servers.push(server);
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  const address = server.address();
+  if (!address || typeof address === 'string') throw new Error('test server did not bind TCP');
+  return address.port;
+}
+
+function guardRequest(port: number, id: string | string[] = GUARD_ID, path = '/api/agent-mcp/tool-guard') {
+  const req = request({ hostname: '127.0.0.1', port, path, method: 'POST',
+    headers: { 'x-papercusp-guard-request-id': id, 'content-type': 'application/json' } });
+  // Missing owner/tool exercises the real route's early response without reading authority.
+  req.end(JSON.stringify({ input: PRIVATE_GUARD_INPUT }));
+  return req;
+}
+
+interface GuardTraceRow {
+  guardRequestId: string;
+  event: string;
+  elapsedMs: number;
+  stagesMs: Record<string, number>;
+  headersSent: boolean;
+  writableFinished: boolean;
+}
+function guardTraceRows(log: { mock: { calls: readonly (readonly unknown[])[] } }): GuardTraceRow[] {
+  return log.mock.calls.filter(([label]) => label === '[tool-guard-http-timing]')
+    .map(([, body]) => JSON.parse(String(body)) as GuardTraceRow);
+}
+
+describe('guard HTTP outer timing', () => {
+  it('correlates the real adapter, composed Hono stack, route, response and header write without body data', async () => {
+    const log = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const port = await startGuardServer();
+    const req = guardRequest(port);
+    const [res] = await once(req, 'response');
+    res.resume();
+    await once(res, 'end');
+    const rows = guardTraceRows(log);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ guardRequestId: GUARD_ID, event: 'finish',
+      headersSent: true, writableFinished: true });
+    const stages = rows[0].stagesMs;
+    const ordered = ['hono_enter', 'middleware_enter', 'route_start', 'route_end', 'hono_response', 'headers_write']
+      .map(stage => stages[stage]);
+    expect(ordered.every(value => Number.isFinite(value) && value >= 0)).toBe(true);
+    expect(ordered).toEqual([...ordered].sort((a, b) => a - b));
+    expect(rows[0].elapsedMs).toBeGreaterThanOrEqual(ordered.at(-1)!);
+    expect(JSON.stringify(rows)).not.toContain(PRIVATE_GUARD_INPUT);
+  });
+
+  it('records disconnect before headers and separately captures the late response', async () => {
+    const log = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    let entered!: () => void, release!: () => void, settled!: () => void;
+    const entry = new Promise<void>(resolve => { entered = resolve; });
+    const hold = new Promise<void>(resolve => { release = resolve; });
+    const done = new Promise<void>(resolve => { settled = resolve; });
+    let closed!: Promise<unknown>;
+    const port = await startGuardServer(async (req, bindings) => {
+      enterGuardHttpRequest(req, bindings.incoming as import('node:http').IncomingMessage);
+      closed = once(bindings.outgoing, 'close');
+      entered();
+      await hold;
+      markGuardHttpStage(req, 'hono_response');
+      settled();
+      return new Response('late');
+    });
+    const req = guardRequest(port);
+    req.on('error', () => {}); // Expected ECONNRESET from this test's explicit disconnect.
+    await entry;
+    req.destroy();
+    await closed;
+    expect(guardTraceRows(log)).toEqual([expect.objectContaining({ event: 'close', headersSent: false })]);
+    release();
+    await done;
+    const rows = guardTraceRows(log);
+    expect(rows.map(row => row.event)).toEqual(['close', 'late_response']);
+    expect(rows[0].stagesMs.hono_response).toBeUndefined();
+    expect(rows[1].stagesMs.hono_response).toBeGreaterThanOrEqual(rows[0].elapsedMs);
+    expect(JSON.stringify(rows)).not.toContain(PRIVATE_GUARD_INPUT);
+  });
+
+  it('ignores arbitrary/duplicate identifiers and unrelated paths without consuming their bodies', async () => {
+    const log = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const port = await startGuardServer(async req => new Response(await req.text()));
+    for (const [id, path] of [[PRIVATE_GUARD_INPUT, '/api/agent-mcp/tool-guard'],
+      [[GUARD_ID, GUARD_ID], '/api/agent-mcp/tool-guard'], [GUARD_ID, '/api/health']] as const) {
+      const req = guardRequest(port, Array.isArray(id) ? [...id] : id as string, path);
+      const [res] = await once(req, 'response');
+      let body = '';
+      res.on('data', (chunk: Buffer) => { body += chunk.toString(); });
+      await once(res, 'end');
+      expect(body).toContain(PRIVATE_GUARD_INPUT);
+    }
+    expect(guardTraceRows(log)).toEqual([]);
+  });
 });
 
 function startServer() {
@@ -90,6 +199,23 @@ function getHealth(port: number): Promise<{ statusCode: number; body: string }> 
 }
 
 describe('host handler HTTP composition', () => {
+  it('captures newly registered reaction edges without executing conditions or copying private arguments', async () => {
+    const id = 'vault-census-omission-control';
+    const when = vi.fn(() => { throw Error('discovery executed a condition'); });
+    registerReactionRule({ id, on: ['vault:probe', 'vault:other'], fire: 'vault:effect', when,
+      args: { payload: 'private-census-canary' } });
+    try {
+      const captured = await captureOperatorHttpSecurityPopulation();
+      expect(captured.surfaces.find(row => row.kind === 'registered-event-reaction' && row.surfaceId === id))
+        .toMatchObject({ attrs: { on: ['vault:probe', 'vault:other'], fire: 'vault:effect' } });
+      expect(JSON.stringify(captured)).not.toContain('private-census-canary');
+      expect(when).not.toHaveBeenCalled();
+      expect(captured.unresolved).toContain('reaction-registration-source-and-adapter-reconciliation-unverified');
+      expect(captured.closureAccepted).toBe(false);
+    } finally { unregisterReactionRule(id); }
+    const after = await captureOperatorHttpSecurityPopulation();
+    expect(after.surfaces.some(row => row.kind === 'registered-event-reaction' && row.surfaceId === id)).toBe(false);
+  });
   it('includes unloaded plugin declarations in the declared census without promoting them to serving handlers', async () => {
     _injectPluginHostForTests([], { roots: [], unavailable: [], candidates: [{
       path: '/excluded', source: 'project', status: 'excluded', reason: 'not installed',

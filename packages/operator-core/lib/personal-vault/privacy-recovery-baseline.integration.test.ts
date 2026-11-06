@@ -17,6 +17,10 @@ it('retains the actual private operator population, signed custody and migrated 
       'packages/operator-core/test/private-http-workspace-preflight.ts',
       'packages/operator-core/test/isolated-integration-proof.ts',
       'packages/operator-core/lib/observability/runtime.ts',
+      'packages/operator-core/lib/coverage-census/providers/dbos-workflows.ts',
+      'packages/operator-core/lib/dbos/bootstrap.ts',
+      'packages/operator-core/lib/dbos/event-reaction-workflow.ts',
+      'packages/operator-core/lib/events/registry.ts',
       'packages/operator-core/lib/coverage-census/security-qualification.ts',
       'packages/operator-core/lib/coverage-census/security-manifest-store.ts',
       'packages/operator-core/lib/superuser-token.ts',
@@ -27,7 +31,7 @@ it('retains the actual private operator population, signed custody and migrated 
       'apps/operator/bin/hono-host.ts', 'scripts/with-test-pg.mjs'],
     execute: async (observe, evidenceDir) => {
       await symlink(join(root, 'node_modules'), join(evidenceDir, 'node_modules'), 'dir');
-      const child = fork(join(root, 'scripts/with-test-pg.mjs'), ['--isolated-runtime=operator-api', '--',
+      const child = fork(join(root, 'scripts/with-test-pg.mjs'), ['--isolated-runtime', '--',
         process.execPath, '--import', 'tsx', join(root, 'packages/operator-core/test/vault-runtime-census-fixture.ts')],
       { cwd: root, detached: true, execArgv: [], stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
         env: { ...process.env, PC_ISOLATED_RUNTIME_PROOF: '1', FORCE_COLOR: '0',
@@ -51,12 +55,18 @@ it('retains the actual private operator population, signed custody and migrated 
         transport: 'mcp', authenticatedActor: expect.stringMatching(/^su-/), unauthenticatedRejected: true,
         bundleSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
         populationComplete: false, closureAccepted: false, qualifyingBaselineAccepted: false,
-        backgroundRuntime: 'not-captured', recoveryAdapters: 'not-reconciled' });
+        backgroundRuntime: 'captured', dbosSchema: 'dbos',
+        dbosWorkflowCount: expect.any(Number), reactionCount: expect.any(Number),
+        recoveryAdapters: 'not-reconciled' });
+      expect(receipt.dbosWorkflowCount).toBeGreaterThan(0);
+      expect(receipt.reactionCount).toBeGreaterThan(0);
       const snapshot = JSON.parse(readFileSync(join(evidenceDir, 'runtime-census.json'), 'utf8'));
       expect(snapshot.runtimeIdentity.artifact.bundleSha256).toBe(receipt.bundleSha256);
       expect(snapshot.rows).toHaveLength(receipt.runtimeRows);
       expect(snapshot.rows.some((row: any) => row.basis === 'serving-registry')).toBe(true);
       expect(snapshot.rows.some((row: any) => row.basis === 'declared-route')).toBe(true);
+      expect(snapshot.rows.some((row: any) => row.kind === 'dbos-workflow'
+        && row.attrs.name === 'eventReaction' && row.attrs.executorLaunched === true)).toBe(true);
       console.info('VAULT_CENSUS_VERIFIED ' + JSON.stringify(receipt));
     },
   });

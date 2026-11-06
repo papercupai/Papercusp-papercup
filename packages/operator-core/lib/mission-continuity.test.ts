@@ -37,6 +37,15 @@ describe('accepted displacement classification', () => {
 });
 
 describe('mission reducer', () => {
+  it('projects durable binding fields from the richer canonical parent', () => {
+    const { disposition, blockerRef, nextActionRef, ...binding } = parent;
+    expect(bound().binding).toEqual(binding);
+    const refreshed = reduceMissionContinuity(bound(), { id: 'refresh', kind: 'recovered' },
+      { ...parent, disposition: 'blocked', blockerRef: 'WI-blocker', nextActionRef: 'WI-next' }, 3_000).state;
+    expect(refreshed.binding).toEqual(binding);
+    expect(refreshed).toMatchObject({ disposition: 'blocked', blockerRef: 'WI-blocker', nextActionRef: 'WI-next' });
+  });
+
   it('keeps the parent and its criteria across ordinary child progress', () => {
     const { state, consequences } = reduceMissionContinuity(bound(), {
       id: 'progress', kind: 'activity-accepted', activity: activity({ relationship: 'same-assignment' }),

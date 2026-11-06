@@ -33,6 +33,7 @@ export async function broadcastResourceDrainStart(params: {
   ];
   try {
     if (owners.length > 0) {
+      // notify-classification: {"id":"packages/operator-core/lib/agent-tools/locks/resource-broadcast.ts#<module>/broadcastResourceDrainStart:57d0267c78aade78b3e4:1","classification":"durable","reason":"Shared holders are told to finish and release for a pending exclusive drain; the lock-store safety guarantee does not prove this targeted notice was delivered.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009 must prove the shared sendMessage inbox path retains the resource/drain episode and holder audience across restart","deliveryState":"unverified"}
       await sendMessage(params.source, {
         to: owners,
         summary: `🔒 "${params.resource}" is draining for an exclusive hold by ${params.source.ownerLabel} — release when your current use is done`,
@@ -69,6 +70,7 @@ export async function broadcastResourceBackUp(params: {
   // lock-store receipt. This helper handles only availability and waiter notices.
   if (!params.waiters || params.waiters.length === 0) return;
   try {
+    // notify-classification: {"id":"packages/operator-core/lib/agent-tools/locks/resource-broadcast.ts#<module>/broadcastResourceBackUp:fc61c84c1601acb17d5d:1","classification":"durable","reason":"The retained waiter audience is promised an availability notice after exclusive release; emitting the separate lock-boundary event does not prove this inbox consequence.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009 must prove the shared sendMessage inbox path retains the resource/release episode and waiter audience across restart","deliveryState":"unverified"}
     await sendMessage(params.source, {
       to: params.waiters,
       summary: `✅ "${params.resource}" is back up (released by ${params.source.ownerLabel})`,

@@ -15,6 +15,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ConversationDetail } from '../conversations-core';
 import type { ConversationRow } from '../conversations-store';
 import { ADMIN_COORD_UI_OWNER } from '../identity';
+import { appendConsultReview } from '../../../consult/review-findings';
 
 vi.mock('../conversations', async (importActual) => ({
   getConversation: vi.fn(),
@@ -256,6 +257,50 @@ describe('conversations:get handler (bulk keyed-array)', () => {
       },
       dispatch: null as ConsultDispatchSummary | null,
       ...over,
+    });
+
+    it.each(['awaiting_followup', 'closed_answered'])('preserves typed review evidence and disposition history for %s consults', async (state) => {
+      const id = `c-review-${state}`;
+      const findingId = 'post:17#missing-proof';
+      const original = appendConsultReview({
+        postId: 17, authorId: 'su-reviewer', requesterId: 'su-requester', at: 't1',
+        answer: {
+          subjectRef: 'plan:reviewed@exact-hash', coverage: 'complete',
+          findings: [{ key: 'missing-proof', severity: 'major', text: 'Required proof is missing.', evidenceRefs: ['spec:proof@3'] }],
+        },
+      });
+      const planned = appendConsultReview({
+        current: original, postId: 18, authorId: 'su-requester', requesterId: 'su-requester', at: 't2',
+        dispositions: [{ findingId, status: 'planned', reason: 'Implement the missing proof.', reference: 'WI-7' }],
+      });
+      const review = appendConsultReview({
+        current: planned, postId: 19, authorId: 'su-requester', requesterId: 'su-requester', at: 't3',
+        dispositions: [{ findingId, status: 'fixed', reason: 'Regression now passes.', reference: 'test-run:23' }],
+      });
+      const outcome = state === 'closed_answered' ? { disposition: 'answered', answer: 'Reviewed.' } : null;
+      getM.mockResolvedValue(detail(id, { kind: 'consult', state: 'open' }));
+      consultM.mockResolvedValue(new Map([[id, consultRow(id, {
+        state, closed_at: outcome ? 't4' : null, outcome, review,
+      })]]));
+
+      const reply = (await body({ id })).results[0];
+
+      expect(reply.consult.review).toEqual(review);
+      expect(reply.consult.review.findings).toEqual(original.findings);
+      expect(reply.consult.review.dispositions.map((entry: { status: string }) => entry.status)).toEqual(['planned', 'fixed']);
+      if (outcome) {
+        expect(reply.consult.outcome).toEqual(outcome);
+        expect(reply.consult.result).not.toHaveProperty('review');
+      }
+    });
+
+    it.each([undefined, null])('does not invent typed review evidence for legacy consults (%s)', async (review) => {
+      getM.mockResolvedValue(detail('c-legacy', { kind: 'consult' }));
+      consultM.mockResolvedValue(new Map([['c-legacy', consultRow('c-legacy', { review })]]));
+
+      const reply = (await body({ id: 'c-legacy' })).results[0];
+
+      expect(reply.consult).not.toHaveProperty('review');
     });
 
     it('exposes an unmeasured routing result and remedy separately from the no-responder lifecycle', async () => {

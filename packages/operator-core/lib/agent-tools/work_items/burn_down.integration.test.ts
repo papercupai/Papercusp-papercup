@@ -369,7 +369,7 @@ describe('default fleet reports over the real current-spec queue', () => {
       expect(await explainIssueClaimFloors(HARNESS, ids, opts, reader)).toEqual(baseline);
       await tx`
         UPDATE harness_shared.work_items
-           SET admission = 'pending', payload = '{"_claimHold":true}'::jsonb
+           SET admission = 'pending', payload = '{"_claimHold":true}'::jsonb, created_ts = ${Date.now()}
          WHERE workspace_id = 'default' AND harness_slug = ${HARNESS} AND feature_id = ${ids[3]}`;
       await tx`
         INSERT INTO harness_shared.routines
@@ -382,6 +382,20 @@ describe('default fleet reports over the real current-spec queue', () => {
       // The ordinary client cannot observe the uncommitted controls. The supplied
       // context must cover both the canonical floor SELECT and its retry lookup.
       expect(await explainIssueClaimFloors(HARNESS, ids, opts)).toEqual(baseline);
+      // A paused promoter alone proves no automatic retry bound. The caller's
+      // transaction must also see the backstop's actual successful-run evidence.
+      expect((await explainIssueClaimFloors(HARNESS, ids, opts, reader))[3].retry).toBeUndefined();
+      await tx`
+        INSERT INTO harness_shared.routines
+          (id, workspace_id, install_slug, name, trigger_kind, trigger_config, target_role, active, metadata)
+        VALUES ('rt-floor-read-backstop', 'default', ${operatorHomeHarnessSlug()},
+                'work-item-admission-fail-open', 'cron', '{"cron":"* * * * *"}'::jsonb,
+                'system:work-item-admission-fail-open', true, '{}'::jsonb)`;
+      await tx`
+        INSERT INTO harness_shared.admission_runs
+          (id, workspace_id, harness_slug, run_kind, started_at, finished_at, detail)
+        VALUES ('floor-read-backstop-success', 'default', ${operatorHomeHarnessSlug()},
+                'promoter-tick', now(), now(), '{"mode":"fail-open","status":"complete"}'::jsonb)`;
       const rows = await explainIssueClaimFloors(HARNESS, ids, opts, reader);
       expect(rows.slice(0, 3)).toEqual(baseline.slice(0, 3));
       expect(rows[3]).toMatchObject({
@@ -440,6 +454,12 @@ describe('default fleet reports over the real current-spec queue', () => {
       (sum: number, count) => sum + Number(count), 0,
     )).toBe(snapshot.remaining.total);
     expect(snapshot.remaining.buckets.claimable).toBe(floors.filter(row => row.admissible).length);
+    expect(snapshot.remaining.categorization.primaryReasons.claimable).toBe(floors.filter(row => row.admissible).length);
+    expect(snapshot.remaining.categorization.floorCoverage).toEqual({ measured: 4, unknown: 0 });
+    expect(snapshot.remaining.categorization.exclusionCoverage).toEqual({ complete: 4, firstReasonOnly: 0, unknown: 0 });
+    expect(Object.values(snapshot.remaining.categorization.stateCounts).reduce(
+      (sum: number, count) => sum + Number(count), 0,
+    )).toBe(snapshot.remaining.total);
     expect(snapshot.quality.exactness).toMatchObject({ status: 'exact', sourceCap: null });
     expect(snapshot.queueHealth.waiting.reviewWait).toMatchObject({
       population: 2, known: 1, unknown: 1, oldestMs: null,
@@ -945,7 +965,12 @@ describe('default fleet reports over the real current-spec queue', () => {
     const afterRelease = await readLeaderBriefFleetMetrics({ workspaceId: 'default', fleet: FLEET, harness: HARNESS });
     expect(afterRelease.ok).toBe(true);
     if (!afterRelease.ok) throw new Error(afterRelease.reason);
-    expect(afterRelease.snapshot.remaining).toEqual(snapshot.remaining);
+    expect(afterRelease.snapshot.remaining.buckets).toEqual(snapshot.remaining.buckets);
+    expect(afterRelease.snapshot.remaining.total).toBe(snapshot.remaining.total);
+    expect(afterRelease.snapshot.remaining.categorization!.primaryReasons['blocked-dep']).toBe(1);
+    expect(afterRelease.snapshot.remaining.categorization!.exclusionCounts['claim-hold']).toBe(
+      snapshot.remaining.categorization!.exclusionCounts['claim-hold'] - 1,
+    );
   }, 30_000);
 
   it('reads the real verification ledgers and keeps unstaffed outcomes unmeasured', async () => {

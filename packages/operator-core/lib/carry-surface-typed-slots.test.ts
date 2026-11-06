@@ -362,3 +362,27 @@ describe('ownerQuestionSlotField', () => {
     expect(f?.matches.length).toBe(1);
   });
 });
+
+describe('EI-27708617656755031: source-bound runtime-owner reply', () => {
+  const runtimeReply = [
+    '## Next action',
+    'Wait for owner answer from a source-bound qualification reply from named runtime owner su-eac698b0-0256-4b75-9ffd-f0b7d0971343; bounded await 397197 for work-item:done:EI-24751601902405606.',
+    'The earlier human handoff approval question is WITHDRAWN; AUTO/self continues. No human approval remains.',
+  ].join('\n');
+
+  it('does not turn a named runtime-owner reply into a human approval wall', () => {
+    expect(lintOwnerQuestionSlots(runtimeReply)).toEqual({ flagged: false, matches: [] });
+  });
+
+  it('still flags a separate genuine human question in the same carry note', () => {
+    const result = lintOwnerQuestionSlots(
+      runtimeReply + ' Separately, ask the owner whether this release requires approval.',
+    );
+    expect(result.flagged).toBe(true);
+    expect(result.matches.some((match) => match.matchedText === 'ask the owner')).toBe(true);
+  });
+
+  it('keeps a pending human owner-answer wait flagged without a runtime-owner source', () => {
+    expect(lintOwnerQuestionSlots('Need the owner answer to approve publication.').flagged).toBe(true);
+  });
+});

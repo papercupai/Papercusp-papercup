@@ -3,6 +3,7 @@ import { CONTINUITY_PROBE_MAX_PER_WAKE } from '../../agent-tools/limits';
 import { leadingScaleLabel } from '../../rubric-rating-vocabulary';
 import { parseRecordedMeasurementProvenance, type RecordedMeasurementProvenance } from '@papercusp/test-config/execution-details';
 import { measurementProvenanceStatus } from '../../measurement-provenance';
+import { specQualityRerunRecipeSchema, type SpecQualityRerunRecipe } from '../../agent-tools/plans/spec-quality-identity';
 
 /**
  * observation-types.ts — the canonical structured-observation v2 shape
@@ -467,6 +468,8 @@ export interface SpecTestAdequacyRerunRecipe {
   };
 }
 
+export type ScorecardRerunRecipe = SpecTestAdequacyRerunRecipe | SpecQualityRerunRecipe;
+
 /** v1 free-text observation fields (turn-end-reflection-observations D-005). */
 export const OBSERVATION_KINDS = ['friction', 'workaround', 'gap', 'surprise', 'reinforce', 'test-failure'] as const;
 export type ObservationKind = (typeof OBSERVATION_KINDS)[number];
@@ -568,7 +571,7 @@ export interface StructuredObservation {
   /** Post-grading implementer verdict; valid only for acceptance-kind rubrics. */
   acceptance?: ScorecardAcceptance;
   /** Structured currentness inputs and selector for independently replaying spec-test-adequacy. */
-  rerunRecipe?: SpecTestAdequacyRerunRecipe;
+  rerunRecipe?: ScorecardRerunRecipe;
   /**
    * Stable SHA-256 of the canonical rubricRef + ratings + deterministic instrument
    * snapshots. Written by scorecards:emit so repeated grading of unchanged evidence
@@ -1550,6 +1553,10 @@ export function asStructuredObservation(v: unknown): StructuredObservation | und
   // an apparently replayable but incomplete attestation.
   if (o.rerunRecipe && typeof o.rerunRecipe === 'object' && !Array.isArray(o.rerunRecipe)) {
     const recipe = o.rerunRecipe as Record<string, unknown>;
+    if (recipe.evaluator === 'plans:evaluate-spec-quality') {
+      const quality = specQualityRerunRecipeSchema.safeParse(recipe);
+      if (quality.success) out.rerunRecipe = quality.data;
+    }
     const hasEvaluatorBuild = Object.prototype.hasOwnProperty.call(recipe, 'evaluatorBuild');
     const hasEvaluatorRevision = Object.prototype.hasOwnProperty.call(recipe, 'evaluatorRevision');
     let evaluatorBuild: SpecTestAdequacyEvaluatorBuild | null | undefined;

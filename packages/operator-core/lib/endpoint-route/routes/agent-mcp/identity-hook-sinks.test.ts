@@ -345,6 +345,10 @@ describe('POST /agent-mcp/tool-guard', () => {
     } satisfies Record<import('../../../acceptance-bar-contract-snapshot').AcceptanceBarSnapshotSource, true>;
     const stages = [
       'bindings', 'goal_module', 'goal_read', 'goal', 'start_proof', 'scope', 'plan_row',
+      'goal_leg_work_items', 'goal_leg_plan_items', 'goal_leg_fleet', 'goal_leg_override', 'goal_leg_links',
+      'goal_pool_acquire_work_items', 'goal_pool_acquire_plan_items', 'goal_pool_acquire_fleet', 'goal_pool_acquire_override',
+      'plan_row_resolve_scope', 'plan_row_wait_for_begin', 'plan_row_workspace_setup',
+      'plan_row_acquire_and_setup', 'plan_row_query', 'plan_row_finish_transaction', 'plan_row_row',
       'audit', 'activation', 'admission',
       ...Object.keys(sources).map(source => `start_gate_snapshot_${source}`),
       'start_gate', 'spec_quality', 'critique', 'recheck', 'binding',
@@ -377,7 +381,7 @@ describe('POST /agent-mcp/tool-guard', () => {
   });
 
   it('keeps extended plan timings bounded and rejects invalid labels and durations', async () => {
-    const stages = Array.from({ length: 32 }, (_, index) =>
+    const stages = Array.from({ length: 48 }, (_, index) =>
       `stage_${String.fromCharCode(97 + Math.floor(index / 26), 97 + index % 26)}`);
     planExecutionGuard.mockImplementation(async ({ observeTiming }) => {
       for (const stage of ['private-plan-content', 'start_gate_snapshot_private-content', 'x'.repeat(33),

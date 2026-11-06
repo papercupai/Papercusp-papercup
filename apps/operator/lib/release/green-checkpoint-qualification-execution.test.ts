@@ -2,13 +2,12 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { checkpointQualificationBudgetFromEnv, CheckpointQualificationBoundaryError, QUALIFICATION_UNBOUNDED_SPAN_MS,
+import { checkpointQualificationBudgetFromEnv, CheckpointQualificationBoundaryError,
   createCheckpointQualificationExecution, createCheckpointQualificationYieldBoundary, realCheckpointDeps, runCmd } from './green-checkpoint';
 import { releaseConfig } from './release-config';
 import type { CheckpointExec, CheckpointExecResult } from './green-checkpoint';
 import type { QualificationWorkProgressInput } from '@papercusp/operator-core/lib/release/checkpoint-qualification-transaction';
 import { TASK_DEADLINE_EPOCH_MS_ENV } from '@papercusp/operator-core/lib/systemd-scope';
-import { GREEN_CHECKPOINT_SUITE_TIMEOUT_MS } from '@papercusp/operator-core/lib/release/green-checkpoint-schedule';
 import { resolveQualificationYieldBudget } from '../../../../scripts/lib/batch-watchdog.mjs';
 
 const confined = vi.hoisted(() => vi.fn());
@@ -25,7 +24,7 @@ const target = { workspaceId: 'w', installSlug: 'h' };
 const budget = () => {
   const resolved = resolveQualificationYieldBudget({ startedAtMs: 1000, quantumMs: 500,
     orphanDeadlineEpochMs: 5000, deadlineEpochMs: 4000, cleanupReserveMs: 500, yieldReserveMs: 200 });
-  if (resolved.status !== 'ready') throw new Error(resolved.reason);
+  if (resolved.status !== 'ready' || resolved.executionCutoffEpochMs === null) throw new Error('expected bounded budget');
   return resolved;
 };
 function setup(execute: CheckpointExec = vi.fn().mockResolvedValue(result)) {
@@ -101,7 +100,8 @@ describe('qualification production execution', () => {
     const resolved = checkpointQualificationBudgetFromEnv(started + 50_000,
       { [TASK_DEADLINE_EPOCH_MS_ENV]: String(inherited) });
     expect(resolved).toMatchObject({ status: 'ready', callerDeadlineEpochMs: null,
-      cleanupDeadlineEpochMs: started + 50_000 + QUALIFICATION_UNBOUNDED_SPAN_MS });
+      executionCutoffEpochMs: null, yieldDeadlineEpochMs: null,
+      cleanupDeadlineEpochMs: null, orphanDeadlineEpochMs: null });
     expect(checkpointQualificationBudgetFromEnv(inherited + 10_000,
       { [TASK_DEADLINE_EPOCH_MS_ENV]: String(inherited) }))
       .toMatchObject({ status: 'ready', callerDeadlineEpochMs: null });
@@ -113,12 +113,12 @@ describe('qualification production execution', () => {
     const lateStart = started + 3 * 60 * 60_000;
     const fallback = checkpointQualificationBudgetFromEnv(lateStart, {});
     expect(fallback).toMatchObject({ status: 'ready', callerDeadlineEpochMs: null,
-      cleanupDeadlineEpochMs: lateStart + QUALIFICATION_UNBOUNDED_SPAN_MS });
+      executionCutoffEpochMs: null, yieldDeadlineEpochMs: null,
+      cleanupDeadlineEpochMs: null, orphanDeadlineEpochMs: null });
     if (fallback.status !== 'ready') throw new Error('expected a ready budget');
-    // Far beyond the old 115m quantum, and still timer-safe: a Node timer longer than 2^31-1 ms
-    // is clamped to 1ms and would fire immediately.
-    expect(fallback.executionCutoffEpochMs - lateStart).toBeGreaterThan(20 * GREEN_CHECKPOINT_SUITE_TIMEOUT_MS);
-    expect(fallback.cleanupDeadlineEpochMs - lateStart).toBeLessThanOrEqual(2 ** 31 - 1);
+    // There is no sentinel deadline to expire or overflow after Node's timer horizon.
+    expect(checkpointQualificationBudgetFromEnv(lateStart + 3 * (2 ** 31 - 1), {})).toMatchObject({
+      status: 'ready', executionCutoffEpochMs: null, cleanupDeadlineEpochMs: null });
     // A garbage deadline is ignored, never read as an immediate one.
     expect(checkpointQualificationBudgetFromEnv(lateStart, { [TASK_DEADLINE_EPOCH_MS_ENV]: 'nope' }))
       .toMatchObject({ status: 'ready', callerDeadlineEpochMs: null });
@@ -157,6 +157,20 @@ describe('qualification production execution', () => {
     expect(onStop.mock.calls[0]?.[0]).toMatchObject({ disposition: 'killed', detail: 'durable-progress-stalled' });
     expect(() => execution.assertRunning()).toThrow('durable-progress-stalled');
     await execution.stop();
+  });
+
+  it('passes owned lifetime and cancellation through the app executor to confined candidate work', async () => {
+    const owned = checkpointQualificationBudgetFromEnv(1000, { [TASK_DEADLINE_EPOCH_MS_ENV]: '500' });
+    if (owned.status !== 'ready') throw new Error(owned.reason);
+    const execute = vi.fn<CheckpointExec>().mockResolvedValue(result);
+    const execution = createCheckpointQualificationExecution({ target, progress,
+      observer: { snapshot: vi.fn() }, budget: owned, baselineReceipts: [], execute, onStop: vi.fn() });
+    await execution.execute('npm', ['test'], { cwd: '/repo/packages/a' });
+    expect(execute).toHaveBeenCalledWith('npm', ['test'], expect.objectContaining({
+      qualification: { target, progress, deadlineEpochMs: null }, signal: expect.any(AbortSignal),
+    }));
+    const signal = execute.mock.calls[0]![2]!.signal!;
+    expect(signal.aborted).toBe(false); await execution.stop(); expect(signal.aborted).toBe(true);
   });
 
   it('runCmd keeps the original npm argv inside pc-heavy and uses the confined executor even with a worker timeout', async () => {

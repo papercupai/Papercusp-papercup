@@ -259,6 +259,100 @@ pub struct ActivitySubscriptions {
     pub error: Option<String>,
 }
 
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct AgentTurns {
+    pub turns: Option<Vec<AgentTurn>>,
+    pub has_more: Option<bool>,
+    pub history_cursor: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct AgentTurn {
+    pub turn: usize,
+    pub question: String,
+    pub asked_at: Option<String>,
+    pub answer_index: Option<usize>,
+    pub answer: Option<String>,
+    pub duration_ms: Option<u64>,
+    pub tool_count: Option<u64>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct AgentFleet {
+    pub unknown_session: Option<bool>,
+    pub fleet: Option<FleetPeers>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct FleetPeers {
+    pub fleet_slug: String,
+    pub total: Option<usize>,
+    pub leader: Option<FleetPeer>,
+    pub members: Option<Vec<FleetPeer>>,
+    pub warning: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct FleetPeer {
+    pub owner_id: String,
+    pub handle: String,
+    pub label: String,
+    pub intent: Option<String>,
+    pub column: String,
+    pub reason: String,
+    pub is_leader: bool,
+    pub context_pct: Option<f64>,
+}
+
+fn peers(app: &App) -> Vec<&FleetPeer> {
+    app.agent_ctx
+        .as_ref()
+        .and_then(|r| r.as_ref().ok())
+        .and_then(|d| d.fleet_peers.as_ref())
+        .and_then(|d| d.fleet.as_ref())
+        .map(|f| f.leader.iter().chain(f.members.iter().flatten()).collect())
+        .unwrap_or_default()
+}
+
+pub fn selected_peer(app: &App) -> Option<&FleetPeer> {
+    peers(app).get(app.agent_ctx_selected).copied()
+}
+
+pub fn navigation_len(app: &App) -> usize {
+    if app.agent_ctx_mode == AgentCtxMode::Fleet {
+        return peers(app).len();
+    }
+    app.agent_ctx
+        .as_ref()
+        .and_then(|r| r.as_ref().ok())
+        .and_then(|d| d.turns.as_ref())
+        .and_then(|d| d.turns.as_ref())
+        .map_or(0, Vec::len)
+}
+
+pub fn navigation_keys(app: &App) -> Vec<String> {
+    if app.agent_ctx_mode == AgentCtxMode::Fleet {
+        return peers(app).iter().map(|p| p.owner_id.clone()).collect();
+    }
+    app.agent_ctx
+        .as_ref()
+        .and_then(|r| r.as_ref().ok())
+        .and_then(|d| d.turns.as_ref())
+        .and_then(|d| d.turns.as_ref())
+        .map(|turns| {
+            turns
+                .iter()
+                .map(|t| format!("{:?}:{}", t.asked_at, t.question))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// Existing sync invalidations, scoped to this pinned reader. A change for a
 /// different owner must not refetch this agent's expensive carry projection.
 pub fn matches_sidebar_invalidation(
@@ -277,7 +371,7 @@ pub fn matches_sidebar_invalidation(
     }
     let query = match mode {
         AgentCtxMode::Orders => "agentOrders.byOwner",
-        AgentCtxMode::Activity => "agentDetail.byOwner",
+        AgentCtxMode::Activity | AgentCtxMode::Turns | AgentCtxMode::Fleet => "agentDetail.byOwner",
         _ => return false,
     };
     if name != query {
@@ -336,6 +430,8 @@ pub fn draw_agent_ctx(f: &mut Frame, app: &App, area: Rect) {
                     AgentCtxMode::Work => work_lines(d, &mut lines),
                     AgentCtxMode::Orders => orders_lines(d, &mut lines),
                     AgentCtxMode::Activity => activity_lines(d, &mut lines),
+                    AgentCtxMode::Turns => turns_lines(app, d, &mut lines),
+                    AgentCtxMode::Fleet => fleet_lines(app, d, &mut lines),
                 }
             }
         }
@@ -353,6 +449,159 @@ fn title(mode: AgentCtxMode) -> &'static str {
         AgentCtxMode::Work => "☑ work",
         AgentCtxMode::Orders => "Orders",
         AgentCtxMode::Activity => "Activity",
+        AgentCtxMode::Turns => "Turns",
+        AgentCtxMode::Fleet => "Fleet",
+    }
+}
+
+fn turns_lines(app: &App, d: &crate::models::AgentCtxData, lines: &mut Vec<Line<'_>>) {
+    let Some(data) = &d.turns else {
+        text_lines(lines, "turns unavailable");
+        return;
+    };
+    text_lines(lines, "[ earlier history · ] latest history");
+    if app.agent_ctx_page_request.is_some() {
+        text_lines(lines, "Loading history…");
+    }
+    if app.agent_ctx_history_cursor.is_some() {
+        text_lines(lines, "Earlier history · press ] to follow latest");
+    }
+    let Some(turns) = &data.turns else {
+        text_lines(lines, "turns unavailable from this operator");
+        return;
+    };
+    if turns.is_empty() {
+        text_lines(lines, "No turns in this history window");
+        return;
+    }
+    if app.agent_ctx_detail {
+        if let Some(turn) = turns.get(app.agent_ctx_selected) {
+            text_lines(lines, "↑↓ select turn · j/k scroll · Esc return to index");
+            heading(lines, format!("Turn {} · {}", turn.turn, turn.question));
+            field(lines, "asked", turn.asked_at.as_deref());
+            heading(lines, "Answer");
+            text_lines(
+                lines,
+                if turn.answer_index.is_none() {
+                    "no answer yet"
+                } else {
+                    turn.answer.as_deref().unwrap_or("answer unavailable")
+                },
+            );
+        }
+        return;
+    }
+    text_lines(lines, "↑↓ select · Enter jump to answer · j/k scroll index");
+    for (index, turn) in turns.iter().enumerate() {
+        let selected = if index == app.agent_ctx_selected {
+            "▶"
+        } else {
+            " "
+        };
+        let answer = if turn.answer_index.is_some() {
+            "answered"
+        } else {
+            "no answer yet"
+        };
+        let tools = turn
+            .tool_count
+            .map(|n| n.to_string())
+            .unwrap_or_else(|| "unavailable".into());
+        let duration = turn
+            .duration_ms
+            .map(|n| format!("{n}ms"))
+            .unwrap_or_else(|| "unavailable".into());
+        heading(
+            lines,
+            format!("{selected} {} · {}", turn.turn, turn.question),
+        );
+        text_lines(
+            lines,
+            &format!("{answer} · tools {tools} · elapsed {duration}"),
+        );
+    }
+    if data.has_more == Some(true) {
+        text_lines(
+            lines,
+            "Earlier history exists; this index covers the current window",
+        );
+        if data.history_cursor.is_none() {
+            text_lines(lines, "earlier-history cursor unavailable");
+        }
+    } else if data.has_more.is_none() {
+        text_lines(lines, "history completeness unavailable");
+    }
+}
+
+fn fleet_lines(app: &App, d: &crate::models::AgentCtxData, lines: &mut Vec<Line<'_>>) {
+    let Some(data) = &d.fleet_peers else {
+        text_lines(lines, "fleet unavailable");
+        return;
+    };
+    if data.unknown_session == Some(true) {
+        text_lines(lines, "This session is not in the live roster");
+        return;
+    }
+    let Some(fleet) = &data.fleet else {
+        text_lines(
+            lines,
+            if data.unknown_session == Some(false) {
+                "Solo session"
+            } else {
+                "fleet unavailable from this operator"
+            },
+        );
+        return;
+    };
+    heading(lines, &fleet.fleet_slug);
+    text_lines(
+        lines,
+        &format!(
+            "members: {}",
+            fleet
+                .total
+                .map(|n| n.to_string())
+                .unwrap_or_else(|| "unavailable".into())
+        ),
+    );
+    if let Some(warning) = &fleet.warning {
+        lines.push(Line::from(Span::styled(warning.clone(), Theme::warn())));
+    }
+    text_lines(lines, "↑↓ select · Enter open peer session · j/k scroll");
+    for (index, peer) in peers(app).iter().enumerate() {
+        let selected = if index == app.agent_ctx_selected {
+            "▶"
+        } else {
+            " "
+        };
+        let current = if d.owner.as_deref() == Some(peer.owner_id.as_str()) {
+            " · current"
+        } else {
+            ""
+        };
+        let leader = if peer.is_leader { " · leader" } else { "" };
+        let label = if peer.label.is_empty() {
+            &peer.handle
+        } else {
+            &peer.label
+        };
+        heading(lines, format!("{selected} {label}{leader}{current}"));
+        text_lines(lines, &peer.owner_id);
+        text_lines(
+            lines,
+            &format!("{} · {}", peer.column.replace('-', " "), peer.reason),
+        );
+        if let Some(intent) = &peer.intent {
+            text_lines(lines, intent);
+        }
+        let context = peer
+            .context_pct
+            .map(|n| format!("{n:.0}%"))
+            .unwrap_or_else(|| "unavailable".into());
+        text_lines(lines, &format!("context: {context}"));
+    }
+    if fleet.members.is_none() {
+        text_lines(lines, "member list unavailable from this operator");
     }
 }
 
@@ -1162,5 +1411,97 @@ mod tests {
             &scope,
             "malformed"
         ));
+        for mode in [AgentCtxMode::Turns, AgentCtxMode::Fleet] {
+            assert!(matches_sidebar_invalidation(mode, &scope,
+                r#"{"name":"agentDetail.byOwner","args":{"ownerId":"su-selected"}}"#));
+            assert!(!matches_sidebar_invalidation(mode, &scope,
+                r#"{"name":"agentDetail.byOwner","args":{"ownerId":"su-other"}}"#));
+            assert!(matches_sidebar_invalidation(mode, &scope, r#"{"name":"advRoster.list"}"#));
+        }
+    }
+
+    #[test]
+    fn turns_view_jumps_to_the_answer_and_preserves_unknown_duration() {
+        let mut app = App::new();
+        app.agent_ctx_mode = AgentCtxMode::Turns;
+        let data = crate::models::AgentCtxData {
+            owner: Some("su-selected".into()),
+            turns: Some(serde_json::from_value(json!({"turns":[
+                {"turn":1,"question":"First question","answerIndex":1,"answer":"THE FINAL ANSWER","toolCount":2,"durationMs":null},
+                {"turn":2,"question":"Second question","answerIndex":null,"answer":null}
+            ],"hasMore":true,"historyCursor":"older"})).unwrap()),
+            ..Default::default()
+        };
+        let mut lines = Vec::new();
+        turns_lines(&app, &data, &mut lines);
+        let text = lines
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("▶ 1 · First question"));
+        assert!(text.contains("elapsed unavailable"));
+        assert!(text.contains("Earlier history exists"));
+        assert!(!text.contains("THE FINAL ANSWER"));
+        app.agent_ctx_detail = true;
+        lines.clear();
+        turns_lines(&app, &data, &mut lines);
+        let text = lines
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("THE FINAL ANSWER"));
+        assert!(!text.contains("Second question"));
+        app.agent_ctx_selected = 1;
+        lines.clear();
+        turns_lines(&app, &data, &mut lines);
+        assert!(lines.iter().any(|line| line.to_string() == "no answer yet"));
+    }
+
+    #[test]
+    fn fleet_view_keeps_unknown_solo_missing_leader_and_unmeasured_context_distinct() {
+        let mut app = App::new();
+        app.agent_ctx_mode = AgentCtxMode::Fleet;
+        let mut data = crate::models::AgentCtxData {
+            owner: Some("su-selected".into()),
+            ..Default::default()
+        };
+        for (value, expected) in [
+            (json!({}), "fleet unavailable from this operator"),
+            (
+                json!({"unknownSession":true,"fleet":null}),
+                "This session is not in the live roster",
+            ),
+            (json!({"unknownSession":false,"fleet":null}), "Solo session"),
+        ] {
+            data.fleet_peers = Some(serde_json::from_value(value).unwrap());
+            let mut lines = Vec::new();
+            fleet_lines(&app, &data, &mut lines);
+            assert!(lines.iter().any(|line| line.to_string() == expected));
+        }
+        data.fleet_peers = Some(serde_json::from_value(json!({"unknownSession":false,"fleet":{
+            "fleetSlug":"fleet-exact","total":1,"leader":null,"warning":"no leader","members":[
+                {"ownerId":"su-selected","label":"Selected","column":"blocked","reason":"needs dependency","contextPct":null}
+            ]}})).unwrap());
+        app.agent_ctx = Some(Ok(data.clone()));
+        let mut lines = Vec::new();
+        fleet_lines(&app, &data, &mut lines);
+        let text = lines
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        for expected in [
+            "no leader",
+            "blocked · needs dependency",
+            "context: unavailable",
+            "current",
+            "members: 1",
+        ] {
+            assert!(text.contains(expected), "{expected}: {text}");
+        }
+        assert!(!text.contains("context: 0%"));
+        assert_eq!(selected_peer(&app).unwrap().owner_id, "su-selected");
     }
 }

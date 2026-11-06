@@ -1,4 +1,23 @@
+import { createHash } from 'node:crypto';
+import { canonicalJson } from '@papercusp/hash-chain';
 import { specBehaviorNonAtomicReason } from './agent-tools/plans/spec-clause-compiler';
+
+/** A failed check is evidence about this exact candidate, never a reusable pass. */
+export class AcceptanceBarCandidateError extends Error {
+  readonly candidateValidation: { candidateHash: string; status: 'failed'; issues: string[] };
+
+  constructor(candidate: unknown, issues: string[]) {
+    super(`invalid_args: acceptance_bar_candidate_invalid: ${issues.join('; ')}`);
+    this.name = 'AcceptanceBarCandidateError';
+    this.candidateValidation = {
+      candidateHash: acceptanceBarCandidateHash(candidate), status: 'failed', issues,
+    };
+  }
+}
+
+export function acceptanceBarCandidateHash(candidate: unknown): string {
+  return createHash('sha256').update(canonicalJson(candidate)).digest('hex');
+}
 
 export interface AcceptanceBarProjectionText {
   key: string;

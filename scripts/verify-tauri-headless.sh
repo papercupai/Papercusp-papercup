@@ -2588,7 +2588,9 @@ smoke_verifier_operator_host() {
   # Set the maintained allocator cap before exec. Otherwise boot-malloc-arena
   # re-executes after loading the graph, paying the import cost twice inside
   # this same deadline. Preserve an explicitly configured cap.
-  MALLOC_ARENA_MAX="${MALLOC_ARENA_MAX:-2}" \
+  # This is a compiled .mjs entry. Source-fixture loaders inherited from Cargo
+  # must not run again while importing the frozen host bundle.
+  NODE_OPTIONS= NODE_PATH= MALLOC_ARENA_MAX="${MALLOC_ARENA_MAX:-2}" \
     timeout --signal=TERM --kill-after=1s "${timeout_sec}s" \
     node --import='data:text/javascript,import{writeSync}from"node:fs";writeSync(2,"PAPERCUSP_HOST_IMPORT_SMOKE_START\n")' \
     "$OPERATOR_HOST_BUNDLE" --papercusp-import-smoke \

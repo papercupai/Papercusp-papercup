@@ -244,6 +244,7 @@ export default defineTool({
     const planSlug = typeof original.plan_slug === 'string' ? original.plan_slug : undefined;
     const notices: Array<{ msg_id: string; to: string[]; quoted: boolean }> = [];
     if (seen.length) {
+      // notify-classification: {"id":"packages/operator-core/lib/agent-tools/coordination/tools/retract.ts#<module>/handler:046b834b6af0f69f2005:1","classification":"durable","reason":"Recipients already shown a retracted message need the withdrawal and its reason; a producer exit must not leave them acting on the withdrawn claim.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009 must prove the shared sendMessage retraction notice and original-audience suppression survive restart","deliveryState":"unverified"}
       const n = await sendMessage(RETRACT_IDENTITY, {
         to: seen,
         summary:
@@ -264,6 +265,7 @@ export default defineTool({
     if (unseen.length) {
       // Neither the original's summary nor the reason: either would be the
       // only way these recipients learn the subject.
+      // notify-classification: {"id":"packages/operator-core/lib/agent-tools/coordination/tools/retract.ts#<module>/handler:f859f44c3fb813afb813:1","classification":"durable","reason":"The content-free notice also records the withdrawal for recipients who never saw the original; restart must preserve suppression without exposing the withdrawn summary or reason.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009 must prove the shared sendMessage retraction marker and unseen-audience privacy survive restart","deliveryState":"unverified"}
       const n = await sendMessage(RETRACT_IDENTITY, {
         to: unseen,
         summary: `⛔ RETRACTED message ${args.msg_id} from ${senderOwnerId}, withdrawn before you read it — nothing to disregard or do`,

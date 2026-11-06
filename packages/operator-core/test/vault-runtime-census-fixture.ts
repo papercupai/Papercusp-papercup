@@ -12,6 +12,7 @@ import { readProcessIdentity } from '../lib/process-identity';
 import { loadImmutableTextArtifact } from '../lib/text-artifacts';
 import { isValidSuperuserBearer, readSuperuserToken, superuserTokenPath } from '../lib/superuser-token';
 import { verifyAuthenticatedRuntimeSecurityCensus } from '../lib/coverage-census/security-qualification';
+import { operatorArtifactSource, writeOperatorArtifactManifest } from '../lib/release/operator-artifact';
 import { preparePrivateHttpWorkspaces, preparePrivateOperatorApiBundle } from './private-http-workspace-preflight';
 
 const digest = (bytes: string | Buffer) => createHash('sha256').update(bytes).digest('hex');
@@ -37,8 +38,11 @@ async function stopHost() {
 async function main() {
   assert.ok(evidenceDir, 'durable evidence directory required');
   const { workspace } = preparePrivateHttpWorkspaces();
-  assert.equal(process.env.PAPERCUSP_BACKGROUND_WORKERS, '0');
-  assert.equal(process.env.PAPERCUSP_DBOS_ENABLE, '0');
+  assert.equal(process.env.PAPERCUSP_BACKGROUND_WORKERS, '1');
+  assert.equal(process.env.PAPERCUSP_DBOS_ENABLE, '1');
+  assert.equal(process.env.PAPERCUSP_DBOS_ORCHESTRATOR_HARNESSES, 'none');
+  assert.equal(process.env.PAPERCUSP_DBOS_ROUTINES, '0');
+  assert.equal(process.env.PAPERCUSP_DBOS_TIMERS, '0');
   assert.notEqual(process.env.PAPERCUSP_PG_PORT, '5432');
   const base = process.env.PAPERCUSP_OPERATOR_URL!;
   const url = new URL(base);
@@ -59,8 +63,19 @@ async function main() {
     timeoutMs: 240_000, maxMs: 420_000,
     onProgress: progress => console.log('VAULT_CENSUS_STAGE=build-' + progress.step),
   } });
+  // The generic private HTTP builder returns byte pins, not a release-artifact
+  // manifest. Publish the existing source/blob binding before this child boots;
+  // boot measurement must never borrow a caller's digest or checkout HEAD.
+  const sourceSha = await operatorArtifactSource(root);
+  const artifact = await writeOperatorArtifactManifest({ root, entry: prepared.path, sourceSha,
+    artifactRoot: evidenceDir });
+  assert.equal(artifact.status, 'measured', 'private artifact source binding required before boot');
+  writeFileSync(join(evidenceDir, 'operator-artifact-preflight.json'), JSON.stringify(artifact));
   const originalBundle = readFileSync(prepared.path);
-  host = spawn(process.execPath, [prepared.path], { cwd: root, env: { ...process.env },
+  // The isolation wrapper strips ambient product switches. Select this census
+  // profile only for the already-isolated host; never weaken that scrub policy.
+  host = spawn(process.execPath, [prepared.path], { cwd: root,
+    env: { ...process.env, PAPERCUSP_DBOS_REACTIONS: '1' },
     stdio: ['ignore', 'pipe', 'pipe'] });
   for (const stream of [host.stdout!, host.stderr!]) stream.on('data', chunk =>
     appendFileSync(join(evidenceDir, 'operator.log'), chunk));
@@ -102,6 +117,29 @@ async function main() {
     const catalog = await client.listTools(undefined, requestOptions);
     const generation = catalog.tools.find(tool => tool.name === 'dev:telemetry')?._meta?.['papercusp/servingGeneration'];
     assert.equal(typeof generation, 'string', 'serving tool contract baseline required');
+    // HTTP health precedes the asynchronous production DBOS bootstrap. Observe
+    // the owning process's installed-registration state before persisting the
+    // single full capture; env flags alone cannot establish executor readiness.
+    const backgroundDeadline = Date.now() + 240_000;
+    let backgroundReady = false;
+    while (Date.now() < backgroundDeadline) {
+      assert.equal(host.exitCode, null, 'private background host exited before DBOS readiness');
+      const probe = await client.callTool({ name: 'dev:telemetry',
+        arguments: { view: 'security-census', limit: 1 },
+        _meta: { 'papercusp/servingGeneration': generation } }, undefined, requestOptions);
+      assert.notEqual(probe.isError, true, JSON.stringify(probe));
+      const probeText = (probe as any).content?.find((item: any) =>
+        item.type === 'text' && item.text?.trim().startsWith('{'))?.text;
+      const payload = probe.structuredContent ?? (probeText ? JSON.parse(probeText) : null);
+      assert.ok(payload, 'background readiness response lacked structured census');
+      backgroundReady = Array.isArray(payload.unresolved)
+        && !payload.unresolved.includes('dbos-executor-not-launched')
+        && !payload.unresolved.includes('dbos-installed-registration-set-empty');
+      if (backgroundReady) break;
+      await new Promise(done => setTimeout(done, 500));
+    }
+    assert.ok(backgroundReady, 'private production DBOS launch/registration deadline; see operator.log');
+    console.log('VAULT_CENSUS_STAGE=background-registered');
     captured = await client.callTool({ name: 'dev:telemetry',
       arguments: { view: 'security-census', capture: true, harness: workspace },
       _meta: { 'papercusp/servingGeneration': generation } }, undefined, requestOptions);
@@ -125,6 +163,12 @@ async function main() {
   assert.equal(snapshot.runtimeIdentity.artifact.bundleSha256, digest(originalBundle));
   assert.equal(snapshot.total, snapshot.rows.length);
   assert.ok(snapshot.total > 0 && snapshot.hostCaptureSha256);
+  const workflows = snapshot.rows.filter((row: any) => row.kind === 'dbos-workflow');
+  const reactions = snapshot.rows.filter((row: any) => row.kind === 'registered-event-reaction');
+  assert.ok(workflows.length && workflows.every((row: any) => row.attrs.executorLaunched === true
+    && /^[a-f0-9]{64}$/.test(row.attrs.loadedFunctionSha256)), 'actual launched workflow registry required');
+  assert.ok(workflows.some((row: any) => row.attrs.name === 'eventReaction'), 'durable reaction executor absent');
+  assert.ok(reactions.length, 'actual event reaction registry absent');
   assert.equal(snapshot.schemaCoverage, 'not-included');
   assert.equal(snapshot.populationComplete, false);
   assert.equal(snapshot.closureAccepted, false);
@@ -146,6 +190,9 @@ async function main() {
   assert.ok(columns.length && constraints.length, 'migrated private schema inventory is required');
   const schemaBytes = canonicalJson({ columns: [...columns], constraints: [...constraints] });
   writeFileSync(join(evidenceDir, 'schema-census.json'), schemaBytes);
+  const [dbosSchema] = await sql`SELECT count(*)::int AS tables FROM information_schema.tables
+    WHERE table_schema = 'dbos' AND table_name IN ('workflow_status', 'operation_outputs')`;
+  assert.equal(dbosSchema.tables, 2, 'real DBOS system database/schema required');
   assert.deepEqual(readFileSync(prepared.path), originalBundle, 'loaded bundle changed during capture');
   await stopHost();
   console.log('VAULT_CENSUS_RECEIPT ' + JSON.stringify({ workspace, hostStopped: true,
@@ -154,9 +201,14 @@ async function main() {
     signedReceiptSha256: receipt.receiptRef, schemaSha256: digest(schemaBytes),
     runtimeRows: snapshot.rows.length, schemaColumns: columns.length, schemaConstraints: constraints.length,
     populationComplete: false, closureAccepted: false, qualifyingBaselineAccepted: false,
-    backgroundRuntime: 'not-captured', recoveryAdapters: 'not-reconciled' }));
+    backgroundRuntime: 'captured', dbosWorkflowCount: workflows.length, reactionCount: reactions.length,
+    dbosDatabase: new URL(process.env.HARNESS_ADMIN_DATABASE_URL!).pathname.slice(1), dbosSchema: 'dbos',
+    recoveryAdapters: 'not-reconciled' }));
 }
 
 try { await main(); }
-catch (error) { console.error('VAULT_CENSUS_FAILURE ' + String(error)); process.exitCode = 1; }
+catch (error) {
+  console.error('VAULT_CENSUS_FAILURE ' + (error instanceof Error ? error.stack : String(error)));
+  process.exitCode = 1;
+}
 finally { await stopHost(); await getOrgPg().sql.end({ timeout: 5 }); }

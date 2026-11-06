@@ -190,6 +190,39 @@ const deadCheckpointMarker = (over: Partial<StoredInFlightCandidate> = {}): Stor
 });
 
 describe('wakeAbandonedCheckpointAwaits (WI-6989)', () => {
+  it.each(['live', 'unknown', 'dead'] as const)(
+    'checks qualification custody before treating a dead marker PID as abandoned: %s', async liveness => {
+      const { beginQualificationTransaction, reserveQualificationRunner } =
+        await import('./checkpoint-qualification-transaction');
+      const begun = beginQualificationTransaction(null, { attemptId: 'marker-custody', nowMs: NOW - 60_000 }).transaction;
+      const qualification = reserveQualificationRunner(begun, {
+        attemptId: begun.attemptId, runnerId: 'marker-runner',
+        unit: 'checkpoint-root.scope', leaseDurationMs: 1_000, nowMs: NOW - 60_000,
+      }).transaction;
+      const probeQualificationRunner = vi.fn(async () => liveness);
+      const emit = vi.fn().mockResolvedValue({ ok: true });
+      const recordLostRun = vi.fn().mockResolvedValue(undefined);
+      const clearIfUnchanged = vi.fn().mockResolvedValue(true);
+      const result = await wakeAbandonedCheckpointAwaits({
+        installSlug: 'papercusp', workspaceId: 'papercusp-workspace',
+        rawMarker: deadCheckpointMarker(), rawQualification: qualification,
+      }, { nowMs: NOW, selfPid: 7, pidAlive: () => false, probeQualificationRunner,
+        emit, recordLostRun, clearIfUnchanged });
+      expect(probeQualificationRunner).toHaveBeenCalledWith(qualification.currentPhysicalRunner, NOW);
+      if (liveness === 'dead') {
+        expect(result.status).toBe('woken');
+        expect(recordLostRun).toHaveBeenCalledOnce();
+        expect(emit).toHaveBeenCalledTimes(2);
+        expect(clearIfUnchanged).toHaveBeenCalledOnce();
+      } else {
+        expect(result).toEqual({ status: 'not-abandoned', reason: `qualification-custody-${liveness}` });
+        expect(recordLostRun).not.toHaveBeenCalled();
+        expect(emit).not.toHaveBeenCalled();
+        expect(clearIfUnchanged).not.toHaveBeenCalled();
+      }
+    },
+  );
+
   it('emits the existing global + pipeline inconclusive keys for an unscoped or candidate-bound waiter', async () => {
     const order: string[] = [];
     const emit = vi.fn(async (opts: EmitAwaitedEventOpts) => {

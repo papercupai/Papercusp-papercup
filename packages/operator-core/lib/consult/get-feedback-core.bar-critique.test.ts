@@ -12,7 +12,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
-import { getFeedbackCore, type GetFeedbackDeps, type GetFeedbackRequest } from './get-feedback-core';
+import { acceptFeedbackRequestCore, getFeedbackCore, type GetFeedbackDeps, type GetFeedbackRequest } from './get-feedback-core';
 import { BAR_CRITIQUE_POLICY } from './selection-policies';
 
 const TOUCHED = 'COLLABORATOR_TOUCHED';
@@ -25,6 +25,7 @@ function trippedDeps() {
   }) as unknown as Sql;
   const deps = {
     getSql: () => sql,
+    withCurrentDiscovery: async (_input: unknown, accept: () => Promise<unknown>) => ({ ok: true, result: await accept() }),
     route: async () => {
       touched.push('route');
       throw new Error(TOUCHED);
@@ -53,6 +54,7 @@ function planValidationDeps(registered: RegisteredPlan[]) {
   }) as unknown as Sql;
   const deps = {
     getSql: () => sql,
+    withCurrentDiscovery: async (_input: unknown, accept: () => Promise<unknown>) => ({ ok: true, result: await accept() }),
     route: async () => { touched.push('route'); throw new Error(TOUCHED); },
     open: async () => { touched.push('open'); throw new Error(TOUCHED); },
   } as unknown as GetFeedbackDeps;
@@ -77,6 +79,17 @@ async function settle(p: Promise<unknown>): Promise<{ value?: unknown; thrown?: 
 }
 
 describe('getFeedbackCore bar-critique origin guard (SPEC-P-007-CRITIQUE-REF, unit)', () => {
+  it.each(['accept', 'dispatch'])('refuses stale discovery before any %s effects', async mode => {
+    const { deps, touched } = planValidationDeps([
+      { workspaceId: 'ws-unit', harnessSlug: 'papercusp', planSlug: 'some-real-plan' },
+    ]);
+    deps.withCurrentDiscovery = (async () => ({ ok: false, error: 'discovery_not_ready',
+      nextAction: 'Reconcile the stale finding.' })) as NonNullable<GetFeedbackDeps['withCurrentDiscovery']>;
+    const req = request({ policy: BAR_CRITIQUE_POLICY, originTaskRef: 'some-real-plan', harnessSlug: 'papercusp' });
+    const result = mode === 'accept' ? await acceptFeedbackRequestCore(req, deps) : await getFeedbackCore(req, deps);
+    expect(result).toMatchObject({ error: 'discovery_not_ready' });
+    expect(touched).toEqual(['plan-lookup']);
+  });
   const missing: Array<[string, Partial<GetFeedbackRequest>]> = [
     ['omitted', {}],
     ['null', { originTaskRef: null }],

@@ -25,6 +25,13 @@ A restart can **never** deploy raw churning HEAD by construction, and nothing
 but green-checkpoint may move `main` (never push or `branch -f` it by hand).
 Watch the whole pipeline at **`/admin/git`**.
 
+Setup, dependency publication, and rescue reruns have no default aggregate or
+output-idle cutoff. Quiet work remains unknown and retains custody while independent
+supervision investigates it; output and CPU alone do not prove useful progress.
+Explicit operator budgets, caller cancellation, and per-test limits remain bounded.
+Materialization heartbeats describe phase liveness until the operation finishes;
+they do not count as useful child progress or renew its idle timer.
+
 ## Why a separate checkout works (Phase 0)
 
 The operator has no hot-reload, so the runtime is already pinned to whatever was on

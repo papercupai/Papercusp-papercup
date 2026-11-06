@@ -1,0 +1,8 @@
+{
+  "schemaVersion": "luna-bg-build-attempt-v1",
+  "status": "failed",
+  "startedAtMs": 1793935161015,
+  "completedAtMs": 1793935194898,
+  "deadlineEpochMs": 1793949556845,
+  "error": "TypeError: Cannot add property 224, object is not extensible\n    at Array.push (<anonymous>)\n    at file:///home/marsh-office/papercupai-workspace/papercusp/[eval1]:43:388\n    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)"
+}

@@ -15,17 +15,20 @@ const treeFiles = { ...fileHashes, 'viewer.json': blobSha(manifest) };
 function fixture() {
   const state = {
     tree: Object.entries(treeFiles).map(([path, sha]) => ({ path, sha, type: 'blob', mode: '100644' })),
-    requests: [] as { url: string; method: string }[], scopes: 'gist, repo', anonymousStatus: 200, authenticatedStatus: 200,
+    requests: [] as { url: string; method: string; body?: unknown }[], scopes: 'gist, repo', anonymousStatus: 200, authenticatedStatus: 200,
     snapshot: { id, public: false, owner: { id: 7, login: 'alice' }, files: { 'report.md': { content: body, truncated: false } } },
     deployedFiles: { ...assets.files }, pages: 1, treeSha: 'trusted-tree',
   };
   const response = (value: unknown, status = 200, headers = {}) => new Response(JSON.stringify(value), { status, headers: { 'Content-Type': 'application/json', ...headers } });
   const transport: typeof fetch = async (input, init) => {
     const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url);
-    const method = init?.method ?? 'GET'; state.requests.push({ url: url.href, method });
+    const method = init?.method ?? 'GET';
+    const payload = typeof init?.body === 'string' ? JSON.parse(init.body) : undefined;
+    state.requests.push({ url: url.href, method, body: payload });
     if (url.hostname === 'alice.github.io') return new Response(state.deployedFiles[url.pathname.split('/').pop() || 'index.html'], { status: 200 });
     if (url.pathname === '/user') return response({ id: 7, login: 'alice' }, 200, { 'x-oauth-scopes': state.scopes });
     if (url.pathname === '/gists') {
+      if (method === 'POST') return response({ ...state.snapshot, public: payload.public, files: payload.files }, 201);
       const page = Number(url.searchParams.get('page'));
       return response(page < state.pages ? Array.from({ length: 100 }, (_, n) => ({ id: String(n), description: 'unrelated', owner: { id: 7 } }))
         : [{ id, description: 'Papercusp report snapshot operation', owner: { id: 7 } }]);
@@ -49,6 +52,19 @@ function fixture() {
 }
 
 describe('owned GitHub sharing HTTP contract', () => {
+  it('sends a secret Gist create request containing exactly the selected Markdown edition', async () => {
+    const f = fixture();
+    const selected = '# Selected édition\n\nExact whitespace and Unicode: λ 🐦\n';
+    const result = await f.github.create('selected-operation', selected);
+    expect(f.state.requests).toHaveLength(1);
+    expect(f.state.requests[0]).toEqual({ url: 'https://api.github.com/gists', method: 'POST', body: {
+      public: false, description: expect.stringContaining('selected-operation'),
+      files: { 'report.md': { content: selected } },
+    } });
+    expect(result).toMatchObject({ public: false, owner: { id: 7, login: 'alice' },
+      files: { 'report.md': { content: selected } } });
+  });
+
   it('reuses the exact locally derived complete viewer tree without writing remote files', async () => {
     const f = fixture();
     expect(await f.github.prepareViewer(assets, 9)).toEqual({ repoId: 9, ready: true, treeSha: 'trusted-tree' });

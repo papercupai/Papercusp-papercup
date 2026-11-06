@@ -939,6 +939,28 @@ describe('exact spec evidence bindings', () => {
       expect(stored.environment_fingerprint).toBe(expected);
     });
 
+  it.each([undefined, { kind: 'llm-in-process' } as const])(
+    'binds evidence without isolated source receipts for completed runtime %j', async completedRuntime => {
+      await specs.setSpecClause(clause({ mutationRequired: false }));
+      const { testRunId } = await seedExternalEvidence('test/reconnect.test.ts');
+      const currentMeasurement = evidenceStore.repoFilesEvidenceMeasurementSchema.parse({
+        schemaVersion: 1, kind: 'repo-files', sourcePaths: ['src/reconnect.ts'],
+        runtimeUnits: ['llm-test-runtime'],
+        ...(completedRuntime ? { completedRuntime } : {}),
+      });
+      const result = await evidenceStore.bindSpecEvidence({
+        workItemId: 'WI-101', specId: 'SPEC-003-01', harnessSlug: HARNESS,
+        planSlug: 'reconnect-plan', actorId: 'su-test', evidenceKind: 'test',
+        evidenceRef: 'test/reconnect.test.ts#no-isolated-receipt', testRunId, sourceFingerprint: 'source',
+        environmentFingerprint: 'caller-cannot-create-a-receipt', details: { evidencePlane: 'live', currentMeasurement },
+      });
+      expect(result).toMatchObject({ status: 'created' });
+      const stored = await db.sql`SELECT environment_fingerprint, details FROM harness_shared.spec_evidence_bindings`;
+      expect(stored).toHaveLength(1);
+      expect(stored[0].environment_fingerprint).toBeNull();
+      expect(stored[0].details.currentMeasurement.completedRuntime).toEqual(completedRuntime);
+    });
+
   it('refuses isolated source paths absent from a retained source receipt at bind time', async () => {
     await specs.setSpecClause(clause({ mutationRequired: false }));
     const { testRunId } = await seedExternalEvidence('test/reconnect.test.ts');

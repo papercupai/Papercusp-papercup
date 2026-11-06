@@ -12,6 +12,8 @@ import {
   validateAcceptanceBarRevisionProjectionPreview,
 } from './acceptance-bar-amendment';
 import { buildAcceptanceBarSeed } from './acceptance-bar-seed';
+import { specClauseWriteIssues } from './agent-tools/plans/spec-clauses-store';
+import { AcceptanceBarCandidateError } from './acceptance-bar-projection';
 
 // Mirrors the fixture in acceptance-bar-amendment.test.ts. R-1 mapped to P-001 is what
 // makes the canonical identity `AUTO-BAR-R-1-P-001` -- the exact clause that wedged the
@@ -137,6 +139,82 @@ function runAmendment(
   });
 }
 
+describe('complete generated candidate preflight (P-002)', () => {
+  function preview(rows: unknown[], templateData = seedTemplateData(), rubricRevision = 4) {
+    return validateAcceptanceBarRevisionProjectionPreview(sqlStub(rows) as never, {
+      workspaceId: 'workspace', harnessSlug: 'papercusp', rubricSlug: 'acceptance-subject-plan',
+      rubricRevision, templateData, previousTemplateData: templateData,
+    });
+  }
+
+  it('collects independent defects retained in generated specifications before writes', async () => {
+    const data = seedTemplateData();
+    const row = clauseRow({
+      source_bar_hash: data.criteria[0]!.barHash,
+      required_test_layers: ['unrecordable-layer'],
+      falsifier: { observation: ' ' },
+    });
+    await expect(preview([row], data, 0)).rejects.toThrow(
+      /test_layers_invalid.*falsifier_invalid.*bar_pin_invalid/,
+    );
+    expect(h.setSpecClause).not.toHaveBeenCalled();
+  });
+
+  it('uses the immutable writer validator for malformed generated fields', async () => {
+    const data = seedTemplateData();
+    const falsifier = { observation: 'The wrong BAR is retained.', requiredScenarios: ['same', 'same'] };
+    const row = clauseRow({
+      source_bar_hash: data.criteria[0]!.barHash,
+      falsifier,
+    });
+    const expected = specClauseWriteIssues({
+      specId: row.spec_id, expectedRevision: 1, planItemId: 'P-001',
+      behavior: row.behavior, behaviorClass: 'happy-path', lifecycleStatus: 'active',
+      falsifier,
+    });
+    expect(expected).toEqual([{ status: 'falsifier_invalid', specId: row.spec_id, reason: 'required_scenario_duplicate' }]);
+    await expect(preview([row], data)).rejects.toThrow(JSON.stringify(expected[0]));
+  });
+
+  it('returns consolidated semantic failures bound to the whole failed candidate', async () => {
+    const data = seedTemplateData();
+    const row = clauseRow({
+      source_bar_hash: data.criteria[0]!.barHash,
+      behavior: 'The writer works; the reader works.',
+      falsifier: { observation: ' ' },
+    });
+    const failure = await preview([row], data).catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(AcceptanceBarCandidateError);
+    const validation = (failure as AcceptanceBarCandidateError).candidateValidation;
+    expect(validation).toMatchObject({ status: 'failed', candidateHash: expect.stringMatching(/^[a-f0-9]{64}$/) });
+    expect(validation.issues.join('; ')).toMatch(/falsifier_invalid.*behavior.atomicity/);
+    const repeated = await preview([row], data).catch((error: AcceptanceBarCandidateError) => error.candidateValidation);
+    expect(repeated).toEqual(validation);
+    const changed = await preview([{ ...row, behavior: 'The reader works; the writer works.' }], data)
+      .catch((error: AcceptanceBarCandidateError) => error.candidateValidation);
+    expect(changed).not.toEqual(validation);
+    expect(h.setSpecClause).not.toHaveBeenCalled();
+  });
+
+  it('binds a corrected preflight pass to the exact normalized candidate and generated refinements', async () => {
+    const data = seedTemplateData();
+    const falsifier = { observation: 'The wrong BAR is retained.', probeMethod: 'Read the immutable revision.' };
+    const row = clauseRow({
+      source_bar_hash: data.criteria[0]!.barHash,
+      falsifier,
+    });
+    const first = await preview([row], data);
+    expect(first).toMatchObject({ candidateHash: expect.stringMatching(/^[a-f0-9]{64}$/), generatedSpecCount: 1 });
+    expect(await preview([row], data)).toEqual(first);
+    const changed = await preview([{ ...row, falsifier: { ...falsifier, probeMethod: 'Read the replaced revision.' } }], data);
+    expect(changed!.candidateHash).not.toBe(first!.candidateHash);
+    const changedCriterion = structuredClone(data);
+    changedCriterion.criteria[0]!.method = 'Read the complete revision history.';
+    expect((await preview([row], changedCriterion))!.candidateHash).not.toBe(first!.candidateHash);
+    expect(h.setSpecClause).not.toHaveBeenCalled();
+  });
+});
+
 describe('plan-only BAR mapping (EI-25651776897214505)', () => {
   const extendedPlan = subjectPlan('| R-1 | P-001 | tree |\n| R-2 | P-002 | tree |')
     .replace('## Design', '**R-2 — Second outcome.** The reader consumes the canonical BAR.\n\n## Design');
@@ -165,7 +243,9 @@ describe('plan-only BAR mapping (EI-25651776897214505)', () => {
   });
 
   it('allows a preview that adds the mapped BAR even before its clause exists', async () => {
-    await expect(preview(seedTemplateData(extendedPlan))).resolves.toBeUndefined();
+    await expect(preview(seedTemplateData(extendedPlan))).resolves.toMatchObject({
+      candidateHash: expect.stringMatching(/^[a-f0-9]{64}$/), generatedSpecCount: 2,
+    });
     expect(h.setSpecClause).not.toHaveBeenCalled();
   });
 });

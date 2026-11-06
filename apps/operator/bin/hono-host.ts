@@ -35,6 +35,7 @@ import { observeFallback } from '@papercusp/operator-core/lib/degradation/fallba
 import { randomUUID } from 'node:crypto';
 import cluster from 'node:cluster';
 import { createAdaptorServer } from '@hono/node-server';
+import { installGuardHttpDiagnostics } from '@papercusp/operator-core/lib/endpoint-route/telemetry';
 import { listenWithEaddrinuseRetry } from '@papercusp/operator-core/lib/listen-with-eaddrinuse-retry';
 import { BOOT_INTEGRITY_EXIT_CODE } from '@papercusp/operator-core/lib/boot-integrity-preflight';
 import { runBootstrap, waitForBootMigrationGate } from './host-bootstrap';
@@ -469,6 +470,7 @@ function startRequestServers(): void {
   // for the retry wrapper.
   const server: ReturnType<typeof createAdaptorServer> = createAdaptorServer({ fetch: handler });
   const httpServer = server as unknown as import('node:http').Server;
+  installGuardHttpDiagnostics(httpServer);
 
   // WI-41422: dev:restart targets this ONE verified Linux desktop-dev Hono
   // child with SIGUSR2. Drain first, then take the existing no-native-teardown

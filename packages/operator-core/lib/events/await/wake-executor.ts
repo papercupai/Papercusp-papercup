@@ -2881,6 +2881,7 @@ async function notifyPoisonedResumeSession(
 ): Promise<void> {
   try {
     const codex = context.agent === 'codex';
+    // notify-classification: {"id":"packages/operator-core/lib/events/await/wake-executor.ts#<module>/notifyPoisonedResumeSession:743dc380f335cc20e748:1","classification":"durable","reason":"The quarantined session must retain its explanation of terminal resume failure and claim cleanup; the caught send failure is not delivery proof.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009 must prove the quarantine notice reaches the persistent coord inbox across restart","deliveryState":"unverified"}
     await send(inboxNotifierIdentity(delivery.workspaceId), {
       to: [delivery.subscriberId],
       summary: codex
@@ -2944,6 +2945,7 @@ export async function degradeToInboxOrDrop(
     id: d.inboxDeliveryId ?? d.id,
   });
   try {
+    // notify-classification: {"id":"packages/operator-core/lib/events/await/wake-executor.ts#<module>/degradeToInboxOrDrop:61ad853fc68572c2e03d:1","classification":"durable","reason":"The fallback is the retained consequence for a wake that cannot start a turn; its delivery-row replay key must survive an outcome-unknown retry.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009 must verify event-wake-inbox replay and persistent coord delivery across restart","deliveryState":"unverified"}
     await send(inboxNotifierIdentity(d.workspaceId), {
       to: [inboxDelivery.subscriberId],
       // The delivery pump may retry after an outcome-unknown failure between
@@ -4817,6 +4819,7 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
           `⚠ STALE — lock ${lockGrantCheck.lockId} is no longer held by ${d.subscriberId}; ` +
           `do NOT act on this delayed grant. Original now-RETRACTED assertion: ${d.summary}`,
       };
+      // notify-classification: {"id":"packages/operator-core/lib/events/await/wake-executor.ts#<module>/executeWake:2a65273aa0426456a802:1","classification":"durable","reason":"A delayed lock grant needs a retained retraction so its recipient does not edit under expired ownership; this wrapper shares the inbox fallback obligation.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009 must verify the shared degradeToInboxOrDrop terminal notice across restart","deliveryState":"unverified"}
       return degradeToInboxOrDrop(
         staleDelivery,
         `lock grant ${lockGrantCheck.lockId} is STALE and RETRACTED at delivery time; ownership is no longer present`,
@@ -4842,6 +4845,7 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
           `${d.summary} (delivery-time check: ${currentReleasedItem.id} is already claimed by ` +
           `${currentReleasedItem.assignee}; wake downgraded to inbox)`,
       };
+      // notify-classification: {"id":"packages/operator-core/lib/events/await/wake-executor.ts#<module>/executeWake:f72b4268331400ae1673:1","classification":"durable","reason":"The claim-released snapshot is obsolete after another holder claims it; retain the corrected assignment through the shared inbox fallback.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009 must verify the shared degradeToInboxOrDrop terminal notice across restart","deliveryState":"unverified"}
       return degradeToInboxOrDrop(
         staleDelivery,
         `work item ${currentReleasedItem.id} is already claimed by ${currentReleasedItem.assignee}`,
@@ -4884,6 +4888,7 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
           `not 'ended' (recovered since this wake was queued). Do NOT treat this as a live death ` +
           `signal or act on it (no relaunch/reclaim/release). Original now-RETRACTED assertion: ${d.summary}`,
       };
+      // notify-classification: {"id":"packages/operator-core/lib/events/await/wake-executor.ts#<module>/executeWake:d2a0211d738724449aca:1","classification":"durable","reason":"A recovered member's death notice must be retracted durably so delayed delivery cannot cause a relaunch or claim release against a live agent.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009 must verify the shared degradeToInboxOrDrop terminal notice across restart","deliveryState":"unverified"}
       return degradeToInboxOrDrop(
         staleDelivery,
         `fleet member ${staleAgentId} is currently '${memberDeadCheck.currentState}', not 'ended' — this member-dead wake is STALE and RETRACTED, do not act on it`,
@@ -4923,6 +4928,7 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
           `⚠ STALE — fleet member ${staleAgentId} context-critical wake is no longer current (${detail}). ` +
           `Do NOT treat it as a live compaction signal or act on it. Original now-RETRACTED assertion: ${d.summary}`,
       };
+      // notify-classification: {"id":"packages/operator-core/lib/events/await/wake-executor.ts#<module>/executeWake:084b9d1ba21844ff6205:1","classification":"durable","reason":"A superseded context-pressure wake needs its corrected generation retained, preventing stale pressure from triggering an unnecessary compaction.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009 must verify the shared degradeToInboxOrDrop terminal notice across restart","deliveryState":"unverified"}
       return degradeToInboxOrDrop(
         staleDelivery,
         `fleet member ${staleAgentId} context-critical wake is STALE and RETRACTED — ${detail}; do not act on it`,
@@ -4952,6 +4958,7 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
           hostCommitPending: true,
         };
       }
+      // notify-classification: {"id":"packages/operator-core/lib/events/await/wake-executor.ts#<module>/executeWake:ead597e18fee017fe595:1","classification":"durable","reason":"After the accepted native write is cancelled, the obsolete claimable wake still owes its retained correction; cancellation alone does not prove inbox delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009 must verify the shared degradeToInboxOrDrop terminal notice across restart","deliveryState":"unverified"}
       return degradeToInboxOrDrop(
         d,
         `work-item:claimable delivery revalidated stale item(s): ${claimableFreshness.staleIds.join(', ')}`,
@@ -6133,6 +6140,7 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
         ? (exit: ResumeTurnExitRaw) => {
             accounting?.finish(exit);
             const observedExit = resumeAgent === 'codex' ? { ...exit, outputProtocol: 'codex-jsonl' as const } : exit;
+            // notify-classification: {"id":"packages/operator-core/lib/events/await/wake-executor.ts#<module>/executeWake/<callback>:0e6417228acb0ac966cd:1","classification":"durable","reason":"This detached exit callback can quarantine a poisoned session and initiate terminal owner or fleet notices; process exit and accounting completion do not prove those consequences.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009 must prove detached resume-exit consequences and shared quarantine notices survive restart","deliveryState":"unverified"}
             void (async () => {
               let context = resumeTurnContext;
               const errorText = [observedExit.stderrTail, observedExit.stdoutTail].filter(Boolean).join('\n');

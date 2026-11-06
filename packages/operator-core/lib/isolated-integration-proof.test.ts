@@ -101,6 +101,19 @@ it('composes explicit per-phase maxima into an exact bounded enclosing file budg
   expect(options.testTimeoutMs).toBe(600_000);
 });
 
+it('contains preparation and original worker finalization without widening native assertions', () => {
+  const worker = isolatedWorkerOptions(180_000, {});
+  const proof = isolatedWorkerOptions(180_000, {}, 180_000, {}, 600_000);
+  expect(proof.phaseTimeouts).toEqual(worker.phaseTimeouts);
+  expect(proof.phaseTimeouts.executeMaxMs).toBe(180_000);
+  expect(proof.testTimeoutMs).toBe(worker.testTimeoutMs + 600_000);
+  expect(() => assertIsolatedFileRunBudget(proof.testTimeoutMs + proof.killGraceMs + 20_000, {}))
+    .toThrow('enclosing router');
+  expect(() => assertIsolatedFileRunBudget(proof.testTimeoutMs + proof.killGraceMs + 20_000,
+    { PAPERCUSP_TEST_FILE_TIMEOUT_MS: String(proof.testTimeoutMs + proof.killGraceMs + 20_000) }))
+    .not.toThrow();
+});
+
 it('keeps the execute stall default and carries an explicit long-verifier override', () => {
   expect(isolatedWorkerOptions(180_000, {}).phaseTimeouts.executeStallWindowMs).toBeUndefined();
   const stallWindowMs = 12 * 60_000;
@@ -128,6 +141,16 @@ it('admits the exact declared proof budget without changing child phase ceilings
   const env = { PAPERCUSP_TEST_FILE_TIMEOUT_MS: String(requiredMs) };
   expect(() => assertIsolatedFileRunBudget(requiredMs, env)).not.toThrow();
   expect(isolatedWorkerOptions(480_000, env)).toEqual(isolatedWorkerOptions(480_000, {}));
+});
+
+it('refuses a cancelled proof before reading source or allocating its observer', async () => {
+  const execute = vi.fn();
+  const prepare = vi.fn();
+  await expect(recordIsolatedIntegrationProof({ root: '/never-allocate-cancelled-proof',
+    filePath: 'never-run.test.ts', sourcePaths: [], signal: AbortSignal.abort(new Error('outer test cancelled')),
+    prepare, execute })).rejects.toThrow('outer test cancelled');
+  expect(prepare).not.toHaveBeenCalled();
+  expect(execute).not.toHaveBeenCalled();
 });
 
 async function withCapturedRouter(options: Parameters<typeof captureIsolatedWorker>[2],
@@ -283,7 +306,9 @@ it('starts buffered supervisor execution from runtime IPC without spending its b
   });
 });
 
-it.each([true, false])('lets a detached supervisor clean up before the bounded group fallback: cooperative=%s', async cooperative => {
+it.for([{ cooperative: true, abort: false }, { cooperative: false, abort: false },
+  { cooperative: true, abort: true }, { cooperative: false, abort: true }])(
+  'lets a detached supervisor clean up before the bounded group fallback: %j', async ({ cooperative, abort }) => {
   const evidenceDir = mkdtempSync(join(tmpdir(), 'isolated-supervisor-stop-'));
   const earlySignal = join(evidenceDir, 'descendant-signaled');
   const cleaned = join(evidenceDir, 'cleanup-complete');
@@ -305,13 +330,21 @@ it.each([true, false])('lets a detached supervisor clean up before the bounded g
   });
   try {
     await once(child, 'message');
-    const result = await captureIsolatedWorker(child, evidenceDir,
-      { timeoutMs: 50, killGraceMs: 1000, drainGraceMs: 1000 });
-    expect(result).toMatchObject({ timedOut: true, timeoutPhase: 'bootstrap',
+    const controller = new AbortController();
+    const captured = captureIsolatedWorker(child, evidenceDir,
+      { timeoutMs: abort ? 10_000 : 50, killGraceMs: 1000, drainGraceMs: 1000, signal: controller.signal });
+    if (abort) controller.abort(new Error('outer testcase deadline'));
+    const result = await captured;
+    expect(result).toMatchObject({ timedOut: !abort, aborted: abort,
+      abortReason: abort ? 'Error: outer testcase deadline' : null, timeoutPhase: abort ? null : 'bootstrap',
       exitWaitTimedOut: false, stdioDrainTimedOut: false,
       code: cooperative ? 0 : null, signal: cooperative ? null : 'SIGKILL' });
     expect(existsSync(earlySignal)).toBe(false);
     expect(existsSync(cleaned)).toBe(cooperative);
+    expect(JSON.parse(readFileSync(join(evidenceDir, 'worker-result.json'), 'utf8')))
+      .toMatchObject({ aborted: abort, timedOut: !abort });
+    if (abort) expect(isolatedWorkerFailureDetail(result.output, result))
+      .toContain('ISOLATED_WORKER_ABORT reason=Error: outer testcase deadline');
   } finally {
     try { process.kill(-child.pid!, 'SIGKILL'); } catch { /* owned group already reaped */ }
     if (child.connected) child.disconnect();
@@ -365,6 +398,28 @@ it('gives runtime shutdown its own bounded allowance after provenance finalizati
     expect(child.kill).toHaveBeenCalledWith('SIGTERM');
     child.emit('close');
     expect(await result).toMatchObject({ timedOut: true, timeoutPhase: 'teardown' });
+  });
+});
+
+it('separates nested worker finalization and renews it only on distinct census progress', async () => {
+  const options = { ...routerPhaseOptions, phaseTimeouts: { ...routerPhaseOptions.phaseTimeouts,
+    finalizeMaxMs: 90 } };
+  await withCapturedRouter(options, async (child, result) => {
+    const progress = (phase: string, stage: string) => child.stderr!.emit('data',
+      'ISOLATED_WORKER_PROGRESS ' + JSON.stringify({ pid: 12345, phase, stage }) + '\n');
+    progress('execute', 'phase-execute');
+    await vi.advanceTimersByTimeAsync(75);
+    progress('finalize', 'phase-finalize');
+    await vi.advanceTimersByTimeAsync(20);
+    progress('finalize', 'provenance-files-256');
+    await vi.advanceTimersByTimeAsync(20);
+    expect(child.kill).not.toHaveBeenCalled();
+    // A repeated count is not fresh progress and cannot extend this phase.
+    progress('finalize', 'provenance-files-256');
+    await vi.advanceTimersByTimeAsync(20);
+    expect(child.kill).toHaveBeenCalledWith('SIGTERM');
+    child.emit('close');
+    expect(await result).toMatchObject({ timedOut: true, aborted: false, timeoutPhase: 'finalize' });
   });
 });
 

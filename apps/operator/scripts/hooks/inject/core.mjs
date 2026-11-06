@@ -231,6 +231,16 @@ export async function postInjection(port, body, opts = {}) {
         loopMarkerAppend: matches
           ? oneOf(validOutcome.loopMarkerAppend, ['appended', 'failed', 'not-applicable', 'pending', 'unknown'], 'unknown')
           : 'unknown',
+        // Keep failure diagnostics on the existing per-request receipt even
+        // when optional hook tracing is off. Never persist request/error text.
+        transport: {
+          phase: transportPhase ?? 'not-started',
+          operatorOrigin: attemptedOperatorOrigin,
+          timeoutMs: spec.timeoutMs,
+          elapsedMs: Math.max(0, now() - startedAt),
+          headersElapsedMs: headersReceivedAt === null ? null : Math.max(0, headersReceivedAt - startedAt),
+          responseBodyMs: bodyStartedAt === null ? null : Math.max(0, (bodyFinishedAt ?? now()) - bodyStartedAt),
+        },
       });
     } catch { /* optional per-request evidence never changes hook delivery */ }
   };

@@ -105,6 +105,43 @@ describe('own-head publish (G-2a: worktree head → own namespace, guarded)', ()
     expect(type).toBe('commit');
   });
 
+  it('diagnoses a zero-byte bare-store object before transfer and preserves it for recovery', async () => {
+    const key = 'corrupt-ohp';
+    const corruptWorktree = join(root, 'corrupt-worktree');
+    await git(['init', '-q', '-b', BRANCH, corruptWorktree], root);
+    await commitFile(corruptWorktree, 'a.txt', 'healthy\n', 'bare corruption control');
+    const repoPath = await ensurePotGitRepo(HIVE, key);
+    const oid = '1'.repeat(40);
+    const objectDir = join(repoPath, 'objects', oid.slice(0, 2));
+    const objectPath = join(objectDir, oid.slice(2));
+    await mkdir(objectDir, { recursive: true });
+    await writeFile(objectPath, '');
+    let transfers = 0;
+    const runGit: typeof defaultRunGit = async (args, cwd, options) => {
+      if (args[0] === 'fetch') transfers++;
+      return defaultRunGit(args, cwd, options);
+    };
+    const input = { potHomeSlug: HIVE, repoKey: key, worktreePath: corruptWorktree,
+      branch: BRANCH, devicePubkeyBase64: dev, runGit };
+    const failed = await runOwnHeadPublishTick(input);
+    expect(failed.errors).toEqual([
+      `own-head Git object database corrupt: zero-byte loose object(s): ${oid}; repair required before fetch`,
+    ]);
+    expect(failed.changed).toBe(false);
+    expect(transfers).toBe(0);
+    expect(await readFile(objectPath)).toHaveLength(0);
+    expect(await listNamespaces(repoPath)).toHaveLength(0);
+
+    // The guard does not delete an object whose only copy might be local.
+    // Explicit fixture recovery lets the same production path publish again.
+    await rm(objectPath);
+    const recovered = await runOwnHeadPublishTick(input);
+    expect(recovered.errors).toEqual([]);
+    expect(recovered.changed).toBe(true);
+    expect(transfers).toBe(1);
+    expect(await readNamespaceRef(repoPath, dev, `refs/heads/${BRANCH}`)).toBe(recovered.headSha);
+  });
+
   it('an unmoved head is a free changed:false no-op', async () => {
     const out = await runOwnHeadPublishTick({
       potHomeSlug: HIVE,

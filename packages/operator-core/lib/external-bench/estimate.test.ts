@@ -81,10 +81,11 @@ describe('estimateBenchLaunch', () => {
 describe('committed current protocol launch preflight', () => {
   const setup = () => {
     const config = currentProtocolFixture('current-study');
+    const suites: string[] = ['swe-bench-pro'];
     config.priceSchedule.rates[0].inputTokenCeiling = 1000;
     config.priceSchedule.rates[0].inputTokenCeilingSourceSha256 = currentBenchOpenAiInputContract('configured-alias', 1000);
     const ports = {
-      readPrereg: vi.fn(async () => ({ preregHash: 'a'.repeat(64), config })),
+      readPrereg: vi.fn(async () => ({ preregHash: 'a'.repeat(64), config, suites })),
       verify: vi.fn(async () => ({ preregHash: 'a'.repeat(64) })),
       readAccounts: vi.fn(async () => ({ accounts: [{ id: 'api', provider: 'codex', credentialRef: 'token:/private/key' }] })),
       supportsBearer: vi.fn(async () => true),
@@ -94,8 +95,21 @@ describe('committed current protocol launch preflight', () => {
     };
     const run = (changed = {}) => estimateCurrentBenchLaunch({ workspaceId: 'benchmarks', protocolRunId: config.runId,
       arm: 'papercusp', seed: 1, ...changed }, {}, ports as never);
-    return { run, ports, config };
+    return { run, ports, config, suites };
   };
+  it.each(['swe-bench-pro', 'frontier-swe', 'hive-backlog', 'minecraft'])(
+    'preserves the registered %s suite through launch preflight', async suite => {
+      const s = setup();
+      s.suites.splice(0, s.suites.length, suite);
+      expect(await s.run()).toMatchObject({ ready: true, suite });
+    });
+  it.each([{ suites: [] }, { suites: [''] }, { suites: ['swe-bench-pro', 'frontier-swe'] }])(
+    'refuses a missing or ambiguous registered suite $suites', async ({ suites }) => {
+      const s = setup();
+      s.suites.splice(0, s.suites.length, ...suites);
+      expect(await s.run()).toMatchObject({ ready: false, error: expect.stringContaining('single registered suite') });
+      expect(s.ports.readAccounts).not.toHaveBeenCalled();
+    });
   it('derives controls and boot observation from verified frozen data without inference', async () => {
     const { run, ports } = setup();
     expect(await run()).toMatchObject({ ready: true, arm: 'papercusp', model: 'configured-alias', perTaskUsd: 3,

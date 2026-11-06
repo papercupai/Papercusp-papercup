@@ -88,6 +88,9 @@ export interface SessionTaskBridge {
     request: { kind?: string; title?: string; summary?: string; harness?: string },
   ) => Promise<SessionTaskWorkItemLink>;
   syncProgress?: (link: SessionTaskWorkItemLink, task: SessionTask, op: SessionTaskOp) => Promise<void>;
+  /** Acceptance and continuation intent share the task mutation's transaction.
+   * Failure here rolls back the operation, unlike checkpoint enrichment. */
+  commitTransition?: (sql: Sql | TransactionSql, before: readonly SessionTask[], result: SessionTaskResult) => Promise<void>;
 }
 
 export interface SessionTaskStoreArgs extends SessionTaskOpArgs {
@@ -791,6 +794,8 @@ export async function applySessionTaskOp(sql: SqlLike, args: SessionTaskStoreArg
            ${link.workItemHarness ?? ''}, ${link.workItemId})`;
     }
   }
+
+  await args.bridge?.commitTransition?.(sql, current, reduced);
 
   if (reduced.changedTaskId && args.bridge?.syncProgress && CHECKPOINT_PROGRESS_OPS.includes(op)) {
     const task = reduced.tasks.find((candidate) => candidate.id === reduced.changedTaskId);

@@ -308,10 +308,9 @@ export function resetResultDoorAggregatesForTests(): void {
 // that happens on a result that ALSO overflows the door, the spill faithfully
 // preserves the tool's output — but that output was already missing the field
 // content, so "page the spill instead of re-running" is a dead end: the spill
-// can never contain what the tool itself never serialized. Detect the generic
-// `"<name>_truncated": true` / `"<name>Truncated": true` JSON shapes and
-// their bare TOON equivalents (`<name>Truncated: true`) textually (cheap,
-// tool-agnostic). Then swap the footer/header wording so the reader is
+// can never contain what the tool itself never serialized. Parse the generic
+// JSON fields and self-identifying TOON bodies into metadata before inspecting
+// their keys. Then swap the footer/header wording so the reader is
 // pointed at re-calling the tool with a wider field-level limit instead of
 // paging a spill that cannot help. The camelCase form is used by
 // build:typecheck's public fields (errorsTruncated, byFileTruncated).
@@ -468,31 +467,86 @@ function upstreamProjectionRecoveryInstruction(
   );
 }
 
-/** Distinct truncation and partial marker names found in text (capped — this
- *  feeds advisory wording, not an audit). Empty when none are present. */
+/** Parse JSON or self-identifying TOON; ordinary prose/source text is not metadata. */
+function parseStructuredMarkerBody(text: string, formatHint?: unknown): unknown | undefined {
+  const toonHeader = /^format:\s*toon\s*\r?\n/.exec(text);
+  if (toonHeader || formatHint === 'toon') {
+    try {
+      return decode(toonHeader ? text.slice(toonHeader[0].length) : text, 'toon');
+    } catch {
+      return undefined;
+    }
+  }
+
+  const trimmed = text.trimStart();
+  if (!trimmed.startsWith('{') && !trimmed.startsWith('[')) return undefined;
+  const jsonSlice = findJsonPrefixSlice(trimmed, true);
+  if (!jsonSlice || jsonSlice.start !== 0) return undefined;
+  try {
+    return JSON.parse(trimmed.slice(jsonSlice.start, jsonSlice.end));
+  } catch {
+    return undefined;
+  }
+}
+
+function collectStructuredTruncationMarkers(
+  value: unknown,
+  found: Set<string>,
+  diagnosticToolName: string | undefined,
+): void {
+  if (found.size >= 5 || value === null || typeof value !== 'object') return;
+  if (Array.isArray(value)) {
+    for (const entry of value) collectStructuredTruncationMarkers(entry, found, diagnosticToolName);
+    return;
+  }
+
+  const object = value as Record<string, unknown>;
+  for (const [key, child] of Object.entries(object)) {
+    if (child === true) {
+      INNER_TRUNCATION_MARKER_REGEX.lastIndex = 0;
+      if (
+        INNER_TRUNCATION_MARKER_REGEX.test(JSON.stringify(key) + ': true') &&
+        !isCoordSendDeliveryDiagnostic(diagnosticToolName, key)
+      ) {
+        found.add(key);
+      }
+    }
+    collectStructuredTruncationMarkers(child, found, diagnosticToolName);
+    if (found.size >= 5) return;
+  }
+}
+
+/** Distinct truncation and partial marker names found in structured metadata.
+ *  This feeds advisory wording, not an audit; the returned set is capped. */
 function detectInnerTruncationMarkers(
-  text: string | readonly string[],
+  result: DoorableResult,
   toolName: string,
   nestedTargetToolName?: string,
 ): string[] {
-  const textItems = typeof text === 'string' ? [text] : [...text];
-  const sourceText = textItems.join('\n\n');
   const diagnosticToolName = toolName === 'tools:invoke' ? nestedTargetToolName : toolName;
   const found = new Set<string>();
-  INNER_TRUNCATION_MARKER_REGEX.lastIndex = 0;
-  let m: RegExpExecArray | null;
-  while ((m = INNER_TRUNCATION_MARKER_REGEX.exec(sourceText))) {
-    const marker = m[1] ?? m[2];
-    if (isCoordSendDeliveryDiagnostic(diagnosticToolName, marker)) continue;
-    found.add(marker);
+  const add = (marker: string) => {
+    if (found.size < 5 && !isCoordSendDeliveryDiagnostic(diagnosticToolName, marker)) found.add(marker);
+  };
+  const inspect = (value: unknown) => {
+    if (value === undefined) return;
+    try {
+      const serialized = JSON.stringify(value);
+      if (serialized && hasStructuredPartialFlag(serialized)) add('_partial');
+      if (serialized && hasStructuredSummaryNoticeTruncation(serialized)) add('summaryNotice.truncated');
+    } catch {
+      // A non-JSON value cannot be tool-result marker metadata.
+    }
+    collectStructuredTruncationMarkers(value, found, diagnosticToolName);
+  };
+
+  inspect(result.structuredContent);
+  const formatHint = result._meta?.format;
+  for (const item of result.content) {
+    if (!isTextItem(item)) continue;
+    inspect(parseStructuredMarkerBody(item.text, formatHint));
     if (found.size >= 5) break;
   }
-  // Work-item and other custom shapers also put the cutoff directly in the
-  // field value, but a tool payload can quote the same text as ordinary content.
-  // Do not infer truncation from marker substrings in serialized payload text;
-  // shapers must emit a structured *_truncated, *Truncated, or _partial flag.
-  if (textItems.some(hasStructuredPartialFlag)) found.add('_partial');
-  if (textItems.some(hasStructuredSummaryNoticeTruncation)) found.add('summaryNotice.truncated');
   return [...found];
 }
 
@@ -1708,8 +1762,10 @@ interface JsonPrefixSlice {
 /** Find a complete object/array JSON value at the start of a text item. Some
  * dispatch paths append guidance to the SAME text item rather than emitting a
  * separate content item, so JSON.parse(item.text) cannot identify the payload
- * even though the bytes before the guidance are a complete JSON document. */
-function findJsonPrefixSlice(text: string): JsonPrefixSlice | null {
+ * even though the bytes before the guidance are a complete JSON document.
+ * allowTrailingText lets marker detection inspect that parsed prefix without
+ * claiming that the whole result is JSON. */
+function findJsonPrefixSlice(text: string, allowTrailingText = false): JsonPrefixSlice | null {
   const start = text.search(/\S/);
   if (start < 0 || (text[start] !== '{' && text[start] !== '[')) return null;
   let depth = 0;
@@ -1739,7 +1795,11 @@ function findJsonPrefixSlice(text: string): JsonPrefixSlice | null {
           // advisory shape. A JSON snippet followed by arbitrary text can be a
           // genuine non-JSON result (including tool-owned truncation samples),
           // and treating that as a complete payload would overclaim recovery.
-          if (trailing && !/^(?:See also:|\[batch-hint\]|\[nudge\])/i.test(trailing)) return null;
+          if (
+            trailing &&
+            !allowTrailingText &&
+            !/^(?:See also:|\[batch-hint\]|\[nudge\])/i.test(trailing)
+          ) return null;
           return { start, end };
         } catch {
           return null;
@@ -2135,7 +2195,7 @@ function spillResultAsReferenceEnvelope<T extends DoorableResult>(input: {
       | undefined
   )?.payloadProjection;
   const innerTruncationMarkers = detectInnerTruncationMarkers(
-    input.result.content.filter(isTextItem).map((item) => item.text),
+    input.result,
     input.opts.toolName,
     input.opts.nestedTargetToolName,
   );
@@ -3714,7 +3774,7 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
       // and per-entry evidence even though the body already fits this door.
       if (isAlreadyCompactedReleaseRepairQueueResult(result, opts)) return result;
       const innerTruncationMarkers = detectInnerTruncationMarkers(
-        items.filter(isTextItem).map((item) => item.text),
+        result,
         opts.toolName,
         opts.nestedTargetToolName,
       );
@@ -3855,7 +3915,7 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
     // recovery routes (for example work_items:get's checkpointOnly + sourceRef handle), so
     // the broader projection must not suppress the field-level diagnosis.
     const innerTruncationMarkers = detectInnerTruncationMarkers(
-      textItems.map((item) => item.text),
+      result,
       opts.toolName,
       opts.nestedTargetToolName,
     );

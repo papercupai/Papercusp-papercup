@@ -627,6 +627,14 @@ pub fn chat_dock_kdl(_brain_argv: &[String], lex: &crate::lexicon::Lexicon) -> S
                     command "pui"
                     args "activity-pane" "--mug"
                 }}
+                pane name="{q}↶ Turns" {{
+                    command "pui"
+                    args "turns-pane" "--mug"
+                }}
+                pane name="{q}☷ Fleet" {{
+                    command "pui"
+                    args "fleet-pane" "--mug"
+                }}
             }}
         }}
         pane name="{cups_name}" stacked=true size="12%" {{{driver_pane_block}
@@ -1678,6 +1686,8 @@ mod tests {
         assert!(on.contains("args \"wake-pane\" \"--mug\""));
         assert!(on.contains("args \"mail-pane\" \"--mug\""));
         assert!(on.contains("args \"activity-pane\" \"--mug\""));
+        assert!(on.contains("args \"turns-pane\" \"--mug\""));
+        assert!(on.contains("args \"fleet-pane\" \"--mug\""));
         assert!(on.contains("name=\"☕✉ Orders\""));
         assert!(on.contains("name=\"☕⏸ wakes\""));
         assert!(on.contains("name=\"☕✉ mail\""));
@@ -1697,8 +1707,8 @@ mod tests {
         assert!(on.contains("name=\"⏸ wakes\""));
         // queen transcript-view + overwatch transcript-view (D-003) + queen
         // Orders/wakes/mail/Activity + driver + fleet-wakes + the network tab's
-        // network-pane + the Context tab's context-pane = 10.
-        assert_eq!(on.matches("command \"pui\"").count(), 10);
+        // network-pane + the Context tab's context-pane + Turns/Fleet = 12.
+        assert_eq!(on.matches("command \"pui\"").count(), 12);
         assert!(on.contains("args \"network-pane\""));
         assert!(on.contains("args \"context-pane\""));
         // Order: brain precedes her side column; the queen split precedes the

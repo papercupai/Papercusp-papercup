@@ -157,10 +157,15 @@ export interface AnchorResolveOptions {
 /** One shared wall budget, with cancellation, even when a dependency never settles. */
 export async function resolvePlanItemAnchors(inputs: AnchorInput[], options: AnchorResolveOptions): Promise<PlanItemAnchor[]> {
   anchorsInputSchema.parse(inputs);
-  const result = await withBoundedTimeout(async signal => {
-    const snapshot = typeof options.snapshot === 'function' ? await options.snapshot()
-      : options.snapshot ?? null;
-    return Promise.all(inputs.map(async input => {
+  const deadline = performance.now() + (options.budgetMs ?? ANCHOR_RESOLUTION_BUDGET_MS);
+  let snapshotPromise: Promise<PushSnapshot | null> | undefined;
+  const getSnapshot = (): Promise<PushSnapshot | null> => {
+    snapshotPromise ??= Promise.resolve().then(() => typeof options.snapshot === 'function'
+      ? options.snapshot() : options.snapshot ?? null);
+    return snapshotPromise;
+  };
+  return Promise.all(inputs.map(async input => {
+    const result = await withBoundedTimeout(async signal => {
       const empty = unknownAnchor(input, 'not-found');
       if (input.change?.action === 'investigate') return unknownAnchor(input, 'investigation');
       if (input.change?.action === 'create') return unknownAnchor(input, 'planned');
@@ -169,6 +174,7 @@ export async function resolvePlanItemAnchors(inputs: AnchorInput[], options: Anc
         return bytes ? { ...empty, contentHash: hash(bytes), resolution: 'resolved' as const,
           unknownReason: null, freshness: 'fresh' as const } : empty;
       }
+      const snapshot = await getSnapshot();
       if (!snapshot) return unknownAnchor(input, 'no-snapshot');
       const candidates = [...new Map((snapshot.symbols?.get(input.symbol) ?? [])
         .filter(s => !input.path || s.path === input.path).map(s => [s.id, s])).values()];
@@ -191,11 +197,11 @@ export async function resolvePlanItemAnchors(inputs: AnchorInput[], options: Anc
         consumersTotal: symbol.callers.length, tests: topology.tests,
         resolution: 'resolved' as const, unknownReason: null, freshness: 'fresh' as const,
         resolvedCommit: snapshot.commit };
-    }));
-  }, { fallback: inputs.map(input => unknownAnchor(input, 'timeout')),
-    timeoutMs: options.budgetMs ?? ANCHOR_RESOLUTION_BUDGET_MS, label: 'plan-item-anchors', warn: false });
-  if (result.reason === 'error') throw result.error;
-  return result.value;
+    }, { fallback: unknownAnchor(input, 'timeout'),
+      timeoutMs: Math.max(1, deadline - performance.now()), label: 'plan-item-anchors', warn: false });
+    if (result.reason === 'error') throw result.error;
+    return result.value;
+  }));
 }
 
 export async function resolveHarnessAnchors(workspaceId: string, harnessSlug: string, inputs: AnchorInput[]): Promise<PlanItemAnchor[]> {

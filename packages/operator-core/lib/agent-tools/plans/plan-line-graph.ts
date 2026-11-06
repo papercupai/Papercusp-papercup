@@ -151,6 +151,7 @@ export async function readPlanLineItemsByPlan(
 /** Under the plan lock; admit the returned edge changes in the SAME transaction. */
 export async function writePlanLineNodes(
   tx: Sql, scope: PlanLineScope, before: readonly PlanLineNode[], items: readonly PlanIndexItem[],
+  options: { allowDraftStatusProjection?: boolean } = {},
 ): Promise<WorkItemDependencyMutation[]> {
   const { workspaceId, harnessSlug, slug } = scope;
   const prior = new Map(before.map((n) => [n.id, n]));
@@ -162,6 +163,16 @@ export async function writePlanLineNodes(
     if (old) {
       const changeStatus = item.status !== old.status && !(item.status === 'blocked' && old.status === 'todo');
       const changeText = item.text !== old.text;
+      // A plan rewrite has no authenticated completion evidence. It must not
+      // close a claimed node while preserving its holder and null authority,
+      // or reopen a settled node while retaining its old completion record.
+      // Canonical lifecycle writers update the graph first; their subsequent
+      // plan reflection has no status edge here and remains a normal rewrite.
+      if (!options.allowDraftStatusProjection && changeStatus &&
+          [status, old.status].some(value => value === 'done' || value === 'dropped')) {
+        throw new Error(`plan_line_status_change_requires_lifecycle_writer: ${harnessSlug}#${old.featureId} ` +
+          `(${slug}#${item.id}); use work_items:complete for completion or work_items:set_state for other lifecycle changes`);
+      }
       await tx`
         UPDATE harness_shared.work_items SET plan_seq = ${seq}, plan_phase = ${item.phase},
           plan_importance = ${item.importance}, plan_decision_refs = ${item.decisionRefs}::text[],

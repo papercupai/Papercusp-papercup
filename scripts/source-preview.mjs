@@ -390,7 +390,8 @@ function materializedSubmodule(repo, link, full) {
 
 // Resolve only the tested path's gitlinks, against their pinned commits. An
 // unrelated unresolved gitlink must not hide an initial dirty-input refusal.
-function committedInputBlob(repo, sha, path, trees) {
+// Retain the object owner so contract readers can read pinned submodule bytes.
+function committedInputObject(repo, sha, path, trees, optional = false) {
   const key = `${repo}\0${sha}`;
   if (!trees.has(key)) {
     const entries = new Map();
@@ -407,13 +408,20 @@ function committedInputBlob(repo, sha, path, trees) {
   }
   const { entries, links } = trees.get(key);
   const link = links.find((entry) => path.startsWith(`${entry.path}/`));
-  if (link) return committedInputBlob(materializedSubmodule(repo, link, link.path),
-    link.sha, path.slice(link.path.length + 1), trees);
+  if (link) return committedInputObject(materializedSubmodule(repo, link, link.path),
+    link.sha, path.slice(link.path.length + 1), trees, optional);
+  if (optional && !entries.has(path)) return null;
   const [mode, type, blob] = entries.get(path) ?? [];
   if (type !== 'blob' || !['100644', '100755'].includes(mode)) {
     throw new PreviewError(`tested input is not a regular committed file: ${path}`, 2);
   }
-  return blob;
+  return { repo, blob };
+}
+
+function committedInputBlob(repo, sha, path, trees) {
+  const input = committedInputObject(repo, sha, path, trees);
+  assert.ok(input, 'Committed input must be present');
+  return input.blob;
 }
 
 /** Conservative allocated source bytes for the exact recursive verifier export.
@@ -2170,7 +2178,7 @@ export async function prepareVerifierDependencies({ donor, dest, receipt, runPha
   // subsequent source checks still reject unfinished copies. Runtime assets
   // are seeded only after the committed source itself has been verified.
   await runPhase('deps.source.before', () => verifyVerifierSource(dest, receipt,
-    { runtimeArtifacts: false, dependencyStaging: true }));
+    { runtimeArtifacts: true, dependencyStaging: true }));
   const runtimeSetup = join(dest, 'apps/operator/scripts/setup-porcupine-runtime.sh');
   if (existsSync(runtimeSetup)) {
     const modelDonor = join(donor, 'apps/operator/public/porcupine/porcupine_params.pv');
@@ -2491,12 +2499,13 @@ function preflightVerifierWorkspaceBinDonor({ repo, commit, donor }) {
 /** Freeze source and dependencies before invoking a command that allocates fixtures.
  * The receipt survives outside the owned tree; only this invocation's tree is removed.
  * @param {{ repo: string, ref: string, receiptPath: string, inputs?: string[], inputsFile?: string, tauriInputs?: boolean, command: string[], env?: NodeJS.ProcessEnv, budgetFrom?: string, childEstimateMs?: number, preparationMaxMs?: number, prepareChildEnv?: (context: { sourceRoot: string }) => Promise<NodeJS.ProcessEnv | void> | NodeJS.ProcessEnv | void, releaseParentPrivatePg?: boolean, requestParentPgReleaseImpl?: (token: string) => Promise<unknown>,
- *   clock?: { now: () => number, setTimeout: (callback: () => void, delay: number) => ReturnType<typeof setTimeout>, clearTimeout: (timer: ReturnType<typeof setTimeout>) => void } }} options
+ *   signal?: AbortSignal, clock?: { now: () => number, setTimeout: (callback: () => void, delay: number) => ReturnType<typeof setTimeout>, clearTimeout: (timer: ReturnType<typeof setTimeout>) => void } }} options
  * @returns {Promise<number>}
  */
 export async function runVerifierCommand({ repo, ref, receiptPath, inputs = [], inputsFile, tauriInputs = false, command, env = process.env, budgetFrom, childEstimateMs = 0, preparationMaxMs, prepareChildEnv = async () => ({}),
-  releaseParentPrivatePg = false, requestParentPgReleaseImpl = requestPrivateTestPgRelease,
+  releaseParentPrivatePg = false, requestParentPgReleaseImpl = requestPrivateTestPgRelease, signal,
   clock = { now: Date.now, setTimeout, clearTimeout } }) {
+  if (signal?.aborted) throw new PreviewError('verifier command canceled before launch', 143);
   if (!ref?.trim() || !receiptPath || !command?.length || !command[0])
     throw new PreviewError('verifier command needs an explicit ref, external receipt and command', 2);
   if (!Number.isSafeInteger(childEstimateMs) || childEstimateMs < 0)
@@ -2544,8 +2553,8 @@ export async function runVerifierCommand({ repo, ref, receiptPath, inputs = [], 
     throw new PreviewError('verifier command scratch must be outside the source and dependency donor', 2);
   const copyMode = verifierDependencyCopyMode(donor, scratch);
   const helperPath = 'papercusp-desktop/bin/lib/pinned-deps.sh';
-  const helperSource = git(sourceRepo, ['ls-tree', sourceCommit, '--', helperPath]).trim()
-    ? git(sourceRepo, ['show', sourceCommit + ':' + helperPath]) : '';
+  const helperObject = committedInputObject(sourceRepo, sourceCommit, helperPath, new Map(), true);
+  const helperSource = helperObject ? git(helperObject.repo, ['cat-file', 'blob', helperObject.blob]) : '';
   const snapshotSelection = selectVerifierDependencySnapshot(copyMode,
     /^\s*snapshot-generation-locked\s*\)/m.test(helperSource), explicitGeneration);
   // Automatic cross-device selection consumes the same immutable closure as an
@@ -2564,10 +2573,13 @@ export async function runVerifierCommand({ repo, ref, receiptPath, inputs = [], 
   };
   const onInt = () => cancel('SIGINT'), onTerm = () => cancel('SIGTERM'), onHup = () => cancel('SIGHUP');
   process.on('SIGINT', onInt); process.on('SIGTERM', onTerm); process.on('SIGHUP', onHup);
+  signal?.addEventListener('abort', onTerm, { once: true });
+  if (signal?.aborted) onTerm();
   let owned;
   try { owned = await fs.mkdtemp(join(scratch, 'verifier-command-')); }
   catch (error) {
     process.off('SIGINT', onInt); process.off('SIGTERM', onTerm); process.off('SIGHUP', onHup);
+    signal?.removeEventListener('abort', onTerm);
     throw error;
   }
   const root = join(owned, 'invoked-source');
@@ -2937,6 +2949,7 @@ export async function runVerifierCommand({ repo, ref, receiptPath, inputs = [], 
         }
       } finally {
         process.off('SIGINT', onInt); process.off('SIGTERM', onTerm); process.off('SIGHUP', onHup);
+        signal?.removeEventListener('abort', onTerm);
       }
     }
     checkCancellation();

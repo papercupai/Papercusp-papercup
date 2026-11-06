@@ -420,7 +420,6 @@ import { isNotCheckedNonGating } from "../../../../scripts/lib/not-checked-non-g
 import { EXIT_NOT_CHECKED } from "../../../../scripts/lib/not-checked.mjs";
 import {
   resolveBatchTimeoutMs,
-  resolveTaskTimeoutMs,
   resolveQualificationYieldBudget,
   createQualificationYieldBoundary,
   type QualificationYieldBudget,
@@ -3026,102 +3025,24 @@ export const CANDIDATE_SELECTION_TO_SUITE_WARN_MS = 20 * 60_000;
  *  is skipped and the candidate still reaches those normal checks. */
 export const EARLY_TYPECHECK_PREFLIGHT_TIMEOUT_MS = 15 * 60_000;
 
-/** WI-7069 root-fix (the run-bounding half): `setupTree`'s `bash setup-release-checkout.sh`
- *  (git checkout + an isolated node_modules copy + a forced dependency re-copy) was the ONE
- *  unbounded call on the candidate-selection→suite path — see CANDIDATE_SELECTION_TO_SUITE_WARN_MS
- *  above for the incident this closes: a run stalled here (or somewhere on this stretch) for
- *  ~10.5h with nothing to stop it, silently producing a 12:53Z verdict that judged a candidate
- *  chosen at ~02:06Z.
- *
- *  Past this bound, setupTree's exec call kills the WHOLE subtree the setup script spawned
- *  (not just the direct `bash` process — see runCmd's `killProcessGroupOnTimeout`) and rejects,
- *  so the run fails LOUD instead of hanging silently for hours. The caller (runGreenCheckpoint)
- *  does not catch this rejection, so it propagates as a run error — the same as any other
- *  unrecoverable setup failure — rather than being swallowed.
- *
- *  30m is generous: CANDIDATE_SELECTION_TO_SUITE_WARN_MS already warns at 20m for the WHOLE
- *  selection→suite stretch (setupTree + both preflights + a slot wait capped at
- *  HEAVY_SLOT_WAIT_SEC=120s), of which setupTree is normally the dominant but still single-digit-
- *  minute leg even under contention. 30m stays comfortably inside the 115m suite timeout, so a
- *  setupTree timeout still leaves that outer bound (and SELF_WATCHDOG_MS above it) as the final
- *  backstop for anything downstream — this constant only closes the ONE gap that let a run
- *  outlive both of those without ever reaching the suite at all. */
+/** Legacy windows remain available to explicitly bounded validation callers.
+ * Main-greening setup/publication omit output-idle and aggregate deadlines:
+ * quiet computation is unknown, not independent evidence of a stalled operation. */
 export const SETUP_TREE_TIMEOUT_MS = 30 * 60_000;
 
-/** EI-21411600805243319: publishing a cold dependency generation performs three
- * metadata walks (live-before, live-after, immutable-copy) around the copy. The
- * root node_modules walk is intentionally metadata-complete and can take ~14m
- * while continuously consuming CPU on the production tree. D-053 proved that a
- * single 30m wall-clock timer therefore kills a healthy publisher during its
- * second walk even though no individual stage is stalled.
- *
- * Keep the existing 30m value as a NO-OUTPUT/NO-PROGRESS budget, and cap the
- * complete publisher independently at 90m. Stage markers from
- * dependency-generation.sh reset the idle budget; the hard cap remains immune
- * to output, so a child that merely prints forever still terminates below the
- * gate-wide 115m parent budget. */
+/** Scoped validation may opt into this window; main-greening does not. */
 export const DEPENDENCY_GENERATION_IDLE_TIMEOUT_MS = SETUP_TREE_TIMEOUT_MS;
-export const DEPENDENCY_GENERATION_HARD_TIMEOUT_MS = 90 * 60_000;
 
-/** EI-21533144726892345: setupTree includes both the pc-heavy exclusive-writer wait and
- * the dependency-generation copy into the checkpoint tree. A single 30m wall-clock budget
- * covered both legs, so a healthy 9m writer wait left only 21m for the atomic copy and killed
- * candidate 10bf66f6 while it was still materializing. Keep 30m as the NO-PROGRESS budget,
- * but share the publisher's 90m hard ceiling so stage output can renew the idle timer without
- * allowing an endlessly-chatty child to hold the gate forever. */
-export const SETUP_TREE_HARD_TIMEOUT_MS = DEPENDENCY_GENERATION_HARD_TIMEOUT_MS;
-
-/** WI-21357012876642589: refresh the materialization phase marker while the two
- * timeout-bounded setup legs are quiet. The max is two setup bounds because
- * realCheckpointDeps.setupTree first publishes the dependency generation and
- * then runs setup-release-checkout, each with SETUP_TREE_TIMEOUT_MS. */
+/** Phase liveness only, not evidence of useful child progress. Its owner stops
+ * the heartbeat in finally when materialization completes or fails. */
 export const MATERIALIZATION_HEARTBEAT_INTERVAL_MS = 15_000;
-export const MATERIALIZATION_HEARTBEAT_MAX_DURATION_MS =
-  DEPENDENCY_GENERATION_HARD_TIMEOUT_MS + SETUP_TREE_TIMEOUT_MS;
 
-/** WI-1319 root fix (c): a SELF-BOUND wall-clock watchdog, armed by THIS process
- *  (green-checkpoint.ts) itself, independent of the supervising parent
- *  (release-actions.ts's `runScript`, which SIGTERMs the whole process group at
- *  GREEN_CHECKPOINT_SUITE_TIMEOUT_MS=115m + escalates to SIGKILL 15s later).
- *
- *  That parent-side kill relies on the PARENT (the bg-host / routines-tick node
- *  process) staying alive long enough for its in-memory `setTimeout` to fire.
- *  This process is spawned `detached: true` (its own process-group leader) —
- *  detached is exactly what lets it SURVIVE the parent's death/restart, which
- *  means a parent restart mid-suite (routine bg-host crash/deploy/manual
- *  restart) silently drops the ONLY thing that was going to kill a hung run:
- *  the child (this process + any vitest/tsx workers it spawned, which inherit
- *  ITS pgid since they're plain non-detached `runCmd` spawns) is orphaned,
- *  keeps holding the run-lock, and — if genuinely deadlocked (e.g. wedged in
- *  ep_poll awaiting a vitest child that never returns, 0 CPU) — never releases
- *  it or exits. The run-lock's own stale-reclaim (CHECKPOINT_LOCK_STALE_MS,
- *  time-based) lets a LATER attempt proceed, but does nothing to the orphan
- *  itself — it lingers, leaking RSS/FDs/docker containers, and each repeat
- *  orphan compounds the resource pressure on this memory-constrained box. This
- *  froze `main` ~97h on 2026-06-30 even with the reaper's then-60m no-output window
- *  in place (that window only cancels the DBOS-level bookkeeping row — it has
- *  no reach into an already-orphaned OS process tree).
- *
- *  Fix: THIS process arms its own watchdog on startup. On the scheduled path, a
- *  fire means the parent is presumed dead (a live parent's SIGTERM+SIGKILL would
- *  have landed well before this — see the margin below). On the detached manual
- *  path, the launcher deliberately transports a shorter primary run deadline;
- *  that deadline says nothing about parent liveness. In either case this process
- *  releases its own lock, emits a loud red verdict through the normal checkpoint
- *  result path, and then SIGKILLs its OWN process group (`-process.pid`, covering
- *  itself + every runCmd-spawned vitest/tsx worker in one shot) — no orphan can
- *  outlive it.
- *
- *  GREEN_CHECKPOINT_SUITE_TIMEOUT_MS in packages/operator-core/lib/release/green-checkpoint-schedule.ts — 115m.
- *  timeout 115m < self-watchdog 180m < stale-reclaim 190m.
- *
- *  INVARIANT: strictly greater than the parent's full kill window (115m SIGTERM
- *  + 15s SIGKILL escalation), so a LIVE parent's kill always wins the race and
- *  this watchdog is a pure backstop, never a competing timeout. Keep it at or
- *  above 3h for long-load checkpoint runs so the outer launch cap cannot cut the
- *  suite off before the red verdict path can run. Also strictly less than
- *  CHECKPOINT_LOCK_STALE_MS (190m) so THIS run terminates itself (and frees its
- *  lock) before a peer attempt would need to force-reclaim it. */
+/** Default idle/no-progress budget for the checkpoint's own watchdog. The main-
+ * greening CLI explicitly passes hardCeilingMs:null: scheduled and manual runs
+ * have no aggregate execution-age limit or parent runtime fuse. This watchdog
+ * still detects silence and owns terminal publication and process-group cleanup.
+ * Explicit bounded-validation callers may retain this value as a hard ceiling;
+ * their fixed cutoff is separate from detached qualification ownership. */
 export const SELF_WATCHDOG_MS = 3 * 60 * 60_000;
 
 /** WI-6554700010009615 stage 1: once runGreenCheckpoint passes the admission refire in its return
@@ -3129,8 +3050,8 @@ export const SELF_WATCHDOG_MS = 3 * 60 * 60_000;
  *  (freeze-disposition write, leg routing, an `awaiting-fixer` tick's P-009 repair-tick legs, the
  *  terminal emit) gets at most this long. Run b874ad21 recorded its verdict, then sat ~2h until
  *  SELF_WATCHDOG_MS fired. Sized for a full P-009 leg pass (setupTree + the cheap legs), the only
- *  long post-verdict step. It only ever pulls the ceiling IN, so the ordering chain
- *  (suite < self-watchdog < stale-reclaim) is preserved. */
+ *  long post-verdict step. These tighten defaults apply to explicitly bounded
+ *  callers; the main-greening CLI's null ceiling cannot be tightened into an age cap. */
 export const POST_VERDICT_WATCHDOG_MS = 60 * 60_000;
 
 /** WI-6554700010009615 stage 2: from the CLI finalizer's entry (every leg is done) to the verdict
@@ -3171,12 +3092,10 @@ export interface SelfWatchdogFireContext {
   tightenedBecause: string | null;
 }
 
-/** Internal transport used only by release-checkpoint-launch.ts's detached MANUAL unit.
- * Scheduled runs omit it and retain SELF_WATCHDOG_MS as their independent parent-death
- * backstop. The lower bound is the scheduled parent's COMPLETE kill window — SIGTERM at
- * the suite budget, SIGKILL a grace later — because accepting anything shorter would let a
- * malformed env kill a healthy run early. Derived from the schedule leaf rather than
- * hand-typed, so it tracks a retune of the budget on its own.
+/** Compatibility duration transport from the manual launcher. The main-greening
+ * CLI uses the resolved duration as an idle budget and explicitly disables its
+ * absolute ceiling. The legacy minimum remains derived
+ * from the bounded suite and escalation defaults, never a detached run lifetime.
  */
 export const MANUAL_SELF_WATCHDOG_ENV =
   "PAPERCUSP_MANUAL_GREEN_CHECKPOINT_WATCHDOG_MS";
@@ -3192,13 +3111,9 @@ export interface SelfWatchdogConfig {
   trigger: SelfWatchdogTrigger;
 }
 
-/** Resolve the deadline AND what that deadline means from the same validated transport.
- *
- * A scheduled run inherits a live parent-side 115m timeout, so its later 180m watchdog can
- * only fire after that parent failed to land the normal kill. A detached manual run has no
- * such parent timer: the launcher deliberately transports 120m15s into THIS watchdog, while
- * systemd remains a 3h outer backstop. Reusing the scheduled "presumed-dead parent" diagnosis
- * for that manual deadline created the false lost-supervisor incident in EI-20444707119723892.
+/** Resolve compatibility duration and trigger together. The bounded helper keeps
+ * its historical validation rules. Main-greening selects hardCeilingMs:null at
+ * watchdog construction, so this result never supplies its aggregate deadline.
  */
 export function selfWatchdogConfigFromEnv(
   env: Readonly<Record<string, string | undefined>> = process.env,
@@ -3926,11 +3841,9 @@ export async function withPublishedMaterialization<T>(
   }
 }
 
-/** WI-21357012876642589: keep a silent materialization visibly alive without
- * allowing the heartbeat timer to outlive the setup operation indefinitely.
- * Recursive setTimeout avoids overlapping marker writes when the event loop is
- * delayed, and the deadline is checked again at every tick so the hard bound
- * holds even when the interval does not divide the maximum duration. */
+/** Keep materialization visibly owned until the returned stop function runs.
+ * Explicit bounded callers may still set maxDurationMs. Recursive scheduling
+ * avoids overlapping marker writes. This heartbeat does not renew child idle timers. */
 export function startMaterializationHeartbeat(
   lockDir: string,
   options: {
@@ -3942,11 +3855,9 @@ export function startMaterializationHeartbeat(
     1,
     options.intervalMs ?? MATERIALIZATION_HEARTBEAT_INTERVAL_MS,
   );
-  const maxDurationMs = Math.max(
-    0,
-    options.maxDurationMs ?? MATERIALIZATION_HEARTBEAT_MAX_DURATION_MS,
-  );
-  const deadlineMs = Date.now() + maxDurationMs;
+  const maxDurationMs = options.maxDurationMs == null
+    ? null : Math.max(0, options.maxDurationMs);
+  const deadlineMs = maxDurationMs == null ? null : Date.now() + maxDurationMs;
   let stopped = maxDurationMs === 0;
   let timer: ReturnType<typeof setTimeout> | undefined;
 
@@ -3959,7 +3870,7 @@ export function startMaterializationHeartbeat(
 
   const schedule = () => {
     if (stopped) return;
-    const remainingMs = deadlineMs - Date.now();
+    const remainingMs = deadlineMs == null ? intervalMs : deadlineMs - Date.now();
     if (remainingMs <= 0) {
       stop();
       return;
@@ -3968,7 +3879,7 @@ export function startMaterializationHeartbeat(
       () => {
         timer = undefined;
         if (stopped) return;
-        if (Date.now() >= deadlineMs) {
+        if (deadlineMs != null && Date.now() >= deadlineMs) {
           stop();
           return;
         }
@@ -4659,26 +4570,17 @@ export class CheckpointQualificationBoundaryError extends Error {
   }
 }
 
-/** The longest span a Node timer can arm. A setTimeout delay above 2^31-1 ms is not
- * honoured: Node clamps it to 1ms, so an "unbounded" deadline expressed as a larger number
- * (or Infinity) would fire IMMEDIATELY. The qualification boundary arms real timers at its
- * deadlines, so "no wall-clock limit" is represented by this span (~24.8 days), not by a
- * larger value. */
-export const QUALIFICATION_UNBOUNDED_SPAN_MS = 2 ** 31 - 1;
-
 /** WI-6554700010042457: a main-greening qualification owns its detached lifetime and
- * ignores the launching request's deadline. Its quantum and orphan fuse retain the
- * timer-safe unbounded span; explicit cancellation and idle detection remain independent.
- * Before this, the 115m suite budget was the quantum and the fallback caller deadline,
- * anchored at PROCESS start, so a long preparation (a 50m early typecheck) left the
- * suite too little budget and the run refused before executing anything. */
+ * ignores the launching request's deadline. Explicit null clocks arm no aggregate
+ * timer or OS fuse, including beyond Node's 24.8-day timer range. Worker/idle bounds,
+ * explicit cancellation and death-verified child custody remain independent. */
 export function checkpointQualificationBudgetFromEnv(startedAtMs: number,
   _environment: NodeJS.ProcessEnv = process.env) {
-  return resolveQualificationYieldBudget({ startedAtMs, quantumMs: QUALIFICATION_UNBOUNDED_SPAN_MS,
-    deadlineEpochMs: null, orphanDeadlineEpochMs: startedAtMs + QUALIFICATION_UNBOUNDED_SPAN_MS });
+  return resolveQualificationYieldBudget({ startedAtMs, quantumMs: null,
+    deadlineEpochMs: null, orphanDeadlineEpochMs: null });
 }
 
-/** One quantum owns the suite and its post-suite workers. Stop publication first,
+/** One qualification owner controls the suite and its post-suite workers. Stop publication first,
  * then drain the fenced executors' death-aware cleanup before releasing this call. */
 export function createCheckpointQualificationExecution(input: {
   target: GateVerdictTarget;
@@ -9958,10 +9860,7 @@ export function decideConcurrencyConfirmation(input: {
   return { verdict, reproducedIn, undeterminedIn };
 }
 
-/** WI-6956: wall-clock cap for ONE workspace's confirming co-execution re-run. Larger
- *  than ISOLATION_RUN_TIMEOUT_MS (that caps a single file at single concurrency; this
- *  runs up to ISOLATION_MAX_FILES files together) but well under the workspace-wide
- *  WORKSPACE_RERUN_TIMEOUT_MS, since it re-runs only the originally-failing files. */
+/** No-output budget for a workspace's confirming co-execution re-run. */
 export const CONCURRENT_CONFIRM_TIMEOUT_MS = 10 * 60_000;
 
 /** The most files the isolation step will ever re-run. A broad red (many distinct
@@ -19241,8 +19140,8 @@ export type CheckpointExec = (
     allowNonZero?: boolean;
     timeoutMs?: number;
     /** When true, timeoutMs is an idle/no-output budget instead of an absolute
-     * wall-clock cap. Every stdout/stderr chunk re-arms it. Pair with
-     * hardTimeoutMs so a noisy but non-terminating child still has a fixed bound. */
+     * wall-clock cap. Every stdout/stderr chunk re-arms it. Aggregate limits are
+     * opt-in for bounded callers; main-greening execution omits them. */
     timeoutResetsOnProgress?: boolean;
     /** Absolute wall-clock cap independent of child output. */
     hardTimeoutMs?: number;
@@ -19270,7 +19169,8 @@ export type CheckpointExec = (
      *  process GROUP when `killProcessGroupOnTimeout` is set) and the call rejects. Optional
      *  so every injected test fake keeps compiling untouched — a fake simply ignores it. */
     signal?: AbortSignal;
-    /** Fenced qualification commands require an independently bounded OS scope. */
+    /** Fenced qualification commands require a registered OS scope; an explicit
+     * null deadline retains owned lifetime without an aggregate runtime cap. */
     qualification?: Pick<QualificationCommandOptions, 'target' | 'progress' | 'deadlineEpochMs'>;
   },
 ) => Promise<CheckpointExecResult>;
@@ -19319,9 +19219,6 @@ export async function ensureCheckpointDependencyGeneration(
       CHECKPOINT_DEPENDENCY_RETAIN_LABEL,
     ],
     {
-      timeoutMs: DEPENDENCY_GENERATION_IDLE_TIMEOUT_MS,
-      timeoutResetsOnProgress: true,
-      hardTimeoutMs: DEPENDENCY_GENERATION_HARD_TIMEOUT_MS,
       killProcessGroupOnTimeout: true,
       onOutput: (stream, text) => {
         for (const line of text.split(/\r?\n/)) {
@@ -19859,17 +19756,14 @@ function commandCompletedSuccessfully(
   return result.code === 0 && result.signal == null;
 }
 
-/** load-flake-isolation-2026-06-23: hard cap for ONE isolated single-file re-run.
- *  A single test file at single concurrency finishes in seconds; 5 min covers even a
- *  cold heavy `await import()` graph. On timeout the exec REJECTS → the absorption step
- *  records that file errored → it counts as still-failing (never a false green). */
+/** Available to explicitly bounded validation; main-greening rescues omit it. */
 export const ISOLATION_RUN_TIMEOUT_MS = 5 * 60_000;
 
 /**
  * EI-204898: task-shaped test rescues used to bypass the affected runner's parent-owned
- * watchdog entirely. Keep their outer bound on the same conservative policy as the batch
- * runner: a generous floor for the largest workspace, adaptive headroom when a caller has
- * supplied an override, and a ceiling below the gate-wide backstop. The env is the already
+ * watchdog entirely. Default rescues now retain custody without a silence-only
+ * deadline; their individual worker/test guards remain. Explicit operator
+ * overrides remain bounded. The env is the already
  * sanitized child env, so a host-only override cannot silently change what the rescue claims
  * to have bounded.
  */
@@ -19884,12 +19778,8 @@ export const RESCUE_TASK_TIMEOUT_MAX_MS = 90 * 60_000;
  * 2700000ms on every pass while still completing files, so the queue's only signature leg read
  * ERRORED forever and the frozen candidate could never converge (repair head 1a044fb6, 2026-09-26).
  *
- * Default policy (no operator override): the floor becomes an IDLE budget — every stdout/stderr
- * chunk re-arms it — capped by an absolute ceiling. Both properties the batch runner relies on hold:
- *   1. MONOTONE — an idle window of at least the floor cannot expire before the floor has elapsed,
- *      and the ceiling is at least the floor, so no input is killed EARLIER than before.
- *   2. BOUNDED — a silent wedge dies at the floor exactly as before; a chattering wedge dies at
- *      the ceiling, below the gate-wide backstop.
+ * Default policy: no aggregate or output-idle cutoff. Independent observation
+ * separates useful progress from activity; opaque silence remains unknown.
  * An explicit AFFECTED_BATCH_TIMEOUT_MS stays an ABSOLUTE bound: an operator who pins a deadline
  * gets that deadline, never a silently-extended one.
  */
@@ -19907,18 +19797,8 @@ export function rescueTaskWatchdogOptions(
   // number for a positive, finite env value.
   const explicitMs = resolveBatchTimeoutMs(env.AFFECTED_BATCH_TIMEOUT_MS, 0);
   const overrideMs = explicitMs > 0 ? explicitMs : null;
-  const timeoutMs = resolveTaskTimeoutMs({
-    overrideMs,
-    floorMs: RESCUE_TASK_TIMEOUT_FLOOR_MS,
-    maxMs: RESCUE_TASK_TIMEOUT_MAX_MS,
-  });
-  if (overrideMs != null) return { timeoutMs, killProcessGroupOnTimeout: true };
-  return {
-    timeoutMs,
-    timeoutResetsOnProgress: true,
-    hardTimeoutMs: Math.max(timeoutMs, RESCUE_TASK_TIMEOUT_MAX_MS),
-    killProcessGroupOnTimeout: true,
-  };
+  if (overrideMs != null) return { timeoutMs: overrideMs, killProcessGroupOnTimeout: true };
+  return { killProcessGroupOnTimeout: true };
 }
 
 /**
@@ -19952,17 +19832,16 @@ export function rescueTaskWatchdogOptions(
  * the worker's own event loop, so a test that blocks that loop SYNCHRONOUSLY (the
  * `mkdirSync('/proc/...')` ENOENT/EEXIST spin observed 2026-08-02) can never let the
  * callback be scheduled — 5s and 180s are equally unfireable. The only real backstops are
- * the OUTER wall-clock caps named below and the parent's 120m process-group SIGTERM. See
+ * scoped external worker guards and independent parent supervision. See
  * EI-19370814345784324; raising this constant does not help that class at all.
  *
- * Fail-safe in both directions: each call site still carries its own OUTER wall-clock cap
- * (ISOLATION_RUN_TIMEOUT_MS / CONCURRENT_CONFIRM_TIMEOUT_MS / WORKSPACE_RERUN_TIMEOUT_MS),
- * so a genuinely hung test still trips the subprocess timeout → errored → treated as
- * still-failing. Raising this can therefore delay a red, never manufacture a green.
+ * A scoped guard failure is an execution error, never a pass. The aggregate
+ * rescue can be quiet without being dead; independent supervision must retain
+ * custody while investigating it.
  */
 export const RESCUE_TEST_TIMEOUT_MS = 60_000;
 
-/** worker-pool-crash-absorption-2026-06-25 (WI-806): hard cap for ONE crashed-workspace
+/** worker-pool-crash-absorption-2026-06-25 (WI-806): idle budget for ONE crashed-workspace
  *  re-run at single concurrency. A whole workspace suite (vs one file) needs more room
  *  than the per-file isolation run, but must still bound a genuine hang. On timeout the
  *  exec REJECTS → attemptWorkerCrashAbsorption treats it as still-failing (never a false
@@ -22533,7 +22412,7 @@ export function realCheckpointDeps(
   // a fresh `vitest run <file>` scoped to its workspace, at SINGLE concurrency
   // (VITEST_MAX_FORKS/THREADS=1) so the 8-fork load contention that caused the flake is
   // gone. Same committed-defaults env (buildGreenCheckpointEnv) + the same checkpoint
-  // tree the suite ran in. A bounded timeout (ISOLATION_RUN_TIMEOUT_MS) caps a genuine
+  // tree the suite ran in. A renewable idle timeout (ISOLATION_RUN_TIMEOUT_MS) catches a genuine
   // hang; on timeout/spawn-error the result is errored:true so the decision treats the
   // file as still-failing (never a false-green). `--no-file-parallelism` + the fork cap
   // give a clean, deterministic single-file run. Defined as a const (not `this`) so
@@ -22577,7 +22456,7 @@ export function realCheckpointDeps(
         cwd: invocation.cwd,
         env,
         allowNonZero: true,
-        timeoutMs: ISOLATION_RUN_TIMEOUT_MS,
+        ...rescueTaskWatchdogOptions("test", env),
       });
       // WI-6969: capture THIS attempt's own failing case names + timing-signature so the
       // retry loop can tell "matches the original failure exactly, structurally can't be
@@ -22645,7 +22524,7 @@ export function realCheckpointDeps(
       // still does so at 60s. Being merely SLOWER when co-executed is not a defect at all;
       // it is what contention is, and scoring it as one was the category error. A genuine
       // co-execution DEADLOCK is unaffected: it blows 60s exactly as it blew 5s, and
-      // CONCURRENT_CONFIRM_TIMEOUT_MS still bounds the whole run.
+      // CONCURRENT_CONFIRM_TIMEOUT_MS still catches a run that stops producing output.
       const bashFiles = files.filter((file) =>
         needsOwnFileRunner(cfg.checkpointRoot, workspace, file),
       );
@@ -22663,7 +22542,7 @@ export function realCheckpointDeps(
           cwd: invocation.cwd,
           env,
           allowNonZero: true,
-          timeoutMs: CONCURRENT_CONFIRM_TIMEOUT_MS,
+          ...rescueTaskWatchdogOptions("test", env),
         });
         if (r.code !== 0) return { workspace, passed: false };
       }
@@ -22677,7 +22556,7 @@ export function realCheckpointDeps(
         cwd: invocation.cwd,
         env,
         allowNonZero: true,
-        timeoutMs: CONCURRENT_CONFIRM_TIMEOUT_MS,
+        ...rescueTaskWatchdogOptions("test", env),
       });
       return { workspace, passed: r.code === 0 };
     } catch (e) {
@@ -22727,7 +22606,7 @@ export function realCheckpointDeps(
       cwd: invocation.cwd,
       env,
       allowNonZero: true,
-      timeoutMs: WORKSPACE_RERUN_TIMEOUT_MS,
+      ...rescueTaskWatchdogOptions("test", env),
     });
     if (r.code === 0) return { workspace, passed: true };
     const out = r.stdout + r.stderr;
@@ -22804,9 +22683,6 @@ export function realCheckpointDeps(
     let publishedGeneration: CheckpointExecResult;
     try {
       publishedGeneration = await exec(process.execPath, generationArgs, {
-        timeoutMs: DEPENDENCY_GENERATION_IDLE_TIMEOUT_MS,
-        timeoutResetsOnProgress: true,
-        hardTimeoutMs: DEPENDENCY_GENERATION_HARD_TIMEOUT_MS,
         killProcessGroupOnTimeout: true,
         onOutput: relayOutput,
       });
@@ -24479,9 +24355,6 @@ export function realCheckpointDeps(
               PC_HEAVY_COALESCE: "0",
               PC_HEAVY_RELEASE_GATE: "1",
             },
-            timeoutMs: SETUP_TREE_TIMEOUT_MS,
-            timeoutResetsOnProgress: true,
-            hardTimeoutMs: SETUP_TREE_HARD_TIMEOUT_MS,
             killProcessGroupOnTimeout: true,
             onOutput: relaySetupOutput,
           },
@@ -25658,7 +25531,7 @@ export function realCheckpointDeps(
             cwd: invocation.cwd,
             env,
             allowNonZero: true,
-            timeoutMs: ISOLATION_RUN_TIMEOUT_MS,
+            ...rescueTaskWatchdogOptions("test", env),
           }).catch((e: unknown) => ({
             code: 1,
             stdout: "",
@@ -25702,7 +25575,7 @@ export function realCheckpointDeps(
                 cwd: invocation.cwd,
                 env,
                 allowNonZero: true,
-                timeoutMs: ISOLATION_RUN_TIMEOUT_MS,
+                ...rescueTaskWatchdogOptions("test", env),
               }).catch(() => null);
               // A throw is INDETERMINATE, not a failure — returning false here would name a
               // healthy file under "STILL FAILING (fix these)". null abandons the whole split.
@@ -26850,9 +26723,8 @@ export function runCmd(
     }
     // A bounded timeout kills the whole opted-in process group and rejects. By
     // default timeoutMs retains its historical absolute semantics. The
-    // dependency publisher opts into idle semantics and also supplies the hard
-    // cap below, so advancing work survives while a hang or noisy infinite loop
-    // still fails closed.
+    // dependency publisher and rescue paths opt into idle semantics. An explicit
+    // bounded caller may independently supply the hard cap below.
     armIdleTimer();
     if (opts.hardTimeoutMs) {
       hardTimer = setTimeout(() => {

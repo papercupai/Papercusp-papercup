@@ -65,6 +65,15 @@ const FUTURE = new Date(NOW.getTime() + 3_600_000).toISOString();
 const MIGRATION_834 = fileURLToPath(
   new URL('../../../../libs/papercusp/libs/db/sql/834-consult-threads.sql', import.meta.url),
 );
+const MIGRATION_501 = fileURLToPath(
+  new URL('../../../../libs/papercusp/libs/db/sql/501-session-turns.sql', import.meta.url),
+);
+const MIGRATION_702 = fileURLToPath(
+  new URL('../../../../libs/papercusp/libs/db/sql/702-session-turn-parts.sql', import.meta.url),
+);
+const MIGRATION_968 = fileURLToPath(
+  new URL('../../../../libs/papercusp/libs/db/sql/968-self-review-turn-parts-owner-ts-idx.sql', import.meta.url),
+);
 // Migration 844 (cascade_cursor + cascade_digest) — .sql once armed, .DRAFT
 // while iterating, so the suite is valid on both sides of the arming mv.
 const MIGRATION_844_ARMED = fileURLToPath(
@@ -104,6 +113,10 @@ beforeAll(async () => {
       state text NOT NULL DEFAULT 'open',
       updated_at timestamptz NOT NULL DEFAULT now()
     )`);
+  await ensureCoordEventLogTable(rootSql);
+  await rootSql.unsafe(readFileSync(MIGRATION_501, 'utf8'));
+  await rootSql.unsafe(readFileSync(MIGRATION_702, 'utf8'));
+  await rootSql.unsafe(readFileSync(MIGRATION_968, 'utf8'));
   // The REAL migrations — consult_state + consult_post_meta cannot drift.
   await rootSql.unsafe(readFileSync(MIGRATION_834, 'utf8'));
   await rootSql.unsafe(readFileSync(MIGRATION_844, 'utf8'));
@@ -113,7 +126,6 @@ beforeAll(async () => {
   // away; its FK needs only this parent identity table in the isolated fixture.
   await rootSql.unsafe('CREATE TABLE harness_shared.users (id uuid PRIMARY KEY)');
   await rootSql.unsafe(readFileSync(MIGRATION_1302, 'utf8'));
-  await ensureCoordEventLogTable(rootSql);
   coordFixture.sql = rootSql;
   coordFixture.log = new PgCoordLog({
     getSql: () => rootSql,
@@ -1459,6 +1471,7 @@ describe('review consult conversion at half TTL (review-system-rework-reduction-
     routing: unknown;
     createdMin: number;
     expiresMin: number;
+    updatedMin?: number;
     exchangesUsed?: number;
     latency?: 'proceed' | 'hard-blocked';
   }): Promise<string> {
@@ -1472,7 +1485,7 @@ describe('review consult conversion at half TTL (review-system-rework-reduction-
         (${WS}, ${id}, 'rubric-author', 'resp-1', 'awaiting_responder', 'Vet acceptance rubric R rev 2',
          ${opts.latency ?? 'proceed'}, ${at(opts.expiresMin)}::timestamptz,
          ${rootSql.json(opts.routing as never)}, 0, ${opts.exchangesUsed ?? 0},
-         ${at(opts.createdMin)}::timestamptz, ${at(opts.createdMin)}::timestamptz)`;
+         ${at(opts.createdMin)}::timestamptz, ${at(opts.updatedMin ?? opts.createdMin)}::timestamptz)`;
     await rootSql`
       INSERT INTO harness_shared.coord_conversations (workspace_id, id, kind, state, updated_at)
       VALUES (${WS}, ${id}, 'consult', 'open', ${at(opts.createdMin)}::timestamptz)`;
@@ -1498,6 +1511,14 @@ describe('review consult conversion at half TTL (review-system-rework-reduction-
     const row = rows[0]!;
     if (typeof row.outcome === 'string') row.outcome = JSON.parse(row.outcome);
     return row;
+  }
+
+  async function seedToolUse(owner: string, timestamp: string): Promise<void> {
+    await rootSql`
+      INSERT INTO harness_shared.session_turn_parts
+        (workspace_id, source_kind, session_id, part_idx, ts, owner, speaker, part_kind, tool_name, text)
+      VALUES ('default', 'codex', ${owner}, 0, ${timestamp}::timestamptz, ${owner},
+              'assistant', 'tool_use', 'rubrics:get', '{}')`;
   }
 
   afterAll(async () => {
@@ -1554,6 +1575,104 @@ describe('review consult conversion at half TTL (review-system-rework-reduction-
     const alert = alerts.find((a) => a.conversationId === id)!;
     expect(alert.msgId).toContain('consult-review-conversion');
     expect(alert.body).toContain(`vettingWorkItem: 'WI-review-${id}'`);
+  });
+
+  it('leases recent answering-session tool use, but only after routing and before the configured expiry', async () => {
+    const activeId = await seedReview({
+      routing: { policy: 'rubric-vetting', ...menuSnapshot(['resp-1'], ['answerer-active']) },
+      createdMin: -70, expiresMin: 50,
+    });
+    const staleId = await seedReview({
+      routing: { policy: 'rubric-vetting', ...menuSnapshot(['resp-1'], ['answerer-stale']) },
+      createdMin: -70, expiresMin: 50,
+    });
+    const beforeRouteId = await seedReview({
+      routing: { policy: 'rubric-vetting', ...menuSnapshot(['resp-1'], ['answerer-before-route']) },
+      createdMin: -70, updatedMin: -1, expiresMin: 50,
+    });
+    const expiredId = await seedReview({
+      routing: { policy: 'rubric-vetting', ...menuSnapshot(['resp-1'], ['answerer-expired']) },
+      createdMin: -70, expiresMin: -1,
+    });
+    const dispatchBackedId = await seedReview({
+      routing: { policy: 'rubric-vetting', ...menuSnapshot(['resp-1']) },
+      createdMin: -70, expiresMin: 50,
+    });
+    await rootSql`
+      UPDATE harness_shared.consult_state
+         SET dispatch_attempts = ${rootSql.json([{
+           at: at(-60), sourceOwnerId: 'resp-1', dispatched: true,
+           answeringOwnerId: 'answerer-dispatch',
+         }] as never)}
+       WHERE workspace_id = ${WS} AND conversation_id = ${dispatchBackedId}`;
+    await seedToolUse('answerer-active', at(-2));
+    await seedToolUse('answerer-stale', at(-6));
+    await seedToolUse('answerer-before-route', at(-2));
+    await seedToolUse('answerer-expired', at(-2));
+    await seedToolUse('answerer-dispatch', at(-2));
+
+    const { deps, filed } = withFiler();
+    const result = await sweepExpiredConsults(deps);
+    const targetIds = new Set([activeId, staleId, beforeRouteId, expiredId, dispatchBackedId]);
+    const convertedIds = result.converted
+      .map((entry) => entry.conversationId)
+      .filter((id) => targetIds.has(id));
+
+    expect(new Set(convertedIds)).toEqual(new Set([staleId, beforeRouteId, expiredId]));
+    expect(filed
+      .map((entry) => entry.conversationId)
+      .filter((id) => targetIds.has(id))
+      .sort()).toEqual([staleId, beforeRouteId, expiredId].sort());
+    expect(await rowOf(activeId)).toMatchObject({
+      state: 'awaiting_responder', closed_at: null, cascade_cursor: 0,
+    });
+    expect(await rowOf(dispatchBackedId)).toMatchObject({
+      state: 'awaiting_responder', closed_at: null, cascade_cursor: 0,
+    });
+  });
+
+  it('rechecks answering-session activity with the current clock after work-item filing', async () => {
+    const id = await seedReview({
+      routing: { policy: 'rubric-vetting', ...menuSnapshot(['resp-1'], ['answerer-after-file']) },
+      createdMin: -70, expiresMin: 50,
+    });
+    let currentTime = NOW;
+    const { deps, filed, alerts } = withFiler();
+    deps.now = () => currentTime;
+    const fileReviewWorkItem = deps.fileReviewWorkItem!;
+    deps.fileReviewWorkItem = async (request) => {
+      const result = await fileReviewWorkItem(request);
+      currentTime = new Date(NOW.getTime() + 1_000);
+      await seedToolUse('answerer-after-file', currentTime.toISOString());
+      return result;
+    };
+
+    try {
+      const result = await sweepExpiredConsults(deps);
+
+      expect(result.converted.some((entry) => entry.conversationId === id)).toBe(false);
+      expect(result.requesterAlerts).toEqual([]);
+      expect(filed.filter((entry) => entry.conversationId === id)).toHaveLength(1);
+      expect(alerts).toEqual([]);
+      expect(await rowOf(id)).toMatchObject({ state: 'awaiting_responder', closed_at: null });
+    } finally {
+      const cleanupAt = currentTime.toISOString();
+      await rootSql`
+        UPDATE harness_shared.consult_state
+           SET closed_at = COALESCE(closed_at, ${cleanupAt}::timestamptz),
+               updated_at = GREATEST(updated_at, ${cleanupAt}::timestamptz)
+         WHERE workspace_id = ${WS} AND conversation_id = ${id}
+      `;
+      await rootSql`
+        UPDATE harness_shared.coord_conversations
+           SET state = 'closed', updated_at = GREATEST(updated_at, ${cleanupAt}::timestamptz)
+         WHERE workspace_id = ${WS} AND id = ${id}
+      `;
+      await rootSql`
+        DELETE FROM harness_shared.session_turn_parts
+         WHERE workspace_id = 'default' AND owner = 'answerer-after-file'
+      `;
+    }
   });
 
   it('does not send a conversion alert when a reply closes the consult during work-item filing', async () => {

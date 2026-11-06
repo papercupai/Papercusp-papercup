@@ -153,6 +153,23 @@ describe('scorecards:get evidence-first projection', () => {
     expect((getTool as unknown as { skipWorkspaceTx?: boolean }).skipWorkspaceTx).toBe(true);
   });
 
+  it.each(['diagnostic', 'grading'] as const)('preserves %s identity on evidence and recipe reads', async (purpose) => {
+    const identity = { purpose, barSetHash: 'b'.repeat(64),
+      baselineRef: 'EI-baseline', supersedes: 'EI-corrected-reading' };
+    const card = { ...scorecard, ...identity, criteria: scorecard.criteria.slice(0, 1), nKeys: 1,
+      auditTarget: { ...scorecard.auditTarget, purpose, current: purpose !== 'diagnostic' } };
+    readScorecardEvidenceM.mockResolvedValue({ kind: 'found', scorecard: card });
+    readScorecardRecipeHeaderM.mockResolvedValue({ kind: 'found', scorecard: recipeHeaderOf(card) as never });
+    for (const cursor of [{}, { criterionKey: 'criterion-1' }, { rerunRecipeOffset: 0 }]) {
+      const result = await getTool.handler({ issueId: card.issueId, ...cursor }, makeDispatchContext());
+      if (!('data' in result)) throw new Error('Expected a structured scorecard response');
+      expect(result.data).toMatchObject({ ok: true, scorecard: { ...identity,
+        rubricRef: card.rubricRef, rubricRevision: card.rubricRevision, criteriaHash: card.criteriaHash,
+        subject: card.subject, auditTarget: card.auditTarget } });
+      expect(resultContract.safeParse(result.data).success).toBe(true);
+    }
+  });
+
   it('keeps the header criteria result schema compatible with the saved recipe read', async () => {
     const { validateRecipeScriptAgainstCatalog } = await import('../recipes/recipe-schema-validation');
     const scorecardsGet = {
@@ -857,6 +874,10 @@ describe('scorecards:get evidence-first projection', () => {
     };
     const largeIndex = {
       ...scorecard,
+      purpose: 'diagnostic' as const,
+      barSetHash: 'b'.repeat(64),
+      supersedes: 'EI-previous-diagnostic-reading',
+      auditTarget: { ...scorecard.auditTarget, purpose: 'diagnostic' as const, current: false },
       gradingAudit,
       criteria: Array.from({ length: 300 }, (_, i) => ({
         key: `criterion-${i}`, rating: 'pass', evidence: 'x'.repeat(200),
@@ -894,7 +915,8 @@ describe('scorecards:get evidence-first projection', () => {
       expect(result.scorecard.criteria).toEqual([]);
       expect(result.scorecard.gradingAudit).toEqual(gradingAudit);
       expect(result.scorecard.rerunRecipe).toEqual(rerunRecipe);
-      expect(result.scorecard.auditTarget).toEqual(scorecard.auditTarget);
+      expect(result.scorecard).toMatchObject({ purpose: largeIndex.purpose, barSetHash: largeIndex.barSetHash,
+        supersedes: largeIndex.supersedes, auditTarget: largeIndex.auditTarget });
       expect(result.evidenceRead).toMatchObject({
         complete: false,
         scope: 'criterion-index',
@@ -1006,6 +1028,9 @@ describe('scorecards:get evidence-first projection', () => {
     };
     const large = {
       ...scorecard,
+      purpose: 'grading' as const,
+      barSetHash: null,
+      baselineRef: 'EI-prior-diagnostic-baseline',
       gradingAudit,
       rerunRecipe: {
         ...rerunRecipe,
@@ -1056,6 +1081,8 @@ describe('scorecards:get evidence-first projection', () => {
       expect(result.scorecard.subject).toEqual(large.subject);
       expect(result.scorecard.gradingAudit).toEqual(gradingAudit);
       expect(result.scorecard.evidenceFingerprint).toBe(large.evidenceFingerprint);
+      expect(result.scorecard).toMatchObject({ purpose: large.purpose,
+        barSetHash: large.barSetHash, baselineRef: large.baselineRef });
       expect(JSON.stringify(result).length).toBeLessThanOrEqual(
         computeTurnDoors(0, BAKED_DOOR_CONSTANTS).resultEach * CHARS_PER_TOKEN_ESTIMATE - 256,
       );

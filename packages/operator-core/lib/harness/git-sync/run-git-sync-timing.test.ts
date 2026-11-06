@@ -184,11 +184,36 @@ describe('git-sync submodule timing evidence', () => {
     }
   });
 
+  it('runs eight independent repositories concurrently before the next depth batch', async () => {
+    const f = fixture();
+    const entered = new Set<string>();
+    let activeRepos = 0;
+    let peakActiveRepos = 0;
+    const runGit: RunGit = async (args, cwd, options) => {
+      if (cwd.startsWith('/fake/libs/') && !entered.has(cwd)) {
+        entered.add(cwd);
+        activeRepos++;
+        peakActiveRepos = Math.max(peakActiveRepos, activeRepos);
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        activeRepos--;
+      }
+      return f.opts.runGit(args, cwd, options);
+    };
+    await runGitSync('timing-concurrency-test', {
+      ...f.opts,
+      runGit,
+      submodulePaths: Array.from({ length: 9 }, (_, i) => 'libs/r' + i),
+    });
+    const batches = f.recorded.get('git-sync:submodules').submoduleTiming.batches;
+    expect(peakActiveRepos).toBe(8);
+    expect(batches.map((batch: any) => batch.repositories.length)).toEqual([8, 1]);
+  });
+
   it('bounds retained batches and keeps completed evidence when the next batch yields', async () => {
     const f = fixture();
     await expect(runGitSync('timing-test', {
       ...f.opts,
-      submodulePaths: Array.from({ length: 261 }, (_, i) => `libs/r${i}`),
+      submodulePaths: Array.from({ length: 521 }, (_, i) => `libs/r${i}`),
       shouldYield: async () => {
         // Several safe yield probes run during setup and the early root commit.
         // Anchor this test to the submodule batch boundary it is asserting.
@@ -200,8 +225,8 @@ describe('git-sync submodule timing evidence', () => {
     const timing = f.recorded.get('git-sync:submodules').submoduleTiming;
     expect(timing.batches).toHaveLength(64);
     expect(timing.omittedBatches).toBe(1);
-    expect(timing.batches.flatMap((b: any) => b.repositories)).toHaveLength(256);
-    expect(f.calls).not.toContain('/fake/libs/r260');
+    expect(timing.batches.flatMap((b: any) => b.repositories)).toHaveLength(512);
+    expect(f.calls).not.toContain('/fake/libs/r520');
     expect(f.logs.some((line) => line.includes('batch-settled') && line.includes('"index":64'))).toBe(true);
   });
 

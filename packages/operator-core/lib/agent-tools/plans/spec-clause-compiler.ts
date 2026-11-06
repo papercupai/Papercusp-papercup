@@ -308,6 +308,9 @@ function canonicalCandidate(candidate: SpecSetHashClause): Record<string, unknow
   };
 }
 
+/** v2 includes declared falsifiers; v1 omitted them. Never silently replay across versions. */
+export const SPEC_SET_HASH_VERSION = 2;
+
 /** Hash only semantic clause content; source order and Markdown styling do not matter. */
 export function computeSpecSetHash(candidates: readonly SpecSetHashClause[]): string {
   const semanticRows = candidates

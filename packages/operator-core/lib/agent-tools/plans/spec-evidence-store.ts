@@ -4356,6 +4356,7 @@ async function completedRuntimeSourceReceiptGaps(
       || (verifierJourney || !path.startsWith('scripts/')) && !qualified.has(path));
     return missingSourcePaths.length > 0 ? [{ runId: selector.journeyRunId, missingSourcePaths }] : [];
   }
+  if (selector.kind !== 'isolated-integration') return [];
   const gaps: Array<{ runId: string; missingSourcePaths: string[] }> = [];
   await Promise.all(selector.runIds.map(async (runId) => {
     let receipt: unknown;
@@ -4980,13 +4981,15 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
                  AND tr.workspace_id = b.workspace_id AND tr.harness_slug = b.harness_slug
            )) AS test_run_present
       FROM harness_shared.spec_evidence_bindings b
+      -- Metadata retains the scoped presence probes but does not hydrate run payloads.
       LEFT JOIN harness_shared.test_runs tr
-        ON tr.id = b.test_run_id
+        ON ${!metadataOnly} AND tr.id = b.test_run_id
        AND tr.workspace_id = b.workspace_id AND tr.harness_slug = b.harness_slug
       LEFT JOIN LATERAL (
         SELECT baseline.id, baseline.status, baseline.execution_details
           FROM harness_shared.test_runs baseline
-         WHERE b.evidence_kind IN ('mutation', 'counterexample')
+         WHERE ${!metadataOnly}
+           AND b.evidence_kind IN ('mutation', 'counterexample')
            AND tr.source = 'mutation-probe'
            AND tr.execution_details->'mutation'->>'leg' = 'mutant'
            AND baseline.workspace_id = tr.workspace_id
@@ -5036,6 +5039,11 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
      ORDER BY b.observed_at DESC, b.id DESC
       LIMIT ${limit}`;
       recordPhase('bindingRowsQuery', bindingRowsStartedAt);
+      // Pre-start needs the bounded contract rows, not proof receipts or scorecards.
+      if (metadataOnly) {
+        if (diagnostics) diagnostics.phaseMs.scorecardProofQuery = 0;
+        return rows;
+      }
       // Batch in the same workspace snapshot rather than querying per binding.
       const runIds = [...new Set(rows.flatMap(row => [row.test_run_id, row.mutation_baseline_id])
         .filter((id): id is number | string => id != null).map(Number))];
@@ -5465,7 +5473,9 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
     );
   }
   recordPhase('postReadProbeFence', postReadProbeStartedAt);
-  const declaredConfigurations = await resolveDeclaredConfigurations(rows);
+  const declaredConfigurations = metadataOnly
+    ? new Map<string, DeclaredConfigurationResolution>()
+    : await resolveDeclaredConfigurations(rows);
   const classificationStartedAt = diagnostics ? Date.now() : 0;
   const classified = rows.map((row, index) => {
     const measured = serverMeasurements[index];

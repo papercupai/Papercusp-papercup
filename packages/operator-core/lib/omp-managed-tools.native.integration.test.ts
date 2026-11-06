@@ -12,14 +12,19 @@ import { invoke } from '@papercusp/orchestrator';
 import { resumeArgsFor, roleLaunchArgs, suLaunchArgs } from '../../../apps/operator/scripts/psu-launcher.mjs';
 import { resumeCommandFor } from './events/await/wake-executor';
 import { resolveOnPath, wellKnownBackendBin } from './backend-bin-resolve.mjs';
-import { captureIsolatedWorker, isolatedTestFileWorkerOptions, isolatedWorkerFailureDetail,
+import { captureIsolatedWorker, isolatedWorkerOptions, isolatedWorkerFailureDetail,
   recordIsolatedIntegrationProof } from '../test/isolated-integration-proof';
 import { preparePrivateOperatorApiBundle } from '../test/private-http-workspace-preflight';
 
 const root = resolve(import.meta.dirname, '../../..');
 const filePath = 'packages/operator-core/lib/omp-managed-tools.native.integration.test.ts';
 const privateMcpUrl = process.env.OMP_MANAGED_PRIVATE_MCP_URL;
-const workerOptions = isolatedTestFileWorkerOptions(process.env, 1, {}, 'runtime');
+// Preparation, native assertions, source verification and PG shutdown have
+// separate allowances. The 180s assertion limit is also used by the census
+// supervisor; an enclosing timer must contain all of those phases.
+const nativeCaseTimeoutMs = 180_000;
+const workerOptions = { ...isolatedWorkerOptions(nativeCaseTimeoutMs, process.env, nativeCaseTimeoutMs,
+  {}, 600_000), testFileExecutionFromStdout: true as const };
 const nativeTools = ['read', 'bash', 'edit', 'write', 'grep', 'glob', 'task', 'todo', 'web_search'];
 const admitted: CapabilityPolicyRequest = {
   client: 'omp', surface: 'launch', clientVersions: { omp: '18.0.3' }, ompNativeTools: nativeTools,
@@ -259,13 +264,14 @@ if (privateMcpUrl) {
         .toEqual(retained[0]!.names.filter((name: string) => name !== 'bash' && !name.startsWith('mcp__')).sort());
     }
     console.info('OMP_ADMITTED_LIFECYCLE ' + JSON.stringify({ retained, removed, drift, invoked }));
-  }, 180_000);
+  }, nativeCaseTimeoutMs);
 } else {
   // Preflight belongs to the retained runtime's prepare phase below. A separate
   // passing case has no runtime receipt and suppresses custody for the file.
   it('retains installed OMP production MCP removal and native lifecycle evidence', async context => {
     let prepared: Awaited<ReturnType<typeof preparePrivateOperatorApiBundle>>;
-    const runId = await recordIsolatedIntegrationProof({ root, filePath,
+    const proof = recordIsolatedIntegrationProof({ root, filePath, signal: context.signal,
+      minimumFileRunTimeoutMs: workerOptions.testTimeoutMs + workerOptions.killGraceMs + 20_000,
       sourcePaths: ['libs/papercusp/packages/orchestrator/src/managed-capability-policy.ts',
         'libs/papercusp/packages/orchestrator/src/invoke.ts',
         'apps/operator/scripts/psu-launcher.mjs', 'packages/operator-core/lib/events/await/wake-executor.ts',
@@ -296,10 +302,10 @@ if (privateMcpUrl) {
         ], { cwd: root, detached: true, execArgv: [], env, stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
         observe(child);
         let result: Awaited<ReturnType<typeof captureIsolatedWorker>>;
-        try { result = await captureIsolatedWorker(child, evidenceDir, workerOptions); }
+        try { result = await captureIsolatedWorker(child, evidenceDir, { ...workerOptions, signal: context.signal }); }
         finally { await rm(join(evidenceDir, 'node_modules')); }
         expect(result, isolatedWorkerFailureDetail(result.output, result)).toMatchObject({
-          code: 0, signal: null, timedOut: false, exitWaitTimedOut: false, stdioDrainTimedOut: false,
+          code: 0, signal: null, timedOut: false, aborted: false, exitWaitTimedOut: false, stdioDrainTimedOut: false,
         });
         expect(result.output).toContain('OMP_PRODUCTION_MCP_VERIFIED');
         const line = result.output.split('\n').find(row => row.startsWith('OMP_ADMITTED_LIFECYCLE '));
@@ -307,7 +313,11 @@ if (privateMcpUrl) {
         await writeFile(join(evidenceDir, 'native-tool-surface.json'), line!.slice('OMP_ADMITTED_LIFECYCLE '.length));
       },
     });
+    // A test timeout aborts context.signal before its async body settles. Keep
+    // the original proof alive through supervisor cleanup and result retention.
+    context.onTestFinished(async () => { await proof.catch(() => {}); }, workerOptions.killGraceMs + 20_000);
+    const runId = await proof;
     Object.assign(context.task.meta, { papercuspIsolatedRuntimeRunId: runId });
     console.info('ISOLATED_OMP_MANAGED_SURFACE_PROOF_RUN ' + runId);
-  }, 600_000);
+  }, workerOptions.testTimeoutMs);
 }

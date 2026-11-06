@@ -53,6 +53,7 @@ import { resolveConcreteWorkspaceId } from '../../workspace-registry';
 import { getOrgPg } from '@papercusp/db-org';
 import { deriveItemWorkEvidence, type ItemWorkEvidence } from '../../item-activity';
 import { activeExternalBlockers } from '../../external-blockers';
+import { hasActiveStrictHumanAsk } from '../../hold-registry';
 import {
   FLEET_METRIC_ADMISSION_PARITY,
   FLEET_METRIC_FEATURE_INHERITED_CLAIM_TO_CLOSE_MAX_MS,
@@ -1406,6 +1407,12 @@ export async function buildFleetMetricsResult(
     Promise.resolve(opts.terminalContributions ?? []),
   ]);
   const floorById = new Map(floorRows.map((row: ClaimFloorAttribution) => [row.id, row]));
+  const stateCounts: Record<string, number> = Object.create(null);
+  const primaryReasons: Record<string, number> = Object.create(null);
+  const exclusionCounts: Record<string, number> = Object.create(null);
+  const floorCoverage = { measured: 0, unknown: 0 };
+  const exclusionCoverage = { complete: 0, firstReasonOnly: 0, unknown: 0 };
+  const evidenceGaps = { humanWithoutStrictAsk: 0, blockedWithoutRecordedGate: 0 };
   const buckets = {
     needsHuman: 0,
     blocked: 0,
@@ -1417,6 +1424,25 @@ export async function buildFleetMetricsResult(
   for (const item of remainingItems) {
     const floor = floorById.get(item.id);
     const failsFloor = (label: string) => floor?.refusedBy === label || floor?.failedFloors?.includes(label);
+    stateCounts[item.state] = (stateCounts[item.state] ?? 0) + 1;
+    const measured = floor && typeof floor.admissible === 'boolean';
+    const reason = floor?.admissible === true ? 'claimable' : floor?.refusedBy ?? 'unknown';
+    primaryReasons[reason] = (primaryReasons[reason] ?? 0) + 1;
+    floorCoverage[measured ? 'measured' : 'unknown'] += 1;
+    exclusionCoverage[!measured ? 'unknown' : floor.admissible || Array.isArray(floor.failedFloors)
+      ? 'complete' : 'firstReasonOnly'] += 1;
+    // The scheduler's own vocabulary and precedence are authoritative. Count
+    // every failing floor once per id; these counts intentionally overlap.
+    for (const label of new Set([...(floor?.failedFloors ?? []), ...(floor?.refusedBy ? [floor.refusedBy] : [])])) {
+      exclusionCounts[label] = (exclusionCounts[label] ?? 0) + 1;
+    }
+    if ((hasNeedsHuman(item) || item.state === 'needs-human' || item.state === 'needs_human' || failsFloor('needs-owner-action')) &&
+        !hasActiveStrictHumanAsk(item.payload)) evidenceGaps.humanWithoutStrictAsk += 1;
+    const recordedTriage = item.payload && typeof item.payload === 'object' &&
+      typeof (item.payload as Record<string, unknown>).blockedReason === 'string' &&
+      String((item.payload as Record<string, unknown>).blockedReason).trim().length > 0;
+    if (item.state === 'blocked' && !hasActiveExternalBlocker(item) && !hasClaimHold(item) &&
+        !recordedTriage && !failsFloor('blocked-dep') && !failsFloor('claim-hold')) evidenceGaps.blockedWithoutRecordedGate += 1;
     if (
       hasNeedsHuman(item) ||
       item.state === 'needs-human' ||
@@ -1598,6 +1624,18 @@ export async function buildFleetMetricsResult(
       remaining: {
         total: remainingItems.length,
         unit: FLEET_METRIC_UNITS.workItems,
+        categorization: {
+          stateCounts, primaryReasons, exclusionCounts, exclusionsOverlap: true,
+          floorCoverage, exclusionCoverage, evidenceGaps,
+          explanation: `${remainingItems.length} remaining; ${primaryReasons.claimable ?? 0} scheduler-claimable; ` +
+            `${stateCounts.blocked ?? 0} stored blocked; ${stateCounts['needs-human'] ?? 0} stored needs-human. ` +
+            `Observed overlapping exclusions: ${exclusionCounts['agent-review'] ?? 0} agent review, ` +
+            `${exclusionCounts['admission-pending'] ?? 0} admission pending, ${exclusionCounts['claim-hold'] ?? 0} claim holds. ` +
+            `Complete exclusion coverage: ${exclusionCoverage.complete}/${remainingItems.length}; ` +
+            `unknown floor rows: ${floorCoverage.unknown}; first-reason-only rows: ${exclusionCoverage.firstReasonOnly}. ` +
+            'Stored labels and scheduler restrictions are separate views; exclusions must not be added together. ' +
+            'Evidence gaps require investigation, never automatic unblocking.',
+        },
         buckets,
         mutuallyExclusive: true,
         precedence: [...FLEET_METRIC_REMAINING_PRECEDENCE],

@@ -495,6 +495,77 @@ export async function previewThreadHasLaterPost(args: {
   return rows.length > 0;
 }
 
+export interface FreshAmendmentReviewerHealth {
+  state: 'unknown' | 'no-failure-observed' | 'later-post' | 'reclaimable';
+  taskId?: string;
+  taskState?: TaskState;
+  nativeRef?: string;
+  reason?: string;
+  evidence?: string;
+}
+
+/**
+ * Inspect a retained fresh reviewer before reporting or reclaiming its amend
+ * receipt. A running ledger row is not proof that its native turn can still
+ * answer: the latest transcript can end on a provider error while the task row
+ * remains running. Missing reads and any later thread post fail closed.
+ */
+export async function inspectFreshAmendmentReviewer(
+  input: { workspaceId: string; previewPostRef: string; reviewer: unknown },
+  deps: {
+    readTaskState?: (taskId: string) => Promise<TaskState | null>;
+    resolveSessionStates?: ResolveSessionStates;
+    analyzeTranscript?: typeof analyzeClaudeResumeTranscriptFile;
+    hasLaterPost?: typeof previewThreadHasLaterPost;
+  } = {},
+): Promise<FreshAmendmentReviewerHealth> {
+  const reviewer = input.reviewer && typeof input.reviewer === 'object'
+    ? input.reviewer as Record<string, unknown>
+    : undefined;
+  const taskId = typeof reviewer?.taskId === 'string' ? reviewer.taskId : undefined;
+  const nativeRef = typeof reviewer?.nativeRef === 'string' ? reviewer.nativeRef : undefined;
+  const ownerId = typeof reviewer?.ownerId === 'string' ? reviewer.ownerId : undefined;
+  if (reviewer?.state !== 'launched' || !taskId || !PREVIEW_POST_REF.test(input.previewPostRef)) {
+    return { state: 'unknown', ...(taskId ? { taskId } : {}), reason: 'reviewer or preview identity is incomplete' };
+  }
+
+  let taskState: TaskState | null;
+  try {
+    taskState = await (deps.readTaskState ?? readLedgerTaskState)(taskId);
+  } catch {
+    return { state: 'unknown', taskId, reason: 'reviewer task state could not be read' };
+  }
+  if (!taskState) return { state: 'unknown', taskId, reason: 'reviewer task state is absent' };
+
+  const terminal = isTerminalState(taskState);
+  const failure = reviewerEndedOnFailure(nativeRef, deps.analyzeTranscript);
+  const liveness = !terminal && ownerId
+    ? await readReviewerLiveness(ownerId, deps.resolveSessionStates)
+    : null;
+  const stranded = liveness?.sessionState === 'parked' && liveness.selfWake === 'none';
+  const reason = failure?.reason ?? (stranded ? 'parked-without-self-wake' : terminal ? 'task-ended' : undefined);
+  if (!reason) return { state: 'no-failure-observed', taskId, taskState, ...(nativeRef ? { nativeRef } : {}) };
+
+  let laterPost: boolean;
+  try {
+    laterPost = await (deps.hasLaterPost ?? previewThreadHasLaterPost)({
+      workspaceId: input.workspaceId,
+      previewPostRef: input.previewPostRef,
+    });
+  } catch {
+    return { state: 'unknown', taskId, taskState, reason: 'preview-thread history could not be read' };
+  }
+  if (laterPost) return { state: 'later-post', taskId, taskState, reason: 'a post exists after the preview' };
+  return {
+    state: 'reclaimable',
+    taskId,
+    taskState,
+    ...(nativeRef ? { nativeRef } : {}),
+    reason,
+    ...(failure?.evidence ? { evidence: failure.evidence } : {}),
+  };
+}
+
 /** Evidence must be the applier's later local post on this exact preview thread. */
 export async function resolveAmendmentReviewEvidence(args: {
   workspaceId: string;

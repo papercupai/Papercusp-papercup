@@ -1,0 +1,9 @@
+{
+  "schemaVersion": "luna-bg-dependency-terminal-v1",
+  "attempt": 2,
+  "status": "failed",
+  "atMs": 1793933322465,
+  "deadlineEpochMs": 1793934941129,
+  "sourceReceiptSha256": "105618afb29fc712adb3a9ff6cee4e6f1c8a959bbe32b8ac4829e7d795987c77",
+  "error": "Error: tampered verification source archive: added apps/operator/node_modules/.bin/csv2json; added apps/operator/node_modules/.bin/csv2tsv; added apps/operator/node_modules/.bin/dsv2dsv; added apps/operator/node_modules/.bin/dsv2json; added apps/operator/node_modules/.bin/json2csv; added apps/operator/node_modules/.bin/json2dsv; added apps/operator/node_modules/.bin/json2tsv; added apps/operator/node_modules/.bin/tsv2csv; added apps/operator/node_modules/.bin/tsv2json; added apps/operator/node_modules/.diff-tOHkUINB/CONTRIBUTING.md; further differences omitted\n    at verifyVerifierSourceSync (/home/marsh-office/papercupai-workspace/papercusp/scripts/source-preview.mjs:2988:53)\n    at verifyVerifierSource (/home/marsh-office/papercupai-workspace/papercusp/scripts/source-preview.mjs:2967:10)\n    at <anonymous> (/home/marsh-office/papercupai-workspace/papercusp/scripts/source-preview.mjs:2180:46)\n    at runPhase (file:///home/marsh-office/papercupai-workspace/papercusp/[eval1]:18:136)\n    at prepareVerifierDependencies (/home/marsh-office/papercupai-workspace/papercusp/scripts/source-preview.mjs:2180:9)\n    at file:///home/marsh-office/papercupai-workspace/papercusp/[eval1]:21:27\n    at ModuleJob.run (node:internal/modules/esm/module_job:437:25)\n    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at async node:internal/modules/esm/loader:246:26\n    at async ModuleLoader.executeModuleJob (node:internal/modules/esm/loader:243:20)"
+}

@@ -17,7 +17,7 @@
  *   - deleting the plan cascades (no orphaned index rows)
  *   - the rows agree with the jsonb column they replace
  */
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type postgres from 'postgres';
 import { withPlanLock } from '../with-plan-lock';
 import { writePlanIndexRows } from '../plan-index-rows';
@@ -176,10 +176,11 @@ describe('migration 675 — plan_items / plan_decisions stay in lockstep with co
   });
 
   it('an edit REPLACES the rows rather than accumulating them', async () => {
+    // Exercise a progress edge; completion belongs to the work-item writer.
     await write(
       body({
         items: [
-          '- **P-001** `done` first item',
+          '- **P-001** `wip` first item',
           '- **P-002** `wip` second item',
           '- **P-003** `todo` third item',
         ],
@@ -189,11 +190,11 @@ describe('migration 675 — plan_items / plan_decisions stay in lockstep with co
 
     const rows = await itemRows();
     expect(rows.length).toBe(3);
-    expect(rows.find((r) => r.item_id === 'P-001')?.status).toBe('done');
+    expect(rows.find((r) => r.item_id === 'P-001')?.status).toBe('wip');
   });
 
   it('REMOVING items deletes their rows — the case an upsert-only writer gets wrong', async () => {
-    await write(body({ items: ['- **P-001** `done` first item'] }));
+    await write(body({ items: ['- **P-001** `wip` first item'] }));
 
     const rows = await itemRows();
     expect(rows.map((r) => r.item_id)).toEqual(['P-001']);
@@ -338,6 +339,18 @@ describe('writePlanIndexRows keeps the jsonb twins equal to the rows', () => {
 });
 
 describe('acceptance BAR subject pin follows BAR-neutral writes only', () => {
+  beforeEach(async () => {
+    // Deleting a plan deliberately retains its work graph. The preceding
+    // jsonb-only fixtures recreate an empty plan; their retained line nodes
+    // must not become the next BAR case's supposed lifecycle preimage.
+    await admin`DELETE FROM harness_shared.work_items
+      WHERE workspace_id=${wsId} AND harness_slug=${HARNESS} AND plan_slug=${SLUG}`;
+    await admin`DELETE FROM harness_shared.harness_plans
+      WHERE workspace_id=${wsId} AND harness_slug=${HARNESS}`;
+    const rows = await admin`SELECT feature_id FROM harness_shared.work_items
+      WHERE workspace_id=${wsId} AND harness_slug=${HARNESS} AND plan_slug=${SLUG}`;
+    expect(rows).toHaveLength(0);
+  });
   it.each([
     ['completion backlink', 'done', 'alpha — note: ← WI-100 completed (done)', 'done', 'alpha — note: ← EI-200 completed (done)', true],
     ['todo → wip', 'todo', 'alpha', 'wip', 'alpha', true],

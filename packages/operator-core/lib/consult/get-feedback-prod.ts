@@ -4,7 +4,7 @@ import { hostname } from 'node:os';
 import { resolveSpawnHostOperatorBaseUrl } from '../mcp-base-url';
 import { getBuildInfo } from '../build-info';
 import { recordExpertiseRoutingInvocation } from '../endpoint-route/telemetry';
-import { CONSULT_DEFAULT_POLICY, methodReviewTarget } from './selection-policies';
+import { BAR_CRITIQUE_POLICY, CONSULT_DEFAULT_POLICY, methodReviewTarget } from './selection-policies';
 import type { AcceptedFeedbackResult, GetFeedbackDeps, GetFeedbackRequest } from './get-feedback-core';
 import type { QueryEmbedderAcquisition } from '../agent-tools/search/embedder';
 
@@ -49,13 +49,21 @@ export async function acceptFeedbackRequestProd(
     const planRefusal = await validateBarCritiquePlanOrigin(payload, sql);
     if (planRefusal) return planRefusal;
 
+    // A governed BAR critique targets the plan in originTaskRef. That target
+    // may be new, so it cannot also be required as prior reviewer expertise.
+    // Keep caller-supplied subject_refs as source constraints, but disable the
+    // router's generic question inference when a BAR critique has none.
+    const inferredSourceRef = request.policy === BAR_CRITIQUE_POLICY ? null : expertiseSubject(request.question);
     const sourceRefs = request.subjectRefs?.length ? request.subjectRefs :
-      expertiseSubject(request.question) ? [expertiseSubject(request.question)!] : [];
+      inferredSourceRef ? [inferredSourceRef] : [];
     const subjectExpansion = sourceRefs.length ? await publicManualSource().expandSubjectRefs(sourceRefs) : null;
     const acceptedPayload = { ...payload,
       ...(subjectExpansion ? {
         resolvedSubjectRefs: subjectExpansion.refs,
         unresolvedSubjectRefs: subjectExpansion.unresolvedDocuments,
+      } : request.policy === BAR_CRITIQUE_POLICY ? {
+        resolvedSubjectRefs: [],
+        unresolvedSubjectRefs: [],
       } : {}) };
     const accepted = await acceptFeedbackRequestCore(acceptedPayload, {
       getSql: () => sql,

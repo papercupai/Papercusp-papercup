@@ -26,6 +26,7 @@ function fakeSql(handler: (text: string, values: unknown[]) => unknown) {
   const sqlFn = async (strings: TemplateStringsArray, ...values: unknown[]) => {
     const text = Array.from(strings).join('?');
     calls.push({ text, values });
+    if (text.includes("r.metadata->'qualificationTransaction' AS qualification")) return [];
     return handler(text, values);
   };
   const unsafe = async (text: string, values: unknown[] = []) => {

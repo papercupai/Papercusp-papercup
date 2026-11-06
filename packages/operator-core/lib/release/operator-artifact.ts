@@ -122,10 +122,17 @@ async function treeObjects(root: string, sha: string, git: GitRead): Promise<Map
  * No caller receipt, checkout SHA alone, or development freshness stamp qualifies. */
 export async function writeOperatorArtifactManifest(input: {
   root: string; entry: string; sourceSha: string;
+  /** Private builds retain outputs outside their frozen source checkout. The
+   * explicit output root changes only entry containment; source objects and
+   * compiler inputs are still verified against root and sourceSha. */
+  artifactRoot?: string;
 }, git: GitRead = gitRead): Promise<OperatorArtifactIdentity> {
   const root = realpathSync(input.root);
   const entry = realpathSync(input.entry);
-  const entryRelative = relative(root, entry);
+  const artifactRoot = input.artifactRoot === undefined ? root : realpathSync(input.artifactRoot);
+  if (input.artifactRoot !== undefined && (!isAbsolute(input.artifactRoot)
+    || resolve(input.artifactRoot) !== artifactRoot)) throw Error('operator-artifact-output-root-invalid');
+  const entryRelative = relative(artifactRoot, entry);
   if (existsSync(resolve(dirname(entry), '.bundle-stale.json'))) throw Error('operator-artifact-stale-build');
   if (!normalized(entryRelative) || !SHA.test(input.sourceSha) || await operatorArtifactSource(root, git) !== input.sourceSha) {
     throw new Error('operator-artifact-source-moved');

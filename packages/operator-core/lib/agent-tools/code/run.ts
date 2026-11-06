@@ -44,7 +44,7 @@ import {
   type RecipeAuthorityContext,
 } from '../../recipe-authority';
 import { bindCurrentCallerDispatch, withNestedWorkItemId } from '../orchestration/current-caller-dispatch';
-import { recordRecipeRun } from '../../code-recipes-store';
+import { recordRecipeRun, recipeRunChoice, type RecipeRunUsage } from '../../code-recipes-store';
 import { withBoundedTimeout, type BoundedTimeoutResult } from '../../bounded-timeout';
 import { buildScratchUri, safeScratchFilesystemPath } from '../../scratch-uri';
 import { storeVolatileScratchReference, writeScratchReference } from '../../scratch-reference';
@@ -681,7 +681,8 @@ export default defineTool({
     if (executionTrace && !recipeCapture) {
       const traceRecord = await runPostprocessing(
         'trace-only recording',
-        () => maybeRecordTraceOnly(ctx, executionTrace as NormalizedExecutionTrace, Boolean(result.ok)),
+        () => maybeRecordTraceOnly(ctx, executionTrace as NormalizedExecutionTrace,
+          Boolean(result.ok) && !(result.fieldMisses?.length), args.dryRun ?? false),
         undefined,
       );
       if (traceRecord.degraded) {
@@ -3008,8 +3009,11 @@ async function maybeCaptureRecipe(
     const concreteHarnessSlug = resolveConcreteHarnessSlug(undefined, ctx);
 
     let ownerId: string | null = null;
+    let choice: RecipeRunUsage['choice'] = 'unknown';
     try {
-      ownerId = resolveAgentIdentity(ctx).ownerId;
+      const identity = resolveAgentIdentity(ctx);
+      ownerId = identity.ownerId;
+      choice = recipeRunChoice(identity);
     } catch {
       ownerId = null; // unattributable ctx (e.g. a test/in-process call) — still capture
     }
@@ -3066,6 +3070,7 @@ async function maybeCaptureRecipe(
         harness: ctx.harnessSlug ?? null,
         ownerId,
         role: ctx.role ?? null,
+        choice,
         title: args.title,
         description: args.description,
         ...(contract?.bindingSchema ? { bindingSchema: contract.bindingSchema } : {}),
@@ -3096,6 +3101,7 @@ async function maybeRecordTraceOnly(
   ctx: UnifiedToolContext,
   executionTrace: NormalizedExecutionTrace,
   success: boolean,
+  dryRun: boolean,
 ): Promise<void> {
   try {
     const workspaceId = ctx.workspaceId;
@@ -3103,8 +3109,11 @@ async function maybeRecordTraceOnly(
     const { resolveLearningPotSlug } = await import('../../learning/pot-scope');
     const { resolveAgentIdentity } = await import('../coordination/identity');
     let ownerId: string | null = null;
+    let choice: RecipeRunUsage['choice'] = 'unknown';
     try {
-      ownerId = resolveAgentIdentity(ctx).ownerId;
+      const identity = resolveAgentIdentity(ctx);
+      ownerId = identity.ownerId;
+      choice = recipeRunChoice(identity);
     } catch {
       ownerId = null;
     }
@@ -3122,6 +3131,8 @@ async function maybeRecordTraceOnly(
       reused: false,
       executionTrace,
       countTowardRecipe: false,
+      usage: { version: 1, selection: 'authored', choice, mode: dryRun ? 'preview' : 'commit',
+        outcome: success ? 'success' : 'error', settled: true },
     });
   } catch (err) {
     ctx.log(`code:run trace record failed (swallowed): ${(err as Error)?.message ?? String(err)}`);

@@ -1,4 +1,11 @@
-import { isItemContinuation, maskFences, parsePlan, renderPlanItem, type PlanItem } from '@papercusp/plan-parser';
+import {
+  isItemContinuation,
+  maskFences,
+  parsePlan,
+  preserveOperationalProgressNote,
+  renderPlanItem,
+  type PlanItem,
+} from '@papercusp/plan-parser';
 import type { PlanIndexItem } from './derive-index';
 
 /** Replace physical item spans. All other bytes (including free prose) belong to the author. */
@@ -29,7 +36,9 @@ export function renderPlanLines(
   const emit = () => {
     const item = items[next++];
     const prior = priorById.get(item.id);
-    const text = options.preserveItemText && prior ? prior.text : item.text;
+    const text = options.preserveItemText && prior
+      ? prior.text
+      : prior ? preserveOperationalProgressNote(item.text, prior.text) : item.text;
     if (phase !== item.phase) {
       output.push('', item.phase ? `## ${item.phase}` : '## Items', '');
       phase = item.phase;

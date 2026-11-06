@@ -9,7 +9,10 @@
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
-vi.mock('../../work-items', () => ({ getCompletionIntegrityStats: vi.fn() }));
+vi.mock('../../work-items', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../work-items')>(),
+  getCompletionIntegrityStats: vi.fn(),
+}));
 
 import { getCompletionIntegrityStats } from '../../work-items';
 const mockStats = vi.mocked(getCompletionIntegrityStats);
@@ -30,6 +33,9 @@ describe('work_items:completion_stats tool', () => {
   it('passes `harness` through to getCompletionIntegrityStats and returns { ok, ...stats }', async () => {
     mockStats.mockResolvedValue({
       harness: 'papercusp',
+      population: { kind: 'harness', harness: 'papercusp', window: 'all-time', fleetAttribution: 'none' },
+      authorityRecordedCompletions: 6,
+      independentlyVerifiedNewChanges: null,
       terminalTotal: 10,
       genuineCompletions: 6,
       dedupOrUnverified: 4,
@@ -41,6 +47,9 @@ describe('work_items:completion_stats tool', () => {
     expect(res.data).toEqual({
       ok: true,
       harness: 'papercusp',
+      population: { kind: 'harness', harness: 'papercusp', window: 'all-time', fleetAttribution: 'none' },
+      authorityRecordedCompletions: 6,
+      independentlyVerifiedNewChanges: null,
       terminalTotal: 10,
       genuineCompletions: 6,
       dedupOrUnverified: 4,
@@ -55,6 +64,9 @@ describe('work_items:completion_stats tool', () => {
   it('passes gateJudged through (the P-013 coverage half)', async () => {
     mockStats.mockResolvedValue({
       harness: 'papercusp',
+      population: { kind: 'harness', harness: 'papercusp', window: 'all-time', fleetAttribution: 'none' },
+      authorityRecordedCompletions: 100,
+      independentlyVerifiedNewChanges: null,
       terminalTotal: 100,
       genuineCompletions: 100,
       dedupOrUnverified: 0,

@@ -27,7 +27,8 @@ vi.mock('../../consult/park-door', async (importOriginal) => {
     }),
   };
 });
-vi.mock('../../work-items', () => ({
+vi.mock('../../work-items', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../work-items')>()),
   getWorkItem: (...args: unknown[]) => getWorkItem(...args),
   mergeWorkItemPayload: (...args: unknown[]) => mergeWorkItemPayload(...args),
   setWorkItemClaimHold: (...args: unknown[]) => setWorkItemClaimHold(...args),

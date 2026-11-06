@@ -10,8 +10,9 @@ import type { GateVerdictTarget } from './gate-verdict-target';
 export interface QualificationCommandOptions {
   target: GateVerdictTarget;
   progress: QualificationWorkProgressInput;
-  /** Cleanup must finish before this fixed caller/OS cutoff. */
-  deadlineEpochMs: number;
+  /** Fixed validation cutoff, or explicit null for the detached owner's lifetime.
+   * Owned work keeps worker timeouts and cancellation without an aggregate OS fuse. */
+  deadlineEpochMs: number | null;
   cwd: string;
   env: NodeJS.ProcessEnv;
   signal?: AbortSignal;
@@ -32,8 +33,10 @@ export async function runQualificationCommand(command: string, args: string[], i
   const options = { ...input, target: structuredClone(input.target), progress: structuredClone(input.progress),
     env: { ...input.env } };
   const callerDeadline = Number(options.env[TASK_DEADLINE_EPOCH_MS_ENV]);
-  if (Number.isSafeInteger(callerDeadline) && callerDeadline > 0)
+  if (options.deadlineEpochMs === null) delete options.env[TASK_DEADLINE_EPOCH_MS_ENV];
+  else if (Number.isSafeInteger(callerDeadline) && callerDeadline > 0)
     options.deadlineEpochMs = Math.min(options.deadlineEpochMs, callerDeadline);
+  const deadlineEpochMs = options.deadlineEpochMs;
   const argv = [command, ...args], taskId = deps.taskId(), unit = scopeUnitForTask(taskId);
   const fence = { attemptId: options.progress.attemptId, runnerId: options.progress.runnerId,
     runId: options.progress.runId, pidIdentity: options.progress.pidIdentity, unit };
@@ -42,11 +45,20 @@ export async function runQualificationCommand(command: string, args: string[], i
   let child: ChildProcess | undefined;
   let stdout = '', stderr = '', closed = false, launchSettled = false;
   let stopReason: Error | undefined;
-  let idleTimer: ReturnType<typeof setTimeout> | undefined;
-  let hardTimer: ReturnType<typeof setTimeout> | undefined;
-  const timers = new Set<ReturnType<typeof setTimeout>>();
+  let idleTimer: ReturnType<typeof arm> | undefined;
+  let hardTimer: ReturnType<typeof arm> | undefined;
+  const timers = new Set<{ handle: ReturnType<typeof setTimeout> }>();
   const arm = (fn: () => void, ms: number) => {
-    const timer = setTimeout(fn, Math.max(0, ms)); timers.add(timer); return timer;
+    const at = deps.now() + Math.max(0, ms);
+    const tick = () => {
+      if (deps.now() < at) { timer.handle = setTimeout(tick, Math.min(2 ** 31 - 1, at - deps.now())); return; }
+      timers.delete(timer); fn();
+    };
+    const timer = { handle: setTimeout(tick, Math.min(2 ** 31 - 1, Math.max(0, ms))) };
+    timers.add(timer); return timer;
+  };
+  const disarm = (timer: ReturnType<typeof arm> | undefined) => {
+    if (timer) { clearTimeout(timer.handle); timers.delete(timer); }
   };
   const bounded = <T>(operation: Promise<T>, cleanup = false): Promise<T> => {
     const signal = cleanup ? cleanupController.signal : controller.signal;
@@ -76,17 +88,18 @@ export async function runQualificationCommand(command: string, args: string[], i
   const abort = () => stop('qualification-command-aborted');
   const startIdle = () => {
     if (!options.timeoutMs) return;
-    if (idleTimer) { clearTimeout(idleTimer); timers.delete(idleTimer); }
+    disarm(idleTimer);
     idleTimer = arm(() => stop('qualification-worker-timeout'), options.timeoutMs);
   };
-  if (!Number.isSafeInteger(options.deadlineEpochMs) || options.deadlineEpochMs - deps.now() < 2000)
+  if (deadlineEpochMs !== null &&
+      (!Number.isSafeInteger(deadlineEpochMs) || deadlineEpochMs - deps.now() < 2000))
     throw new Error('qualification-command-deadline-exhausted');
   const relativeCwd = path.relative(options.progress.root, options.cwd);
   if (relativeCwd === '..' || relativeCwd.startsWith(`..${path.sep}`) || path.isAbsolute(relativeCwd))
     throw new Error('qualification-command-root-mismatch');
   if (options.signal?.aborted) throw new Error('qualification-command-aborted');
-  const deadlineTimer = arm(() => { stop('qualification-command-deadline'); cleanupController.abort(); },
-    options.deadlineEpochMs - deps.now());
+  const deadlineTimer = deadlineEpochMs === null ? undefined :
+    arm(() => { stop('qualification-command-deadline'); cleanupController.abort(); }, deadlineEpochMs - deps.now());
   options.signal?.addEventListener('abort', abort, { once: true });
   let enrolled = false;
   try {
@@ -95,16 +108,16 @@ export async function runQualificationCommand(command: string, args: string[], i
       throw new Error('qualification-child-enrollment-refused');
     enrolled = true;
     controller.signal.throwIfAborted();
-    if (options.deadlineEpochMs - deps.now() < 2000) throw new Error('qualification-command-deadline-exhausted');
-    const inheritedDeadline = Number(options.env[TASK_DEADLINE_EPOCH_MS_ENV]);
-    options.env[TASK_DEADLINE_EPOCH_MS_ENV] = String(Number.isSafeInteger(inheritedDeadline) && inheritedDeadline > 0
-      ? Math.min(inheritedDeadline, options.deadlineEpochMs) : options.deadlineEpochMs);
+    if (deadlineEpochMs !== null) {
+      if (deadlineEpochMs - deps.now() < 2000) throw new Error('qualification-command-deadline-exhausted');
+      options.env[TASK_DEADLINE_EPOCH_MS_ENV] = String(deadlineEpochMs);
+    }
     const launch = deps.spawn(command, argv.slice(1), {
       class: 'test-run', title: 'Frozen qualification command', argv, cwd: options.cwd,
       launchedBy: 'green-checkpoint:qualification',
-      runtimeMaxSec: Math.floor((options.deadlineEpochMs - deps.now()) / 1000),
+      runtimeMaxSec: deadlineEpochMs === null ? 0 : Math.floor((deadlineEpochMs - deps.now()) / 1000),
     }, { taskId, workspaceId: options.target.workspaceId, requireConfinement: true, requireRegistration: true,
-      signal: controller.signal, deadlineEpochMs: options.deadlineEpochMs,
+      signal: controller.signal, ...(deadlineEpochMs === null ? {} : { deadlineEpochMs }),
       spawnOptions: { cwd: options.cwd, env: options.env, stdio: ['ignore', 'pipe', 'pipe'] },
       onSpawn: spawned => {
         child = spawned;
@@ -134,15 +147,16 @@ export async function runQualificationCommand(command: string, args: string[], i
     const managed = await bounded(launch);
     if (!managed.confined || managed.scopeUnit !== unit) throw new Error('qualification-child-confinement-unmeasured');
     const result = await bounded(completion);
-    if (idleTimer) clearTimeout(idleTimer);
-    if (hardTimer) clearTimeout(hardTimer);
+    disarm(idleTimer);
+    disarm(hardTimer);
     // wireExit waits through systemd's launch handoff before delegating live residue.
     await bounded(managed.waitForCompletion());
     return { ...result, stdout, stderr };
   } finally {
-    if (idleTimer) clearTimeout(idleTimer);
-    if (hardTimer) clearTimeout(hardTimer);
-    // Keep the absolute deadline armed through scope teardown and the DB release.
+    disarm(idleTimer);
+    disarm(hardTimer);
+    // Bounded validation keeps its deadline through teardown and DB release.
+    // Owned work retains custody until verified death, independent of execution age.
     // An unmeasured/late launch retains its reservation for death-aware recovery.
     try {
       if (enrolled && launchSettled) {
@@ -164,8 +178,8 @@ export async function runQualificationCommand(command: string, args: string[], i
           throw new Error('qualification-child-death-unmeasured');
       }
     } finally {
-      clearTimeout(deadlineTimer);
-      for (const timer of timers) clearTimeout(timer);
+      disarm(deadlineTimer);
+      for (const timer of timers) clearTimeout(timer.handle);
       options.signal?.removeEventListener('abort', abort);
       controller.abort();
       cleanupController.abort();

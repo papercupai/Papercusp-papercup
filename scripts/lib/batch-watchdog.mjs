@@ -270,19 +270,42 @@ export function createProgressAwareWatchdog({
 
 /** @typedef {Readonly<{status:'ready', startedAtMs:number, callerDeadlineEpochMs:number|null,
  * executionCutoffEpochMs:number, yieldDeadlineEpochMs:number, cleanupDeadlineEpochMs:number,
- * orphanDeadlineEpochMs:number}>} QualificationYieldBudget */
+ * orphanDeadlineEpochMs:number}>} BoundedQualificationYieldBudget */
+/** @typedef {BoundedQualificationYieldBudget | Readonly<{status:'ready', startedAtMs:number,
+ * callerDeadlineEpochMs:null, executionCutoffEpochMs:null, yieldDeadlineEpochMs:null,
+ * cleanupDeadlineEpochMs:null, orphanDeadlineEpochMs:null}>} QualificationYieldBudget */
 /** @typedef {Readonly<{identity:string, completedUnitIds:readonly string[], pendingUnitIds:readonly string[],
- * newCompletionIds:readonly string[], budget:QualificationYieldBudget}>} QualificationYieldProgress */
+ * newCompletionIds:readonly string[], budget:BoundedQualificationYieldBudget}>} QualificationYieldProgress */
 
+/** @overload
+ * @param {{startedAtMs:number, quantumMs:number, orphanDeadlineEpochMs:number,
+ * deadlineEpochMs?:number|null, cleanupReserveMs?:number, yieldReserveMs?:number}} input
+ * @returns {BoundedQualificationYieldBudget | Readonly<{status:'refused', reason:string}>}
+ */
+/** @overload
+ * @param {{startedAtMs:number, quantumMs:number|null, orphanDeadlineEpochMs:number|null,
+ * deadlineEpochMs?:number|null, cleanupReserveMs?:number, yieldReserveMs?:number}} input
+ * @returns {QualificationYieldBudget | Readonly<{status:'refused', reason:string}>}
+ */
 /** Absolute clocks for one physical qualification quantum. Progress and successors
  * cannot move the caller deadline. Persistence and cleanup precede the OS fuse.
- * @param {{startedAtMs:number, quantumMs:number, orphanDeadlineEpochMs:number,
+ * Explicit null quantum AND orphan clocks select owned lifetime without an aggregate
+ * timer; a caller deadline cannot be combined with that policy. Worker bounds remain.
+ * @param {{startedAtMs:number, quantumMs:number|null, orphanDeadlineEpochMs:number|null,
  * deadlineEpochMs?:number|null, cleanupReserveMs?:number, yieldReserveMs?:number}} input
  * @returns {QualificationYieldBudget | Readonly<{status:'refused', reason:string}>}
  */
 export function resolveQualificationYieldBudget({ startedAtMs, quantumMs, orphanDeadlineEpochMs,
   deadlineEpochMs = null, cleanupReserveMs = 120_000, yieldReserveMs = 15_000 }) {
   const refused = reason => Object.freeze({ status: 'refused', reason });
+  if (![startedAtMs, cleanupReserveMs, yieldReserveMs]
+    .every(value => Number.isSafeInteger(value) && value >= 0) ||
+      cleanupReserveMs === 0 || yieldReserveMs === 0) return refused('invalid-policy');
+  if (quantumMs === null && orphanDeadlineEpochMs === null && deadlineEpochMs === null)
+    return Object.freeze({ status: 'ready', startedAtMs, callerDeadlineEpochMs: null,
+      executionCutoffEpochMs: null, yieldDeadlineEpochMs: null,
+      cleanupDeadlineEpochMs: null, orphanDeadlineEpochMs: null });
+  if (quantumMs === null || orphanDeadlineEpochMs === null) return refused('invalid-policy');
   if (![startedAtMs, quantumMs, orphanDeadlineEpochMs, cleanupReserveMs, yieldReserveMs]
     .every(value => Number.isSafeInteger(value) && value >= 0) ||
       quantumMs === 0 || cleanupReserveMs === 0 || yieldReserveMs === 0 ||
@@ -329,10 +352,17 @@ export function createQualificationYieldBoundary({ budget, identity, unitIds, ba
   const cancellation = new AbortController(), timers = new Set(), workers = new Map();
   let state = 'running';
   const arm = (fn, at) => {
-    const timer = setTimer(() => { timers.delete(timer); fn(); }, Math.max(0, at - now()));
-    timers.add(timer); timer?.unref?.(); return timer;
+    const timer = { handle: undefined };
+    const schedule = () => {
+      timer.handle = setTimer(() => {
+        if (now() < at) { schedule(); return; }
+        timers.delete(timer); fn();
+      }, Math.min(2 ** 31 - 1, Math.max(0, at - now())));
+      timer.handle?.unref?.();
+    };
+    timers.add(timer); schedule(); return timer;
   };
-  const clear = () => { for (const timer of timers) clearTimer(timer); timers.clear(); workers.clear(); };
+  const clear = () => { for (const timer of timers) clearTimer(timer.handle); timers.clear(); workers.clear(); };
   const active = () => state === 'running' || state === 'persisting';
   const kill = (reason, workerId = undefined) => {
     if (!active()) return;
@@ -340,10 +370,11 @@ export function createQualificationYieldBoundary({ budget, identity, unitIds, ba
     onKill({ reason, ...(workerId ? { workerId } : {}) });
   };
   const boundary = async () => {
-    if (!active()) return;
-    if (now() >= budget.yieldDeadlineEpochMs) { kill('yield-deadline'); return; }
+    if (!active() || budget.executionCutoffEpochMs === null) return;
+    const boundedBudget = budget;
+    if (now() >= boundedBudget.yieldDeadlineEpochMs) { kill('yield-deadline'); return; }
     state = 'persisting';
-    arm(() => kill('yield-deadline'), budget.yieldDeadlineEpochMs);
+    arm(() => kill('yield-deadline'), boundedBudget.yieldDeadlineEpochMs);
     try {
       const observed = await readDurableProgress(cancellation.signal);
       if (!active()) return;
@@ -368,33 +399,35 @@ export function createQualificationYieldBoundary({ budget, identity, unitIds, ba
       const progress = Object.freeze({ identity,
         completedUnitIds: Object.freeze([...completed.keys()]),
         pendingUnitIds: Object.freeze(units.filter(id => !completed.has(id))),
-        newCompletionIds: Object.freeze(fresh.map(receipt => receipt.completionId)), budget });
-      if (now() >= budget.yieldDeadlineEpochMs) { kill('yield-deadline'); return; }
+        newCompletionIds: Object.freeze(fresh.map(receipt => receipt.completionId)), budget: boundedBudget });
+      if (now() >= boundedBudget.yieldDeadlineEpochMs) { kill('yield-deadline'); return; }
       const committed = await commitYield(progress, cancellation.signal);
       if (!active()) return;
-      if (now() >= budget.yieldDeadlineEpochMs) { kill('yield-deadline'); return; }
+      if (now() >= boundedBudget.yieldDeadlineEpochMs) { kill('yield-deadline'); return; }
       if (committed !== true) { kill('yield-not-durable'); return; }
       state = 'yielded'; clear(); onYield(progress);
     } catch { kill('yield-unreadable'); }
   };
-  arm(() => { void boundary(); }, budget.executionCutoffEpochMs);
+  if (budget.executionCutoffEpochMs !== null) arm(() => { void boundary(); }, budget.executionCutoffEpochMs);
   return {
     get state() { return state; },
     get signal() { return cancellation.signal; },
     workerStarted(workerId, timeoutMs) {
-      if (!active() || state !== 'running' || now() >= budget.executionCutoffEpochMs) return false;
+      if (!active() || state !== 'running' ||
+          (budget.executionCutoffEpochMs !== null && now() >= budget.executionCutoffEpochMs)) return false;
       if (typeof workerId !== 'string' || !workerId || workers.has(workerId) ||
           !Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) throw new TypeError('Invalid qualification worker');
       const at = now() + timeoutMs;
       if (!Number.isSafeInteger(at)) throw new TypeError('Invalid qualification worker deadline');
       // The quantum owns equal deadlines; no worker/output event can extend it.
-      const timer = at < budget.executionCutoffEpochMs ? arm(() => kill('worker-stalled', workerId), at) : null;
+      const timer = budget.executionCutoffEpochMs === null || at < budget.executionCutoffEpochMs
+        ? arm(() => kill('worker-stalled', workerId), at) : null;
       workers.set(workerId, timer); return true;
     },
     workerFinished(workerId) {
       if (!workers.has(workerId)) return false;
       const timer = workers.get(workerId);
-      if (timer !== null) { clearTimer(timer); timers.delete(timer); }
+      if (timer !== null) { clearTimer(timer.handle); timers.delete(timer); }
       workers.delete(workerId); return true;
     },
     stop() { if (!active()) return; state = 'stopped'; cancellation.abort(); clear(); },

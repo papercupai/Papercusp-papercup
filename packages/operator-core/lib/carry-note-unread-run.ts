@@ -227,8 +227,11 @@ function isRunScopedInFlight(text: string, index: number, length: number): boole
 // Adversative clauses can introduce another operation without a run-like noun
 // (`...test log was read, while scorecards:repair is still running`). Keep the
 // completed operation's artifact out of the pending operation's reference range.
+// Explicit coordinated subjects such as `and the separate native-custody job was
+// launched` need the same boundary even when the writer omits the comma. End the
+// boundary at `separate` so the run subject remains available for status scoping.
 const SENTENCE_BOUNDARY_RE =
-  /[\n;]|\b(?:but|while|whereas|however|although)\b|,(?=\s+(?:(?:and|but|while|whereas|however|although)\s+)?(?:\w+\s+){0,4}(?:run|test|suite|job|command|process|build|check|lint|typecheck)\b)|[.!?](?=\s|$)/g;
+  /[\n;]|\b(?:but|while|whereas|however|although)\b|\b(?:and\s+)?(?:(?:a|the)\s+)?(?:separate|another|different)\b(?=\s+(?:[\w'-]+\s+){0,3}(?:run|test|suite|job|command|process|build|check|lint|typecheck)\b(?=\s+(?:(?:is|are|was|were|has|have|had|remains?|still|currently|actively|explicitly|marked)\s+){0,4}(?:launched|started|ran|executed|spawned|submitted|running|in[-\s]flight|pending|completed|finished|exited)\b))|,(?=\s+(?:(?:and|but|while|whereas|however|although)\s+)?(?:\w+\s+){0,4}(?:run|test|suite|job|command|process|build|check|lint|typecheck)\b)|[.!?](?=\s|$)/g;
 const RUN_SUBJECT_AFTER_LAUNCH_RE =
   /^\W*(?:(?:a|an|the|my|our|this|that|full|affected|verification|separate)\W+){0,3}\b(?:run|test|suite|job|command|process|build|check|lint|typecheck)\b/i;
 const PEER_LAUNCH_BEFORE_STATUS_RE =

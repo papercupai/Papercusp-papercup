@@ -102,7 +102,8 @@ function verdictChangeDetail(cards: ScorecardRow[], result: SpecTestAdequacyResu
   const live = cards.find((card) => !card.supersededBy && !card.retracted);
   if (!live) return null;
   const disposition = adequacyCardRevisionDisposition({
-    recordedRevision: live.rerunRecipe?.evaluatorRevision,
+    recordedRevision: live.rerunRecipe?.evaluator === 'plans:evaluate-spec-test-adequacy'
+      ? live.rerunRecipe.evaluatorRevision : undefined,
     recordedRatings: live.ratings,
     liveRatings: result.ratings,
   });
@@ -353,13 +354,15 @@ function scorecardProofCohortMatches(
   result: SpecTestAdequacyResult,
   evidence: SpecEvidenceForAdequacy[],
 ): boolean {
-  const recorded = card.rerunRecipe?.current;
+  const recipe = card.rerunRecipe?.evaluator === 'plans:evaluate-spec-test-adequacy' ? card.rerunRecipe : undefined;
+  if (card.rerunRecipe && !recipe) return false;
+  const recorded = recipe?.current;
   if (!recorded?.supplied) return true; // pre-fingerprint legacy cards keep their existing admission rule
   const proofKey = (row: { evidenceKind: string; evidenceRef: string }) =>
     `${row.evidenceKind}\0${row.evidenceRef}`;
   const selected = result.scorecardDraft.rerunRecipe.selection.evidence;
   const selectedKeys = new Set(selected.map(proofKey));
-  const recordedKeys = card.rerunRecipe?.selection.evidence.map(proofKey) ?? [];
+  const recordedKeys = recipe?.selection.evidence.map(proofKey) ?? [];
   if (JSON.stringify([...selectedKeys].sort()) !== JSON.stringify([...recordedKeys].sort())) return false;
   const tuple = (row: {
     planSlug?: string; specId?: string; specRevision?: number; specFingerprint?: string;
@@ -939,7 +942,8 @@ export async function specTestAdequacyCompletionGate(
             ? `${label}: current proof cohort is awaiting a settled independent grading audit: ${pendingAuditsForLabel.join(', ')}`
             : (() => {
                 const movedCohort = cards.some((card) =>
-                  card.rerunRecipe?.current.supplied && ratingVerdictsMatch(card, result) &&
+                  card.rerunRecipe?.evaluator === 'plans:evaluate-spec-test-adequacy' &&
+                  card.rerunRecipe.current.supplied && ratingVerdictsMatch(card, result) &&
                   !scorecardProofCohortMatches(card, result, clauseEvidence));
                 const detail = verdictChangeDetail(cards, result);
                 return movedCohort
@@ -952,7 +956,7 @@ export async function specTestAdequacyCompletionGate(
     // Only an evaluator-minted card (it carries a rerun recipe) has a grading revision to
     // report; a recipe without the stamp predates it and reads as revision 1.
     const admitting = cards.find((card) => scorecardMatches(card, result, clauseEvidence))!;
-    const disposition = admitting.rerunRecipe
+    const disposition = admitting.rerunRecipe?.evaluator === 'plans:evaluate-spec-test-adequacy'
       ? adequacyCardRevisionDisposition({
           recordedRevision: admitting.rerunRecipe.evaluatorRevision,
           recordedRatings: admitting.ratings,

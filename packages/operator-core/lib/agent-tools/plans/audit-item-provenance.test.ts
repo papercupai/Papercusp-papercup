@@ -41,6 +41,7 @@ vi.mock('../../plan-audits', async (orig) => {
   const actual = await orig<typeof import('../../plan-audits')>();
   return {
     ...actual,
+    withCurrentDiscovery: vi.fn(async (_input: unknown, accept: () => Promise<unknown>) => ({ ok: true, result: await accept() })),
     getPlanItemStatuses: vi.fn(),
     getEffectiveItemAudits: vi.fn(),
     getLatestActivationAudit: vi.fn(),

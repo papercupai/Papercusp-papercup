@@ -92,7 +92,8 @@ vi.mock('../../fleet/assignments', async () => {
     executingOwnersSince: (...a: unknown[]) => h.executingOwnersSince(...a),
   };
 });
-vi.mock('../../work-items', () => ({
+vi.mock('../../work-items', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../work-items')>(),
   getCompletionIntegrityStats: (...a: unknown[]) => h.getCompletionIntegrityStats(...a),
 }));
 // WI-7286: the per-member engine-loop batch read is its own IO seam. Spread the real
@@ -148,7 +149,7 @@ import type { FleetRosterEntry } from '../../fleet/fleet-roster';
 import { fleetSlugFromName } from '../../agent-fleets-store';
 import { FLEET_LEADER_MISSING_GRACE_MS } from '../../scheduler/fleet-scope-admission';
 
-const CTX = { workspaceId: 'ws', role: 'operator' } as never;
+const CTX = { workspaceId: 'ws', role: 'operator' } as const;
 const parse = (res: { content?: { text: string }[]; data?: unknown }) =>
   res.data ?? JSON.parse(res.content?.[0]?.text ?? '{}');
 const invoke = (args: Record<string, unknown>) =>
@@ -954,11 +955,21 @@ describe('fleet:status', () => {
     });
   });
 
-  it('includes harness completion stats when `harness` is provided', async () => {
+  it('keeps harness-wide authority counts explicitly separate from fleet verified fixes', async () => {
+    h.getCompletionIntegrityStats.mockResolvedValue({
+      ...await h.getCompletionIntegrityStats(),
+      population: { kind: 'harness', harness: 'papercusp', window: 'all-time', fleetAttribution: 'none' },
+      authorityRecordedCompletions: 7,
+      independentlyVerifiedNewChanges: null,
+    });
+    h.getCompletionIntegrityStats.mockClear();
     const out = parse(await invoke({ fleet: 'rocket', harness: 'papercusp' }));
     expect(h.getCompletionIntegrityStats).toHaveBeenCalledWith('papercusp');
     expect(out.completionStats).toEqual({
       harness: 'papercusp',
+      population: { kind: 'harness', harness: 'papercusp', window: 'all-time', fleetAttribution: 'none' },
+      authorityRecordedCompletions: 7,
+      independentlyVerifiedNewChanges: null,
       gateJudged: 4,
       terminalTotal: 10,
       genuineCompletions: 7,

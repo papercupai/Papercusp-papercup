@@ -1,7 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const m = vi.hoisted(() => ({ sql: vi.fn(), launch: vi.fn(), host: vi.fn(), loops: vi.fn(),
-  held: vi.fn(), gates: vi.fn(), pause: vi.fn(), delivery: vi.fn(), ingest: vi.fn(), targets: vi.fn() }));
+  held: vi.fn(), gates: vi.fn(), pause: vi.fn(), delivery: vi.fn(), ingest: vi.fn(), targets: vi.fn(), enqueue: vi.fn() }));
+vi.mock('../../dbos/session-interruption-workflow', () => ({ enqueueSessionInterruption: m.enqueue }));
 vi.mock('@papercusp/db-org', async orig => ({ ...(await orig<object>()), getOrgPg: () => ({ sql: m.sql }) }));
 vi.mock('../../events/await/psu-pty-discovery', () => ({ findLiveHostAsync: m.host }));
 vi.mock('../../events/await/wake-source-predicate', async orig => ({
@@ -13,7 +14,8 @@ vi.mock('./loop', () => ({ getLoopStatuses: m.loops }));
 vi.mock('./psu-pty-host-events-ingest', () => ({ ingestPsuPtyHostEvents: m.ingest }));
 vi.mock('../../agent-tools/capability/launch-agent', () => ({
   default: { handler: m.launch }, INTERNAL_INTERRUPTION_RECOVERY: Symbol.for('test-interruption') }));
-import { interruptionFromEvent, sweepSessionInterruptions } from './session-interruption-runtime';
+import { interruptionFromEvent, runSessionInterruptionPass as sweepSessionInterruptions,
+  sweepSessionInterruptions as discoverInterruptions } from './session-interruption-runtime';
 
 const now = Date.now();
 const snapshot = () => ({ owner_id: 'su-interrupted', session_id: 'native-exact', retired_at: null,
@@ -27,6 +29,7 @@ let awaits: unknown[] = [];
 const ctx = { workspaceId: 'ws', installSlug: 'papercusp', triggerConfig: {}, payloadTemplate: null };
 beforeEach(() => {
   vi.clearAllMocks(); row = snapshot(); awaits = [];
+  m.enqueue.mockResolvedValue({ workflowId: 'stable-action' });
   m.host.mockResolvedValue(null); m.loops.mockResolvedValue(new Map()); m.held.mockResolvedValue([]);
   m.gates.mockResolvedValue([]); m.pause.mockResolvedValue(null); m.delivery.mockResolvedValue(false);
   m.ingest.mockResolvedValue({ ingestErrors: 0 }); m.targets.mockResolvedValue(new Map());
@@ -50,6 +53,23 @@ beforeEach(() => {
 });
 
 describe('production session interruption adapter', () => {
+  it('enqueues eligible discovery without creating a native process or consuming an attempt', async () => {
+    await discoverInterruptions(ctx);
+    await discoverInterruptions(ctx);
+    expect(m.enqueue).toHaveBeenCalledTimes(2);
+    expect(m.enqueue.mock.calls[0][0]).toEqual(m.enqueue.mock.calls[1][0]);
+    expect(m.enqueue.mock.calls[0][0]).toMatchObject({ workspaceId: 'ws', ownerId: row.owner_id });
+    expect(m.launch).not.toHaveBeenCalled();
+    expect(row.receipt).toBeNull();
+  });
+  it.each(['empty', 'stopped', 'dry-run'])('creates no action history for %s discovery', async kind => {
+    if (kind === 'empty') m.sql.mockImplementation((strings: TemplateStringsArray) =>
+      strings.join('').includes('SELECT e.owner_id') ? [] : []);
+    if (kind === 'stopped') Object.assign(row.payload.execution, { ownerStopRequested: true });
+    await discoverInterruptions(ctx, kind === 'dry-run');
+    expect(m.enqueue).not.toHaveBeenCalled();
+    expect(m.launch).not.toHaveBeenCalled();
+  });
   it('rejects a foreign native witness', () => {
     row.payload.nativeSessionId = 'foreign'; expect(interruptionFromEvent(row)).toBeNull();
   });

@@ -1,0 +1,10 @@
+{
+  "status": "completed",
+  "attempt": 2,
+  "resume": 1,
+  "atMs": 1793934513216,
+  "deadlineEpochMs": 1793934941129,
+  "sourceReceiptSha256": "105618afb29fc712adb3a9ff6cee4e6f1c8a959bbe32b8ac4829e7d795987c77",
+  "dependenciesSha256": "b7bd8e0b73efbd9dd509bd0c36128fd659f438ee1e50f6c652c8fb3278316201",
+  "trees": 98
+}

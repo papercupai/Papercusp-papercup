@@ -244,13 +244,13 @@ export function censusSources(sources) {
         const callee = ref(n.expression, scope);
         const args = n.arguments.map(a => ref(a, scope));
         const line = sf.getLineAndCharacterOfPosition(n.getStart(sf)).line + 1;
-        const annotation = lines.slice(Math.max(0, line - 4), line).join('\n').match(/notify-classification:\s*(\{[^\n]*\})/);
-        let declaration;
-        if (annotation) {
-          try { declaration = JSON.parse(annotation[1]); }
+        const annotations = lines.slice(Math.max(0, line - 4), line).join('\n').matchAll(/notify-classification:\s*(\{[^\n]*\})/g);
+        const declarations = [];
+        for (const annotation of annotations) {
+          try { declarations.push(JSON.parse(annotation[1])); }
           catch { gaps.push({ path, kind: 'invalid-classification-json', offset: n.getStart(sf) }); }
         }
-        calls.push({ path, line, owner: scope.owner, context: scope.label, callee, args, declaration, discarded: discarded(n), expression: tokens(n, sf) });
+        calls.push({ path, line, owner: scope.owner, context: scope.label, callee, args, declarations, discarded: discarded(n), expression: tokens(n, sf) });
         if (scope.owner) scope.owner.edges.push(callee);
       }
     }
@@ -330,8 +330,10 @@ export function censusSources(sources) {
     const key = `${c.path}#${c.context}:${digest(c.expression).slice(0, 20)}`;
     const ordinal = (occurrences.get(key) ?? 0) + 1; occurrences.set(key, ordinal);
     const id = `${key}:${ordinal}`;
-    // An explicit ID prevents nearby or nested calls from inheriting this judgment.
-    const declaration = c.declaration && (!c.declaration.id || c.declaration.id === id) ? c.declaration : undefined;
+    // Resolve exact IDs after occurrence assignment, so neighboring declarations
+    // cannot shadow one another or leak to nested calls. Preserve legacy unscoped
+    // declarations only when no exact declaration names this site.
+    const declaration = c.declarations.find(d => d?.id === id) ?? c.declarations.find(d => d && !d.id);
     sites.push({ id, path: c.path, line: c.line, context: c.context, expression: c.expression, roots, mode: c.discarded ? 'discarded' : 'detached-wrapper', ...(declaration ? { declaration } : {}) });
   }
   const resolutionFiles = Object.entries(sources).filter(([p]) => /(?:^|\/)(?:package|tsconfig[^/]*)\.json$/.test(p));

@@ -36,7 +36,7 @@ import {
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { resolveLearningPotSlug } from '../../learning/pot-scope';
-import { getRecipe, recordRecipeRun } from '../../code-recipes-store';
+import { getRecipe, recordRecipeRun, recipeRunChoice, type RecipeRunUsage } from '../../code-recipes-store';
 import { PROJECTED_DEPS } from '../../projected-tool-deps';
 import { runBulk, bulkContent, type BulkItemResult } from '../_bulk';
 import { DISPATCH_WRAPPER_METADATA_KEY } from '../sessions/automatic-tool-names';
@@ -51,7 +51,7 @@ import {
   type RecipeAuthorityRefs,
   type RecipeAuthorityProof,
 } from '../../recipe-authority';
-import { deriveFleetMembership } from '../coordination/identity';
+import { deriveFleetMembership, resolveAgentIdentity } from '../coordination/identity';
 import { resolvePresenceFleet } from '../coordination/presence-fleet';
 import { getTxPool } from '../locks/su-lock-store';
 import { readIdentity } from '../locks/identity';
@@ -273,11 +273,13 @@ export default defineTool({
     // Resolve the REUSER's identity ONCE (used by every per-recipe run-record).
     // Best-effort: a recipe run does not require an identity to execute.
     let ownerId: string | null = null;
+    let choice: RecipeRunUsage['choice'] = 'unknown';
     let coordinationDomain: string | null = null;
     try {
       const identity = readIdentity(ctx);
       ownerId = identity.ownerId;
       coordinationDomain = identity.coordinationDomain;
+      choice = recipeRunChoice(resolveAgentIdentity(ctx));
     } catch {
       ownerId = null;
       coordinationDomain = null;
@@ -469,6 +471,8 @@ export default defineTool({
             reused: true,
             executionTrace,
             countTowardRecipe: successfulReuse && !dryRun,
+            usage: { version: 1, selection: 'saved-replay', choice,
+              mode: dryRun ? 'preview' : 'commit', outcome: successfulReuse ? 'success' : 'error', settled: true },
           });
         } catch (err) {
           ctx.log(`recipes:run trace record failed (swallowed): ${(err as Error)?.message ?? String(err)}`);

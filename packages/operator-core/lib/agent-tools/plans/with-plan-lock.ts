@@ -1037,6 +1037,10 @@ export async function withPlanLock<T>(
 
       const dependencyMutations = await writePlanLineNodes(
         tx, { workspaceId, harnessSlug, slug }, lineNodes, idx.items,
+        // Drafts can describe proposed or historical progress. Once execution
+        // is admitted, lifecycle state belongs to the work-item writer. Derive
+        // this exception from the locked preimage, never from caller options.
+        { allowDraftStatusProjection: cur?.status === 'draft' && idx.status === 'draft' && !cur.op_status },
       );
       if (dependencyMutations.length > 0) {
         // A coupled graph write needs the canonical isolation boundary. Abort

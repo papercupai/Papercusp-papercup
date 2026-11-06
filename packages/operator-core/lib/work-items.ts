@@ -146,6 +146,7 @@ import {
   activeExternalBlockers,
   readExternalBlockers,
   updateExternalBlockerHistory,
+  ownerActionFlagsReleasedByClear,
   type ExternalBlockerKind,
   type ExternalBlockerRecord,
 } from './external-blockers';
@@ -5351,6 +5352,13 @@ export async function setWorkItemStateWithAliasInfo(
 
 export interface CompletionIntegrityStats {
   harness: string;
+  /** This aggregate is all terminal rows in the harness, including non-members.
+   * A fleet:status caller must never read it as that fleet's output. */
+  population: { kind: 'harness'; harness: string; window: 'all-time'; fleetAttribution: 'none' };
+  /** Recorded completion authority/ref coverage, independent of declared outcome. */
+  authorityRecordedCompletions: number;
+  /** Neither authority nor self-declared introduced-change proves an independent fix. */
+  independentlyVerifiedNewChanges: null;
   /** Every work-item (both families) currently sitting in a terminal state. */
   terminalTotal: number;
   /** Terminal AND carrying terminal_owner PLUS either a terminal_completion_ref or an
@@ -5359,7 +5367,8 @@ export interface CompletionIntegrityStats {
    *  judgement in place of the ref (and work_items:complete no longer supplies a ref at
    *  all), so a ref-only test would report every post-P-004 completion as `dedupOrUnverified`
    *  — a metric that measures the deleted auto-fill rather than completion integrity.
-   *  This is NOT a count of new code or durable changes. */
+   *  This is NOT a count of new code or durable changes.
+   *  @deprecated Compatibility alias for authorityRecordedCompletions. */
   genuineCompletions: number;
   /** terminalTotal - genuineCompletions — watchdog/hygiene/revert dedup flips (or any
    *  other skipCompletionGate write, or a pre-migration-432 historical row with the
@@ -5476,6 +5485,9 @@ export async function getCompletionIntegrityStats(harness: string): Promise<Comp
   const otherNoNewChange = outcomeCount('other_no_new_change');
   return {
     harness,
+    population: { kind: 'harness', harness, window: 'all-time', fleetAttribution: 'none' },
+    authorityRecordedCompletions: genuineCompletions,
+    independentlyVerifiedNewChanges: null,
     terminalTotal,
     genuineCompletions,
     dedupOrUnverified: terminalTotal - genuineCompletions,
@@ -7767,6 +7779,25 @@ export async function clearExternalBlockersOnLockedRow(
     externalBlockers: blockers,
   };
 
+  const active = blockers.filter((blocker) => blocker.status === 'active');
+  const humanCleared = cleared.some((blocker) => blocker.kind === 'human');
+  for (const key of ownerActionFlagsReleasedByClear(payload, active, { kind: 'human', cleared: humanCleared })) {
+    delete nextPayload[key];
+  }
+  // Settling a consult answers the decision, not the underlying bug. Correct the
+  // stale human queue label conservatively without lifting defaults or durable parks.
+  const settledHumanClassification = issueFamily && humanCleared &&
+    String(row.status ?? '').toLowerCase() === 'needs-human' && !active.some((blocker) => blocker.kind === 'human');
+  if (settledHumanClassification && active.length === 0) {
+    // Settlement records a decision, not its application. Retain that concrete
+    // triage reason until the woken parker applies the default or alternative.
+    const settled = blockers.find((blocker) => blocker.kind === 'human' &&
+      cleared.some((target) => target.kind === blocker.kind && target.ref === blocker.ref));
+    nextPayload.blockedReason = `Apply settled decision ${settled?.ref ?? ''}: ` +
+      (settled?.evidence || settled?.defaultIfUnanswered || 'parker must apply the recorded consult outcome');
+    nextPayload.blockedAt = new Date().toISOString();
+  }
+
   if (restoreIssue) {
     delete nextPayload.held_open_by;
     delete nextPayload.held_open_at;
@@ -7783,7 +7814,8 @@ export async function clearExternalBlockersOnLockedRow(
   await tx`
     UPDATE harness_shared.work_items
        SET payload = ${JSON.stringify(nextPayload)}::text::jsonb,
-           status = CASE WHEN ${restoreIssue} THEN 'open' ELSE status END,
+           status = CASE WHEN ${restoreIssue} THEN 'open'
+                         WHEN ${settledHumanClassification} THEN 'blocked' ELSE status END,
            updated_ts = ${updatedTs}
      WHERE workspace_id = ${row.workspace_id}
        AND feature_id = ${row.feature_id}

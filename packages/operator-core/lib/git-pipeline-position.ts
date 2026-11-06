@@ -150,6 +150,9 @@ export function gitPipelinePositionSidecarEnabled(env: NodeJS.ProcessEnv = proce
 
 export const realGit: GitRunner = async (repo, args, signal) => {
   if (signal?.aborted) return null;
+  // Source blobs are content, not a line-oriented Git status/ref response.
+  // Trimming a source file changes its accepted digest (including final LF).
+  const sourceBlob = args[0] === 'cat-file' && args[1] === 'blob';
   const argv = ['-C', repo, ...args];
   const env = args[0] === 'status'
     ? { ...process.env, GIT_OPTIONAL_LOCKS: '0' }
@@ -175,7 +178,7 @@ export const realGit: GitRunner = async (repo, args, signal) => {
             GIT_PIPELINE_POSITION_SUBPROCESS_TIMEOUT_MS,
             env,
           );
-      return result.code === 0 ? result.stdout.trim() : null;
+      return result.code === 0 ? sourceBlob ? result.stdout : result.stdout.trim() : null;
     } catch (error) {
       if (signal?.aborted) return null;
       noteSidecarFallback('git-pipeline-position', error);
@@ -189,7 +192,7 @@ export const realGit: GitRunner = async (repo, args, signal) => {
       ...(args[0] === 'status' ? { env } : {}),
       ...(signal ? { signal } : {}),
     });
-    return stdout.trim();
+    return sourceBlob ? stdout : stdout.trim();
   } catch {
     return null;
   }
@@ -373,7 +376,7 @@ async function isRemoteTipContaining(
 export interface PipelinePositionInput {
   path?: string;
   sha?: string;
-  /** Frozen SHA256 of the accepted file bytes; requires a concrete path. */
+  /** Frozen SHA256 of accepted file bytes; sha pins the immutable source revision. */
   expectedSourceSha256?: string;
   /**
    * EI-18797292094433710 — a distinctive literal string from the CALLER'S OWN change.
@@ -7180,7 +7183,15 @@ export async function gitPipelinePosition(
     const expectedSource = inp.expectedSourceSha256;
     const readBytes = deps.readFileBytes ?? realReadFileBytes;
     const sourcePath = path.join(root, inp.path.replace(/^\.?\//, ''));
-    const frozenBytes = expectedSource ? await readBytes(sourcePath) : null;
+    // An explicit revision selects immutable accepted content. A later edit
+    // in the shared tree cannot replace the subject of artifact containment.
+    // The resolved target already accounts for superproject/submodule pins.
+    const pinnedSource = Boolean(expectedSource && inp.sha);
+    const pinnedText = pinnedSource && targetSha && relPath
+      ? await git(gitDir, ['cat-file', 'blob', `${targetSha}:${relPath}`]) : null;
+    const frozenBytes = pinnedSource
+      ? pinnedText === null ? null : Buffer.from(pinnedText, 'utf8')
+      : expectedSource ? await readBytes(sourcePath) : null;
     // Freeze the comparison's tree side. Reuse the existing blob reader and
     // gitlink resolver; a concurrent edit must never replace the accepted subject.
     const objectFormat = expectedSource ? await git(gitDir, ['rev-parse', '--show-object-format']) : null;
@@ -7256,14 +7267,17 @@ export async function gitPipelinePosition(
     }
     if (expectedSource) {
       const deployedContains = deployedSha ? (await blobContainsAt(deployedSha)).contains : null;
-      const observedBytes = await readBytes(sourcePath);
+      const workingBytes = await readBytes(sourcePath);
+      const observedBytes = pinnedSource ? frozenBytes : workingBytes;
       const observedMtimeMs = await mtimeOf(sourcePath);
       const frozenMatches = frozenBytes !== null && createHash('sha256').update(frozenBytes).digest('hex') === expectedSource;
+      const workingMatches = workingBytes !== null && createHash('sha256').update(workingBytes).digest('hex') === expectedSource;
       // Time-based load evidence must describe the same file observation. Blob
       // evidence is already bound to the frozen bytes and needs no mtime equality.
       const boundRuntimes = servingRuntimes.map((runtime) => ({
         ...runtime,
-        containsChange: frozenMatches && (runtime.method === 'blob' || observedMtimeMs === workingTreeMtimeMs)
+        containsChange: frozenMatches && (runtime.method === 'blob' ||
+          (workingMatches && observedMtimeMs === workingTreeMtimeMs))
           ? runtime.containsChange : null,
       }));
       acceptedSource = evaluateAcceptedSourceContainment(

@@ -116,7 +116,14 @@ export function classifyMissionActivity(activity: AcceptedMissionActivity): 'pro
 }
 
 function copyBinding(binding: MissionBinding): MissionBinding {
-  return { ...binding, objectiveRefs: [...binding.objectiveRefs], completionCriteriaRefs: [...binding.completionCriteriaRefs] };
+  // Canonical parent reads carry live disposition fields too. Structural typing
+  // permits passing that richer value; only the declared binding is retained.
+  return {
+    assignmentRef: binding.assignmentRef, ownerDirectiveRef: binding.ownerDirectiveRef,
+    objectiveRefs: [...binding.objectiveRefs], completionCriteriaRefs: [...binding.completionCriteriaRefs],
+    accountableOwner: binding.accountableOwner, custodyGeneration: binding.custodyGeneration,
+    assignmentRevision: binding.assignmentRevision, authorityRef: binding.authorityRef,
+  };
 }
 
 function sameCustody(a: MissionBinding, b: MissionBinding): boolean {

@@ -753,6 +753,9 @@ describe('recipes:run REUSE ENVELOPE invariant (P-006 / D-004)', () => {
     expect(input.agentRole).toBe('worker'); // the REUSER's role, recorded
     expect(input.executionTrace).toBe(normalizedTrace);
     expect(input.countTowardRecipe).toBe(true);
+    expect(recordRecipeRunMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      usage: expect.objectContaining({ selection: 'saved-replay', mode: 'commit', outcome: 'success', settled: true }),
+    }));
   });
 
   it('records a dry-run trace without moving the parent recipe counters', async () => {
@@ -781,6 +784,7 @@ describe('recipes:run REUSE ENVELOPE invariant (P-006 / D-004)', () => {
         success: true,
         reused: true,
         countTowardRecipe: false,
+        usage: expect.objectContaining({ selection: 'saved-replay', mode: 'preview', outcome: 'success' }),
       }),
     );
   });
@@ -887,6 +891,7 @@ describe('recipes:run REUSE ENVELOPE invariant (P-006 / D-004)', () => {
         executionTrace: normalizedTrace,
         success: false,
         countTowardRecipe: false,
+        usage: expect.objectContaining({ selection: 'saved-replay', mode: 'commit', outcome: 'error', settled: true }),
       }),
     );
   });

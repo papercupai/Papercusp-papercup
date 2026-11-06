@@ -1,0 +1,52 @@
+{
+  "schemaVersion": 1,
+  "kind": "source-qualified-inventory",
+  "plan": "unified-recipe-sql-shell-tool-learning-2026-11-05",
+  "workItem": "WI-6554700010045519",
+  "capturedAt": "2026-11-06T02:53:00Z",
+  "sourceHead": "cff3eb57b3b69e484c455f570097f0845ce2ce59",
+  "scope": { "workspace": "papercusp-workspace", "harness": "papercusp" },
+  "baseline": {
+    "since": "2026-11-04T18:00:00Z",
+    "until": "2026-11-05T18:00:00Z",
+    "interval": "[since,until)",
+    "population": "Verified agent-origin operations in this workspace/harness, partitioned by provider and exact source operation identity; exclude hooks/system activity; collapse copies and polls rather than logical demand.",
+    "status": "UNKNOWN",
+    "counts": null,
+    "reason": "Window frozen before implementation; no complete current source/serving-generation-qualified census has been measured. Do not derive adoption or reliability from parent recipe popularity."
+  },
+  "runtimes": {
+    "operator-api": { "route": "http://127.0.0.1:3170", "build": "3fec47fb7d", "identity": "known", "evidenceRef": "WI-6554700010045519:checkpoint:2026-11-06T02:40Z" },
+    "background-federation": { "build": null, "identity": "UNKNOWN", "reason": "Pipeline runtime resolver could not report the bg-host bundle identity; process start does not establish loaded bytes." },
+    "native-client": { "build": null, "identity": "UNKNOWN", "reason": "No source-complete receipt/runtime matrix measured for the frozen window." }
+  },
+  "families": [
+    { "family": "composition", "clients": ["managed"], "source": "packages/operator-core/lib/agent-tools/code/run.ts", "sha256": "0d422756ccecabecea7da7f290117f468c7b75f544be8ab22d706b631c34b593", "runtime": "operator-api", "coverage": "UNKNOWN", "executionSourceRef": null, "reason": "Capture implementation inventoried; frozen-window completeness unmeasured." },
+    { "family": "shell", "clients": ["managed"], "source": "packages/operator-core/lib/agent-opportunities/native-operation.ts", "sha256": "c7c8c9d13ccbc0f12817f3f079dce96ca68fdcaab6673a5fda97a32461d5bc44", "runtime": "background-federation", "coverage": "UNKNOWN", "executionSourceRef": null, "reason": "Semantic parser recognizes managed shell names; shared recipe capture bridge is P-005/P-007 work." },
+    { "family": "sql", "clients": ["managed"], "source": "packages/operator-core/lib/bash-substitution/sql-tool-candidates.ts", "sha256": "2a651ec0b6e8ab465a44c38efef22cf547470adfea844b57fef67fb803522b75", "runtime": "background-federation", "coverage": "UNKNOWN", "executionSourceRef": null, "reason": "Scoped SQL AST/miner/review sources exist; complete fresh window and recipe bridge remain unverified." },
+    { "family": "native-operation", "clients": ["claude", "codex", "omp"], "source": "packages/operator-core/lib/agent-opportunities/native-capture.ts", "sha256": "030b57340b1d51d7d2494977ac296dea43bc961189c1e1ea61cecc2663cf27b0", "runtime": "native-client", "coverage": "UNKNOWN", "executionSourceRef": null, "reason": "Provider parser support is not measured source/receipt coverage; no nested execution is inferred from functions.exec strings." },
+    { "family": "search-reformulation", "clients": ["claude", "codex", "omp"], "source": "packages/operator-core/lib/agent-opportunities/search-reformulation.ts", "sha256": "7ae0335d951c6cee3b1097ad25071c74f08e1f045cd86ab9fb5eabac02eda2e0", "runtime": "background-federation", "coverage": "UNKNOWN", "executionSourceRef": null, "reason": "Existing monitored family retained; no complete window measured." },
+    { "family": "result-recovery", "clients": ["claude", "codex", "omp"], "source": "packages/operator-core/lib/agent-opportunities/result-recovery.ts", "sha256": "d1e4246481ac93ec5ccbc6f7e69b352ff267c2845defa079aa1d0718e2607686", "runtime": "background-federation", "coverage": "UNKNOWN", "executionSourceRef": null, "reason": "Existing monitored family retained; no complete window measured." },
+    { "family": "workaround-funnel", "clients": ["claude", "codex", "omp"], "source": "packages/operator-core/lib/agent-opportunities/workaround-funnel.ts", "sha256": "3554ca37b7bc7f0101ffd739cf319567d205ae2fdd39d4cba393d10387c6567c", "runtime": "background-federation", "coverage": "UNKNOWN", "executionSourceRef": null, "reason": "Existing monitored family retained; no complete window measured." }
+  ],
+  "reuse": {
+    "recipeStore": "harness_shared.code_recipes",
+    "outcomeStore": "harness_shared.code_recipe_runs",
+    "traceSchemaVersion": 1,
+    "reviewSource": "packages/operator-core/lib/sql-tool-candidate-review.ts",
+    "sqlRubricCharacteristic": "sql-tool-opportunity-feedback",
+    "codeReuseRubricCharacteristic": "code-intel-reuse",
+    "rubricDiscovery": "rubrics:list status=active returned both existing standards on 2026-11-06; reuse these rather than create parallel grading rails."
+  },
+  "ownedDefects": [
+    { "id": "EI-27970531880500756", "assignee": "su-5c46e76e-e3d6-448c-8959-58dcdfb533f9", "planItem": "P-003", "finding": "recipes:run excludes failed/preview attempts from parent popularity; candidate reliability reads parent success/run counts. Distinguishing regression still required." },
+    { "id": "EI-27961618619692116", "assignee": "su-5c46e76e-e3d6-448c-8959-58dcdfb533f9", "planItem": "P-004", "finding": "Partial substitution coverage may retain a healthy grade; matched-window negative control still required." },
+    { "id": "EI-27754926603738522", "assignee": null, "state": "open", "planItem": "P-004", "finding": "Existing census failure item was unassigned at inventory read. Claim and diagnose this existing item before repair; no duplicate fixer." }
+  ],
+  "acceptanceCases": [
+    "legacy composition/shell/SQL metadata survives inspection without conveying author privileges",
+    "reordered recipe results select by identity; absent identity/current revision prevents dispatch",
+    "unmeasured native clients and unknown serving bytes cannot be labeled measured",
+    "existing monitored families and canonical recipe/review/rubric stores remain the shared population"
+  ]
+}

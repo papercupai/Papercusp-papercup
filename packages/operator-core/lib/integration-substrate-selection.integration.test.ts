@@ -45,6 +45,15 @@ describe('integration selection without a PostgreSQL dependency', () => {
     expect(integrationNeedsPostgres([fixture, fixture + '.unknown'])).toBe(true);
     expect(integrationNeedsPostgres([])).toBe(true);
   });
+  it('keeps selected-operator digest acceptance outside shared PG setup', async () => {
+    const fixture = fileURLToPath(new URL('./agent-tools/sessions/digest.selected-operator.integration.test.ts', import.meta.url));
+    const baseline = vi.fn(async () => { throw new Error('Shared PG must not initialize'); });
+    const org = vi.fn(async () => { throw new Error('Shared org must not initialize'); });
+    await setupIntegrationSubstrate({}, [fixture], { baseline, org });
+    expect(baseline).not.toHaveBeenCalled();
+    expect(org).not.toHaveBeenCalled();
+    expect(integrationNeedsPostgres([fixture, fixture + '.unknown'])).toBe(true);
+  });
   it('enrolls filesystem/parser native fixtures while retaining mixed and full database setup', () => {
     const native = fileURLToPath(new URL('./agent-tools/plans/plan-native-declarations.integration.test.ts', import.meta.url));
     const canary = fileURLToPath(new URL('./integration-substrate-selection.integration.test.ts', import.meta.url));

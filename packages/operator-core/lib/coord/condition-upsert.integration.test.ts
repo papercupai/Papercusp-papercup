@@ -158,7 +158,7 @@ describe('exact-identity author handoff — rubric workflow P004', () => {
     action: 'record-vetting' as const });
   const request = { authorId: 'su-author', requestedBy: 'su-requester' };
 
-  it('keeps one durable obligation under concurrent retries and a later independent read', async () => {
+  it('handoff-retry-idempotency: keeps one durable obligation under concurrent retries', async () => {
     const t = target('retry');
     const [a, b] = await Promise.all([reserveAuthorVettingHandoff(t, request), reserveAuthorVettingHandoff(t, request)]);
     expect(a.id).toBe(b.id);
@@ -168,6 +168,29 @@ describe('exact-identity author handoff — rubric workflow P004', () => {
     expect((await reserveAuthorVettingHandoff(t, request)).id).toBe(a.id);
     expect(await holdersOf(authorVettingTargetKey(t))).toEqual([a.id]);
   });
+
+  it('handoff-restart-durability: adopts the persisted receipt through a fresh module reader', async () => {
+    const t = target('restart');
+    const deliver = vi.fn(async () => ({ queued: 1, pickupConfirmed: false }));
+    const first = await reserveAuthorVettingHandoff(t, { ...request, deliver });
+    await advanceAuthorVettingHandoff({ id: first.id, target: t, actorId: 'su-author', phase: 'pickup',
+      authorize: async () => true });
+    const persisted = await reserveAuthorVettingHandoff(t, request);
+    expect(persisted.state).toBe('picked-up');
+    vi.resetModules();
+    const fresh = await import('./condition-upsert');
+    const replay = await fresh.reserveAuthorVettingHandoff(t, { ...request, deliver });
+    expect(replay).toEqual(persisted);
+    expect(deliver).toHaveBeenCalledTimes(1);
+    expect(await holdersOf(first.key)).toEqual([first.id]);
+  });
+
+  it.each(['workspaceId', 'harnessSlug', 'planSlug', 'rubricId', 'revision', 'criteriaHash', 'barSetHash'] as const)(
+    'handoff-exact-tuple: distinguishes a changed %s', key => {
+      const t = target('identity');
+      const changed = { ...t, [key]: key === 'revision' ? 4 : `changed-${key}` };
+      expect(authorVettingTargetKey(changed)).not.toBe(authorVettingTargetKey(t));
+    });
 
   it('records queued delivery separately from authorized pickup', async () => {
     const t = target('delivery');
@@ -185,21 +208,41 @@ describe('exact-identity author handoff — rubric workflow P004', () => {
     expect(queued.receipts).toEqual([expect.objectContaining({ state: 'blocked', reason: 'author-of-record-unavailable' })]);
   });
 
-  it('rechecks authority independently at pickup and settlement', async () => {
-    const t = target('authority');
+  it('handoff-authority-at-pickup: refuses an unauthorized actor without a pickup receipt', async () => {
+    const t = target('pickup-authority');
     const queued = await reserveAuthorVettingHandoff(t, request);
-    const advance = (phase: 'pickup' | 'settle', allowed: boolean) => advanceAuthorVettingHandoff({
-      id: queued.id, target: t, actorId: 'su-successor', phase, authorize: async () => allowed, verdictRef: 'EI-final',
-    });
-    expect(await advance('pickup', false)).toMatchObject({ ok: false, state: 'blocked' });
-    expect(await advance('pickup', true)).toMatchObject({ ok: true, state: 'picked-up' });
-    expect(await advance('settle', false)).toMatchObject({ ok: false, state: 'blocked' });
-    expect(await advance('pickup', true)).toMatchObject({ ok: true, state: 'picked-up' });
-    const final = await advance('settle', true);
-    expect(final).toMatchObject({ ok: true, state: 'completed' });
-    if (!('receipts' in final)) throw new Error('missing durable final receipt');
-    expect(final.receipts.at(-1)).toMatchObject({ state: 'completed', actorId: 'su-successor', verdictRef: 'EI-final' });
-    expect((await reserveAuthorVettingHandoff(t, request)).id).toBe(queued.id);
+    const result = await advanceAuthorVettingHandoff({ id: queued.id, target: t, actorId: 'su-impostor',
+      phase: 'pickup', authorize: async () => false });
+    expect(result).toMatchObject({ ok: false, state: 'blocked' });
+    expect('receipts' in result && result.receipts.some(row => row.state === 'picked-up')).toBe(false);
+  });
+
+  it('handoff-authority-at-settlement: rechecks revoked authority after a valid pickup', async () => {
+    const t = target('settlement-authority');
+    const queued = await reserveAuthorVettingHandoff(t, request);
+    const common = { id: queued.id, target: t, actorId: 'su-author' };
+    expect(await advanceAuthorVettingHandoff({ ...common, phase: 'pickup', authorize: async () => true }))
+      .toMatchObject({ ok: true, state: 'picked-up' });
+    const result = await advanceAuthorVettingHandoff({ ...common, phase: 'settle', authorize: async () => false,
+      verdictRef: 'EI-revoked' });
+    expect(result).toMatchObject({ ok: false, state: 'blocked' });
+    expect('receipts' in result && result.receipts.some(row => row.state === 'completed')).toBe(false);
+  });
+
+  it('handoff-authorized-reassignment: requires fresh policy approval for the successor', async () => {
+    const t = target('successor');
+    const queued = await reserveAuthorVettingHandoff(t, request);
+    const common = { id: queued.id, target: t, actorId: 'su-successor' };
+    expect(await advanceAuthorVettingHandoff({ ...common, phase: 'pickup', authorize: async () => false }))
+      .toMatchObject({ ok: false, state: 'blocked' });
+    expect(await advanceAuthorVettingHandoff({ ...common, phase: 'pickup', authorize: async () => true }))
+      .toMatchObject({ ok: true, state: 'picked-up' });
+    const final = await advanceAuthorVettingHandoff({ ...common, phase: 'settle', authorize: async () => true,
+      verdictRef: 'EI-successor-final' });
+    expect(final).toMatchObject({ ok: true, state: 'completed', authorId: 'su-author' });
+    if (!('receipts' in final)) throw new Error('missing durable successor receipt');
+    expect(final.receipts.at(-1)).toMatchObject({ state: 'completed', actorId: 'su-successor',
+      verdictRef: 'EI-successor-final' });
   });
 
   it.each(['revision', 'criteriaHash', 'barSetHash'] as const)('rejects a superseded %s instead of settling by slug', async key => {

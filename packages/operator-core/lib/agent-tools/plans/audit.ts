@@ -52,6 +52,8 @@ import {
   recordCurrentActivationAudit,
   previewCurrentActivationAudit,
   recordPlanAudit,
+  recordCurrentDiscoveryAudit,
+  withCurrentDiscovery,
   repoCitationContextForHarness,
   resolveCitation,
   resolvePlanItemHomeHarness,
@@ -244,8 +246,8 @@ const itemProvenanceSchema = z.discriminatedUnion('kind', [
 const argsSchema = refineEvenWithShapeIssues(z.object({
   slug: z.string().min(1).describe('The plan being audited.'),
   harness: harnessArg,
-  phase: z.enum(['completion', 'activation', 'shaping']).default('completion').describe(
-    '`shaping` previews the product brief/scenario gaps and original-intent reviewer context without writes. `completion` (default) audits implemented code. `activation` records the source-conversation audit.',
+  phase: z.enum(['completion', 'activation', 'shaping', 'discovery']).default('completion').describe(
+    '`shaping` previews the brief. `discovery` derives and finalizes its findings without activation; only slug and phase are required. `completion` audits code; `activation` records source coverage.',
   ),
   dryRun: z.boolean().default(false).describe(
     'Validate and preview the audit without recording an audit row, repair filing, derived spec clause, or plan event.',
@@ -288,10 +290,12 @@ const argsSchema = refineEvenWithShapeIssues(z.object({
         ctx.addIssue({ code: z.ZodIssueCode.custom, path: [field], message: `${field} is completion-phase only` });
       }
     }
-  } else if (args.phase === 'shaping') {
+  } else if (args.phase === 'shaping' || args.phase === 'discovery') {
     for (const field of ['items', 'findings', 'auditedSha', 'sourceRanges', 'mappings', 'itemProvenance', 'repairedOmissions', 'rejectedOrSuperseded', 'unresolvedBlockers', 'classRef', 'proposeCitations'] as const) {
-      if (args[field] !== undefined) ctx.addIssue({ code: z.ZodIssueCode.custom, path: [field], message: `${field} is not used by the read-only shaping preview` });
+      if (args[field] !== undefined) ctx.addIssue({ code: z.ZodIssueCode.custom, path: [field], message: `${field} is not used by ${args.phase}; facts and readiness are derived from the current draft` });
     }
+    if (args.phase === 'discovery' && args.summary !== undefined) ctx.addIssue({ code: z.ZodIssueCode.custom,
+      path: ['summary'], message: 'Discovery returns a derived summary; put conclusions in the draft declaration.' });
   } else {
     if (!args.items && !args.proposeCitations) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['items'], message: 'items is required for phase:completion' });
@@ -393,7 +397,7 @@ export function auditAbortCompletionReceipt(
   const harness = payload.harness;
   const auditSeq = payload.auditSeq;
   if (
-    (phase !== 'activation' && phase !== 'completion') ||
+    (phase !== 'activation' && phase !== 'completion' && phase !== 'discovery') ||
     typeof slug !== 'string' || !slug.trim() || slug !== input.slug ||
     typeof harness !== 'string' || !harness.trim() ||
     (input.harness != null && input.harness !== harness) ||
@@ -403,7 +407,7 @@ export function auditAbortCompletionReceipt(
   ) return incomplete();
 
   const revision = asRecord(payload.auditedPlanRevision);
-  if (phase === 'activation') {
+  if (phase === 'activation' || phase === 'discovery') {
     if (
       !revision || !Number.isSafeInteger(revision.id) || Number(revision.id) < 1 ||
       !Number.isSafeInteger(revision.seq) || Number(revision.seq) < 1 ||
@@ -418,7 +422,7 @@ export function auditAbortCompletionReceipt(
     effectRef: `plan-audit:${context.callId}:${encodeURIComponent(harness)}:${encodeURIComponent(slug)}:${phase}:${auditSeq}`,
     diagnostics: {
       harness, slug, phase, auditSeq,
-      ...(phase === 'activation' ? { auditedPlanRevision: revision } : { auditedSha: payload.auditedSha }),
+      ...(phase === 'activation' || phase === 'discovery' ? { auditedPlanRevision: revision } : { auditedSha: payload.auditedSha }),
       // A partial audit is still a persisted audit; its acceptance verdict stays partial.
       partial: payload.partial === true,
     },
@@ -455,7 +459,10 @@ export default defineTool({
   result: z
     .object({
       ok: z.boolean().optional(),
-      phase: z.enum(['activation', 'completion', 'shaping']).optional(),
+      phase: z.enum(['activation', 'completion', 'shaping', 'discovery']).optional(),
+      discovery: z.unknown().optional(),
+      readiness: z.unknown().optional(),
+      reused: z.boolean().optional(),
       productShaping: z.unknown().optional(),
       dryRun: z.boolean().optional(),
       preview: z.boolean().optional(),
@@ -525,6 +532,15 @@ export default defineTool({
     const harnessSlug = resolveCtxHarnessSlug(sctx);
     const dryRun = args.dryRun === true;
 
+    if (args.phase === 'discovery') {
+      const identity = resolveAgentIdentity(sctx);
+      const result = await recordCurrentDiscoveryAudit({ workspaceId: sctx.workspaceId ?? activeWorkspaceId(),
+        harnessSlug: harnessSlug ?? '', planSlug: args.slug, createdBy: identity.ownerId, dryRun });
+      return { data: { ...result, slug: args.slug, harness: harnessSlug, phase: 'discovery',
+        ...('discovery' in result && result.discovery ? { readiness: result.discovery.readiness } : {}),
+        ...('audit' in result && result.audit ? { auditSeq: result.audit.auditSeq } : {}) } };
+    }
+
     if (args.phase === 'shaping') {
       const plan = await getPlanRow(args.slug, { harnessSlug });
       if (!plan) return { data: { ok: false, slug: args.slug, phase: 'shaping', error: 'plan_not_found' } };
@@ -535,6 +551,10 @@ export default defineTool({
 
     if (args.phase === 'activation') {
       const workspaceId = sctx.workspaceId ?? activeWorkspaceId();
+      const discoveryInput = { workspaceId, harnessSlug: harnessSlug ?? '', planSlug: args.slug,
+        createdBy: resolveAgentIdentity(sctx).ownerId };
+      const discovery = await withCurrentDiscovery(discoveryInput, async () => null);
+      if (!discovery.ok) return { data: { ...discovery, slug: args.slug, phase: 'activation' as const } };
       const classResolution = await resolveActivationClassRef({
         planSlug: args.slug, harnessSlug: harnessSlug ?? '', suppliedClassRef: args.classRef,
       });
@@ -578,14 +598,15 @@ export default defineTool({
         submittedActivation.unresolvedBlockers.length > 0 ||
         submittedActivation.mappings.some((mapping) => mapping.disposition === 'open')
       ) {
-        const repairFiling = dryRun
-          ? null
-          : await ensureActivationAuditRepairFiling({
+        const repair = dryRun ? { ok: true as const, result: null }
+          : await withCurrentDiscovery(discoveryInput, async () => ensureActivationAuditRepairFiling({
               workspaceId,
               harnessSlug: harnessSlug ?? '',
               planSlug: args.slug,
               activation: submittedActivation,
-            });
+            }));
+        if (!repair.ok) return { data: { ...repair, slug: args.slug, phase: 'activation' as const } };
+        const repairFiling = repair.result;
         return { data: {
           ok: false as const,
           slug: args.slug,

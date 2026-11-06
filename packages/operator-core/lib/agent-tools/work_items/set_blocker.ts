@@ -32,6 +32,7 @@ import {
   readExternalBlockers,
   isDirectHumanCapability,
   isHumanBlockerCapability,
+  ownerActionFlagsReleasedByClear,
   type DirectHumanCapability,
   type ExternalBlockerCapability,
   type ExternalBlockerKind,
@@ -304,35 +305,8 @@ const TERMINAL = new Set(['passed', 'deprecated', 'resolved', 'closed', 'done', 
 type WorkItemRow = NonNullable<Awaited<ReturnType<typeof getWorkItem>>>;
 const MIGRATION_EVIDENCE = 'WI-10005020 R-15: migrated to the work_item_deps blocks edge (canonical dependency form)';
 
-const OWNER_ACTION_FLAGS = ['needsOwnerAction', 'needsHuman'] as const;
-
-/**
- * WI-10008173 — the owner-action payload flags a CLEAR must release with its blocker.
- *
- * `payload.needsOwnerAction` (and legacy `needsHuman`) are written ALONGSIDE a human
- * blocker (resolve-core's park write, mergeIssuePayload in work-items.ts) and gate every
- * claim door on their own (`needsOwnerActionExclusionSql`, the `needsOwnerAction` claimable
- * exclusion leg). Clearing the last active human blocker removes the flag's only backing
- * evidence, so the flag must go in the SAME CAS write; leaving it reopened the row while
- * keeping it excluded from every claim door (measured 2026-10-10: 7 open rows, 0 active
- * blockers, flag still set).
- *
- * Releases nothing unless this request CLEARS a human-kind blocker and no active human-kind
- * blocker remains, so a surviving owner ask, a non-human clear, or a set call never drops
- * an owner flag.
- */
-export function ownerActionFlagsReleasedByClear(
-  payload: unknown,
-  remainingActive: ReadonlyArray<{ kind: string }>,
-  change: { kind: string; cleared: boolean },
-): Array<(typeof OWNER_ACTION_FLAGS)[number]> {
-  if (!change.cleared || change.kind !== 'human') return [];
-  if (remainingActive.some((blocker) => blocker.kind === 'human')) return [];
-  const record = payload && typeof payload === 'object' && !Array.isArray(payload)
-    ? (payload as Record<string, unknown>)
-    : {};
-  return OWNER_ACTION_FLAGS.filter((key) => record[key] === true);
-}
+// Preserve the existing import surface while sharing the policy with system settlement.
+export { ownerActionFlagsReleasedByClear } from '../../external-blockers';
 
 /**
  * WI-10005020 (P-002 / R-15) — migrate an item's legacy `externalBlockers` rows whose ref

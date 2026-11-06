@@ -74,6 +74,18 @@ describe('plan item anchors', () => {
     await vi.advanceTimersByTimeAsync(21);
     expect(await pending).toMatchObject([{ requested: 'planned', resolution: 'unknown', unknownReason: 'timeout' }]);
   });
+  it('resolves path anchors while the symbol snapshot never settles', async () => {
+    const f = await fixture();
+    let snapshotCalls = 0;
+    const anchors = await resolvePlanItemAnchors([{ path: 'code.ts' }, { symbol: 'planned' }], {
+      ...f, snapshot: () => { snapshotCalls += 1; return new Promise(() => {}); }, budgetMs: 250,
+    });
+    expect(anchors).toMatchObject([
+      { requested: 'code.ts', resolution: 'resolved', contentHash: hash(source) },
+      { requested: 'planned', resolution: 'unknown', unknownReason: 'timeout' },
+    ]);
+    expect(snapshotCalls).toBe(1);
+  });
   it('does not report callers or reaching tests after their proof source changes', async () => {
     const f = await fixture();
     await writeFile(join(f.root, 'consumer.ts'), 'export const noCall = 1;\n');
@@ -95,11 +107,13 @@ describe('plan item anchors', () => {
     expect((await resolvePlanItemAnchors([{ symbol: 'planned' }], { ...f, snapshot, budgetMs: 5000 }))[0])
       .toMatchObject({ resolution: 'unknown', unknownReason: 'no-snapshot', tests: [] });
   });
-  it('rejects traversal and symlinks outside the repository', async () => {
+  it('rejects traversal input and symlinks outside the repository', async () => {
     const f = await fixture(); const outside = await fixture();
     await symlink(join(outside.root, 'code.ts'), join(f.root, 'escape.ts'));
-    const anchors = await resolvePlanItemAnchors([{ path: '../outside' }, { path: 'escape.ts' }], { ...f, budgetMs: 5000 });
-    expect(anchors.every(a => a.resolution === 'unknown')).toBe(true);
+    await expect(resolvePlanItemAnchors([{ path: '../outside' }], { ...f, budgetMs: 5000 }))
+      .rejects.toThrow('Use a repository-relative source path.');
+    const [anchor] = await resolvePlanItemAnchors([{ path: 'escape.ts' }], { ...f, budgetMs: 5000 });
+    expect(anchor).toMatchObject({ resolution: 'unknown', unknownReason: 'not-found' });
   });
   it('removes rendered code-link lines from a pasted plan while preserving fenced examples', () => {
     const text = '- **P-001** `todo` Work\n  ↳ code: stale rendered metadata\n```\n  ↳ code: example\n```\n';

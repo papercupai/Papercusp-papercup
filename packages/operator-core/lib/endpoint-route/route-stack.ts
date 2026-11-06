@@ -27,7 +27,7 @@ import type { RouteDefinition } from './define-route';
 import { defaultCorsOrigin } from './cors';
 import { requireLoopbackOr403 } from './loopback-guard';
 import { foreignLoopbackPeerResponse } from '../auth/loopback-peer-trust';
-import { recordRouteInvocation } from './telemetry';
+import { markGuardHttpStage, recordRouteInvocation } from './telemetry';
 import { recordHttpTraffic } from '../coverage-census/attribution/sink';
 import {
   currentRemoteAuthPolicy,
@@ -639,6 +639,7 @@ export async function runRouteStack(
   hono: Context,
   stack: ReadonlyArray<RouteStep> = DEFAULT_ROUTE_STACK,
 ): Promise<Response> {
+  try { markGuardHttpStage(hono.req.raw, 'route_start'); } catch { /* observational only */ }
   const exec: RouteExecution = {
     def,
     hono,
@@ -673,6 +674,7 @@ export async function runRouteStack(
     };
     response = errorResponse(500, presented.code, presented.message);
   } finally {
+    try { markGuardHttpStage(hono.req.raw, 'route_end'); } catch { /* observational only */ }
     if (exec.timeoutTimer) clearTimeout(exec.timeoutTimer);
     // EI-7069: Content-Length only — never .clone()/read the body. A streaming
     // (SSE/chunked) response has no Content-Length, so this stays null for

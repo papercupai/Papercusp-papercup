@@ -278,10 +278,22 @@ const authorityPartitionSchema = z
     }
   });
 
+const queueCategorizationSchema = z.object({
+  stateCounts: z.record(z.string(), nonNegativeInt),
+  primaryReasons: z.record(z.string(), nonNegativeInt),
+  exclusionCounts: z.record(z.string(), nonNegativeInt),
+  exclusionsOverlap: z.literal(true),
+  floorCoverage: z.object({ measured: nonNegativeInt, unknown: nonNegativeInt }),
+  exclusionCoverage: z.object({ complete: nonNegativeInt, firstReasonOnly: nonNegativeInt, unknown: nonNegativeInt }),
+  evidenceGaps: z.object({ humanWithoutStrictAsk: nonNegativeInt, blockedWithoutRecordedGate: nonNegativeInt }),
+  explanation: nonEmpty,
+});
+
 const remainingSchema = z
   .object({
     total: nonNegativeInt,
     unit: z.literal(FLEET_METRIC_UNITS.workItems),
+    categorization: queueCategorizationSchema.optional(),
     buckets: z.object({
       needsHuman: nonNegativeInt,
       blocked: nonNegativeInt,
@@ -301,6 +313,17 @@ const remainingSchema = z
     ]),
   })
   .superRefine((remaining, ctx) => {
+    const categories = remaining.categorization;
+    if (categories && (
+      Object.values(categories.stateCounts).reduce((a, b) => a + b, 0) !== remaining.total ||
+      Object.values(categories.primaryReasons).reduce((a, b) => a + b, 0) !== remaining.total ||
+      categories.floorCoverage.measured + categories.floorCoverage.unknown !== remaining.total ||
+      categories.exclusionCoverage.complete + categories.exclusionCoverage.firstReasonOnly + categories.exclusionCoverage.unknown !== remaining.total ||
+      Object.values(categories.exclusionCounts).some(count => count > remaining.total)
+    )) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['categorization'],
+        message: 'queue categories must reconcile with the complete population and retain unknown floor coverage' });
+    }
     const partitioned = FLEET_METRIC_REMAINING_BUCKETS.reduce((sum, key) => sum + remaining.buckets[key], 0);
     if (partitioned !== remaining.total) {
       ctx.addIssue({

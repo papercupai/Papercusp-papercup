@@ -18,6 +18,7 @@ import { deriveIndexFromContent } from './derive-index';
 import { hashPlanContent } from './content-hash';
 import { writePlanLineNodes, readPlanLineNodes } from './plan-line-graph';
 import { writePlanIndexRows } from './plan-index-rows';
+import { withPlanLock } from './with-plan-lock';
 import { checkPlanStartable } from './plan-start-gate';
 import * as lifecycle from '../../acceptance-bar-lifecycle-evaluator';
 import * as admission from './plan-admission-gate';
@@ -323,6 +324,59 @@ describe('plan item anchors through the real plan tools', () => {
     }
     expect(read.prose).toContain('↳ code:');
   });
+  it.each(['done', 'dropped'])('refuses an unauthenticated %s graph projection and rolls back the plan rewrite', async status => {
+    const scope = { workspaceId: WS, harnessSlug: HARNESS, slug: SLUG };
+    const before = await readPlanLineNodes(fx.admin, scope);
+    const featureId = before[0].featureId;
+    await fx.admin`UPDATE harness_shared.work_items SET taken_by='agent-anchor-test'
+      WHERE workspace_id=${WS} AND harness_slug=${HARNESS} AND feature_id=${featureId}`;
+    const proposed = body().replace('`todo`', '`' + status + '`');
+    await expect(fx.admin.begin(async tx => {
+      await tx`UPDATE harness_shared.harness_plans SET content=${proposed}, version=version + 1
+        WHERE workspace_id=${WS} AND harness_slug=${HARNESS} AND plan_slug=${SLUG}`;
+      await writePlanLineNodes(tx as never, scope, before, deriveIndexFromContent(proposed).items);
+    })).rejects.toThrow('plan_line_status_change_requires_lifecycle_writer');
+    const [stored] = await fx.admin`SELECT status, taken_by, authority, terminal_owner, closed_ts
+      FROM harness_shared.work_items
+      WHERE workspace_id=${WS} AND harness_slug=${HARNESS} AND feature_id=${featureId}`;
+    expect(stored).toMatchObject({ status: 'open', taken_by: 'agent-anchor-test',
+      authority: null, terminal_owner: null, closed_ts: null });
+    const [plan] = await fx.admin`SELECT content FROM harness_shared.harness_plans
+      WHERE workspace_id=${WS} AND harness_slug=${HARNESS} AND plan_slug=${SLUG}`;
+    expect(plan.content).toBe(body());
+  });
+
+  it.each([
+    { status: 'active', opStatus: null },
+    { status: 'draft', opStatus: 'started' },
+  ])('rejects a terminal plan rewrite after execution admission: %j', async ({ status, opStatus }) => {
+    await fx.admin`UPDATE harness_shared.harness_plans SET status=${status}, op_status=${opStatus}
+      WHERE workspace_id=${WS} AND harness_slug=${HARNESS} AND plan_slug=${SLUG}`;
+    await expect(withPlanLock(null, {
+      workspaceId: WS, harnessSlug: HARNESS, slug: SLUG, intent: 'terminal projection regression',
+    }, async () => ({ newBody: body().replace('`todo`', '`done`'), value: { ok: true } })))
+      .rejects.toThrow('plan_line_status_change_requires_lifecycle_writer');
+    expect((await readPlanLineNodes(fx.admin, { workspaceId: WS, harnessSlug: HARNESS, slug: SLUG }))[0].status)
+      .toBe('todo');
+  });
+
+  it('preserves an existing terminal authority record during an unrelated graph rewrite', async () => {
+    const scope = { workspaceId: WS, harnessSlug: HARNESS, slug: SLUG };
+    const [node] = await readPlanLineNodes(fx.admin, scope);
+    // Seed an already-settled row; the projection must preserve its authority.
+    await fx.admin`UPDATE harness_shared.work_items SET status='done', authority='committed',
+      terminal_owner='agent-anchor-test', taken_by=NULL
+      WHERE workspace_id=${WS} AND harness_slug=${HARNESS} AND feature_id=${node.featureId}`;
+    const before = await readPlanLineNodes(fx.admin, scope);
+    await fx.admin.begin(tx => writePlanLineNodes(tx as never, scope, before,
+      before.map(item => ({ ...item, text: 'Revised settled item' }))));
+    const [stored] = await fx.admin`SELECT status, authority, terminal_owner, taken_by, plan_line_text
+      FROM harness_shared.work_items
+      WHERE workspace_id=${WS} AND harness_slug=${HARNESS} AND feature_id=${node.featureId}`;
+    expect(stored).toMatchObject({ status: 'done', authority: 'committed',
+      terminal_owner: 'agent-anchor-test', taken_by: null, plan_line_text: 'Revised settled item' });
+  });
+
   it('anchor-only edits preserve stored prose and reconcile stale graph line text', async () => {
     const canonical = body().replace('Existing item', 'Reconciled native item').replace('`todo`', '`wip`');
     await fx.admin`

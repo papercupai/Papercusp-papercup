@@ -281,6 +281,10 @@ export function classifyEvaluatorBuildCurrentness(
 
 const scorecardEvidenceSchema = z.object({
   issueId: z.string(),
+  purpose: z.enum(['diagnostic', 'grading']).optional(),
+  barSetHash: z.string().nullable().optional(),
+  baselineRef: z.string().optional(),
+  supersedes: z.string().optional(),
   createdAt: z.string(),
   createdBy: z.string().nullable(),
   rubricRef: z.string(),
@@ -364,6 +368,7 @@ const scorecardEvidenceSchema = z.object({
   subjectRubricCurrentness: scorecardSubjectRubricCurrentnessSchema.optional(),
   supersededBy: z.string().optional(),
   auditTarget: z.object({
+    purpose: z.enum(['diagnostic', 'grading']).optional(),
     current: z.boolean().nullable(),
     superseded: z.boolean(),
     supersededBy: z.string().nullable(),

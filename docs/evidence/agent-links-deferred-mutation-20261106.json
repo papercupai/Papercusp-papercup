@@ -1,0 +1,78 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Recover original deterministic terminal recognition mutant receipt",
+  "framework": "shell",
+  "command": [
+    "bash",
+    "scripts/mutation-probe.sh",
+    "--file",
+    "apps/operator/lib/terminal-links.ts",
+    "--mutate",
+    "s/appRefs\\(line.text\\)/appRefs(\"\")/",
+    "--test",
+    "PC_PROBE_SUBJECT={} npm run test:file -- apps/operator/lib/terminal-links.test.ts -t \"preserves query-fragment\"",
+    "--expect",
+    "caught",
+    "--relocation",
+    "overlay"
+  ],
+  "exitCode": 2,
+  "startedAt": "2026-11-06T03:42:54.028Z",
+  "finishedAt": "2026-11-06T03:42:54.049Z",
+  "summary": "Original immutable recognition mutant produced the recorded assertion failure, then its ledger INSERT timed out and the connection closed. This edition retains exact original reporter JSONL and selected machine proof lines with non-proof stack-frame identity redacted; recovery performs no new test execution. Original full log: /tmp/desktop-link-mutation-immutable.log.",
+  "assertions": [
+    {
+      "id": "terminal app references in real xterm buffers > preserves query-fragment and punctuation with exact-cell-range and app activation",
+      "passed": false,
+      "evidence": "Original TEST_FILE_ASSERTION_FAILURE and failed reporter case; mutant disables appRefs recognition."
+    }
+  ],
+  "mutationProbes": [
+    {
+      "runnerSha256": "c931f88ca43f1a55506638d9ba6bb31a25317b33a56081e086e6174aa7ea0d33",
+      "result": {
+        "target": "copy-out",
+        "relocation": "overlay",
+        "mutantLedger": "missing:failed_write_CONNECTION_DESTROYED_localhost:5432",
+        "verdict": "caught-ledger-unconfirmed",
+        "copyBaselineLedger": "test_runs:23444560",
+        "assertionEvidence": "test-file-assertion-failure",
+        "guardExit": 2,
+        "baselineLedger": "test_runs:23444556",
+        "baselineExit": 0,
+        "mutantParse": "ok",
+        "expected": "caught"
+      },
+      "runnerPath": "scripts/mutation-probe.sh",
+      "schemaVersion": 1,
+      "argv": [
+        "--file",
+        "apps/operator/lib/terminal-links.ts",
+        "--mutate",
+        "s/appRefs\\(line.text\\)/appRefs(\"\")/",
+        "--test",
+        "PC_PROBE_SUBJECT={} npm run test:file -- apps/operator/lib/terminal-links.test.ts -t \"preserves query-fragment\"",
+        "--expect",
+        "caught",
+        "--relocation",
+        "overlay"
+      ],
+      "cwd": ".",
+      "runnerCommit": "7eef3642ea88f395e1df1ebe5ba3f22118c6b4f0",
+      "environment": {
+        "PAPERCUSP_MUTATION_DESCRIPTOR_READER_REPO": "/tmp/pcv/papercusp-lint-as-committed-7eef3642ea-toKaXa",
+        "PAPERCUSP_TEST_RUN_HARNESS": "papercusp",
+        "PAPERCUSP_MUTATION_DESCRIPTOR_READER_HEALTH_URL": "http://127.0.0.1:3170/api/health",
+        "PAPERCUSP_MUTATION_DESCRIPTOR_EXPORT": "auto",
+        "PAPERCUSP_MUTATION_DESCRIPTOR_READER_REQUIRED": 1
+      }
+    }
+  ],
+  "deferredMutation": {
+    "receiptFile": "docs/evidence/agent-links-deferred-mutation-20261106.receipt.jsonl",
+    "receiptSha256": "83ac06afd0d10311b033efb5f89bd41f650714c54d34b19994efa8bbc0602da8",
+    "rawLogFile": "docs/evidence/agent-links-deferred-mutation-20261106.log",
+    "rawLogSha256": "c3b98c5946a21d8bc2f7d1379e4c4b841db9c58051fcb2c48901584cb362d184"
+  }
+}

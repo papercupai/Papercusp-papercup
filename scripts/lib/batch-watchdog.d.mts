@@ -133,21 +133,31 @@ export function createProgressAwareWatchdog({ timeoutMs, maxMs, stallWindowMs, e
      */
     readonly msSinceProgress: number;
 };
-/** @typedef {Readonly<{status:'ready', startedAtMs:number, callerDeadlineEpochMs:number|null,
- * executionCutoffEpochMs:number, yieldDeadlineEpochMs:number, cleanupDeadlineEpochMs:number,
- * orphanDeadlineEpochMs:number}>} QualificationYieldBudget */
-/** @typedef {Readonly<{identity:string, completedUnitIds:readonly string[], pendingUnitIds:readonly string[],
- * newCompletionIds:readonly string[], budget:QualificationYieldBudget}>} QualificationYieldProgress */
-/** Absolute clocks for one physical qualification quantum. Progress and successors
- * cannot move the caller deadline. Persistence and cleanup precede the OS fuse.
+/** @overload
  * @param {{startedAtMs:number, quantumMs:number, orphanDeadlineEpochMs:number,
  * deadlineEpochMs?:number|null, cleanupReserveMs?:number, yieldReserveMs?:number}} input
- * @returns {QualificationYieldBudget | Readonly<{status:'refused', reason:string}>}
+ * @returns {BoundedQualificationYieldBudget | Readonly<{status:'refused', reason:string}>}
  */
-export function resolveQualificationYieldBudget({ startedAtMs, quantumMs, orphanDeadlineEpochMs, deadlineEpochMs, cleanupReserveMs, yieldReserveMs }: {
+export function resolveQualificationYieldBudget(input: {
     startedAtMs: number;
     quantumMs: number;
     orphanDeadlineEpochMs: number;
+    deadlineEpochMs?: number | null;
+    cleanupReserveMs?: number;
+    yieldReserveMs?: number;
+}): BoundedQualificationYieldBudget | Readonly<{
+    status: "refused";
+    reason: string;
+}>;
+/** @overload
+ * @param {{startedAtMs:number, quantumMs:number|null, orphanDeadlineEpochMs:number|null,
+ * deadlineEpochMs?:number|null, cleanupReserveMs?:number, yieldReserveMs?:number}} input
+ * @returns {QualificationYieldBudget | Readonly<{status:'refused', reason:string}>}
+ */
+export function resolveQualificationYieldBudget(input: {
+    startedAtMs: number;
+    quantumMs: number | null;
+    orphanDeadlineEpochMs: number | null;
     deadlineEpochMs?: number | null;
     cleanupReserveMs?: number;
     yieldReserveMs?: number;
@@ -306,7 +316,7 @@ export function formatBatchProgress(progress: {
     completedFiles: number;
     totalFiles: number | null;
 }, classification?: ReturnType<typeof classifyBatchProgress>): string;
-export type QualificationYieldBudget = Readonly<{
+export type BoundedQualificationYieldBudget = Readonly<{
     status: "ready";
     startedAtMs: number;
     callerDeadlineEpochMs: number | null;
@@ -315,10 +325,19 @@ export type QualificationYieldBudget = Readonly<{
     cleanupDeadlineEpochMs: number;
     orphanDeadlineEpochMs: number;
 }>;
+export type QualificationYieldBudget = BoundedQualificationYieldBudget | Readonly<{
+    status: "ready";
+    startedAtMs: number;
+    callerDeadlineEpochMs: null;
+    executionCutoffEpochMs: null;
+    yieldDeadlineEpochMs: null;
+    cleanupDeadlineEpochMs: null;
+    orphanDeadlineEpochMs: null;
+}>;
 export type QualificationYieldProgress = Readonly<{
     identity: string;
     completedUnitIds: readonly string[];
     pendingUnitIds: readonly string[];
     newCompletionIds: readonly string[];
-    budget: QualificationYieldBudget;
+    budget: BoundedQualificationYieldBudget;
 }>;

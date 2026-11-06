@@ -8,7 +8,13 @@ import { managedSpawn } from '../task-manager/managed-spawn';
 import { killScopeUnit } from '../task-manager/control';
 import { buildTaskScopeArgv, userManagerBusReachable } from '../systemd-scope';
 import { runQualificationCommand } from './checkpoint-qualification-command';
-import type { recordStoredQualificationChildScope } from './checkpoint-qualification-transaction';
+import {
+  beginQualificationTransaction,
+  checkpointPidIdentity,
+  probeRunnerLiveness,
+  reserveQualificationRunner,
+  type recordStoredQualificationChildScope,
+} from './checkpoint-qualification-transaction';
 
 // This integration suite exercises real OS boundaries. Only the task ledger is replaced. The payloads, systemd scopes, cgroups,
 // cancellation, timeout and scope-death control path are real OS operations.
@@ -113,8 +119,18 @@ describe.runIf(process.platform === 'linux' && userManagerBusReachable())('quali
       const pids = JSON.parse(output.trim()) as number[];
       expect(pids).toHaveLength(2);
       expect(pids.every(running), diagnostics).toBe(true);
+      const nowMs = Date.now();
+      const transaction = beginQualificationTransaction(null, { attemptId: 'orphan-scope', nowMs }).transaction;
+      const runner = reserveQualificationRunner(transaction, {
+        attemptId: 'orphan-scope', runnerId: 'orphan-launcher', unit,
+        pid: parent.pid!, pidIdentity: checkpointPidIdentity(parent.pid!),
+        leaseDurationMs: 60_000, nowMs,
+      }).transaction.currentPhysicalRunner!;
       const exit = once(parent, 'exit');
       parent.kill('SIGKILL'); await exit;
+      // A reaped launcher is not a dead managed scope: its confined payload
+      // and detached descendant must keep the qualification single-flight.
+      await expect(probeRunnerLiveness(runner)).resolves.toBe('live');
       // No JS cleanup remains in the launcher. systemd must kill both the
       // TERM-resistant payload and its detached descendant at its own bound.
       await until(() => pids.every(pid => !running(pid)), 6000);

@@ -42,7 +42,7 @@
  */
 
 import type { ChatMessage, ChatToolCall } from './chat-types';
-import { groupEntriesIntoTurns, type TimelineEntry } from '../../harness/AgentThinkingStream';
+import { groupEntriesIntoTurns, type TimelineEntry } from '../../harness/session-timeline-turns';
 import { ownerVisiblePromptText } from '@papercusp/operator-core/lib/agent-tools/coordination/owner-chat-turn';
 
 /**

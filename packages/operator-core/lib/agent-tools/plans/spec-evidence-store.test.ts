@@ -19,6 +19,7 @@ const h = vi.hoisted(() => ({
   measurementRoot: '',
   fixtureMeasurementRoot: '',
   caseRows: null as Array<Record<string, unknown>> | null,
+  bindingReadError: null as Error | null,
   mutationProbeLocks: [] as Array<{ coordinationDomain: string; path: string; intent: string }>,
   mutationProbeReads: 0,
   mutationProbeLockAfterRead: 0,
@@ -38,6 +39,7 @@ vi.mock('@papercusp/db-org', async (importOriginal) => {
       const tx = Object.assign((strings: TemplateStringsArray | string[], ...values: unknown[]) => {
         const sql = Array.from(strings).join(' ');
         h.queries.push({ sql, values });
+        if (sql.includes('FROM harness_shared.spec_evidence_bindings') && h.bindingReadError) throw h.bindingReadError;
         if (sql.includes('to_regclass')) return Promise.resolve([{ present: h.caseRows !== null }]);
         if (sql.includes('FROM harness_shared.test_case_runs')) return Promise.resolve(h.caseRows ?? []);
         return Promise.resolve(sql.includes('provisional') ? h.scorecardRows : h.rows);
@@ -100,6 +102,7 @@ vi.mock('../../harness-registry', async (importOriginal) => {
 import {
   canonicalOperationalAdapterLayer,
   classifySpecEvidenceCurrentness,
+  declaredConfigurationReadSeam,
   evidenceMeasurementSchema,
   listSpecEvidence,
   readCurrentOperationalArtifacts,
@@ -3177,8 +3180,9 @@ describe('listSpecEvidence timestamp normalization', () => {
 
     it('keeps contract metadata unmeasured even with a claimed server replay, then freshly detects moved source', async () => {
       const measured = await measureRepoFilesEvidenceAtRoot(measurementRoot, recipe);
-      h.rows = [boundRow(recipe, { source: 'sha256:source-at-binding-time', test: measured.testFingerprint })];
-      const bound = h.rows[0]!;
+      const sourceFingerprint = 'sha256:source-at-binding-time';
+      const bound = boundRow(recipe, { source: sourceFingerprint, test: measured.testFingerprint });
+      h.rows = [bound];
       const diagnostics: ListSpecEvidenceDiagnostics = { phaseMs: {}, bindings: {
         selectedRows: 0, rowsWithRecipe: 0, measured: 0, unavailable: 0, skipped: 0,
         totalMeasurementMs: 0, maxMeasurementMs: 0,
@@ -3186,8 +3190,8 @@ describe('listSpecEvidence timestamp normalization', () => {
       const [metadata] = await listSpecEvidence({ harnessSlug: 'papercusp', planSlugs: ['plan-one'],
         measurementMode: 'metadata', replaySnapshot: true, currentProvenance: 'server-measured', diagnostics,
         current: [{ planSlug: bound.plan_slug, specId: bound.spec_id, specRevision: bound.spec_revision,
-          specFingerprint: bound.spec_fingerprint, evidenceKind: bound.evidence_kind, evidenceRef: bound.evidence_ref,
-          sourceFingerprint: bound.source_fingerprint, testFingerprint: bound.test_fingerprint }],
+          specFingerprint: bound.spec_fingerprint, evidenceKind: 'test', evidenceRef: bound.evidence_ref,
+          sourceFingerprint, testFingerprint: bound.test_fingerprint }],
       });
       expect(metadata?.currentness.overall).toBe('unknown');
       expect(metadata?.currentness.unknownReasons).toContain('evidence-metadata-only');
@@ -3197,6 +3201,101 @@ describe('listSpecEvidence timestamp normalization', () => {
       expect(fresh?.serverMeasurement?.status).toBe('measured');
       expect(fresh?.currentness.overall).toBe('stale');
       expect(fresh?.currentness.staleReasons).toContain('source-stale');
+    });
+
+    it('metadata leaves case, scorecard and declared-configuration proof hydration to full reads', async () => {
+      const measured = await measureRepoFilesEvidenceAtRoot(measurementRoot, recipe);
+      h.rows = [{
+        ...boundRow(recipe, { source: measured.sourceFingerprint, test: measured.testFingerprint }),
+        evidence_ref: 'scorecard:EI-123#matched-window', test_run_id: 42, test_run_present: true,
+        source_rubric_slug: 'rubric-one', source_rubric_revision: 1, source_bar_key: 'bar-one',
+      }];
+      h.caseRows = [{ test_run_id: 42, case_key: 'measured case', occurrence: 1, status: 'pass', duration_ms: 1 }];
+      h.scorecardRows = [{ feature_id: 'EI-123', provisional: {
+        stampedAt: '2026-08-20T17:09:00.000Z', violatableKeys: ['criterion-a'],
+      } }];
+      const loadRubricCriteria = vi.fn(async () => []);
+      declaredConfigurationReadSeam.loadRubricCriteria = loadRubricCriteria;
+      try {
+        const [metadata] = await listSpecEvidence({
+          harnessSlug: 'papercusp', planSlugs: ['plan-one'], measurementMode: 'metadata',
+        });
+        expect(h.queries.filter(q => q.sql.includes('to_regclass') ||
+          q.sql.includes('FROM harness_shared.test_case_runs') || q.sql.includes("payload -> 'observation'"))).toEqual([]);
+        expect(loadRubricCriteria).not.toHaveBeenCalled();
+        expect(h.rows[0]).not.toHaveProperty('test_run_cases');
+        expect(metadata).toMatchObject({ id: 4, testRunId: 42, currentness: { overall: 'unknown' } });
+        expect(metadata?.currentness.unknownReasons).toContain('evidence-metadata-only');
+        expect(metadata?.currentness.provenance).not.toBe('server-measured');
+        expect(metadata).not.toHaveProperty('serverMeasurement');
+        expect(metadata).not.toHaveProperty('provisionalScorecard');
+
+        h.queries = [];
+        const full = await readWithoutCallerCurrent();
+        expect(h.queries.some(q => q.sql.includes('FROM harness_shared.test_case_runs'))).toBe(true);
+        expect(h.queries.some(q => q.sql.includes("payload -> 'observation'"))).toBe(true);
+        expect(loadRubricCriteria).toHaveBeenCalledWith('rubric-one', 1);
+        expect(h.rows[0]).toHaveProperty('test_run_cases', [
+          { caseKey: 'measured case', occurrence: 1, status: 'pass', durationMs: 1 },
+        ]);
+        expect(full).toMatchObject({
+          serverMeasurement: { status: 'measured' }, provisionalProofBase: true,
+          provisionalScorecard: { issueId: 'EI-123' },
+        });
+      } finally {
+        delete declaredConfigurationReadSeam.loadRubricCriteria;
+        h.caseRows = null;
+      }
+    });
+
+    it('metadata retains the full binding selection contract and withdrawal identity', async () => {
+      const withdrawn = {
+        ...boundRow(recipe, { source: 'source-at-binding', test: 'test-at-binding' }),
+        retracted_at: '2026-10-12T00:00:00.000Z', retracted_by: 'su-reviewer', retraction_reason: 'superseded',
+      };
+      h.rows = [withdrawn, { ...withdrawn, id: 5, spec_is_current: false,
+        retracted_at: null, retracted_by: null, retraction_reason: null }];
+      const options = {
+        workspaceId: 'workspace-explicit', harnessSlug: 'papercusp', planSlugs: ['plan-one'],
+        workItemIds: ['WI-4'], specIds: ['SPEC-001-01'], sourceValIds: ['VAL-001-01'],
+        evidenceKinds: ['test' as const], evidenceRefs: ['vitest:p002'], bindingIds: [4, 5],
+        specRevision: 1, specFingerprint: 'sha256:spec-v1', includeRetracted: true,
+        auditAsOf: new Date('2026-10-13T00:00:00.000Z'), limit: 2,
+      };
+      const metadata = await listSpecEvidence({ ...options, measurementMode: 'metadata' });
+      const metadataQuery = h.queries.find(q => q.sql.includes('FROM harness_shared.spec_evidence_bindings'))!;
+      expect(metadata.map(row => row.id)).toEqual([4, 5]);
+      expect(metadata[0]).toMatchObject({ withdrawal: {
+        at: '2026-10-12T00:00:00.000Z', by: 'su-reviewer', reason: 'superseded',
+      } });
+      expect(metadata[1]).not.toHaveProperty('withdrawal');
+      expect(metadata.every(row => row.currentness.overall === 'unknown')).toBe(true);
+      expect(metadata[1]?.currentness.dimensions.spec).toBe('stale');
+      expect(h.workspaceScopes).toEqual(['workspace-explicit']);
+      expect(metadataQuery.values).toEqual(expect.arrayContaining([
+        'workspace-explicit', 'papercusp', ['plan-one'], ['WI-4'], ['SPEC-001-01'], ['VAL-001-01'],
+        ['test'], ['vitest:p002'], options.auditAsOf, 2,
+      ]));
+      const bindingFilter = h.queries.find(q => q.sql.includes('b.id = ANY('))!;
+      expect(bindingFilter.values).toContainEqual([4, 5]);
+      h.queries = [];
+      await listSpecEvidence(options);
+      const fullQuery = h.queries.find(q => q.sql.includes('FROM harness_shared.spec_evidence_bindings'))!;
+      const selection = (sql: string) => sql.slice(sql.indexOf('JOIN harness_shared.plan_spec_clauses c'));
+      expect(selection(metadataQuery.sql)).toBe(selection(fullQuery.sql));
+      await expect(listSpecEvidence({ ...options, measurementMode: 'metadata', includeRetracted: false }))
+        .rejects.toThrow('auditAsOf requires includeRetracted:true');
+    });
+
+    it.each([undefined, 'metadata'] as const)('propagates binding source failure in measurement mode %s', async (measurementMode) => {
+      h.bindingReadError = new Error('binding source unavailable');
+      try {
+        await expect(listSpecEvidence({
+          harnessSlug: 'papercusp', planSlugs: ['plan-one'], measurementMode,
+        })).rejects.toThrow('binding source unavailable');
+      } finally {
+        h.bindingReadError = null;
+      }
     });
 
     it('records separate registry, filesystem, and commit maxima for root-resolution outliers', async () => {

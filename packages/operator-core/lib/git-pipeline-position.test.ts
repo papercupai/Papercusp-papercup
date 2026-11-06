@@ -25,6 +25,7 @@ vi.mock('./agent-tools/dev/systemd-service-probe', async (importOriginal) => {
 import { probeServiceStart } from './agent-tools/dev/systemd-service-probe';
 import {
   gitPipelinePosition,
+  realGit,
   withGitReadBudget,
   assessPipelinePosition,
   assessGateVerdict,
@@ -457,6 +458,8 @@ describe('accepted-source pipeline containment (WI-10007982)', () => {
     moveSource?: boolean;
     moveMtime?: boolean;
     unknownFormat?: boolean;
+    acceptedRevision?: boolean;
+    pinnedBytes?: Buffer | null;
     startedAtMs?: number;
     path?: string;
     /** EI-27242252657062361 — marker plus each build sha's file text (null = path absent). */
@@ -488,9 +491,13 @@ describe('accepted-source pipeline containment (WI-10007982)', () => {
       // Deliberately different: accepted containment must use the frozen source,
       // never the mutable hash-object answer from a later tree observation.
       if (args[0] === 'hash-object') return 'd'.repeat(40);
+      if (args[0] === 'cat-file' && args[1] === 'blob') {
+        return options.pinnedBytes === null ? null : (options.pinnedBytes ?? acceptedBytes).toString('utf8');
+      }
       return fallback(repo, args);
     };
-    return gitPipelinePosition({ path: options.path ?? sourcePath, expectedSourceSha256, marker: options.marker }, {
+    return gitPipelinePosition({ path: options.path ?? sourcePath, expectedSourceSha256, marker: options.marker,
+      ...(options.acceptedRevision ? { sha: target } : {}) }, {
       git,
       loadDeploy: async () => deploy({ deployed: { sha: laterArtifact } as DevDeployState['deployed'] }),
       loadSnapshot: async () => snap(),
@@ -619,6 +626,34 @@ describe('accepted-source pipeline containment (WI-10007982)', () => {
     const result = await readAccepted({ moveSource: true });
     expect(result.acceptedSource).toMatchObject({ matches: false, deployedContains: false });
     expect(result.acceptedSource?.runtimeContainment['bg-host']).toBe(false);
+  });
+
+  it('keeps an explicitly pinned accepted revision independent of later working-tree edits', async () => {
+    const result = await readAccepted({ acceptedRevision: true, bytes: Buffer.from('later unaccepted tree\n') });
+    expect(result.acceptedSource).toMatchObject({ matches: true, deployedContains: true });
+    expect(result.acceptedSource?.runtimeContainment['staging-operator']).toBe(true);
+  });
+
+  it('reads source blob bytes without trimming their final newline', async () => {
+    const object = 'HEAD:packages/operator-core/lib/git-pipeline-position.ts';
+    const source = await realGit(process.cwd(), ['cat-file', 'blob', object]);
+    const size = await realGit(process.cwd(), ['cat-file', '-s', object]);
+    expect(source).not.toBeNull();
+    expect(Buffer.byteLength(source!, 'utf8')).toBe(Number(size));
+    expect(source!.endsWith('\n')).toBe(true);
+  });
+
+  it('does not let a valid accepted pin excuse different artifact bytes', async () => {
+    const result = await readAccepted({ acceptedRevision: true, bytes: Buffer.from('later tree\n'), artifactBlob: 'e'.repeat(40) });
+    expect(result.acceptedSource).toMatchObject({ matches: true, deployedContains: false });
+    expect(result.acceptedSource?.runtimeContainment['release-operator']).toBe(false);
+  });
+
+  it('fails closed when the explicit accepted revision is missing or has a different digest', async () => {
+    const absent = await readAccepted({ acceptedRevision: true, pinnedBytes: null });
+    expect(absent.acceptedSource).toMatchObject({ matches: null, deployedContains: null });
+    const different = await readAccepted({ acceptedRevision: true, pinnedBytes: Buffer.from('wrong pin\n') });
+    expect(different.acceptedSource).toMatchObject({ matches: false, deployedContains: false });
   });
 
   it('does not invent blob containment when the repository object format cannot be read', async () => {
@@ -3743,6 +3778,8 @@ describe('computeStages: position x health', () => {
     const failures = (over: Partial<GateCandidateFailures> = {}): GateCandidateFailures => ({
       candidateSha: 'c'.repeat(40),
       repairHeadSha: 'd'.repeat(40),
+      candidateRunGroupId: null,
+      repairHeadRunGroupId: null,
       filesJudged: 12,
       distinctFailingFiles: [],
       failingFileCount: 0,

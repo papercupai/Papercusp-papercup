@@ -2459,6 +2459,66 @@ describe('durable detached snapshot lifecycle', () => {
     expect(updates.map(([status]) => status)).toEqual(['error', 'error', 'pass']);
   });
 
+  it('recovers the same run after its terminal ledger query hits the deadline', async () => {
+    vi.useFakeTimers();
+    try {
+      const runId = 'deadline-then-recovered-coverage';
+      const filePath = 'lib/first.test.ts';
+      const durableRow: Record<string, unknown> = {
+        run_id: runId, task_id: 'task-deadline-then-recovered', kind: 'vitest', label: 'deadline then recovered',
+        file_path: null, command: ['node', 'scripts/test-files.mjs'], status: 'pass', exit_code: 0,
+        started_at: new Date(1_700_000_000_000), finished_at: new Date(1_700_000_010_000),
+        output: '', truncated: false, task_state: 'exited', task_exit_code: 0,
+        task_ended_at: new Date(1_700_000_010_000), task_detail: { requestedFiles: [filePath] },
+      };
+      const ledgerRows = [{
+        file_path: filePath, status: 'pass', finished_at: new Date(1_700_000_011_000), output_tail: null,
+        execution_details: measuredPass(filePath, runId),
+      }];
+      const updates: unknown[][] = [];
+      let ledgerReads = 0;
+      const sql = vi.fn((strings: TemplateStringsArray, ...values: unknown[]) => {
+        const statement = strings.join(' ');
+        if (statement.includes('FROM harness_shared.testing_run_snapshots AS snapshot')) {
+          return Promise.resolve([{ ...durableRow }]);
+        }
+        if (statement.includes('FROM harness_shared.test_runs')) {
+          ledgerReads += 1;
+          return ledgerReads === 1 ? new Promise<never>(() => {}) : Promise.resolve(ledgerRows);
+        }
+        if (statement.includes('UPDATE harness_shared.testing_run_snapshots')) {
+          updates.push(values);
+          Object.assign(durableRow, {
+            status: values[0], exit_code: values[1], finished_at: values[2], output: values[3], truncated: values[4],
+          });
+          return Promise.resolve([{ run_id: runId }]);
+        }
+        return Promise.resolve([]);
+      }) as unknown as Sql;
+
+      const initialRead = store.getRunAsync(runId, sql);
+      await vi.advanceTimersByTimeAsync(1_000);
+      const withheld = await initialRead;
+      expect(withheld).toMatchObject({ runId, status: 'error', exitCode: 0 });
+      const diagnostic = withheld!.output.split('\n').find(line => line.startsWith('[coverage-gate:verification] '));
+      expect(JSON.parse(diagnostic!.slice('[coverage-gate:verification] '.length))).toMatchObject({
+        reason: 'ledger-read-unavailable',
+        requestedFileCount: 1,
+        ledgerRowCount: null,
+        ledgerReadFailure: { phase: 'deadline', errorName: 'TestingRunSnapshotQueryTimeout', timeoutMs: 1_000 },
+      });
+
+      const recovered = await store.getRunAsync(runId, sql);
+      expect(recovered).toMatchObject({ runId, status: 'pass', exitCode: 0 });
+      expect(recovered?.output).toContain('recovered pass from exact requested-file ledger rows');
+      expect(recovered?.output).not.toContain('[coverage-gate');
+      expect(ledgerReads).toBeGreaterThan(1);
+      expect(updates.map(([status]) => status)).toEqual(['error', 'pass']);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('withholds a terminal PASS when requested per-file ledger rows include failures', async () => {
     const runId = 'terminal-pass-with-failed-ledger';
     const requestedFiles = ['lib/first.test.ts', 'lib/second.test.ts', 'lib/third.test.ts'];

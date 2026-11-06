@@ -15,6 +15,13 @@ vi.mock('../../code-intelligence/ast-grep-facade', async (original) => ({
 import {
   LIBRARIES_SECTION_DESCRIPTION,
   LIBRARIES_SECTION_HEADING,
+  DISCOVERY_QUESTION_KINDS,
+  discoveryDeclarationScaffold,
+  discoveryDeclarationSchema,
+  evaluateDiscoveryReadiness,
+  previewDiscoveryDeclaration,
+  type DiscoveryDeclaration,
+  type DiscoveryReadinessContext,
   REUSE_REF_KINDS,
   REUSE_SECTION_HEADING,
   checkLibraryDeclarations,
@@ -47,6 +54,136 @@ const validReuse = {
   newSurfaces: [{ name: 'plan-declarations.ts', kind: 'module', nearestExisting: 'product-shaping.ts', whyNotReused: 'keeps that file focused' }],
   notApplicable: null,
 };
+
+describe('Discovery before implementation review', () => {
+  const section = (value: unknown) => `## Discovery\n\n\`\`\`discovery\n${JSON.stringify(value)}\n\`\`\``;
+  const declaration = (): DiscoveryDeclaration => ({
+    questions: DISCOVERY_QUESTION_KINDS.map((kind, index) => ({
+      id: `Q-${index + 1}`, kind, question: `Establish ${kind}`, stopCondition: 'Read current implementation and its maintained test once', outcome: 'answered',
+    })),
+    findings: [{
+      id: 'F-1', questions: ['Q-1', 'Q-2', 'Q-3'], conclusion: 'The existing helper covers the behavior; only its missing caller needs wiring.',
+      evidenceRefs: ['proof:current-source'], dispositions: [{ target: 'P-001', decision: 'reuse', reason: 'Extend the existing helper rather than repeat inventory during implementation.' }],
+    }],
+    notApplicable: null,
+  });
+  const context = (): DiscoveryReadinessContext => ({
+    evidence: new Map([['proof:current-source', { state: 'current', usable: true }]]),
+    targets: [{ ref: 'P-001', change: 'proposed' }],
+  });
+  const evaluate = (value: DiscoveryDeclaration = declaration(), ctx = context()) => evaluateDiscoveryReadiness(section(value), ctx);
+
+  it('requires a single bounded declaration and never treats scaffold seeds as answers', () => {
+    expect(evaluateDiscoveryReadiness('## Design\nReady', context()).ready).toBe(false);
+    expect(previewDiscoveryDeclaration(section(declaration()) + '\n' + section(declaration())).status).toBe('invalid');
+    expect(previewDiscoveryDeclaration('## Discovery\n```discovery\n{\n```').status).toBe('invalid');
+    const scaffold = discoveryDeclarationScaffold();
+    for (const kind of DISCOVERY_QUESTION_KINDS) expect(scaffold).toContain(kind);
+    expect(evaluateDiscoveryReadiness(scaffold, context()).ready).toBe(false);
+  });
+
+  it('admits evidence-backed reuse and justified unchanged outcomes', () => {
+    expect(evaluate()).toMatchObject({ ready: true, state: 'ready', supportedTargets: ['P-001'], evidenceRefs: ['proof:current-source'] });
+    const value = declaration();
+    value.findings[0]!.dispositions[0] = { target: 'P-001', decision: 'unchanged', reason: 'The measured behavior supports the existing proposal.' };
+    expect(evaluate(value).ready).toBe(true);
+  });
+
+  it('refuses claimed readiness and deferred material answers even when findings are present', () => {
+    expect(discoveryDeclarationSchema.safeParse({ ...declaration(), ready: true }).success).toBe(false);
+    const value = declaration();
+    value.questions[0]!.outcome = 'unresolved';
+    expect(evaluate(value).blockers).toContainEqual(expect.objectContaining({ code: 'discovery_unresolved', path: 'questions.0' }));
+    expect(discoveryDeclarationSchema.safeParse({ ...value, questions: [{ ...value.questions[0], outcome: 'deferred' }] }).success).toBe(false);
+    value.questions[0]!.outcome = 'answered';
+    value.findings = [];
+    expect(evaluate(value).ready).toBe(false);
+  });
+
+  it('requires current-behavior, gap and feasibility coverage instead of an investigation anchor', () => {
+    const value = declaration();
+    value.questions = value.questions.slice(0, 1);
+    value.findings[0]!.questions = ['Q-1'];
+    expect(evaluate(value).blockers.filter(({ code }) => code === 'discovery_question_missing')).toHaveLength(2);
+    value.findings[0]!.evidenceRefs = ['anchor:investigate'];
+    expect(evaluate(value).state).toBe('unknown');
+  });
+
+  it.each(['stale', 'unknown', 'historical'] as const)('keeps %s evidence non-ready', (state) => {
+    const ctx = context();
+    ctx.evidence = new Map([['proof:current-source', { state, usable: true }]]);
+    expect(evaluate(declaration(), ctx).ready).toBe(false);
+  });
+
+  it('requires the provider trust verdict and permits current-source fallback', () => {
+    const value = declaration();
+    value.findings[0]!.evidenceRefs = ['invocation:graph-empty'];
+    const ctx = context();
+    ctx.evidence = new Map([['invocation:graph-empty', { state: 'current', usable: false, reason: 'degraded coverage; empty does not prove absence' }]]);
+    expect(evaluate(value, ctx).blockers).toContainEqual(expect.objectContaining({ code: 'discovery_evidence_unusable' }));
+    // The conclusion selects the corroborating evidence, not the unusable suggestion.
+    value.findings[0]!.evidenceRefs = ['proof:current-source'];
+    expect(evaluate(value).ready).toBe(true);
+  });
+
+  it('requires every proposed change to have a supported finding and a current target', () => {
+    const ctx = context();
+    ctx.targets = [...ctx.targets, { ref: 'P-002', change: 'proposed' }];
+    expect(evaluate(declaration(), ctx).blockers).toContainEqual(expect.objectContaining({ code: 'discovery_change_unsupported', path: 'P-002' }));
+    const value = declaration();
+    value.findings[0]!.dispositions[0]!.target = 'P-099';
+    expect(evaluate(value).blockers).toContainEqual(expect.objectContaining({ code: 'discovery_target_unknown' }));
+    value.findings[0]!.questions.push('Q-missing');
+    expect(evaluate(value).blockers).toContainEqual(expect.objectContaining({ code: 'discovery_question_unknown' }));
+  });
+
+  it('accepts removal only when canonical reconciliation recorded it', () => {
+    const value = declaration();
+    value.findings[0]!.dispositions[0]!.decision = 'remove';
+    expect(evaluate(value).ready).toBe(false);
+    const ctx = context();
+    ctx.targets = [{ ref: 'P-001', change: 'removed' }];
+    expect(evaluate(value, ctx).ready).toBe(true);
+    value.findings[0]!.dispositions[0]!.decision = 'exclude';
+    expect(evaluate(value, ctx).ready).toBe(true);
+    expect(evaluate(value).ready).toBe(false);
+    value.findings[0]!.dispositions[0]!.decision = 'unchanged';
+    expect(evaluate(value, ctx).ready).toBe(false);
+  });
+
+  it('permits excluded scope and bounded experiments with evidence and a non-invalidating rationale', () => {
+    const value = declaration();
+    value.questions[0] = { ...value.questions[0]!, outcome: 'excluded', rationale: 'The selected scope has no mobile clients.' };
+    value.questions[1] = { ...value.questions[1]!, outcome: 'experiment', rationale: 'Either tuning result preserves the chosen API.', bounds: 'Compare two cache sizes for ten minutes; retain the default if inconclusive.' };
+    expect(evaluate(value).ready).toBe(true);
+    delete value.questions[1]!.bounds;
+    expect(evaluate(value).ready).toBe(false);
+  });
+
+  it('supports minimal general plans without a blank exemption or duplicate report', () => {
+    const value = declaration();
+    value.questions = [];
+    value.notApplicable = 'A small scheduling plan reuses the established event procedure; no material unknowns remain.';
+    value.findings[0]!.questions = [];
+    value.findings[0]!.evidenceRefs = ['doc:existing-event-procedure'];
+    const ctx = context();
+    ctx.evidence = new Map([['doc:existing-event-procedure', { state: 'current', usable: true }]]);
+    expect(evaluate(value, ctx).ready).toBe(true);
+    value.findings = [];
+    expect(evaluate(value, ctx).ready).toBe(false);
+  });
+
+  it('fails closed without canonical inputs and rejects copied facts or duplicate ids', () => {
+    expect(evaluateDiscoveryReadiness(section(declaration())).state).toBe('unknown');
+    const value = declaration();
+    value.questions[1]!.id = value.questions[0]!.id;
+    expect(discoveryDeclarationSchema.safeParse(value).success).toBe(false);
+    for (const field of ['fingerprint', 'timestamp', 'status', 'testResult']) {
+      expect(discoveryDeclarationSchema.safeParse({ ...declaration(), [field]: 'copied fact' }).success).toBe(false);
+    }
+    expect(discoveryDeclarationSchema.safeParse({ ...declaration(), findings: Array(101).fill(declaration().findings[0]) }).success).toBe(false);
+  });
+});
 
 describe('R-1 native declarations', () => {
   let workspace: string;

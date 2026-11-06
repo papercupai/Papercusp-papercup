@@ -118,6 +118,115 @@ beforeEach(async () => {
 });
 
 describe('real write-boundary bypass regression', () => {
+  it.each([true, false])('forwards canonical plan-row subphases with scoped binding %s', async scoped => {
+    const source = await import('./source');
+    const originalRead = source.getPlanRow;
+    const sourceTimings = {
+      'source.resolveScope': 1, 'source.waitForBegin': 2, 'source.workspaceSetup': 3,
+      'source.acquireAndSetup': 4, 'source.query': 5, 'source.finishTransaction': 6, 'source.row': 7,
+    };
+    const read = vi.spyOn(source, 'getPlanRow').mockImplementation(async (...args) => {
+      const row = await originalRead(...args);
+      if (args[2]) Object.assign(args[2], sourceTimings);
+      return row;
+    });
+    const timings: Array<{ stage: string; durationMs: number }> = [];
+    try {
+      const { checkPlanExecutionReadiness } = await import('./plan-execution-guard');
+      expect(await checkPlanExecutionReadiness({ ...binding, harnessSlug: scoped ? 'project' : null }, WS,
+        timing => { timings.push(timing); throw new Error('broken observer'); })).toEqual(['plan_status:draft']);
+      expect(read).toHaveBeenCalledExactlyOnceWith(binding.planSlug,
+        { harnessSlug: 'project', workspaceId: WS }, expect.objectContaining(sourceTimings));
+      expect(Object.fromEntries(timings.map(({ stage, durationMs }) => [stage, durationMs]))).toMatchObject({
+        plan_row_resolve_scope: 1, plan_row_wait_for_begin: 2, plan_row_workspace_setup: 3,
+        plan_row_acquire_and_setup: 4, plan_row_query: 5, plan_row_finish_transaction: 6, plan_row_row: 7,
+      });
+    } finally { read.mockRestore(); }
+  });
+
+  it.each([true, false])('retains collected subphases and the reader error with scoped binding %s', async scoped => {
+    const source = await import('./source');
+    const failure = new Error('canonical rendered read failed');
+    const read = vi.spyOn(source, 'getPlanRow').mockImplementation(async (_slug, _opts, timings) => {
+      if (timings) Object.assign(timings, { 'source.resolveScope': 1, 'source.waitForBegin': 2,
+        'source.workspaceSetup': NaN, 'source.query': -1, 'source.row': Infinity,
+        'source.private-plan-content': 3 });
+      throw failure;
+    });
+    const timings: Array<{ stage: string; durationMs: number }> = [];
+    try {
+      const { checkPlanExecutionReadiness } = await import('./plan-execution-guard');
+      await expect(checkPlanExecutionReadiness({ ...binding, harnessSlug: scoped ? 'project' : null }, WS,
+        timing => { timings.push(timing); throw new Error('broken observer'); })).rejects.toBe(failure);
+      expect(read).toHaveBeenCalledTimes(1);
+      expect(timings.filter(({ stage }) => stage.startsWith('plan_row_'))).toEqual([
+        { stage: 'plan_row_resolve_scope', durationMs: 1 },
+        { stage: 'plan_row_wait_for_begin', durationMs: 2 },
+      ]);
+      expect(timings.some(({ stage }) => stage === 'plan_row')).toBe(true);
+    } finally { read.mockRestore(); }
+  });
+
+  it.each([true, false])('keeps the canonical reader call unchanged without an observer, scoped %s', async scoped => {
+    const source = await import('./source');
+    const read = vi.spyOn(source, 'getPlanRow');
+    try {
+      const { checkPlanExecutionReadiness } = await import('./plan-execution-guard');
+      expect(await checkPlanExecutionReadiness({ ...binding, harnessSlug: scoped ? 'project' : null }, WS))
+        .toEqual(['plan_status:draft']);
+      expect(read).toHaveBeenCalledExactlyOnceWith(binding.planSlug, { harnessSlug: 'project', workspaceId: WS });
+    } finally { read.mockRestore(); }
+  });
+
+  it('starts the canonical scoped read before the scope census settles and refuses mismatched revisions', async () => {
+    const source = await import('./source');
+    const originalRead = source.getPlanRow;
+    let entered!: () => void, rendered!: () => void, release!: () => void;
+    const scopeEntered = new Promise<void>(resolve => { entered = resolve; });
+    const rowRendered = new Promise<void>(resolve => { rendered = resolve; });
+    const holdScope = new Promise<void>(resolve => { release = resolve; });
+    const read = vi.spyOn(source, 'getPlanRow').mockImplementation(async (...args) => {
+      const row = await originalRead(...args);
+      rendered();
+      return row;
+    });
+    connection.sql = new Proxy(db.sql, {
+      apply(target, thisArg, args) {
+        const template = args[0];
+        if (Array.isArray(template) && template.join(' ').includes('SELECT harness_slug, content, content_hash, op_status, created_at')) {
+          entered();
+          return holdScope.then(() => Reflect.apply(target, thisArg, args));
+        }
+        return Reflect.apply(target, thisArg, args);
+      },
+    });
+    const { checkPlanExecutionReadiness } = await import('./plan-execution-guard');
+    const attempt = checkPlanExecutionReadiness(binding, WS);
+    try {
+      await scopeEntered;
+      expect(read).toHaveBeenCalledWith(binding.planSlug, { harnessSlug: binding.harnessSlug, workspaceId: WS });
+      await rowRendered;
+      await db.sql`UPDATE harness_shared.harness_plans SET content_hash='changed-during-scoped-read'`;
+      release();
+      expect(await attempt).toEqual(['plan_revision_changed']);
+    } finally {
+      release();
+      await attempt.catch(() => {});
+      connection.sql = db.sql;
+      read.mockRestore();
+    }
+  });
+
+  it('retains missing-scope refusal when the concurrent rendered read rejects', async () => {
+    await db.sql`DELETE FROM harness_shared.harness_plans`;
+    const source = await import('./source');
+    const read = vi.spyOn(source, 'getPlanRow').mockRejectedValue(new Error('rendered read unavailable'));
+    try {
+      const { checkPlanExecutionReadiness } = await import('./plan-execution-guard');
+      expect(await checkPlanExecutionReadiness(binding, WS)).toEqual(['bound_plan_missing']);
+    } finally { read.mockRestore(); }
+  });
+
   it('separates goal module and read timing without allowing a broken diagnostic sink to change refusal', async () => {
     await db.sql`INSERT INTO harness_shared.session_briefs VALUES (${OWNER}, ${WS}, 'draft-feature', 'project',
       ${db.sql.json({ scope: { plan: 'draft-feature', harness: 'project' } })}, 1)`;
@@ -128,7 +237,12 @@ describe('real write-boundary bypass regression', () => {
         throw new Error('diagnostic sink unavailable');
       } });
     expect(result).toMatchObject({ planSlug: 'draft-feature', blockers: ['plan_status:draft'] });
-    expect(timings.map(timing => timing.stage)).toEqual(expect.arrayContaining(['goal_module', 'goal_read', 'goal']));
+    expect(timings.map(timing => timing.stage)).toEqual(expect.arrayContaining([
+      'goal_module', 'goal_read', 'goal',
+      'goal_leg_work_items', 'goal_leg_plan_items', 'goal_leg_fleet', 'goal_leg_override', 'goal_leg_links',
+      'goal_pool_acquire_work_items', 'goal_pool_acquire_plan_items',
+      'goal_pool_acquire_fleet', 'goal_pool_acquire_override',
+    ]));
     expect(timings.every(timing => Number.isFinite(timing.durationMs) && timing.durationMs >= 0)).toBe(true);
   });
   it('denies native patches and shell writes despite an unrelated held WI and no worn identity', async () => {
@@ -275,7 +389,9 @@ describe('real write-boundary bypass regression', () => {
       expect(await checkPlanExecutionReadiness(binding, WS, timing => {
         stages.push(timing.stage); throw Error('diagnostic sink unavailable');
       })).toEqual([]);
-      expect(stages.sort()).toEqual(['scope', 'plan_row', 'activation', 'audit', 'start_gate', 'start_gate_snapshot_plan', 'spec_quality', 'admission', 'recheck'].sort());
+      expect(stages.sort()).toEqual(['scope', 'plan_row', 'activation', 'audit', 'start_gate', 'start_gate_snapshot_plan',
+        'spec_quality', 'admission', 'recheck', 'plan_row_resolve_scope', 'plan_row_acquire_and_setup',
+        'plan_row_query', 'plan_row_finish_transaction', 'plan_row_row'].sort());
       expect(policy.readLifecycle).toHaveBeenCalledTimes(1);
       expect(policy.readLifecycle).toHaveBeenLastCalledWith('draft-feature', 'pre-start', {
         harnessSlug: 'project', requireCompleteContractBeforeProof: true, proofMode: 'metadata',

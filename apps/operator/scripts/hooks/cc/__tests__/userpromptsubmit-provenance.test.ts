@@ -218,6 +218,15 @@ describe('userpromptsubmit-provenance.sh', () => {
     expect(ctx).toContain('EXPIRED');
   });
 
+  it('an expired envelope reports its own per-row ttlMs', () => {
+    writeRow({ ts: Date.now() - 71 * 60_000, ttlMs: 65 * 60_000 });
+    const ctx = contextOf(
+      runHook({ prompt: '⟦turn-origin:wake-pump nonce:aabbccddeeff0011⟧\nthe injected payload' }),
+    );
+    expect(ctx).toContain('EXPIRED');
+    expect(ctx).toContain('ttl 3900s');
+  });
+
   /**
    * EI-19302386056422625: an expired nonce carries TWO independent risks. The
    * authority one ("not owner input") was already stamped; agents read it, conclude

@@ -656,7 +656,7 @@ export async function createRouterProofCustody(groups, env, repoRoot) {
   // Keep this lazy, but use the module's native ESM loader. The committed-source
   // fence can substitute a dirty ESM helper; its CommonJS compile hook must
   // refuse because it cannot safely make that substitution.
-  const { retainNativeProofPacket } = await import('./lib/budgeted-task-scheduler.mjs');
+  const { retainNativeProofPacketAsync } = await import('./lib/budgeted-task-scheduler.mjs');
   const base = env.PAPERCUSP_TEST_ARTIFACT_DIR || join(homedir(), '.papercusp', 'test-artifacts', 'testing-run');
   mkdirSync(base, { recursive: true, mode: 0o700 });
   const directory = mkdtempSync(join(base, 'native-router-'));
@@ -711,8 +711,8 @@ export async function createRouterProofCustody(groups, env, repoRoot) {
       publishDeclaration();
       return id;
     },
-    finish() {
-      const result = retainNativeProofPacket(directory, { identity, expected, observations, execution: 'router-settled',
+    async finish() {
+      const result = await retainNativeProofPacketAsync(directory, { identity, expected, observations, execution: 'router-settled',
         onProgress: record => console.error('TEST_FILE_FINALIZATION ' + JSON.stringify({
           pid: process.pid, phase: 'native-proof-custody', ...record, custodyDirectory: directory,
         })),
@@ -4929,7 +4929,7 @@ export async function main(
   const settledCustody = proofCustody;
   proofCustody = null;
   try {
-    const custodyResult = settledCustody?.finish();
+    const custodyResult = await settledCustody?.finish();
     if (settledCustody && custodyResult?.status !== 'complete') {
       summary.anyFinalizationError = true;
       const manifest = custodyResult?.manifest;

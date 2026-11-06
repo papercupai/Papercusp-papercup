@@ -272,6 +272,8 @@ export const HOST_GLOBAL_RESOURCES: ReadonlySet<string> = new Set([
   // optional mid-turn memory budget. A caller-tree domain would recreate the
   // exact split-brain this set exists to prevent and make locks:list lie.
   'memory-injection:mid-turn',
+  // WI-6554700010045715: the physical macOS test VM is shared across operator checkouts.
+  'mac-test-vm',
 ]);
 
 /**

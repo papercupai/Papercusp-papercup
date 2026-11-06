@@ -1,7 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   measureTargetedGateRuns,
-  RESCUE_TASK_TIMEOUT_FLOOR_MS,
   RESCUE_TASK_TIMEOUT_MAX_MS,
   rescueTaskWatchdogOptions,
   validateTargetedGateOutcomes,
@@ -177,28 +176,27 @@ describe("targeted gate outcome evidence", () => {
 });
 
 describe("rescue task watchdog policy (WI-10003211)", () => {
-  it("lets a still-progressing test task outlive the floor, bounded by the ceiling", () => {
+  it("lets a still-progressing test task outlive the former aggregate ceiling", () => {
     // The live failure: a whole `test:lane-stateful` rescue at the 2-fork gate cap was killed at
     // exactly the 45-min floor while still completing files. The floor must be an IDLE budget.
     const opts = rescueTaskWatchdogOptions("test:lane-stateful", {});
-    expect(opts).toEqual({
-      timeoutMs: RESCUE_TASK_TIMEOUT_FLOOR_MS,
-      timeoutResetsOnProgress: true,
-      hardTimeoutMs: RESCUE_TASK_TIMEOUT_MAX_MS,
-      killProcessGroupOnTimeout: true,
-    });
+    expect(opts).toEqual({ killProcessGroupOnTimeout: true });
   });
 
-  it("never kills earlier than the old absolute floor (monotone) and stays bounded", () => {
+  it("retains process-group cleanup without silence-only or aggregate cancellation", () => {
     for (const script of ["test", "test:lane-pure", "test:lane-stateful", "test:integration"]) {
       const opts = rescueTaskWatchdogOptions(script, {});
-      // An idle window of >= the floor cannot expire before the floor has elapsed ...
-      expect(opts.timeoutMs).toBeGreaterThanOrEqual(RESCUE_TASK_TIMEOUT_FLOOR_MS);
-      // ... and the absolute ceiling is never below the idle window, and is finite.
-      expect(opts.hardTimeoutMs).toBeGreaterThanOrEqual(opts.timeoutMs!);
-      expect(opts.hardTimeoutMs).toBe(RESCUE_TASK_TIMEOUT_MAX_MS);
+      expect(opts.timeoutMs).toBeUndefined();
+      expect(opts.timeoutResetsOnProgress).toBeUndefined();
+      expect(opts.hardTimeoutMs).toBeUndefined();
       expect(opts.killProcessGroupOnTimeout).toBe(true);
     }
+  });
+
+  it("keeps a long explicit override bounded", () => {
+    const opts = rescueTaskWatchdogOptions("test", { AFFECTED_BATCH_TIMEOUT_MS: String(RESCUE_TASK_TIMEOUT_MAX_MS) });
+    expect(opts.timeoutMs).toBe(RESCUE_TASK_TIMEOUT_MAX_MS);
+    expect(opts.timeoutResetsOnProgress).toBeUndefined();
   });
 
   it("keeps an explicit operator override as an ABSOLUTE deadline", () => {
@@ -208,9 +206,9 @@ describe("rescue task watchdog policy (WI-10003211)", () => {
     });
   });
 
-  it("ignores an invalid override rather than treating it as absolute", () => {
+  it("ignores an invalid override without inventing a default deadline", () => {
     for (const bad of ["", "0", "-5", "soon"]) {
-      expect(rescueTaskWatchdogOptions("test", { AFFECTED_BATCH_TIMEOUT_MS: bad }).timeoutResetsOnProgress).toBe(true);
+      expect(rescueTaskWatchdogOptions("test", { AFFECTED_BATCH_TIMEOUT_MS: bad }).timeoutMs).toBeUndefined();
     }
   });
 

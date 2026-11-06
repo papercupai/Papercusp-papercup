@@ -180,6 +180,56 @@ async function verdictAwaits(park: SeededPark) {
 const seams = (ws: string) => makeProdParkSeams(sql, ws);
 
 describe('consult-backed parking against real Postgres (R-9)', () => {
+  it.each(['settled', 'durable-park', 'event-remains', 'credential-remains'] as const)(
+    'settles issue-family human classification atomically: %s', async (scenario) => {
+      const deadline = Date.now() + 3_600_000;
+      const park = await seedPark(new Date(deadline).toISOString());
+      const [before] = await sql<Array<{ payload: Record<string, unknown> }>>`
+        SELECT payload FROM harness_shared.work_items
+         WHERE workspace_id = ${WS} AND feature_id = ${park.workItemId}`;
+      let payload: Record<string, unknown> = { ...before.payload, needsOwnerAction: true, needsHuman: true };
+      if (scenario === 'event-remains' || scenario === 'credential-remains') {
+        const human = scenario === 'credential-remains';
+        const { blockers } = updateExternalBlockerHistory(payload, {
+          kind: human ? 'human' : 'event', ref: `remaining:${park.workItemId}`,
+          ...(human ? { capability: 'credential' as const, defaultIfUnanswered: 'Keep blocked' } : {}),
+          summary: human ? 'A credential is still required' : 'Await the real dependency',
+        }, park.setterId);
+        payload = { ...payload, externalBlockers: blockers };
+      }
+      const stored = scenario === 'durable-park'
+        ? { ...payload, claim_hold_by: park.setterId, claim_hold_reason: 'Keep historical timeout blocked',
+            claim_hold_at: new Date().toISOString(), _claimHold: true }
+        : payload;
+      await sql`UPDATE harness_shared.work_items
+        SET item_kind = 'bug', status = 'needs-human', payload = ${sql.json(stored as never)}
+        WHERE workspace_id = ${WS} AND feature_id = ${park.workItemId}`;
+
+      const result = await runParkTriggersForConsult(sql, WS, park.consultId, seams(WS),
+        new Date(deadline + 1_000).toISOString());
+      expect(result?.applied).toContain('clear-blocker');
+      const [after] = await sql<Array<{ status: string; payload: Record<string, unknown> }>>`
+        SELECT status, payload FROM harness_shared.work_items
+         WHERE workspace_id = ${WS} AND feature_id = ${park.workItemId}`;
+      expect((await blockerStatus(park))?.status).toBe('cleared');
+      if (scenario === 'credential-remains') {
+        expect(after.status).toBe('needs-human');
+        expect(after.payload).toMatchObject({ needsOwnerAction: true, needsHuman: true });
+      } else {
+        expect(after.payload.needsOwnerAction).toBeUndefined();
+        expect(after.payload.needsHuman).toBeUndefined();
+        // A settled decision is not proof of a fix or authority to lift a park.
+        expect(after.status).toBe('blocked');
+      }
+      if (scenario === 'durable-park') {
+        expect(after.payload).toMatchObject({ claim_hold_by: park.setterId,
+          claim_hold_reason: 'Keep historical timeout blocked', _claimHold: true });
+      }
+      const active = readExternalBlockers(after.payload).filter((blocker) => blocker.status === 'active');
+      expect(active).toHaveLength(scenario.endsWith('-remains') ? 1 : 0);
+    }, 60_000,
+  );
+
   it('persisted owner-authority survives park creation and expiry: no clear, exactly one owner question with both options', async () => {
     const deadline = Date.now() + 3_600_000;
     const park = await seedPark(new Date(deadline).toISOString(), 'spend');

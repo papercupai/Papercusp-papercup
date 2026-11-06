@@ -87,6 +87,14 @@ export interface DueConsultRow {
 export const FIRST_TURN_REJUDGE_WINDOW_MS = HARD_BLOCKED_EXPIRY_MS;
 
 /**
+ * A recent tool call by the currently stamped answering session is a
+ * non-advancing engagement receipt. It leases the half-window conversion for
+ * five minutes after that call; the consult's configured expiry remains the
+ * hard upper bound.
+ */
+const REVIEW_PROGRESS_LEASE_MS = 5 * 60_000;
+
+/**
  * The unjudged first turn of the slot's CURRENT dispatch, or null.
  *
  * The current dispatch is the newest persisted walk for this source that
@@ -229,6 +237,52 @@ function currentSelectionAnswerer(
   } catch {
     return null;
   }
+}
+
+function currentReviewAnsweringOwner(
+  row: Pick<DueConsultRow, 'dispatch_attempts' | 'responder_id' | 'routing' | 'cascade_cursor'>,
+): string | null {
+  if (row.responder_id == null) return null;
+  const selection = currentSelectionAnswerer(row.routing, row.cascade_cursor, row.responder_id);
+  if (!selection) return null;
+  if (selection.answeringOwnerId) return selection.answeringOwnerId;
+
+  let records: unknown = row.dispatch_attempts;
+  if (typeof records === 'string') {
+    try { records = JSON.parse(records); } catch { return null; }
+  }
+  if (!Array.isArray(records)) return null;
+  for (let i = records.length - 1; i >= 0; i -= 1) {
+    const record = records[i] as PersistedDispatchRecord | null;
+    if (!record || typeof record !== 'object' || record.sourceOwnerId !== row.responder_id) continue;
+    if (record.dispatched !== true) continue;
+    const ownerId = typeof record.answeringOwnerId === 'string' ? record.answeringOwnerId.trim() : '';
+    return ownerId || null;
+  }
+  return null;
+}
+
+async function hasRecentReviewAnswererToolUse(
+  sql: Sql,
+  answeringOwnerId: string,
+  routedAt: string,
+  nowIso: string,
+): Promise<boolean> {
+  const [row] = await sql<{ active: boolean }[]>`
+    SELECT EXISTS (
+      SELECT 1
+        FROM harness_shared.session_turn_parts
+       WHERE workspace_id = 'default'
+         AND owner = ${answeringOwnerId}
+         AND part_kind = 'tool_use'
+         AND ts >= GREATEST(
+           ${routedAt}::timestamptz,
+           ${nowIso}::timestamptz - (${REVIEW_PROGRESS_LEASE_MS}::bigint * interval '1 millisecond')
+         )
+         AND ts <= ${nowIso}::timestamptz
+    ) AS active
+  `;
+  return row?.active === true;
 }
 
 export interface ExpirySweepDeps {
@@ -480,7 +534,18 @@ export async function sweepExpiredConsults(deps: ExpirySweepDeps): Promise<Expir
       Number(row.exchanges_used ?? 0) === 0 &&
       (row.is_half_silent === true || unstampedDispatchFailed)
     ) {
-      const outcome = await convertReviewConsult(deps, sql, row, reviewKind, nowIso, unstampedDispatchFailed);
+      const answeringOwnerId = currentReviewAnsweringOwner(row);
+      if (!isDue && !unstampedDispatchFailed && answeringOwnerId) {
+        try {
+          if (await hasRecentReviewAnswererToolUse(sql, answeringOwnerId, row.snapshot_updated_at, nowIso)) continue;
+        } catch {
+          conversionFailures.push(row.conversation_id);
+          continue;
+        }
+      }
+      const outcome = await convertReviewConsult(
+        deps, sql, row, reviewKind, nowIso, unstampedDispatchFailed, isDue, answeringOwnerId,
+      );
       if (outcome.status === 'converted') {
         converted.push({ conversationId: row.conversation_id, workItemId: outcome.workItemId, kind: reviewKind });
         requesterAlerts.push(row.conversation_id);
@@ -817,6 +882,8 @@ async function convertReviewConsult(
   kind: ReviewConsultKind,
   nowIso: string,
   unstampedDispatchFailed = false,
+  isDue = false,
+  answeringOwnerId: string | null = null,
 ): Promise<ReviewConversionOutcome> {
   let workItemId: string;
   try {
@@ -839,11 +906,18 @@ async function convertReviewConsult(
     // Filing the pullable item is asynchronous. A reply/close may win while
     // the filer runs, so do not send a conversion alert from the old snapshot.
     if (!(await isCurrentExpirySnapshot(sql, row))) return { status: 'raced' };
-    await deps.notifyRequester(reviewConversionAlertForRow({ row, kind, workItemId, nowIso }));
+    const activityNowIso = (deps.now ? deps.now() : new Date()).toISOString();
+    if (
+      !isDue &&
+      answeringOwnerId &&
+      await hasRecentReviewAnswererToolUse(sql, answeringOwnerId, row.snapshot_updated_at, activityNowIso)
+    ) return { status: 'raced' };
+    await deps.notifyRequester(reviewConversionAlertForRow({ row, kind, workItemId, nowIso: activityNowIso }));
   } catch {
     return { status: 'failed' };
   }
 
+  const commitNowIso = (deps.now ? deps.now() : new Date()).toISOString();
   let flipped: Array<{ conversation_id: string }>;
   try {
     flipped = (await sql.begin(async (tx) => {
@@ -859,8 +933,8 @@ async function convertReviewConsult(
                  || CASE WHEN (outcome -> 'reconciliation') IS NOT NULL
                          THEN jsonb_build_object('reconciliation', outcome -> 'reconciliation')
                          ELSE '{}'::jsonb END,
-               closed_at = ${nowIso}::timestamptz,
-               updated_at = ${nowIso}::timestamptz
+               closed_at = ${commitNowIso}::timestamptz,
+               updated_at = ${commitNowIso}::timestamptz
          WHERE workspace_id = ${row.workspace_id}
            AND conversation_id = ${row.conversation_id}
            AND closed_at IS NULL
@@ -868,6 +942,22 @@ async function convertReviewConsult(
            AND exchanges_used = 0
            AND cascade_cursor = ${row.cascade_cursor}
            AND expires_at IS NOT DISTINCT FROM ${row.expires_at}::timestamptz
+           AND (
+             ${isDue}::boolean
+             OR ${answeringOwnerId}::text IS NULL
+             OR NOT EXISTS (
+               SELECT 1
+                 FROM harness_shared.session_turn_parts progress
+                WHERE progress.workspace_id = 'default'
+                  AND progress.owner = ${answeringOwnerId}
+                  AND progress.part_kind = 'tool_use'
+                  AND progress.ts >= GREATEST(
+                    ${row.snapshot_updated_at}::timestamptz,
+                    ${commitNowIso}::timestamptz - (${REVIEW_PROGRESS_LEASE_MS}::bigint * interval '1 millisecond')
+                  )
+                  AND progress.ts <= ${commitNowIso}::timestamptz
+             )
+           )
            AND (
              ${nowIso}::timestamptz >= created_at + (expires_at - created_at) / 2
              OR (
@@ -882,7 +972,7 @@ async function convertReviewConsult(
       await tx`
         UPDATE harness_shared.coord_conversations c
            SET state = 'expired',
-               updated_at = GREATEST(c.updated_at, ${nowIso}::timestamptz)
+               updated_at = GREATEST(c.updated_at, ${commitNowIso}::timestamptz)
          WHERE c.workspace_id = ${row.workspace_id}
            AND c.id = ${row.conversation_id}
            AND c.kind = 'consult'

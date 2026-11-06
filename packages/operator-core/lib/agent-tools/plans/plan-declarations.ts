@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { splitPlanSections } from './plan-sections';
+import type { EngineeringState } from '../../code-intelligence/engineering-evidence';
 
 /**
  * Plan declarations (plan-reuse-and-library-declarations-2026-10-20, D-001):
@@ -114,6 +115,93 @@ export const librariesDeclarationSchema = z.object({
 });
 export type LibrariesDeclaration = z.infer<typeof librariesDeclarationSchema>;
 
+export const DISCOVERY_SECTION_HEADING = 'Discovery';
+export const DISCOVERY_FENCE = 'discovery';
+export const DISCOVERY_QUESTION_KINDS = ['current-behavior', 'gap', 'feasibility'] as const;
+export const DISCOVERY_SECTION_DESCRIPTION =
+  'A provisional discovery brief records bounded questions before implementation review. Findings cite existing evidence and explain how the current draft changes, reuses existing behavior, removes work or remains justified unchanged. Evidence identities, freshness, target changes and readiness are resolved by the server. A justified no-material-unknowns reason still needs evidence and dispositions; an investigation anchor or a ready assertion is not an answer.';
+
+const discoveryId = required(100);
+const discoveryTarget = required(500).refine(
+  (value) => /^(?:[RPD]-\d{3,}|R-\d+|section:.+)$/.test(value),
+  'must identify a current R-, P-, D- or section: target',
+);
+
+/** Only judgments and selections are authored. No copied status, hash, time or test result. */
+export const discoveryDeclarationSchema = z.object({
+  questions: z.array(z.object({
+    id: discoveryId,
+    kind: z.enum([...DISCOVERY_QUESTION_KINDS, 'other']),
+    question: required(1000),
+    stopCondition: required(1000),
+    outcome: z.enum(['unresolved', 'answered', 'excluded', 'experiment']),
+    rationale: optionalText(1000),
+    bounds: optionalText(1000),
+  }).strict().superRefine((question, ctx) => {
+    if ((question.outcome === 'excluded' || question.outcome === 'experiment') && !question.rationale) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['rationale'], message: 'explain why this uncertainty cannot invalidate the chosen scope or approach' });
+    }
+    if (question.outcome === 'experiment' && !question.bounds) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['bounds'], message: 'record the bounded residual experiment and its stop condition' });
+    }
+  })).max(40),
+  findings: z.array(z.object({
+    id: discoveryId,
+    questions: z.array(discoveryId).max(40),
+    conclusion: required(2000),
+    evidenceRefs: z.array(required(500)).min(1).max(40),
+    dispositions: z.array(z.object({
+      target: discoveryTarget,
+      decision: z.enum(['change', 'remove', 'reuse', 'unchanged', 'exclude']),
+      reason: required(1000),
+    }).strict()).min(1).max(100),
+  }).strict()).max(100),
+  notApplicable,
+}).strict().superRefine((value, ctx) => {
+  for (const field of ['questions', 'findings'] as const) {
+    const ids = new Set<string>();
+    value[field].forEach((row, index) => {
+      if (ids.has(row.id)) ctx.addIssue({ code: z.ZodIssueCode.custom, path: [field, index, 'id'], message: 'must be unique within this declaration' });
+      ids.add(row.id);
+    });
+  }
+  if (value.notApplicable !== null && value.questions.length > 0) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['notApplicable'], message: 'a no-material-unknowns record cannot also declare unresolved questions; use question outcomes instead' });
+  }
+});
+export type DiscoveryDeclaration = z.infer<typeof discoveryDeclarationSchema>;
+
+/** Projections of existing authorities, supplied by the server, never the plan author. */
+export interface DiscoveryReadinessContext {
+  evidence: ReadonlyMap<string, {
+    state: EngineeringState;
+    /** Derived from the evidence provider's coverage/trust contract, not invocation success. */
+    usable: boolean;
+    reason?: string;
+  }>;
+  /** Current parser identities plus removals recorded by canonical reconciliation history. */
+  targets: readonly { ref: string; change: 'proposed' | 'existing' | 'removed' }[];
+}
+
+export interface DiscoveryBlocker {
+  code: 'discovery_missing' | 'discovery_invalid' | 'discovery_context_unknown'
+    | 'discovery_question_missing' | 'discovery_unresolved' | 'discovery_finding_missing'
+    | 'discovery_question_unknown' | 'discovery_evidence_unknown' | 'discovery_evidence_unusable'
+    | 'discovery_target_unknown' | 'discovery_disposition_invalid' | 'discovery_change_unsupported';
+  path: string;
+  detail: string;
+}
+
+export interface DiscoveryReadiness {
+  ready: boolean;
+  state: 'ready' | 'blocked' | 'unknown';
+  preview: DeclarationPreview<DiscoveryDeclaration>;
+  blockers: DiscoveryBlocker[];
+  evidenceRefs: string[];
+  supportedTargets: string[];
+  nextAction: string;
+}
+
 export interface PlanDeclarationDiagnostic {
   code:
     | 'declaration_section_missing'
@@ -182,6 +270,111 @@ function previewSection<T extends { notApplicable: string | null }>(
     return { status: 'invalid', data: null, diagnostics };
   }
   return { status: parsed.data.notApplicable !== null ? 'not-applicable' : 'declared', data: parsed.data, diagnostics };
+}
+
+export function previewDiscoveryDeclaration(planContent: string): DeclarationPreview<DiscoveryDeclaration> {
+  return previewSection(planContent, DISCOVERY_SECTION_HEADING, DISCOVERY_FENCE, discoveryDeclarationSchema);
+}
+
+/**
+ * Shared pre-review/start rule. Pure: no audit insertion, lifecycle mutation or
+ * dispatch. Parsing a declaration does not certify its evidence or incorporation.
+ * Persistence/freshness adapters resolve existing authorities before calling it.
+ */
+export function evaluateDiscoveryReadiness(
+  planContent: string,
+  context?: DiscoveryReadinessContext,
+): DiscoveryReadiness {
+  const preview = previewDiscoveryDeclaration(planContent);
+  const blockers: DiscoveryBlocker[] = [];
+  const add = (code: DiscoveryBlocker['code'], path: string, detail: string) => blockers.push({ code, path, detail });
+  const evidenceRefs = new Set<string>();
+  const supportedTargets = new Set<string>();
+  const declaration = preview.data;
+  if (!declaration) {
+    add(preview.status === 'missing' ? 'discovery_missing' : 'discovery_invalid', 'section:Discovery',
+      preview.diagnostics.map((diagnostic) => `${diagnostic.path}: ${diagnostic.message}`).join('; '));
+  } else {
+    if (!context) add('discovery_context_unknown', 'section:Discovery', 'Resolve canonical evidence and current plan targets before assessing readiness.');
+    if (declaration.notApplicable === null) {
+      for (const kind of DISCOVERY_QUESTION_KINDS) {
+        if (!declaration.questions.some((question) => question.kind === kind)) {
+          add('discovery_question_missing', 'questions', `Record the material ${kind} question and its bounded investigation, or justify no material unknowns with evidence and dispositions.`);
+        }
+      }
+    }
+    if (declaration.findings.length === 0) {
+      add('discovery_finding_missing', 'findings', 'Record an evidence-backed conclusion and its disposition, including for no-change or no-material-unknowns outcomes.');
+    }
+    const questions = new Map(declaration.questions.map((question) => [question.id, question]));
+    const targets = new Map(context?.targets.map((target) => [target.ref, target]));
+    const supportedQuestions = new Set<string>();
+    declaration.findings.forEach((finding, index) => {
+      const at = `findings.${index}`;
+      const before = blockers.length;
+      for (const ref of finding.questions) {
+        if (!questions.has(ref)) add('discovery_question_unknown', `${at}.questions`, `Question ${ref} is not declared.`);
+      }
+      for (const ref of finding.evidenceRefs) {
+        evidenceRefs.add(ref);
+        const evidence = context?.evidence.get(ref);
+        if (!evidence || evidence.state === 'unknown') {
+          add('discovery_evidence_unknown', `${at}.evidenceRefs`, `Evidence ${ref} is unavailable or unknown; resolve it or select corroborating current evidence.`);
+        } else if (evidence.state !== 'current' || !evidence.usable) {
+          add('discovery_evidence_unusable', `${at}.evidenceRefs`, `Evidence ${ref} cannot support this finding (${evidence.reason ?? evidence.state}); an invocation, stale graph or degraded empty result is insufficient.`);
+        }
+      }
+      for (const disposition of finding.dispositions) {
+        const target = targets.get(disposition.target);
+        if (!target) {
+          add('discovery_target_unknown', `${at}.dispositions`, `Target ${disposition.target} must exist in the current draft or its recorded removal history.`);
+        } else if ((target.change === 'removed') !== (disposition.decision === 'remove' || disposition.decision === 'exclude')) {
+          add('discovery_disposition_invalid', `${at}.dispositions`, `The ${disposition.decision} disposition does not match the canonical removal state of ${disposition.target}.`);
+        }
+      }
+      if (context && blockers.length === before) {
+        finding.questions.forEach((ref) => supportedQuestions.add(ref));
+        finding.dispositions.forEach(({ target }) => supportedTargets.add(target));
+      }
+    });
+    declaration.questions.forEach((question, index) => {
+      if (question.outcome === 'unresolved') {
+        add('discovery_unresolved', `questions.${index}`, `${question.id}: ${question.question} remains unresolved; investigate within ${question.stopCondition} before implementation review.`);
+      } else if (!supportedQuestions.has(question.id)) {
+        add('discovery_finding_missing', `questions.${index}`, `${question.id} needs a current evidence-backed finding and a reconciled disposition for its ${question.outcome} outcome.`);
+      }
+    });
+    for (const target of context?.targets ?? []) {
+      if (target.change !== 'existing' && !supportedTargets.has(target.ref)) {
+        add('discovery_change_unsupported', target.ref, `Proposed change/removal ${target.ref} needs a supporting finding or adoption decision incorporated into this draft.`);
+      }
+    }
+  }
+  const ready = blockers.length === 0;
+  const unknown = blockers.some(({ code }) => code === 'discovery_context_unknown' || code === 'discovery_evidence_unknown');
+  return {
+    ready, state: ready ? 'ready' : unknown ? 'unknown' : 'blocked', preview, blockers,
+    evidenceRefs: [...evidenceRefs].sort(), supportedTargets: [...supportedTargets].sort(),
+    nextAction: ready
+      ? 'Finalize discovery with plans:audit phase=discovery before implementation review.'
+      : `Reconcile Discovery in the draft: ${blockers[0]!.detail}`,
+  };
+}
+
+/** Bounded seeds are intentionally unfinished; creating a draft cannot certify discovery. */
+export function discoveryDeclarationScaffold(): string {
+  const prompts = {
+    'current-behavior': 'What relevant behavior already exists?',
+    gap: 'What required gap remains after reusing existing behavior?',
+    feasibility: 'What evidence establishes the feasibility of the proposed approach?',
+  };
+  const draft: DiscoveryDeclaration = {
+    questions: DISCOVERY_QUESTION_KINDS.map((kind, index) => ({
+      id: `Q-${index + 1}`, kind, question: prompts[kind], stopCondition: '', outcome: 'unresolved',
+    })),
+    findings: [], notApplicable: null,
+  };
+  return `## ${DISCOVERY_SECTION_HEADING}\n\n${DISCOVERY_SECTION_DESCRIPTION}\n\n\`\`\`${DISCOVERY_FENCE}\n${JSON.stringify(draft, null, 2)}\n\`\`\``;
 }
 
 /**

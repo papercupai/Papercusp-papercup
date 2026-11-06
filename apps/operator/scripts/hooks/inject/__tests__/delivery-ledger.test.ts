@@ -134,6 +134,15 @@ describe('delivery ledger', () => {
       loopMarkerAppend: 'appended',
       prompt: 'private prompt must not be stored',
       error: 'private error must not be stored',
+      transport: {
+        phase: 'private phase must not be stored',
+        operatorOrigin: 'https://private-user:private-password@operator.example/private/path?private-query=1#private-fragment',
+        timeoutMs: 2500,
+        elapsedMs: 2500.4,
+        headersElapsedMs: -1,
+        responseBodyMs: Number.POSITIVE_INFINITY,
+        error: 'private transport error must not be stored',
+      },
     })).toBe(true);
     const storedPath = path.join(receiptDir, `${createHash('sha256').update(requestId).digest('hex')}.json`);
     const storedBytes = readFileSync(storedPath, 'utf8');
@@ -147,9 +156,21 @@ describe('delivery ledger', () => {
       ambientGate: 'denied',
       loopFire: true,
       loopMarkerAppend: 'appended',
+      transport: {
+        phase: 'unknown',
+        operatorOrigin: 'https://operator.example',
+        timeoutMs: 2500,
+        elapsedMs: 2500,
+        headersElapsedMs: null,
+        responseBodyMs: null,
+      },
     });
     expect(storedBytes).not.toContain('private prompt');
     expect(storedBytes).not.toContain('private error');
+    expect(storedBytes).not.toContain('private-');
+    expect(storedBytes).not.toContain('/private/');
+    expect(storedBytes).not.toContain('private phase');
+    expect(storedBytes).not.toContain('private transport error');
 
     for (let n = 0; n < MAX_TURN_START_OUTCOME_RECEIPTS + 4; n++) {
       expect(ledger.recordOutcome({
@@ -243,8 +264,60 @@ describe('delivery ledger', () => {
       ambientGate: 'unknown',
       loopFire: null,
       loopMarkerAppend: 'unknown',
+      transport: {
+        phase: 'waiting-for-headers',
+        timeoutMs: 2500,
+        elapsedMs: expect.any(Number),
+        headersElapsedMs: null,
+        responseBodyMs: null,
+      },
     });
     expect(JSON.stringify(receipt)).not.toContain('private transport detail');
+  });
+
+  it.each(['headers', 'body'] as const)('retains the failed transport phase for a stalled %s response', async (phase) => {
+    vi.useFakeTimers();
+    try {
+      const env = { ...home(), PAPERCUSP_SID: 'su-stalled-response', PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:48111' };
+      const adapter = {
+        client: 'codex' as const,
+        portForEvent: () => 'turn-start' as const,
+        parse: () => ({ prompt: 'PRIVATE PROMPT' }),
+        render: () => 'must not render',
+      };
+      const fetchImpl = vi.fn(async (_input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+        const stall = () => new Promise<never>((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () => reject(new Error('private timeout detail')), { once: true });
+        });
+        return phase === 'headers' ? stall() : { ok: true, json: stall } as unknown as Response;
+      });
+      const exchange = runInjection({
+        adapter, nativeEvent: 'UserPromptSubmit', event: {}, env,
+        fetchImpl: fetchImpl as typeof fetch, openDeliveryLedger,
+      });
+      await vi.advanceTimersByTimeAsync(2501);
+      await expect(exchange).resolves.toBeNull();
+      const request = JSON.parse(String(fetchImpl.mock.calls[0]![1]?.body)) as { turnStartRequestId: string };
+      const receipt = JSON.parse(readFileSync(path.join(ledgerDir(env), 'su-stalled-response.outcomes',
+        `${createHash('sha256').update(request.turnStartRequestId).digest('hex')}.json`), 'utf8'));
+      expect(receipt).toMatchObject({
+        hookOutcome: 'request-failed',
+        serverOutcome: 'unavailable',
+        transport: {
+          phase: phase === 'headers' ? 'waiting-for-headers' : 'reading-body',
+          timeoutMs: 2500,
+          elapsedMs: 2500,
+          headersElapsedMs: phase === 'headers' ? null : 0,
+          responseBodyMs: phase === 'headers' ? null : 2500,
+        },
+      });
+      expect(receipt.transport.operatorOrigin).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
+      expect(JSON.stringify(receipt)).not.toContain('PRIVATE PROMPT');
+      expect(JSON.stringify(receipt)).not.toContain('private timeout detail');
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

@@ -18,6 +18,7 @@ import {
   type SpecQualityPlanItem,
 } from './spec-quality';
 import { PLAN_CLASS_RUBRIC_REFS, type PlanClassRubricRef } from './spec-test-adequacy';
+import { SPEC_SET_HASH_VERSION } from './spec-clause-compiler';
 
 export type PlanSpecQualityGateCode =
   | 'spec_quality_failed'
@@ -147,6 +148,7 @@ function matchesSpecQualityEvidence(card: ScorecardRow, evaluation: PlanSpecQual
     rubricRef: SPEC_QUALITY_RUBRIC_REF,
     ratings,
     instrumentSnapshots: card.instrumentSnapshots,
+    ...(card.rerunRecipe ? { rerunRecipe: card.rerunRecipe } : {}),
   });
   // A stored fingerprint must first attest to the actual stored ratings, not
   // merely to what the current evaluator would have emitted.
@@ -183,6 +185,9 @@ function scorecardStructurallyExact(card: ScorecardRow, evaluation: PlanSpecQual
     card.rubricRef === SPEC_QUALITY_RUBRIC_REF &&
     card.subject?.kind === 'plan' &&
     card.subject.ref === evaluation.scorecardDraft.subject.ref &&
+    (!card.rerunRecipe || (card.rerunRecipe.evaluator === 'plans:evaluate-spec-quality' &&
+      card.rerunRecipe.specSetHashVersion === SPEC_SET_HASH_VERSION &&
+      card.rerunRecipe.args.expectedSpecSetHash === evaluation.specSetHash)) &&
     card.rubricResolved &&
     card.missingKeys.length === 0 &&
     card.extraKeys.length === 0 &&

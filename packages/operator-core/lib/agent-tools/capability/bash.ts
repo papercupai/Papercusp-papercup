@@ -851,6 +851,24 @@ export default defineTool({
       return { content: [{ type: 'text' as const, text: JSON.stringify(loopRefusal) }], isError: true };
     }
 
+    // Preflight can await policy and provenance reads after the caller's
+    // response deadline has aborted this request. Do not turn that late
+    // completion into a new shell process.
+    if (ctx.signal.aborted) {
+      const payload = {
+        ok: false,
+        status: 'cancelled',
+        reason: 'request_aborted',
+        command_started: false,
+        message: 'The request was aborted during preflight; no shell process was started.',
+      };
+      return {
+        content: [{ type: 'text' as const, text: JSON.stringify(payload) }],
+        isError: true,
+        ...(ctx.codeMode || ctx.requestedStructured ? { structuredContent: payload } : {}),
+      };
+    }
+
     // CAP-CONTRACT-P002-YIELD-SAME-JOB@1: every admitted call forks exactly
     // once through the existing durable background/task seam. The only mode
     // difference is how long this request waits before returning that handle.

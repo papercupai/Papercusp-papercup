@@ -53,7 +53,7 @@ import {
   resolveIncrementalPublishSha,
 } from './publish-guard';
 import type { SecretFinding } from './secrets-guard';
-import { listTempPackFiles, pruneFailedFetchTempPacks } from '../../harness/git-sync/run-git-sync';
+import { findZeroByteLooseObjects, listTempPackFiles, pruneFailedFetchTempPacks } from '../../harness/git-sync/run-git-sync';
 import { readFile } from 'node:fs/promises';
 import { isAbsolute, join } from 'node:path';
 
@@ -317,6 +317,15 @@ export async function runOwnHeadPublishTick(
   }
   if (priorSha === headSha) {
     return { ran: true, changed: false, branch, headSha, priorSha, refused: null, exemptedFindings: [], ...unshallowTag(), errors };
+  }
+
+  // The checkout preflight does not inspect this separate destination ODB.
+  // Reuse its non-destructive diagnosis before transfer, preserving object
+  // identities for verified recovery without scanning an unchanged head.
+  const corruptObjects = await findZeroByteLooseObjects(runGit, repoPath);
+  if (corruptObjects.length > 0) {
+    errors.push(`own-head Git object database corrupt: zero-byte loose object(s): ${corruptObjects.join(', ')}; repair required before fetch`);
+    return { ...noop(branch), ran: true, headSha, priorSha };
   }
 
   // WI-5163: a SHALLOW source worktree (from-repo's `shallow:true` smoke

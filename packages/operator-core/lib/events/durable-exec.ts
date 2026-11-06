@@ -28,6 +28,7 @@ export async function executeDurableReaction(payload: DurableReactionPayload): P
   // notify-classification: {"id":"packages/operator-core/lib/events/durable-exec.ts#<module>/executeDurableReaction:89cdbf4853cbe29c6593:1","classification":"durable","reason":"Execution-time policy/bootstrap may reach mandatory notices; retain custody in the awaited durable reaction and its terminal consequence.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009 must prove the shared reaction/notification terminal path across restart","deliveryState":"unverified"}
   if (payload.parent.workspaceId
     && !await reactionBackgroundActivityAllowed(payload.parent.workspaceId, payload.fire, payload.ruleId)) return;
+  // notify-classification: {"id":"packages/operator-core/lib/events/durable-exec.ts#<module>/executeDurableReaction:4fe9eb5d488ece25a7b0:1","classification":"durable","reason":"The reaction wrapper owns the persisted claim and awaited dispatch, including mandatory notifications reached by the injected store and fire callbacks.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009 must prove this shared reaction's terminal effects survive restart without duplicate delivery","deliveryState":"unverified"}
   await genericExecuteDurableReaction(payload, {
     // The PG idempotency ledger (migration 153) — `harness_shared.event_reactions`.
     store: { claim: claimReaction, release: releaseReaction, markFailed: markReactionFailed,

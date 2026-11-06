@@ -1,10 +1,13 @@
 /** Plan-level spec quality over the exact current first-class clause set (P-004). */
 import { createHash } from 'node:crypto';
+import { getBuildInfo } from '../../build-info';
+import type { SpecQualityRerunRecipe } from './spec-quality-identity';
 import { RECORDED_TEST_LAYERS, isRecordedTestLayer } from '@papercusp/test-config/execution-details';
 import type { SpecClauseRevision } from './spec-clauses-store';
 import { isNonAutomatedBehaviorClass } from '../../plan-verification-profile';
 import {
   computeSpecSetHash,
+  SPEC_SET_HASH_VERSION,
   inspectPlanAcceptanceRef,
   normalizeSpecSemanticText,
   specBehaviorImplementationPresenceReason,
@@ -95,6 +98,7 @@ export interface PlanSpecQualityResult {
     body: string;
     ratings: Record<SpecQualityCriterion, SpecQualityRatingEntry>;
     terminal: true;
+    rerunRecipe?: SpecQualityRerunRecipe;
   };
 }
 
@@ -611,6 +615,21 @@ export function specQualitySubjectRef(planSlug: string, classRef: PlanClassRubri
   return `spec-set:${classRef}:${specSetHash}:${planKey}`;
 }
 
+/** Recover the registered plan from the existing bounded subject identity.
+ * Caller prose/title and the emitter's home harness are not subject authority. */
+export async function resolveSpecQualityPlanSubject(workspaceId: string, subjectRef: string) {
+  const match = /^spec-set:([^:]+):([a-f0-9]{64}):([a-f0-9]{16})$/.exec(subjectRef);
+  if (!match || !PLAN_CLASS_RUBRIC_REFS.includes(match[1] as PlanClassRubricRef)) return null;
+  const { getOrgPg } = await import('@papercusp/db-org');
+  const { sql } = getOrgPg();
+  const rows = await sql<Array<{ plan_slug: string; harness_slug: string }>>`
+    SELECT plan_slug, harness_slug FROM harness_shared.harness_plans
+    WHERE workspace_id=${workspaceId}
+      AND substring(encode(sha256(convert_to(plan_slug, 'UTF8')), 'hex'), 1, 16)=${match[3]}
+    LIMIT 2`;
+  return rows.length === 1 ? { planSlug: rows[0]!.plan_slug, harnessSlug: rows[0]!.harness_slug } : null;
+}
+
 /**
  * The plan items that owe a spec contract: every item except a deliberately
  * dropped one. A dropped item is a recorded departure (`plans:set-status
@@ -1124,6 +1143,17 @@ export function evaluatePlanSpecQuality(input: {
       body: `Plan ${input.planSlug}; class ${input.classRef}; exact current specSetHash ${specSetHash}; ${currentSet.length} current clause(s), ${planItemIds.length} plan item(s).`,
       ratings,
       terminal: true,
+      ...(input.replaySnapshot ? { rerunRecipe: {
+        schemaVersion: 1 as const,
+        evaluator: 'plans:evaluate-spec-quality' as const,
+        evaluatorBuild: getBuildInfo(),
+        specSetHashVersion: SPEC_SET_HASH_VERSION,
+        args: {
+          harness: input.harnessSlug, slug: input.planSlug, classRef: input.classRef,
+          expectedSpecSetHash: specSetHash, specSetHashVersion: SPEC_SET_HASH_VERSION,
+          evaluatorBuild: getBuildInfo(), replaySnapshot: input.replaySnapshot,
+        },
+      } } : {}),
     },
   };
 }

@@ -1,0 +1,13 @@
+{
+  "schemaVersion": "luna-bg-dependency-attempt-v1",
+  "attempt": 2,
+  "startedAtMs": 1793933142436,
+  "deadlineEpochMs": 1793934941129,
+  "clockOrigin": "new-independent-dependency-task-after-terminal-original",
+  "priorAttempt": ".papercusp/evidence/luna-bg-preparation-20261106-v1/dependency-attempt.json",
+  "priorOutcome": "failed-workspace-output-manifest; resume-refused-before-effects",
+  "sourceReceiptSha256": "105618afb29fc712adb3a9ff6cee4e6f1c8a959bbe32b8ac4829e7d795987c77",
+  "sourceRoot": "/mnt/data/tmp/luna-bg-source-20261106-v1",
+  "donor": "/home/marsh-office/papercupai-workspace/papercusp",
+  "cleanupReserveMs": 120000
+}

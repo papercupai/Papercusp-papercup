@@ -326,6 +326,13 @@ pub enum Event {
     AgentCtx {
         result: Result<crate::models::AgentCtxData, String>,
     },
+    /// A requested history page; owner and request identity reject stale replies.
+    AgentTurnsPage {
+        owner: String,
+        request_id: u64,
+        cursor: Option<String>,
+        result: Result<crate::agent_ctx::AgentTurns, String>,
+    },
     /// The deployed cloud frames (hive-agent-tabs P-013) from
     /// `/api/deploy/frames` — drives the per-frame zellij tabs in the dock.
     Frames(Vec<crate::models::DeployFrameRow>),

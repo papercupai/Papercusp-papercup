@@ -98,6 +98,24 @@ export interface UpsertCodeRecipeInput {
   potSlug: string | null;
 }
 
+/** Execution provenance on the existing run ledger. Missing historical receipts
+ * remain unknown: `reused` alone cannot distinguish automatic matching or previews. */
+export interface RecipeRunUsage {
+  version: 1;
+  selection: 'authored' | 'automatic-match' | 'saved-replay';
+  choice: 'agent' | 'hook' | 'system' | 'unknown';
+  mode: 'commit' | 'preview';
+  outcome: 'success' | 'error' | 'refused' | 'unknown';
+  settled: boolean;
+}
+
+export function recipeRunChoice(identity: { source?: string; ownerId?: string | null }): RecipeRunUsage['choice'] {
+  if (identity.ownerId?.startsWith('hook:')) return 'hook';
+  if (identity.source === 'event-reaction' || identity.ownerId?.startsWith('system:')) return 'system';
+  return ['omp-hook-session', 'power-user-token', 'fleet-spawn', 'signed-spawn'].includes(identity.source ?? '')
+    ? 'agent' : 'unknown';
+}
+
 export interface RecordRecipeRunInput {
   /** Null for an executed script that was not captured as / replayed from a recipe. */
   recipeId?: string | null;
@@ -115,6 +133,7 @@ export interface RecordRecipeRunInput {
   reused?: boolean;
   /** Secret-free normalized P-013 trace. Its fingerprint is stored alongside it for indexed dedup. */
   executionTrace?: NormalizedExecutionTrace | null;
+  usage?: RecipeRunUsage;
   /**
    * Preserve the existing recipe popularity semantics for failed and dry-run traces:
    * their execution row is durable, but the parent recipe counters do not move.
@@ -293,7 +312,19 @@ export async function recordRecipeRun(sql: postgres.Sql, input: RecordRecipeRunI
   }
   const success = input.success ?? true;
   const countTowardRecipe = input.countTowardRecipe ?? recipeId !== null;
-  const traceJson = executionTrace ? JSON.stringify(executionTrace) : null;
+  const usage = input.usage;
+  if (usage && (usage.version !== 1
+    || !['authored', 'automatic-match', 'saved-replay'].includes(usage.selection)
+    || !['agent', 'hook', 'system', 'unknown'].includes(usage.choice)
+    || !['commit', 'preview'].includes(usage.mode)
+    || !['success', 'error', 'refused', 'unknown'].includes(usage.outcome)
+    || typeof usage.settled !== 'boolean')) throw new Error('invalid_recipe_run_usage');
+  // Select fields so extra runtime properties cannot carry raw inputs or secrets.
+  const traceJson = executionTrace || usage ? JSON.stringify({
+    ...executionTrace,
+    ...(usage ? { usage: { version: 1, selection: usage.selection, choice: usage.choice,
+      mode: usage.mode, outcome: usage.outcome, settled: usage.settled } } : {}),
+  }) : null;
   await sql.begin(async (tx) => {
     await tx`
       INSERT INTO harness_shared.code_recipe_runs

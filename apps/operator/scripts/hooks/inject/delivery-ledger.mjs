@@ -105,6 +105,26 @@ function pruneTurnStartOutcomeReceipts(dir, current) {
 function turnStartOutcomeMetadata(outcome) {
   if (typeof outcome?.requestId !== 'string' || !/^[A-Za-z0-9_-]{1,80}$/.test(outcome.requestId)) return null;
   const oneOf = (value, values, fallback) => values.includes(value) ? value : fallback;
+  const rawTransport = outcome.transport;
+  let transport;
+  if (rawTransport && typeof rawTransport === 'object') {
+    const milliseconds = value => typeof value === 'number' && Number.isFinite(value)
+      && value >= 0 && value <= 3_600_000 ? Math.round(value) : null;
+    let operatorOrigin = null;
+    try {
+      const url = new URL(rawTransport.operatorOrigin);
+      if (url.protocol === 'http:' || url.protocol === 'https:') operatorOrigin = url.origin;
+    } catch { /* absent or malformed origin remains explicitly unknown */ }
+    transport = {
+      phase: oneOf(rawTransport.phase,
+        ['not-started', 'waiting-for-headers', 'headers-received', 'reading-body', 'body-received'], 'unknown'),
+      operatorOrigin,
+      timeoutMs: milliseconds(rawTransport.timeoutMs),
+      elapsedMs: milliseconds(rawTransport.elapsedMs),
+      headersElapsedMs: milliseconds(rawTransport.headersElapsedMs),
+      responseBodyMs: milliseconds(rawTransport.responseBodyMs),
+    };
+  }
   return {
     requestId: outcome.requestId,
     client: ['claude', 'codex', 'omp'].includes(outcome.client) ? outcome.client : null,
@@ -115,6 +135,7 @@ function turnStartOutcomeMetadata(outcome) {
     loopFire: typeof outcome.loopFire === 'boolean' ? outcome.loopFire : null,
     loopMarkerAppend: oneOf(outcome.loopMarkerAppend,
       ['appended', 'failed', 'not-applicable', 'pending', 'unknown'], 'unknown'),
+    ...(transport ? { transport } : {}),
   };
 }
 

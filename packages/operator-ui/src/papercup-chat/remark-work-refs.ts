@@ -44,9 +44,10 @@ export function chatAppHref(value: string): string | null {
   return value;
 }
 
-interface AppRefMatch { start: number; end: number; href: string }
+export interface AppRefMatch { start: number; end: number; href: string }
 
-function appRefs(text: string): AppRefMatch[] {
+/** Position-aware shared policy for prose and terminal output (UTF-16 offsets). */
+export function appRefs(text: string): AppRefMatch[] {
   const matches: AppRefMatch[] = [];
   const paths: Array<{ start: number; end: number }> = [];
   // A whole candidate is consumed even when it is not an app route. This avoids
@@ -62,7 +63,7 @@ function appRefs(text: string): AppRefMatch[] {
   }
   for (const match of text.matchAll(/\brpt_[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\b/g)) {
     const start = match.index!;
-    if (/[\w/-]/.test(text[start - 1] ?? '') || /[\w-]/.test(text[start + match[0].length] ?? '')) continue;
+    if (/[\w/.:\\%~-]/.test(text[start - 1] ?? '') || /[\w/\\%~-]/.test(text[start + match[0].length] ?? '')) continue;
     if (paths.some(other => start >= other.start && start < other.end)) continue;
     matches.push({ start, end: start + match[0].length, href: `/reports?sel=${match[0]}` });
   }

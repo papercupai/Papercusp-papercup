@@ -310,6 +310,62 @@ describe('durable qualification quantum', () => {
     s.clock.advance(2_000); expect(s.kills).toEqual([]);
   });
 
+  it('keeps owned lifetime running beyond repeated Node timer horizons, with independent late worker bounds', async () => {
+    const clock = fakeScheduler(), kills: string[] = [], delays: number[] = [];
+    const owned = resolveQualificationYieldBudget({ startedAtMs: 0, quantumMs: null, orphanDeadlineEpochMs: null });
+    if (owned.status !== 'ready') throw new Error(owned.reason);
+    const watchdog = createQualificationYieldBoundary({ budget: owned, identity: 'owned', unitIds: ['a'],
+      readDurableProgress: async () => { throw new Error('no aggregate read'); },
+      commitYield: async () => { throw new Error('no aggregate yield'); },
+      onKill: d => kills.push(d.reason), now: clock.now,
+      setTimer: (fn, ms) => { delays.push(ms); return clock.setTimer(fn, ms); }, clearTimer: clock.clearTimer });
+    expect(delays).toEqual([]);
+    clock.advance(3 * (2 ** 31 - 1)); await flush();
+    expect(watchdog.state).toBe('running'); expect(kills).toEqual([]);
+    expect(watchdog.workerStarted('completed-late', 100)).toBe(true);
+    clock.advance(50); expect(watchdog.workerFinished('completed-late')).toBe(true);
+    expect(watchdog.workerStarted('stalled-late', 100)).toBe(true);
+    clock.advance(100); expect(kills).toEqual(['worker-stalled']);
+    expect(watchdog.signal.aborted).toBe(true);
+  });
+
+  it('stops owned lifetime and clears worker custody timers on explicit cancellation', () => {
+    const clock = fakeScheduler(), kills: string[] = [];
+    const owned = resolveQualificationYieldBudget({ startedAtMs: 0, quantumMs: null, orphanDeadlineEpochMs: null });
+    if (owned.status !== 'ready') throw new Error(owned.reason);
+    const watchdog = createQualificationYieldBoundary({ budget: owned, identity: 'owned', unitIds: ['a'],
+      readDurableProgress: async () => ({ status: 'refused' }), commitYield: async () => false,
+      onKill: d => kills.push(d.reason), now: clock.now, setTimer: clock.setTimer, clearTimer: clock.clearTimer });
+    watchdog.workerStarted('worker', 100); watchdog.stop(); clock.advance(4 * (2 ** 31 - 1));
+    expect(watchdog.state).toBe('stopped'); expect(watchdog.signal.aborted).toBe(true);
+    expect(watchdog.workerStarted('after-stop', 100)).toBe(false); expect(kills).toEqual([]);
+  });
+
+  it('requires both explicit null clocks and no caller cutoff to select owned lifetime', () => {
+    for (const input of [
+      { quantumMs: null, orphanDeadlineEpochMs: 1000 },
+      { quantumMs: 500, orphanDeadlineEpochMs: null },
+      { quantumMs: null, orphanDeadlineEpochMs: null, deadlineEpochMs: 1000 },
+      { quantumMs: Infinity, orphanDeadlineEpochMs: Infinity },
+    ]) expect(resolveQualificationYieldBudget({ startedAtMs: 0, ...input }))
+      .toEqual({ status: 'refused', reason: 'invalid-policy' });
+  });
+
+  it('chunks a long bounded quantum without expiring at the Node timer horizon', async () => {
+    const clock = fakeScheduler(), kills: string[] = [], delays: number[] = [];
+    const horizon = 2 ** 31 - 1;
+    const resolved = resolveQualificationYieldBudget({ startedAtMs: 0, quantumMs: horizon + 100,
+      orphanDeadlineEpochMs: horizon + 1000, cleanupReserveMs: 200, yieldReserveMs: 100 });
+    if (resolved.status !== 'ready') throw new Error(resolved.reason);
+    const watchdog = createQualificationYieldBoundary({ budget: resolved, identity: 'bounded', unitIds: ['a'],
+      readDurableProgress: async () => ({ status: 'refused' }), commitYield: async () => false,
+      onKill: d => kills.push(d.reason), now: clock.now,
+      setTimer: (fn, ms) => { delays.push(ms); return clock.setTimer(fn, ms); }, clearTimer: clock.clearTimer });
+    clock.advance(horizon); await flush(); expect(watchdog.state).toBe('running');
+    clock.advance(100); await flush(); expect(kills).toEqual(['durable-progress-unmeasured']);
+    expect(delays.every(ms => ms <= horizon)).toBe(true);
+  });
+
   it('does not count repeated old receipts or output-shaped fields as progress', async () => {
     const s = setup(async () => ({ status: 'ready', identity: 'frozen-attempt-runner', capturedBytes: 999999,
       receipts: [{ unitId: 'a', completionId: 'old', state: 'pass', observedAtMs: 0 }] }));

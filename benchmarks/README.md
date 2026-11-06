@@ -112,6 +112,9 @@ the committed protocol ID, isolated workspace, current arm and registered seed.
 Its existing estimate read checks the committed protocol, the payer-matched Codex
 account and loaded host, then derives the exact launch controls. A historical launch or a successful
 refusal fixture does not establish current measured generation or provider billing.
+The form shows the payer before approval. Subscription ceilings and their approval
+are labelled list-price-equivalent usage, not money spent; API-key ceilings are
+metered spend. Missing or inconsistent payer/cost-basis metadata cannot unlock launch.
 
 1. Select the `operator-api` current-build route with
    `dev:pipeline_position { path: "packages/operator-core/lib/external-bench/current-su.ts", testClass: "operator-api" }`.
@@ -158,6 +161,7 @@ refusal fixture does not establish current measured generation or provider billi
    ```json
    {
      "arm": "papercusp",
+     "suite": "suite-from-the-verified-preregistration",
      "taskSetId": "custom",
      "current": {
        "workspaceId": "benchmarks",
@@ -174,7 +178,10 @@ refusal fixture does not establish current measured generation or provider billi
    ```
 
    `baseline` selects the stock Codex arm; `papercusp` selects current su. The
-   seed must be registered. The host-issued private gateway runs in the worker
+   preflight returns the protocol's single registered `suite`; forward that exact
+   value to launch. Missing or ambiguous suite registrations are refused rather
+   than falling back to SWE-bench Pro.
+   The seed must be registered. The host-issued private gateway runs in the worker
    process, so both observation unit fields identify that actual boot unit.
    The observation reader checks the process/kernel identity; these fields do
    not create a runtime receipt. Optional model, task IDs, concurrency and caps
@@ -182,6 +189,19 @@ refusal fixture does not establish current measured generation or provider billi
    JSON cannot supply a principal. A successful response returns a managed run ID,
    not a completed or graded result. A second attempt of the same arm/seed is
    refused; create a new preregistration for a different protocol.
+
+   The registered native Evaluation surface check also exercises launch refusal
+   and the Compare → Launch transition when run with an empty isolated database:
+
+   ```sh
+   VERIFY_TAURI_ISOLATED_DB=1 VERIFY_TAURI_ISOLATED_SEED=ready \
+     VERIFY_TAURI_REQUIRE_BUILT='apps/operator-vite/src/components/adv/AdvEvalsTab.tsx' \
+     scripts/verify-tauri-headless.sh -- bash scripts/tauri-surface-verify-p005-cloud-eval.sh
+   ```
+
+   This check starts no benchmark generation. It establishes unavailable-protocol
+   UI/API behavior on the verifier's frozen build; it does not establish a funded
+   launch, measured outcomes, reproduction or shipment.
 6. Reconcile the complete task/session/request reservation population at terminal
    state. Inspect `currentExecution.protocolIdentity`, native transcript source
    hashes, provider response IDs, per-event billing evidence, and governor

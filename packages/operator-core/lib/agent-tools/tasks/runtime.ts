@@ -15,6 +15,7 @@ import {
   type SessionTaskWorkItemLink,
 } from '../../session-tasks';
 import { getActiveClaimForOwner } from '../../work-item-claims';
+import { commitMissionTaskTransition } from '../../mission-continuity-task-acceptance';
 import { setWorkItemCheckpointWithPrior } from '../../work-item-checkpoint';
 import { isWorkItemKind } from '../../work-items';
 import { resolveConcreteHarnessSlug } from '../_harness-scope';
@@ -114,6 +115,11 @@ export async function createSessionTaskLedgerBridge(
 
   return {
     seedWorkItem,
+    async commitTransition(tx, before, result) {
+      await commitMissionTaskTransition(tx, {
+        workspaceId, ownerId: args.claimOwnerId?.trim() || sessionId,
+      }, sessionId, before, result);
+    },
     async promoteTask(task, request) {
       const kind = request.kind?.trim() || 'task';
       if (!isWorkItemKind(kind)) {
