@@ -22,6 +22,10 @@ import { currentBenchObservationReader, currentBenchIdentityFromObservation, liv
   currentBenchProviderAuthenticator, currentBenchOpenAiInputContract, currentBenchOpenAiInputReader,
   type CurrentBenchTask } from './current-su';
 import { preregister } from './reproducibility/prereg';
+import { EVALUATION_TRIAL_CONTRACT_VERSION, computeTrialIdentity } from '../evaluation-trial/identity';
+import { sealEvidence, type PreservedEvidence } from '../evaluation-trial/evidence';
+import { replayResolvedWorkloadEvidence, type WorkloadCompletionRequirements } from '../evaluation-trial/integrity';
+import type { EvaluationTrial } from '../evaluation-trial/schema';
 import { readBenchRunCost, type BenchHarnessOps } from './bench-harness-live';
 import type { PapercuspUnifiedToolContext } from '../agent-tools/_tool-context';
 import { currentProtocolFixture, controlledProtocolFixture } from './reproducibility/_protocol-test-fixture';
@@ -819,6 +823,77 @@ describe('private workload stored grade authority', () => {
     expect(() => currentBenchWorkloadGradeReader({ ...f.options, receipts: [f.receipt, f.receipt] })).toThrow(/unique pinned/);
     expect(() => currentBenchWorkloadGradeReader({ ...f.options, preregHash: 'b'.repeat(64) })).toThrow(/frozen private protocol/);
     expect(() => currentBenchWorkloadGradeReader({ ...f.options, receipts: [{ ...f.receipt, graderRef: 'candidate-grader' }] })).toThrow(/frozen private protocol/);
+  });
+  it.each(['valid', 'exit-only', 'missing-artifact', 'changed-artifact', 'missing-transition', 'missing-grade', 'forged-transition', 'failed-grade'] as const)
+  ('composes real PG and file authorities through workload replay: %s', async defect => {
+    const f = await fixture();
+    const trial: EvaluationTrial = {
+      contractVersion: EVALUATION_TRIAL_CONTRACT_VERSION,
+      subject: { family: 'external-bench', corpus: 'private-integration', taskId: 't1', taskRevision: 'fixture-v1' },
+      system: { modelId: f.input.generation.modelId, modelVersion: null, harnessVersion: 'private-harness',
+        harnessGitSha: null, environmentFingerprint: null },
+      configuration: { configHash: f.options.preregHash, seed: 1, arm: 'papercusp', matrixIndex: 0,
+        budgets: { capped: false, breaches: [] } },
+      grader: { kind: 'deterministic', family: f.options.protocol.grader.family, version: f.options.protocol.grader.version, judgeModel: null },
+      outcome: { status: 'passed', resolved: true, score: 1, infraFailure: false, errors: [] },
+      usage: { tokensIn: null, tokensOut: null, tokensTotal: null, costUsd: null },
+      evidence: { trajectoryRef: 'private:trajectory', trajectoryKind: 'transcript-json', privacy: 'internal', contentHash: null },
+      lineage: { runId: binding.runId, sourceRef: 'private:integration' },
+      startedAt: '2026-10-11T00:00:00.000Z', finishedAt: new Date().toISOString(),
+    };
+    const expectedIdentity = computeTrialIdentity(trial);
+    expect(expectedIdentity.bindingComplete).toBe(true);
+    const exactBinding = { runId: binding.runId, trialBindingHash: expectedIdentity.bindingHash };
+    const eventKey = `work-item:status:${subjectId}`, transitionRef = `${eventKey}@1791676800000000#1`;
+    const payload = { id: subjectId, harness: harnessSlug, prevState: 'wip', state: 'done' };
+    await sql`INSERT INTO harness_shared.event_key_fires VALUES (${workspaceId}, ${eventKey},
+      '2026-10-11T00:00:00Z', '2026-10-11T00:00:01Z', 'work-items', ${sql.json(payload)}, 1)`;
+    const transitionReader = currentBenchWorkloadTransitionReader({ sql, workspaceId, harnessSlug, ...exactBinding,
+      notBefore: '2026-10-11T00:00:00.000Z', receipts: [{ receiptRef: transitionRef, subjectId, transitionId: 'finish', index: 0 }] });
+    const gradeReader = currentBenchWorkloadGradeReader({ ...f.options, ...exactBinding,
+      receipts: [{ ...f.receipt, index: 1 }] });
+    const transition = await transitionReader(transitionRef, exactBinding), grade = await gradeReader(f.receipt.receiptRef, exactBinding);
+    expect(transition).toHaveLength(1); expect(grade).toHaveLength(1);
+    const artifactRef = 'private:answer', artifactPath = join(repoRoot, 'answer.txt'), answer = 'durable answer π\n';
+    writeFileSync(artifactPath, answer);
+    const artifactReader = currentBenchWorkloadArtifactReader({ sql, workspaceId, harnessSlug, ...exactBinding,
+      checkoutRoot: repoRoot, artifacts: [{ ref: artifactRef, subjectId, path: 'answer.txt', maxBytes: 1024 }] });
+    const requirements: WorkloadCompletionRequirements = {
+      artifacts: [{ id: 'answer', minBytes: 1, sha256: sha(answer) }],
+      transitions: [{ id: 'finish', subjectRef: `work-item:${harnessSlug}:${subjectId}`, from: 'wip', to: 'done' }],
+      context: [], downstream: { id: f.receipt.outcomeId, value: true, graderRef: f.receipt.graderRef },
+    };
+    const evidence: PreservedEvidence = { privacy: 'internal',
+      artifacts: [{ id: 'answer', ref: artifactRef, bytes: Buffer.byteLength(answer), sha256: sha(answer), mediaType: 'text/plain' }],
+      trajectory: [...transition!, ...grade!, { index: 2, kind: 'tool-result', name: 'process', content: 'exit=0', metadata: { exitCode: 0 } }],
+    };
+    if (defect === 'exit-only') { evidence.artifacts = []; evidence.trajectory = [{ ...evidence.trajectory[2], index: 0 }]; }
+    if (defect === 'missing-artifact') rmSync(artifactPath);
+    if (defect === 'changed-artifact') writeFileSync(artifactPath, 'candidate replacement');
+    if (defect === 'missing-transition') await sql`DELETE FROM harness_shared.event_key_fires`;
+    if (defect === 'missing-grade') await sql`DELETE FROM harness_shared.benchmark_run_result`;
+    if (defect === 'forged-transition') {
+      await sql`UPDATE harness_shared.event_key_fires SET last_payload = ${sql.json({ ...payload, state: 'blocked' })}`;
+    }
+    if (defect === 'failed-grade') {
+      await sql`UPDATE harness_shared.benchmark_run_result SET resolved = false, grader_status = 'failed'`;
+    }
+    // Seal the candidate claim before the independent authority reads. Even a
+    // well-sealed exit=0 claim cannot replace missing bytes, state or grade.
+    const sealed = sealEvidence(evidence);
+    const replay = await replayResolvedWorkloadEvidence({ trial, expectedIdentity, evidence,
+      manifest: sealed.manifest, envelope: sealed.envelope, completionRequirements: requirements }, {
+      readArtifact: artifactReader,
+      readObservations: (ref, claim) => ref === transitionRef ? transitionReader(ref, claim) : gradeReader(ref, claim),
+    });
+    expect(replay.ok).toBe(defect === 'valid');
+    if (defect === 'valid') expect(replay.integrity.findings).toEqual([]);
+    else {
+      const expected = ['missing-artifact', 'changed-artifact'].includes(defect) ? 'completion-artifact-missing'
+        : ['missing-transition', 'forged-transition'].includes(defect) ? 'durable-transition-missing'
+          : 'downstream-outcome-missing';
+      expect(replay.integrity.findings.map(row => row.kind)).toContain(expected);
+    }
   });
 });
 
