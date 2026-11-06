@@ -9535,66 +9535,48 @@ impl App {
         Some(spec)
     }
 
-    /// The local hostname (best-effort, "" when unknown) — used to gate
-    /// same-host external-window focus (a pid on another machine can't be
-    /// wmctrl-focused here, and could collide with a local pid).
-    fn local_host() -> String {
-        std::env::var("HOSTNAME").unwrap_or_default()
-    }
-
-    /// Try to correlate a roster agent to a LIVE terminal pane in this workbench
-    /// (Enter-by-location local route, D-001). Conservative on purpose: it
-    /// returns a pane only on an UNAMBIGUOUS title/command match against the
-    /// strongest identifier the entry carries (feature → plan → role → agent
-    /// kind). Two panes matching the strongest needle → `None` (don't guess and
-    /// focus the wrong agent); the caller then falls through to window/resume.
+    /// Match a live pane using the selected session's canonical resume command.
+    /// Labels, roles and plan names are shared by unrelated sessions. Even one
+    /// matching label is not evidence that a pane belongs to the selected row.
+    /// Search every tab: focus_terminal_pane can reach an inactive tab too.
+    /// Flattened commands with whitespace inside argv cells cannot establish
+    /// identity; leave those unavailable until structured pane identity exists.
     fn match_local_pane(&self, entry: &RosterEntry) -> Option<u32> {
-        let topo = self.topology.as_ref()?;
-        let active = topo
-            .tabs
-            .iter()
-            .find(|t| t.active)
-            .map(|t| t.pos)
-            .unwrap_or(0);
-        let candidates: Vec<&pui_companion_proto::PaneNode> = topo
-            .panes
-            .iter()
-            .filter(|p| p.tab == active && !p.is_plugin && !p.exited && !self.is_hud_node(p))
-            .collect();
-        if candidates.is_empty() {
+        if !entry.host.is_empty() && entry.host != self.local_host {
             return None;
         }
-        let needles: Vec<String> = [
-            entry.feature.clone(),
-            entry.current_plan_slug.clone(),
-            entry.role.clone(),
-            entry.agent.clone(),
+        let topo = self.topology.as_ref()?;
+        let commands: Vec<Vec<String>> = [
+            self.resume_spec(entry).map(|spec| spec.argv),
+            entry.dock_pane_argv(),
         ]
         .into_iter()
         .flatten()
-        .filter(|s| !s.is_empty())
-        .map(|s| s.to_lowercase())
+        .filter(|argv| {
+            argv.iter()
+                .all(|arg| !arg.is_empty() && !arg.chars().any(char::is_whitespace))
+        })
         .collect();
-        for needle in &needles {
-            let matched: Vec<u32> = candidates
-                .iter()
-                .filter(|p| {
-                    p.title.to_lowercase().contains(needle)
-                        || p.command
-                            .as_deref()
-                            .map(|c| c.to_lowercase().contains(needle))
-                            .unwrap_or(false)
-                })
-                .map(|p| p.id)
-                .collect();
-            if matched.len() == 1 {
-                return Some(matched[0]);
+        let mut matched = topo.panes.iter().filter(|pane| {
+            if pane.is_plugin || pane.exited || self.is_hud_node(pane) {
+                return false;
             }
-            if matched.len() > 1 {
-                return None; // ambiguous on the strongest needle → don't guess
-            }
-        }
-        None
+            let Some(command) = pane.command.as_deref() else {
+                return false;
+            };
+            let cells: Vec<&str> = command.split_whitespace().collect();
+            commands.iter().any(|argv| {
+                let plain: Vec<&str> = argv.iter().map(String::as_str).collect();
+                if cells == plain {
+                    return true;
+                }
+                // Installed releases resolve psu beside pui, rather than PATH.
+                let program = crate::remote_connect::pane_program(&argv[0]);
+                cells.first().copied() == Some(program.as_str()) && cells[1..] == plain[1..]
+            })
+        });
+        let pane_id = matched.next()?.id;
+        matched.next().is_none().then_some(pane_id)
     }
 
     /// Build the `[r]/[n]/[f]` no-session menu for an agent (D-002). `[n] launch`
@@ -9640,8 +9622,7 @@ impl App {
         if let Some(pane_id) = self.match_local_pane(entry) {
             return AgentRoute::LocalPane { pane_id };
         }
-        let host = Self::local_host();
-        let can_focus_window = entry.has_window_handle(&host);
+        let can_focus_window = entry.has_window_handle(&self.local_host);
         let resumable = entry.is_resumable();
         if entry.is_live() {
             // Running elsewhere. Focus its window if we can reach it; otherwise
@@ -24238,11 +24219,10 @@ mod tests {
                 focused: false,
                 is_plugin: false,
                 exited: false,
-                command: Some("psu".into()),
+                command: Some("psu --resume 7".into()),
             }],
         });
-        // Live + windowed, but a local pane matches the entry's feature → local
-        // pane wins (it's right here in the workbench).
+        // Exact resume identity wins over the external window handle.
         let entry = RosterEntry {
             feature: Some("F-9".into()),
             ..live_windowed_entry("claude")
@@ -24251,6 +24231,179 @@ mod tests {
             a.resolve_agent_route(&entry),
             AgentRoute::LocalPane { pane_id: 5 }
         );
+    }
+
+    #[test]
+    fn exact_session_route_never_uses_shared_labels_or_partial_handles() {
+        let mut a = App::new();
+        let entry = RosterEntry {
+            feature: Some("F-9".into()),
+            current_plan_slug: Some("same-plan".into()),
+            role: Some("su".into()),
+            ..live_windowed_entry("claude")
+        };
+        for command in [
+            None,
+            Some("psu"),
+            Some("psu --resume 70"),
+            Some("echo psu --resume 7"),
+            Some("psu --resume 7 --connect=other-host"),
+            Some("psu --resume 7 --resume 8"),
+            Some("claude --resume unrelated"),
+        ] {
+            let mut pane = topo_pane(5, "claude · F-9 · same-plan · su");
+            pane.command = command.map(str::to_string);
+            a.topology = Some(pui_companion_proto::Topology {
+                panes: vec![pane],
+                ..Default::default()
+            });
+            assert!(
+                matches!(
+                    a.resolve_agent_route(&entry),
+                    AgentRoute::FocusWindow { .. }
+                ),
+                "must use the row's exact window, never guess from {command:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn exact_session_route_reaches_inactive_tabs_and_rejects_duplicate_or_dead_panes() {
+        let mut a = App::new();
+        let entry = live_windowed_entry("claude");
+        let mut pane = topo_pane(5, "renamed by owner");
+        pane.tab = 4;
+        pane.command = Some("psu --resume 7".into());
+        a.topology = Some(pui_companion_proto::Topology {
+            panes: vec![pane.clone()],
+            ..Default::default()
+        });
+        assert_eq!(
+            a.resolve_agent_route(&entry),
+            AgentRoute::LocalPane { pane_id: 5 }
+        );
+        let mut duplicate = pane.clone();
+        duplicate.id = 6;
+        a.topology.as_mut().unwrap().panes.push(duplicate);
+        assert!(matches!(
+            a.resolve_agent_route(&entry),
+            AgentRoute::FocusWindow { .. }
+        ));
+        for (exited, is_plugin, is_hud) in [
+            (true, false, false),
+            (false, true, false),
+            (false, false, true),
+        ] {
+            pane.exited = exited;
+            pane.is_plugin = is_plugin;
+            a.hud_pane_id = is_hud.then_some(5);
+            a.topology.as_mut().unwrap().panes = vec![pane.clone()];
+            assert!(matches!(
+                a.resolve_agent_route(&entry),
+                AgentRoute::FocusWindow { .. }
+            ));
+        }
+    }
+
+    #[test]
+    fn exact_session_route_keeps_native_session_and_host_identity() {
+        let mut a = App::new();
+        a.local_host = "local-box".into();
+        let mut entry = live_windowed_entry("claude");
+        entry.session_id = Some("native-exact".into());
+        let mut pane = topo_pane(5, "anything");
+        pane.command = Some("claude --resume native-exact".into());
+        a.topology = Some(pui_companion_proto::Topology {
+            panes: vec![pane],
+            ..Default::default()
+        });
+        assert_eq!(
+            a.resolve_agent_route(&entry),
+            AgentRoute::LocalPane { pane_id: 5 }
+        );
+        entry.session_id = Some("native-exact-prefix".into());
+        assert!(matches!(
+            a.resolve_agent_route(&entry),
+            AgentRoute::FocusWindow { .. }
+        ));
+        entry.session_id = Some("native-exact".into());
+        entry.host = "remote-box".into();
+        assert!(matches!(a.resolve_agent_route(&entry), AgentRoute::Menu(_)));
+        assert!(!entry.has_window_handle(&a.local_host));
+    }
+
+    #[test]
+    fn exact_session_route_preserves_isolated_native_home_and_refuses_lossy_argv() {
+        let mut a = App::new();
+        let mut entry = live_windowed_entry("claude");
+        entry.native_session = Some(
+            serde_json::from_value(serde_json::json!({
+                "backend": "claude", "sessionId": "native-exact",
+                "configDir": "/isolated/config", "exactResumeSupported": true
+            }))
+            .unwrap(),
+        );
+        for (command, expected) in [
+            ("claude --resume native-exact", false),
+            (
+                "env CLAUDE_CONFIG_DIR=/wrong/config claude --resume native-exact",
+                false,
+            ),
+            (
+                "env CLAUDE_CONFIG_DIR=/isolated/config claude --resume native-exact",
+                true,
+            ),
+        ] {
+            let mut pane = topo_pane(5, "same label");
+            pane.command = Some(command.into());
+            a.topology = Some(pui_companion_proto::Topology {
+                panes: vec![pane],
+                ..Default::default()
+            });
+            assert_eq!(
+                a.match_local_pane(&entry),
+                expected.then_some(5),
+                "{command}"
+            );
+        }
+        // The old string topology loses argv boundaries. Do not treat a
+        // flattened home containing spaces as a supported exact binding.
+        entry.native_session = Some(
+            serde_json::from_value(serde_json::json!({
+                "backend": "claude", "sessionId": "native-exact",
+                "configDir": "/isolated/my config", "exactResumeSupported": true
+            }))
+            .unwrap(),
+        );
+        a.topology.as_mut().unwrap().panes[0].command =
+            Some("env CLAUDE_CONFIG_DIR=/isolated/my config claude --resume native-exact".into());
+        assert_eq!(a.match_local_pane(&entry), None);
+    }
+
+    #[test]
+    fn exact_session_route_without_identity_is_unavailable_and_keeps_center_pane() {
+        let mut a = App::new();
+        let entry = RosterEntry {
+            owner_id: "su-other".into(),
+            agent: Some("claude".into()),
+            liveness: "live".into(),
+            ..Default::default()
+        };
+        let mut pane = topo_pane(5, "claude");
+        pane.command = Some("claude".into());
+        a.topology = Some(pui_companion_proto::Topology {
+            panes: vec![pane],
+            ..Default::default()
+        });
+        let before = a.topology.clone();
+        match a.resolve_agent_route(&entry) {
+            AgentRoute::Menu(menu) => {
+                assert!(!menu.can_resume);
+                assert!(!menu.can_focus_window);
+            }
+            route => panic!("no exact binding must be unavailable, got {route:?}"),
+        }
+        assert_eq!(a.topology, before);
     }
 
     #[test]

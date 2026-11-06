@@ -32,7 +32,7 @@
  * shipped logic, never a copy) and drive it under controlled inputs.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, realpathSync, symlinkSync, existsSync, readdirSync, statSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, realpathSync, symlinkSync, linkSync, lstatSync, existsSync, readdirSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { spawn, spawnSync, execFileSync } from 'node:child_process';
@@ -1407,6 +1407,91 @@ describe('sync-staging-checkout.sh superseded generation pruning (WI-10005310)',
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
+  it.each(['hardlink', 'copy'] as const)('selects the measured %s preparation cost without lowering the writer reserve', (mode) => {
+    const root = mkdtempSync(join(tmpdir(), 'staging-headroom-copy-mode-'));
+    try {
+      const bytesFile = join(root, '.generation-bytes');
+      writeFileSync(bytesFile, JSON.stringify({ schemaVersion: 1, fullBytes: 9000000000000000, hardlinkBytes: 1 }));
+      const result = runFn(['staging_preparation_has_headroom'],
+        'if staging_preparation_has_headroom; then echo HEADROOM_OK; else echo "HEADROOM_STATUS=$?"; fi', {
+          env: {
+            INTEGRATION_ROOT: resolve(dirname(SCRIPT_PATH), '../../../..'),
+            STAGING_GENERATIONS_ROOT: root,
+            STAGING_GENERATION_BYTES_FILE: bytesFile,
+            NODE_MODULES_COPY_MODE: mode,
+            PAPERCUSP_DISK_ALARM_CRITICAL_GB: '0.000001',
+            PAPERCUSP_DISK_ALARM_CRITICAL_PCT: '0.000001',
+          },
+        });
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout).toContain(mode === 'hardlink' ? 'HEADROOM_OK' : 'HEADROOM_STATUS=75');
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it('discounts only externally shared dependency files from the hardlink preparation estimate', () => {
+    const root = mkdtempSync(join(tmpdir(), 'staging-generation-hardlinks-'));
+    const home = join(root, '.candidate-abc.x');
+    const checkout = join(home, 'checkout');
+    const deps = join(checkout, 'node_modules');
+    const bytesFile = join(root, '.generation-bytes');
+    try {
+      mkdirSync(deps, { recursive: true });
+      const externalDependency = join(root, 'dependency-source');
+      const externalBuild = join(root, 'build-source');
+      writeFileSync(externalDependency, Buffer.alloc(1024 * 1024, 1));
+      writeFileSync(externalBuild, Buffer.alloc(256 * 1024, 2));
+      const dependency = join(deps, 'shared');
+      const build = join(checkout, 'shared-build');
+      const internal = join(deps, 'internal-a');
+      const internalLink = join(deps, 'internal-b');
+      const privateFile = join(deps, 'private');
+      const symlink = join(deps, 'symlink');
+      const sources = join(checkout, 'sources');
+      const misleadingName = join(sources, 'node_modules');
+      mkdirSync(sources);
+      linkSync(externalDependency, dependency);
+      linkSync(externalBuild, build);
+      writeFileSync(internal, Buffer.alloc(128 * 1024, 3));
+      linkSync(internal, internalLink);
+      writeFileSync(privateFile, Buffer.alloc(64 * 1024, 4));
+      symlinkSync(externalDependency, symlink);
+      linkSync(externalBuild, misleadingName);
+      const body = /^STAGING_GENERATION_MEASURE_SCRIPT='([^']*)'$/m.exec(readFileSync(SCRIPT_PATH, 'utf8'))?.[1];
+      const result = runFn(['launch_staging_generation_measure'],
+        `log() { echo "$*"; }; launch_staging_generation_measure ${JSON.stringify(home)} ${JSON.stringify(bytesFile)}`,
+        { env: { STAGING_GENERATION_MEASURE_MODE: 'inline', STAGING_GENERATION_MEASURE_SCRIPT: body } });
+      expect(result.status, result.stderr).toBe(0);
+      const measurement = JSON.parse(readFileSync(bytesFile, 'utf8'));
+      // Count each inode once, including directories and symlinks. The build
+      // hardlink and links wholly inside this generation still cost bytes.
+      const fullBytes = [home, checkout, deps, sources, dependency, build, internal, privateFile, symlink]
+        .reduce((sum, path) => sum + lstatSync(path).blocks * 512, 0);
+      expect(measurement).toEqual({
+        schemaVersion: 1,
+        fullBytes,
+        hardlinkBytes: fullBytes - lstatSync(dependency).blocks * 512,
+      });
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it.each([-1, 9000000000000001, 'unknown'])('keeps full-copy admission when the hardlink estimate is invalid (%s)', (hardlinkBytes) => {
+    const root = mkdtempSync(join(tmpdir(), 'staging-headroom-invalid-'));
+    try {
+      const bytesFile = join(root, '.generation-bytes');
+      writeFileSync(bytesFile, JSON.stringify({ schemaVersion: 1, fullBytes: 9000000000000000, hardlinkBytes }));
+      const result = runFn(['staging_preparation_has_headroom'],
+        'if staging_preparation_has_headroom; then echo HEADROOM_OK; else echo "HEADROOM_STATUS=$?"; fi', {
+          env: {
+            INTEGRATION_ROOT: resolve(dirname(SCRIPT_PATH), '../../../..'), STAGING_GENERATIONS_ROOT: root,
+            STAGING_GENERATION_BYTES_FILE: bytesFile, NODE_MODULES_COPY_MODE: 'hardlink',
+            PAPERCUSP_DISK_ALARM_CRITICAL_GB: '0.000001', PAPERCUSP_DISK_ALARM_CRITICAL_PCT: '0.000001',
+          },
+        });
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout).toContain('HEADROOM_STATUS=75');
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
   it('records a published generation size atomically and keeps the previous value when the walk fails', () => {
     const root = mkdtempSync(join(tmpdir(), 'staging-generation-measure-'));
     const home = join(root, '.candidate-abc.x');
@@ -1418,7 +1503,7 @@ describe('sync-staging-checkout.sh superseded generation pruning (WI-10005310)',
       // The walk body is a top-level assignment, not a function, so runFn's
       // function extraction cannot source it: hand the live text in instead.
       const body = /^STAGING_GENERATION_MEASURE_SCRIPT='([^']*)'$/m.exec(readFileSync(SCRIPT_PATH, 'utf8'))?.[1];
-      expect(body).toContain('du -sxB1');
+      expect(body).toContain('stat.blocks * 512');
       const measure = (env: Record<string, string> = {}) => runFn(['launch_staging_generation_measure'],
         `log() { echo "$*"; }; launch_staging_generation_measure ${JSON.stringify(home)} ${JSON.stringify(bytesFile)}`,
         { env: { STAGING_GENERATION_MEASURE_MODE: 'inline', STAGING_GENERATION_MEASURE_SCRIPT: body, ...env } });
@@ -1426,13 +1511,15 @@ describe('sync-staging-checkout.sh superseded generation pruning (WI-10005310)',
       const first = measure();
       expect(first.status, first.stderr).toBe(0);
       const recorded = readFileSync(bytesFile, 'utf8').trim();
-      expect(recorded).toMatch(/^[0-9]+$/);
-      expect(Number(recorded)).toBeGreaterThanOrEqual(256 * 1024);
+      const measurement = JSON.parse(recorded);
+      expect(measurement.schemaVersion).toBe(1);
+      expect(measurement.fullBytes).toBeGreaterThanOrEqual(256 * 1024);
+      expect(measurement.hardlinkBytes).toBe(measurement.fullBytes);
       expect(first.stdout).toContain(`measured staging generation size inline: ${recorded} bytes`);
 
       // A failing walk must not overwrite or delete the last good measurement.
       mkdirSync(bin);
-      writeFileSync(join(bin, 'du'), '#!/usr/bin/env bash\necho "1 $2"\nexit 1\n', { mode: 0o755 });
+      writeFileSync(join(bin, 'node'), '#!/usr/bin/env bash\nexit 1\n', { mode: 0o755 });
       const failed = measure({ PATH: `${bin}:${process.env.PATH}` });
       expect(failed.status, failed.stderr).toBe(0);
       expect(failed.stdout).toContain('keeping the previous measurement');

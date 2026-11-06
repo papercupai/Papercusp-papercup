@@ -108,20 +108,35 @@ describe('projected plugin host resource approval', () => {
     expect((await f.run()).result?.isError).toBe(true); expect(existsSync(f.marker)).toBe(false);
   });
 
-  it('fails closed on grant read failure, missing exact allowlist, expiry or current-policy read failure', async () => {
+  it.each(['grant-read', 'allowlist', 'expiry', 'policy-read'] as const)(
+    'isolates %s refusal between authorized filesystem effects', async axis => {
     const f = fixture();
-    const fail = createPluginInvocationChokepoint({ resolvePolicy: () => f.policy,
-      readManifest: async () => ['tasks:write'], readGrants: async () => { throw Error('offline'); } });
-    expect((await dispatchProjectedTool(f.tool, 'fixture:write', {}, f.ctx, { aroundInvoke: fail })).result?.isError).toBe(true);
-    const original = f.policy.decide;
-    f.policy.decide = async query => { const d = await original(query);
-      (d.obligations!.pluginInvocation as { expiresAt: number }).expiresAt = 0; return d; };
-    expect((await f.run()).result?.isError).toBe(true);
-    f.policy.decide = original; f.policy.isCurrent = () => { throw Error('unknown revision'); };
-    expect((await f.run()).result?.isError).toBe(true);
-    f.principal.allowedTools = undefined;
-    expect((await f.run()).result?.isError).toBe(true);
+    expect((await f.run()).result?.isError).not.toBe(true);
+    expect(readFileSync(f.marker, 'utf8')).toBe('authorized');
+    rmSync(f.marker);
+
+    const originalDecide = f.policy.decide, originalIsCurrent = f.policy.isCurrent;
+    const originalAllowlist = f.principal.allowedTools;
+    let aroundInvoke = f.aroundInvoke;
+    if (axis === 'grant-read') {
+      aroundInvoke = createPluginInvocationChokepoint({ resolvePolicy: () => f.policy,
+        readManifest: async () => ['tasks:write'], readGrants: async () => { throw Error('offline'); } });
+    }
+    if (axis === 'allowlist') f.principal.allowedTools = undefined;
+    if (axis === 'expiry') {
+      f.policy.decide = async query => { const d = await originalDecide(query);
+        (d.obligations!.pluginInvocation as { expiresAt: number }).expiresAt = 0; return d; };
+    }
+    if (axis === 'policy-read') f.policy.isCurrent = () => { throw Error('unknown revision'); };
+
+    const denied = await dispatchProjectedTool(f.tool, 'fixture:write', {}, f.ctx, { aroundInvoke });
+    expect(denied.result?.isError).toBe(true);
     expect(existsSync(f.marker)).toBe(false);
+
+    f.policy.decide = originalDecide; f.policy.isCurrent = originalIsCurrent;
+    f.principal.allowedTools = originalAllowlist;
+    expect((await f.run()).result?.isError).not.toBe(true);
+    expect(readFileSync(f.marker, 'utf8')).toBe('authorized');
   });
 
   it('attenuates a nested dispatch even when the host approves a broader child operation', async () => {

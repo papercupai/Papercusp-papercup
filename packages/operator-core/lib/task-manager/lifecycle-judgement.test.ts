@@ -612,7 +612,7 @@ describe('evaluateLifecycleCandidates', () => {
     expect(brief).toContain('pc-*.scope or recognized vte-spawn-*.scope entry with a non-empty scopeUnit');
     expect(brief).not.toContain('When live.unaccountedGroups is non-empty, require a known-present same-kind control');
     expect(brief).toContain('processes:list { scopeUnit, live:true, includeEnded:true }');
-    expect(brief).toContain('the ageSec-bearing row is terminal and the default tasks[] filter would hide it');
+    expect(brief).toContain('Group age is a conservative lower bound derived from the youngest matched PID');
     expect(brief).toContain('When no addressable control exists, the same-kind control prerequisite is structurally unavailable, not a failed read');
     expect(brief).toContain('even when live.unaccountedGroups is non-empty');
     expect(brief).toContain('do not use the cgroupfs path to work around a failed read');
@@ -622,7 +622,7 @@ describe('evaluateLifecycleCandidates', () => {
     expect(brief).toContain('Never use stored cgroupPath, /proc absence, detector reason, or empty filtered output');
     expect(brief).toContain('inspect only live.exactScopeUnitMatches entries with kind "unaccounted"');
     expect(brief).toContain('When an addressable control exists, require a known-present same-kind unaccounted control from the census, read it twice');
-    expect(brief).toContain('compare payload.processLifecycleCandidate.observedPids with the complete live.unaccountedGroups[].pids set');
+    expect(brief).toContain('compare payload.processLifecycleCandidate.taskId with live.unaccountedGroups[].taskId');
     expect(brief).toContain('live.ownedTruncated=false');
     expect(brief).toContain('require taskPage.truncated=false');
     expect(brief).toContain('taskPage.total is the exact matching ledger row count');

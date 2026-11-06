@@ -16,11 +16,13 @@ afterAll(async () => { await db?.cleanup(); });
 describe('exact workspace owner identity', () => {
   it('reads an old authoritative identity despite hundreds of newer facts and another workspace', async () => {
     await db.sql`INSERT INTO harness_shared.agent_facts (workspace_id, scope, key, claim)
-      VALUES ('fixture', 'workspace', 'owner-identity', ${{ displayName: 'Fixture owner' }}::jsonb),
-             ('other', 'workspace', 'owner-identity', ${{ displayName: 'Wrong owner' }}::jsonb)`;
+      VALUES ('fixture', 'workspace', 'owner-identity', ${db.sql.json({ displayName: 'Fixture owner' })}),
+             ('other', 'workspace', 'owner-identity', ${db.sql.json({ displayName: 'Wrong owner' })})`;
     await db.sql`INSERT INTO harness_shared.agent_facts (workspace_id, scope, key)
       SELECT 'fixture', 'workspace', 'newer-' || n FROM generate_series(1, 250) n`;
-    expect(await readWorkspaceOwnerIdentity('fixture', db.sql)).toMatchObject({ status: 'known', displayName: 'Fixture owner' });
+    expect(await readWorkspaceOwnerIdentity('fixture', db.sql)).toEqual({
+      status: 'known', displayName: 'Fixture owner', sourceRef: expect.any(String),
+    });
   });
 
   it('never guesses absent, expired, foreign or malformed identity records', async () => {

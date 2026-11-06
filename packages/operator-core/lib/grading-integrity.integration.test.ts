@@ -142,6 +142,42 @@ describe.each([false, true])('grading audit JSON writes with prepare=%s', (prepa
     expect(await readAudit()).toHaveProperty('dispatchBackoff', backoff);
   });
 
+  it('clears a live generation-incompatible backoff only after compatibility is proven', async () => {
+    const generationBackoff = { ...backoff, code: 'generation_incompatible',
+      reason: 'the previous dispatcher did not contain the graded generation' };
+    await seed(issueId, { state: 'pending', dispatchBackoff: generationBackoff });
+
+    expect(await reservePendingGradingAudit(issueId, reservation.key, { workspaceId, now }))
+      .toEqual({ status: 'dispatch-backoff', backoff: generationBackoff });
+    expect(await reservePendingGradingAudit(issueId, reservation.key, {
+      workspaceId, now, allowGenerationIncompatibleBackoff: true,
+    })).toMatchObject({ status: 'claimed', reservation });
+    expect(await readAudit()).not.toHaveProperty('dispatchBackoff');
+  });
+
+  it('reports a fresh dispatch claim when the compatible backoff override loses the claim race', async () => {
+    const generationBackoff = { ...backoff, code: 'generation_incompatible',
+      reason: 'the previous dispatcher did not contain the graded generation' };
+    const liveClaim = {
+      key: reservation.key,
+      reservedAt: new Date(now.getTime() - 60_000).toISOString(),
+    };
+    await seed(issueId, {
+      state: 'pending',
+      dispatchBackoff: generationBackoff,
+      dispatchClaim: liveClaim,
+    });
+
+    expect(await reservePendingGradingAudit(issueId, reservation.key, {
+      workspaceId, now, allowGenerationIncompatibleBackoff: true,
+    })).toEqual({ status: 'already-reserved' });
+    expect(await readAudit()).toMatchObject({
+      dispatchBackoff: generationBackoff,
+      dispatchClaim: liveClaim,
+    });
+    expect(await readAudit()).not.toHaveProperty('dispatchReservation');
+  });
+
   it('stores both reservation fields as objects and confirms the exact lease', async () => {
     await seed();
     expect(await reservePendingGradingAudit(issueId, reservation.key, { workspaceId, now }))

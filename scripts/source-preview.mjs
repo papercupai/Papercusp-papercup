@@ -2543,19 +2543,17 @@ export async function runVerifierCommand({ repo, ref, receiptPath, inputs = [], 
   if (isInside(donor, scratch) || isInside(sourceRepo, scratch))
     throw new PreviewError('verifier command scratch must be outside the source and dependency donor', 2);
   const copyMode = verifierDependencyCopyMode(donor, scratch);
-  const helper = join(sourceRepo, 'papercusp-desktop/bin/lib/pinned-deps.sh');
-  const helperSource = existsSync(helper) ? readFileSync(helper, 'utf8') : '';
+  const helperPath = 'papercusp-desktop/bin/lib/pinned-deps.sh';
+  const helperSource = git(sourceRepo, ['ls-tree', sourceCommit, '--', helperPath]).trim()
+    ? git(sourceRepo, ['show', sourceCommit + ':' + helperPath]) : '';
   const snapshotSelection = selectVerifierDependencySnapshot(copyMode,
     /^\s*snapshot-generation-locked\s*\)/m.test(helperSource), explicitGeneration);
   // Automatic cross-device selection consumes the same immutable closure as an
-  // explicit generation. Refuse missing custody before allocating source, too.
+  // explicit generation. Select its contract from the requested commit, then
+  // validate custody against that frozen source before copying dependencies.
   if (snapshotSelection.command === 'snapshot-generation-locked') {
     if (!/^\s*preflight-generation\s*\)/m.test(helperSource))
       throw new PreviewError('selected source does not support immutable verifier generations', 2);
-    const check = spawnSync('bash', [helper, 'preflight-generation', donor, sourceRepo],
-      { env: verifierDependencyEnv(env), encoding: 'utf8', timeout: 120_000, maxBuffer: 1024 * 1024 });
-    if (check.error || check.status !== 0)
-      throw new PreviewError('verifier generation preflight failed: ' + (check.error?.message || check.stderr || check.status), 2);
   } else preflightVerifierWorkspaceBinDonor({ repo: sourceRepo, commit: sourceCommit, donor });
   const taskReceiptPath = `${resolve(receiptPath)}.task.json`;
   const cancellation = new AbortController();
@@ -2687,6 +2685,15 @@ export async function runVerifierCommand({ repo, ref, receiptPath, inputs = [], 
     const receipt = await runPhase('source.freeze', () => prepareVerifierSource({ repo: sourceRepo, ref: sourceCommit, dest: root,
       inputs, inputsFile, tauriInputs, gitCheckout: true }));
     await runPhase('receipt.write', () => fs.writeFile(receiptPath, `${JSON.stringify(receipt)}\n`, { flag: 'wx', mode: 0o600 }));
+    if (snapshotSelection.command === 'snapshot-generation-locked') {
+      await runPhase('deps.preflight', () => {
+        const check = spawnSync('bash', [join(root, helperPath), 'preflight-generation', donor, root],
+          { env: verifierDependencyEnv(env), encoding: 'utf8', timeout: 120_000, maxBuffer: 1024 * 1024 });
+        if (check.error || check.status !== 0)
+          throw new PreviewError('verifier generation preflight failed: ' +
+            (check.error?.message || check.stderr || check.status), 2);
+      });
+    }
     const dependencies = await prepareVerifierDependencies({ donor, dest: root, receipt, runPhase,
       signal: cancellation.signal, env, maxMs: preparationMaxMs, cutoffEpochMs: budget.childCutoffEpochMs, now: clock.now, resourceInventory });
     await runPhase('deps.receipt.write', () => fs.writeFile(`${receiptPath}.dependencies.json`,

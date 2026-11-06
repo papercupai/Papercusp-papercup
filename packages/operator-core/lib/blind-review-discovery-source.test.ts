@@ -91,7 +91,13 @@ describe('original agent discovery blind source', () => {
       if (query.includes('plan_audits')) return [{ audit_seq: 8,
         activation: { mappings: [], itemProvenance: [declaration()] } }];
       if (query.includes('plan_blind_reviews')) return [];
-      if (query.includes('work_item_occurrences')) return sqlFor(occurrence)(parts, ...values);
+      if (query.includes('work_item_occurrences')) {
+        expect(query).toContain('workspace_id =');
+        expect(query).toContain('canonical_harness_slug =');
+        expect(values).toContain('ws');
+        expect(values).toContain('papercusp');
+        return [occurrence];
+      }
       throw new Error(`unexpected query ${query}`);
     }) as unknown as Parameters<typeof loadBlindReviewDiscoveries>[1];
     const brief = await loadBlindReviewBrief({ workspaceId: 'ws', planSlug: 'repair', harnessSlug: 'papercusp' }, { sql });

@@ -323,6 +323,37 @@ describe('plan item anchors through the real plan tools', () => {
     }
     expect(read.prose).toContain('↳ code:');
   });
+  it('anchor-only edits preserve stored prose and reconcile stale graph line text', async () => {
+    const canonical = body().replace('Existing item', 'Reconciled native item').replace('`todo`', '`wip`');
+    await fx.admin`
+      UPDATE harness_shared.harness_plans
+      SET content=${canonical}, content_hash=${hashPlanContent(canonical)}, version=version + 1
+      WHERE workspace_id=${WS} AND harness_slug=${HARNESS} AND plan_slug=${SLUG}
+    `;
+    const [stale] = await readPlanLineNodes(fx.admin, { workspaceId: WS, harnessSlug: HARNESS, slug: SLUG });
+    expect(stale).toMatchObject({ text: 'Existing item', status: 'todo' });
+    await fx.admin`
+      UPDATE harness_shared.work_items SET status='wip'
+      WHERE workspace_id=${WS} AND harness_slug=${HARNESS} AND feature_id=${stale.featureId}
+    `;
+    expect((await readPlanLineNodes(fx.admin, { workspaceId: WS, harnessSlug: HARNESS, slug: SLUG }))[0].status)
+      .toBe('wip');
+
+    const edited = data(await editTool.handler({ slug: SLUG, harness: HARNESS, itemId: 'P-001',
+      anchors: [{ symbol: 'linked' }] } as never, ctx()));
+    expect(edited.ok, JSON.stringify(edited)).toBe(true);
+
+    const [stored] = await fx.admin<{ content: string; content_hash: string }[]>`
+      SELECT content, content_hash FROM harness_shared.harness_plans
+      WHERE workspace_id=${WS} AND harness_slug=${HARNESS} AND plan_slug=${SLUG}
+    `;
+    expect(stored.content).toBe(canonical);
+    expect(stored.content_hash).toBe(hashPlanContent(canonical));
+    expect((await readPlanLineNodes(fx.admin, { workspaceId: WS, harnessSlug: HARNESS, slug: SLUG }))[0])
+      .toMatchObject({ text: 'Reconciled native item', status: 'wip' });
+    expect((await anchorStore.readPlanItemAnchors({ workspaceId: WS, harnessSlug: HARNESS, planSlug: SLUG }))['P-001'][0])
+      .toMatchObject({ symbolName: 'linked', path: 'code.ts' });
+  });
   it('file links retain content hashes, unresolved links retain reasons, and general plans get no no-links warning', async () => {
     const added = data(await add({ anchors: [{ path: 'code.ts' }, { symbol: 'absent' }] })).results[0];
     expect(added.anchors).toMatchObject([{ path: 'code.ts', contentHash: digest, resolution: 'resolved' },

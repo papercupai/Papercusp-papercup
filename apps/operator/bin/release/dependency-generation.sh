@@ -4155,10 +4155,12 @@ dependency_generation_ensure_verifier_ref() (
     "${DEPENDENCY_GENERATION_NODE:-node}" "$helper" same-source "$scratch" "$source_root" || return $?
     # Publishing uses the existing provenance-bound identity, token, atomic
     # rename, selector, retention and lease machinery, including torn-source checks.
-    dependency_generation_main --integration "$scratch" --generation-root "$generation_root" >/dev/null || return $?
+    # Bridge publication through native verification/ref pinning with the
+    # existing controller-owned selector lease, including competing retention.
+    dependency_generation_main --integration "$scratch" --generation-root "$generation_root" \
+      --lease-owner-pid "${BASHPID:-$$}" >/dev/null || return $?
     dependency_generation_select_input_fingerprint "$input" "$generation_root" || return $?
-    dependency_generation_acquire_selector_lease "$generation_root" "$DEPENDENCY_GENERATION_ID" \
-      "${BASHPID:-$$}" "$DEPENDENCY_GENERATION_TOKEN" || return $?
+    # The nested publisher's lease remains held for the enclosing EXIT trap.
     "${DEPENDENCY_GENERATION_NODE:-node}" "$helper" verify "$DEPENDENCY_GENERATION_PATH" "$source_root" || return $?
     DEPENDENCY_GENERATION_REUSED=false
   else
@@ -4287,6 +4289,14 @@ dependency_generation_main() {
       dependency_generation_log '--prune-only cannot select or publish a generation'
       return 2
     }
+    # Exact-ref scratch used to live beside the integration checkout. Native
+    # rebuilds now keep private copies on the store filesystem; sweep both
+    # locations so a killed legacy builder does not strand its last copy.
+    # The existing owner check preserves live and remote builders.
+    dependency_generation_sweep_exact_scratch "$(dependency_generation_exact_scratch_parent "$integration_root")"
+    if [ "$generation_root" != "$integration_root" ]; then
+      dependency_generation_sweep_exact_scratch "$(dependency_generation_exact_scratch_parent "$generation_root")"
+    fi
     # A quiescent hive still needs retention. Never create a store merely to
     # sweep it; the same publish lock protects live selectors and generation
     # publication when a checkout happens concurrently.
@@ -4332,8 +4342,10 @@ dependency_generation_main() {
     dependency_generation_log '--select-inputs-from, --ensure-ref, and --fingerprint-ref are mutually exclusive'
     return 2
   fi
-  if [ -n "$lease_owner_pid" ] && [ -z "$select_inputs_from" ]; then
-    dependency_generation_log '--lease-owner-pid requires --select-inputs-from'
+  if [ -n "$lease_owner_pid" ] && {
+    [ -n "$ensure_ref$fingerprint_ref" ] || [ "${#workspace_dirs[@]}" -gt 0 ];
+  }; then
+    dependency_generation_log '--lease-owner-pid requires selection or full publication'
     return 2
   fi
   if [ -n "$fingerprint_ref" ]; then
@@ -4527,21 +4539,32 @@ dependency_generation_main() {
   fi
   # Protect the just-published/reused identity even when several generations
   # share the same second-level `created` timestamp and retention ordering ties.
-  dependency_generation_acquire_selector_lease "$generation_root" "$DEPENDENCY_GENERATION_ID" || return $?
+  dependency_generation_acquire_selector_lease "$generation_root" "$DEPENDENCY_GENERATION_ID" \
+    "${lease_owner_pid:-$$}" "$DEPENDENCY_GENERATION_TOKEN" || return $?
   dependency_generation_apply_retention "$generation_root" "$integration_root" || {
     retention_rc=$?
     dependency_generation_release_selector_lease
     return "$retention_rc"
   }
-  dependency_generation_release_selector_lease
   if [ -n "$ensure_ref" ]; then
     # Publication indexed the LIVE integration inputs. Re-open by the exact
     # candidate key so incompatible live/candidate inputs remain a typed miss.
     dependency_generation_select_input_fingerprint \
-      "$exact_input" "$generation_root" || return $?
+      "$exact_input" "$generation_root" || {
+      retention_rc=$?
+      dependency_generation_release_selector_lease
+      return "$retention_rc"
+    }
     dependency_generation_retain_ensured_ref "$generation_root" "$integration_root" \
-      "$retain_as" "$DEPENDENCY_GENERATION_ID" "$ensure_ref" || return $?
+      "$retain_as" "$DEPENDENCY_GENERATION_ID" "$ensure_ref" || {
+      retention_rc=$?
+      dependency_generation_release_selector_lease
+      return "$retention_rc"
+    }
   fi
+  # Selection and publication share the existing live-controller handoff.
+  # Its caller releases the lease after verification and durable ref pinning.
+  [ -n "$lease_owner_pid" ] || dependency_generation_release_selector_lease
   dependency_generation_cleanup_exact_scratch
   printf 'DEPENDENCY_GENERATION_RESULT schema=1 identity=%s source=%s input=%s closure=%s scope=%s reused=%s token=%s path=%s\n' \
     "$DEPENDENCY_GENERATION_ID" "$DEPENDENCY_GENERATION_SOURCE_FINGERPRINT" \

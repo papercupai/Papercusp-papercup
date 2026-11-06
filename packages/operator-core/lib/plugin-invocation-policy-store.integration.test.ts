@@ -91,14 +91,42 @@ function fixture() {
 }
 
 describe('production signed plugin invocation policy', () => {
-  it('binds the exported production entry point without installing a test PDP', async () => {
+  it.each(['manifest', 'declaration', 'grant', 'caller', 'allowlist', 'approval',
+    'approval-capability', 'identity', 'authentication', 'trust', 'workspace'] as const)
+  ('intersects the production %s axis before the checked effect', async axis => {
+    // Each case owns its positive, forbidden-effect canary and restored control.
+    // The exported entry point resolves the real signed PG policy and grants;
+    // only the loaded installation metadata and DB connection are fixture ports.
     const f = fixture(); const allowed = await f.runProduction();
     expect(allowed.ok).toBe(true); expect(allowed.result?.isError).not.toBe(true);
     expect(readFileSync(f.marker, 'utf8')).toBe('authorized');
-    await db.sql.unsafe('DELETE FROM harness_shared.plugin_capability_grants'); rmSync(f.marker);
+    rmSync(f.marker);
+    const loaded = host.loaded, declaration = [...f.tool.capabilities], principal = { ...f.principal };
+    if (axis === 'manifest') host.loaded = [{ plugin: { name: 'fixture', version: '1.0.0', capabilities: [] },
+      path: directory, source: 'global' }];
+    if (axis === 'declaration') f.tool.capabilities = [];
+    if (axis === 'grant') await db.sql.unsafe('DELETE FROM harness_shared.plugin_capability_grants');
+    if (axis === 'caller') f.principal.capabilities = new Set();
+    if (axis === 'allowlist') f.principal.allowedTools = new Set();
+    if (axis === 'approval') await writePolicy({ pluginInvocations: { approvals: [] } });
+    if (axis === 'approval-capability') await writePolicy({ pluginInvocations: {
+      approvals: [{ ...approval, capabilities: ['tasks:read'] }] } });
+    if (axis === 'identity') f.principal.slug = 'other-caller';
+    if (axis === 'authentication') f.principal.authMethod = 'cookie-session';
+    if (axis === 'trust') f.principal.trust = 'unverified-loopback';
+    if (axis === 'workspace') f.ctx.workspaceId = 'other-workspace';
     const denied = await f.runProduction();
     expect(denied.ok === false || denied.result?.isError === true).toBe(true);
     expect(existsSync(f.marker)).toBe(false);
+
+    host.loaded = loaded; f.tool.capabilities = declaration; Object.assign(f.principal, principal);
+    f.ctx.workspaceId = 'fixture-workspace';
+    await db.sql`INSERT INTO harness_shared.plugin_capability_grants VALUES
+      ('fixture', '1.0.0', 'fixture-harness', 'tasks:write') ON CONFLICT DO NOTHING`;
+    await writePolicy({ pluginInvocations: { approvals: [approval] } });
+    const restored = await f.runProduction();
+    expect(restored.ok).toBe(true); expect(restored.result?.isError).not.toBe(true);
+    expect(readFileSync(f.marker, 'utf8')).toBe('authorized');
   });
 
   it.each(['declaration', 'caller', 'approval', 'allowlist', 'identity'] as const)

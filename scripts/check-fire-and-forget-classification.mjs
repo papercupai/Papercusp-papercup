@@ -31,10 +31,20 @@ export function inScope(path) {
     && !path.startsWith('apps/operator-docs/');
 }
 
-function tokens(source) {
-  const scanner = ts.createScanner(ts.ScriptTarget.Latest, true, ts.LanguageVariant.JSX, source);
+function tokens(node, sourceFile) {
+  // Reuse parser-resolved tokens. A standalone scan() does not resume template
+  // tails or recognize regex literals in their expression context: it can hash
+  // comments as template content and erase meaningful whitespace inside regexes.
   const out = [];
-  while (scanner.scan() !== ts.SyntaxKind.EndOfFileToken) out.push(scanner.getTokenText());
+  function visit(token) {
+    if (token.kind === ts.SyntaxKind.EndOfFileToken || token.kind === ts.SyntaxKind.JSDocComment) return;
+    if (token.kind >= ts.SyntaxKind.FirstToken && token.kind <= ts.SyntaxKind.LastToken) {
+      out.push(token.getText(sourceFile));
+      return;
+    }
+    for (const child of token.getChildren(sourceFile)) visit(child);
+  }
+  visit(node);
   return out.join(' ');
 }
 
@@ -240,7 +250,7 @@ export function censusSources(sources) {
           try { declaration = JSON.parse(annotation[1]); }
           catch { gaps.push({ path, kind: 'invalid-classification-json', offset: n.getStart(sf) }); }
         }
-        calls.push({ path, line, owner: scope.owner, context: scope.label, callee, args, declaration, discarded: discarded(n), expression: tokens(n.getText(sf)) });
+        calls.push({ path, line, owner: scope.owner, context: scope.label, callee, args, declaration, discarded: discarded(n), expression: tokens(n, sf) });
         if (scope.owner) scope.owner.edges.push(callee);
       }
     }

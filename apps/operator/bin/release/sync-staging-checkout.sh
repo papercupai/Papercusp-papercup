@@ -327,14 +327,26 @@ if (!Number.isSafeInteger(total) || total <= 0 || !Number.isSafeInteger(availabl
   throw new Error('staging source preparation: filesystem capacity is unmeasured');
   }
 const reserve = criticalWriteHeadroomBytes(total, diskPolicyFromEnv());
-// WI-6554700010029252: preparing a candidate writes about one more generation, so
-// the reserve must still hold AFTER it lands. With no usable measurement yet the
-// check is the writer reserve alone. (Closing braces stay indented: tests
+// The reserve must still hold AFTER candidate preparation. Hardlinked dependency
+// data already exists on this filesystem; charge its metadata and private files,
+// rather than another full copy. Legacy integer stamps remain conservative.
+// With no usable measurement yet the check is the writer reserve alone. (Closing
+// braces stay indented: tests
 // extract this function with a sed range that ends at the first column-0 `}`.)
 let generationBytes = 0;
 try {
   const raw = readFileSync(process.argv[3], 'utf8').trim();
   if (/^[0-9]+$/.test(raw) && Number.isSafeInteger(Number(raw))) generationBytes = Number(raw);
+  else {
+    const measured = JSON.parse(raw);
+    if (measured?.schemaVersion === 1 && Number.isSafeInteger(measured.fullBytes) && measured.fullBytes >= 0) {
+      generationBytes = measured.fullBytes;
+      if ((process.env.NODE_MODULES_COPY_MODE || 'hardlink') === 'hardlink' &&
+          Number.isSafeInteger(measured.hardlinkBytes) && measured.hardlinkBytes >= 0 && measured.hardlinkBytes <= measured.fullBytes) {
+        generationBytes = measured.hardlinkBytes;
+        }
+      }
+    }
   } catch {}
 const required = reserve + generationBytes;
 if (available < required) {
@@ -597,16 +609,59 @@ launch_staging_trash_drain() {
   return 0
 }
 
-# WI-6554700010029252: record a published generation's real on-disk size for
-# staging_preparation_has_headroom. A df delta across preparation is unusable
+# Record both full-copy and incremental hardlink preparation costs in the existing
+# generation measurement. A df delta across preparation is unusable
 # because the detached trash drain frees space at the same time, so this walks
 # the tree. That walk took over a minute under gate load, so it runs detached,
 # like the drain, never inside the tick. A failed or partial walk writes nothing
 # and leaves the previous measurement in place.
-STAGING_GENERATION_MEASURE_SCRIPT='set -o pipefail
-bytes="$(du -sxB1 -- "$1" | awk "NR==1 {print \$1}")" || exit 1
-[[ "$bytes" =~ ^[0-9]+$ ]] && ((bytes > 0)) || exit 1
-printf "%s\n" "$bytes" > "$2.tmp.$$" && mv -f -- "$2.tmp.$$" "$2" || { rm -f -- "$2.tmp.$$"; exit 1; }'
+STAGING_GENERATION_MEASURE_SCRIPT='node --input-type=module - "$1" "$2" <<\NODE
+import { lstatSync, readdirSync, writeFileSync, renameSync, unlinkSync } from "node:fs";
+import { basename, join } from "node:path";
+const root = process.argv[2], file = process.argv[3];
+const device = lstatSync(root).dev;
+const shared = new Map();
+const pending = [{ path: root, dependency: false }];
+let fullBytes = 0;
+while (pending.length) {
+  const { path, dependency: parentDependency } = pending.pop();
+  const stat = lstatSync(path);
+  const dependency = parentDependency || (stat.isDirectory() && basename(path) === "node_modules");
+  if (stat.dev !== device) throw new Error("generation crosses filesystem boundary");
+  const bytes = stat.blocks * 512;
+  let first = true;
+  if (!stat.isDirectory() && stat.nlink > 1) {
+    const key = `${stat.dev}:${stat.ino}`;
+    const prior = shared.get(key);
+    if (prior) {
+      if (prior.bytes !== bytes || prior.nlink !== stat.nlink) throw new Error("generation changed during measurement");
+      prior.links++;
+      prior.dependency &&= dependency;
+      first = false;
+    } else shared.set(key, { bytes, nlink: stat.nlink, links: 1, regular: stat.isFile(), dependency });
+  }
+  if (first) fullBytes += bytes;
+  if (stat.isDirectory()) {
+    for (const name of readdirSync(path)) pending.push({ path: join(path, name), dependency });
+  }
+}
+let hardlinkBytes = fullBytes;
+for (const inode of shared.values()) {
+  // Internal-only links still own their allocation. Source/build files and
+  // symlink/directory metadata always count, even when externally shared.
+  if (inode.regular && inode.dependency && inode.nlink > inode.links) hardlinkBytes -= inode.bytes;
+}
+if (!Number.isSafeInteger(fullBytes) || fullBytes <= 0 || !Number.isSafeInteger(hardlinkBytes) || hardlinkBytes < 0) {
+  throw new Error("generation allocation is unmeasured");
+}
+const temporary = `${file}.tmp.${process.pid}`;
+try {
+  writeFileSync(temporary, JSON.stringify({ schemaVersion: 1, fullBytes, hardlinkBytes }) + "\n");
+  renameSync(temporary, file);
+} finally {
+  try { unlinkSync(temporary); } catch (error) { if (error.code !== "ENOENT") throw error; }
+}
+NODE'
 
 launch_staging_generation_measure() {
   local home="$1" file="${2:-$STAGING_GENERATION_BYTES_FILE}" unit bash_bin status

@@ -25,6 +25,7 @@ export async function executeDurableReaction(payload: DurableReactionPayload): P
   if (payload.ruleId !== payload.cause.ruleId) return;
   // Read at actual execution, not enqueue time. A queued or recovered reaction
   // withheld by policy must not consume a claim or pretend an effect completed.
+  // notify-classification: {"id":"packages/operator-core/lib/events/durable-exec.ts#<module>/executeDurableReaction:89cdbf4853cbe29c6593:1","classification":"durable","reason":"Execution-time policy/bootstrap may reach mandatory notices; retain custody in the awaited durable reaction and its terminal consequence.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009 must prove the shared reaction/notification terminal path across restart","deliveryState":"unverified"}
   if (payload.parent.workspaceId
     && !await reactionBackgroundActivityAllowed(payload.parent.workspaceId, payload.fire, payload.ruleId)) return;
   await genericExecuteDurableReaction(payload, {

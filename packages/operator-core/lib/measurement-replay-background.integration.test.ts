@@ -22,6 +22,11 @@ const sourcePaths = [
   'packages/operator-core/lib/retained-replay-identity.ts',
   'packages/operator-core/lib/retained-replay-sources.json',
   'apps/operator/bin/bundle-host-common.sh',
+  'packages/operator-core/test/compiled-library-fixture.ts',
+  'scripts/check-bundled-cli-entry-guards.mjs',
+  'scripts/check-no-hand-rolled-cli-entry.mjs',
+  'scripts/lib/strip-comments-and-strings.mjs',
+  'packages/operator-core/lib/util/cli-entry.ts',
   'packages/operator-core/lib/pg-read-query.ts',
   'libs/test-config/src/execution-details.ts',
 ];

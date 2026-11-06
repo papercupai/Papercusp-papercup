@@ -516,6 +516,7 @@ describe('processes:list structured output', () => {
         tooYoung: [],
       },
       scan: { processes: 0, foreignTruncated: false },
+      scannedProcesses: [],
       degraded: false,
       touched: 0,
       strandedCount: 0,
@@ -866,8 +867,11 @@ describe('processes:list structured output', () => {
           },
         ],
         foreign: [],
+        abandonedWindow: [],
+        consoleWindow: [],
       },
       scan: { processes: 2, foreignTruncated: false },
+      scannedProcesses: [],
       degraded: false,
       touched: 0,
       strandedCount: 0,
@@ -979,8 +983,9 @@ describe('processes:list structured output', () => {
         cgroupPath: '/user.slice/papercusp.slice/pc-orphan123.scope',
         scopeUnit: 'pc-orphan123.scope',
         pids: [11, 12], sampleCmdline: 'node orphan',
-      }] },
+      }], abandonedWindow: [], consoleWindow: [], verifierScope: [], foreign: [] },
       degraded: false, scan: { processes: 2, foreignTruncated: false },
+      scannedProcesses: [],
     } as never);
     const context = {
       log: vi.fn(), signal: new AbortController().signal, progress: vi.fn(), emit: vi.fn(),
@@ -1097,7 +1102,7 @@ describe('processes:list structured output', () => {
     const { reconcileTick } = await import('../../../task-manager/reconcile-tick');
     vi.mocked(listTasks).mockResolvedValueOnce([]);
     vi.mocked(reconcileTick).mockResolvedValueOnce({
-      summary: { unaccounted: 38, foreign: 38, verifier: 1 },
+      summary: { unaccounted: 38, foreign: 38, verifierScope: 1 },
       result: {
         unaccounted: [
           {
@@ -1122,8 +1127,11 @@ describe('processes:list structured output', () => {
             sampleCmdline: 'node unrelated foreign process',
           },
         ],
+        abandonedWindow: [],
+        consoleWindow: [],
       },
       scan: { processes: 3, foreignTruncated: false },
+      scannedProcesses: [],
       degraded: false,
       touched: 0,
       strandedCount: 0,

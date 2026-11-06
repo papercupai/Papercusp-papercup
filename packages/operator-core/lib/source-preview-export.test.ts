@@ -1710,7 +1710,7 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
       const prepareChildEnv = vi.fn(async () => { throw new Error('PG must not start'); });
       const receiptPath = join(tmp, 'generation-preflight-' + selection + '.json');
       await expect(runVerifierCommand({ repo: fixture.repo,
-        ref, receiptPath, prepareChildEnv,
+        ref, receiptPath, prepareChildEnv, inputs: ['selected-source.txt'],
         env: { ...childEnv(), PAPERCUSP_DEPENDENCY_GENERATION_ROOT: selection === 'explicit' ? join(parent, 'store') : '' },
         command: [process.execPath, '-e', 'throw Error("provider must not start")'],
       })).rejects.toThrow('verifier generation preflight failed: missing verifier closure');
@@ -1749,7 +1749,7 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     // A mutable donor helper must not replace the selected commit's checksum pin.
     write(fixture.repo, setup, '#!/bin/bash\nexit 0\n');
     const receiptPath = join(tmp, 'runtime-asset-preflight.json');
-    const options = { repo: fixture.repo, ref, receiptPath,
+    const options = { repo: fixture.repo, ref, receiptPath, inputs: [setup, helper],
       env: { ...childEnv(), PAPERCUSP_DEPENDENCY_GENERATION_ROOT: join(tmp, 'runtime-asset-store') },
       command: [process.execPath, '-e', 'throw Error("provider must not start")'] };
     await expect(runVerifierCommand(options)).rejects.toThrow('pinned runtime model missing or invalid');

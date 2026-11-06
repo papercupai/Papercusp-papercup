@@ -100,6 +100,7 @@ export function createNotifyBus(channel: string, label: string = channel, onList
       // reconnect: notifications sent during a connection gap are not replayed.
       const ready = () => {
         if (gen !== generation || handlers.size === 0) return;
+        // notify-classification: {"id":"packages/operator-core/lib/pg-notify-bus.ts#<module>/createNotifyBus/ensureStarted/ready:5c73b73f6de335065411:1","classification":"durable","reason":"Reconnect starts replay from each consumer's durable row cursor; a LISTEN callback alone is not a delivery receipt.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009 must prove consumer cursor replay after listener loss/restart","deliveryState":"unverified"}
         try { onListen?.(); } catch (err) {
           console.error(`[${label}] listen-ready handler threw:`, err);
         }

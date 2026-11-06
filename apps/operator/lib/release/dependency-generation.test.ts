@@ -3682,6 +3682,32 @@ exec /bin/cp "$@"
     expect(existsSync(firstPath)).toBe(false);
   }, NATIVE_SHELL_TIMEOUT_MS);
 
+  it('prunes abandoned native scratch in legacy and migrated roots while preserving live owners', () => {
+    const integration = makeIntegration();
+    const store = join(integration, 'migrated-store');
+    const parents = [integration, store].map(root => join(root, '.papercusp/dependency-exact-ref'));
+    const host = execFileSync('hostname', { encoding: 'utf8' }).trim();
+    for (const parent of parents) {
+      for (const name of ['dead', 'live', 'foreign']) {
+        const scratch = join(parent, name);
+        mkdirSync(scratch, { recursive: true });
+        writeFileSync(join(scratch, 'owned-copy'), name);
+        writeFileSync(join(scratch, '.papercusp-exact-ref-writer'),
+          `host=${name === 'foreign' ? 'another-host' : host}\npid=${name === 'dead' ? 2147483647 : process.pid}\nstarted=1\n`);
+      }
+    }
+    const result = spawnSync('bash', [SCRIPT, '--integration', integration,
+      '--generation-root', store, '--prune-only', '--no-recorded-store-cascade'], {
+      encoding: 'utf8', env: { ...process.env },
+    });
+    expect(result.status, result.stderr).toBe(0);
+    for (const parent of parents) {
+      expect(existsSync(join(parent, 'dead'))).toBe(false);
+      expect(readFileSync(join(parent, 'live/owned-copy'), 'utf8')).toBe('live');
+      expect(readFileSync(join(parent, 'foreign/owned-copy'), 'utf8')).toBe('foreign');
+    }
+  }, NATIVE_SHELL_TIMEOUT_MS);
+
   it('sweeps a quiescent store without publishing from changed inputs (WI-10002317)', () => {
     const integration = makeIntegration();
     const generationRoot = join(integration, '.papercusp/dependency-generations');

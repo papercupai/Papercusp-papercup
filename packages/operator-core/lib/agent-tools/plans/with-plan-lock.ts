@@ -349,6 +349,11 @@ export interface WithPlanLockOpts<T = unknown> {
    */
   loadLatestRevision?: boolean;
   /**
+   * Preserve stored item text while rendering graph-owned fields. The anchor-only
+   * plans:edit path uses this when an older content writer has left graph text stale.
+   */
+  preserveStoredItemText?: boolean;
+  /**
    * Optional hook run *after* the upsert transaction commits (EI-118).
    * The `plans:*` verbs append a `plan_revisions` row here. `scope` is
    * the (workspaceId, harnessSlug) this lock resolved for the write —
@@ -588,7 +593,7 @@ export async function withPlanLock<T>(
       // would otherwise erase old-writer items before the mutator sees them.
       // Keep lineNodes graph-only for the subsequent graph mutation diff.
       const items = lineNodes.length ? lineNodes : await readPlanLineItems(tx, { workspaceId, harnessSlug, slug }, cur);
-      cur.content = renderPlanLines(cur.content, items);
+      cur.content = renderPlanLines(cur.content, items, { preserveItemText: opts.preserveStoredItemText });
     }
     const curVersion = cur ? Number(cur.version) : 0;
     // WI-10004529: opt-in read of the revision-spine head, under the SAME lock as `cur`.

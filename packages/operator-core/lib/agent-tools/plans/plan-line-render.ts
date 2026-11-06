@@ -2,7 +2,11 @@ import { isItemContinuation, maskFences, parsePlan, renderPlanItem, type PlanIte
 import type { PlanIndexItem } from './derive-index';
 
 /** Replace physical item spans. All other bytes (including free prose) belong to the author. */
-export function renderPlanLines(content: string, items: readonly PlanIndexItem[]): string {
+export function renderPlanLines(
+  content: string,
+  items: readonly PlanIndexItem[],
+  options: { preserveItemText?: boolean } = {},
+): string {
   const parsed = parsePlan(content);
   // Parser coordinates are relative to the body AFTER the frontmatter fence.
   const prefix = content.slice(0, content.length - parsed.prose.length);
@@ -24,12 +28,14 @@ export function renderPlanLines(content: string, items: readonly PlanIndexItem[]
   let next = 0;
   const emit = () => {
     const item = items[next++];
+    const prior = priorById.get(item.id);
+    const text = options.preserveItemText && prior ? prior.text : item.text;
     if (phase !== item.phase) {
       output.push('', item.phase ? `## ${item.phase}` : '## Items', '');
       phase = item.phase;
     }
     output.push(renderPlanItem({
-      ...priorById.get(item.id), ...item, storedStatus: item.status, lineNumber: 0, rawLine: '',
+      ...prior, ...item, text, storedStatus: item.status, lineNumber: 0, rawLine: '',
     } as PlanItem));
   };
   const emitRest = () => { while (next < items.length) emit(); };

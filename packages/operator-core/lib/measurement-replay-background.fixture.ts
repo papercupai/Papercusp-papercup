@@ -16,6 +16,7 @@ import type { CheckedCriterion } from './rubrics-criterion-checks';
 import pgQuery from './agent-tools/dev/pg_query';
 import { flushPendingTelemetry } from './projected-tool-deps';
 import { retainedReplaySourceIdentity } from './retained-replay-identity';
+import { compileLibraryFixture } from '../test/compiled-library-fixture';
 
 const root = process.env.MEASUREMENT_REPLAY_SOURCE_ROOT ?? resolve(import.meta.dirname, '../../..');
 const workspaceId = process.env.PAPERCUSP_WORKSPACE_ID!;
@@ -70,6 +71,7 @@ async function replay(inputs: Inputs) {
     scoped: replayRetainedProbe(inputs.scoped!) };
 }
 
+async function main() {
 try {
   // The compiled child runs without tsx. Both directions use the real writer,
   // ledger reader, parser and private PostgreSQL; no recorded value is injected.
@@ -141,18 +143,8 @@ try {
   await symlink(join(root, 'node_modules'), join(compiledDir, 'node_modules'), 'dir');
   const bundle = join(compiledDir, 'consumer.mjs');
   const run = promisify(execFile);
-  const compileScript = [
-    'set -euo pipefail',
-    'source "$1/apps/operator/bin/bundle-host-common.sh"',
-    'root="$1"; shift',
-    'externals=("${HOST_COMMON_EXTERNALS[@]}" --external:@embedded-postgres/* --external:@papercusp/embedded-postgres-server)',
-    'for package in "${NATIVE_PKGS[@]}"; do externals+=("--external:$package"); done',
-    'bundle_host_esbuild "$root" "$@" --bundle --platform=node --format=esm --target=node22 ' +
-      '"--banner:js=$HOST_BANNER" "${HOST_BANNER_DEFINES[@]}" "${HOST_RELEASE_COMPACTION_ARGS[@]}" "${externals[@]}"',
-  ].join('\n');
-  await run('bash', ['-c', compileScript, 'measurement-replay-compile', root,
-    join(root, 'packages/operator-core/lib/measurement-replay-background.fixture.ts'), `--outfile=${bundle}`],
-  { cwd: root, timeout: 180_000, maxBuffer: 16_000_000 });
+  await compileLibraryFixture(root,
+    join(root, 'packages/operator-core/lib/measurement-replay-background.fixture.ts'), bundle);
   const inputFile = join(compiledDir, 'source-inputs.json');
   await writeFile(inputFile, JSON.stringify(inputs));
   const child = async (mode: string, home = process.env.PAPERCUSP_HOME!) => {
@@ -192,3 +184,9 @@ try {
   await flushPendingTelemetry();
   await sql.end({ timeout: 2 });
 }
+}
+
+void main().catch(error => {
+  console.error(error);
+  process.exitCode = 1;
+});

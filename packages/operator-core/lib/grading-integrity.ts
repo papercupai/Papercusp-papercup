@@ -1849,12 +1849,14 @@ export async function reservePendingGradingAudit(
       {
         state: string | null;
         has_reservation: boolean;
+        dispatch_claim_reserved_at: string | null;
         backoff: GradingAuditDispatchBackoff | null;
         retracted: boolean;
       }[]
     >`
       SELECT payload->'observation'->'gradingAudit'->>'state' AS state,
              (payload->'observation'->'gradingAudit' ? 'dispatchReservation') AS has_reservation,
+             payload->'observation'->'gradingAudit'->'dispatchClaim'->>'reservedAt' AS dispatch_claim_reserved_at,
              payload->'observation'->'gradingAudit'->'dispatchBackoff' AS backoff,
              payload->'observation'->'retracted' IS NOT NULL AS retracted
         FROM harness_shared.work_items
@@ -1864,18 +1866,30 @@ export async function reservePendingGradingAudit(
        FOR UPDATE`;
     const row = current[0];
     if (row?.state !== 'pending' || row.retracted) return { status: 'not-pending' as const };
-    // Report the quota wall ahead of the reservation: a backoff is only written
-    // as the reservation is released, so a live one is the specific reason this
-    // claim was refused — and a caller that reads 'already-reserved' would wait
-    // on a dispatcher that is not in fact running.
+    // A live backoff is the blocker only when this caller cannot override it.
+    // Otherwise the failed UPDATE may have lost to a fresh dispatchClaim; report
+    // that competing election instead of blaming the now-bypassed backoff.
     const until = row.backoff?.until ? Date.parse(row.backoff.until) : NaN;
-    if (row.backoff && Number.isFinite(until) && until > now.getTime()) {
+    const backoffBypassed = row.backoff && (
+      (options.allowGenerationIncompatibleBackoff === true && row.backoff.code === 'generation_incompatible') ||
+      (options.allowRecoveredQuotaBackoff === true && row.backoff.code === 'model_quota_exhausted')
+    );
+    if (row.backoff && Number.isFinite(until) && until > now.getTime() && !backoffBypassed) {
       return {
         status: row.backoff.code === 'model_quota_exhausted' ? ('quota-backoff' as const) : ('dispatch-backoff' as const),
         backoff: row.backoff,
       };
     }
-    return row.has_reservation ? { status: 'already-reserved' as const } : { status: 'not-pending' as const };
+    const claimReservedAt = row.dispatch_claim_reserved_at;
+    const claimReservedAtMs = claimReservedAt &&
+      /^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}/.test(claimReservedAt)
+      ? Date.parse(claimReservedAt)
+      : NaN;
+    const activeDispatchClaim = Number.isFinite(claimReservedAtMs) &&
+      claimReservedAtMs >= Date.parse(staleBefore);
+    return row.has_reservation || activeDispatchClaim
+      ? { status: 'already-reserved' as const }
+      : { status: 'not-pending' as const };
   }));
 }
 

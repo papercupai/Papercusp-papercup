@@ -1,8 +1,8 @@
-//! IPC client (SSE→IPC pivot). Connects to the operator's endpoint-ipc Unix
-//! socket and invokes tools — including `sys:http` for `/api/*` routes.
+//! IPC client (SSE→IPC pivot). Connects to the operator's endpoint-ipc
+//! Unix socket, Windows named pipe or TCP endpoint and invokes tools.
 //! Leaner mirror of `papercusp-desktop/src-tauri/src/endpoint_ipc.rs`
-//! (mpsc + std Mutex map instead of Tauri Channels). No auth token: the Unix
-//! socket is the trust boundary.
+//! (mpsc + std Mutex map instead of Tauri Channels). Transport selection uses
+//! the same Rust source as the desktop client; discovery remains port-scoped.
 #![allow(dead_code)] // some surface (CallResult.result, generic invoke) is consumed as panels grow.
 
 use crate::framing::{decode_event_bin_payload, encode_frame, Frame, FrameDecoder, FrameType};
@@ -14,9 +14,11 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::unix::OwnedWriteHalf;
-use tokio::net::UnixStream;
 use tokio::sync::mpsc;
+
+#[path = "../../../papercusp-desktop/src-tauri/src/endpoint_ipc_transport.rs"]
+mod transport;
+use transport::{connect_stream, IpcStream};
 
 /// A non-terminal event frame for a call.
 pub enum CallEvent {
@@ -58,7 +60,7 @@ enum SocketSource {
 /// (its reader task owns a clone) + a liveness flag the reader clears on EOF so
 /// the next call reconnects instead of writing into a dead socket.
 struct Conn {
-    writer: OwnedWriteHalf,
+    writer: tokio::io::WriteHalf<IpcStream>,
     sinks: Sinks,
     alive: Arc<AtomicBool>,
 }
@@ -98,10 +100,10 @@ impl IpcClient {
     /// connection dead (so a racing issuer reconnects rather than registering
     /// into a now-readerless map) and fails every in-flight call.
     async fn dial(socket_path: &Path) -> Result<Conn> {
-        let stream = UnixStream::connect(socket_path)
+        let stream = connect_stream(socket_path)
             .await
             .with_context(|| format!("connect ipc socket {}", socket_path.display()))?;
-        let (mut read_half, write_half) = stream.into_split();
+        let (mut read_half, write_half) = tokio::io::split(stream);
         let sinks: Sinks = Arc::new(Mutex::new(HashMap::new()));
         let reader_sinks = sinks.clone();
         let alive = Arc::new(AtomicBool::new(true));
@@ -412,7 +414,7 @@ fn writer_alive(pid: i64) -> bool {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use crate::client::OperatorClient;
@@ -421,6 +423,7 @@ mod tests {
     use tokio::sync::oneshot;
 
     #[test]
+    #[cfg(target_os = "linux")]
     fn discover_socket_is_strictly_per_port_and_skips_dead_writers() {
         let dir = tempfile::tempdir().unwrap();
         let me = std::process::id() as i64;
@@ -797,5 +800,212 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.to_string().contains("404"));
+    }
+}
+
+#[cfg(test)]
+mod transport_tests {
+    use super::*;
+    use tokio::io::{AsyncRead, AsyncWrite};
+    use tokio::net::TcpListener;
+
+    async fn read_request<S: AsyncRead + Unpin>(stream: &mut S) -> Value {
+        let mut header = [0u8; 5];
+        stream.read_exact(&mut header).await.unwrap();
+        assert_eq!(header[4], FrameType::Request as u8);
+        let size = u32::from_be_bytes(header[..4].try_into().unwrap()) as usize;
+        let mut payload = vec![0; size];
+        stream.read_exact(&mut payload).await.unwrap();
+        serde_json::from_slice(&payload).unwrap()
+    }
+
+    async fn reply<S: AsyncWrite + Unpin>(stream: &mut S, id: u64, body: &[u8]) {
+        let head = serde_json::json!({
+            "id": id, "name": "head", "data": {"status": 200, "headers": {}}
+        });
+        stream
+            .write_all(
+                &encode_frame(FrameType::EventJson, &serde_json::to_vec(&head).unwrap()).unwrap(),
+            )
+            .await
+            .unwrap();
+        let mut payload = id.to_be_bytes().to_vec();
+        payload.extend_from_slice(&4u32.to_be_bytes());
+        payload.extend_from_slice(b"body");
+        payload.extend_from_slice(body);
+        stream
+            .write_all(&encode_frame(FrameType::EventBin, &payload).unwrap())
+            .await
+            .unwrap();
+        let done = serde_json::json!({"id": id, "result": null});
+        stream
+            .write_all(&encode_frame(FrameType::Done, &serde_json::to_vec(&done).unwrap()).unwrap())
+            .await
+            .unwrap();
+        stream.flush().await.unwrap();
+    }
+
+    async fn wait_for_disconnect(client: &IpcClient) {
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if !client.conn.lock().await.alive.load(Ordering::SeqCst) {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("reader did not observe the closed transport");
+    }
+
+    #[test]
+    fn discovery_preserves_tcp_endpoint_and_never_uses_another_port() {
+        let dir = tempfile::tempdir().unwrap();
+        let endpoint = "tcp://127.0.0.1:12345";
+        std::fs::write(
+            dir.path().join("endpoint-ipc.3170.json"),
+            serde_json::json!({"socketPath": endpoint, "pid": std::process::id()}).to_string(),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("endpoint-ipc.json"),
+            serde_json::json!({"socketPath": "tcp://127.0.0.1:54321"}).to_string(),
+        )
+        .unwrap();
+        assert_eq!(
+            discover_socket_in(dir.path(), 3170).unwrap(),
+            PathBuf::from(endpoint)
+        );
+        assert!(discover_socket_in(dir.path(), 3070).is_err());
+    }
+
+    #[tokio::test]
+    async fn tcp_framed_calls_reconnect_after_operator_disconnect() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("tcp://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let mut ids = Vec::new();
+            for expected_path in ["/api/first", "/api/second"] {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let request = read_request(&mut stream).await;
+                assert_eq!(request["toolName"], "sys:http");
+                assert_eq!(request["input"]["method"], "GET");
+                assert_eq!(request["input"]["path"], expected_path);
+                let id = request["id"].as_u64().unwrap();
+                ids.push(id);
+                reply(&mut stream, id, expected_path.as_bytes()).await;
+            }
+            assert!(ids[1] > ids[0], "reconnect must not reuse request identity");
+        });
+        let client = IpcClient::connect(Path::new(&endpoint)).await.unwrap();
+        assert_eq!(
+            client.sys_http("GET", "/api/first", None).await.unwrap(),
+            b"/api/first"
+        );
+        wait_for_disconnect(&client).await;
+        assert_eq!(
+            client.sys_http("GET", "/api/second", None).await.unwrap(),
+            b"/api/second"
+        );
+        tokio::time::timeout(Duration::from_secs(2), server)
+            .await
+            .unwrap()
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn tcp_disconnect_terminates_inflight_stream_and_next_call_recovers() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("tcp://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_request(&mut stream).await;
+            let event = serde_json::json!({
+                "id": request["id"], "name": "progress", "data": {"session": "exact-session"}
+            });
+            stream
+                .write_all(
+                    &encode_frame(FrameType::EventJson, &serde_json::to_vec(&event).unwrap())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            drop(stream);
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_request(&mut stream).await;
+            reply(&mut stream, request["id"].as_u64().unwrap(), b"recovered").await;
+        });
+        let client = IpcClient::connect(Path::new(&endpoint)).await.unwrap();
+        let mut frames = client
+            .invoke_stream(
+                "sys:http",
+                serde_json::json!({
+                    "method": "GET", "path": "/api/stream"
+                }),
+            )
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            assert!(matches!(frames.recv().await,
+                Some(CallFrame::Event(CallEvent::Json { name, data }))
+                    if name == "progress" && data["session"] == "exact-session"));
+            assert!(matches!(frames.recv().await, Some(CallFrame::ConnLost)));
+            assert!(frames.recv().await.is_none());
+        })
+        .await
+        .expect("disconnected calls must terminate");
+        assert_eq!(
+            client.sys_http("GET", "/api/recovery", None).await.unwrap(),
+            b"recovered"
+        );
+        tokio::time::timeout(Duration::from_secs(2), server)
+            .await
+            .unwrap()
+            .unwrap();
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn named_pipe_framed_calls_reconnect_after_operator_disconnect() {
+        use tokio::net::windows::named_pipe::ServerOptions;
+        let endpoint = format!(
+            r"\\.\pipe\pui-ipc-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let first = ServerOptions::new()
+            .first_pipe_instance(true)
+            .create(&endpoint)
+            .unwrap();
+        let server_endpoint = endpoint.clone();
+        let server = tokio::spawn(async move {
+            let mut first = first;
+            first.connect().await.unwrap();
+            let request = read_request(&mut first).await;
+            reply(&mut first, request["id"].as_u64().unwrap(), b"first").await;
+            // Make the replacement available before closing the original connection.
+            let mut second = ServerOptions::new().create(&server_endpoint).unwrap();
+            drop(first);
+            second.connect().await.unwrap();
+            let request = read_request(&mut second).await;
+            reply(&mut second, request["id"].as_u64().unwrap(), b"second").await;
+        });
+        let client = IpcClient::connect(Path::new(&endpoint)).await.unwrap();
+        assert_eq!(
+            client.sys_http("GET", "/api/first", None).await.unwrap(),
+            b"first"
+        );
+        wait_for_disconnect(&client).await;
+        assert_eq!(
+            client.sys_http("GET", "/api/second", None).await.unwrap(),
+            b"second"
+        );
+        tokio::time::timeout(Duration::from_secs(2), server)
+            .await
+            .unwrap()
+            .unwrap();
     }
 }

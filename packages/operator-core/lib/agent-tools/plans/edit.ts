@@ -187,6 +187,7 @@ export default defineTool({
         slug: args.slug,
         intent: 'plans:edit',
         ...(harnessSlug ? { harnessSlug } : {}),
+        preserveStoredItemText: args.anchors !== undefined && args.old_string === undefined,
         afterWrite: rev.afterWrite,
         inTransaction: async (tx, _body, scope, value) => {
           if (value.ok && anchors !== undefined) {

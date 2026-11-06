@@ -177,6 +177,29 @@ console.log(JSON.stringify({ sites: censusSources({ 'src/app.ts': 'void notifyOw
     expect(b.files[0].sha256).not.toBe(a.files[0].sha256);
   });
 
+  it.each([
+    'const key = `owner:${1}`;',
+    'const key = `outer:${`inner:${1}`}`;',
+  ])('keeps wrapper IDs stable after template interpolation: %s', (prefix) => {
+    const source = `void (async () => { ${prefix} await notifyOwner(key); })();`;
+    const annotated = source.replace('await notifyOwner', '// replay custody\n await notifyOwner');
+    const before = scan(source);
+    const after = scan(annotated);
+    expect(before.sites).toHaveLength(2);
+    expect(after.sites.map(s => s.id)).toEqual(before.sites.map(s => s.id));
+    expect(after.sites.some(s => s.expression.includes('replay custody'))).toBe(false);
+  });
+
+  it('preserves literal whitespace and comment-like content in site IDs', () => {
+    for (const [before, after] of [
+      ['notifyOwner(/owner notice/);', 'notifyOwner(/ownernotice/);'],
+      ['notifyOwner(`owner:${1}// first`);', 'notifyOwner(`owner:${1}// second`);'],
+      ['notifyOwner("/* first */");', 'notifyOwner("/* second */");'],
+    ]) {
+      expect(scan(before).sites[0].id).not.toBe(scan(after).sites[0].id);
+    }
+  });
+
   it('gives repeated identical sites distinct IDs', () => {
     const c = scan('notifyOwner(); notifyOwner();');
     expect(c.sites).toHaveLength(2);

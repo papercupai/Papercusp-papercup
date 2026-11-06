@@ -809,7 +809,7 @@ impl RosterEntry {
             .as_deref()
             .map(|w| !w.is_empty())
             .unwrap_or(false);
-        has_wid || (same_host && self.pid.is_some())
+        same_host && (has_wid || self.pid.is_some())
     }
 
     /// The dock pane command for this entry as a fleet bee (hive-agent-tabs P-004
