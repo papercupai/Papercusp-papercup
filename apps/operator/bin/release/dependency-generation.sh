@@ -4159,7 +4159,11 @@ dependency_generation_ensure_verifier_ref() (
     # existing controller-owned selector lease, including competing retention.
     dependency_generation_main --integration "$scratch" --generation-root "$generation_root" \
       --lease-owner-pid "${BASHPID:-$$}" >/dev/null || return $?
-    dependency_generation_select_input_fingerprint "$input" "$generation_root" || return $?
+    # Another source with the same lock inputs can replace the ordinary
+    # selector after publication. Consume our leased identity and token;
+    # the shared selector is not authority for this exact source closure.
+    dependency_generation_select_prevalidated "$generation_root" \
+      "$DEPENDENCY_GENERATION_ID" "$DEPENDENCY_GENERATION_TOKEN" || return $?
     # The nested publisher's lease remains held for the enclosing EXIT trap.
     "${DEPENDENCY_GENERATION_NODE:-node}" "$helper" verify "$DEPENDENCY_GENERATION_PATH" "$source_root" || return $?
     DEPENDENCY_GENERATION_REUSED=false
