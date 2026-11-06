@@ -778,6 +778,14 @@ async function withMcpCallFetchFixture<T>(run: (fixture: McpCallFetchFixture) =>
     '  };',
     "  appendFileSync(process.env.MCP_CALL_FETCH_LOG, JSON.stringify(request) + '\\n');",
     '  const mode = process.env.MCP_CALL_FETCH_MODE;',
+    '  const url = new URL(request.url);',
+    "  if (mode === 'build-identity-fallback' && url.pathname === '/api/health' && url.port === '41001') {",
+    "    throw new TypeError('fetch failed', { cause: Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' }) });",
+    '  }',
+    "  if ((mode === 'build-identity-fallback' || mode === 'build-identity-mismatch') && url.pathname === '/api/health') {",
+    "    const sha = mode === 'build-identity-fallback' && url.port === '9071' ? process.env.MCP_CALL_EXPECTED_BUILD_SHA : 'd740fc3802';",
+    "    return new Response(JSON.stringify({ ok: true, sha, version: '1.2.3' }), { status: 200, headers: { 'content-type': 'application/json' } });",
+    '  }',
     "  if (mode === 'repair-queue-fallback' && new URL(request.url).port === '41001') {",
     "    throw new TypeError('fetch failed', { cause: Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' }) });",
     '  }',
@@ -870,6 +878,63 @@ async function readMcpCallFetchLog(path: string): Promise<Array<{ url: string; a
   const raw = await readFile(path, 'utf8').catch(() => '');
   return raw.split('\n').filter(Boolean).map((line) => JSON.parse(line));
 }
+
+describe('mcp-call evaluator build identity pin', () => {
+  it('skips a dead inherited endpoint and a wrong-build fallback before calling the matching proxy', async () => {
+    await withMcpCallFetchFixture(async (fixture) => {
+      await writeFile(join(fixture.isolatedHome, 'superuser-token'), 'isolated-valid\n');
+      const expectedSha = '1147c15c86';
+      const run = await runMcpCallWithFetchFixture(
+        fixture,
+        ['--transport', 'auto'],
+        {
+          PAPERCUSP_HONO_PORT: '41001',
+          PAPERCUSP_MCP_EXPECTED_BUILD_SHA: expectedSha,
+          MCP_CALL_FETCH_MODE: 'build-identity-fallback',
+          MCP_CALL_EXPECTED_BUILD_SHA: expectedSha,
+        },
+        'coord:whoami',
+        '{}',
+      );
+      const requests = await readMcpCallFetchLog(fixture.logPath);
+      const healthPorts = requests
+        .filter((request) => new URL(request.url).pathname === '/api/health')
+        .map((request) => new URL(request.url).port);
+      const mcpPorts = requests
+        .filter((request) => new URL(request.url).pathname === '/api/mcp')
+        .map((request) => new URL(request.url).port);
+
+      expect(run.code, run.stderr).toBe(0);
+      expect(JSON.parse(run.stdout)).toEqual({ ok: true });
+      expect(healthPorts).toEqual(['41001', '3070', '9071']);
+      expect(mcpPorts).toEqual(['9071']);
+    });
+  });
+
+  it('refuses UDS when no candidate health response matches the expected build', async () => {
+    await withMcpCallFetchFixture(async (fixture) => {
+      await writeFile(join(fixture.isolatedHome, 'superuser-token'), 'isolated-valid\n');
+      const run = await runMcpCallWithFetchFixture(
+        fixture,
+        ['--transport', 'uds'],
+        {
+          PAPERCUSP_HONO_PORT: '41001',
+          PAPERCUSP_MCP_EXPECTED_BUILD_SHA: '1147c15c86',
+          MCP_CALL_FETCH_MODE: 'build-identity-mismatch',
+        },
+        'coord:whoami',
+        '{}',
+      );
+      const requests = await readMcpCallFetchLog(fixture.logPath);
+
+      expect(run.code, run.stderr).toBe(4);
+      expect(run.stderr).toContain('expected operator build SHA');
+      expect(run.stderr).toContain('port 3070=d740fc3802');
+      expect(requests.filter((request) => new URL(request.url).pathname === '/api/mcp')).toHaveLength(0);
+      expect(run.stderr).not.toContain('uds_endpoint_unavailable');
+    });
+  });
+});
 
 describe('mcp-call release repair-queue install scope', () => {
   it('falls back after a read-only timeout and verifies the requested install at every endpoint', async () => {

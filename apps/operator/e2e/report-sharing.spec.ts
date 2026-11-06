@@ -45,7 +45,7 @@ if(process.env.PAPERCUSP_REPORT_SHARING_LIVE==='1') {
   test('SHARE-SHIPMENT actual secret Gist renders anonymously on Pages and a fresh reader fails after deletion',async({browser},info)=>{
     const github=await reportSharingGithub();const user=await github.user();
     const rows=new Map<string,ReportShare>();
-    const store:ReportShareStore={async locked(_key,work){return work({list:async(w,r)=>[...rows.values()].filter(row=>row.workspaceId===w&&row.reportId===r),get:async(w,r,a)=>rows.get(JSON.stringify([w,r,a]))??null,
+    const store:ReportShareStore={async locked(_key,work){return work({viewerState:async a=>{const row=[...rows.values()].filter(row=>row.accountId===a&&row.repoId&&row.viewerTreeSha&&row.viewerGeneration).sort((a,b)=>b.viewerGeneration!-a.viewerGeneration!)[0];return row?{repoId:row.repoId!,treeSha:row.viewerTreeSha!,generation:row.viewerGeneration!}:null;},list:async(w,r)=>[...rows.values()].filter(row=>row.workspaceId===w&&row.reportId===r),get:async(w,r,a)=>rows.get(JSON.stringify([w,r,a]))??null,
       put:async share=>{rows.set(JSON.stringify([share.workspaceId,share.reportId,share.accountId]),share);}});}};
     const now=new Date().toISOString();const reportId='sharing-fixture-'+randomUUID();
     const report:ReportRecord={workspaceId:'harmless-acceptance',reportId,title:'Harmless sharing acceptance',summary:'No private data',bodyMd:markdown,bodySha256:'',goalOwnerReport:null,kind:'other',subject:{kind:'none',ref:null,label:null},origin:{harnessSlug:null,authorOwnerId:null,authorSessionRef:null},visibility:'owner',supersedesReportId:null,lineageId:reportId,source:'owner',tags:[],publishedAt:now,updatedAt:now,retiredAt:null};

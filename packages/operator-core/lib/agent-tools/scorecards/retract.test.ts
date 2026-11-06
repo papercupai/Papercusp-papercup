@@ -6,19 +6,25 @@ const RATINGS = { criterion: { rating: 'healthy', evidence: 'verified' } };
 function atomicRetractionHarness(payload: unknown) {
   const statements: Array<{ text: string; values: unknown[] }> = [];
   let writtenObservation: Record<string, unknown> | null = null;
-  const tx = (async (strings: TemplateStringsArray, ...values: unknown[]) => {
-    const text = strings.join('?');
-    statements.push({ text, values });
-    if (text.includes('SELECT feature_id, payload')) return [{ feature_id: 'EI-1', payload }];
-    if (text.includes('UPDATE harness_shared.work_items')) {
-      const observationJson = values.find(
-        (value): value is string => typeof value === 'string' && value.startsWith('{') && value.includes('"retracted"'),
-      );
-      if (observationJson) writtenObservation = JSON.parse(observationJson) as Record<string, unknown>;
-      return [{ feature_id: 'EI-1' }];
-    }
-    throw new Error(`unexpected query: ${text}`);
-  }) as never;
+  const tx = Object.assign(
+    async (strings: TemplateStringsArray, ...values: unknown[]) => {
+      const text = strings.join('?');
+      statements.push({ text, values });
+      if (text.includes('SELECT feature_id, payload')) return [{ feature_id: 'EI-1', payload }];
+      if (text.includes('UPDATE harness_shared.work_items')) {
+        const observationJson = values.find(
+          (value): value is string => typeof value === 'string' && value.startsWith('{') && value.includes('"retracted"'),
+        );
+        if (observationJson) writtenObservation = JSON.parse(observationJson) as Record<string, unknown>;
+        return [{ feature_id: 'EI-1' }];
+      }
+      throw new Error(`unexpected query: ${text}`);
+    },
+    {
+      // Production uses unsafe() to interpolate this constant SQL fragment.
+      unsafe: (rawSql: string) => rawSql,
+    },
+  ) as never;
   const transact = (async (fn: (client: never) => Promise<unknown>) => fn(tx)) as never;
   return { statements, transact, writtenObservation: () => writtenObservation };
 }

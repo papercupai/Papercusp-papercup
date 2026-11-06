@@ -3019,6 +3019,9 @@ export default defineTool({
         const memberBrief = memberBriefs[i];
         const env = {
           ...base.env,
+          ...(auditRuntime
+            ? { PAPERCUSP_MCP_EXPECTED_BUILD_SHA: auditRuntime.evaluatorBuild.sha! }
+            : {}),
           // Only explicit exact resume authorizes retirement clearing.
           ...(!fork && isResume && !interruptionRecovery ? { PSU_ALLOW_RETIRED_RESUME: '1' } : {}),
           ...(scopedGateway ? { [SCOPED_INFERENCE_GATEWAY_ENV]: JSON.stringify(scopedGateway) } : {}),

@@ -18,11 +18,12 @@ describe('report sharing durable association',()=>{
   },180000);
   afterAll(async()=>{await db?.cleanup();});
   it('persists ambiguous creation across a new store instance and releases its lock after failure',async()=>{
-    const share:ReportShare={workspaceId:workspace,reportId,accountId:7,login:'alice',operationId:randomUUID(),digest:'abc',phase:'creating'};
+    const share:ReportShare={workspaceId:workspace,reportId,accountId:7,login:'alice',operationId:randomUUID(),digest:'abc',phase:'creating',repoId:9,viewerTreeSha:'trusted-tree',viewerGeneration:1};
     await expect(postgresReportShareStore(db.adminSql).locked('persistent-key',async store=>{await store.put(share);throw new Error('process interrupted');})).rejects.toThrow('process interrupted');
     await postgresReportShareStore(db.adminSql).locked('persistent-key',async store=>{
       expect(await store.get(workspace,reportId,7)).toEqual(share);expect(await store.get(workspace,reportId,8)).toBeNull();expect(await store.get('other',reportId,7)).toBeNull();
       expect(await store.list(workspace,reportId)).toEqual([share]);expect(await store.list('other',reportId)).toEqual([]);
+      expect(await store.viewerState(7)).toEqual({repoId:9,treeSha:'trusted-tree',generation:1});expect(await store.viewerState(8)).toBeNull();
     });
   });
   it('refuses concurrent access while allowing the persisted intent to remain visible',async()=>{

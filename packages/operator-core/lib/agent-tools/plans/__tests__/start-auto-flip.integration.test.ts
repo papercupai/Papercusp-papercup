@@ -66,6 +66,8 @@ vi.mock('../../../pot/started', async (importOriginal) => {
 const START_GATES = vi.hoisted(() => ({
   activation: vi.fn(),
   admission: vi.fn(),
+  laneHealth: vi.fn(),
+  useLaneHealthFixture: false,
   claimSpec: vi.fn(),
   startable: vi.fn(),
   promotion: vi.fn(),
@@ -135,6 +137,10 @@ vi.mock('../plan-admission-preflight', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../plan-admission-preflight')>();
   return {
     ...actual,
+    preflightExactPlanLaneHealth: (...args: Parameters<typeof actual.preflightExactPlanLaneHealth>) =>
+      START_GATES.useLaneHealthFixture
+        ? START_GATES.laneHealth(...args)
+        : actual.preflightExactPlanLaneHealth(...args),
     preflightExactPlanAdmission: (...args: unknown[]) => START_GATES.admission(...args),
   };
 });
@@ -311,6 +317,9 @@ beforeEach(async () => {
     reason: 'ready',
     message: 'exact-plan admission fixture override',
   });
+  START_GATES.useLaneHealthFixture = false;
+  START_GATES.laneHealth.mockReset();
+  START_GATES.laneHealth.mockResolvedValue({ effective: { claimable: 1 } });
   START_GATES.claimSpec.mockReset();
   START_GATES.claimSpec.mockResolvedValue({ ok: true, errors: [], revision: 1 });
   START_GATES.startable.mockReset();
@@ -519,6 +528,9 @@ describe('plans:start — refused approval leaves no persisted start (P-002)', (
     const newCard = cardFor('plan-class-bugfix');
     expect(newCard.subject?.ref).not.toBe(oldCard.subject?.ref);
     expect(newCard.evidenceFingerprint).not.toBe(oldCard.evidenceFingerprint);
+    // The migration-park case exercises the real lane-health preflight. Keep this
+    // scorecard race independent of fleet-lane state so it reaches the class recheck.
+    START_GATES.useLaneHealthFixture = true;
     START_GATES.listCards.mockResolvedValue([oldCard]);
     START_GATES.afterQuality.mockImplementationOnce(async (verdict) => {
       expect(verdict, JSON.stringify(verdict)).toMatchObject({ satisfied: true, classRef: 'plan-class-feature-ship' });

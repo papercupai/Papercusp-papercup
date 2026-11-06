@@ -45,9 +45,9 @@ async function read(input: Record<string, unknown>, workspaceId = 'default') {
   return (result as { data: { results: Array<Record<string, unknown>> } }).data.results[0]!;
 }
 
-async function revision(content: string, workspaceId = 'default', harnessSlug = HARNESS, planSlug = SLUG) {
+async function revision(content: string, workspaceId = 'default', harnessSlug = HARNESS, planSlug = SLUG, contentHash?: string) {
   return fx.admin.begin((tx) => recordPlanRevisionInTransaction(tx, {
-    workspaceId, harnessSlug, planSlug, content,
+    workspaceId, harnessSlug, planSlug, content, contentHash,
     identity: { ownerId: 'revision-reader-test', ownerLabel: 'revision reader test', source: 'static-client', workspaceId, userId: null },
   }));
 }
@@ -88,6 +88,32 @@ describe('plans:get immutable revision reader', () => {
     });
     const shaped = shapePlansGet({ ok: true, results: [result] }, 'trimmed');
     expect(shaped).toMatchObject({ results: [{ revision: 1, decisions: result.decisions }] });
+  });
+
+  it('selects exact immutable bytes by hash when a newer enriched receipt shares that hash', async () => {
+    const slug = 'enriched-revision';
+    const hash = hashPlanContent(original);
+    const receipt = JSON.stringify({ event: 'execution-start', contentHash: hash });
+    await seedPlan(fx.admin, fx.workspaceId, HARNESS, slug, updated);
+    await revision(original, fx.workspaceId, HARNESS, slug);
+    await revision(receipt, fx.workspaceId, HARNESS, slug, hash);
+
+    expect(await read({ slug, revision: hash, mode: 'full', includeRaw: true })).toMatchObject({
+      ok: true, revision: 1, contentHash: hash, contentSnapshotHash: hash, raw: original,
+    });
+    // An explicit sequence still selects that exact receipt, without rewriting history.
+    expect(await read({ slug, revision: 2, mode: 'full', includeRaw: true })).toMatchObject({
+      ok: true, revision: 2, contentHash: hash, contentSnapshotHash: hashPlanContent(receipt), raw: receipt,
+    });
+  });
+
+  it('refuses a hash with only enriched receipts instead of substituting the mutable body', async () => {
+    const slug = 'receipt-without-immutable-body';
+    const hash = hashPlanContent(original);
+    await seedPlan(fx.admin, fx.workspaceId, HARNESS, slug, original);
+    await revision(JSON.stringify({ event: 'execution-start' }), fx.workspaceId, HARNESS, slug, hash);
+
+    expect(await read({ slug, revision: hash })).toMatchObject({ ok: false, error: 'revision_not_found' });
   });
 
   it('fails closed for missing revisions and foreign plan, harness and workspace hashes', async () => {

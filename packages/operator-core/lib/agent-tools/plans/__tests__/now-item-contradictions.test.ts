@@ -134,6 +134,33 @@ describe('detectNowItemContradictions', () => {
     expect(detectNowItemContradictions(parsed)).toEqual([]);
   });
 
+  it('treats corrected terminal statuses and superseded historical mentions as neutral, but still flags a reopen', () => {
+    const correctedSource =
+      CURRENT
+        .replace(
+          '**State:** P-001 is done.',
+          '**State:** current item status — P-031 [done]. Stored State below contradicts these terminal items; those mentions are superseded, not current work. Historical reference: re-evaluated in the same write by the scope-write cascade, P-030/P-031; the BAR State snapshot is outdated.',
+        )
+        .replace(
+          '- **P-002** `todo` Open item.',
+          '- **P-002** `todo` Open item.\n- **P-030** `done` Scope-write cascade item.\n- **P-031** `done` Corrected terminal item.',
+        );
+    const corrected = parsePlan(correctedSource);
+
+    expect(detectNowItemContradictions(corrected)).toEqual([]);
+
+    const reopened = parsePlan(
+      correctedSource.replace(
+        '**Next:** Continue with P-002.',
+        '**Next:** Reopen P-031 after the status correction.',
+      ),
+    );
+
+    expect(detectNowItemContradictions(reopened)).toEqual([
+      expect.objectContaining({ id: 'P-031', status: 'done' }),
+    ]);
+  });
+
   it('allows a neutral possessive citation after an explicit terminal completion', () => {
     const proposed = parsePlan(
       CURRENT.replace(

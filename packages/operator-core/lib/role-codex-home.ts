@@ -116,6 +116,13 @@ function installedHookPath(...parts: string[]): string {
   return join(papercuspHome({}, homedir()), 'hooks', ...parts);
 }
 
+// Match the host injector's ledger, independently of a child's workspace data
+// home. Preserve an explicit server-selected ledger override across resumes.
+function codexHookProvenanceDir(): string {
+  return process.env.PAPERCUSP_TURN_PROVENANCE_DIR ||
+    join(papercuspHome({}, homedir()), 'turn-provenance');
+}
+
 import { dirname as __esmDirname } from 'node:path';
 import { fileURLToPath as __esmFileURLToPath } from 'node:url';
 
@@ -1024,7 +1031,8 @@ export function writeCodexLockHooks(
       hooks: [
         {
           type: 'command',
-          command: `PAPERCUSP_SID=${shellSingleQuote(opts.injectSid)} PAPERCUSP_AGENT=codex ${provenance}`,
+          command: `PAPERCUSP_SID=${shellSingleQuote(opts.injectSid)} PAPERCUSP_AGENT=codex ` +
+            `PAPERCUSP_TURN_PROVENANCE_DIR=${shellSingleQuote(codexHookProvenanceDir())} ${provenance}`,
         },
       ],
     });
@@ -1465,7 +1473,8 @@ function repairSuCodexHomeIdentityImpl(
       // group on a dropped run, so that home must be rewritten on resume too.
       const turnHooks: Array<[event: string, script: string, marker: string | null]> = [
         ['Stop', CODEX_TURN_JOURNAL_HOOK, 'PAPERCUSP_JOURNAL_SYNC=1'],
-        ['UserPromptSubmit', 'userpromptsubmit-provenance.sh', null],
+        ['UserPromptSubmit', 'userpromptsubmit-provenance.sh',
+          `PAPERCUSP_TURN_PROVENANCE_DIR=${shellSingleQuote(codexHookProvenanceDir())}`],
       ];
       return turnHooks.every(([event, script, marker]) =>
         !existsSync(installedHookPath('cc', script)) ||

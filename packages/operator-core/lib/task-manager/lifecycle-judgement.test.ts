@@ -479,12 +479,14 @@ describe('evaluateLifecycleCandidates', () => {
     expect(summary).toContain('live.ownedTruncated and live.foreignTruncated do not cover tasks[]');
     expect(summary).toContain('If live.unaccountedGroups is missing or not an array, leave the result unknown');
     expect(summary).toContain('never coerce a missing group list to []');
-    expect(summary).toContain('compare payload.processLifecycleCandidate.observedPids against the complete live.unaccountedGroups[].pids set');
+    expect(summary).toContain('compare its taskId with live.unaccountedGroups[].taskId');
+    expect(summary).toContain('A missing match can support gone only after two healthy, complete, self-consistent census reads');
     expect(summary).toContain('Select the same-kind control path by addressability, not by live.unaccountedGroups.length');
     expect(summary).toContain('pc-*.scope or recognized vte-spawn-*.scope entry with a non-empty scopeUnit');
     expect(summary).not.toContain('When live.unaccountedGroups is non-empty, require a known-present same-kind control');
     expect(summary).toContain('processes:list { scopeUnit, live:true, includeEnded:true }');
-    expect(summary).toContain('the ageSec-bearing row is terminal and the default tasks[] filter would hide it');
+    expect(summary).toContain('live.exactScopeUnitMatches[].ageSec increases by elapsed wall time');
+    expect(summary).toContain('null or absent ageSec is unknown');
     expect(summary).toContain('When no addressable control exists, the same-kind control prerequisite is structurally unavailable, not a failed read');
     expect(summary).toContain('even when live.unaccountedGroups is non-empty');
     expect(summary).toContain('For an exact candidate scopeUnit, a gone verdict requires state=stranded, no livePids in the exact task read, the passing same-kind control above, and the exact-scope proof below');
@@ -506,8 +508,9 @@ describe('evaluateLifecycleCandidates', () => {
     const noScopeSummary = lifecycleCandidateSummary(noScope);
     expect(noScopeSummary).toContain('unfiltered processes:list { live:true }');
     expect(noScopeSummary).toContain('complete live.unaccountedGroups');
-    expect(noScopeSummary).toContain('observedPids are last-known host PID hints only');
-    expect(noScopeSummary).toContain('no match or an empty list is inconclusive and leaves the result unknown');
+    expect(noScopeSummary).toContain('observedPids are last-known host PID hints');
+    expect(noScopeSummary).toContain('compare its taskId with live.unaccountedGroups[].taskId');
+    expect(noScopeSummary).toContain('A missing match can support gone only after two healthy, complete, self-consistent census reads');
     expect(noScopeSummary).toContain('Never issue a gone or kill verdict from PID absence alone');
 
     const vteCandidate = evaluate({
@@ -633,7 +636,7 @@ describe('evaluateLifecycleCandidates', () => {
     expect(brief).toContain('pids.current counts kernel tasks (including threads), not task-manager process rows');
     expect(brief).toContain('HTTP 502 is not ECONNREFUSED (curl exit 7)');
     expect(brief).toContain('readlink /proc/self/ns/pid, the visible numeric /proc PID count, and $$ in that same call');
-    expect(brief).toContain('read it twice with processes:list { scopeUnit, live:true, includeEnded:true }, and confirm tasks[].ageSec advances by elapsed wall time');
+    expect(brief).toContain('read it twice with processes:list { scopeUnit, live:true, includeEnded:true }, and confirm the matching live.exactScopeUnitMatches[].ageSec increases by elapsed wall time');
     expect(brief).toContain('confined:false does not prove abandonment');
   });
 
@@ -921,7 +924,7 @@ describe('runLifecycleJudgementSweep', () => {
 
   it('changes the launch key only when the one-hour interval changes', () => {
     const current = lifecycleJudgeIntervalKey('ws-1', NOW);
-    expect(current).toMatch(/^process-lifecycle-judge:v6:ws-1:/);
+    expect(current).toMatch(/^process-lifecycle-judge:v7:ws-1:/);
     expect(lifecycleJudgeIntervalKey('ws-1', NOW + LIFECYCLE_JUDGE_INTERVAL_MS - 1)).toBe(current);
     expect(lifecycleJudgeIntervalKey('ws-1', NOW + LIFECYCLE_JUDGE_INTERVAL_MS)).not.toBe(current);
   });

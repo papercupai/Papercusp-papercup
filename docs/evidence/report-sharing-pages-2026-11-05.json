@@ -23,5 +23,24 @@
   ],
   "verified": ["fresh anonymous contexts", "exact viewer meta version", "headings", "tables", "code", "Mermaid SVG", "no credential headers", "no localhost or operator request", "fresh reader refuses deleted Gist"],
   "notVerified": ["exact deployed operator artifact", "native desktop Share/Copy/Stop journey", "independent acceptance grading"],
-  "sourceEvidence": "apps/operator/test-results/report-sharing/report-sharing-SHARE-SHIPM-61558-reader-fails-after-deletion-chromium/fixture-recovery-state.json"
+  "sourceEvidence": "apps/operator/test-results/report-sharing/report-sharing-SHARE-SHIPM-61558-reader-fails-after-deletion-chromium/fixture-recovery-state.json",
+  "latestRun": {
+    "testRunId": 23427292,
+    "commitStamp": "c53388e3d8eb9d6ea5726b304afe1202241604b6",
+    "verifiedAt": "2026-11-05T23:28:01.866Z",
+    "reasonForRerun": "Verify the real provider lifecycle after independent review corrections to viewer attestation, readiness, removal, account state and cancellation.",
+    "url": "https://papercupai.github.io/papercusp-reports/?v=d621fba0958b9edee9cde2c35d55276d8d8c1c17299d03bddf398102fbc45a29#gist=papercupai%2F75269bcfc1c1268cda741f3bd248d989",
+    "viewerVersion": "d621fba0958b9edee9cde2c35d55276d8d8c1c17299d03bddf398102fbc45a29",
+    "reportId": "sharing-fixture-c93eb202-62ab-482d-b47f-bbcfecda5415",
+    "operationId": "e4abdbdb-987f-470e-800e-aca338214560",
+    "gistId": "75269bcfc1c1268cda741f3bd248d989",
+    "providerState": "removed",
+    "viewerTreeSha": "2c1f01822044902559e0d417b2b84593a72ab400",
+    "viewerGeneration": 1,
+    "network": [
+      { "phase": "before", "url": "https://api.github.com/gists/75269bcfc1c1268cda741f3bd248d989?read=2416668055-2254326051-3196642599-1403103646", "status": 200 },
+      { "phase": "after", "url": "https://api.github.com/gists/75269bcfc1c1268cda741f3bd248d989?read=1563049889-213335910-2036963425-1126869823", "status": 404 }
+    ],
+    "notVerified": ["exact deployed operator artifact", "native desktop Share/Copy/Stop journey", "independent acceptance grading"]
+  }
 }

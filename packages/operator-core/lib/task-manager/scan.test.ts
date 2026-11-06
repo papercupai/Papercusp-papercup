@@ -171,6 +171,10 @@ describe('scanProcessesAsync — inventory IO', () => {
     await readFinished;
 
     expect(actual.scanTimedOut).toBe(true);
+    expect(actual.scanTimeoutElapsedMs).toBeGreaterThan(0);
+    expect(actual.scanTimeoutPhase).toBe('self-cgroup');
+    expect(actual.scanTimeoutOperationAgeMs).toBeGreaterThan(0);
+    expect(actual.scanTimeoutPendingIoCount).toBe(1);
     expect(readSignal?.aborted).toBe(true);
     expect(readContinuedAfterReturn).toBe(false);
   });

@@ -1023,6 +1023,31 @@ describe('reconcileTick — refusing to act on a bad scan', () => {
     expect(store.endedUnobserved).toHaveLength(0);
   });
 
+  it('includes the timed-out IO phase and duration in the degraded escalation', async () => {
+    const notifications: string[] = [];
+    await reconcileTick({
+      listLive: async () => [],
+      scan: () => scanResult([], {
+        ownedRootExists: null,
+        ownedTruncated: true,
+        foreignTruncated: true,
+        scanTimedOut: true,
+        scanTimeoutElapsedMs: 20_005,
+        scanTimeoutPhase: 'proc-stat',
+        scanTimeoutOperationAgeMs: 19_996,
+        scanTimeoutPendingIoCount: 3,
+      }),
+      fs: memFs({}),
+      notify: async ({ summary }) => { notifications.push(summary); },
+    });
+
+    expect(notifications).toHaveLength(1);
+    expect(notifications[0]).toContain('elapsed=20005ms');
+    expect(notifications[0]).toContain('phase=proc-stat');
+    expect(notifications[0]).toContain('oldestIO=19996ms');
+    expect(notifications[0]).toContain('pendingIO=3');
+  });
+
   it('a truncated FOREIGN pass does NOT degrade the verdict', async () => {
     // Found by the P-021 live run: on this box the foreign population (500+
     // matching processes) exhausted a SHARED cap, set `truncated`, and put the

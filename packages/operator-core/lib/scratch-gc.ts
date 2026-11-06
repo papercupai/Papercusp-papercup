@@ -2636,6 +2636,8 @@ export async function writeWithScratchQuota(
 
   let reservation: ScratchQuotaReservation | undefined;
   let markerPresentAfterWrite = true;
+  let completionRevisionPublished = false;
+  let completionRevisionError: unknown;
   let writeFailure: unknown;
   // A write may wait for or initiate one shared recovery pass. If the same
   // reservation still does not fit after that pass, refuse it instead of
@@ -2762,6 +2764,40 @@ export async function writeWithScratchQuota(
                 markerPresentAfterWrite = false;
               }
             }
+            // A refresh in another process may have measured before this payload landed while
+            // reading the reservation's current ledger revision. Advance that revision before
+            // releasing the data read lease, preserving the latest shared byte count so the
+            // refresh rejects its stale snapshot without erasing another writer's reservation.
+            const completionWaitOwnerCapture = createMutexWaitOwnerCapture();
+            try {
+              await withScratchWorkspaceMutex(
+                opts.workspaceId,
+                'write-settlement-revision',
+                async () => {
+                  const shared = await readSharedScratchQuotaState(opts.workspaceId, observeAwait);
+                  if (!shared) {
+                    throw new ScratchQuotaError('scratch reservation completion: shared quota ledger is unavailable');
+                  }
+                  await writeSharedScratchQuotaState(
+                    opts.workspaceId,
+                    shared.bytes,
+                    shared.measuredAt,
+                    observeAwait,
+                    shared,
+                  );
+                },
+                completionWaitOwnerCapture.onWaiting,
+                (info) => recordMutexWait(info, completionWaitOwnerCapture.getOwner()),
+                opts.requestTraceId,
+                opts.mutexTimeoutMs,
+                (info) => recordMutexWait(info, completionWaitOwnerCapture.getOwner()),
+              );
+              completionRevisionPublished = true;
+            } catch (error) {
+              // The payload is already durable. Keep its reservation conservative, trigger a
+              // local re-measurement, and report the metadata failure after the success path settles.
+              completionRevisionError = error;
+            }
             return SCRATCH_PAYLOAD_WRITTEN;
           },
           dataLeaseWaitOwnerCapture.onWaiting,
@@ -2828,7 +2864,11 @@ export async function writeWithScratchQuota(
       // admission on the existing cross-process FIFO mutex; settle only this process's metadata.
       pending.reserved = false;
       entry.writeGeneration += 1;
-      if (reservation!.sharedStateStale || (reservation!.markerBytes > 0 && !markerPresentAfterWrite)) {
+      if (
+        !completionRevisionPublished ||
+        reservation!.sharedStateStale ||
+        (reservation!.markerBytes > 0 && !markerPresentAfterWrite)
+      ) {
         // The shared state may be stale, or may conservatively still count a marker that failed
         // to appear. Re-measure after local writers drain instead of publishing a local snapshot.
         invalidateRunSizeIndex(entry);
@@ -2837,6 +2877,7 @@ export async function writeWithScratchQuota(
         entry.refreshDeferred = false;
       }
     } else if (pending.reserved) {
+      const settlementWaitOwnerCapture = createMutexWaitOwnerCapture();
       try {
         await withScratchWorkspaceMutex(opts.workspaceId, 'write-settlement', async () => {
           if (!pending.reserved) return;
@@ -2849,12 +2890,13 @@ export async function writeWithScratchQuota(
             // measures the actual tree before making a quota decision.
             await removeSharedScratchQuotaState(opts.workspaceId).catch(() => {});
           }
-        }, quotaWaitOwnerCapture.onWaiting, (info) => recordMutexWait(info, quotaWaitOwnerCapture.getOwner()), opts.requestTraceId, opts.mutexTimeoutMs, (info) => recordMutexWait(info, quotaWaitOwnerCapture.getOwner()));
+        }, settlementWaitOwnerCapture.onWaiting, (info) => recordMutexWait(info, settlementWaitOwnerCapture.getOwner()), opts.requestTraceId, opts.mutexTimeoutMs, (info) => recordMutexWait(info, settlementWaitOwnerCapture.getOwner()));
       } catch (error) {
         writeFailure ??= error;
       }
     }
     if (writeFailure) throw writeFailure;
+    if (completionRevisionError) throw completionRevisionError;
   } finally {
     entry.writes.delete(token);
     if (pending.reserved) entry.writeGeneration += 1;

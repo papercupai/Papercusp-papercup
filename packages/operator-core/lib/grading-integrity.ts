@@ -3984,13 +3984,58 @@ export async function reconcilePendingGradingAudits(
   await retireSettledGradingAuditTasks(input, deps);
   if (input.ctx.workspaceId) await (deps.retireRuntimes ?? retireUnusedGradingAuditRuntimes)(
     input.ctx.workspaceId,
-    async ids => {
+    async (ids, locator) => {
       if (!ids.length) return [];
       const current = await runWithWorkspaceIfConcrete(input.ctx.workspaceId, () =>
         (deps.listScorecards ?? listScorecards)({ issueIds: ids, includeSuperseded: true, includeRetracted: true, limit: 200 }));
       // An incomplete read is unknown; preserve its references until the bounded deadline.
       if (current.length !== ids.length) return ids;
-      return current.filter(card => currentPendingScorecard(card)).map(card => card.issueId);
+      const pending = current.filter(card => currentPendingScorecard(card));
+      if (!locator) return pending.map(card => card.issueId);
+      const retained = await mapWithConcurrency(pending, GRADING_AUDIT_DISPATCH_CONCURRENCY, async card => {
+        // A recipe's exact evaluator remains a recovery dependency even if no
+        // grader is live. Unbound cards can move between compatible builds;
+        // pending alone must not pin every build they have ever touched.
+        const recorded = recordedEvaluatorBuildForRecipe(card.rerunRecipe);
+        if (recorded?.sha === locator.evaluatorBuild.sha && recorded?.version === locator.evaluatorBuild.version) {
+          return card.issueId;
+        }
+        const key = `${GRADING_AUDIT_TASK_LABEL_PREFIX}${card.issueId}`;
+        try {
+          const tasks = await (deps.listTasks ?? listTasks)({ workspaceId: input.ctx.workspaceId,
+            labelPrefix: key, states: ['pending', 'running', 'unaccounted'], classes: ['agent-session'], limit: 200 });
+          // A full page, absent consumer or incomplete binding cannot prove a
+          // move. Preserve crash recovery until the existing bounded expiry.
+          if (tasks.length >= 200) return card.issueId;
+          const consumers = tasks.filter(task => task.detail.label === key ||
+            String(task.detail.label).startsWith(`${key}:`));
+          if (!consumers.length) return card.issueId;
+          const lease = card.gradingAudit?.dispatchReservation;
+          let currentConsumer = false;
+          for (const task of consumers) {
+            const binding = task.detail.gradingAuditRuntimeBinding as Partial<GradingAuditRuntimeBinding> | undefined;
+            if (task.state === 'unaccounted' || task.workspaceId !== input.ctx.workspaceId ||
+                task.class !== 'agent-session' || task.launchedBy !== GRADING_AUDIT_DISPATCH_ACTOR ||
+                !binding?.taskId || typeof binding.baseUrl !== 'string' ||
+                !binding.evaluatorBuild?.sha || !binding.evaluatorBuild.version ||
+                typeof binding.bundleSha256 !== 'string' || !/^[a-f0-9]{64}$/i.test(binding.bundleSha256) ||
+                typeof binding.expiresAtSec !== 'number' || binding.expiresAtSec <= Math.floor((deps.now?.() ?? Date.now()) / 1000) ||
+                binding.baseUrl === locator.baseUrl) return card.issueId;
+            const audit = task.detail.gradingAudit as { issueId?: unknown; evidenceFingerprint?: unknown;
+              reservation?: { key?: unknown; reservedAt?: unknown } } | undefined;
+            if (lease?.key === key && lease.reservedAt && card.evidenceFingerprint &&
+                audit?.issueId === card.issueId && audit.evidenceFingerprint === card.evidenceFingerprint &&
+                audit.reservation?.key === lease.key && audit.reservation.reservedAt === lease.reservedAt &&
+                (!recorded || (binding.evaluatorBuild.sha === recorded.sha && binding.evaluatorBuild.version === recorded.version))) {
+              currentConsumer = true;
+            }
+          }
+          return currentConsumer ? null : card.issueId;
+        } catch {
+          return card.issueId;
+        }
+      });
+      return retained.filter((id): id is string => id !== null);
     },
     undefined,
     input.targetIds,

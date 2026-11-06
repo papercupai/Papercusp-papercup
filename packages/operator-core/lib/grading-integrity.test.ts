@@ -56,7 +56,8 @@ import {
   type DispatchPendingGradingAuditsInput,
 } from './grading-integrity';
 import { GRADING_INTEGRITY_JUDGE_STACK } from './judge-identity-stack';
-import { GradingAuditRuntimeReadinessError, type GradingAuditRuntimeReadinessDiagnostic } from './release/grading-audit-runtime';
+import { GradingAuditRuntimeReadinessError, type GradingAuditRuntimeReadinessDiagnostic,
+  type GradingAuditRuntimeLocator } from './release/grading-audit-runtime';
 
 type ListScorecards = NonNullable<DispatchPendingGradingAuditsDeps['listScorecards']>;
 type ReadEvidence = NonNullable<DispatchPendingGradingAuditsDeps['readEvidence']>;
@@ -232,6 +233,49 @@ function deps() {
 }
 
 describe('targeted grading runtime cleanup (EI-26838521482108819)', () => {
+  it.each(['moved', 'same-endpoint', 'missing-binding', 'stale-lease', 'wrong-evidence',
+    'unaccounted', 'no-consumer', 'incomplete', 'read-failed'] as const)(
+    'retains pending-card source unless the current consumer proves a move: %s', async mode => {
+      const d = deps();
+      const reservation = { key: 'grading-audit:EI-retained', reservedAt: '2026-11-05T22:00:00.000Z' };
+      const pendingCard = card('EI-retained', { evidenceFingerprint: 'current-evidence',
+        gradingAudit: { state: 'pending', metaRubricRef: GRADING_INTEGRITY_RUBRIC_REF,
+          stampedAt: reservation.reservedAt, dispatchReservation: reservation } });
+      d.listScorecards.mockImplementation(async filter => filter?.issueIds?.includes('EI-retained') ? [pendingCard] : []);
+      const locator: GradingAuditRuntimeLocator = { schemaVersion: 1, sourceRoot: '/retained/.candidate-old/checkout',
+        ownerRef: 'grading-audit-runtime:old', bundlePath: '/retained/old.mjs', bundleSha256: 'a'.repeat(64),
+        evaluatorBuild: { sha: 'old-build', version: '1' }, baseUrl: 'http://127.0.0.1:41001',
+        expiresAtSec: 4102444800, issueIds: ['EI-retained'] };
+      const runtime = { taskId: 'new-runtime', baseUrl: 'http://127.0.0.1:41002',
+        bundleSha256: 'b'.repeat(64), evaluatorBuild: { sha: 'new-build', version: '1' }, expiresAtSec: 4102444800 };
+      const task: TaskRow = { taskId: 'current-grader', workspaceId: 'ws-test', rootTaskId: 'current-grader',
+        class: 'agent-session', title: 'Current grader', argv: [], launchedBy: GRADING_AUDIT_DISPATCH_ACTOR,
+        confined: true, state: mode === 'unaccounted' ? 'unaccounted' : 'running',
+        startedAt: reservation.reservedAt, lastSeenAt: reservation.reservedAt,
+        detail: { label: reservation.key, gradingAudit: { issueId: 'EI-retained',
+          evidenceFingerprint: mode === 'wrong-evidence' ? 'old-evidence' : 'current-evidence',
+          reservation: mode === 'stale-lease' ? { ...reservation, reservedAt: '2026-11-04T22:00:00.000Z' } : reservation },
+        ...(mode === 'missing-binding' ? {} : { gradingAuditRuntimeBinding: mode === 'same-endpoint'
+          ? { ...runtime, baseUrl: locator.baseUrl, bundleSha256: locator.bundleSha256,
+            evaluatorBuild: locator.evaluatorBuild } : runtime }) } };
+      d.listTasks.mockImplementation(async filter => {
+        if (filter?.labelPrefix !== reservation.key) return [];
+        if (mode === 'read-failed') throw new Error('unavailable census');
+        if (mode === 'no-consumer') return [];
+        if (mode === 'incomplete') return Array.from({ length: filter.limit ?? 200 }, () => task);
+        return [task];
+      });
+      let retained: string[] | undefined;
+      d.retireRuntimes.mockImplementation(async (_workspace, pending) => {
+        retained = await pending(['EI-retained'], locator);
+      });
+
+      await reconcilePendingGradingAudits({ ctx, targetIds: ['EI-other'] }, d);
+
+      expect(retained).toEqual(mode === 'moved' ? [] : ['EI-retained']);
+    },
+  );
+
   it('reaches dispatch without awaiting an unrelated runtime cleanup mutex', async () => {
     const d = deps();
     d.listScorecards.mockResolvedValue([card('EI-target')]);

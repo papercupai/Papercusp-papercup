@@ -24,6 +24,19 @@ const ledgerFailures: string[] = [];
 const realRecordIssued = issuedLedger.recordReuseBriefIssued;
 
 beforeAll(async () => {
+  const setupStage = async <T>(name: string, action: () => Promise<T>): Promise<T> => {
+    const startedAt = Date.now();
+    process.stderr.write(`R18_AUTHORING_SETUP stage=${name} state=start atMs=${startedAt}\n`);
+    try {
+      const result = await action();
+      process.stderr.write(`R18_AUTHORING_SETUP stage=${name} state=done elapsedMs=${Date.now() - startedAt}\n`);
+      return result;
+    } catch (error) {
+      const detail = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+      process.stderr.write(`R18_AUTHORING_SETUP stage=${name} state=failed elapsedMs=${Date.now() - startedAt} error=${JSON.stringify(detail)}\n`);
+      throw error;
+    }
+  };
   vi.spyOn(issuedLedger, 'recordReuseBriefIssued').mockImplementation(async (input, signal) => {
     const samples: unknown[] = [];
     let finished = false;
@@ -72,20 +85,20 @@ beforeAll(async () => {
       }
     }
   });
-  fx = await setupPlanPgFixture({ isolated: true });
-  root = await mkdtemp(join(tmpdir(), 'p010-authoring-'));
-  await writeFile(join(root, 'target.ts'), 'export function target() { return 1; }\n');
-  await registerHarnessProject(fx.admin, fx.workspaceId, HARNESS);
+  fx = await setupStage('plan-pg-fixture', () => setupPlanPgFixture({ isolated: true }));
+  root = await setupStage('temporary-project-root', () => mkdtemp(join(tmpdir(), 'p010-authoring-')));
+  await setupStage('write-target-source', () => writeFile(join(root, 'target.ts'), 'export function target() { return 1; }\n'));
+  await setupStage('register-project', () => registerHarnessProject(fx.admin, fx.workspaceId, HARNESS));
   vi.spyOn(registry, 'loadHarnessRegistry').mockResolvedValue({ projects: [{ slug: HARNESS, path: root }] });
-  await fx.admin`INSERT INTO harness_shared.identity_hook_turns (workspace_id, owner_id, turn_id)
-    VALUES (${fx.workspaceId}, ${OWNER}, 'p010-authoring-turn')`;
+  await setupStage('insert-identity-turn', () => fx.admin`INSERT INTO harness_shared.identity_hook_turns (workspace_id, owner_id, turn_id)
+    VALUES (${fx.workspaceId}, ${OWNER}, 'p010-authoring-turn')`);
   // Warm handler/module initialization outside the bounded advisory measurements.
-  const warm = payload(await newPlan.handler(newPlan.args.parse({ harness: HARNESS,
+  const warm = payload(await setupStage('warm-plans-new', () => newPlan.handler(newPlan.args.parse({ harness: HARNESS,
     slug: 'p010-authoring-warm-2026-10-25', title: 'Warm controlled authoring fixture',
     force: true, content: '# Fixture\n\n## Phase 1 — Work\n' }), {
     workspaceId: fx.workspaceId, harnessSlug: HARNESS, uiClientId: OWNER,
     isSuperuser: true, log: vi.fn(), emit: vi.fn(), progress: vi.fn(), metadata: vi.fn(),
-  } as unknown as UnifiedToolContext));
+  } as unknown as UnifiedToolContext)));
   expect(warm.ok, JSON.stringify(warm)).toBe(true);
 }, 180_000);
 afterAll(async () => { vi.restoreAllMocks(); await fx?.dispose(); if (root) await rm(root, { recursive: true, force: true }); });

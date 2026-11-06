@@ -62,7 +62,8 @@ async function main() {
   // Filtering only hostEnv leaves test preloads on the worker's launch lineage.
   if (e.STAGING_FIRST_HTTP_SCENARIO?.startsWith('current-su-native'))
     e.NODE_OPTIONS = privateBundleRuntimeEnv(e).NODE_OPTIONS;
-  if (e.STAGING_FIRST_HTTP_SCENARIO === 'report-journal') e.PAPERCUSP_FLAG_PAPERCUSP_REPORTS_LIBRARY = '1';
+  if (['report-journal', 'private-completion'].includes(e.STAGING_FIRST_HTTP_SCENARIO ?? ''))
+    e.PAPERCUSP_FLAG_PAPERCUSP_REPORTS_LIBRARY = '1';
   const harness = `${workspace}-guard`;
   const registry = await loadHarnessRegistry(workspace, { fresh: true });
   const home = registry.projects.find(project => project.slug === workspace);
@@ -322,6 +323,14 @@ async function main() {
     writeFileSync(join(evidenceDir, 'operator-mcp-receipt.json'), JSON.stringify(receipt));
     console.log(result.output);
     console.log(prefix + '_PRODUCTION_MCP_VERIFIED ' + JSON.stringify(receipt));
+    return;
+  }
+  if (e.STAGING_FIRST_HTTP_SCENARIO === 'private-completion') {
+    const receipt = await (await import('./private-completion-http-scenario')).measurePrivateCompletionScenario({
+      workspace, harness, base, headers, evidenceDir, expectedSha: health.sha,
+    });
+    await stopHost();
+    console.log('PRIVATE_COMPLETION_HTTP_RECEIPT ' + JSON.stringify({ ...receipt, hostStopped: true, bundleSha256, health }));
     return;
   }
   if (e.STAGING_FIRST_HTTP_SCENARIO === 'shared-chat-recovery') {

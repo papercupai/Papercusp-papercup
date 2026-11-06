@@ -22,8 +22,8 @@
  *   html / comment  inert    inert     no rehype-raw: react-markdown renders raw
  *                                      HTML as TEXT (it never becomes elements)
  *   links           allowlist          `papercupChatUrlTransform` — http/https/
- *                                      mailto, canonical /docs anchors; other
- *                                      relative paths remain INERT text
+ *                                      mailto, canonical /docs anchors;
+ *                                      owner also admits known app pages
  *   images          off      opt-in    `allowImages` (owner only) — else `[image]`
  *   tables          inert    render    the GFM table is shown as its source text
  *   work-ref pills  inert    render    `remarkWorkRefs` is not even run on public
@@ -59,7 +59,8 @@ import {
   type ReportBlockRenderContext,
 } from '@papercusp/chat-cards';
 import type { CardResponse, ChatTurn, ChatTurnToolCall, OpenCardSnapshot, ReportBlock } from '@papercusp/chat-protocol';
-import { remarkWorkRefs } from './remark-work-refs';
+import { chatAppHref, remarkWorkRefs } from './remark-work-refs';
+import { operatorUi } from '../seam';
 import type { WorkRefKind } from './parse-work-refs';
 import { canOpenWorkRef } from './chat-ref-popup-params';
 import { HydratedWorkRefPill } from './HydratedWorkRefPill';
@@ -152,6 +153,20 @@ export function papercupChatUrlTransform(url: string, key?: string): string {
   return (CHAT_LINK_PROTOCOLS as readonly string[]).includes(parsed.protocol) ? trimmed : '';
 }
 
+export const ownerChatUrlTransform = (url: string, key: string) =>
+  (key === 'href' ? chatAppHref(url.trim()) : null) ?? papercupChatUrlTransform(url, key);
+
+/** The host owns navigation; public chat retains its existing URL policy. */
+export function ChatLink({ children, href, isOwner }: { children?: ReactNode; href?: string; isOwner: boolean }) {
+  if (!href) return <span className="pc-chat__link-inert" data-trust="inert">{children}</span>;
+  const appHref = isOwner ? chatAppHref(href) : null;
+  if (appHref) {
+    const Link = operatorUi().Link;
+    return <Link to={appHref}>{children}</Link>;
+  }
+  return <a href={href} target="_blank" rel="noreferrer noopener">{children}</a>;
+}
+
 /**
  * Markdown is a hard break on a single `\n` (2026-07-25 owner screenshot: a
  * standard parser collapses a lone newline into a space — chat turns rely on
@@ -224,15 +239,7 @@ export const ChatMarkdown = memo(function ChatMarkdown({
     const map: Record<string, unknown> = {
       p: ({ children }: { children?: ReactNode }) => <p className="pc-chat__p">{children}</p>,
       a: ({ children, href }: { children?: ReactNode; href?: string }) =>
-        href ? (
-          <a href={href} target="_blank" rel="noreferrer noopener">
-            {children}
-          </a>
-        ) : (
-          <span className="pc-chat__link-inert" data-trust="inert">
-            {children}
-          </span>
-        ),
+        <ChatLink href={href} isOwner={isOwner}>{children}</ChatLink>,
       img: ({ src, alt }: { src?: string; alt?: string }) =>
         isOwner && allowImages && src ? (
           <img className="pc-chat__img" src={src} alt={alt ?? ''} loading="lazy" referrerPolicy="no-referrer" />
@@ -287,7 +294,7 @@ export const ChatMarkdown = memo(function ChatMarkdown({
     <ReactMarkdown
       remarkPlugins={isOwner ? OWNER_REMARK_PLUGINS : PUBLIC_REMARK_PLUGINS}
       components={components}
-      urlTransform={papercupChatUrlTransform}
+      urlTransform={isOwner ? ownerChatUrlTransform : papercupChatUrlTransform}
     >
       {source}
     </ReactMarkdown>
@@ -628,7 +635,11 @@ const ReportItemText = memo(function ReportItemText({
   const isOwner = hostTrust === 'owner';
   const markdownText = useDeferredReportMarkdown(text);
   const components = useMemo<Components>(() => {
-    const map: Record<string, unknown> = { ...REPORT_ITEM_COMPONENTS };
+    const map: Record<string, unknown> = {
+      ...REPORT_ITEM_COMPONENTS,
+      a: ({ children, href }: { children?: ReactNode; href?: string }) =>
+        <ChatLink href={href} isOwner={isOwner}>{children}</ChatLink>,
+    };
     if (isOwner) {
       map.workrefpill = ({ node }: { node?: HastNodeLike }) => {
         const id = typeof node?.properties?.refId === 'string' ? node.properties.refId : '';
@@ -664,7 +675,7 @@ const ReportItemText = memo(function ReportItemText({
     <ReactMarkdown
       remarkPlugins={isOwner ? OWNER_REMARK_PLUGINS : PUBLIC_REMARK_PLUGINS}
       components={components}
-      urlTransform={papercupChatUrlTransform}
+      urlTransform={isOwner ? ownerChatUrlTransform : papercupChatUrlTransform}
     >
       {withHardBreaks(markdownText)}
     </ReactMarkdown>

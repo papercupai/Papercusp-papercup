@@ -171,6 +171,10 @@ export interface ReconcileTickResult {
     ownedTruncated: boolean;
     foreignTruncated: boolean;
     scanTimedOut: boolean;
+    scanTimeoutElapsedMs?: number;
+    scanTimeoutPhase?: string | null;
+    scanTimeoutOperationAgeMs?: number | null;
+    scanTimeoutPendingIoCount?: number;
     processes: number;
     userManagerRoot: string | null;
   };
@@ -299,6 +303,10 @@ export async function reconcileTick(deps: ReconcileTickDeps = {}): Promise<Recon
         ownedTruncated: scan.ownedTruncated,
         foreignTruncated: scan.foreignTruncated,
         scanTimedOut: scan.scanTimedOut === true,
+        scanTimeoutElapsedMs: scan.scanTimeoutElapsedMs,
+        scanTimeoutPhase: scan.scanTimeoutPhase,
+        scanTimeoutOperationAgeMs: scan.scanTimeoutOperationAgeMs,
+        scanTimeoutPendingIoCount: scan.scanTimeoutPendingIoCount,
         processes: scan.processes.length,
         userManagerRoot: scan.userManagerRoot,
       },
@@ -543,7 +551,19 @@ export async function reconcileTick(deps: ReconcileTickDeps = {}): Promise<Recon
   queuePendingTerminalEventRecovery(deps.workspaceId);
 
   deps.stage?.('reconcile-notify');
-  await maybeNotify(deps, { summary, result, degraded, degradedReason, confirmedUnaccounted });
+  await maybeNotify(deps, {
+    summary,
+    result,
+    degraded,
+    degradedReason,
+    confirmedUnaccounted,
+    scanTimeout: scan.scanTimedOut ? {
+      elapsedMs: scan.scanTimeoutElapsedMs,
+      phase: scan.scanTimeoutPhase,
+      operationAgeMs: scan.scanTimeoutOperationAgeMs,
+      pendingIoCount: scan.scanTimeoutPendingIoCount,
+    } : undefined,
+  });
   deps.stage?.('reconcile-complete');
 
   return {
@@ -554,6 +574,10 @@ export async function reconcileTick(deps: ReconcileTickDeps = {}): Promise<Recon
       ownedTruncated: scan.ownedTruncated,
       foreignTruncated: scan.foreignTruncated,
       scanTimedOut: scan.scanTimedOut === true,
+      scanTimeoutElapsedMs: scan.scanTimeoutElapsedMs,
+      scanTimeoutPhase: scan.scanTimeoutPhase,
+      scanTimeoutOperationAgeMs: scan.scanTimeoutOperationAgeMs,
+      scanTimeoutPendingIoCount: scan.scanTimeoutPendingIoCount,
       processes: scan.processes.length,
       userManagerRoot: scan.userManagerRoot,
     },
@@ -618,6 +642,12 @@ async function maybeNotify(
     degraded: boolean;
     degradedReason?: string;
     confirmedUnaccounted: readonly ResidueGroup[];
+    scanTimeout?: {
+      elapsedMs?: number;
+      phase?: string | null;
+      operationAgeMs?: number | null;
+      pendingIoCount?: number;
+    };
   },
 ): Promise<void> {
   if (!deps.notify) return;
@@ -652,7 +682,16 @@ async function maybeNotify(
   lastNotified.at = now;
 
   const parts: string[] = [];
-  if (ctx.degraded) parts.push(`scan DEGRADED — ${ctx.degradedReason}`);
+  if (ctx.degraded) {
+    const timeout = ctx.scanTimeout;
+    const details = timeout
+      ? ' (elapsed=' + (timeout.elapsedMs ?? 'unknown') + 'ms; phase=' +
+        (timeout.phase ?? 'unknown') + '; oldestIO=' +
+        (timeout.operationAgeMs ?? 'unknown') + 'ms; pendingIO=' +
+        (timeout.pendingIoCount ?? 'unknown') + ')'
+      : '';
+    parts.push('scan DEGRADED — ' + ctx.degradedReason + details);
+  }
   if (confirmedUnaccounted.length > 0) {
     // A `pc-<taskId>.scope` proves managed provenance, but not ledger history:
     // synchronous spawn seams mint the scope before their fire-and-forget insert.

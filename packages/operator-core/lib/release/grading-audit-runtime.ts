@@ -560,7 +560,7 @@ export async function ensureGradingAuditRuntime(input: {
 /** Called by the existing audit repair sweep, never a separate monitor/routine. */
 export async function retireUnusedGradingAuditRuntimes(
   workspaceId: string,
-  pendingIssueIds: (ids: string[]) => Promise<string[]>,
+  pendingIssueIds: (ids: string[], locator?: GradingAuditRuntimeLocator) => Promise<string[]>,
   deps: GradingAuditRuntimeDeps = {},
   targetIssueIds?: readonly string[],
 ): Promise<void> {
@@ -582,7 +582,7 @@ export async function retireUnusedGradingAuditRuntimes(
       const locator = locatorFrom(row);
       if (!locator) continue;
       const now = Math.floor((deps.now?.() ?? Date.now()) / 1000);
-      const needed = locator.expiresAtSec > now ? await pendingIssueIds(locator.issueIds) : [];
+      const needed = locator.expiresAtSec > now ? await pendingIssueIds(locator.issueIds, locator) : [];
       const acceptance = locator.expiresAtSec > now
         ? await (deps.pendingAcceptanceRefs ?? pendingAcceptanceRefs)(workspaceId, locator.acceptanceRefs ?? []) : [];
       if (needed.length || acceptance.length) {
@@ -597,7 +597,7 @@ export async function retireUnusedGradingAuditRuntimes(
       // A newer task may share the same pin. Release only after EVERY sibling is unused.
       const siblings = current.map(locatorFrom).filter((item): item is GradingAuditRuntimeLocator => item !== null);
       if ((await Promise.all(siblings.map(async item => item.expiresAtSec > now
-        ? [...await pendingIssueIds(item.issueIds),
+        ? [...await pendingIssueIds(item.issueIds, item),
           ...await (deps.pendingAcceptanceRefs ?? pendingAcceptanceRefs)(workspaceId, item.acceptanceRefs ?? [])] : [])))
         .every(ids => ids.length === 0)) {
         releaseGradingAuditSourcePin(locator.sourceRoot, label);

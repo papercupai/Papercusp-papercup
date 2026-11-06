@@ -898,10 +898,10 @@ describe('reserveScratchSpace — no synchronous walk on the hot path (WI-100045
         String(from).startsWith(statePath + '.') || String(to) === statePath,
       );
 
-      // Successful payload bytes were already charged by the persisted reservation. Only that
-      // admission reads and publishes shared state; success settlement is process-local.
-      expect(reads).toHaveLength(1);
-      expect(writes).toHaveLength(1);
+      // Admission charges the payload; settlement advances the shared revision so an
+      // overlapping pre-payload refresh cannot publish its stale filesystem snapshot.
+      expect(reads).toHaveLength(2);
+      expect(writes).toHaveLength(2);
       expect(writes.every(([path]) => String(path) === statePath)).toBe(true);
       expect(renames).toHaveLength(0);
 
@@ -914,6 +914,28 @@ describe('reserveScratchSpace — no synchronous walk on the hot path (WI-100045
       stateWrites.mockClear();
       stateRenames.mockClear();
     }
+  });
+
+  it('settles a failed payload reservation before admitting the next writer', async () => {
+    const workspaceId = 'ws-failed-write-settlement';
+    const runDir = ensureScratchRunDir({ workspaceId, toolName: 'result-door', runId: UUID(81) });
+    await refreshScratchUsage(workspaceId);
+    const marker = markerBytes(workspaceId);
+    const statePath = join(resolveScratchQuotaStateRoot(),
+      createHash('sha256').update(resolve(scratchRootForWorkspace(workspaceId))).digest('hex') + '.json');
+    const failure = new Error('payload write failed after admission');
+    await expect(writeWithScratchQuota({ workspaceId, filePath: join(runDir, 'failed'), bytes: 1024 },
+      async () => { throw failure; })).rejects.toBe(failure);
+    expect(scratchUsageBytes(workspaceId)).toBe(marker);
+    // Settlement invalidates the persisted reservation; the next admission must
+    // remeasure disk rather than inherit the failed writer's charged bytes.
+    expect(existsSync(statePath)).toBe(false);
+    const nextPath = join(runDir, 'next');
+    await writeWithScratchQuota({ workspaceId, filePath: nextPath, bytes: 16 },
+      () => writeFile(nextPath, Buffer.alloc(16)));
+    expect(readFileSync(nextPath)).toHaveLength(16);
+    expect(JSON.parse(readFileSync(statePath, 'utf8')).bytes).toBe(marker + 16);
+    expect(scratchUsageBytes(workspaceId)).toBe(marker + 16);
   });
 
   it('uses the runtime filesystem for default quota state and preserves explicit roots', () => {
@@ -1538,6 +1560,110 @@ describe('cross-process scratch quota coordination', () => {
     expect(outcomes.find((outcome) => !outcome.ok)).toMatchObject({ code: 'SCRATCH_QUOTA_EXCEEDED' });
     expect([existsSync(firstPath), existsSync(secondPath)].filter(Boolean)).toHaveLength(1);
   }, 15_000);
+
+  it('does not publish a pre-payload refresh snapshot over a completed cross-process reservation', async () => {
+    const workspaceId = 'ws-QUOTA-REFRESH-SETTLEMENT-REVISION';
+    const workspaceRoot = scratchRootForWorkspace(workspaceId);
+    mkdirSync(workspaceRoot, { recursive: true });
+    const markerPath = join(workspaceRoot, WORKSPACE_SCRATCH_MARKER);
+    const marker = Buffer.from(JSON.stringify({
+      kind: 'papercusp-workspace-scratch-root',
+      workspaceId,
+      markedAt: new Date().toISOString(),
+    }) + '\n');
+    writeFileSync(markerPath, marker);
+    const baselinePath = join(workspaceRoot, 'legacy-baseline.bin');
+    const availableBytes = 120;
+    writeFileSync(baselinePath, Buffer.alloc(0));
+    truncateSync(baselinePath, WORKSPACE_QUOTA_BYTES - availableBytes - marker.length);
+
+    await refreshScratchUsage(workspaceId);
+    const resolvedRoot = resolve(workspaceRoot);
+    const ledgerPath = join(
+      resolveScratchQuotaStateRoot(),
+      createHash('sha256').update(resolvedRoot).digest('hex') + '.json',
+    );
+    const readLedgerBytes = (): number => Number(JSON.parse(readFileSync(ledgerPath, 'utf8')).bytes);
+    const baselineBytes = readLedgerBytes();
+    expect(baselineBytes).toBe(WORKSPACE_QUOTA_BYTES - availableBytes);
+
+    const baseEnv = {
+      PC_SCRATCH_GC_MODULE: new URL('./scratch-gc.ts', import.meta.url).href,
+      PC_WORKSPACE_ID: workspaceId,
+    };
+    const firstPath = join(workspaceRoot, 'writer-one.bin');
+    const secondPath = join(workspaceRoot, 'writer-two.bin');
+    const firstScript = [
+      'const { writeWithScratchQuota } = await import(process.env.PC_SCRATCH_GC_MODULE);',
+      "const { writeFile } = await import('node:fs/promises');",
+      'const workspaceId = process.env.PC_WORKSPACE_ID;',
+      'const filePath = process.env.PC_FILE_PATH;',
+      'await writeWithScratchQuota({ workspaceId, filePath, bytes: 80 }, async () => {',
+      "  process.send({ type: 'payload-reserved' });",
+      '  await new Promise((resolve) => {',
+      "    process.once('message', (message) => { if (message && message.type === 'release') resolve(undefined); });",
+      '  });',
+      '  await writeFile(filePath, Buffer.alloc(80));',
+      '});',
+      'process.stdout.write(JSON.stringify({ ok: true }));',
+    ].join('\n');
+    const refreshScript = [
+      'const { refreshScratchUsage, writeWithScratchQuota } = await import(process.env.PC_SCRATCH_GC_MODULE);',
+      "const { writeFile } = await import('node:fs/promises');",
+      'const workspaceId = process.env.PC_WORKSPACE_ID;',
+      'const filePath = process.env.PC_FILE_PATH;',
+      "process.send({ type: 'refresh-started' });",
+      'await refreshScratchUsage(workspaceId);',
+      'let secondWrite = { ok: true };',
+      'try {',
+      '  await writeWithScratchQuota({ workspaceId, filePath, bytes: 80 }, async () => {',
+      '    await writeFile(filePath, Buffer.alloc(80));',
+      '  });',
+      '} catch (error) {',
+      '  secondWrite = { ok: false, code: error && error.code };',
+      '}',
+      'process.stdout.write(JSON.stringify({ secondWrite }));',
+    ].join('\n');
+    const mutexRoot = process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR;
+    expect(mutexRoot).toBeTruthy();
+    const dataMutexName = 'papercusp-scratch-data-' +
+      createHash('sha256').update(resolvedRoot).digest('hex').slice(0, 40);
+    const dataOwnerPath = join(mutexRoot!, dataMutexName + '.lock', 'owner.json');
+
+    const first = startScratchChild(firstScript, { ...baseEnv, PC_FILE_PATH: firstPath });
+    let refresh: ReturnType<typeof startScratchChild> | undefined;
+    try {
+      await first.waitForMessage('payload-reserved');
+      expect(readLedgerBytes()).toBe(baselineBytes + 80);
+      refresh = startScratchChild(refreshScript, { ...baseEnv, PC_FILE_PATH: secondPath });
+      await refresh.waitForMessage('refresh-started');
+      await vi.waitFor(() => {
+        // The FIFO ticket is removed when the writer reserves its lock, before
+        // it drains readers. Observe the durable admission phase and exact child.
+        const owner = existsSync(dataOwnerPath)
+          ? JSON.parse(readFileSync(dataOwnerPath, 'utf8')) : null;
+        expect(owner).toMatchObject({ pid: refresh!.child.pid,
+          intent: { operation: 'usage-refresh-adopt' }, phase: 'draining-readers' });
+      }, { timeout: 8_000, interval: 10 });
+      expect(existsSync(firstPath)).toBe(false);
+
+      first.child.send({ type: 'release' });
+      const firstResult = await first.finished;
+      expect(firstResult.code, firstResult.stderr || firstResult.spawnError || undefined).toBe(0);
+      const refreshResult = await refresh.finished;
+      expect(refreshResult.code, refreshResult.stderr || refreshResult.spawnError || undefined).toBe(0);
+      expect(JSON.parse(refreshResult.stdout)).toMatchObject({
+        secondWrite: { ok: false, code: 'SCRATCH_QUOTA_EXCEEDED' },
+      });
+      expect(readLedgerBytes()).toBe(baselineBytes + 80);
+      expect([existsSync(firstPath), existsSync(secondPath)]).toEqual([true, false]);
+    } finally {
+      if (first.child.connected) first.child.send({ type: 'release' });
+      if (refresh?.child.exitCode === null) refresh.child.kill('SIGTERM');
+      if (first.child.exitCode === null) first.child.kill('SIGTERM');
+      await Promise.allSettled([first.finished, ...(refresh ? [refresh.finished] : [])]);
+    }
+  }, 20_000);
 
   it('does not overwrite a newer process reservation when an earlier write settles', async () => {
     const workspaceId = 'ws-SETTLEMENT-REMOTE-RESERVATION';

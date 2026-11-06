@@ -1686,7 +1686,7 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     }
   }, 120_000);
 
-  it.each(['automatic', 'explicit'] as const)('rejects %s generation custody before allocating verifier source', async selection => {
+  it.each(['automatic', 'explicit'] as const)('checks %s generation custody against selected source before dependencies or PG', async selection => {
     const parent = process.platform === 'linux' ? mkdtempSync('/var/tmp/source-preview-generation-preflight-') : tmp;
     try {
       const fixture = makeSuperproject(join(parent, 'generation-' + selection));
@@ -1696,20 +1696,30 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
       const helper = 'papercusp-desktop/bin/lib/pinned-deps.sh';
       write(fixture.repo, helper, [
         '#!/bin/bash', 'set -eu', 'case "$1" in',
-        '  preflight-generation) echo "missing verifier closure" >&2; exit 74 ;;',
+        '  preflight-generation)',
+        '    test "$(cat "$3/selected-source.txt")" = committed-candidate || { echo "checked moving source" >&2; exit 95; }',
+        '    echo "missing verifier closure" >&2; exit 74 ;;',
         '  snapshot-generation-locked) echo "snapshot must not start" >&2; exit 93 ;;',
         '  *) exit 94 ;;', 'esac', '',
       ].join('\n'));
-      git(fixture.repo, ['add', helper]);
+      write(fixture.repo, 'selected-source.txt', 'committed-candidate');
+      git(fixture.repo, ['add', helper, 'selected-source.txt']);
       git(fixture.repo, ['commit', '-qm', 'generation admission fixture']);
+      const ref = git(fixture.repo, ['rev-parse', 'HEAD']).trim();
+      write(fixture.repo, 'selected-source.txt', 'unrelated-live-change');
+      const prepareChildEnv = vi.fn(async () => { throw new Error('PG must not start'); });
       const receiptPath = join(tmp, 'generation-preflight-' + selection + '.json');
       await expect(runVerifierCommand({ repo: fixture.repo,
-        ref: git(fixture.repo, ['rev-parse', 'HEAD']).trim(), receiptPath,
+        ref, receiptPath, prepareChildEnv,
         env: { ...childEnv(), PAPERCUSP_DEPENDENCY_GENERATION_ROOT: selection === 'explicit' ? join(parent, 'store') : '' },
         command: [process.execPath, '-e', 'throw Error("provider must not start")'],
       })).rejects.toThrow('verifier generation preflight failed: missing verifier closure');
-      expect(existsSync(receiptPath)).toBe(false);
-      expect(existsSync(receiptPath + '.task.json')).toBe(false);
+      expect(JSON.parse(readFileSync(receiptPath, 'utf8')).sourceCommit).toBe(ref);
+      const task = JSON.parse(readFileSync(receiptPath + '.task.json', 'utf8'));
+      expect(task.cleanup).toBe('completed');
+      expect(existsSync(task.ownedRoot)).toBe(false);
+      expect(existsSync(receiptPath + '.dependencies.json')).toBe(false);
+      expect(prepareChildEnv).not.toHaveBeenCalled();
       expect(existsSync(join(fixture.repo, '.papercusp/scratch'))).toBe(false);
     } finally {
       if (parent !== tmp) rmSync(parent, { recursive: true, force: true });
@@ -1747,8 +1757,8 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     await expect(runVerifierCommand(options)).rejects.toThrow('pinned runtime model missing or invalid');
     write(fixture.repo, model, validModel);
     await expect(runVerifierCommand(options)).rejects.toThrow('runtime cache accepted; generation guard reached');
-    expect(existsSync(receiptPath)).toBe(false);
-    expect(existsSync(receiptPath + '.task.json')).toBe(false);
+    expect(JSON.parse(readFileSync(receiptPath, 'utf8')).sourceCommit).toBe(ref);
+    expect(JSON.parse(readFileSync(receiptPath + '.task.json', 'utf8')).cleanup).toBe('completed');
     expect(existsSync(join(fixture.repo, '.papercusp/scratch'))).toBe(false);
   });
 

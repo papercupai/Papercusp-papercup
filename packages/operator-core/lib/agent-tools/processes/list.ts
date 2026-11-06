@@ -287,7 +287,7 @@ export default defineTool({
     chaining:
       'Filter one exact row with `taskId`, `scopeUnit`, `invocationId` or `dispatchCallId`. Use `includeAttemptEvidence:true` for its bounded redacted excerpt. Lost a bash launch response? Search by `dispatchCallId` with `includeEnded:true`; do not relaunch. Then use `processes:kill`, `freeze` or `limit` on the exact task. Check `taskPage.truncated` and kernel scan truncation before treating a row as absent.',
     returns:
-      '{ ok, counts:{ byState, byClass }, tasks:[{ taskId, class, title, state, launchedBy, workItemId, planSlug, ageSec, rssMb, peakRssMb, cpuSec, cpuBusyPercent, pids: number|null (PID count), livePids: number[]|null (PID array for live unaccounted tasks; null otherwise), confined, scopeUnit, confinement, deadlineAt, logPath }], live?: { unaccountedGroups?: Array<{ pids: number[] (PID array) }> } } — `confinement` answers "what confines this task, and therefore what can kill it": `{ confined, cgroupPath, scopeUnit, source, insideOperatorCgroup?, reason? }`. Read `source` before the path. `derived-from-scope-unit` is the trustworthy case — the path is DERIVED, because the stored `cgroup_path` column holds the SPAWNER cgroup on ~1300 historical rows and would answer "would restarting the operator kill this agent?" with the pre-EI-9748 YES (D-111). `insideOperatorCgroup` IS that answer, and is absent — never false — when unknown. `not-derivable` means confined but no scope unit was recorded: that is UNKNOWN, not unconfined, so `confined` stays true. `recorded-at-spawn` is the unconfined case, where the /proc read is correct. `observed-at-reconcile` means an unaccounted residue had an exact `pc-<taskId>` scope and matching kernel-scanned path; it uses that observed path because its original task class is unknown. To find your OWN row pass `coordOwnerId` (your coord owner id) — `launchedBy` is whoever spawned you, and `pgrep -f <ownerId>` self-matches your own command line. `cpuSec` is cumulative CPU time; `cpuBusyPercent` is derived from two cumulative samples (100% = one saturated core) and is null until a second valid sample exists. Unfiltered `live:true` reads include `live.verifierGroups` and other reconciler groups; a task-filtered live read keeps the compact reconciliation summary but omits unrelated global group samples. `confined:false` means the task is ledgered but NOT cgroup-isolated, so a kill falls back to a pid signal and freeze is unavailable. An exact-identity lookup (`dispatchCallId` especially) that finds nothing is not proof no command ran: legacy jobs may lack that identity.',
+      '{ ok, counts:{ byState, byClass }, tasks:[{ taskId, class, title, state, launchedBy, workItemId, planSlug, ageSec, rssMb, peakRssMb, cpuSec, cpuBusyPercent, pids: number|null (PID count), livePids: number[]|null (PID array for live unaccounted tasks; null otherwise), confined, scopeUnit, confinement, deadlineAt, logPath }], live?: { unaccountedGroups?: Array<{ taskId: string (stable ledger key), pids: number[] (PID array), ageSec: number|null }>, exactScopeUnitMatches?: Array<{ taskId: string, pids: number[], ageSec: number|null (lower bound; null if any PID start is unknown) }> } } — `confinement` answers "what confines this task, and therefore what can kill it": `{ confined, cgroupPath, scopeUnit, source, insideOperatorCgroup?, reason? }`. Read `source` before the path. `derived-from-scope-unit` is the trustworthy case — the path is DERIVED, because the stored `cgroup_path` column holds the SPAWNER cgroup on ~1300 historical rows and would answer "would restarting the operator kill this agent?" with the pre-EI-9748 YES (D-111). `insideOperatorCgroup` IS that answer, and is absent — never false — when unknown. `not-derivable` means confined but no scope unit was recorded: that is UNKNOWN, not unconfined, so `confined` stays true. `recorded-at-spawn` is the unconfined case, where the /proc read is correct. `observed-at-reconcile` means an unaccounted residue had an exact `pc-<taskId>` scope and matching kernel-scanned path; it uses that observed path because its original task class is unknown. To find your OWN row pass `coordOwnerId` (your coord owner id) — `launchedBy` is whoever spawned you, and `pgrep -f <ownerId>` self-matches your own command line. `cpuSec` is cumulative CPU time; `cpuBusyPercent` is derived from two cumulative samples (100% = one saturated core) and is null until a second valid sample exists. Unfiltered `live:true` reads include `live.verifierGroups` and other reconciler groups; a task-filtered live read keeps the compact reconciliation summary but omits unrelated global group samples. `confined:false` means the task is ledgered but NOT cgroup-isolated, so a kill falls back to a pid signal and freeze is unavailable. An exact-identity lookup (`dispatchCallId` especially) that finds nothing is not proof no command ran: legacy jobs may lack that identity.',
   },
   requirePrincipal: false,
   // Release-fixer must inspect the managed task ledger when classifying a
@@ -430,15 +430,32 @@ export default defineTool({
         ownedTruncated: tick.scan.ownedTruncated,
         foreignTruncated: tick.scan.foreignTruncated,
       };
+      const processStartsByPid = new Map(
+        tick.scannedProcesses.map((process) => [process.pid, process.startedAtMs] as const),
+      );
+      const groupAgeSampledAtMs = Date.now();
+      const groupAgeSec = (pids: number[]): number | null => {
+        if (pids.length === 0) return null;
+        let youngestStartAtMs = Number.NEGATIVE_INFINITY;
+        for (const pid of pids) {
+          const startedAtMs = processStartsByPid.get(pid);
+          if (typeof startedAtMs !== 'number' || !Number.isFinite(startedAtMs)) return null;
+          youngestStartAtMs = Math.max(youngestStartAtMs, startedAtMs);
+        }
+        // The scope predates its youngest PID, so this is a conservative age lower bound.
+        return Math.max(0, Math.floor((groupAgeSampledAtMs - youngestStartAtMs) / 1000));
+      };
       const mapLiveGroup = (group: {
         cgroupPath: string;
         scopeUnit: string | null;
         pids: number[];
         sampleCmdline: string;
       }) => ({
+        taskId: (group.scopeUnit && taskIdFromScopeUnit(group.scopeUnit)) || residueTaskId(group.cgroupPath),
         cgroupPath: group.cgroupPath,
         scopeUnit: group.scopeUnit,
         pids: group.pids,
+        ageSec: groupAgeSec(group.pids),
         sample: safeDiagnosticText(group.sampleCmdline, 160, diagnosticSecrets),
       });
       // EI-20974969153018746: a task selector answers a narrow ledger question.

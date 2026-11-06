@@ -327,6 +327,10 @@ function isNegatedRunStatus(text: string, index: number): boolean {
   const clauseStart = sentenceRange(text, index, 0).start;
   const before = text.slice(Math.max(clauseStart, index - 120), index);
   const directNegation = /\b(?:not|never|no longer|(?:is|are|was|were|has|have|had|did|does|do|can|could|would|should)n['’]t)\s+(?:(?:currently|actively|actually|still)\s+){0,2}["'`“‘]?\s*$/i;
+  // Evidence qualifiers can sit between the negator and launch status ("not
+  // proven launched"). Do not treat that uncertainty as an affirmative run;
+  // `not yet read` remains a positive unread signal because it has no qualifier.
+  const unprovenStatus = /\b(?:not|never)\s+(?:(?:currently|actively|actually|still|yet)\s+){0,2}(?:proven|confirmed|verified|established)\s+(?:(?:to|be|have|been)\s+){0,3}$/i;
   // Status phrases often put the negator before the run subject ("No jobs still
   // running"). The old check only handled a negator immediately before the
   // matched phrase, so it treated that completed-status sentence as unread.
@@ -339,7 +343,7 @@ function isNegatedRunStatus(text: string, index: number): boolean {
   // repair run was launched"). Keep this bounded to the current clause so a later
   // affirmative launch after "but" remains actionable.
   const noLongSubject = /\b(?:no|zero)(?:\s+[\w'-]+){1,5}\s+(?:(?:is|are|was|were|has|have|had|been)\s+)?\s*$/i;
-  return directNegation.test(before) || noRunSubject.test(before) || noLongSubject.test(before) || noCoordinatedSubject.test(before);
+  return directNegation.test(before) || unprovenStatus.test(before) || noRunSubject.test(before) || noLongSubject.test(before) || noCoordinatedSubject.test(before);
 }
 
 /** A proposed scenario or conditional is not a statement that a run exists.

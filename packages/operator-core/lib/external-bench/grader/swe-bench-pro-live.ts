@@ -50,12 +50,13 @@ export function buildLiveSweBenchProGrader(cfg: SweBenchProGraderConfig = resolv
 
 export interface SweBenchProPreflight {
   /**
-   * True iff Docker is reachable AND the eval checkout is present AND the raw CSV is present and is
+   * True iff Docker is reachable AND the evaluator and run_scripts are present AND the raw CSV is present and is
    * byte-identical to the pinned population — safe to run the grader.
    */
   ready: boolean;
   docker: { available: boolean; detail: string };
   evalScript: { present: boolean; path: string };
+  runScripts: { present: boolean; path: string };
   rawSampleCsv: {
     present: boolean;
     path: string;
@@ -115,6 +116,8 @@ export async function preflightSweBenchPro(cfg: SweBenchProGraderConfig, deps: P
 
   const evalScriptPath = `${cfg.evalRepoDir}/swe_bench_pro_eval.py`;
   const evalPresent = await pathExists(evalScriptPath);
+  const runScriptsPath = `${cfg.evalRepoDir}/run_scripts`;
+  const runScriptsPresent = await pathExists(runScriptsPath);
   const csvPresent = await pathExists(cfg.rawSamplePath);
 
   const issues: string[] = [];
@@ -130,6 +133,7 @@ export async function preflightSweBenchPro(cfg: SweBenchProGraderConfig, deps: P
 
   if (!dockerAvailable) issues.push(`Docker daemon not reachable (docker version exit ${ver.code}: ${ver.stderr.slice(0, 200)})`);
   if (!evalPresent) issues.push(`eval harness missing — clone scaleapi/SWE-bench_Pro-os into ${cfg.evalRepoDir} (expects swe_bench_pro_eval.py + run_scripts/)`);
+  if (!runScriptsPresent) issues.push(`eval run_scripts directory missing at ${runScriptsPath} — restore it from the pinned scaleapi/SWE-bench_Pro-os checkout`);
   if (!csvPresent) issues.push(`raw sample CSV missing at ${cfg.rawSamplePath} (the ${pin.csvFile} for the ${pin.taskCount}-task ${pin.hfDataset} config '${pin.hfConfig}' population)`);
   if (csvSha256 !== null && !matchesPin) {
     issues.push(
@@ -141,9 +145,10 @@ export async function preflightSweBenchPro(cfg: SweBenchProGraderConfig, deps: P
   }
 
   return {
-    ready: dockerAvailable && evalPresent && csvPresent && matchesPin,
+    ready: dockerAvailable && evalPresent && runScriptsPresent && csvPresent && matchesPin,
     docker: { available: dockerAvailable, detail: dockerAvailable ? `Server ${ver.stdout.trim()}` : ver.stderr.slice(0, 200) || `exit ${ver.code}` },
     evalScript: { present: evalPresent, path: evalScriptPath },
+    runScripts: { present: runScriptsPresent, path: runScriptsPath },
     rawSampleCsv: {
       present: csvPresent,
       path: cfg.rawSamplePath,

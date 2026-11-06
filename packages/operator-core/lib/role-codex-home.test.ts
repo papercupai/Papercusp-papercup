@@ -2324,7 +2324,7 @@ describe('writeSuCodexHome', () => {
     expect(readFileSync(join(home.codexHome, 'AGENTS.md'), 'utf8')).toContain('PRESERVE');
   });
 
-  it.each(['missing', 'wrong-client'] as const)('repairs %s prompt provenance in a same-owner home once while preserving native history', async (damage) => {
+  it.each(['missing', 'wrong-client', 'missing-ledger-pin', 'wrong-ledger-pin'] as const)('repairs %s prompt provenance in a same-owner home once while preserving native history', async (damage) => {
     await installFakeHooks();
     const { ensureSuCodexHomeConfig, writeSuCodexHome } = await loadMod();
     const opts = { sessionKey: 'provenance-upgrade', mcpUrl: 'http://x/api/mcp?superuser=1', sid: 'su-provenance-upgrade' };
@@ -2341,9 +2341,15 @@ describe('writeSuCodexHome', () => {
     if (damage === 'missing') {
       oldHooks.hooks.UserPromptSubmit = oldHooks.hooks.UserPromptSubmit.filter((group: any) =>
         !group.hooks.some((hook: any) => hook.command.includes('userpromptsubmit-provenance.sh')));
-    } else {
+    } else if (damage === 'wrong-client') {
       for (const group of oldHooks.hooks.UserPromptSubmit) for (const hook of group.hooks) {
         if (hook.command.includes('userpromptsubmit-provenance.sh')) hook.command = hook.command.replace('PAPERCUSP_AGENT=codex', 'PAPERCUSP_AGENT=claude');
+      }
+    } else {
+      for (const group of oldHooks.hooks.UserPromptSubmit) for (const hook of group.hooks) {
+        if (!hook.command.includes('userpromptsubmit-provenance.sh')) continue;
+        hook.command = hook.command.replace(/PAPERCUSP_TURN_PROVENANCE_DIR='[^']*' /, '');
+        if (damage === 'wrong-ledger-pin') hook.command = `PAPERCUSP_TURN_PROVENANCE_DIR='/wrong-ledger' ${hook.command}`;
       }
     }
     writeFileSync(hooksPath, JSON.stringify(oldHooks));
@@ -2354,6 +2360,8 @@ describe('writeSuCodexHome', () => {
     expect(commands).toContainEqual(expect.stringContaining('userpromptsubmit-provenance.sh'));
     expect(commands.find((command: string) => command.includes('userpromptsubmit-provenance.sh')))
       .toContain('PAPERCUSP_AGENT=codex');
+    expect(commands.find((command: string) => command.includes('userpromptsubmit-provenance.sh')))
+      .toContain(`PAPERCUSP_TURN_PROVENANCE_DIR='${join(fakeHome, '.papercusp', 'turn-provenance')}'`);
     expect(readFileSync(nativePath, 'utf8')).toBe(nativeBytes);
     expect(readFileSync(agentsPath, 'utf8')).toBe(agentsBytes);
     expect(ensureSuCodexHomeConfig(opts)).toMatchObject({ repaired: false, identityRepaired: false });
@@ -2696,6 +2704,33 @@ describe('writeCodexLockHooks — turn-end journal (WI-10006795)', () => {
       expect(journalEntries(JSON.parse(text))).toHaveLength(1);
       expect(text).toContain(join(injectDir, 'index.mjs'));
     }
+  });
+
+  it.each([false, true])('executes provenance against its pinned ledger with a workspace data home (custom=%s)', async custom => {
+    const dir = await installFakeHooks();
+    const script = join(dir, 'userpromptsubmit-provenance.sh');
+    writeFileSync(script, '#!/bin/sh\nprintf "%s" "$PAPERCUSP_TURN_PROVENANCE_DIR"\n');
+    chmodSync(script, 0o700);
+    const expected = custom ? join(fakeHome, 'custom-ledger') : join(fakeHome, '.papercusp', 'turn-provenance');
+    vi.stubEnv('PAPERCUSP_HOME', join(fakeHome, 'workspace-data', '.papercusp'));
+    vi.stubEnv('PAPERCUSP_TURN_PROVENANCE_DIR', custom ? expected : '');
+    try {
+      const { writeSuCodexHome, writeRoleCodexHome } = await loadMod();
+      const homes = [
+        writeSuCodexHome({ sessionKey: 'ledger-su', mcpUrl: 'http://x/api/mcp?superuser=1', promptText: 'P', sid: 'su-ledger' }),
+        writeRoleCodexHome({ sessionKey: 'ledger-role', mcpUrl: 'http://x/?role=worker&sig=1', promptText: 'P', sid: 'role-ledger' }),
+      ];
+      for (const home of homes) {
+        const hooks = JSON.parse(readFileSync(join(home.codexHome, 'hooks.json'), 'utf8'));
+        const command = hooks.hooks.UserPromptSubmit.flatMap((group: { hooks: { command: string }[] }) => group.hooks)
+          .find((hook: { command: string }) => hook.command.includes('userpromptsubmit-provenance.sh')).command;
+        // Inherited workspace scope must not retarget the injector's ledger.
+        const result = spawnSync('/bin/sh', ['-c', command], { encoding: 'utf8',
+          env: { ...process.env, PAPERCUSP_TURN_PROVENANCE_DIR: '' } });
+        expect(result.status, result.stderr).toBe(0);
+        expect(result.stdout).toBe(expected);
+      }
+    } finally { vi.unstubAllEnvs(); }
   });
 
   it('a resumed pre-fix home is repaired once, then left byte-identical', async () => {

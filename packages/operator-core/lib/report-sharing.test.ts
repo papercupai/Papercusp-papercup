@@ -12,7 +12,7 @@ function fixture() {
   const rows = new Map<string,ReportShare>(); const locks = new Set<string>();
   const store: ReportShareStore = { async locked(key, work) {
     if (locks.has(key)) throw new Error('already running'); locks.add(key);
-    try { return await work({list:async(w,r)=>[...rows.values()].filter(row=>row.workspaceId===w && row.reportId===r),get:async (w,r,a) => rows.get(JSON.stringify([w,r,a])) ?? null,
+    try { return await work({viewerState:async a=>{const row=[...rows.values()].filter(row=>row.accountId===a&&row.repoId&&row.viewerTreeSha&&row.viewerGeneration).sort((a,b)=>b.viewerGeneration!-a.viewerGeneration!)[0];return row?{repoId:row.repoId!,treeSha:row.viewerTreeSha!,generation:row.viewerGeneration!}:null;},list:async(w,r)=>[...rows.values()].filter(row=>row.workspaceId===w && row.reportId===r),get:async (w,r,a) => rows.get(JSON.stringify([w,r,a])) ?? null,
       put:async share => { rows.set(JSON.stringify([share.workspaceId,share.reportId,share.accountId]),{...share}); }}); }
     finally { locks.delete(key); }
   }};
@@ -51,13 +51,32 @@ describe('selected-edition Gist sharing',()=>{
     const first=f.run();await vi.waitFor(()=>expect(f.github.create).toHaveBeenCalledTimes(1));
     await expect(f.run()).rejects.toThrow('already running');resume();await first;expect(f.github.create).toHaveBeenCalledTimes(1);
   });
-  it('saves cancellation after zero recovery matches and never publishes again while cancellation is pending',async()=>{
+  it('terminalizes zero-result cancellation locally, keeps its tombstone, and reaps late results before a new publication',async()=>{
     const f=fixture();vi.mocked(f.github.create).mockRejectedValueOnce(new Error('lost response'));
     await expect(f.run()).rejects.toThrow();vi.mocked(f.github.find).mockResolvedValueOnce([]);
-    expect((await f.run('stop')).phase).toBe('uncertain');expect([...f.rows.values()][0].phase).toBe('cancelling');
-    await expect(f.run()).rejects.toMatchObject({code:'removal_pending'});
-    expect((await f.run('stop')).phase).toBe('inactive');expect(f.github.remove).toHaveBeenCalledWith(id);
-    expect(f.github.create).toHaveBeenCalledTimes(1);
+    expect((await f.run('stop')).phase).toBe('cancelled');expect([...f.rows.values()][0].phase).toBe('cancelled');
+    const operation=[...f.rows.values()][0].operationId;
+    vi.mocked(f.github.find).mockResolvedValueOnce([]);
+    expect((await f.run('stop')).phase).toBe('cancelled');expect(f.github.create).toHaveBeenCalledTimes(1);
+    expect((await f.run()).phase).toBe('ready');expect(f.github.remove).toHaveBeenCalledWith(id);
+    expect([...f.rows.values()][0].cancelledOperations).toContain(operation);expect(f.github.create).toHaveBeenCalledTimes(2);
+  });
+  it('reuses the account-global viewer pin when a new report upgrades the shared repository',async()=>{
+    const f=fixture();vi.mocked(f.github.prepareViewer).mockResolvedValue({repoId:9,ready:true,treeSha:'old-trusted-tree'});
+    await f.run();vi.mocked(f.github.prepareViewer).mockResolvedValue({repoId:9,ready:true,treeSha:'new-trusted-tree'});
+    await f.run('share',{...report,reportId:'another-edition'});
+    expect(f.github.prepareViewer).toHaveBeenLastCalledWith(expect.anything(),9,'old-trusted-tree');
+    await f.run('stop');
+    vi.mocked(f.github.prepareViewer).mockResolvedValue({repoId:9,ready:true,treeSha:'third-trusted-tree'});
+    await f.run('share',{...report,reportId:'third-edition'});
+    expect(f.github.prepareViewer).toHaveBeenLastCalledWith(expect.anything(),9,'new-trusted-tree');
+  });
+  it('refuses every late-result deletion if any tombstone candidate has changed its snapshot',async()=>{
+    const f=fixture();vi.mocked(f.github.create).mockRejectedValueOnce(new Error('lost response'));await expect(f.run()).rejects.toThrow();
+    vi.mocked(f.github.find).mockResolvedValueOnce([]);await f.run('stop');
+    vi.mocked(f.github.find).mockResolvedValue([id,'b'.repeat(32)]);
+    vi.mocked(f.github.gist).mockResolvedValueOnce(f.gist).mockResolvedValueOnce({...f.gist,id:'b'.repeat(32),files:{'report.md':{content:'an unrelated snapshot'}}});
+    await expect(f.run()).rejects.toMatchObject({code:'snapshot_changed'});expect(f.github.remove).not.toHaveBeenCalled();
   });
   it('removes every owned matching ambiguous publication and validates the whole set before removal',async()=>{
     const f=fixture();const second='b'.repeat(32);vi.mocked(f.github.create).mockRejectedValueOnce(new Error('lost response'));

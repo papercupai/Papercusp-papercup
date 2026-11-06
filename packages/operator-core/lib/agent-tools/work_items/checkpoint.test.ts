@@ -5881,6 +5881,33 @@ describe('work_items:checkpoint — launched-but-unread run lint (EI-19455262557
     expect(result).not.toHaveProperty('unreadRunLint');
   });
 
+  it('distinguishes an unproven launch receipt from an unread run', async () => {
+    const body = [
+      'The consult run is NOT proven launched/answered;',
+      'output: /tmp/current-contract-critique-request.log.',
+    ].join(' ');
+    getWorkItem.mockResolvedValue({ id: 'WI-UNREAD-UNPROVEN-LAUNCH', harness: 'papercup' });
+    setWorkItemCheckpointWithPrior.mockResolvedValue({ stored: body, priorLength: 0 });
+    getWorkItemCheckpoint.mockResolvedValue(body);
+
+    const result = await one({ id: 'WI-UNREAD-UNPROVEN-LAUNCH', checkpoint: body });
+
+    expect(result.ok).toBe(true);
+    expect(result).not.toHaveProperty('unreadRunLint');
+
+    const unread = 'The verification run is not yet read; output: /tmp/not-yet-read.log.';
+    getWorkItem.mockResolvedValue({ id: 'WI-UNREAD-NOT-YET-READ', harness: 'papercup' });
+    setWorkItemCheckpointWithPrior.mockResolvedValue({ stored: unread, priorLength: 0 });
+    getWorkItemCheckpoint.mockResolvedValue(unread);
+
+    const pending = await one({ id: 'WI-UNREAD-NOT-YET-READ', checkpoint: unread });
+
+    expect(pending.unreadRunLint).toMatchObject({
+      flagged: true,
+      signals: { inFlight: ['not yet read'], runRefs: ['/tmp/not-yet-read.log'] },
+    });
+  });
+
   it('does not flag a refused verifier preflight as a launched native run', async () => {
     const body = [
       'validateVerifierInputs refused the dirty mandatory scripts/run-operator-e2e-isolated.sh input.',

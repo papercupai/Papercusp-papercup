@@ -583,10 +583,50 @@ export function resolveCandidatePorts(flags = {}, env = process.env) {
   };
 }
 
+/** A grading-audit judge must keep implicit MCP recovery on its evaluator build. */
+function resolveExpectedMcpBuildSha(env = process.env) {
+  const sha = env.PAPERCUSP_MCP_EXPECTED_BUILD_SHA;
+  return typeof sha === 'string' && sha.trim() ? sha.trim() : null;
+}
+
+async function probeMcpBuildIdentity(port, expectedSha) {
+  let response;
+  try {
+    response = await fetch('http://localhost:' + port + '/api/health', {
+      signal: AbortSignal.timeout(2000),
+    });
+  } catch (error) {
+    const code = error?.cause?.code ?? error?.code;
+    const reason = typeof code === 'string' ? code : String(error?.message ?? error);
+    return { matches: false, actual: null, reason };
+  }
+  if (!response.ok) {
+    return { matches: false, actual: null, reason: 'health HTTP ' + response.status };
+  }
+  let health;
+  try {
+    health = await response.json();
+  } catch {
+    return { matches: false, actual: null, reason: 'health response was not JSON' };
+  }
+  const actual = typeof health?.sha === 'string' && health.sha.trim() ? health.sha.trim() : null;
+  return actual === expectedSha
+    ? { matches: true, actual, reason: 'build SHA matches' }
+    : { matches: false, actual, reason: actual ? 'build SHA mismatch' : 'health response omitted build SHA' };
+}
+
+function buildMcpBuildIdentityDiagnostic(expectedSha, mismatches) {
+  const details = mismatches.length > 0
+    ? mismatches.map((entry) =>
+      'port ' + entry.port + '=' + (entry.actual ?? 'unknown') + ' (' + entry.reason + ')',
+    ).join('; ')
+    : 'no candidate endpoint was measured';
+  return 'mcp-call: refusing the MCP request: no endpoint reported expected operator build SHA ' +
+    JSON.stringify(expectedSha) + '. ' + details + '. No MCP tool request was sent.';
+}
+
 /**
- * A scoped repair-queue operation must keep the install selected by the caller.
- * `--harness` is the strongest local signal; the operator-home pointer covers
- * calls that intentionally omit a per-call harness.
+ * Resolve the scoped repair-queue target selected by the caller.
  */
 export function resolveRepairQueueExpectedInstallSlug(flags = {}, env = process.env) {
   const explicit = typeof flags.harness === 'string' ? flags.harness.trim() : '';
@@ -1114,6 +1154,16 @@ async function main() {
   const proxyPort = resolveMcpProxyPort();
 
   const transport = resolveMcpTransport(flags);
+  const expectedMcpBuildSha = resolveExpectedMcpBuildSha();
+  const mcpBuildMismatches = [];
+  const verifiedMcpBuildPorts = [];
+  if (expectedMcpBuildSha && transport === 'uds') {
+    for (const port of candidatePorts) {
+      const identity = await probeMcpBuildIdentity(port, expectedMcpBuildSha);
+      if (identity.matches) verifiedMcpBuildPorts.push(port);
+      else mcpBuildMismatches.push({ port, actual: identity.actual, reason: identity.reason });
+    }
+  }
   // Each CLI invocation is a standalone MCP request, even when several
   // processes share one agent SID and start within the 2s legacy cohort
   // window. Do not let a previous process consume this request's budget.
@@ -1216,6 +1266,15 @@ async function main() {
       const tokenCandidate = tokenCandidates[tokenIndex];
       responseTokenPath = tokenCandidate.path;
       try {
+        if (expectedMcpBuildSha) {
+          const identity = await probeMcpBuildIdentity(port, expectedMcpBuildSha);
+          if (!identity.matches) {
+            mcpBuildMismatches.push({ port, actual: identity.actual, reason: identity.reason });
+            tryNextEndpoint = hasEndpointFallback;
+            break;
+          }
+          verifiedMcpBuildPorts.push(port);
+        }
         if (repairQueueNeedsPreflight) {
           const probe = await fetchCandidateCall(
             port,
@@ -1335,15 +1394,17 @@ async function main() {
   }
 
   let out;
+  const canTryUdsFallback = shouldTryUdsFallback({ transport, attempts }) &&
+    (!expectedMcpBuildSha || verifiedMcpBuildPorts.length > 0);
   if (res) {
     if (flags.raw) { process.stdout.write(raw); return; }
     out = parseSse(raw, REQUEST_ID);
-  } else if (shouldTryUdsFallback({ transport, attempts })) {
+  } else if (canTryUdsFallback) {
     if (transport === 'auto') console.error(buildUdsFallbackNotice(attempts));
-    let udsPorts = candidatePorts;
+    let udsPorts = expectedMcpBuildSha ? verifiedMcpBuildPorts : candidatePorts;
     if (repairQueueNeedsPreflight) {
       const probe = await callToolViaAgentMcpUds({
-        ports: candidatePorts,
+        ports: udsPorts,
         tokens: tokenCandidates.map((candidate) => candidate.token),
         query: qs,
         params: buildMcpCallParams('release:repair-queue', { op: 'get' }, { outputGroupId: randomUUID() }),
@@ -1411,6 +1472,10 @@ async function main() {
   } else {
     if (repairQueueScopeMismatches.length > 0) {
       reportRepairQueueScopeMismatch(repairQueueExpectedInstall, repairQueueScopeMismatches);
+    }
+    if (expectedMcpBuildSha && verifiedMcpBuildPorts.length === 0) {
+      console.error(buildMcpBuildIdentityDiagnostic(expectedMcpBuildSha, mcpBuildMismatches));
+      process.exit(4);
     }
     console.error(buildUnreachableDiagnostic({ attempts, configuredPort, pinned }));
     process.exit(4);

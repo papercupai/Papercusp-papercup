@@ -1915,7 +1915,10 @@ describe('headless composition (D-003: an ARG, not a separate tool)', () => {
     const res = await launchAgent.handler({ brief: 'exact audit', headless: true, mcpTarget: 'spawn-host' }, internalCtx);
     expect(isError(res)).toBe(false);
     expect(buildConsoleEnvelopeMock.mock.calls[0]?.[0]).toMatchObject({ agentMcpBaseUrl: runtime.baseUrl });
-    expect(spawnHeadlessMock.mock.calls[0]?.[0]).toMatchObject({ ledgerDetail: { gradingAuditRuntimeBinding: runtime } });
+    expect(spawnHeadlessMock.mock.calls[0]?.[0]).toMatchObject({
+      envelope: { env: { PAPERCUSP_MCP_EXPECTED_BUILD_SHA: 'exact123' } },
+      ledgerDetail: { gradingAuditRuntimeBinding: runtime },
+    });
   });
 
   it.each(['http://example.com:45187', 'http://127.0.0.1:45187/unrelated', 'http://127.0.0.1:45187?x=1'])(

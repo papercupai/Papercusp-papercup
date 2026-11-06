@@ -3,7 +3,7 @@
  * env→config resolve, the readiness preflight (mocked docker/fs), and the run-command description.
  */
 import { createHash } from 'node:crypto';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -39,6 +39,7 @@ describe('preflightSweBenchPro', () => {
     expect(pre.ready).toBe(true);
     expect(pre.issues).toEqual([]);
     expect(pre.docker.available).toBe(true);
+    expect(pre.runScripts).toEqual({ present: true, path: '/eval/run_scripts' });
     expect(pre.rawSampleCsv).toMatchObject({ present: true, sha256: SWE_BENCH_PRO_V1_PIN.csvSha256, matchesPin: true });
   });
 
@@ -51,6 +52,42 @@ describe('preflightSweBenchPro', () => {
     expect(pre.issues.length).toBeGreaterThanOrEqual(2); // docker + eval-harness gaps
     expect(pre.issues.some((i) => /Docker/.test(i))).toBe(true);
     expect(pre.issues.some((i) => /SWE-bench_Pro-os/.test(i))).toBe(true);
+  });
+
+  it('refuses a checkout missing run_scripts even when Docker, evaluator and pinned CSV are ready', async () => {
+    const paths: string[] = [];
+    const pre = await preflightSweBenchPro(cfg, {
+      exec: dockerUp,
+      pathExists: async path => { paths.push(path); return path !== '/eval/run_scripts'; },
+      fileSha256: pinnedSha,
+    });
+    expect(paths).toContain('/eval/run_scripts');
+    expect(pre.ready).toBe(false);
+    expect(pre.issues).toEqual([expect.stringMatching(/run_scripts.*missing/)]);
+  });
+
+  it('reads real checkout dependencies and becomes ready only after run_scripts is restored', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'swe-pro-deps-'));
+    try {
+      const csv = join(dir, 'population.csv');
+      writeFileSync(csv, 'repo,instance_id\na/b,task\n');
+      writeFileSync(join(dir, 'swe_bench_pro_eval.py'), '# official evaluator fixture\n');
+      const pin = { ...SWE_BENCH_PRO_V1_PIN, csvSha256: await sha256OfFile(csv) } as unknown as typeof SWE_BENCH_PRO_V1_PIN;
+      const fileCfg = { evalRepoDir: dir, rawSamplePath: csv, version: 'fixture-pinned' };
+      const missing = await preflightSweBenchPro(fileCfg, { exec: dockerUp, pin });
+      expect(missing.ready).toBe(false);
+      expect(missing.evalScript.present).toBe(true);
+      expect(missing.rawSampleCsv.matchesPin).toBe(true);
+      expect(missing.runScripts.present).toBe(false);
+      expect(missing.issues).toEqual([expect.stringMatching(/run_scripts.*missing/)]);
+      mkdirSync(join(dir, 'run_scripts'));
+      const restored = await preflightSweBenchPro(fileCfg, { exec: dockerUp, pin });
+      expect(restored.ready).toBe(true);
+      expect(restored.runScripts.present).toBe(true);
+      expect(restored.issues).toEqual([]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   // WI-6554700010008394: the HF default config is now the 642-task v2 set, so a re-exported CSV is a

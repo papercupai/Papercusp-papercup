@@ -12,6 +12,8 @@
 export {
   PapercupChat,
   ChatMarkdown,
+  ChatLink,
+  ownerChatUrlTransform,
   askTranscriptPlaceholder,
   askCapabilityNoticeText,
   lookedAtTools,

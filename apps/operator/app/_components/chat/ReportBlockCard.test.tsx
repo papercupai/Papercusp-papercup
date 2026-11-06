@@ -22,6 +22,19 @@ const render = (ui: ReactElement) => rtlRender(<NuqsTestingAdapter searchParams=
 
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
+it('resolves a bare report reference in a report line without opening another window', async () => {
+  const reportId = 'rpt_c6a650d3-4b68-4bef-9169-8bf4fe69f998';
+  const { container } = render(<ReportBlockCard report={{
+    title: 'Audit results',
+    plans: [{ slug: 'reference-links', title: 'Reference links', status: 'active',
+      items: [{ id: 'P-001', status: 'done', text: `Read ${reportId}.` }] }],
+  }} />);
+  const link = await screen.findByRole('link', { name: reportId });
+  expect(link.getAttribute('href')).toBe(`/reports?sel=${reportId}`);
+  expect(link.getAttribute('target')).toBeNull();
+  expect(container.textContent).toContain(`Read ${reportId}.`);
+});
+
 vi.mock('@papercusp/sync', () => ({
   fetchSyncQuery,
   onSyncBusEvent: () => () => {},

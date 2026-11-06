@@ -142,7 +142,7 @@ describe('processes:list structured output', () => {
     const returns = projected.guidance?.returns ?? '';
     expect(returns).toContain('pids: number|null (PID count)');
     expect(returns).toContain('livePids: number[]|null (PID array');
-    expect(returns).toContain('unaccountedGroups?: Array<{ pids: number[] (PID array) }>');
+    expect(returns).toContain('unaccountedGroups?: Array<{ taskId: string (stable ledger key), pids: number[] (PID array), ageSec: number|null }>, exactScopeUnitMatches?: Array<{ taskId: string, pids: number[], ageSec: number|null');
   });
 
   it('accepts the singular state filter used by sibling task surfaces', async () => {
@@ -288,6 +288,23 @@ describe('processes:list structured output', () => {
           tooYoung: [],
         },
         scan: { processes: 3, ownedTruncated: false, foreignTruncated: true },
+        scannedProcesses: [
+          {
+            pid: 101, cgroupPath: `/user.slice/${scopeUnit}`, processIdentity: null,
+            cmdline: 'checkpoint target', owned: false, scope: 'unaccounted', exemptReason: null,
+            startedAtMs: Date.now() - 60_000,
+          },
+          {
+            pid: 102, cgroupPath: `/user.slice/${scopeUnit}`, processIdentity: null,
+            cmdline: 'checkpoint target', owned: false, scope: 'unaccounted', exemptReason: null,
+            startedAtMs: Date.now() - 20_000,
+          },
+          {
+            pid: 201, cgroupPath: '/user.slice/other.service', processIdentity: null,
+            cmdline: 'other', owned: false, scope: 'unaccounted', exemptReason: null,
+            startedAtMs: Date.now() - 5_000,
+          },
+        ],
         degraded: false,
         touched: 0,
         strandedCount: 0,
@@ -330,14 +347,91 @@ describe('processes:list structured output', () => {
       expect(structured.live.exactScopeUnitMatches).toEqual([
         {
           kind: 'unaccounted',
+          taskId: `residue:/user.slice/${scopeUnit}`,
           cgroupPath: `/user.slice/${scopeUnit}`,
           scopeUnit,
           pids: [101, 102],
+          ageSec: expect.any(Number),
           sample: 'checkpoint target',
         },
       ]);
+      expect(structured.live.exactScopeUnitMatches[0]?.ageSec).toBeGreaterThanOrEqual(20);
+      expect(structured.live.exactScopeUnitMatches[0]?.ageSec).toBeLessThan(30);
     },
   );
+
+  it('exposes stable identity for a scope-less census group and keeps partial age unknown', async () => {
+    const { listTasks } = await import('../../../task-manager/store');
+    const { reconcileTick } = await import('../../../task-manager/reconcile-tick');
+    const cgroupPath = '/user.slice/papercusp.slice/opaque-group';
+    vi.mocked(listTasks).mockResolvedValueOnce([]);
+    vi.mocked(reconcileTick).mockResolvedValueOnce(tickResult({
+      result: {
+        unaccounted: [{
+          cgroupPath,
+          scopeUnit: null,
+          pids: [301, 302],
+          sampleCmdline: 'scope-less',
+        }],
+      },
+      scan: { processes: 2 },
+      scannedProcesses: [
+        {
+          pid: 301, cgroupPath, processIdentity: null, cmdline: 'scope-less',
+          owned: false, scope: 'unaccounted', exemptReason: null,
+          startedAtMs: Date.now() - 20_000,
+        },
+        {
+          pid: 302, cgroupPath, processIdentity: null, cmdline: 'scope-less',
+          owned: false, scope: 'unaccounted', exemptReason: null,
+          startedAtMs: null,
+        },
+      ],
+    }));
+
+    const dispatched = await dispatchProjectedTool(
+      projected,
+      'processes:list',
+      { live: true },
+      {
+        log: vi.fn(),
+        signal: new AbortController().signal,
+        progress: vi.fn(),
+        emit: vi.fn(),
+        workspaceId: 'default',
+        runId: 'processes-list-scope-less-age-test',
+        role: 'operator',
+        gateBypass: { role: true, capability: true, quota: true },
+        transport: 'mcp',
+        requestedFormat: 'json',
+        requestedStructured: true,
+        tx: makeTx(),
+      },
+      {},
+    );
+
+    expect(dispatched.ok, JSON.stringify(dispatched)).toBe(true);
+    const structured = dispatched.result?.structuredContent as {
+      live: {
+        unaccountedGroups: Array<{
+          taskId: string;
+          cgroupPath: string;
+          scopeUnit: string | null;
+          pids: number[];
+          ageSec: number | null;
+          sample: string;
+        }>;
+      };
+    };
+    expect(structured.live.unaccountedGroups).toEqual([{
+      taskId: `residue:${cgroupPath}`,
+      cgroupPath,
+      scopeUnit: null,
+      pids: [301, 302],
+      ageSec: null,
+      sample: 'scope-less',
+    }]);
+  });
 
   it('reports task-ledger pagination independently of a complete kernel scan', async () => {
     const { listTasksPage } = await import('../../../task-manager/store');
@@ -820,8 +914,8 @@ describe('processes:list structured output', () => {
         foreignCount: number;
         overdueCount: number;
         tooYoungCount: number;
-        unaccountedGroups: Array<{ scopeUnit: string; cgroupPath: string; pids: number[] }>;
-        verifierGroups: Array<{ scopeUnit: string; cgroupPath: string; pids: number[] }>;
+        unaccountedGroups: Array<{ taskId: string; scopeUnit: string; cgroupPath: string; pids: number[]; ageSec: number | null }>;
+        verifierGroups: Array<{ taskId: string; scopeUnit: string; cgroupPath: string; pids: number[]; ageSec: number | null }>;
       };
     };
     expect(structured.live).toMatchObject({
@@ -848,9 +942,11 @@ describe('processes:list structured output', () => {
       expect(structured.live).not.toHaveProperty(ambiguousCountKey);
     }
     expect(structured.live.unaccountedGroups[0]).toMatchObject({
+      taskId: 'orphan123',
       scopeUnit: 'pc-orphan123.scope',
       cgroupPath: '/user.slice/user-1000.slice/user@1000.service/papercusp.slice/pc-orphan123.scope',
       pids: [11, 12],
+      ageSec: null,
     });
     expect(structured.live.unaccountedGroups).toHaveLength(structured.live.unaccountedCount);
     expect(structured.live.unaccountedPidCount).toBe(

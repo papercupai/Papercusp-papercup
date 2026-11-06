@@ -13,6 +13,19 @@ export function postgresReportShareStore(sql: postgres.Sql): ReportShareStore {
         if (!held) throw new Error('A sharing operation is already running. Retry shortly.');
         // Autocommit persists intent BEFORE GitHub, even if the process dies.
         return await work({
+          async viewerState(accountId) {
+            // Only account-global viewer metadata crosses workspace boundaries;
+            // immutable report content and sharing operation IDs remain scoped.
+            const [row] = await connection<{ repo_id: number; tree_sha: string; generation: number }[]>`
+              SELECT (share->>'repoId')::bigint AS repo_id, share->>'viewerTreeSha' AS tree_sha,
+                (share->>'viewerGeneration')::bigint AS generation
+              FROM harness_shared.report_library_shares WHERE github_user_id=${accountId}
+                AND share->>'repoId' IS NOT NULL AND share->>'viewerTreeSha' IS NOT NULL
+                AND share->>'viewerGeneration' IS NOT NULL
+              ORDER BY (share->>'viewerGeneration')::bigint DESC LIMIT 1`;
+            // State transitions on old reports do not advance this generation.
+            return row ? { repoId: Number(row.repo_id), treeSha: row.tree_sha, generation: Number(row.generation) } : null;
+          },
           async list(workspaceId, reportId) {
             const rows = await connection<{ share: ReportShare }[]>`SELECT share FROM harness_shared.report_library_shares
               WHERE workspace_id=${workspaceId} AND report_id=${reportId}`;

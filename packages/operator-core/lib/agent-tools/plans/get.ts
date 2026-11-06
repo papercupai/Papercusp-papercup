@@ -806,7 +806,13 @@ export default defineTool({
     if (args.revision !== undefined) {
       const revisionScope = await resolvePlanScope(opts);
       const env = await runBulk(slugs, async (slug) => {
-        const snapshot = await getPlanRevisionSnapshot(slug, args.revision!, revisionScope);
+        // Runtime receipts can share the plan's declared body hash while storing
+        // enriched bytes. A hash citation must select the immutable body itself;
+        // an explicit sequence still selects that exact recorded receipt.
+        const snapshot = await getPlanRevisionSnapshot(slug, args.revision!, {
+          ...revisionScope,
+          exactBody: typeof args.revision === 'string',
+        });
         if (!snapshot) return { ok: false as const, slug, error: 'revision_not_found', revision: args.revision };
         const parsed = parsePlan(snapshot.contentSnapshot);
         const sections = splitSections(parsed.prose);

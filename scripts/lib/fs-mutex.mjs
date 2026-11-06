@@ -753,7 +753,8 @@ async function scanOldestTicketDir(ticketsDir, staleMs, io, measureSubphase) {
   return null;
 }
 
-async function oldestTicketDir(ticketsDir, staleMs, retryMs, io = {}, measureSubphase, observeHead = () => {}) {
+async function oldestTicketDir(ticketsDir, staleMs, retryMs, io = {},
+  measureSubphase = (_name, operation) => operation(), observeHead = () => {}) {
   const cacheTtlMs = Math.max(TICKET_HEAD_CACHE_TTL_FLOOR_MS, retryMs * 2);
   const cached = ticketHeadCache.get(ticketsDir);
   if (cached && Number.isFinite(cached.cachedAtMs) && Date.now() - cached.cachedAtMs < cacheTtlMs) {

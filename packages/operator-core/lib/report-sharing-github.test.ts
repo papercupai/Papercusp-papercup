@@ -17,7 +17,7 @@ function fixture() {
     tree: Object.entries(treeFiles).map(([path, sha]) => ({ path, sha, type: 'blob', mode: '100644' })),
     requests: [] as { url: string; method: string }[], scopes: 'gist, repo', anonymousStatus: 200, authenticatedStatus: 200,
     snapshot: { id, public: false, owner: { id: 7, login: 'alice' }, files: { 'report.md': { content: body, truncated: false } } },
-    deployedFiles: { ...assets.files }, pages: 1,
+    deployedFiles: { ...assets.files }, pages: 1, treeSha: 'trusted-tree',
   };
   const response = (value: unknown, status = 200, headers = {}) => new Response(JSON.stringify(value), { status, headers: { 'Content-Type': 'application/json', ...headers } });
   const transport: typeof fetch = async (input, init) => {
@@ -36,7 +36,11 @@ function fixture() {
     }
     if (url.pathname === '/repos/alice/papercusp-reports') return response({ id: 9, owner: { id: 7 }, private: false, default_branch: 'main', description: REPORT_VIEWER_MARKER });
     if (decodeURIComponent(url.pathname).endsWith('/git/ref/heads/main')) return response({ object: { sha: 'head' } });
-    if (url.pathname.endsWith('/git/trees/head')) return response({ sha: 'trusted-tree', truncated: false, tree: state.tree });
+    if (url.pathname.endsWith('/git/trees/head')) return response({ sha: state.treeSha, truncated: false, tree: state.tree });
+    if (method === 'POST' && url.pathname.endsWith('/git/blobs')) return response({sha:blobSha(JSON.parse(String(init?.body)).content)});
+    if (method === 'POST' && url.pathname.endsWith('/git/trees')) return response({sha:'next-trusted-tree'});
+    if (method === 'POST' && url.pathname.endsWith('/git/commits')) return response({sha:'next-commit'});
+    if (method === 'PATCH' && decodeURIComponent(url.pathname).endsWith('/git/refs/heads/main')) return response({object:{sha:'next-commit'}});
     if (url.pathname.endsWith('/pages')) return response({ status: 'built', cname: null, source: { branch: 'main', path: '/' } });
     throw new Error('Unexpected provider call: ' + method + ' ' + url.href);
   };
@@ -65,6 +69,14 @@ describe('owned GitHub sharing HTTP contract', () => {
     const f = fixture(); f.state.pages = 11;
     expect(await f.github.find('operation')).toEqual([id]);
     expect(f.state.requests.filter(request => new URL(request.url).pathname === '/gists')).toHaveLength(11);
+  });
+  it('upgrades a locally pinned previous tree and refuses a modified previous tree',async()=>{
+    const f=fixture();f.state.tree[0].sha=blobSha('previous safe HTML');f.state.treeSha='previous-trusted-tree';
+    expect(await f.github.prepareViewer(assets,9,'previous-trusted-tree')).toMatchObject({treeSha:'next-trusted-tree'});
+    expect(f.state.requests.some(request=>request.method==='PATCH')).toBe(true);
+    const modified=fixture();modified.state.tree[0].sha=blobSha('tampered HTML');modified.state.treeSha='different-tree';
+    await expect(modified.github.prepareViewer(assets,9,'previous-trusted-tree')).rejects.toMatchObject({code:'viewer_modified'});
+    expect(modified.state.requests.every(request=>request.method==='GET')).toBe(true);
   });
   it('proves readiness with canonical metadata and every locally built executable asset', async () => {
     const f = fixture(); expect(await f.github.readable('alice', id, 'v1', digest, assets)).toBe(true);

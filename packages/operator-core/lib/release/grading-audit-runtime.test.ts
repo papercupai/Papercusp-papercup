@@ -587,6 +587,21 @@ describe('exact grading audit runtime lifecycle (EI-25971079852455067)', () => {
     expect(readGradingAuditSourcePin(f.source.sourceRoot, f.source.ownerRef, 1000)).toBeNull();
   });
 
+  it('supplies each exact locator to the consumer check before stopping or releasing its source', async () => {
+    const f = fixture();
+    const runtime = await ensureGradingAuditRuntime(f.input, f.deps);
+    const pending = vi.fn(async (_ids: string[], locator?: GradingAuditRuntimeLocator) =>
+      locator?.baseUrl === runtime.baseUrl ? [] : ['EI-a']);
+
+    await retireUnusedGradingAuditRuntimes('ws', pending, f.deps);
+
+    expect(pending).toHaveBeenCalledWith(['EI-a'], expect.objectContaining({
+      baseUrl: runtime.baseUrl, evaluatorBuild: f.input.evaluatorBuild,
+    }));
+    expect(f.stop).toHaveBeenCalledWith(runtime.taskId);
+    expect(readGradingAuditSourcePin(f.source.sourceRoot, f.source.ownerRef, 1000)).toBeNull();
+  });
+
   it('targeted cleanup bypasses an unrelated runtime mutex and preserves pending siblings', async () => {
     const f = fixture();
     await ensureGradingAuditRuntime(f.input, f.deps);

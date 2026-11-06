@@ -1381,6 +1381,31 @@ describe('fs-mutex lease reclamation', () => {
 // though it registered first. A FIFO ticket queue fixes this: only the OLDEST live
 // ticket may attempt the mkdir race on any given poll.
 describe('withFsMutex fairness (FIFO ticket queue)', () => {
+  it('lets an admitted holder inspect an empty queue and a real waiting writer', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'pc-fs-mutex-holder-waiters-'));
+    process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = dir;
+    let waiter: Promise<string> | undefined;
+    let reportWaiting!: () => void;
+    const waiting = new Promise<void>(resolve => { reportWaiting = resolve; });
+    try {
+      await withFsMutex('holder-waiters', async held => {
+        await expect(held.hasWaiters()).resolves.toBe(false);
+        waiter = withFsMutex('holder-waiters', async () => 'acquired after release', {
+          timeoutMs: 5_000, retryMs: 5, onWaiting: reportWaiting,
+        });
+        await waiting;
+        await expect(held.hasWaiters()).resolves.toBe(true);
+      }, { timeoutMs: 5_000, retryMs: 5 });
+      await expect(waiter).resolves.toBe('acquired after release');
+      await withFsMutex('holder-waiters', async held => {
+        await expect(held.hasWaiters()).resolves.toBe(false);
+      }, { timeoutMs: 5_000, retryMs: 5 });
+    } finally {
+      if (waiter) await Promise.allSettled([waiter]);
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it('serves waiters in FIFO ticket order — a later caller cannot leapfrog one already waiting', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'pc-fs-mutex-'));
     process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = dir;

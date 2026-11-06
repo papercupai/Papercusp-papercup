@@ -49,14 +49,14 @@ let checkRun: { ok: boolean; out: string } | undefined;
 function runCheck(): { ok: boolean; out: string } {
   if (!checkRun) {
     try {
-      // The test runner injects committed-source-loader before TSX; default-type=module keeps
-      // this CommonJS-scoped script on TSX's ESM path so .js specifiers resolve to .ts sources.
+      // The test runner injects committed-source-loader before TSX. Use TSX's explicit ESM
+      // entry so this CommonJS-scoped script resolves .js specifiers to .ts sources without
+      // relying on Node's unsupported default-type option.
       const out = execFileSync(
         process.execPath,
         [
-          '--experimental-default-type=module',
           '--import',
-          'tsx',
+          'tsx/esm',
           'scripts/gen-declarations.ts',
           '--check',
         ],

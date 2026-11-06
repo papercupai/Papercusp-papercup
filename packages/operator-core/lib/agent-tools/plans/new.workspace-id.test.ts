@@ -46,6 +46,15 @@ vi.mock('./plan-verification-profile-stamp', () => ({
 vi.mock('../coordination/plan-events', () => ({ emitPlanEventForCaller: vi.fn(async () => {}) }));
 vi.mock('../../harness/usage-emitters', () => ({ emitPlanAuthored: vi.fn(async () => {}) }));
 vi.mock('./item-parse-feedback', () => ({ summarizeItemParse: vi.fn(() => ({})) }));
+vi.mock('../../modes/goal-context', async (orig) => ({
+  ...(await orig<typeof import('../../modes/goal-context')>()),
+  resolveGoalContext: vi.fn(async () => null),
+  stampPlanGoalProvenance: vi.fn(async () => null),
+}));
+vi.mock('../../capability-envelope/session-confinement-port', async (orig) => ({
+  ...(await orig<typeof import('../../capability-envelope/session-confinement-port')>()),
+  sessionAllowsAmbientContext: vi.fn(async () => false),
+}));
 // The mock MUST mirror `AppliedResult` exactly — `kind:'applied'` plus the
 // `scope` pair. with-plan-lock.ts has exactly ONE applied-kind return and it
 // always carries `scope`, so every caller is entitled to read `result.scope`

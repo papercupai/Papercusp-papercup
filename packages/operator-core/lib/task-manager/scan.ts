@@ -149,11 +149,18 @@ interface AsyncScanProgress {
   userManagerRoot: string | null;
   ownedRootAbs: string | null;
   ownedRootExists: boolean | null;
+  startedAtMs: number;
+  activeOperations: Map<number, { phase: string; startedAtMs: number }>;
+  nextOperationId: number;
 }
 
 const DEFAULT_ASYNC_SCAN_DEADLINE_MS = 20_000;
 
 function incompleteAsyncScanResult(progress: AsyncScanProgress): ScanResult {
+  const nowMs = Date.now();
+  const activeOperations = [...progress.activeOperations.values()]
+    .sort((a, b) => a.startedAtMs - b.startedAtMs);
+  const oldestOperation = activeOperations[0];
   return {
     processes: [],
     ownedRootAbs: progress.ownedRootAbs,
@@ -165,6 +172,12 @@ function incompleteAsyncScanResult(progress: AsyncScanProgress): ScanResult {
     foreignTruncated: true,
     unlistedIdentityByPid: new Map(),
     scanTimedOut: true,
+    scanTimeoutElapsedMs: Math.max(0, nowMs - progress.startedAtMs),
+    scanTimeoutPhase: oldestOperation?.phase ?? null,
+    scanTimeoutOperationAgeMs: oldestOperation
+      ? Math.max(0, nowMs - oldestOperation.startedAtMs)
+      : null,
+    scanTimeoutPendingIoCount: activeOperations.length,
   };
 }
 
@@ -187,12 +200,16 @@ export async function scanProcessesAsync(opts: ScanOptions = {}): Promise<ScanRe
   }
   const root = opts.cgroupRoot ?? CGROUP_ROOT;
   const knownManager = opts.userManagerRoot ?? null;
+  const startedAtMs = Date.now();
   const progress: AsyncScanProgress = {
     userManagerRoot: knownManager,
     ownedRootAbs: knownManager
       ? absCgroupDir(`${knownManager}/${TASK_ROOT_SLICE}`, root)
       : null,
     ownedRootExists: null,
+    startedAtMs,
+    activeOperations: new Map(),
+    nextOperationId: 0,
   };
   const controller = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -224,12 +241,21 @@ async function scanProcessesAsyncComplete(
   const selfPid = opts.selfPid ?? process.pid;
   const files = new Map<string, string | null>();
   const directories = new Map<string, string[]>();
-  const file = async (path: string): Promise<string | null> => {
-    const value = await awaitAbortable(() => source.readFile(path, signal), signal);
+  const trackedIo = async <T>(phase: string, start: () => Promise<T>): Promise<T> => {
+    const operationId = progress.nextOperationId++;
+    progress.activeOperations.set(operationId, { phase, startedAtMs: Date.now() });
+    try {
+      return await awaitAbortable(start, signal);
+    } finally {
+      progress.activeOperations.delete(operationId);
+    }
+  };
+  const file = async (path: string, phase: string): Promise<string | null> => {
+    const value = await trackedIo(phase, () => source.readFile(path, signal));
     files.set(path, value);
     return value;
   };
-  const selfCgroup = await file(`/proc/${selfPid}/cgroup`);
+  const selfCgroup = await file('/proc/' + selfPid + '/cgroup', 'self-cgroup');
   const manager = opts.userManagerRoot ?? deriveUserManagerRoot(parseProcCgroup(selfCgroup ?? ''));
   const owned = absCgroupDir(manager ? `${manager}/${TASK_ROOT_SLICE}` : `/${TASK_ROOT_SLICE}`, root);
   progress.userManagerRoot = manager;
@@ -242,20 +268,23 @@ async function scanProcessesAsyncComplete(
     const batch = pending.splice(0, 32).filter(({ dir }) => !visited.has(dir));
     for (const { dir } of batch) visited.add(dir);
     const nodes = await mapWithConcurrency(batch, 16, async ({ dir, depth }) => {
-      const dirExists = await awaitAbortable(() => source.isDir(dir, signal), signal);
+      const dirExists = await trackedIo(
+        dir === owned ? 'owned-cgroup-directory-stat' : 'cgroup-directory-stat',
+        () => source.isDir(dir, signal),
+      );
       if (dir === owned) progress.ownedRootExists = dirExists;
       if (!dirExists) return { dir, depth, children: [] as string[] };
       const [entries, content] = await Promise.all([
         source.readDirEntries
-          ? awaitAbortable(() => source.readDirEntries!(dir, signal), signal)
-          : awaitAbortable(() => source.readDir(dir, signal), signal).then((names) => names.map((name) => ({
+          ? trackedIo('cgroup-directory-read', () => source.readDirEntries!(dir, signal))
+          : trackedIo('cgroup-directory-read', () => source.readDir(dir, signal)).then((names) => names.map((name) => ({
               name,
               isDirectory: false,
               // Legacy test readers expose names only; stat those candidates to
               // preserve their previous behavior, including symlinked dirs.
               isSymbolicLink: true,
             }))),
-        file(`${dir}/cgroup.procs`),
+        file(dir + '/cgroup.procs', 'cgroup-procs'),
       ]);
       for (const pid of parseCgroupProcs(content ?? '')) pids.add(pid);
       if (depth >= 32) {
@@ -265,8 +294,8 @@ async function scanProcessesAsyncComplete(
       const directoryNames = entries.filter((entry) => entry.isDirectory).map((entry) => entry.name);
       const symlinkNames = entries.filter((entry) => entry.isSymbolicLink).map((entry) => entry.name);
       const symlinkDirectories = await mapWithConcurrency(symlinkNames, 16, async (name) => {
-        const child = `${dir}/${name}`;
-        return (await awaitAbortable(() => source.isDir(child, signal), signal)) ? name : null;
+        const child = dir + '/' + name;
+        return (await trackedIo('cgroup-symlink-stat', () => source.isDir(child, signal))) ? name : null;
       });
       const children = [...directoryNames, ...symlinkDirectories.filter((x): x is string => x !== null)];
       directories.set(dir, children);
@@ -276,9 +305,15 @@ async function scanProcessesAsyncComplete(
       for (const child of node.children) pending.push({ dir: child, depth: node.depth + 1 });
     }
   }
-  await Promise.all([file('/proc/sys/kernel/random/boot_id'), file('/proc/uptime')]);
+  await Promise.all([
+    file('/proc/sys/kernel/random/boot_id', 'boot-id'),
+    file('/proc/uptime', 'proc-uptime'),
+  ]);
   await mapWithConcurrency([...pids], 32, async (pid) => {
-    await Promise.all([file(`/proc/${pid}/stat`), file(`/proc/${pid}/cmdline`)]);
+    await Promise.all([
+      file('/proc/' + pid + '/stat', 'proc-stat'),
+      file('/proc/' + pid + '/cmdline', 'proc-cmdline'),
+    ]);
   });
   const snapshot: CgroupFs = {
     readFile: (path) => files.get(path) ?? null,
@@ -384,6 +419,14 @@ export interface ScanResult {
   foreignTruncated: boolean;
   /** True only when the async IO deadline won the scan race. */
   scanTimedOut?: boolean;
+  /** Elapsed wall time when the async IO deadline returned incomplete coverage. */
+  scanTimeoutElapsedMs?: number;
+  /** Coarse phase of the oldest outstanding async filesystem operation at timeout. */
+  scanTimeoutPhase?: string | null;
+  /** Age of that outstanding operation when the deadline returned. */
+  scanTimeoutOperationAgeMs?: number | null;
+  /** Number of async filesystem operations still outstanding at timeout. */
+  scanTimeoutPendingIoCount?: number;
   /**
    * User-manager processes the FOREIGN pass read but did NOT list because their
    * cmdline misses `foreignSignature`: pid → kernel identity. Never displayed

@@ -126,7 +126,8 @@ describe('D012 native generation closure', () => {
       expect(readFileSync(join(before, 'tree/packages/cli/dist/cli.cjs'), 'utf8')).toContain('frozen-workspace');
     expect(existsSync(join(f.dest, 'node_modules'))).toBe(false);
     expect(existsSync(join(f.dest, 'packages/cli/dist'))).toBe(false);
-    expect(readdirSync(join(f.donor, '.papercusp/dependency-exact-ref'))).toEqual([]);
+    const donorScratch = join(f.donor, '.papercusp/dependency-exact-ref');
+    expect(existsSync(donorScratch) ? readdirSync(donorScratch) : []).toEqual([]);
     expect(readdirSync(join(f.store, '.papercusp/dependency-exact-ref'))).toEqual([]);
     expect(existsSync(join(f.store, '.leases')) ? readdirSync(join(f.store, '.leases')) : []).toEqual([]);
     const compatible = f.shell(f.snapshotHelper, ['preflight-generation', f.dest, f.dest]);

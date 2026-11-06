@@ -8,10 +8,12 @@ import { buildReportViewer, REPORT_VIEWER_MARKER, REPORT_VIEWER_REPO, type Repor
 
 export interface ReportShare {
   workspaceId: string; reportId: string; accountId: number; login: string;
-  operationId: string; digest: string; phase: 'intent' | 'creating' | 'cancelling' | 'active' | 'removing' | 'removed';
-  gistId?: string; repoId?: number; viewerVersion?: string; viewerTreeSha?: string;
+  operationId: string; digest: string; phase: 'intent' | 'creating' | 'cancelling' | 'cancelled' | 'active' | 'removing' | 'removed';
+  gistId?: string; repoId?: number; viewerVersion?: string; viewerTreeSha?: string; viewerGeneration?: number;
+  cancelledOperations?: string[];
 }
 export interface SharePersistence {
+  viewerState(accountId: number): Promise<{ repoId: number; treeSha: string; generation: number } | null>;
   list(workspaceId: string, reportId: string): Promise<ReportShare[]>;
   get(workspaceId: string, reportId: string, accountId: number): Promise<ReportShare | null>;
   put(share: ReportShare): Promise<void>;
@@ -20,7 +22,7 @@ export interface ReportShareStore {
   locked<T>(key: string, work: (store: SharePersistence) => Promise<T>): Promise<T>;
 }
 export interface ReportShareStatus {
-  phase: 'inactive' | 'pending' | 'ready' | 'uncertain';
+  phase: 'inactive' | 'pending' | 'ready' | 'uncertain' | 'cancelled';
   accountId: number; login: string; url?: string; message?: string;
 }
 type Gist = { id: string; public: boolean; owner?: { id: number } | null; files?: Record<string, { content?: string; truncated?: boolean } | null> | null };
@@ -46,36 +48,52 @@ export async function changeReportSharing(input: {
   const { report, accountId, action } = input;
   const user = await deps.github.user();
   if (user.id !== accountId) throw new ReportSharingError('account_changed', 'The selected GitHub account changed. Reload the report before sharing.');
-  return deps.store.locked(JSON.stringify([report.workspaceId, report.reportId]), async store => {
+  return deps.store.locked('report-sharing-account:' + user.id, () => deps.store.locked(JSON.stringify([report.workspaceId, report.reportId]), async store => {
     let share = await store.get(report.workspaceId, report.reportId, user.id);
     const inactive: ReportShareStatus = { phase: 'inactive', accountId: user.id, login: user.login };
-    const others = (await store.list(report.workspaceId, report.reportId)).filter(row => row.accountId !== user.id && row.phase !== 'removed');
+    const associations = await store.list(report.workspaceId, report.reportId);
+    const others = associations.filter(row => row.accountId !== user.id && row.phase !== 'removed' && row.phase !== 'cancelled');
+    const cancelledElsewhere = associations.filter(row => row.accountId !== user.id && row.cancelledOperations?.length);
+    const cancellationNotice = cancelledElsewhere.length ? ' A locally cancelled publication in ' + cancelledElsewhere.map(row => row.login).join(', ') + "'s account still has a late-result tombstone. Switch back to check or remove late Gists; remote deletion was not confirmed." : '';
     if (others.length) {
       const message = 'This edition is already shared or has a pending publication in ' + others.map(row => row.login).join(', ') + "'s GitHub account. Switch back to that account to check or stop it.";
       if (action === 'status') return { ...inactive, phase: 'uncertain', message };
       throw new ReportSharingError('other_account_share', message);
     }
     if (action === 'status') {
-      if (!share || share.phase === 'removed') return inactive;
-      return { ...inactive, phase: 'pending', message: 'Check sharing to verify the saved snapshot and viewer readiness.' };
+      if (!share || share.phase === 'removed') return cancellationNotice ? { ...inactive, phase: 'cancelled', message: cancellationNotice.trim() } : inactive;
+      if (share.phase === 'cancelled') return { ...inactive, phase: 'cancelled', message: 'Publication was cancelled locally. GitHub returned no matching Gist. Check or Stop again to remove any late result; remote deletion is not confirmed.' };
+      return { ...inactive, phase: 'pending', message: 'Check sharing to verify the saved snapshot and viewer readiness.' + cancellationNotice };
     }
-    const assertOwned = (gist: Gist) => {
-      if (gist.owner?.id !== user.id || gist.public !== false || !/^[a-f0-9]{32}$/i.test(gist.id) || (share?.gistId && gist.id !== share.gistId))
+    const assertOwned = (gist: Gist, selected = true) => {
+      if (gist.owner?.id !== user.id || gist.public !== false || !/^[a-f0-9]{32}$/i.test(gist.id) || (selected && share?.gistId && gist.id !== share.gistId))
         throw new ReportSharingError('ownership_mismatch', 'The saved Gist is not a secret report owned by the selected GitHub account.');
     };
-    const validate = (gist: Gist) => {
-      assertOwned(gist);
+    const validate = (gist: Gist, selected = true) => {
+      assertOwned(gist, selected);
       const file = gist.files?.['report.md'];
       if (!file || file.truncated || typeof file.content !== 'string' || digestOf(file.content) !== share!.digest)
         throw new ReportSharingError('snapshot_changed', 'The Gist was changed outside Papercusp. Stop sharing before publishing a new snapshot.');
     };
+    // Cancelled operation IDs survive a subsequent publication. Explicit Check
+    // or Stop reconciles/reaps late matches; opening the reader never mutates GitHub.
+    const lateCandidates = new Set<string>();
+    for (const operationId of share?.cancelledOperations ?? []) {
+      const found = [...new Set(await deps.github.find(operationId))];
+      for (const id of found) { const candidate = await deps.github.gist(id); if (candidate) validate(candidate, false); lateCandidates.add(id); }
+    }
+    for (const id of lateCandidates) await deps.github.remove(id);
     if (share?.phase === 'cancelling' && action !== 'stop')
       throw new ReportSharingError('removal_pending', 'Cancellation is saved. Retry Stop sharing to reconcile the previous publication; no new Gist will be created.');
     if (share?.phase === 'creating' || share?.phase === 'cancelling') {
       if (action === 'stop') {
         share = { ...share, phase: 'cancelling' }; await store.put(share);
         const found = [...new Set(await deps.github.find(share.operationId))];
-        if (!found.length) return { ...inactive, phase: 'uncertain', message: 'Cancellation is saved, but the previous GitHub request is still unconfirmed. No new Gist will be created. Retry Stop sharing shortly.' };
+        if (!found.length) {
+          share = { ...share, phase: 'cancelled', cancelledOperations: [...new Set([...(share.cancelledOperations ?? []), share.operationId])] };
+          await store.put(share);
+          return { ...inactive, phase: 'cancelled', message: 'Publication cancelled locally. GitHub returned no matching Gist. Remote deletion is not confirmed; Check or Stop again to remove any late result.' };
+        }
         // Validate the entire discovered population before deleting anything.
         for (const id of found) { const candidate = await deps.github.gist(id); if (candidate) validate(candidate); }
         for (const id of found) await deps.github.remove(id);
@@ -89,6 +107,7 @@ export async function changeReportSharing(input: {
     }
     if (action === 'stop') {
       if (!share || share.phase === 'removed') return inactive;
+      if (share.phase === 'cancelled') return { ...inactive, phase: 'cancelled', message: 'Publication remains cancelled locally. No matching Gist was found; remote deletion is not confirmed. Late results will be removed on future sharing checks.' };
       if (share.gistId) {
         const current = await deps.github.gist(share.gistId);
         if (current) assertOwned(current);
@@ -104,27 +123,29 @@ export async function changeReportSharing(input: {
       validate(current);
     }
     const assets = await (deps.assets ?? buildReportViewer)();
-    const viewer = await deps.github.prepareViewer(assets, share?.repoId, share?.viewerTreeSha);
-    if (!share || share.phase === 'removed') {
+    const accountViewer = await store.viewerState(user.id);
+    const viewer = await deps.github.prepareViewer(assets, accountViewer?.repoId ?? share?.repoId, accountViewer?.treeSha ?? share?.viewerTreeSha);
+    const viewerGeneration = accountViewer && accountViewer.treeSha === viewer.treeSha ? accountViewer.generation : (accountViewer?.generation ?? 0) + 1;
+    if (!share || share.phase === 'removed' || share.phase === 'cancelled') {
       share = { workspaceId: report.workspaceId, reportId: report.reportId, accountId: user.id, login: user.login,
-        operationId: randomUUID(), digest: digestOf(report.bodyMd), phase: 'intent' };
+        operationId: randomUUID(), digest: digestOf(report.bodyMd), phase: 'intent', cancelledOperations: share?.cancelledOperations };
       await store.put(share);
     }
     if (share.digest !== digestOf(report.bodyMd)) throw new ReportSharingError('edition_changed', 'The saved edition no longer matches its snapshot.');
     if (share.phase === 'intent') {
-      share = { ...share, phase: 'creating', repoId: viewer.repoId, viewerVersion: assets.version, viewerTreeSha: viewer.treeSha }; await store.put(share);
+      share = { ...share, phase: 'creating', repoId: viewer.repoId, viewerVersion: assets.version, viewerTreeSha: viewer.treeSha, viewerGeneration }; await store.put(share);
       // Failure keeps a durable recovery key. Never blindly repeat POST /gists.
       const gist = await deps.github.create(share.operationId, report.bodyMd);
       validate(gist); share = { ...share, gistId: gist.id, phase: 'active' }; await store.put(share);
     }
-    if (share.viewerTreeSha !== viewer.treeSha || share.viewerVersion !== assets.version) {
-      share = { ...share, repoId: viewer.repoId, viewerTreeSha: viewer.treeSha, viewerVersion: assets.version }; await store.put(share);
+    if (share.viewerTreeSha !== viewer.treeSha || share.viewerVersion !== assets.version || share.viewerGeneration !== viewerGeneration) {
+      share = { ...share, repoId: viewer.repoId, viewerTreeSha: viewer.treeSha, viewerVersion: assets.version, viewerGeneration }; await store.put(share);
     }
     const ready = viewer.ready && await deps.github.readable(user.login, share.gistId!, assets.version, share.digest, assets);
     return { ...inactive, phase: ready ? 'ready' : 'pending', ...(ready
-      ? { url: 'https://' + user.login.toLowerCase() + '.github.io/' + REPORT_VIEWER_REPO + '/?v=' + assets.version + '#' + new URLSearchParams({ gist: user.login + '/' + share.gistId }) }
+      ? { url: 'https://' + user.login.toLowerCase() + '.github.io/' + REPORT_VIEWER_REPO + '/?v=' + assets.version + '#' + new URLSearchParams({ gist: user.login + '/' + share.gistId }), ...(cancellationNotice ? {message:cancellationNotice.trim()} : {}) }
       : { message: 'The secret snapshot is saved. GitHub Pages is preparing the reader. Check again shortly.' }) };
-  });
+  }));
 }
 
 /** Pin selected credentials for the entire operation; no active-account fallback. */

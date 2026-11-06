@@ -10,7 +10,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { parseAsString, useQueryState } from 'nuqs';
 import { fetchBrowserSyncQuery as fetchSyncQuery } from '../../../lib/hosted-browser-api';
-import { useDeferredReportMarkdown } from '@papercusp/operator-ui/papercup-chat';
+import { ChatLink, ownerChatUrlTransform, useDeferredReportMarkdown } from '@papercusp/operator-ui/papercup-chat';
 import { parseGoalOwnerReportSnapshot, type GoalOwnerReportRefV1, type ReportBlock } from '@papercusp/chat-protocol';
 import {
   ReportBlockCard as SharedReportBlockCard,
@@ -35,7 +35,7 @@ interface WorkRefPillHastNode {
 
 const REPORT_MARKDOWN_COMPONENTS = {
   p: ({ children }: { children?: ReactNode }) => <span className="report-block-item-text">{children}</span>,
-  a: ({ children, href }: { children?: ReactNode; href?: string }) => <a href={href} target="_blank" rel="noreferrer">{children}</a>,
+  a: ({ children, href }: { children?: ReactNode; href?: string }) => <ChatLink href={href} isOwner>{children}</ChatLink>,
 };
 
 type ReportWorkRef = { id: string; kind: WorkRefKind; planSlug?: string | null };
@@ -131,7 +131,7 @@ const RichItemText = memo(function RichItemText({
   }
 
   return (
-    <ReactMarkdown remarkPlugins={REPORT_REMARK_PLUGINS} components={components}>
+    <ReactMarkdown remarkPlugins={REPORT_REMARK_PLUGINS} components={components} urlTransform={ownerChatUrlTransform}>
       {withHardBreaks(markdownText)}
     </ReactMarkdown>
   );
