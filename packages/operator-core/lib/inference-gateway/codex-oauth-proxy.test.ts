@@ -580,6 +580,29 @@ describe('preflightCodexModel (EI-20362893066852316)', () => {
       status: 200,
     });
   });
+
+  it.each([
+    Object.assign(new Error('Connect Timeout Error (attempted address: chatgpt.com:443, timeout: 10000ms)'), {
+      code: 'UND_ERR_CONNECT_TIMEOUT',
+    }),
+    Object.assign(new AggregateError([
+      new Error('connect ETIMEDOUT 104.18.32.47:443'),
+      new Error('connect ENETUNREACH 2606:4700:4408::ac40:9bd1:443'),
+    ]), { code: 'ETIMEDOUT' }),
+  ])('preserves the transport cause without turning it into a model refusal', async cause => {
+    const transport = vi.fn(async () => {
+      throw new TypeError('fetch failed', { cause });
+    }) as unknown as typeof fetch;
+    const result = await preflightCodexModel('/tmp/codex', 'gpt-6.1-sol', { fetchImpl: transport, resolveAuth });
+
+    expect(result.verdict).toBe('unknown');
+    expect('detail' in result && result.detail).toContain(cause.code);
+    if (cause instanceof AggregateError) {
+      for (const attempt of cause.errors) expect('detail' in result && result.detail).toContain(attempt.message);
+    } else {
+      expect('detail' in result && result.detail).toContain(cause.message);
+    }
+  });
 });
 
 describe('refreshCodexToken', () => {

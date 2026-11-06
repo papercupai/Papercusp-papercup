@@ -40,6 +40,7 @@ import { StringDecoder } from 'node:string_decoder';
 import { parseBridgeModel } from './codex-cli-bridge';
 import { parseProviderReset } from './provider-reset';
 import { CODEX_MODEL_REFUSAL_RE } from './codex-model-refusals';
+import { describeFetchError } from '../loopback-fetch';
 import type { AccountCreditBalance } from '../deployment/account-pool';
 
 /** The ChatGPT backend that serves codex Responses for ChatGPT-subscription auth. */
@@ -954,7 +955,7 @@ export async function preflightCodexModel(
     }
     return { verdict: 'unknown', status: res.status, detail: bodyText.slice(0, 200) };
   } catch (e) {
-    return { verdict: 'unknown', detail: `preflight transport: ${(e as Error).message}` };
+    return { verdict: 'unknown', detail: `preflight transport: ${describeFetchError(e)}` };
   } finally {
     clearTimeout(timer);
   }
