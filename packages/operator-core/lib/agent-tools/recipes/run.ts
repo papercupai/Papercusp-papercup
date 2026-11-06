@@ -36,7 +36,7 @@ import {
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { resolveLearningPotSlug } from '../../learning/pot-scope';
-import { getRecipe, recordRecipeRun, recipeRunChoice, type RecipeRunUsage } from '../../code-recipes-store';
+import { getRecipe, recordRecipeRun, recipeRunChoice, type RecipeRunUsage, type RecipeRunEvidence } from '../../code-recipes-store';
 import { PROJECTED_DEPS } from '../../projected-tool-deps';
 import { runBulk, bulkContent, type BulkItemResult } from '../_bulk';
 import { DISPATCH_WRAPPER_METADATA_KEY } from '../sessions/automatic-tool-names';
@@ -323,23 +323,47 @@ export default defineTool({
 
     const env = await runBulk(
       list,
-      async (it): Promise<BulkItemResult> => {
+      async (it, attempt): Promise<BulkItemResult> => {
+        const attemptStartedAt = Date.now();
         const recipe = await getRecipe(sql, it.id);
         if (!recipe) {
           return { ok: false, id: it.id, error: 'not_found' };
         }
+        const evidence = (executed: boolean, intermediateBytes: number | null): RecipeRunEvidence => ({
+          version: 1, invocationId: ctx.dispatchCallId ?? null, attempt, executed,
+          sourceBytes: Buffer.byteLength(recipe.script, 'utf8'), intermediateBytes,
+          elapsedBeforeRecordMs: Math.max(0, Date.now() - attemptStartedAt),
+        });
+        // A deliberate selection can be refused before any script dispatch.
+        // Keep that terminal disposition on the same run ledger as executions;
+        // never manufacture an execution trace or increment popularity for it.
+        const refused = async (failure: BulkItemResult): Promise<BulkItemResult> => {
+          try {
+            await recordRecipeRun(sql, {
+              recipeId: recipe.id, workspaceId, potSlug: await runPotSlug(),
+              agentOwner: ownerId, agentRole: ctx.role ?? null,
+              success: false, reused: true, countTowardRecipe: false,
+              runEvidence: evidence(false, 0),
+              usage: { version: 1, selection: 'saved-replay', choice,
+                mode: it.dryRun ? 'preview' : 'commit', outcome: 'refused', settled: true },
+            });
+          } catch (err) {
+            ctx.log(`recipes:run refusal record failed: ${(err as Error)?.message ?? String(err)}`);
+          }
+          return { ...failure, phase: 'preflight', executed: false };
+        };
         // A recipe can outlive a tool-schema change. Validate the statically
         // provable calls against the CURRENT catalog before execution so a
         // removed enum/argument (e.g. checkpoint-run op:"status") fails with
         // an actionable stale-recipe result instead of a runtime surprise.
         const schemaValidation = await validateRecipeScriptAgainstCatalog(recipe.script, all);
         if (!schemaValidation.ok) {
-          return {
+          return refused({
             ok: false,
             id: it.id,
             error: 'recipe_schema_stale',
             schemaIssues: schemaValidation.issues,
-          };
+          });
         }
         const staticToolNames = [...new Set([
           ...schemaValidation.staticToolNames.map(projectedToolName),
@@ -354,7 +378,7 @@ export default defineTool({
           derivedReplayClass: runtimeRecipeReplayClass(staticToolNames, all),
           catalog: currentCallerRecipeCatalog(all, allowed),
         });
-        if (!contract.ok) return preflightResult(it.id, contract);
+        if (!contract.ok) return refused(preflightResult(it.id, contract));
         const authority = await validateRecipeAuthorityProof({
           script: recipe.script,
           updatedAt: recipe.updatedAt,
@@ -388,13 +412,13 @@ export default defineTool({
                   suppliedRevision: it.authority.revision,
                 })
               : undefined;
-          return {
+          return refused({
             ok: false,
             id: it.id,
             error: authority.error,
             reason: authority.reason,
             ...(authorityDiagnostics ? { authorityDiagnostics } : {}),
-          };
+          });
         }
         const needsLiveRefs =
           authority.descriptor.refs.plans.length > 0 ||
@@ -402,15 +426,15 @@ export default defineTool({
           authority.descriptor.refs.resources.length > 0;
         if (needsLiveRefs) {
           const pendingRefs = liveBoundRefs();
-          if (!pendingRefs) return { ok: false, id: it.id, error: 'authority_live_context_unavailable' };
+          if (!pendingRefs) return refused({ ok: false, id: it.id, error: 'authority_live_context_unavailable' });
           let refs: RecipeAuthorityRefs;
           try {
             refs = await pendingRefs;
           } catch {
-            return { ok: false, id: it.id, error: 'authority_live_context_unavailable' };
+            return refused({ ok: false, id: it.id, error: 'authority_live_context_unavailable' });
           }
           if (!recipeAuthorityMatchesLiveRefs(authority.descriptor, refs)) {
-            return { ok: false, id: it.id, error: 'authority_entity_mismatch' };
+            return refused({ ok: false, id: it.id, error: 'authority_entity_mismatch' });
           }
         }
         const dryRun = it.dryRun ?? false;
@@ -447,7 +471,10 @@ export default defineTool({
         // undefined values after a tool-schema change. The caller must update the recipe
         // script before it is eligible for a successful reuse record again.
         const fieldMisses = Array.isArray(result.fieldMisses) ? result.fieldMisses : [];
-        const successfulReuse = Boolean(result.ok) && fieldMisses.length === 0;
+        const settled = !result.detachedCalls?.length
+          && !callRecords?.some(call => call.disposition === 'in_flight');
+        const successfulReuse = settled && Boolean(result.ok) && !result.partial
+          && !result.childFailures?.length && fieldMisses.length === 0;
 
         // P-013: every EXECUTED saved script gets one normalized trace row,
         // including failures and dry-run previews. Only a successful committing
@@ -471,8 +498,10 @@ export default defineTool({
             reused: true,
             executionTrace,
             countTowardRecipe: successfulReuse && !dryRun,
+            runEvidence: evidence(true, result.intermediateBytes ?? null),
             usage: { version: 1, selection: 'saved-replay', choice,
-              mode: dryRun ? 'preview' : 'commit', outcome: successfulReuse ? 'success' : 'error', settled: true },
+              mode: dryRun ? 'preview' : 'commit',
+              outcome: !settled ? 'unknown' : successfulReuse ? 'success' : 'error', settled },
           });
         } catch (err) {
           ctx.log(`recipes:run trace record failed (swallowed): ${(err as Error)?.message ?? String(err)}`);
@@ -490,10 +519,9 @@ export default defineTool({
           };
         }
 
-        // The script's own ok/error rides inside `result`; the item is "ok" in the
-        // sense that the recipe RAN — mirror the result's ok so counts.failed
-        // reflects scripts that failed, not just recipes that were absent.
-        return { ok: Boolean(result.ok), id: it.id, result: publicResult };
+        // The original script result remains inspectable. Batch success also
+        // requires settled children without partial/failed execution evidence.
+        return { ok: successfulReuse, id: it.id, result: publicResult };
       },
       { keyOf: (it) => ({ id: it.id }) },
     );

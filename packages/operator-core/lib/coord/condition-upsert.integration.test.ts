@@ -278,6 +278,41 @@ describe('exact-identity author handoff — rubric workflow P004', () => {
     expect(coerceJson<{ receipts: Array<Record<string, unknown>> }>(stored.receipt)?.receipts.at(-1)).toMatchObject({ verdictRef: 'EI-audited-final',
       reason: 'independent-audit:EI-independent-audit' });
   });
+
+  it('handoff-settlement-recovery: closes a work item after a crash between its completed receipt and lifecycle write', async () => {
+    const t = target('settlement-crash');
+    const queued = await reserveAuthorVettingHandoff(t, request);
+    const common = { id: queued.id, target: t, actorId: 'su-author', authorize: async () => true };
+    await advanceAuthorVettingHandoff({ ...common, phase: 'pickup' });
+    const [picked] = await db.sql`SELECT payload -> 'authorHandoff' AS receipt FROM harness_shared.work_items
+      WHERE workspace_id = ${WS} AND feature_id = ${queued.id}`;
+    // Persist exactly the boundary before setWorkItemState, then start a fresh reader.
+    const receipt = coerceJson<import('./condition-upsert').AuthorHandoffReceipt>(picked.receipt)!;
+    receipt.state = 'completed';
+    receipt.receipts.push({ state: 'completed', at: '2026-11-06T00:00:00Z', actorId: 'su-author', verdictRef: 'EI-persisted-final' });
+    await db.sql`UPDATE harness_shared.work_items SET payload = jsonb_set(payload, '{authorHandoff}', ${JSON.stringify(receipt)}::jsonb)
+      WHERE workspace_id = ${WS} AND feature_id = ${queued.id}`;
+    const [before] = await db.sql`SELECT status FROM harness_shared.work_items
+      WHERE workspace_id = ${WS} AND feature_id = ${queued.id}`;
+    expect(ANY_FAMILY_TERMINAL_STATES).not.toContain(before.status);
+    vi.resetModules();
+    const fresh = await import('./condition-upsert');
+
+    expect(await fresh.advanceAuthorVettingHandoff({ ...common, actorId: 'su-impostor', phase: 'settle', verdictRef: 'EI-persisted-final' }))
+      .toMatchObject({ ok: false });
+    const [stillOpen] = await db.sql`SELECT status FROM harness_shared.work_items
+      WHERE workspace_id = ${WS} AND feature_id = ${queued.id}`;
+    expect(ANY_FAMILY_TERMINAL_STATES).not.toContain(stillOpen.status);
+    for (let attempt = 0; attempt < 2; attempt++) {
+      expect(await fresh.advanceAuthorVettingHandoff({ ...common, phase: 'settle', verdictRef: 'EI-persisted-final' }))
+        .toMatchObject({ ok: true, state: 'completed' });
+    }
+    const [stored] = await db.sql`SELECT status, terminal_completion_ref, payload -> 'authorHandoff' AS receipt
+      FROM harness_shared.work_items WHERE workspace_id = ${WS} AND feature_id = ${queued.id}`;
+    expect(ANY_FAMILY_TERMINAL_STATES).toContain(stored.status);
+    expect(stored.terminal_completion_ref).toBe('EI-persisted-final');
+    expect(coerceJson(stored.receipt)).toEqual(receipt);
+  });
 });
 
 beforeAll(async () => {

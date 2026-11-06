@@ -40,6 +40,15 @@ it('persists repeatable scoped checks with build baseline windows and denominato
     expect(details.check?.provenance).toMatchObject({ truncated: false, redacted: false });
     const context = JSON.parse(details.check!.provenance!.procedure.snapshot);
     expect(context.measurement).toEqual(value.repair);
+    for (const window of ['baseline', 'observation'] as const) {
+      expect(JSON.parse(context.recipeOutcomes[window])).toMatchObject({
+        scope: { workspaceId: value.workspaceId, harnessSlug: value.harnessSlug,
+          windowStart: value.repair![window].since, windowEnd: value.repair![window].until },
+        lineage: { rubricRef: SQL_FEEDBACK_RUBRIC, criterionKey: `${sqlFeedbackIdentity(value)}:repair-outcome` },
+        measurement: { attempts: 0 }, coverage: { state: 'unknown', complete: false },
+        benefit: { measuredSavings: null },
+      });
+    }
   }
   const repeat = await record({ ...value, measuredAt: '2026-10-25T01:00:00Z' });
   expect(repeat.testRunIds).not.toEqual(first.testRunIds);

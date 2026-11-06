@@ -85,6 +85,7 @@ const codexThreadWriterHolderMock = vi.hoisted(() =>
 const originalRoutingGuardMock = vi.hoisted(() => vi.fn());
 const inspectBlindReviewResumeTargetMock = vi.hoisted(() => vi.fn());
 const verifyBlindReviewSessionResumeBindingMock = vi.hoisted(() => vi.fn());
+const sessionProcessHolderMock = vi.hoisted(() => vi.fn());
 vi.mock('../../blind-review-session-bindings', async (orig) => ({
   ...(await orig<typeof import('../../blind-review-session-bindings')>()),
   inspectBlindReviewResumeTarget: (...args: unknown[]) => inspectBlindReviewResumeTargetMock(...args),
@@ -95,6 +96,7 @@ vi.mock('../../../../../apps/operator/scripts/psu-launcher.mjs', async (orig) =>
   ORIGINAL_CODEX_ROUTING_ENV: 'PAPERCUSP_ORIGINAL_CODEX_ROUTING',
   assertOriginalCodexRouting: (...args: unknown[]) => originalRoutingGuardMock(...args),
   codexThreadWriterHolder: (...args: [string, string | null]) => codexThreadWriterHolderMock(...args),
+  sessionProcessHolder: (...args: unknown[]) => sessionProcessHolderMock(...args),
 }));
 
 const shutdownViaPtyMock = vi.hoisted(() => vi.fn(async (_ownerId: string, _opts?: unknown) => 'sent'));
@@ -367,7 +369,7 @@ const { goalHolderPlanFleetBypass, INTERNAL_LOOP_FIRE_ORIGIN, INTERNAL_SCOPED_IN
 
 const ctx = { workspaceId: 'ws-test', harnessSlug: 'papercusp', role: 'su' } as never;
 const textOf = (res: unknown): string => (res as { content: Array<{ text: string }> }).content[0].text;
-const dataOf = (res: unknown) => (res as { data?: { deduped?: boolean; launch?: Record<string, unknown>; launchFailure?: { stage: string; processesOpened: number } } }).data;
+const dataOf = (res: unknown) => (res as { data?: { deduped?: boolean; completionReceipt?: unknown; launch?: Record<string, unknown>; launchFailure?: { stage: string; processesOpened: number } } }).data;
 const isError = (res: unknown): boolean => !!(res as { isError?: boolean }).isError;
 /** The command the tool actually handed to the spawner. */
 const spawnedCommand = (mock = spawnConsoleMock): string =>
@@ -396,6 +398,7 @@ beforeEach(() => {
     sessionId: null,
     reason: 'no-lock-file',
   });
+  sessionProcessHolderMock.mockReset().mockReturnValue({ held: false, reason: 'clean-scan' });
   codexPreflightHomeMock.mockResolvedValue(null);
   codexPreflightModelMock.mockReset();
   claimAgentLaunchMock.mockResolvedValue({
@@ -2188,7 +2191,9 @@ describe('resume + fork (D-004/D-007)', () => {
     resolveResumeTargetMock.mockResolvedValue(terminalStamp ? dead : { ...dead, endedAt: null, endedBy: null });
     const result = await launchAgent.handler({ resume: { agentId: dead.ownerId }, fork: false, brief: 'continue exact work' }, ctx);
     expect(isError(result), textOf(result)).toBe(false);
-    expect(acquireAdvSessionResumeMock).toHaveBeenCalledWith(11, expect.any(String), 300, undefined, undefined, true);
+    expect(acquireAdvSessionResumeMock).toHaveBeenCalledWith(11, expect.any(String), 300, undefined,
+      terminalStamp ? undefined : { version: 1, kind: 'no-live-claude-process' }, true,
+      { workspaceId: 'ws-test', binding: dead.binding });
     expect(acquireAdvSessionResumeMock.mock.invocationCallOrder[0])
       .toBeLessThan(spawnGovernedAgentProcessMock.mock.invocationCallOrder[0]);
     const reservation = JSON.parse(spawnedEnv().PAPERCUSP_GOVERNED_RESUME_RESERVATION);
@@ -2202,6 +2207,39 @@ describe('resume + fork (D-004/D-007)', () => {
     }), expect.any(Function));
     expect(releaseAdvSessionResumeMock).not.toHaveBeenCalled();
     expect(markAdvSessionEndedMock).not.toHaveBeenCalled();
+  });
+
+  it.each(['codex', 'claude', 'omp'])('reserves a recently hard-killed %s source using its measured native absence and exact binding', async agent => {
+    findLiveHostMock.mockReturnValue(null);
+    const recent = { ...dead, agent, endedAt: null, endedBy: null };
+    resolveResumeTargetMock.mockResolvedValue(recent);
+    const kind = agent === 'codex' ? 'no-live-codex-writer' : `no-live-${agent}-process`;
+    acquireAdvSessionResumeMock.mockImplementation(async (_id, _key, _lease, _stale, evidence, _retired, pin) =>
+      evidence?.kind === kind && pin?.binding === dead.binding
+        ? { acquired: true, leaseExpiresAt: new Date(Date.now() + 300_000).toISOString() }
+        : { acquired: false, status: 'live' });
+    const result = await launchAgent.handler({ resume: { agentId: dead.ownerId }, fork: false,
+      [INTERNAL_INTERRUPTION_RECOVERY]: { ownerId: dead.ownerId, nativeSessionId: dead.sessionId, wait: true },
+    } as never, ctx);
+    expect(isError(result), textOf(result)).toBe(false);
+    expect(spawnConsoleMock).toHaveBeenCalledTimes(1);
+    expect(acquireAdvSessionResumeMock).toHaveBeenCalledWith(11, expect.any(String), 300, undefined,
+      { version: 1, kind }, true, { workspaceId: 'ws-test', binding: dead.binding });
+    expect(markAdvSessionEndedMock).not.toHaveBeenCalled();
+  });
+
+  it.each(['claude', 'omp'])('does not turn an incomplete %s process scan into a recent-row absence witness', async agent => {
+    findLiveHostMock.mockReturnValue(null);
+    resolveResumeTargetMock.mockResolvedValue({ ...dead, agent, endedAt: null, endedBy: null });
+    sessionProcessHolderMock.mockReturnValue({ held: false, reason: 'no-proc' });
+    acquireAdvSessionResumeMock.mockResolvedValue({ acquired: false, status: 'live' });
+    const result = await launchAgent.handler({ resume: { agentId: dead.ownerId }, fork: false,
+      [INTERNAL_INTERRUPTION_RECOVERY]: { ownerId: dead.ownerId, nativeSessionId: dead.sessionId, wait: true },
+    } as never, ctx);
+    expect(isError(result)).toBe(true);
+    expect(acquireAdvSessionResumeMock.mock.calls[0][4]).toBeUndefined();
+    expect(spawnConsoleMock).not.toHaveBeenCalled();
+    expect(spawnHeadlessMock).not.toHaveBeenCalled();
   });
 
   it('releases the exact startup reservation after a pre-child governor refusal', async () => {
@@ -4732,7 +4770,7 @@ describe('idempotency (P-014: a replay must not open a second set of windows)', 
 
     const res = await launchAgent.handler({ brief: 'do it', idempotencyKey: 'retry-interrupted' }, ctx);
     const progress = recordAgentLaunchResultMock.mock.calls
-      .map(([call]) => call.summary)
+      .map(([call]) => (call as { summary: { memberResults?: Record<string, { pid?: number }> } }).summary)
       .find((summary) => summary.memberResults?.['0']?.pid === 4242);
 
     expect(progress).toMatchObject({

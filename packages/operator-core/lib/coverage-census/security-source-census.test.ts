@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -21,7 +21,7 @@ const progress = (sources: PinnedSecuritySource[]): SecuritySourceProgress => ({
   pending: sources.map(file => ({ path: file.path, commit: file.commit, blobOid: file.blobOid,
     bytes: file.bytes.length, reason: 'source-byte-budget' })), capturedShards: [], populationComplete: false, closureAccepted: false });
 const selectedSnapshot = (sources: PinnedSecuritySource[], paths: string[]): SecuritySourceSnapshot => ({ ...snapshot(sources),
-  selection: { paths: [...paths].sort(), maxBytes: 1000, maxFiles: paths.length,
+  selection: { paths: [...paths].sort(), maxBytes: 1000, maxFiles: paths.length, maxInputBytes: 2 * 1024 * 1024,
     filesRead: sources.length, bytesRead: sources.reduce((sum, file) => sum + file.bytes.length, 0), populationComplete: false } });
 const receipt = (censusFingerprint: string) => ({ sha256: '3'.repeat(64), censusFingerprint });
 
@@ -129,9 +129,34 @@ describe('pinned security source discovery', () => {
     expect(() => advanceSecuritySourceProgress(queue, unavailable, receipt(unavailable.discovery.fingerprint))).toThrow('no_progress');
   });
 
+  it('captures an explicitly budgeted large committed shard without turning archival into closure', () => {
+    const root = mkdtempSync(join(tmpdir(), 'security-large-source-'));
+    const git = (...args: string[]) => execFileSync('git', ['-C', root, ...args], { encoding: 'utf8', timeout: 20_000 });
+    try {
+      const text = JSON.stringify({ data: 'x'.repeat(2 * 1024 * 1024) }), bytes = Buffer.from(text);
+      writeFileSync(join(root, 'large.json'), bytes);
+      git('init', '-q'); git('add', 'large.json');
+      git('-c', 'user.name=Source Census Test', '-c', 'user.email=source-census@example.invalid',
+        '-c', 'core.hooksPath=/dev/null', 'commit', '-qm', 'large pinned fixture');
+      const commit = git('rev-parse', 'HEAD').trim();
+      const file = { path: 'large.json', repository: '.', commit, blobOid: blobHash(bytes), bytes };
+      const queue = { ...progress([file]), repositories: [{ path: '.', commit }] };
+      const refused = captureSecuritySourceShard(root, queue, ['large.json']);
+      expect(refused.discovery.inventory.files).toEqual([]);
+      expect(refused.discovery.inventory.unresolved).toContainEqual(expect.objectContaining({ reason: 'nonregular-or-over-budget-source' }));
+      const shard = captureSecuritySourceShard(root, queue, ['large.json'], { maxInputBytes: bytes.length, maxBytes: bytes.length });
+      expect(shard.discovery.inventory.files).toContainEqual(expect.objectContaining({ path: 'large.json', blobOid: file.blobOid }));
+      expect(shard.discovery.inventory.selection).toMatchObject({ maxInputBytes: bytes.length, bytesRead: bytes.length });
+      const next = advanceSecuritySourceProgress(queue, shard, receipt(shard.discovery.fingerprint));
+      expect(next.pending).toEqual([]);
+      expect(next.populationComplete).toBe(false); expect(next.closureAccepted).toBe(false);
+      expect(shard.discovery.executionAdmitted).toBe(false);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
   it('preserves selected reader scope in the archived discovery and its content identity', () => {
     const input = snapshot([source('a.ts', 'run();')]);
-    input.selection = { paths: ['a.ts'], maxBytes: 100, maxFiles: 1, bytesRead: 6, filesRead: 1, populationComplete: false };
+    input.selection = { paths: ['a.ts'], maxBytes: 100, maxFiles: 1, maxInputBytes: 2 * 1024 * 1024, bytesRead: 6, filesRead: 1, populationComplete: false };
     const result = enumerateSecuritySourcePopulation(input);
     expect(result.inventory.selection).toEqual(input.selection);
     input.selection.maxBytes = 200;

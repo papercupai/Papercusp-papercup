@@ -36,11 +36,29 @@ import {
   clampSinceDays,
   buildCodeRunAdoptionQuery,
   readCodeRunInstrumentation,
+  readRecipeOutcomeReport,
+  RECIPE_OUTCOME_REPORT_SQL,
   readNativeExecRouting,
   __resetCodeRunAdoptionCacheForTests,
   type CallRow,
   type SpawnAdoptionRow,
 } from './code-run-adoption';
+
+it('R13 recipe report keeps raw units and missing source coverage separate from benefit claims', async () => {
+  const scope = { workspaceId: 'ws', harnessSlug: 'app', windowStart: '2026-10-01T00:00:00Z', windowEnd: '2026-10-02T00:00:00Z' };
+  const report = await readRecipeOutcomeReport(async <T>(query: string, params: unknown[]) => {
+    expect(query).toBe(RECIPE_OUTCOME_REPORT_SQL);
+    expect(params).toEqual(['ws', 'app', '2026-10-01T00:00:00.000Z', '2026-10-02T00:00:00.000Z']);
+    return [{ report: { sourceRows: 0, attempts: 0, returnedContextBytes: null } }] as unknown as T[];
+  }, scope);
+  expect(report).toMatchObject({ measurement: { attempts: 0, returnedContextBytes: null },
+    units: { returnedContextBytes: 'utf8-bytes-per-dispatch-at-settled-result-door' },
+    coverage: { state: 'unknown', complete: false, backlog: null },
+    benefit: { state: 'unknown', measuredSavings: null },
+    lineage: { criterionKey: 'provider-outcomes', instrumentKey: 'code-intel:reuse-provider-outcomes' } });
+  await expect(readRecipeOutcomeReport(async () => [], { ...scope, harnessSlug: '' })).rejects.toThrow('Exact scope');
+  await expect(readRecipeOutcomeReport(async () => [], { ...scope, windowEnd: '2999-01-01' })).rejects.toThrow('closed');
+});
 
 describe('P-008 run instrumentation and native-exec routing reads', () => {
   it('maps every metadata-only run dimension without selecting content', async () => {

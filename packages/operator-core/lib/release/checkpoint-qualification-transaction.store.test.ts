@@ -17,6 +17,8 @@ import {
   reserveStoredQualificationRunner,
   recordStoredQualificationWorkProgress,
   recordStoredQualificationChildScope,
+  recordStoredQualificationProgressObservation,
+  qualificationProgressFence,
   recordQualificationChildScope,
   configureRunnerLivenessProber,
   recordStoredQualificationWorkYield,
@@ -71,6 +73,39 @@ describe('stored qualification child scope custody', () => {
 type QueryResult = Record<string, unknown>[];
 
 const target = { workspaceId: 'workspace-1', installSlug: 'papercusp' };
+
+describe('stored independent qualification observation', () => {
+  it.each(['current', 'old-fence', 'future'] as const)('checks %s evidence under the existing row lock', async mode => {
+    const nowMs = Date.now();
+    const current = reserveQualificationRunner(beginQualificationTransaction(null, {
+      attemptId: 'observer-attempt', candidate: 'observer-candidate', nowMs: nowMs - 2000,
+    }).transaction, { attemptId: 'observer-attempt', candidate: 'observer-candidate', runnerId: 'observer-runner',
+      runId: 'observer-run', pid: 42, pidIdentity: 'boot:42', unit: 'pc-observerroot.scope',
+      leaseDurationMs: 60_000, started: true, nowMs: nowMs - 1000 }).transaction;
+    current.currentPhysicalRunner = { ...current.currentPhysicalRunner!, phase: 'suite', phaseEnteredAtMs: nowMs - 1000 };
+    const { statements } = transactionHarness({ qualificationTransaction: current });
+    const result = await recordStoredQualificationProgressObservation(target, {
+      fence: mode === 'old-fence' ? 'prior-runner-fence' : qualificationProgressFence(current, target),
+      observerGeneration: 'observer-generation', sequence: 1,
+      sampledAtMs: mode === 'future' ? nowMs + 60_000 : nowMs, monotonicAtMs: 1000, telemetryHealthy: true,
+    });
+    expect(statements[0]!.text).toContain('FOR UPDATE');
+    const update = statements.find(value => value.text.includes('UPDATE harness_shared.routines'));
+    if (mode !== 'current') {
+      expect(result).toMatchObject({ status: 'conflict', refusalReason:
+        mode === 'future' ? 'observer-future-sample' : 'observer-fence-mismatch' });
+      expect(update).toBeUndefined();
+      return;
+    }
+    expect(result.status).toBe('updated');
+    const persisted = JSON.parse(update!.values.find(value => typeof value === 'string' && value.includes('"progressObservation"')) as string);
+    expect(persisted.progressObservation).toMatchObject({ health: 'baseline', controller: 'responsive',
+      semantic: 'unknown', observerGeneration: 'observer-generation', sequence: 1 });
+    expect(persisted.lastProgressAtMs).toBe(current.lastProgressAtMs);
+    expect(persisted.currentPhysicalRunner).toEqual(current.currentPhysicalRunner);
+    expect(h.appendPipelineEvent).not.toHaveBeenCalled();
+  });
+});
 
 describe('stored continuation uses the existing qualification row authority', () => {
   const fixture = () => {

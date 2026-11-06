@@ -185,7 +185,9 @@ export interface CompileSpecClausesResult {
 const STRICT_VAL_ID_RE = /^VAL-[A-Za-z0-9._-]+$/;
 const STRICT_SPEC_ID_RE = /^\S+$/;
 const OBSERVABLE_VERB =
-  '(?:accept(?:s|ed|ing)?|allows?|becomes?|creates?|deletes?|denies|emits?|fails?|includes?|omits?|records?|rejects?|remains?|returns?|shows?|starts?|stops?|streams?|streamed|streaming|updates?|writes?)';
+  // `record` is a common noun in evidence clauses (for example, "decision record").
+  // Keep the finite verb `records` so independent outcomes remain detectable.
+  '(?:accept(?:s|ed|ing)?|allows?|becomes?|creates?|deletes?|denies|emits?|fails?|includes?|omits?|records|rejects?|remains?|returns?|shows?|starts?|stops?|streams?|streamed|streaming|updates?|writes?)';
 const MULTI_OBSERVABLE_CONJUNCTION_RE = new RegExp(
   `\\b${OBSERVABLE_VERB}\\b[^.;\\n]{0,160}\\b(?:and|or)\\b[^.;\\n]{0,160}\\b${OBSERVABLE_VERB}\\b`,
   'i',

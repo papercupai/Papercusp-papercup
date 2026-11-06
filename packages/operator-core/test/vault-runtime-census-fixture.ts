@@ -6,8 +6,10 @@ import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
-import { getOrgPg } from '@papercusp/db-org';
+import { getOrgPg, _resetForTests } from '@papercusp/db-org';
 import { canonicalJson } from '@papercusp/hash-chain';
+import { stopAllManaged } from '@papercusp/scheduled-registry';
+import { loadHarnessRegistry, saveHarnessRegistry } from '../lib/harness-registry';
 import { readProcessIdentity } from '../lib/process-identity';
 import { loadImmutableTextArtifact } from '../lib/text-artifacts';
 import { isValidSuperuserBearer, readSuperuserToken, superuserTokenPath } from '../lib/superuser-token';
@@ -20,6 +22,27 @@ const root = resolve(import.meta.dirname, '../../..');
 const evidenceDir = process.env.VAULT_CENSUS_EVIDENCE_DIR!;
 let host: ChildProcess | undefined;
 let hostIdentity: ReturnType<typeof readProcessIdentity>;
+
+async function unauthenticatedControl(base: string, workspace: string, caller: string,
+  request: typeof fetch = fetch) {
+  const denied = await request(base + '/api/agent-mcp/run-tool', { method: 'POST',
+    headers: { 'content-type': 'application/json', origin: base, host: new URL(base).host,
+      'x-papercusp-workspace': workspace },
+    body: JSON.stringify({ name: 'dev:telemetry', args: { view: 'security-census', capture: true,
+      harness: workspace }, harness: workspace, callerSid: caller, confirmed: true }),
+    signal: AbortSignal.timeout(30_000) });
+  const responseBody = await denied.text();
+  let refusal: any;
+  try { refusal = JSON.parse(responseBody); }
+  catch { refusal = { unparsedBody: responseBody }; }
+  const observed = { phase: 'unauthenticated-control', httpStatus: denied.status, response: refusal };
+  writeFileSync(join(evidenceDir, 'unauthenticated-response.json'), JSON.stringify(observed));
+  console.log('VAULT_CENSUS_CONTROL_OBSERVED ' + JSON.stringify(observed));
+  // A scope, route, or server failure cannot stand in for this authentication
+  // canary: it must reach the signing boundary and refuse the missing actor.
+  assert.equal(refusal.result?.isError, true, JSON.stringify(observed));
+  assert.match(JSON.stringify(refusal), /security_qualification_authenticated_actor_required/);
+}
 
 async function stopHost() {
   if (!host) return;
@@ -56,6 +79,43 @@ async function main() {
     { mode: 0o600, flag: 'wx' });
   const bearer = readSuperuserToken();
   assert.ok(bearer && isValidSuperuserBearer(bearer), 'private MCP credential preparation required');
+  // The background isolation profile creates a workspace, but unlike the
+  // operator-api profile it does not register a home harness. Both scopes must
+  // exist before this control can reach the authenticated signing boundary.
+  const home = join(process.env.PAPERCUSP_WORKSPACES_ROOT!, workspace, 'operator-home');
+  mkdirSync(home, { recursive: true });
+  const before = await loadHarnessRegistry(workspace, { fresh: true });
+  const existing = before.projects.find(project => project.slug === workspace);
+  if (existing) assert.equal(existing.path, home, 'private harness points outside its disposable home');
+  else await saveHarnessRegistry({ ...before,
+    projects: [...before.projects, { slug: workspace, path: home, harness_kind: 'hive' }] }, workspace);
+  const registry = await loadHarnessRegistry(workspace, { fresh: true });
+  assert.equal(registry.projects.find(project => project.slug === workspace)?.path, home,
+    'private home harness registration must be read back before bundle build or dispatch');
+  console.log('VAULT_CENSUS_REGISTRY_PREFLIGHT ' + JSON.stringify({ workspace,
+    harnessSlug: workspace, privateHome: home, registeredBefore: Boolean(existing), readbackVerified: true }));
+  const caller = 'su-' + randomUUID();
+  if (process.env.VAULT_CENSUS_CONTROL_PREFLIGHT === '1') {
+    // Exercise the actual source route stack/catalog in disposable isolation,
+    // before spending a bundle build or admitting any authenticated capture.
+    const [{ Hono }, { registerRoute }, { default: route }, { workspaceContextMiddleware }] = await Promise.all([
+      import('hono'), import('../lib/endpoint-route/define-route'),
+      import('../lib/endpoint-route/routes/agent-mcp/run-tool'),
+      import('../lib/workspace-context-middleware'),
+    ]);
+    const api = new Hono();
+    registerRoute(api, route);
+    const app = new Hono();
+    app.use('*', workspaceContextMiddleware);
+    app.route('/api', api);
+    await unauthenticatedControl(base, workspace, caller,
+      async (input, init) => app.fetch(new Request(input, init)));
+    console.log('VAULT_CENSUS_CONTROL_PREFLIGHT ' + JSON.stringify({
+      workspace, transport: 'in-process-real-route-stack', unauthenticatedRejected: true,
+      operatorBundleBuilt: false, authenticatedCaptureAttempted: false,
+      qualifyingBaselineAccepted: false }));
+    return;
+  }
   console.log('VAULT_CENSUS_STAGE=bundle-start');
   // Renew preparation only for distinct completed build steps. The fixed
   // synchronous deadline can interrupt a progressing full-input guard census.
@@ -97,15 +157,7 @@ async function main() {
   console.log('VAULT_CENSUS_STAGE=runtime-capture');
   // The serving process chooses the population, signing key, actor and clock.
   // No fixture callback or caller-supplied rows can stand in for that capture.
-  const caller = 'su-' + randomUUID();
-  const denied = await fetch(base + '/api/agent-mcp/run-tool', { method: 'POST', headers,
-    body: JSON.stringify({ name: 'dev:telemetry', args: { view: 'security-census', capture: true,
-      harness: workspace }, harness: workspace, callerSid: caller, confirmed: true }),
-    signal: AbortSignal.timeout(120_000) });
-  const refusal = await denied.json() as any;
-  writeFileSync(join(evidenceDir, 'unauthenticated-response.json'), JSON.stringify(refusal));
-  assert.equal(refusal.result?.isError, true);
-  assert.match(JSON.stringify(refusal), /security_qualification_authenticated_actor_required/);
+  await unauthenticatedControl(base, workspace, caller);
   const client = new Client({ name: 'private-vault-census', version: '1' });
   const requestOptions = { timeout: 120_000 };
   const query = new URLSearchParams({ superuser: '1', client: caller, workspace,
@@ -211,4 +263,46 @@ catch (error) {
   console.error('VAULT_CENSUS_FAILURE ' + (error instanceof Error ? error.stack : String(error)));
   process.exitCode = 1;
 }
-finally { await stopHost(); await getOrgPg().sql.end({ timeout: 5 }); }
+finally {
+  // The source-route preflight imports the real catalog and its managed
+  // observers, including LISTEN clients outside the ordinary org pool. Retire
+  // their owners before closing pools, just as the private HTTP fixture does.
+  // Attempt every cleanup even if one fails, retaining each result so a hang
+  // cannot masquerade as an authentication failure on the next investigation.
+  const cleanup: Array<{ phase: string; ok: boolean; error?: string }> = [];
+  const step = async (phase: string, close: () => void | Promise<void>) => {
+    console.log('VAULT_CENSUS_CLEANUP_START ' + phase);
+    try { await close(); cleanup.push({ phase, ok: true }); }
+    catch (error) {
+      cleanup.push({ phase, ok: false, error: String(error) });
+      process.exitCode = 1;
+    }
+    writeFileSync(join(evidenceDir, 'cleanup.json'), JSON.stringify({ steps: cleanup }));
+  };
+  await step('host', stopHost);
+  await step('managed-observers', async () => { stopAllManaged(); });
+  await step('principal-invalidation', async () => {
+    const { _stopInvalidationListenerForTests } = await import('@papercusp/agent-mcp/auth');
+    await _stopInvalidationListenerForTests();
+  });
+  await step('sync-invalidation', async () => {
+    const { stopInvalidationListener } = await import('../lib/sync-sse');
+    await stopInvalidationListener();
+  });
+  await step('listen-hub', async () => {
+    const { _stopHubForTests } = await import('../lib/pg-listen-hub');
+    await _stopHubForTests();
+  });
+  await step('database-pools', _resetForTests);
+  stopAllManaged();
+  await new Promise<void>(done => setImmediate(done));
+  const report = process.report!.getReport() as { libuv?: Array<Record<string, unknown>> };
+  const referencedTcp = (report.libuv ?? []).filter(handle => handle.type === 'tcp'
+    && handle.is_active && handle.is_referenced).map(handle => ({
+    local: handle.localEndpoint, remote: handle.remoteEndpoint,
+  }));
+  const receipt = { steps: cleanup, activeResources: process.getActiveResourcesInfo(),
+    referencedTcp, exitCode: process.exitCode ?? 0 };
+  writeFileSync(join(evidenceDir, 'cleanup.json'), JSON.stringify(receipt));
+  console.log('VAULT_CENSUS_CLEANUP ' + JSON.stringify(receipt));
+}

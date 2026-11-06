@@ -391,6 +391,18 @@ async function runScheduledPlanFireTx(
       ...(execution ? { execution } : {}),
     };
   }
+  // A scheduled fire creates new implementation work. Recheck discovery under
+  // this accepting transaction before admission, instance creation, or minting.
+  const { withCurrentDiscovery } = await import('../../plan-audits');
+  const discovery = await withCurrentDiscovery({ workspaceId, harnessSlug: planStorageSlug,
+    planSlug: templateSlug, createdBy: 'system:scheduled-plan-fire' }, async () => undefined,
+    undefined, sql as never);
+  if (!discovery.ok) return { started: false, instanceSlug: '', runId: -1, runSeq: -1,
+    minted: 0, workItemIds: [], actionableWorkItemIds: [], replayed: false,
+    reason: 'not-startable', retryable: true,
+    detail: `discovery_not_ready: ${'nextAction' in discovery ? discovery.nextAction ?? discovery.error : discovery.error}`,
+    ...(execution ? { execution } : {}),
+  };
   // P-004 admission on the SCHEDULED fire path. This door never touches
   // checkPlanStartable — it holds its own template row and calls the readiness oracle
   // directly — so the admission check placed in the start gate cannot reach it. That

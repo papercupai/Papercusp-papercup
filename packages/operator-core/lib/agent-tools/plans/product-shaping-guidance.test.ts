@@ -12,6 +12,8 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { PRODUCT_SHAPING_GUIDANCE } from './product-shaping';
+import { renderSuPlaybook } from '../../desktop-install/papercusp-files';
+import { composeSuStackSource } from '@papercusp/orchestrator/blueprint';
 
 const REPO_ROOT = resolve(__dirname, '../../../../..');
 const CANONICAL_SU_PLAN_GUIDANCE = [
@@ -52,5 +54,28 @@ describe('su plan guidance puts shaping first and leads approval with the walkth
     const reversed = shapingBullet('- **Shape, then specify; x.** Write requirements BEFORE Product shaping.\n- **Next.**');
     expect(reversed).not.toBeNull();
     expect(reversed).not.toMatch(/Product shaping.*BEFORE requirements, and requirements before tasks/);
+  });
+});
+
+describe('discovery phase guidance reaches launch rendering', () => {
+  it.each(['claude', 'codex', 'omp'] as const)('%s renders both supported su profiles from canonical sources', async agent => {
+    for (const profile of ['engineer', 'power'] as const) {
+      const rendered = await renderSuPlaybook({ agent, profile, tier: 'full',
+        baseSource: resolve(REPO_ROOT, 'libs/papercusp/packages/harness/blueprints/base/prompts/su.md'),
+        baseText: composeSuStackSource({ harnessDir: resolve(REPO_ROOT, 'libs/papercusp/packages/harness') }).text,
+        overlayDir: resolve(REPO_ROOT, 'apps/operator/prompts') });
+      const instruction = rendered.text.replace(/\s+/g, ' ');
+      expect(instruction).toContain('Brief → scoped discovery → findings incorporated → implementation review → execution.');
+      expect(instruction).toContain('provisional discovery brief');
+      expect(instruction).toContain("plans:audit { slug, phase:'discovery' }");
+      expect(instruction).toContain('proof-warming P-001');
+      expect(instruction).toContain('historical terminal records');
+    }
+  });
+
+  it.each(['scoper', 'reviewer', 'worker'])('%s receives its phase and authority boundary', role => {
+    const prompt = readFileSync(resolve(REPO_ROOT, `apps/operator/prompts/${role}.tools.md`), 'utf8');
+    expect(prompt).toContain('Brief → scoped discovery → findings incorporated → implementation review → execution.');
+    expect(prompt.replace(/\s+/g, ' ')).toContain('provisional discovery brief');
   });
 });

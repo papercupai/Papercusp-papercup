@@ -277,9 +277,10 @@ fn spec_to_open_command(spec: &PaneSpec, stack: bool) -> Command {
     Command::OpenCommandPane {
         command,
         args,
-        cwd: None,
+        cwd: spec.cwd.clone(),
         title: spec.title.clone(),
         stack,
+        adv_session_id: spec.adv_session_id,
     }
 }
 
@@ -339,10 +340,12 @@ mod tests {
                 cwd,
                 title,
                 stack,
+                adv_session_id,
             } => {
                 assert_eq!(command, "psu");
                 assert_eq!(args, vec!["--no-picker", "--agent=claude"]);
                 assert_eq!(cwd, None);
+                assert_eq!(adv_session_id, None);
                 assert_eq!(title.as_deref(), Some("pui · claude"));
                 assert!(
                     stack,
@@ -355,6 +358,26 @@ mod tests {
         match spec_to_open_command(&PaneSpec::new(["bash"]), false) {
             Command::OpenCommandPane { stack, .. } => assert!(!stack),
             other => panic!("expected OpenCommandPane, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn fresh_session_binding_preserves_argv_boundaries_and_working_directory() {
+        let spec = PaneSpec::new(["psu", "--model=a model with spaces"])
+            .cwd("/project with spaces")
+            .for_session(41);
+        match spec_to_open_command(&spec, true) {
+            Command::OpenCommandPane {
+                args,
+                cwd,
+                adv_session_id,
+                ..
+            } => {
+                assert_eq!(args, vec!["--model=a model with spaces"]);
+                assert_eq!(cwd.as_deref(), Some("/project with spaces"));
+                assert_eq!(adv_session_id, Some(41));
+            }
+            other => panic!("expected bound command, got {other:?}"),
         }
     }
 
@@ -402,6 +425,7 @@ mod tests {
                 is_plugin: false,
                 exited: false,
                 command: None,
+                adv_session_id: None,
             }],
         };
         match map_plugin_event(PluginEvent::Topology(topo.clone())) {

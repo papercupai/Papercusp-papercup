@@ -514,6 +514,11 @@ describe('R16 repeatable existing-ledger reads', () => {
       windowStart: start, windowEnd: end });
     expect(live.verdict).toBe('unknown'); // Four providers have no exposure census.
     const detail = JSON.parse(live.detail!);
+    expect(detail.recipeOutcomes).toMatchObject({
+      scope: { workspaceId: fx.workspaceId, harnessSlug: 'collector-fixture', windowStart: start, windowEnd: end },
+      measurement: { attempts: 0 }, coverage: { state: 'unknown', complete: false },
+      lineage: { criterionKey: 'provider-outcomes', instrumentKey: REUSE_MEASUREMENT_INSTRUMENT_KEYS.providerOutcomes },
+    });
     expect(detail.byProvider.coverage).toMatchObject({ issued: 0, deliveryUnknown: 1,
       actedOn: { positive: 1, negative: 0, unknown: 0 }, grepAfterPush: { positive: 1 } });
     expect(detail.notObserved.sort()).toEqual(['cochange', 'provenance', 'semantic', 'sql']);

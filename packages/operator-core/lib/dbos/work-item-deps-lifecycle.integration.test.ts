@@ -27,6 +27,7 @@ const SQL_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '../../../../li
 const EDGE_WS = 'default';
 const ITEM_WS = 'tenant-lifecycle';
 const H = 'lifecycle-harness';
+const REOPEN_MIGRATION = '1621-dependency-reopen-untouched-dependants.sql';
 
 type Family = 'issue' | 'feature';
 type SeedOptions = {
@@ -143,6 +144,7 @@ beforeAll(async () => {
   await applyMigrationForTest(db.sql, resolve(SQL_DIR, '988-work-item-dependency-delete-guard.sql'));
   await applyMigrationForTest(db.sql, resolve(SQL_DIR, '991-work-item-dependency-lifecycle-transition-guard.sql'));
   await applyMigrationForTest(db.sql, resolve(SQL_DIR, '992-work-item-dependency-satisfaction.sql'));
+  await applyMigrationForTest(db.sql, resolve(SQL_DIR, REOPEN_MIGRATION));
 }, 180_000);
 
 afterAll(async () => {
@@ -333,6 +335,45 @@ describe('P-011/992 blocker reopen — untouched dependants pass, progressed dep
       /cannot make dependency blocker issue:BLOCK unsatisfied while nonterminal dependant issue:DEP remains/i,
     );
     expect(await itemState('BLOCK')).toMatchObject({ status: 'done' });
+  });
+});
+
+describe('forward migration repairs previously applied dependency guards', () => {
+  it('repairs an installed historical guard without changing the dependency edge', async () => {
+    // Exact applied 992 from db commit 889df4ce; SHA256 c09f2a119b528d7d2bab7368ad611072596fa564c0007594954b57a0785855d4.
+    // Both historical files in the current tree were edited after deployment.
+    await applyMigrationForTest(db.sql, resolve(dirname(fileURLToPath(import.meta.url)),
+      '../../test/fixtures/work-item-deps-992-applied.sql.fixture'));
+    await seedItem('DEP');
+    await seedItem('BLOCK', { status: 'done' });
+    await addEdge(endpoint('issue', 'DEP'), endpoint('issue', 'BLOCK'));
+    const reopen = () => db.sql`
+      UPDATE harness_shared.work_items SET status = 'open'
+       WHERE workspace_id = ${ITEM_WS} AND feature_id = 'BLOCK'`;
+    try {
+      await expectPgGuardRejected(reopen(), /cannot make dependency blocker/i);
+      await applyMigrationForTest(db.sql, resolve(SQL_DIR, REOPEN_MIGRATION));
+      await expect(reopen()).resolves.toBeDefined();
+      expect(await itemState('BLOCK')).toMatchObject({ status: 'open' });
+      expect(await edgeCount()).toBe(1);
+    } finally {
+      await applyMigrationForTest(db.sql, resolve(SQL_DIR, REOPEN_MIGRATION));
+    }
+  });
+
+  it('preserves cleanup issue-family identity and progressed-dependant protection', async () => {
+    await seedItem('DEP', { takenBy: 'su-holder' });
+    await seedItem('BLOCK', { status: 'done' });
+    await db.sql`UPDATE harness_shared.work_items SET item_kind = 'cleanup'
+      WHERE workspace_id = ${ITEM_WS} AND feature_id IN ('DEP', 'BLOCK')`;
+    await addEdge(endpoint('issue', 'DEP'), endpoint('issue', 'BLOCK'));
+    await expectPgGuardRejected(
+      db.sql`UPDATE harness_shared.work_items SET status = 'open'
+        WHERE workspace_id = ${ITEM_WS} AND feature_id = 'BLOCK'`,
+      /dependency blocker issue:BLOCK.*dependant issue:DEP/i,
+    );
+    expect(await itemState('BLOCK')).toMatchObject({ status: 'done' });
+    expect(await edgeCount()).toBe(1);
   });
 });
 

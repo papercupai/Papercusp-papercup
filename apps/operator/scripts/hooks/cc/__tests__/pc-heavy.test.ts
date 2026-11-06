@@ -4749,6 +4749,41 @@ describe('pc-heavy.sh — release-gate reserve (EI-19315056231449472)', () => {
   })();
   const checkpointLockStaleMs = 190 * 60_000;
 
+  it('bounds stalled checkpoint discovery and conservatively reserves slots (EI-28012704677674257)', () => {
+    plantLock(liveOwner());
+    const path = fakeNprocPath(128);
+    const trace = join(dir, 'discovery-entered');
+    writeFileSync(join(dir, 'fakebin', 'head'), [
+      '#!/usr/bin/env bash',
+      'case "$*" in',
+      '  */owner.json*)',
+      '    printf entered >> "$DISCOVERY_TRACE"',
+      '    trap "" TERM',
+      '    exec sleep 6',
+      '    ;;',
+      'esac',
+      'exec /usr/bin/head "$@"',
+      '',
+    ].join('\n'), { mode: 0o755 });
+
+    // The real launcher must reach admission even if a discovery operation
+    // never settles within its budget. TERM is ignored deliberately, so this
+    // also exercises the supervisor's final process-group kill.
+    const r = probe(128, {
+      PATH: path,
+      PC_HEAVY_LOAD1_OVERRIDE: '0',
+      DISCOVERY_TRACE: trace,
+    });
+    expect(readFileSync(trace, 'utf8')).toContain('entered');
+    expect(r.error).toBeUndefined();
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.stderr).toContain('checkpoint reserve discovery incomplete');
+    expect(slotsLine(r.stderr)).toContain('slots=3 fixed=0');
+    expect(slotsLine(r.stderr)).toContain('gate=1');
+    expect(slotsLine(r.stderr)).toContain('phase=unknown');
+    expect(r.stderr).toContain('slot acquired — starting real work');
+  });
+
   it('clamps the effective slot count to a quarter while a run is LIVE', () => {
     expect(slotsLine(probe(128, { PC_HEAVY_LOAD1_OVERRIDE: '0' }).stderr)).toContain('slots=12');
     plantLock(liveOwner());

@@ -1226,6 +1226,7 @@ describe('evaluatePlanSpecQuality', () => {
     'A completed dialog answer with missing, mixed or mismatched source evidence remains unknown.',
     'The access token remains usable if the owner or an administrator authorizes it.',
     'The reply remains unknown unless the requester or a reviewer supplies evidence.',
+    'Each retained GitNexus consumer has an explicit licence route or unresolved licensing hold in the canonical decision record.',
   ])('keeps one outcome with conditional alternatives atomic: %s', (behavior) => {
     const result = evaluatePlanSpecQuality({
       planSlug: 'quality-plan', harnessSlug: 'papercusp', planItemIds: ['P-001'],
@@ -1234,12 +1235,21 @@ describe('evaluatePlanSpecQuality', () => {
 
     expect(specBehaviorNonAtomicReason(behavior)).toBeNull();
     expect(result.ratings['atomic-observable-behavior'].rating).toBe('pass');
+    if (behavior.includes('licensing hold')) {
+      expect(result.details.atomicityClauseDiagnostics).toContainEqual(expect.objectContaining({
+        behavior,
+        disposition: 'evaluated',
+        rating: 'pass',
+        reason: null,
+      }));
+    }
   });
 
   it.each([
     'The service returns a receipt and an audit record when the model or a verifier reads it.',
     'A completed request returns a receipt and records the request.',
     'The service returns a receipt when ready and records the request.',
+    'Each retained GitNexus consumer has an explicit licence route or unresolved licensing hold in the canonical decision record, and the canonical inventory records its separate distribution decision.',
   ])('still rejects independent outcomes around conditional alternatives: %s', (behavior) => {
     expect(specBehaviorNonAtomicReason(behavior)).toBe('behavior joins multiple independently observable outcomes');
   });

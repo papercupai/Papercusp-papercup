@@ -165,8 +165,14 @@ export async function advanceAuthorVettingHandoff(input: {
     const receipt = coerceJson<AuthorHandoffReceipt>(rows[0]?.receipt);
     if (!receipt) return { ok: false as const, state: 'blocked' as const, reason: 'handoff-not-found' };
     if (receipt.state === 'completed' || receipt.state === 'superseded') {
-      return { ok: receipt.state === 'completed' && receipt.key === key && receipt.receipts.some(row =>
-        row.verdictRef === input.verdictRef && row.actorId === input.actorId), id: input.id, ...receipt };
+      const ok = receipt.state === 'completed' && receipt.key === key && receipt.receipts.some(row =>
+        row.verdictRef === input.verdictRef && row.actorId === input.actorId);
+      // The receipt write can survive a failed lifecycle close. An exact verdict
+      // replay finishes that close without appending or rewriting review history.
+      if (ok && input.phase === 'settle' && input.verdictRef) await setWorkItemState(input.id, 'done', {
+        harness: receipt.target.harnessSlug ?? undefined, by: input.actorId, completionRef: input.verdictRef,
+      });
+      return { ok, id: input.id, ...receipt };
     }
     let state: AuthorHandoffState;
     let reason = input.reason;

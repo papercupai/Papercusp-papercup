@@ -174,14 +174,15 @@ export function groupNativeOperations(observations: readonly NativeObservation[]
     const preferred = copies.find(r => r.outcome !== 'UNKNOWN') ?? copies[0]!;
     operations.push({ ...preferred, sourceRefs: [...new Set(copies.map(r => r.sourceToken))].sort() });
   }
-  const chains = new Map<string, { id: string; kind: NativeKind; scopeToken: string; logicalDemand: number; sourceRefs: string[]; operationRefs: string[]; successCount: number; unknownCount: number; summary: string }>();
+  const chains = new Map<string, { id: string; kind: NativeKind; scopeToken: string; logicalDemand: number; sourceRefs: string[]; operationRefs: string[]; successCount: number; errorCount: number; refusedCount: number; unknownCount: number; summary: string }>();
   for (const row of operations) {
     const key = stable([row.scopeToken, row.kind, row.fingerprint]);
     const chain = chains.get(key) ?? { id: row.fingerprint!, kind: row.kind!, scopeToken: row.scopeToken,
-      logicalDemand: 0, sourceRefs: [], operationRefs: [], successCount: 0, unknownCount: 0,
+      logicalDemand: 0, sourceRefs: [], operationRefs: [], successCount: 0, errorCount: 0, refusedCount: 0, unknownCount: 0,
       summary: `Recurring native ${row.kind} operation` };
     chain.logicalDemand++; chain.sourceRefs.push(...row.sourceRefs); chain.operationRefs.push(row.operationToken!);
-    chain.successCount += Number(row.outcome === 'success'); chain.unknownCount += Number(row.outcome === 'UNKNOWN');
+    chain.successCount += Number(row.outcome === 'success'); chain.errorCount += Number(row.outcome === 'error');
+    chain.refusedCount += Number(row.outcome === 'refused'); chain.unknownCount += Number(row.outcome === 'UNKNOWN');
     chains.set(key, chain);
   }
   return { operations, chains: [...chains.values()].filter(c => c.logicalDemand >= 2).map(c => ({ ...c, sourceRefs: [...new Set(c.sourceRefs)].sort() })),

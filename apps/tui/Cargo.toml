@@ -60,10 +60,10 @@ base64 = "0.22"
 # pui-chat-first-ux P-011) and the glyph width-safety tests. Same crate
 # ratatui already pulls (0.2.0 in the lock), so no new transitive cost.
 unicode-width = "0.2"
-# (tokio-tungstenite + futures-util removed: the pui no longer owns the EL
-# Conv-AI WebSocket — the host does (universal-voice-interface-2026-06-05
-# D-002/D-003); realtime voice rides the operator-voice bus over the local
-# Unix socket instead.)
+# Windows reaches the host-owned voice bus through the existing desktop byte
+# bridge. The operator still owns the vendor session and audio protocol.
+tokio-tungstenite = "0.28"
+futures-util = { version = "0.3", features = ["sink"] }
 
 [dev-dependencies]
 tempfile = "3"

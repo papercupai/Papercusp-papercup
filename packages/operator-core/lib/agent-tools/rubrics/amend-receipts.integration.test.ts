@@ -337,6 +337,57 @@ describe('rubric amend receipts in shared Postgres', () => {
     expect(executions).toBe(4);
   });
 
+  it('status rechecks reviewer custody against the retained evidence boundary in Postgres', async () => {
+    const ws = activeWorkspaceId();
+    const rubric = 'acceptance-reviewer-health-status';
+    const key = 'reviewer-health-' + Date.now();
+    const thread = 'reviewer-health-thread-' + Date.now();
+    const [preview] = await h.sql`
+      INSERT INTO harness_shared.coord_thread_posts (workspace_id, thread_id, author_id, body, origin)
+      VALUES (${ws}, ${thread}, 'applier', 'Original preview', 'local') RETURNING id`;
+    const [oldReply] = await h.sql`
+      INSERT INTO harness_shared.coord_thread_posts (workspace_id, thread_id, author_id, body, origin)
+      VALUES (${ws}, ${thread}, 'fresh-reviewer-owner', 'Old objection', 'local') RETURNING id`;
+    const [evidence] = await h.sql`
+      INSERT INTO harness_shared.coord_thread_posts (workspace_id, thread_id, author_id, body, origin)
+      VALUES (${ws}, ${thread}, 'applier', 'New verification evidence', 'local') RETURNING id`;
+    expect(oldReply!.id).toBeLessThan(evidence!.id);
+    const taskId = 'reviewer-health-task-' + Date.now();
+    await h.sql`
+      INSERT INTO harness_shared.task_ledger
+        (task_id, workspace_id, root_task_id, class, title, launched_by, state)
+      VALUES (${taskId}, ${ws}, ${taskId}, 'agent', 'bar-amendment-review',
+        'system:acceptance-bar-amendment-review', 'ended_unobserved')`;
+    const result = {
+      ok: true,
+      dryRun: true,
+      review: {
+        state: 'no-eligible-reviewer',
+        previewPostRef: 'thread-post:' + preview!.id,
+        reviewEvidencePost: 'thread-post:' + evidence!.id,
+        freshReviewer: { state: 'launched', taskId, ownerId: 'fresh-reviewer-owner' },
+      },
+    };
+    await trackAmendRun(key, rubric, async () => result);
+
+    const status = await amendStatusTool.handler({ rubricRef: rubric, idempotencyKey: key }, {}) as {
+      data: Record<string, unknown>;
+    };
+    expect(status.data).toMatchObject({
+      state: 'previewed',
+      freshReviewerHealth: { state: 'reclaimable', taskId, taskState: 'ended_unobserved', reason: 'task-ended' },
+    });
+
+    await h.sql`
+      INSERT INTO harness_shared.coord_thread_posts (workspace_id, thread_id, author_id, body, origin)
+      VALUES (${ws}, ${thread}, 'fresh-reviewer-owner', 'Reply to new evidence', 'local')`;
+    const answered = await amendStatusTool.handler({ rubricRef: rubric, idempotencyKey: key }, {}) as {
+      data: Record<string, unknown>;
+    };
+    expect(answered.data).toMatchObject({ freshReviewerHealth: { state: 'later-post' } });
+    expect(await getAmendReceipt(rubric, key)).toMatchObject({ state: 'previewed', result });
+  });
+
   it('atomically reclaims a legacy preview that started no reviewer across workers', async () => {
     const key = 'legacy-unstaffed-preview';
     const rubric = 'acceptance-receipt-legacy';

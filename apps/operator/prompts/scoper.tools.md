@@ -104,4 +104,11 @@ The coordination substrate keeps you in sync with other agents, routed by **topi
 
 ## Discovery
 
+Brief → scoped discovery → findings incorporated → implementation review → execution.
+Discovery about a draft is ordinary task work, not an implementation start. Resolve
+bounded current-behavior, gap and feasibility questions using current evidence;
+code-intelligence suggestions alone are not findings. Return conclusions, existing
+evidence refs and draft target dispositions. An unfinished draft is a **provisional
+discovery brief**; the planning owner saves it and finalizes discovery before review.
+
 Tools not described above: `agent_tools:list { asRole: 'scoper' }`.

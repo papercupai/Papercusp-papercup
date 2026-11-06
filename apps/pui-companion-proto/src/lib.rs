@@ -56,6 +56,9 @@ pub enum Command {
         title: Option<String>,
         #[serde(default, skip_serializing_if = "is_false")]
         stack: bool,
+        /// Canonical local launch record, retained against the returned pane id.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        adv_session_id: Option<i64>,
     },
     /// Open a new tab from a stringified KDL `layout` (and optional `name`).
     NewTab {
@@ -154,6 +157,10 @@ pub struct PaneNode {
     /// Stringified command + args, if this is a command pane.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub command: Option<String>,
+    /// Launch identity supplied to OpenCommandPane, never inferred from a title
+    /// or flattened command. Missing on older companions and unbound panes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub adv_session_id: Option<i64>,
 }
 
 impl Command {
@@ -183,6 +190,27 @@ mod tests {
     use super::*;
 
     #[test]
+    fn session_binding_round_trips_and_legacy_topology_stays_unbound() {
+        let command = Command::OpenCommandPane {
+            command: "psu".into(),
+            args: vec!["--model=a model".into()],
+            cwd: None,
+            title: None,
+            stack: true,
+            adv_session_id: Some(41),
+        };
+        assert_eq!(Command::from_line(&command.to_line()).unwrap(), command);
+        let legacy = r#"{"ev":"topology","tabs":[],"panes":[{"id":9,"tab":0,"title":"shared","focused":false,"is_plugin":false,"exited":false}]}"#;
+        let PluginEvent::Topology(mut topology) = PluginEvent::from_line(legacy).unwrap() else {
+            panic!("expected topology");
+        };
+        assert_eq!(topology.panes[0].adv_session_id, None);
+        topology.panes[0].adv_session_id = Some(41);
+        let event = PluginEvent::Topology(topology);
+        assert_eq!(PluginEvent::from_line(&event.to_line()).unwrap(), event);
+    }
+
+    #[test]
     fn command_round_trips() {
         let cases = vec![
             Command::Hello,
@@ -196,6 +224,7 @@ mod tests {
                 cwd: Some("/home/u/repo".into()),
                 title: Some("pui · claude".into()),
                 stack: true,
+                adv_session_id: None,
             },
             Command::OpenCommandPane {
                 command: "bash".into(),
@@ -203,6 +232,7 @@ mod tests {
                 cwd: None,
                 title: None,
                 stack: false,
+                adv_session_id: None,
             },
             Command::NewTab {
                 name: Some("papercup".into()),
@@ -249,6 +279,7 @@ mod tests {
                 cwd: None,
                 title: None,
                 stack: false,
+                adv_session_id: None,
             }
             .to_line(),
             r#"{"cmd":"open_command_pane","command":"bash","args":[]}"#
@@ -261,6 +292,7 @@ mod tests {
                 cwd: None,
                 title: None,
                 stack: true,
+                adv_session_id: None,
             }
             .to_line(),
             r#"{"cmd":"open_command_pane","command":"psu","args":[],"stack":true}"#
@@ -322,6 +354,7 @@ mod tests {
                     is_plugin: false,
                     exited: false,
                     command: Some("psu --no-picker --agent=claude".into()),
+                    adv_session_id: None,
                 },
                 PaneNode {
                     id: 2,
@@ -331,6 +364,7 @@ mod tests {
                     is_plugin: false,
                     exited: false,
                     command: None,
+                    adv_session_id: None,
                 },
             ],
         };

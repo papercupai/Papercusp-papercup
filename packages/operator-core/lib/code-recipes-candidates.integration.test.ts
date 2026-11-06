@@ -95,7 +95,7 @@ describe('recipeCandidates deterministic signals (real PG)', () => {
       id: 'just-list-plans',
       title: 'List the plans',
       description: 'just call plans list',
-      script: 's',
+      script: 'return await tools.plans.list({});',
       toolsUsed: ['plans:list'],
       ...profiledEmbedding(seededEmbedding(20)),
     });
@@ -239,6 +239,53 @@ describe('recipeCandidates deterministic signals (real PG)', () => {
       usage: { unknown: 1, reliability: { state: 'unknown', denominator: 0 } },
     });
     expect(result.promoteCandidates.some(row => row.id === 'legacy-popularity')).toBe(false);
+  });
+
+  it('R10 one-tool result processing can promote while a hotter primitive wrapper cannot', async () => {
+    for (const [id, script, runs] of [
+      ['p003-useful-one-tool', 'const result = await tools.workItems.list({}); return result.rows.filter(row => row.state === "open").map(row => ({ id: row.id }));', 12],
+      ['p003-hot-primitive', 'return await tools.workItems.list({});', 40],
+    ] as const) {
+      await upsertRecipe(db.adminSql, { id, potSlug: null, title: id, description: 'A source-backed value control',
+        script, toolsUsed: ['work_items:list'] });
+      await seedRuns(db.adminSql, id, 'ws-p003-substance', 'alpha', {
+        runs, agents: ['agent-a', 'agent-b', 'agent-c', 'agent-d', 'agent-e'],
+      });
+    }
+    const result = await recipeCandidates(db.adminSql, { minRunCount: 1 });
+    expect(result.signals.find(row => row.id === 'p003-useful-one-tool')).toMatchObject({
+      substance: 'result-processing', redundant: false, usage: { agentDemand: 12, reliability: { state: 'measured' } },
+    });
+    expect(result.promoteCandidates.some(row => row.id === 'p003-useful-one-tool')).toBe(true);
+    expect(result.promoteCandidates.some(row => row.id === 'p003-hot-primitive')).toBe(false);
+    expect(result.signals.find(row => row.id === 'p003-hot-primitive')).toMatchObject({ substance: 'primitive', promotionScore: 0 });
+  });
+
+  it('P003-RECEIPTS: exact copies count once, distinct bulk attempts remain distinct, and conflicting copies stay unknown', async () => {
+    const recipe = await upsertRecipe(db.adminSql, { id: 'p003-receipt-copies', potSlug: null,
+      title: 'Receipt copies', description: 'Keep actual dispatch identity', script: 'return 1;', toolsUsed: ['work_items:get'] });
+    const base = { recipeId: recipe.id, workspaceId: 'ws-p003-receipts', potSlug: null,
+      agentOwner: 'agent-recorded', success: false, countTowardRecipe: false,
+      usage: { version: 1 as const, selection: 'saved-replay' as const, choice: 'agent' as const,
+        mode: 'commit' as const, outcome: 'refused' as const, settled: true },
+      runEvidence: { version: 1 as const, invocationId: 'dispatch:one', attempt: 0, executed: false,
+        sourceBytes: 9, intermediateBytes: 0, elapsedBeforeRecordMs: 12 } };
+    await recordRecipeRun(db.adminSql, base);
+    await recordRecipeRun(db.adminSql, base);
+    await recordRecipeRun(db.adminSql, { ...base, runEvidence: { ...base.runEvidence, attempt: 1, intermediateBytes: null } });
+    let signal = (await recipeCandidates(db.adminSql, { minRunCount: 1 })).signals.find(row => row.id === recipe.id)!;
+    expect(signal.runCount).toBe(0);
+    expect(signal.usage).toMatchObject({ observations: 2, sourceRows: 3, verifiedCopiesExcluded: 1, conflictingReceipts: 0,
+      agentDemand: 2, reliability: { denominator: 2, refused: 2 },
+      costs: { sourceBytes: 18, intermediateBytes: 0, elapsedBeforeRecordMs: 24,
+        sourceMeasuredRows: 2, intermediateMeasuredRows: 1, elapsedMeasuredRows: 2, returnedContextBytes: null, measuredSavings: null },
+      coverage: { state: 'unknown', complete: false } });
+    await recordRecipeRun(db.adminSql, { ...base, success: true,
+      usage: { ...base.usage, outcome: 'success' } });
+    signal = (await recipeCandidates(db.adminSql, { minRunCount: 1 })).signals.find(row => row.id === recipe.id)!;
+    expect(signal.usage).toMatchObject({ observations: 2, sourceRows: 4, verifiedCopiesExcluded: 0,
+      conflictingReceipts: 1, unknown: 1, agentDemand: 1, reliability: { denominator: 1, refused: 1, successes: 0 },
+      costs: { sourceBytes: 9, intermediateBytes: null, intermediateMeasuredRows: 0 } });
   });
 
   it('uses the global recipe corpus across hives', async () => {

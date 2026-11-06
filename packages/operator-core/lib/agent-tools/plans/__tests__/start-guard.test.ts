@@ -187,6 +187,20 @@ vi.mock('../plan-start-critique-gate', () => ({
   evaluatePlanStartBarCritique: (...args: unknown[]) => barCritiqueMock(...args),
 }));
 
+// plans:start's readiness gate checks current discovery before its own
+// admission preflight. This unit suite covers receipt shaping, so satisfy that
+// seam without opening the live plan-audits database.
+vi.mock('../../../plan-audits', async (orig) => {
+  const actual = await orig<typeof import('../../../plan-audits')>();
+  return {
+    ...actual,
+    withCurrentDiscovery: async (_input: unknown, run: () => Promise<unknown>) => ({
+      ok: true,
+      value: await run(),
+    }),
+  };
+});
+
 // Auto-approve runs inside withPlanLock after a successful start — stub it to
 // a no-op so the proceed-case test doesn't need the real lock side-database.
 vi.mock('../with-plan-lock', async (orig) => {
@@ -960,9 +974,16 @@ describe('plans:start — the retired op_status axis (P-047)', () => {
         blockingBars: [],
         contractCodes: [],
         codeAttribution: [],
+        sourceDiagnostics: [
+          { code: 'bar_snapshot_source_unavailable', source: 'plan', severity: 'error', detail: 'plan read failed' },
+          { code: 'bar_snapshot_source_unavailable', source: 'rubric', severity: 'error', detail: 'rubric read failed' },
+        ],
+        sourceDiagnosticsOmitted: 0,
         nextRepair: null,
         staleGradingScorecardId: null,
-        message: 'acceptance BAR contract is not ready for start — 1 of 1 BAR(s) blocking',
+        message: 'acceptance BAR contract is not ready for start — 1 of 1 BAR(s) blocking\n' +
+          'SOURCE DIAGNOSTICS: plan [bar_snapshot_source_unavailable]: plan read failed; ' +
+          'rubric [bar_snapshot_source_unavailable]: rubric read failed',
       },
       ...NO_EDGES,
     });
@@ -980,6 +1001,10 @@ describe('plans:start — the retired op_status axis (P-047)', () => {
     expect(res.data.results[0].message).toContain(
       'Item promotion is blocked by the acceptance BAR contract: acceptance BAR contract is not ready for start',
     );
+    expect(res.data.results[0].promotion.acceptanceBarLifecycle.sourceDiagnostics.map((item: { source: string }) => item.source))
+      .toEqual(['plan', 'rubric']);
+    expect(res.data.results[0].message).toContain('SOURCE DIAGNOSTICS: plan');
+    expect(res.data.results[0].message).toContain('rubric [bar_snapshot_source_unavailable]: rubric read failed');
     expect(res.data.results[0].message).not.toContain('promotion completed before this response');
   });
 
@@ -1067,6 +1092,66 @@ describe('plans:start — the retired op_status axis (P-047)', () => {
       expect(original.results[0].admission.diagnostic).toHaveLength(28_000);
       expect(promotePlanItemsMock).toHaveBeenCalledTimes(1);
       expect(admissionMocks.preflight).toHaveBeenCalledTimes(1);
+    } finally {
+      if (previousRoot === undefined) delete process.env.PAPERCUSP_SCRATCH_ROOT;
+      else process.env.PAPERCUSP_SCRATCH_ROOT = previousRoot;
+      rmSync(sandbox, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    ['structured response', { requestedStructured: true }],
+    ['transport-cap-exempt response', { transportCapExempt: true }],
+  ])('preserves late execution-start authority in a large %s receipt', async (_label, mode) => {
+    const sandbox = mkdtempSync(join(tmpdir(), 'plan-start-structured-receipt-'));
+    const previousRoot = process.env.PAPERCUSP_SCRATCH_ROOT;
+    process.env.PAPERCUSP_SCRATCH_ROOT = join(sandbox, 'scratch');
+    const executionStart = { seq: 40, contentHash: 'execution-start-hash' };
+    const refusalDetails = { code: 'floor-gated', message: 'P-001 is excluded.' };
+    try {
+      admissionMocks.preflight.mockResolvedValueOnce({
+        ready: false,
+        status: 'refused',
+        reason: 'floor-gated',
+        message: 'P-001 is excluded.',
+        diagnostic: 'detail '.repeat(4_000),
+        executionStart,
+        executionStartIssued: true,
+        refusalDetails,
+        earlierSideEffectsMayHaveCommitted: true,
+      });
+      const ctx = { ...(MAKE_CTX() as object), transport: 'http', contextTier: 'trimmed', ...mode };
+      const out = await tool.handler({ harness: 'papercup', slug: 'live-plan-2026-06-02' } as never, ctx as never) as any;
+
+      const expectedAdmission = {
+        executionStart,
+        executionStartIssued: true,
+        refusalDetails,
+        earlierSideEffectsMayHaveCommitted: true,
+      };
+      const structuredResult = out.structuredContent?.results?.[0];
+      expect(
+        structuredResult,
+        `structuredContent keys=${Object.keys(out.structuredContent ?? {}).join(',')}`,
+      ).toBeDefined();
+      expect(
+        structuredResult.admission,
+        `structured result keys=${Object.keys(structuredResult ?? {}).join(',')}; error=${String(structuredResult?.error ?? 'none').slice(0, 500)}`,
+      ).toMatchObject(expectedAdmission);
+      const body = JSON.parse(out.content[0].text);
+      expect(body._projection.cursor.tool).toBe('capability:read');
+      const reference = parseScratchReference(readFileSync(body._projection.cursor.args.file_path))!;
+      const original = JSON.parse(reference.payload.subarray(body._projection.cursor.bodyOffsetInPayload).toString());
+      const serializedResult = original.results?.[0];
+      expect(
+        serializedResult,
+        `spilled payload keys=${Object.keys(original ?? {}).join(',')}`,
+      ).toBeDefined();
+      expect(
+        serializedResult.admission,
+        `spilled result keys=${Object.keys(serializedResult ?? {}).join(',')}`,
+      ).toMatchObject(expectedAdmission);
+      expect(original.results[0].admission.diagnostic).toHaveLength(28_000);
     } finally {
       if (previousRoot === undefined) delete process.env.PAPERCUSP_SCRATCH_ROOT;
       else process.env.PAPERCUSP_SCRATCH_ROOT = previousRoot;

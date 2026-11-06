@@ -13,6 +13,17 @@ import { hostedCustomerAgentIdentitySpec } from './hosted-agent-identity';
 afterEach(() => setHostedAgentIdentityPsuSpec(undefined));
 
 describe('parseHostedPsuCustomerArgv (D-002 allowlist)', () => {
+  it('preserves exact resume host restrictions and refuses malformed host cells', () => {
+    expect(parseHostedPsuCustomerArgv(['--resume=42', '--resume-host', 'remote-1'])).toEqual({
+      ok: true, argv: ['--resume=42', '--resume-host=remote-1'],
+    });
+    for (const host of ['', '../remote', 'remote host', '--no-picker', 'remote\nother']) {
+      expect(parseHostedPsuCustomerArgv([`--resume-host=${host}`])).toEqual({
+        ok: false, reason: 'flag_value_refused:--resume-host',
+      });
+    }
+  });
+
   it('admits the allowlisted flags and normalises the space form to --flag=value', () => {
     expect(
       parseHostedPsuCustomerArgv([

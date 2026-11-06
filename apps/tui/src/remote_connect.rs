@@ -27,10 +27,7 @@ pub const PSU_PROGRAM: &str = "psu";
 /// `<directory of exe>/psu` when it is an executable file: the psu a PUI
 /// release unit ships beside `bin/pui` (D-031).
 pub fn sibling_psu(exe: &Path) -> Option<PathBuf> {
-    use std::os::unix::fs::PermissionsExt;
-    let candidate = exe.parent()?.join(PSU_PROGRAM);
-    let meta = std::fs::metadata(&candidate).ok()?;
-    (meta.is_file() && meta.permissions().mode() & 0o111 != 0).then_some(candidate)
+    crate::fresh_exec::executable_in(exe.parent()?, PSU_PROGRAM)
 }
 
 /// The psu every PUI spawn runs: the one shipped beside the running `pui`
@@ -149,9 +146,16 @@ pub fn setup_connect_note(
 /// success PUI exits as psu did. Otherwise it execs `pui hud` back into setup
 /// with the retained draft and the note; that exec returns only on failure.
 pub async fn supervise_setup_connect(sign_in: bool) -> Result<()> {
+    #[cfg(unix)]
     use tokio::signal::unix::{signal, SignalKind};
+    #[cfg(unix)]
     let _interrupt = signal(SignalKind::interrupt())?;
+    #[cfg(unix)]
     let _quit = signal(SignalKind::quit())?;
+    #[cfg(windows)]
+    let _interrupt = tokio::signal::windows::ctrl_c()?;
+    #[cfg(windows)]
+    let _quit = tokio::signal::windows::ctrl_break()?;
     let note = match refuse_when_forwarded(std::env::var(FORWARDED_ENV).ok().as_deref()) {
         Err(error) => Some(format!("{error:#}")),
         Ok(()) => {
@@ -165,8 +169,10 @@ pub async fn supervise_setup_connect(sign_in: bool) -> Result<()> {
     let Some(note) = note else {
         std::process::exit(0)
     };
-    use std::os::unix::process::CommandExt;
-    let error = return_to_setup_command(std::env::current_exe()?, &note).exec();
+    let error = crate::fresh_exec::replace(&mut return_to_setup_command(
+        std::env::current_exe()?,
+        &note,
+    ));
     eprintln!("pui: {note}");
     Err(error).context("reopen PUI setup")
 }
@@ -318,6 +324,7 @@ mod tests {
         assert!(refuse_when_forwarded(Some("0")).is_ok());
     }
 
+    #[cfg(unix)]
     #[test]
     fn the_psu_shipped_beside_pui_wins_over_path() {
         use std::os::unix::fs::PermissionsExt;
@@ -368,11 +375,21 @@ mod tests {
 #[cfg(test)]
 mod setup_supervisor_tests {
     use super::*;
+    #[cfg(unix)]
     use std::os::unix::process::ExitStatusExt;
+    #[cfg(windows)]
+    use std::os::windows::process::ExitStatusExt;
     use std::process::ExitStatus;
 
     fn exited(code: i32) -> std::io::Result<ExitStatus> {
-        Ok(ExitStatus::from_raw(code << 8))
+        #[cfg(unix)]
+        {
+            Ok(ExitStatus::from_raw(code << 8))
+        }
+        #[cfg(windows)]
+        {
+            Ok(ExitStatus::from_raw(code as u32))
+        }
     }
 
     #[test]
@@ -407,11 +424,14 @@ mod setup_supervisor_tests {
             cancelled.starts_with("Cloud sign-in was cancelled.") && cancelled.contains("Press l"),
             "{cancelled}"
         );
-        let signalled = setup_connect_note(false, &Ok(ExitStatus::from_raw(2))).unwrap();
-        assert!(
-            signalled.starts_with("Connecting to a remote host was cancelled."),
-            "{signalled}"
-        );
+        #[cfg(unix)]
+        {
+            let signalled = setup_connect_note(false, &Ok(ExitStatus::from_raw(2))).unwrap();
+            assert!(
+                signalled.starts_with("Connecting to a remote host was cancelled."),
+                "{signalled}"
+            );
+        }
         let failed = setup_connect_note(true, &exited(3)).unwrap();
         assert!(
             failed.contains("psu exited with status 3") && failed.contains("try again"),

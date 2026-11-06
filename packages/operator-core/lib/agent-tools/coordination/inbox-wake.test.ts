@@ -398,7 +398,7 @@ describe('wakeRecipients skips staging debris for an UNKNOWN recipient (EI-9971)
   });
 
   it('auto mode is unaffected by the roster check (the skip only guards the STAGING branch)', async () => {
-    vi.mocked(resolveWakeMode).mockResolvedValue('auto' as never);
+    mockResolvedTyped(vi.mocked(resolveWakeMode), 'auto');
     vi.mocked(knownOwnerIdSet).mockResolvedValue(new Set(['su-known']));
     const r = await wakeRecipients(['garbage-id'], { summary: 'hi' });
     // auto mode fires regardless of roster membership — firing a key nobody

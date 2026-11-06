@@ -9544,15 +9544,36 @@ impl App {
     /// EXACT agent/session). `None` when the entry carries no launch record to
     /// resume. Enter-by-location ended-session route (D-001).
     pub fn resume_spec(&self, entry: &RosterEntry) -> Option<PaneSpec> {
-        let id = entry.adv_session_id?;
+        let id = entry.adv_session_id.filter(|id| *id > 0)?;
         let agent = entry.agent.clone().unwrap_or_default();
+        if !entry.host.is_empty() && entry.host != self.local_host {
+            // Reuse psu's saved-profile picker; a remote numeric id must never
+            // be interpreted by this computer's operator on cancel/failure.
+            if entry.host.len() > 253
+                || !entry.host.bytes().enumerate().all(|(i, c)| {
+                    c.is_ascii_alphanumeric() || (i > 0 && matches!(c, b'.' | b'_' | b'-'))
+                })
+            {
+                return None;
+            }
+            return Some(
+                PaneSpec::new([
+                    "psu".to_string(),
+                    "--connect".to_string(),
+                    "--resume".to_string(),
+                    id.to_string(),
+                    format!("--resume-host={}", entry.host),
+                ])
+                .titled(format!("connect · {agent}@{}", entry.host)),
+            );
+        }
         let argv = vec!["psu".to_string(), "--resume".to_string(), id.to_string()];
         let title = if agent.is_empty() {
             format!("resume · adv:{id}")
         } else {
             format!("resume · {agent}")
         };
-        let mut spec = PaneSpec::new(argv).titled(title);
+        let mut spec = PaneSpec::new(argv).titled(title).for_session(id);
         if let Some(cwd) = entry.cwd.clone().filter(|c| !c.is_empty()) {
             spec = spec.cwd(cwd);
         }
@@ -9563,8 +9584,8 @@ impl App {
     /// Labels, roles and plan names are shared by unrelated sessions. Even one
     /// matching label is not evidence that a pane belongs to the selected row.
     /// Search every tab: focus_terminal_pane can reach an inactive tab too.
-    /// Flattened commands with whitespace inside argv cells cannot establish
-    /// identity; leave those unavailable until structured pane identity exists.
+    /// Companion launch bindings identify fresh panes even when argv contains
+    /// spaces. Older/unbound panes still need an exact unambiguous command.
     fn match_local_pane(&self, entry: &RosterEntry) -> Option<u32> {
         if !entry.host.is_empty() && entry.host != self.local_host {
             return None;
@@ -9584,6 +9605,9 @@ impl App {
         let mut matched = topo.panes.iter().filter(|pane| {
             if pane.is_plugin || pane.exited || self.is_hud_node(pane) {
                 return false;
+            }
+            if let Some(id) = pane.adv_session_id {
+                return id > 0 && entry.adv_session_id == Some(id);
             }
             let Some(command) = pane.command.as_deref() else {
                 return false;
@@ -23202,6 +23226,7 @@ mod tests {
             is_plugin: false,
             exited: false,
             command: None,
+            adv_session_id: None,
         }
     }
 
@@ -24707,6 +24732,7 @@ mod tests {
                 is_plugin: false,
                 exited: false,
                 command: Some("psu --resume 7".into()),
+                adv_session_id: None,
             }],
         });
         // Exact resume identity wins over the external window handle.
@@ -24868,6 +24894,57 @@ mod tests {
     }
 
     #[test]
+    fn bound_fresh_session_route_uses_identity_across_vendors_and_tabs() {
+        for backend in ["claude", "codex", "omp"] {
+            let mut app = App::new();
+            let entry = live_windowed_entry(backend);
+            let mut pane = topo_pane(55, "shared launch label");
+            pane.tab = 3;
+            pane.command = Some(format!("psu --agent={backend} --model=a model with spaces"));
+            pane.adv_session_id = entry.adv_session_id;
+            app.topology = Some(pui_companion_proto::Topology {
+                panes: vec![pane],
+                ..Default::default()
+            });
+            assert_eq!(
+                app.resolve_agent_route(&entry),
+                AgentRoute::LocalPane { pane_id: 55 }
+            );
+        }
+    }
+
+    #[test]
+    fn bound_session_route_refuses_conflicts_duplicates_and_stale_or_remote_panes() {
+        let mut app = App::new();
+        let mut entry = live_windowed_entry("codex");
+        let mut pane = topo_pane(55, "shared label");
+        pane.command = Some(format!("psu --resume {}", entry.adv_session_id.unwrap()));
+        pane.adv_session_id = Some(99999);
+        app.topology = Some(pui_companion_proto::Topology {
+            panes: vec![pane.clone()],
+            ..Default::default()
+        });
+        // A conflicting typed binding cannot fall back to matching argv.
+        assert_eq!(app.match_local_pane(&entry), None);
+        pane.adv_session_id = entry.adv_session_id;
+        let mut duplicate = pane.clone();
+        duplicate.id = 56;
+        duplicate.tab = 2;
+        app.topology.as_mut().unwrap().panes = vec![pane.clone(), duplicate];
+        assert_eq!(app.match_local_pane(&entry), None);
+        for (plugin, exited) in [(true, false), (false, true)] {
+            let mut stale = pane.clone();
+            stale.is_plugin = plugin;
+            stale.exited = exited;
+            app.topology.as_mut().unwrap().panes = vec![stale];
+            assert_eq!(app.match_local_pane(&entry), None);
+        }
+        app.topology.as_mut().unwrap().panes = vec![pane];
+        entry.host = "another-host".into();
+        assert_eq!(app.match_local_pane(&entry), None);
+    }
+
+    #[test]
     fn exact_session_route_without_identity_is_unavailable_and_keeps_center_pane() {
         let mut a = App::new();
         let entry = RosterEntry {
@@ -24971,6 +25048,44 @@ mod tests {
         let mut bare = ended_resumable_entry("omp");
         bare.adv_session_id = None;
         assert!(a.resume_spec(&bare).is_none());
+    }
+
+    #[test]
+    fn remote_resume_uses_saved_connections_and_preserves_exact_host_without_local_binding() {
+        let app = App::new();
+        for backend in ["claude", "codex", "omp"] {
+            let mut entry = ended_resumable_entry(backend);
+            entry.host = "remote-1".into();
+            let AgentRoute::Resume { spec } = app.resolve_agent_route(&entry) else {
+                panic!("expected remote resume");
+            };
+            assert_eq!(
+                spec.argv,
+                vec![
+                    "psu",
+                    "--connect",
+                    "--resume",
+                    "42",
+                    "--resume-host=remote-1"
+                ]
+            );
+            assert_eq!(spec.cwd, None, "remote cwd must not be applied locally");
+            assert_eq!(
+                spec.adv_session_id, None,
+                "remote row id must not bind a local pane"
+            );
+            assert!(!spec.close_on_exit, "retain connection/refusal output");
+            entry.host = app.local_host.clone();
+            assert_eq!(
+                app.resume_spec(&entry).unwrap().argv,
+                vec!["psu", "--resume", "42"]
+            );
+        }
+        for host in ["-remote", "remote host", "remote/other", "remote\nother"] {
+            let mut entry = ended_resumable_entry("codex");
+            entry.host = host.into();
+            assert!(app.resume_spec(&entry).is_none());
+        }
     }
 
     #[test]
@@ -25985,6 +26100,7 @@ mod tests {
                 is_plugin: false,
                 exited: false,
                 command: Some("psu".into()),
+                adv_session_id: None,
             }],
         };
         assert_eq!(a.update(Event::Topology(topo)), Action::Render);
@@ -26038,6 +26154,7 @@ mod tests {
                 is_plugin: false,
                 exited: false,
                 command: Some("psu --no-picker --agent=claude".into()),
+                adv_session_id: None,
             }],
         });
         // No relaunch armed → `r` is inert (falls through to the default arm).
@@ -26080,6 +26197,7 @@ mod tests {
                 is_plugin: false,
                 exited: false,
                 command: None, // a plain shell, not a command/agent pane
+                adv_session_id: None,
             }],
         });
         a.update(Event::PaneExited {
@@ -28401,6 +28519,7 @@ mod tests {
             is_plugin,
             exited: false,
             command: cmd.map(String::from),
+            adv_session_id: None,
         };
         Topology {
             tabs: vec![TabNode {

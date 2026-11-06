@@ -46,7 +46,7 @@ import type { MessageExtraInfo } from '@modelcontextprotocol/sdk/types.js';
 import { UdsMcpTransport } from '@papercusp/tooldef-mcp';
 import { AGENT_MCP_AUTH_META, startAgentMcpServer } from '../routes/transport/_mcp-uds';
 import type { Principal, UnifiedToolContext } from '@papercusp/agent-mcp';
-import { PAYLOAD_TIER_HARD_CEILING_CHARS, PAYLOAD_TIER_RATCHET_CHARS, setEntityEnum } from '@papercusp/tooldef';
+import { computeViewChecksum, PAYLOAD_TIER_HARD_CEILING_CHARS, PAYLOAD_TIER_RATCHET_CHARS, setEntityEnum } from '@papercusp/tooldef';
 import { _resetVerifiedSpawns } from '../../spawn-signing';
 import { mintConverseChatBinding } from '../../agent-tools/operator/converse-chat-binding';
 import { resetResultDoorAggregatesForTests } from '../../result-door';
@@ -784,6 +784,31 @@ registerProjectedTool({
 });
 
 const deltaRequested: Array<string | undefined> = [];
+// Server-wire fixtures exercise the real MCP proxy's reconstruction and recovery.
+const deltaWireRequested: Array<string | undefined> = [];
+const deltaWireReplies: McpCallResult[] = [];
+function deltaWireReply(data: unknown, delta: Record<string, unknown>): McpCallResult {
+  return { content: [{ type: 'text', text: JSON.stringify(data) }], _meta: { delta } };
+}
+registerProjectedTool({
+  pluginName: 'gating-matrix-test',
+  description: 'test-only upstream delta wire response',
+  inputSchema: { type: 'object', additionalProperties: false },
+  capabilities: ['agent_tools:read'],
+  agentRoles: ['scoper'],
+  expose: { mcp: { name: 'gatingtest:delta_wire' } },
+  delta: {
+    itemKey: (row) => (row as { id: string }).id,
+    itemKeyField: 'id',
+    schemaVersion: 'gating-delta-wire-v1',
+  },
+  fn: async (_args, ctx) => {
+    deltaWireRequested.push(ctx.requestedDelta);
+    const reply = deltaWireReplies.shift();
+    if (!reply) throw new Error('unexpected upstream delta read');
+    return reply;
+  },
+});
 // P006 uses the existing real dispatcher + mocked persistence/auth fixture,
 // rather than maintaining a second copy of the host's dependency mocks.
 const parityCalls: Array<{ args: unknown; ctx: UnifiedToolContext }> = [];
@@ -2660,6 +2685,8 @@ beforeEach(() => {
   seen.length = 0;
   h.resourceReads.length = 0;
   deltaRequested.length = 0;
+  deltaWireRequested.length = 0;
+  deltaWireReplies.length = 0;
   h.withWorkspaceCalls.length = 0;
   h.nativeSessionBinding = 'unbound';
   h.nativeSessionRows = null;
@@ -5387,6 +5414,10 @@ describe('tools/call — role, profile, and workspace gating through the dispatc
 
   it('delta proxy: a generic repeated MCP read sends an internal cursor and reconstructs a full result', async () => {
     const extra = extraFor(signedUrl({ role: 'scoper', spawn: 'spawn-delta' }));
+    const expected = Array.from({ length: 12 }, (_, i) => ({
+      id: `r${i}`,
+      label: `row-${i}-padding-for-delta-proxy`,
+    }));
     const first = await callTool('gatingtest:delta_list', {}, extra);
     expect(first.isError).toBeUndefined();
     expect(deltaRequested).toEqual([undefined]);
@@ -5400,13 +5431,80 @@ describe('tools/call — role, profile, and workspace gating through the dispatc
       servedMode: 'not_modified',
       reconstructedFull: true,
     });
-    expect(JSON.parse(textOf(second))).toHaveLength(12);
+    expect(JSON.parse(textOf(second))).toEqual(expected);
   });
 
   it('delta proxy: explicit client _meta.delta is honored, not overwritten by the proxy cache', async () => {
     const extra = extraFor(signedUrl({ role: 'scoper', spawn: 'spawn-explicit-delta' }));
     await callTool('gatingtest:delta_list', {}, extra, { delta: 'full' });
     expect(deltaRequested).toEqual(['full']);
+  });
+
+  it('delta proxy: semantic add/update/remove reaches an external caller as the exact full state', async () => {
+    const previous = [{ id: 'a', value: 1 }, { id: 'b', value: 1 }, { id: 'c', value: 1 }];
+    const current = [{ id: 'b', value: 2 }, { id: 'c', value: 1 }, { id: 'd', value: 1 }];
+    deltaWireReplies.push(
+      deltaWireReply(previous, { mode: 'full', cursor: 'wire-base', itemKeyField: 'id' }),
+      deltaWireReply([
+        { change: 'removed', id: 'a' },
+        { change: 'updated', id: 'b', data: current[0] },
+        { change: 'added', id: 'd', data: current[2] },
+      ], {
+        mode: 'delta', cursor: 'wire-next', itemKeyField: 'id',
+        checksum: computeViewChecksum(current, row => (row as { id: string }).id),
+      }),
+    );
+    const extra = extraFor(signedUrl({ role: 'scoper', spawn: 'spawn-wire-semantic' }));
+    expect(JSON.parse(textOf(await callTool('gatingtest:delta_wire', {}, extra)))).toEqual(previous);
+    const result = await callTool('gatingtest:delta_wire', {}, extra);
+    expect(result.isError).toBeUndefined();
+    expect(JSON.parse(textOf(result))).toEqual(current);
+    expect(result._meta?.delta).toMatchObject({ mode: 'full', reason: 'proxy_reconstructed' });
+    expect(result._meta?.deltaProxy).toMatchObject({ servedMode: 'delta', reconstructedFull: true });
+    expect(deltaWireRequested).toEqual([undefined, 'not_modified~wire-base']);
+    expect(deltaWireReplies).toEqual([]);
+  });
+
+  it('delta proxy: a checksum mismatch refetches authoritative full output before external delivery', async () => {
+    const previous = [{ id: 'a', value: 1 }];
+    const current = [{ id: 'a', value: 2 }];
+    deltaWireReplies.push(
+      deltaWireReply(previous, { mode: 'full', cursor: 'wire-base', itemKeyField: 'id' }),
+      deltaWireReply([{ change: 'updated', id: 'a', data: { id: 'a', value: 999 } }], {
+        mode: 'delta', cursor: 'wire-corrupt', itemKeyField: 'id',
+        checksum: computeViewChecksum(current, row => (row as { id: string }).id),
+      }),
+      deltaWireReply(current, { mode: 'full', cursor: 'wire-recovered', itemKeyField: 'id' }),
+    );
+    const extra = extraFor(signedUrl({ role: 'scoper', spawn: 'spawn-wire-checksum' }));
+    await callTool('gatingtest:delta_wire', {}, extra);
+    const result = await callTool('gatingtest:delta_wire', {}, extra);
+    expect(result.isError).toBeUndefined();
+    expect(JSON.parse(textOf(result))).toEqual(current);
+    expect(result._meta?.delta).toMatchObject({ mode: 'full', cursor: 'wire-recovered' });
+    expect(deltaWireRequested).toEqual([undefined, 'not_modified~wire-base', undefined]);
+    expect(deltaWireReplies).toEqual([]);
+  });
+
+  it.each([
+    { kind: 'unsupported', data: { ok: true, message: 'non-row result' }, supported: false },
+    { kind: 'grouped', data: { groups: [{ name: 'active', rows: [{ id: 'b', value: 2 }] }] }, supported: true },
+  ])('delta proxy: $kind output takes the raw full fallback without losing its envelope', async ({ kind, data, supported }) => {
+    const reply = deltaWireReply(data, { mode: 'full', supported });
+    deltaWireReplies.push(
+      deltaWireReply([{ id: 'a', value: 1 }], { mode: 'full', cursor: 'wire-base', itemKeyField: 'id' }),
+      reply,
+      reply,
+    );
+    const extra = extraFor(signedUrl({ role: 'scoper', spawn: `spawn-wire-${kind}` }));
+    await callTool('gatingtest:delta_wire', {}, extra);
+    const result = await callTool('gatingtest:delta_wire', {}, extra);
+    expect(result.isError).toBeUndefined();
+    expect(JSON.parse(textOf(result))).toEqual(data);
+    expect(result._meta?.delta).toMatchObject({ mode: 'full', supported });
+    expect(result._meta?.deltaProxy).toBeUndefined();
+    expect(deltaWireRequested).toEqual([undefined, 'not_modified~wire-base', undefined]);
+    expect(deltaWireReplies).toEqual([]);
   });
 
   it('superuser BYPASSES the role allowlist on the same tool (workspace-scoped call)', async () => {

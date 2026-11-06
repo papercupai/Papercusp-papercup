@@ -42,16 +42,18 @@ function git(root, args, options = {}) {
  * are checked against pinned tree metadata BEFORE asking Git for blob bytes.
  * Unavailable/over-budget requested paths remain addressable in unresolved.
  * @param {{ runGit?: (root: string, args: string[], options?: any) => any,
- *   includePaths?: string[], maxBytes?: number, maxFiles?: number }} [options]
+ *   includePaths?: string[], maxBytes?: number, maxFiles?: number, maxInputBytes?: number }} [options]
  */
-export function readCommittedSources(root, revision = 'HEAD', { runGit = git, includePaths, maxBytes, maxFiles } = {}) {
+export function readCommittedSources(root, revision = 'HEAD', {
+  runGit = git, includePaths, maxBytes, maxFiles, maxInputBytes = 2 * 1024 * 1024,
+} = {}) {
   const canonicalPath = (path) => typeof path === 'string' && !!path && !isAbsolute(path)
     && !path.includes('\\') && !path.includes('\0') && path.split('/').every((part) => !!part && part !== '.' && part !== '..');
   if (includePaths !== undefined && (!Array.isArray(includePaths) || !includePaths.length
       || includePaths.some((path) => !canonicalPath(path)) || new Set(includePaths).size !== includePaths.length)) {
     throw new Error('Explicit unique canonical source paths required');
   }
-  if ([maxBytes, maxFiles].some((value) => value !== undefined && (!Number.isSafeInteger(value) || value < 1))) {
+  if ([maxBytes, maxFiles, maxInputBytes].some((value) => value !== undefined && (!Number.isSafeInteger(value) || value < 1))) {
     throw new Error('Positive safe-integer source budgets required');
   }
   const requested = includePaths === undefined ? null : new Set(includePaths);
@@ -87,17 +89,25 @@ export function readCommittedSources(root, revision = 'HEAD', { runGit = git, in
       if (requested && !requested.has(path)) continue;
       missing.delete(path);
       const reason = !/^(?:100644|100755)$/.test(entry.mode) || !Number.isSafeInteger(entry.size)
-          || entry.size < 0 || entry.size > 2 * 1024 * 1024 ? 'nonregular-or-over-budget-source'
+          || entry.size < 0 || entry.size > maxInputBytes ? 'nonregular-or-over-budget-source'
         : maxFiles !== undefined && filesRead >= maxFiles ? 'source-reader-file-budget'
         : maxBytes !== undefined && bytesRead + entry.size > maxBytes ? 'source-reader-byte-budget' : null;
       if (reason) { unresolved.push({ path, commit, blobOid: entry.oid, bytes: entry.size, reason }); continue; }
       selected.push(entry); bytesRead += entry.size; filesRead++;
     }
-    // Each blob is bounded above; sixteen blobs keep the actual batch below
-    // 32MiB rather than buffering the entire repository in a single child call.
-    for (let start = 0; start < selected.length; start += 16) {
-      const chunk = selected.slice(start, start + 16);
+    // Bound batches by bytes as well as count. An explicitly admitted blob over
+    // 32MiB gets its own batch, bounded by the recorded per-input budget. This
+    // never implicitly expands either the default or cumulative read budget.
+    for (let start = 0; start < selected.length;) {
+      const chunk = [];
+      let chunkBytes = 0;
+      while (start < selected.length && chunk.length < 16) {
+        const entry = selected[start];
+        if (chunk.length && chunkBytes + entry.size > 32 * 1024 * 1024) break;
+        chunk.push(entry); chunkBytes += entry.size; start++;
+      }
       const batch = runGit(checkout, ['cat-file', '--batch'], { encoding: null,
+        maxBuffer: Math.max(32 * 1024 * 1024, chunkBytes + 128 * chunk.length),
         input: Buffer.from(chunk.map((entry) => entry.oid).join('\n') + '\n') });
       let offset = 0;
       for (const entry of chunk) {
@@ -118,7 +128,7 @@ export function readCommittedSources(root, revision = 'HEAD', { runGit = git, in
   visit(resolve(root), revision, '');
   for (const path of missing) unresolved.push({ path, revision, reason: 'selected-source-unavailable' });
   return { sources, repositories, unresolved, selection: {
-    paths: requested ? [...requested].sort() : null, maxBytes: maxBytes ?? null, maxFiles: maxFiles ?? null,
+    paths: requested ? [...requested].sort() : null, maxBytes: maxBytes ?? null, maxFiles: maxFiles ?? null, maxInputBytes,
     bytesRead, filesRead, populationComplete: false,
   } };
 }

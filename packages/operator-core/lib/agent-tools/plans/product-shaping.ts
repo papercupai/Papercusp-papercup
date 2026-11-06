@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { parsePlan } from './parser';
 import { splitPlanSections } from './plan-sections';
 import { parseBarMappings, parseRequirementBars } from '../../acceptance-bar-seed';
-import { previewPlanDeclarations, renderDeclarationsWalkthrough } from './plan-declarations';
+import { previewPlanDeclarations, renderDeclarationsWalkthrough, type DiscoveryReadiness } from './plan-declarations';
 
 const text = z.string().trim().max(2000);
 const sourceRef = z.string().trim().max(500).regex(/^session_turn:(claude|codex|omp|agent_chat):[^\s:]+:\d+$/);
@@ -42,8 +42,24 @@ export const productShapingSchema = z.object({
 
 export type ProductShaping = z.infer<typeof productShapingSchema>;
 
+export const DISCOVERY_WORKFLOW_GUIDANCE =
+  'Brief → scoped discovery → findings incorporated → implementation review → execution. Discovery is draft task work, not an implementation start. Save bounded questions, conclusions, existing evidence refs and target dispositions with plans:set-content; then plans:audit { slug, phase:"discovery" }. The server derives identity, freshness and readiness; do not copy facts or assert ready. Reuse current evidence for small/general plans; justify unchanged scope. Relevant changes reopen affected judgments; cosmetic/unrelated edits reuse them. Preserve in-flight work and historical terminal records.';
+
+/** Stage guidance is derived from the measured result, never an author attestation. */
+export function discoveryWorkflow(readiness: Pick<DiscoveryReadiness, 'ready' | 'evidenceRefs' | 'nextAction'>, finalized: boolean) {
+  const reviewable = finalized && readiness.ready;
+  return {
+    stage: reviewable ? 'implementation-review' as const : 'discovery' as const,
+    label: reviewable ? 'Discovery finalized; implementation review may proceed' : 'Provisional discovery brief',
+    evidenceRefs: readiness.evidenceRefs,
+    nextAction: reviewable
+      ? 'Review the reconciled current draft against original intent and its full BARs; then activation/spec-quality and execution. Discovery does not grant implementation authority.'
+      : readiness.nextAction,
+  };
+}
+
 export const PRODUCT_SHAPING_GUIDANCE =
-  'Shape the product before requirements/tasks: record audience, current problem, intended outcome, non-goals and original source refs. Walk concrete user scenarios including relevant failure/recovery and boundaries; keep observed facts, assumptions and material product choices distinct. Investigate existing behavior and recommend defaults; ask only consequential product choices, never engineering methodology. Map scenarios to R-N requirements and the Design BAR-to-work map. plans:audit phase:shaping returns advisory gaps, the ownerWalkthrough and a two-pass blind intent-review brief; lead the owner\'s approval ask with the ownerWalkthrough, not the requirements. Save edits with plans:set-content. Full verification remains unchanged.';
+  'Shape the product before requirements/tasks: record audience, current problem, intended outcome, non-goals and original source refs. Walk concrete user scenarios including failure/recovery and boundaries; keep facts, assumptions and material product choices distinct. Ask only consequential product choices with recommendations. Map scenarios to R-N requirements and the Design BAR-to-work map. plans:audit phase:shaping returns advisory gaps, the ownerWalkthrough and a two-pass blind intent-review brief; lead the owner\'s approval ask with the ownerWalkthrough, not the requirements. ' + DISCOVERY_WORKFLOW_GUIDANCE;
 
 const WALKTHROUGH_FIELD_MAX = 400;
 const clip = (value: string) => value.length > WALKTHROUGH_FIELD_MAX ? value.slice(0, WALKTHROUGH_FIELD_MAX - 1) + '…' : value;
@@ -199,6 +215,7 @@ export function previewProductShaping(planContent: string) {
   // sourceRefs are the pass-one owner turns (brief refs plus owner-request
   // refs); passOne adds only evidence refs and the task, never plan text.
   const reviewerBrief = {
+    scope: 'provisional-discovery-brief' as const,
     sourceRefs: ownerSourceRefs,
     planSection: 'Product shaping',
     readFullContext: 'Pass one: sessions:read each sourceRefs turn only. Pass two: plans:get { slug, heading:"Product shaping" } and { heading:"Requirements" }.',
@@ -212,6 +229,7 @@ export function previewProductShaping(planContent: string) {
       'Pass one is blind: BEFORE reading the plan\'s brief, scenarios or requirements, read sourceRefs and passOne.observedFactRefs and write your expected scenarios. Source syntax is checked; source content and authorship are not.',
       'Pass two: compare your list with the plan. Keep assumptions distinct from owner requests; ask only material product questions, with a recommended answer.',
       'Use the existing independent review route (passOne.consultQuestion suits consult:get_feedback). These diagnostics do not prove semantic completeness or owner approval.',
+      'This is intent/discovery feedback, not formal implementation approval. Formal review reads finalized Discovery findings, their evidence and target dispositions in the reconciled current draft; preserve full BAR re-review without a round cap.',
     ],
   };
   const ownerWalkthrough = renderOwnerWalkthrough(brief, planContent);

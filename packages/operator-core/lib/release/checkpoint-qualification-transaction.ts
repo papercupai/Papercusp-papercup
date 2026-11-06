@@ -303,6 +303,9 @@ export interface CheckpointQualificationState {
     liveness: RunnerLiveness;
     phase: QualificationPhysicalRunner['phase'] | null;
     progressAgeMs: number | null;
+    /** Independent telemetry freshness is separate from the controller heartbeat. */
+    observer?: { health: 'baseline' | 'healthy' | 'unknown'; semantic: 'advancing' | 'unchanged' | 'unknown';
+      sampledAtMs: number | null; reason: string };
   };
   blockers: QualificationBlocker[];
   phaseDurationsMs: Partial<Record<QualificationPhase, number>>;
@@ -360,6 +363,8 @@ export interface CheckpointQualificationTransaction {
   eligibilitySnapshot?: CheckpointEligibilitySnapshot | null;
   /** The full selected population and durable outcomes, under this record's existing runner fence. */
   continuation?: QualificationWorkContinuation;
+  /** Independent sweep telemetry; never a cancellation, verdict or custody authority. */
+  progressObservation?: QualificationProgressObservation;
   /** Selection and carry consumption are committed together before materialization. */
   preparedSelection?: PreparedCheckpointSelectionRecord;
 }
@@ -787,6 +792,125 @@ export interface QualificationWorkUnit {
   kind: 'test' | 'guard' | 'post-suite';
   path: string;
   exclusion?: { reason: string; policyRef: string };
+}
+
+export interface QualificationProgressObservation {
+  schemaVersion: 1;
+  workspaceId: string;
+  installSlug: string;
+  /** Complete identity, including enrolled children and phase epoch, hashed canonically. */
+  fence: string;
+  observerGeneration: string;
+  /** Retired generations cannot replay after a restart established a fresh baseline. */
+  retiredObserverGenerations?: string[];
+  sequence: number;
+  sampledAtMs: number;
+  monotonicAtMs: number;
+  health: 'baseline' | 'healthy' | 'unknown';
+  reason: string;
+  controller: 'responsive' | 'silent' | 'unknown';
+  semantic: 'advancing' | 'unchanged' | 'unknown';
+  manifestHash: string | null;
+  /** One first completion per frozen unit; retries cannot manufacture progress. */
+  completedUnits: string[];
+  lastUsefulProgressMonotonicMs: number | null;
+}
+
+export interface QualificationProgressSample {
+  /** Bound before the external probe; a successor cannot inherit that probe's result. */
+  fence: string;
+  observerGeneration: string;
+  sequence: number;
+  sampledAtMs: number;
+  monotonicAtMs: number;
+  telemetryHealthy: boolean;
+}
+
+export function qualificationProgressFence(current: CheckpointQualificationTransaction, target: GateVerdictTarget): string {
+  const runner = current.currentPhysicalRunner;
+  return createHash('sha256').update(canonicalJson({ workspaceId: target.workspaceId,
+    installSlug: target.installSlug, attemptId: current.attemptId, candidate: current.candidate,
+    repairHead: current.repairHead, runId: current.runId, runnerId: runner?.id ?? null,
+    pid: runner?.pid ?? null, pidIdentity: runner?.pidIdentity ?? null, unit: runner?.unit ?? null,
+    childScopeUnits: [...(runner?.childScopeUnits ?? [])].sort(),
+    childScopeReservedAtMs: runner?.childScopeReservedAtMs ?? null,
+    phase: runner?.phase ?? null, phaseEnteredAtMs: runner?.phaseEnteredAtMs ?? null })).digest('hex');
+}
+
+/** Observation is deliberately read from the locked durable row, never caller counters/output. */
+export function observeQualificationProgress(
+  current: CheckpointQualificationTransaction,
+  target: GateVerdictTarget,
+  sample: QualificationProgressSample,
+): QualificationTransition {
+  const runner = current.currentPhysicalRunner;
+  const conflict = (refusalReason: string): QualificationTransition => ({ status: 'conflict', transaction: current, refusalReason });
+  if (!sample.observerGeneration || !Number.isSafeInteger(sample.sequence) || sample.sequence < 1 ||
+      !Number.isSafeInteger(sample.sampledAtMs) || sample.sampledAtMs < 0 ||
+      !Number.isFinite(sample.monotonicAtMs) || sample.monotonicAtMs < 0) return conflict('observer-sample-invalid');
+  if (!runner || current.phase !== 'running') return conflict('observer-runner-missing');
+  const fence = qualificationProgressFence(current, target);
+  if (sample.fence !== fence) return conflict('observer-fence-mismatch');
+  const rawPrior = current.progressObservation;
+  const prior = rawPrior?.schemaVersion === 1 && typeof rawPrior.observerGeneration === 'string' &&
+    Number.isSafeInteger(rawPrior.sequence) && Number.isFinite(rawPrior.monotonicAtMs) &&
+    Number.isSafeInteger(rawPrior.sampledAtMs) && typeof rawPrior.fence === 'string' &&
+    ['baseline', 'healthy', 'unknown'].includes(rawPrior.health) &&
+    (rawPrior.manifestHash === null || typeof rawPrior.manifestHash === 'string') &&
+    Array.isArray(rawPrior.completedUnits) && rawPrior.completedUnits.every(id => typeof id === 'string')
+    ? rawPrior : undefined;
+  const retired = prior?.retiredObserverGenerations ?? [];
+  if (!Array.isArray(retired) || retired.some(generation => typeof generation !== 'string'))
+    return conflict('observer-generation-history-invalid');
+  if (retired.includes(sample.observerGeneration)) return conflict('observer-retired-generation');
+  const sameGeneration = prior?.schemaVersion === 1 && prior.observerGeneration === sample.observerGeneration;
+  if (sameGeneration && sample.sequence <= prior.sequence) return conflict('observer-sample-replay');
+  if (sameGeneration && sample.monotonicAtMs <= prior.monotonicAtMs) return conflict('observer-sample-order');
+  const heartbeat = runner.heartbeatAtMs;
+  const controller = heartbeat == null || heartbeat > sample.sampledAtMs ? 'unknown'
+    : sample.sampledAtMs - heartbeat > QUALIFICATION_PROGRESS_STALE_MS ? 'silent' : 'responsive';
+  const bound = !!target.workspaceId && !!target.installSlug && !!current.candidate &&
+    runner.candidate === current.candidate && !!current.runId && !!runner.pidIdentity &&
+    Number.isSafeInteger(runner.pid) && runner.pid! > 0 && !!runner.unit &&
+    !!runner.phase && Number.isSafeInteger(runner.phaseEnteredAtMs) && runner.phaseEnteredAtMs! <= sample.sampledAtMs;
+  const sameFence = sameGeneration && prior.fence === fence;
+  // Local monotonic time measures order. Wall-time rebases/gaps demand a new baseline;
+  // persisted samples from another process or a missed sweep never prove elapsed no-progress.
+  const elapsed = sameFence ? sample.monotonicAtMs - prior.monotonicAtMs : 0;
+  const wallElapsed = sameFence ? sample.sampledAtMs - prior.sampledAtMs : 0;
+  const ordered = sameFence && elapsed > 0 && wallElapsed > 0 && elapsed <= 125_000 &&
+    Math.abs(wallElapsed - elapsed) <= 5_000;
+  const work = current.continuation;
+  const relevant = runner.phase === 'suite' || runner.phase === 'isolating' ? ['test', 'guard']
+    : runner.phase === 'delivering' || runner.phase === 'finalizing' ? ['post-suite'] : [];
+  const workBound = work && work.attemptId === current.attemptId && work.candidate === current.candidate &&
+    work.repairHead === current.repairHead && relevant.length > 0;
+  const manifestHash = workBound ? createHash('sha256').update(canonicalJson(work.manifest)).digest('hex') : null;
+  const selected = new Set(workBound ? work.manifest.units.filter(unit => !unit.exclusion && relevant.includes(unit.kind)).map(unit => unit.id) : []);
+  const completedUnits = workBound ? [...new Set(work.receipts.filter(receipt => selected.has(receipt.unitId) &&
+    Number.isSafeInteger(receipt.observedAtMs) && receipt.observedAtMs <= sample.sampledAtMs &&
+    receipt.observedAtMs >= runner.phaseEnteredAtMs!).map(receipt => receipt.unitId))].sort() : [];
+  const manifestChanged = sameFence && prior.manifestHash !== null && manifestHash !== prior.manifestHash;
+  const regressed = sameFence && prior.completedUnits.some(id => !completedUnits.includes(id));
+  const healthy = sample.telemetryHealthy && bound && !manifestChanged && !regressed;
+  const continuing = healthy && ordered && prior.health !== 'unknown' && prior.manifestHash === manifestHash;
+  const advancing = continuing && manifestHash !== null && completedUnits.some(id => !prior.completedUnits.includes(id));
+  const observation: QualificationProgressObservation = {
+    schemaVersion: 1, workspaceId: target.workspaceId, installSlug: target.installSlug,
+    fence, observerGeneration: sample.observerGeneration, sequence: sample.sequence,
+    retiredObserverGenerations: prior && !sameGeneration ? [...retired, prior.observerGeneration] : retired,
+    sampledAtMs: sample.sampledAtMs, monotonicAtMs: sample.monotonicAtMs,
+    health: !healthy ? 'unknown' : continuing ? 'healthy' : 'baseline',
+    reason: !sample.telemetryHealthy ? 'observer-probe-failed' : !bound ? 'observer-identity-incomplete'
+      : manifestChanged ? 'observer-manifest-changed' : regressed ? 'observer-receipts-regressed'
+      : continuing ? 'ordered-independent-sample' : 'fresh-baseline-required',
+    controller, semantic: !continuing || manifestHash === null ? 'unknown' : advancing ? 'advancing' : 'unchanged',
+    manifestHash: manifestChanged ? prior.manifestHash : manifestHash,
+    completedUnits: regressed ? prior.completedUnits : completedUnits,
+    lastUsefulProgressMonotonicMs: advancing ? sample.monotonicAtMs
+      : continuing ? prior.lastUsefulProgressMonotonicMs : null,
+  };
+  return { status: 'updated', transaction: { ...current, progressObservation: observation } };
 }
 
 export interface QualificationWorkReceipt {
@@ -1472,6 +1596,16 @@ export function projectCheckpointQualificationState(
     phase: runner?.phase ?? null,
     progressAgeMs,
   };
+  const observation = transaction.progressObservation;
+  const observedAt = observation?.sampledAtMs;
+  const observationFresh = observation?.schemaVersion === 1 && typeof observedAt === 'number' && Number.isSafeInteger(observedAt) &&
+    observedAt <= nowMs && nowMs - observedAt <= 125_000 &&
+    typeof observation.workspaceId === 'string' && typeof observation.installSlug === 'string' &&
+    observation.fence === qualificationProgressFence(transaction, observation);
+  runnerHealth.observer = { health: observationFresh ? observation.health : 'unknown',
+    semantic: observationFresh && observation.health === 'healthy' ? observation.semantic : 'unknown',
+    sampledAtMs: Number.isSafeInteger(observedAt) ? observedAt! : null,
+    reason: observationFresh ? observation.reason : 'observer-missed-pass-or-identity-changed' };
   const waitEvents = uniqueStrings(transaction.blockers.flatMap((blocker) => blocker.clearEvents));
   let safeNextAction: QualificationSafeNextAction;
   if (transaction.outcome.kind === 'green') {
@@ -3119,6 +3253,19 @@ export function recordStoredQualificationWorkProgress(
   return mutateStoredQualification(target, current => current
     ? recordQualificationWorkProgress(current, input)
     : { status: 'unreadable', error: 'missing attempt' });
+}
+
+/** Same row lock/store as work receipts. An observation cannot move clocks, leases or outcomes. */
+export function recordStoredQualificationProgressObservation(target: GateVerdictTarget,
+  sample: QualificationProgressSample): Promise<StoredQualificationMutation> {
+  return mutateStoredQualification(target, current => {
+    if (!current) return { status: 'missing' };
+    const ageMs = Date.now() - sample.sampledAtMs;
+    if (ageMs < -5_000) return { status: 'conflict', transaction: current, refusalReason: 'observer-future-sample' };
+    return observeQualificationProgress(current, target, {
+      ...sample, telemetryHealthy: sample.telemetryHealthy && ageMs <= 5_000,
+    });
+  });
 }
 
 export function recordStoredQualificationWorkYield(target: GateVerdictTarget,

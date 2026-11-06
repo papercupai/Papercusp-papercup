@@ -121,6 +121,11 @@ function turnStartOutcomeMetadata(outcome) {
       operatorOrigin,
       timeoutMs: milliseconds(rawTransport.timeoutMs),
       elapsedMs: milliseconds(rawTransport.elapsedMs),
+      preFetchMs: milliseconds(rawTransport.preFetchMs),
+      fetchMs: milliseconds(rawTransport.fetchMs),
+      responseStatus: Number.isInteger(rawTransport.responseStatus)
+        && rawTransport.responseStatus >= 100 && rawTransport.responseStatus <= 599
+        ? rawTransport.responseStatus : null,
       headersElapsedMs: milliseconds(rawTransport.headersElapsedMs),
       responseBodyMs: milliseconds(rawTransport.responseBodyMs),
     };

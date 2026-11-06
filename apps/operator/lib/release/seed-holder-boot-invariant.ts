@@ -19,9 +19,9 @@
  * "quiesce the operator" — a fleet-affecting outage — when the actual defect is an inconsistent
  * registry that costs nothing to fix. Naming the state is the whole guard.
  *
- * The three-way split below is load-bearing. "Some sibling answered and every one said false"
- * is a genuinely different fact from "nothing answered at all", and collapsing them is how the
- * inconsistency stayed invisible: a box with no operator running is not violating anything.
+ * A partial set of negative answers cannot establish the violation: the holder may
+ * be one of the siblings that did not answer. Keep that case undetermined until
+ * every probed sibling has answered from a build that supports the route.
  */
 
 export type HolderBootVerdictCode =
@@ -31,7 +31,7 @@ export type HolderBootVerdictCode =
   | 'not-engaged'
   /** D-025: the lock is held, siblings answered, and every one denied booting the hive. */
   | 'holder-without-boot'
-  /** The lock is held but no sibling answered, so the holder is outside the probed set. */
+  /** The lock is held but discovery is incomplete, so the holder's boot state is unknown. */
   | 'holder-unreachable';
 
 export interface HolderBootInvariantInput {
@@ -78,7 +78,8 @@ export function judgeHolderBootInvariant(inp: HolderBootInvariantInput): HolderB
       message: 'corestore write lock is held and a process reports booted:true — D-025 holds.',
     };
   }
-  if (inp.answered.length === 0) {
+  const unanswered = inp.probed.filter((port) => !inp.answered.includes(port));
+  if (inp.answered.length === 0 || unanswered.length > 0 || staleBuild.length > 0) {
     const stale = staleBuild.length
       ? ` ⚠ port(s) ${staleBuild.join(', ')} are alive but predate the probe route, so they cannot answer even while holding the hive.`
       : '';
@@ -86,9 +87,11 @@ export function judgeHolderBootInvariant(inp: HolderBootInvariantInput): HolderB
       code: 'holder-unreachable',
       ok: true,
       message:
-        `the corestore write lock IS held, but no sibling answered the discovery probe ` +
-        `(probed ${inp.probed.length ? inp.probed.join(', ') : 'none'}), so the holder is outside ` +
-        `the probed set — this is undetermined, NOT a D-025 violation.${stale}`,
+        `the corestore write lock IS held, but discovery is incomplete ` +
+        `(answered ${inp.answered.length ? inp.answered.join(', ') : 'none'} of probed ` +
+        `${inp.probed.length ? inp.probed.join(', ') : 'none'}; unanswered ` +
+        `${unanswered.length ? unanswered.join(', ') : 'none'}). The holder may be unreachable ` +
+        `or outside the probed set — this is undetermined, NOT a D-025 violation.${stale}`,
     };
   }
   return {

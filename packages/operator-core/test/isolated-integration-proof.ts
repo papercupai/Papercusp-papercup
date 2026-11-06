@@ -395,9 +395,9 @@ export function captureIsolatedWorker(child: ChildProcess, evidenceDir: string, 
     let completedCases = 0;
     const caseProgress = new Set<string>();
     const nestedProgress = new Set<string>();
-    const provenanceSteps = new Set<string>();
-    let provenanceFiles = 0;
-    let provenanceTotal: number | undefined;
+    const provenanceByPhase = new Map<WorkerPhase, {
+      steps: Set<string>; files: number; total?: number;
+    }>();
     const relayProgress = (stage: string, force = false) => {
       const at = Date.now();
       if (!force && at - lastProgressAt < (options.progressIntervalMs ?? 30_000)) return;
@@ -420,24 +420,32 @@ export function captureIsolatedWorker(child: ChildProcess, evidenceDir: string, 
           const value = JSON.parse(line.slice('TEST_FILE_FINALIZATION '.length));
           if (['files-complete', 'provenance-start'].includes(value.phase) &&
               phase === 'execute' && deadlines.finalizeMs) armPhase('finalize');
-          else if (phase === 'finalize' && value.phase === 'provenance-progress' &&
+          else if ((phase === 'bootstrap' || phase === 'finalize') && value.phase === 'provenance-progress' &&
               ['git-checkout', 'source-census'].includes(value.step)) {
+            // Reporters verify source before the first case as well as after
+            // execution. Renew only the current phase's bounded progress clock;
+            // bootstrap evidence never starts or spends the assertion budget.
+            let provenance = provenanceByPhase.get(phase);
+            if (!provenance) {
+              provenance = { steps: new Set<string>(), files: 0 };
+              provenanceByPhase.set(phase, provenance);
+            }
             const key = `${value.step}:${value.event}`;
-            if (['start', 'end'].includes(value.event) && !provenanceSteps.has(key)) {
-              provenanceSteps.add(key);
+            if (['start', 'end'].includes(value.event) && !provenance.steps.has(key)) {
+              provenance.steps.add(key);
               progressWatchdog?.noteProgress();
               relayProgress('provenance-' + key);
             } else if (value.step === 'source-census' && value.event === 'progress' &&
                 Number.isSafeInteger(value.completedFiles) && Number.isSafeInteger(value.totalFiles) &&
-                value.totalFiles > 0 && value.completedFiles > provenanceFiles &&
+                value.totalFiles > 0 && value.completedFiles > provenance.files &&
                 value.completedFiles <= value.totalFiles &&
-                (provenanceTotal === undefined || value.totalFiles === provenanceTotal)) {
-              provenanceTotal = value.totalFiles;
-              provenanceFiles = value.completedFiles;
+                (provenance.total === undefined || value.totalFiles === provenance.total)) {
+              provenance.total = value.totalFiles;
+              provenance.files = value.completedFiles;
               progressWatchdog?.noteProgress();
               // A parent must distinguish actual census advances from a
               // replayed stage without seeing private source paths/output.
-              relayProgress('provenance-files-' + provenanceFiles);
+              relayProgress('provenance-files-' + provenance.files);
             }
           }
         } catch { /* malformed finalization output cannot alter a deadline */ }

@@ -16,9 +16,12 @@ import {
   withAcceptanceBarAmendmentTransaction,
   carryUnchangedBarEvidenceBindings,
   shouldCarryBarEvidence,
+  validateAcceptanceBarRevisionProjectionPreview,
 } from './acceptance-bar-amendment';
+import { AcceptanceBarCandidateError } from './acceptance-bar-projection';
 import { specEvidenceBindingFingerprint } from './agent-tools/plans/spec-evidence-store';
 import { buildAcceptanceBarSeed } from './acceptance-bar-seed';
+import { rubricTemplateDataAuthoringSchema } from './agent-tools/plans/rubric-template';
 import {
   acceptanceCanonicalUnchangedIgnoringLegacyChecks,
   computeAcceptanceBarSetHash,
@@ -66,6 +69,99 @@ ${overrides.map ?? '| R-1 | P-001 | tree |'}
 }
 
 describe('acceptance BAR amendment transaction contract', () => {
+  function fieldValidationFixture() {
+    const seeded = buildAcceptanceBarSeed({
+      planSlug: 'subject-plan', planContent: subjectPlan(), actorId: 'author',
+      declaredAt: '2026-09-06T00:00:00.000Z', cohort: 'post-epoch', adoptionEpoch: 1,
+      subjectPlanRevision: 2, planStatus: 'active', rubricSlug: 'acceptance-subject-plan', rubricRevision: 4,
+    });
+    if (!seeded.ok) throw new Error('fixture seed failed');
+    const data = rubricTemplateDataAuthoringSchema.parse(seeded.templateData);
+    const sql = vi.fn(async (parts: TemplateStringsArray) => parts.join(' ').includes('SELECT plan_slug, content')
+      ? [{ plan_slug: 'subject-plan', content: subjectPlan() }] : []);
+    const validate = (templateData: unknown) => validateAcceptanceBarRevisionProjectionPreview(sql as never, {
+      workspaceId: 'workspace', harnessSlug: 'papercusp', rubricSlug: 'acceptance-subject-plan',
+      rubricRevision: 4, templateData, previousTemplateData: data,
+    });
+    return { data, validate };
+  }
+
+  it('rejects invalid or missing observables with consolidated defects before review', async () => {
+    const { data, validate } = fieldValidationFixture();
+    for (const observation of ['', undefined]) {
+      const invalid = structuredClone(data);
+      Object.assign(invalid.criteria[0]!, { model: observation, driftMarkers: '', method: '', requiredScope: [''] });
+      const failure = await validate(invalid).catch((error: unknown) => error);
+      expect(failure).toBeInstanceOf(AcceptanceBarCandidateError);
+      for (const field of ['model', 'driftMarkers', 'method', 'requiredScope']) {
+        expect((failure as Error).message).toContain(field);
+      }
+    }
+    await expect(validate(data)).resolves.toMatchObject({ generatedSpecCount: 1 });
+  });
+
+  it('rejects invalid evidence plane and runtime before review', async () => {
+    const { data, validate } = fieldValidationFixture();
+    const invalid = structuredClone(data);
+    Object.assign(invalid.criteria[0]!, { evidencePlane: 'invalid', evidenceRuntime: 'invalid' });
+    const failure = await validate(invalid).catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(AcceptanceBarCandidateError);
+    expect((failure as Error).message).toContain('evidencePlane');
+    expect((failure as Error).message).toContain('evidenceRuntime');
+    await expect(validate(data)).resolves.toMatchObject({ generatedSpecCount: 1 });
+  });
+
+  it('rejects every invalid generated candidate field before review', async () => {
+    const seeded = buildAcceptanceBarSeed({
+      planSlug: 'subject-plan', planContent: subjectPlan(), actorId: 'author',
+      declaredAt: '2026-09-06T00:00:00.000Z', cohort: 'post-epoch', adoptionEpoch: 1,
+      subjectPlanRevision: 2, planStatus: 'active', rubricSlug: 'acceptance-subject-plan', rubricRevision: 4,
+    });
+    if (!seeded.ok) throw new Error('fixture seed failed');
+    const data = rubricTemplateDataAuthoringSchema.parse(seeded.templateData);
+    const base = {
+      workspaceId: 'workspace', harnessSlug: 'papercusp', rubricSlug: 'acceptance-subject-plan',
+      rubricRevision: 4, templateData: data, previousTemplateData: data,
+    };
+    const row = {
+      spec_id: 'AUTO-BAR-R-1-P-001', source_val_id: null, current_revision: 1,
+      source_bar_key: 'R-1', source_bar_hash: data.criteria[0]!.barHash, plan_item_id: 'P-001',
+      behavior: 'The writer persists one canonical BAR.', behavior_class: 'happy-path',
+      falsifier: { observation: 'The stored BAR differs from the requested value.' },
+      required_evidence: ['tree'], required_test_layers: ['unit'], mutation_required: false,
+      lifecycle_status: 'active', supersedes_spec_id: null, supersedes_revision: null, exemption: null,
+    };
+    const sql = vi.fn(async (parts: TemplateStringsArray) => parts.join(' ').includes('SELECT plan_slug, content')
+      ? [{ plan_slug: 'subject-plan', content: subjectPlan() }] : [row]);
+    for (const defect of [
+      { behavior: ' ' },
+      { falsifier: { observation: ' ' } },
+      { falsifier: { observation: 'Wrong BAR.', probeMethod: ' ' } },
+      { falsifier: { observation: 'Wrong BAR.', requiredScenarios: ['same', 'same'] } },
+      { required_evidence: [' '] },
+      { required_test_layers: ['unrecordable'] },
+    ]) {
+      const defectiveSql = vi.fn(async (parts: TemplateStringsArray) => parts.join(' ').includes('SELECT plan_slug, content')
+        ? [{ plan_slug: 'subject-plan', content: subjectPlan() }] : [{ ...row, ...defect }]);
+      await expect(validateAcceptanceBarRevisionProjectionPreview(defectiveSql as never, base))
+        .rejects.toBeInstanceOf(AcceptanceBarCandidateError);
+    }
+    // Shape defects in independent acceptance fields are returned together.
+    const invalid = structuredClone(data);
+    Object.assign(invalid.criteria[0]!, {
+      method: '', requiredScope: [''], evidencePlane: 'invalid', evidenceRuntime: 'invalid',
+      check: { kind: 'tests', files: ['one.test.ts'], cases: [{ file: 'one.test.ts', testName: '' }] },
+    });
+    const failure = await validateAcceptanceBarRevisionProjectionPreview(sql as never, { ...base, templateData: invalid })
+      .catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(AcceptanceBarCandidateError);
+    const issues = (failure as AcceptanceBarCandidateError).candidateValidation.issues.join('; ');
+    for (const field of ['method', 'requiredScope', 'evidencePlane', 'evidenceRuntime', 'testName']) expect(issues).toContain(field);
+    expect((failure as AcceptanceBarCandidateError).candidateValidation.candidateHash).toMatch(/^[a-f0-9]{64}$/);
+    await expect(validateAcceptanceBarRevisionProjectionPreview(sql as never, base))
+      .resolves.toMatchObject({ generatedSpecCount: 1 });
+  });
+
   it('derives a stable replay key independent of BAR hash ordering', () => {
     const first = acceptanceBarAmendmentKey({
       rubricId: 'acceptance-plan',

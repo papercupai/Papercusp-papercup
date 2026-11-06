@@ -105,8 +105,9 @@ export interface PlanLintReport {
 }
 
 
-/** Count features in harness_features_consolidated whose metadata
- *  records this plan slug as their source. Returns 0 when PG is
+/** Count promoted features, excluding nodes created by draft authoring.
+ *  Retain import provenance when a historical feature was later
+ *  adopted as a canonical line node. Returns 0 when PG is
  *  unreachable so the lint never breaks on infra blips. */
 async function countFeaturesFromPlan(planSlug: string): Promise<number> {
   try {
@@ -119,9 +120,12 @@ async function countFeaturesFromPlan(planSlug: string): Promise<number> {
     const workspaceId = activeWorkspaceId();
     const rows = await sql<Array<{ n: number }>>`
       SELECT COUNT(*)::int AS n
-        FROM harness_shared.harness_features_consolidated
+        FROM harness_shared.work_items
        WHERE workspace_id = ${workspaceId}
          AND source_plan_slug = ${planSlug}
+         AND item_kind NOT IN ('bug', 'change', 'task')
+         AND (plan_line_id IS NULL
+           OR metadata ->> 'source_plan' = source_plan_slug)
     `;
     return rows[0]?.n ?? 0;
   } catch {
@@ -783,9 +787,9 @@ export async function lintParsed(
   // regex-scanned the plan body for F-NNN-shaped strings, which
   // false-positived on any plan that mentioned a feature id in
   // *prose* — even purely as documentation ("here's how F-FIX-024
-  // works"). Querying PG for features that claim this slug as their
-  // source asks the right question: did this plan actually mint
-  // features?
+  // works"). Canonical draft authoring also creates source-attributed
+  // line nodes. Exclude those unless retained import provenance
+  // establishes actual promoted work; attribution alone is not proof.
   //
   // Severity is date-gated against the migration ship date. Plans
   // CREATED before then won't have the block until backfilled — emit

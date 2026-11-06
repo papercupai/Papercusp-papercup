@@ -163,7 +163,7 @@ if (process.env.PAPERCUSP_SERVE_UI !== '0') {
 export async function captureOperatorHttpSecurityPopulation(): Promise<import('@papercusp/operator-core/lib/observability/runtime').RuntimeSecurityPopulation & { closureAccepted: false }> {
   const [{ enumerateMountedHonoSurfaces, honoRoutesProvider }, { enumerateMountedPluginHttpSurfaces },
     { enumerateProjectedHandlerSurfaces }, { REPO_ROOT }, { inspectPluginHostSecurityPopulation },
-    { dbosSecurityObserver }, { dbosStarted }, { listReactionRules }] = await Promise.all([
+    { dbosSecurityObserver }, { dbosStarted }, { listReactionRules }, { enumerateSyncQuerySurfaces }] = await Promise.all([
     import('@papercusp/operator-core/lib/coverage-census/providers/hono-routes'),
     import('@papercusp/operator-core/lib/plugin-api-mount'),
     import('@papercusp/operator-core/lib/coverage-census/providers/mcp-tools'),
@@ -172,6 +172,7 @@ export async function captureOperatorHttpSecurityPopulation(): Promise<import('@
     import('@papercusp/operator-core/lib/coverage-census/providers/dbos-workflows'),
     import('@papercusp/operator-core/lib/dbos/bootstrap'),
     import('@papercusp/operator-core/lib/events/registry'),
+    import('@papercusp/operator-core/lib/coverage-census/providers/sync-queries'),
   ]);
   const outer = enumerateMountedHonoSurfaces(host, 'operator-host');
   const inner = enumerateMountedHonoSurfaces(app, 'operator-api');
@@ -180,15 +181,19 @@ export async function captureOperatorHttpSecurityPopulation(): Promise<import('@
   const handlers = await enumerateProjectedHandlerSurfaces({ repoRoot: REPO_ROOT,
     workspaceId: '', harnessSlug: '', config: {} });
   const dbos = dbosSecurityObserver.capture(dbosStarted());
+  const queries = enumerateSyncQuerySurfaces({ securitySnapshot: true });
   const reactions = listReactionRules().map(rule => ({ kind: 'registered-event-reaction',
     surfaceId: rule.id, sourceFile: null, fidelity: 'observed' as const,
     attrs: { on: rule.on, fire: rule.fire, source: rule.source ?? null } }));
   return {
     surfaces: [...outer.surfaces, ...inner.surfaces, ...plugins.surfaces, ...handlers, ...loader.surfaces,
-      ...dbos.surfaces, ...reactions],
+      ...dbos.surfaces, ...reactions, ...queries],
     declaredSurfaces: [...honoRoutesProvider.enumerate(), ...loader.declaredSurfaces],
     unresolved: [...outer.unresolved, ...inner.unresolved, ...plugins.unresolved, ...loader.unresolved,
-      ...dbos.unresolved, 'reaction-registration-source-and-adapter-reconciliation-unverified'],
+      ...dbos.unresolved, 'reaction-registration-source-and-adapter-reconciliation-unverified',
+      'sync-query-source-and-adapter-reconciliation-unverified',
+      ...queries.filter(row => !row.attrs?.loadedFunctionSha256)
+        .map(row => `sync-query-loaded-function-unavailable:${row.surfaceId}`)],
     closureAccepted: false as const,
   };
 }

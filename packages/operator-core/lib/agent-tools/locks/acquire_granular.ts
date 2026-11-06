@@ -93,7 +93,9 @@ export default defineTool({
       // Each retry gets a fresh workspace transaction. A transient advisory-lock
       // or statement timeout must not leak as handler_error; after the bounded
       // retries, report unknown contention rather than inventing a path conflict.
+      // notify-classification: {"id":"packages/operator-core/lib/agent-tools/locks/acquire_granular.ts#<module>/handler:cbce15658d71335cc22e:1","classification":"durable","reason":"The retry reaches inWorkspaceTxn, which arms the background expiry janitor outside tests. Although this granular transaction creates no resource-expiry receipts, the janitor's eventual resource-release event path remains unverified; preserve that shared delivery obligation.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       r = await acquireWithContentionRetry(() =>
+        // notify-classification: {"id":"packages/operator-core/lib/agent-tools/locks/acquire_granular.ts#<module>/handler/<callback>:7f36aa5f9f23c05abc52:1","classification":"durable","reason":"tryAcquireGranular only touches granular rows and marks no resource-expiry receipts, but inWorkspaceTxn also arms startBackgroundJanitor. Preserve the shared janitor resource-release delivery obligation until its terminal path is verified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
         inWorkspaceTxn(coordinationDomain, ownerId, (tx) =>
           tryAcquireGranular(tx, {
             coordinationDomain,
@@ -116,6 +118,7 @@ export default defineTool({
     // P-025: push the acquire to the plan lock banner (post-commit; no-ops for
     // non-plan paths). See notify-lock-change.ts for why the per-call dedupe
     // window is load-bearing (D-042).
+    // notify-classification: {"id":"packages/operator-core/lib/agent-tools/locks/acquire_granular.ts#<module>/handler:0df2b796fc7a1af16377:1","classification":"safe-to-lose","reason":"Only invalidates the plan-lock banner after commit; it does not enforce the lock. usePlanLock in apps/operator/app/admin/plans/plans-api.ts refreshes the current query on window focus and visible-tab transitions, recovering a dropped UI invalidation."}
     notifyPlanLockChange([args.path]);
     return json({
       ok: true,

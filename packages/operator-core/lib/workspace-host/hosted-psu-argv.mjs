@@ -32,6 +32,7 @@ const HOSTED_PSU_VALUE_FLAGS = new Map([
   ["--model", (value) => MODEL_SPEC.test(value)],
   ["--label", (value) => value.length > 0 && value.length <= LABEL_MAX && !/[\p{Cc}]/u.test(value)],
   ["--resume", (value) => SESSION_ID.test(value)],
+  ["--resume-host", (value) => /^[A-Za-z0-9][A-Za-z0-9._-]{0,252}$/.test(value)],
 ]);
 
 /** True when this process is a psu the workspace host started for a customer. */

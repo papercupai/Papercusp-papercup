@@ -11,14 +11,17 @@
 //! `voice.rs`; the testable seam is `push_pcm()` — tests inject synthetic PCM
 //! and a mock unix server, no audio hardware involved.
 
-use std::io::{Read, Write};
+use std::io::{self, Cursor, Read, Write};
+#[cfg(unix)]
 use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
+use futures_util::{SinkExt, StreamExt};
+use tokio_tungstenite::tungstenite::Message;
 
 pub const CTRL: u8 = 0x01;
 pub const MIC: u8 = 0x02;
@@ -134,19 +137,210 @@ struct Discovery {
 
 /// Resolve the operator's voice socket path from the discovery file.
 pub fn discover_socket_path() -> Result<std::path::PathBuf> {
-    let home = std::env::var("HOME").context("HOME unset")?;
-    let p = Path::new(&home).join(".papercusp").join("voice-ipc.json");
+    let home = dirs::home_dir().context("no home dir")?;
+    let p = home.join(".papercusp").join("voice-ipc.json");
     let raw = std::fs::read_to_string(&p)
         .with_context(|| format!("voice discovery missing at {}", p.display()))?;
     let d: Discovery = serde_json::from_str(&raw).context("bad voice-ipc.json")?;
     Ok(std::path::PathBuf::from(d.socket_path))
 }
 
+/// The existing desktop bridge forwards the same voice frames verbatim. Keep
+/// its I/O on one owner thread; capture callbacks enqueue bounded messages and
+/// both existing readers retain their ordinary Read/Write interface.
+pub enum VoiceSocket {
+    #[cfg(unix)]
+    Unix(UnixStream),
+    Desktop {
+        incoming: Arc<Mutex<(Receiver<Vec<u8>>, Cursor<Vec<u8>>)>>,
+        outgoing: tokio::sync::mpsc::Sender<Vec<u8>>,
+        close: tokio::sync::watch::Sender<bool>,
+    },
+}
+
+fn desktop_voice_url(base: &str, config: &[u8]) -> Result<String> {
+    let mut url = reqwest::Url::parse(base).context("invalid selected voice operator")?;
+    if !matches!(url.scheme(), "http" | "https")
+        || !matches!(url.host_str(), Some("127.0.0.1" | "localhost" | "[::1]"))
+        || !url.username().is_empty()
+        || url.password().is_some()
+    {
+        bail!("desktop voice requires a local operator on this machine");
+    }
+    let config: serde_json::Value = serde_json::from_slice(config)?;
+    let port = config["port"]
+        .as_u64()
+        .filter(|port| (1..=65535).contains(port))
+        .context("desktop voice bridge is not ready (no chosen port)")?;
+    if config["path"] != "/api/desktop/voice" {
+        bail!("invalid desktop voice bridge path");
+    }
+    url.set_scheme("ws")
+        .map_err(|_| anyhow!("invalid voice scheme"))?;
+    url.set_port(Some(port as u16))
+        .map_err(|_| anyhow!("invalid voice port"))?;
+    url.set_path("/api/desktop/voice");
+    url.set_query(None);
+    url.set_fragment(None);
+    Ok(url.into())
+}
+
+impl VoiceSocket {
+    pub fn connect() -> Result<Self> {
+        #[cfg(unix)]
+        {
+            let path = discover_socket_path()?;
+            return Ok(Self::Unix(UnixStream::connect(&path).with_context(
+                || format!("voice socket connect {}", path.display()),
+            )?));
+        }
+        #[cfg(windows)]
+        Self::connect_desktop(&crate::client::selected_endpoint_label())
+    }
+
+    fn connect_desktop(base: &str) -> Result<Self> {
+        // Validate locality BEFORE fetching config, including malformed explicit
+        // selectors. Never attach voice to a different machine's loopback.
+        let _ = desktop_voice_url(base, br#"{"port":1,"path":"/api/desktop/voice"}"#)?;
+        let base = base.trim_end_matches('/').to_owned();
+        let (incoming_tx, incoming) = std::sync::mpsc::sync_channel(32);
+        let (outgoing, mut outgoing_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(32);
+        let (close, mut close_rx) = tokio::sync::watch::channel(false);
+        let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
+        std::thread::Builder::new().name("pui-voice-desktop".into()).spawn(move || {
+            let result = (|| -> Result<()> {
+                let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
+                runtime.block_on(async {
+                    let setup = async {
+                        let bytes = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).build()?
+                            .get(format!("{base}/api/desktop/voice-config")).send().await?
+                            .error_for_status()?.bytes().await?;
+                        let url = desktop_voice_url(&base, &bytes)?;
+                        let (socket, _) = tokio_tungstenite::connect_async(url).await?;
+                        Ok::<_, anyhow::Error>(socket)
+                    };
+                    let mut socket = tokio::time::timeout(std::time::Duration::from_secs(5), setup)
+                        .await.context("desktop voice connection timed out")??;
+                    if ready_tx.send(Ok(())).is_err() { return Ok(()); }
+                    loop {
+                        tokio::select! {
+                            _ = close_rx.changed() => break,
+                            message = outgoing_rx.recv() => match message {
+                                Some(bytes) => {
+                                    tokio::select! {
+                                        _ = close_rx.changed() => break,
+                                        result = tokio::time::timeout(std::time::Duration::from_secs(5), socket.send(Message::Binary(bytes.into()))) => { result.context("desktop voice write timed out")??; }
+                                    }
+                                }
+                                None => break,
+                            },
+                            message = socket.next() => match message {
+                                Some(Ok(Message::Binary(bytes))) => incoming_tx.try_send(bytes.to_vec())
+                                    .context("desktop voice reader fell behind")?,
+                                Some(Ok(Message::Close(_))) | None => break,
+                                Some(Err(error)) => return Err(error.into()),
+                                Some(Ok(_)) => {},
+                            }
+                        }
+                    }
+                    Ok(())
+                })
+            })();
+            if let Err(error) = result { let _ = ready_tx.send(Err(format!("{error:#}"))); }
+        }).context("spawn desktop voice transport")?;
+        ready_rx
+            .recv_timeout(std::time::Duration::from_secs(6))
+            .context("desktop voice transport did not start")?
+            .map_err(|e| anyhow!(e))?;
+        Ok(Self::Desktop {
+            incoming: Arc::new(Mutex::new((incoming, Cursor::new(Vec::new())))),
+            outgoing,
+            close,
+        })
+    }
+
+    pub fn try_clone(&self) -> io::Result<Self> {
+        Ok(match self {
+            #[cfg(unix)]
+            Self::Unix(socket) => Self::Unix(socket.try_clone()?),
+            Self::Desktop {
+                incoming,
+                outgoing,
+                close,
+            } => Self::Desktop {
+                incoming: incoming.clone(),
+                outgoing: outgoing.clone(),
+                close: close.clone(),
+            },
+        })
+    }
+
+    pub fn shutdown(&self, how: std::net::Shutdown) -> io::Result<()> {
+        match self {
+            #[cfg(unix)]
+            Self::Unix(socket) => socket.shutdown(how),
+            Self::Desktop { close, .. } => {
+                close.send_replace(true);
+                Ok(())
+            }
+        }
+    }
+}
+
+impl Read for VoiceSocket {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        match self {
+            #[cfg(unix)]
+            Self::Unix(socket) => socket.read(buf),
+            Self::Desktop { incoming, .. } => {
+                if buf.is_empty() {
+                    return Ok(0);
+                }
+                let mut incoming = incoming
+                    .lock()
+                    .map_err(|_| io::Error::other("voice reader poisoned"))?;
+                loop {
+                    let count = incoming.1.read(buf)?;
+                    if count > 0 {
+                        return Ok(count);
+                    }
+                    match incoming.0.recv() {
+                        Ok(bytes) => incoming.1 = Cursor::new(bytes),
+                        Err(_) => return Ok(0),
+                    }
+                }
+            }
+        }
+    }
+}
+
+impl Write for VoiceSocket {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        match self {
+            #[cfg(unix)]
+            Self::Unix(socket) => socket.write(bytes),
+            Self::Desktop { outgoing, .. } => {
+                outgoing
+                    .try_send(bytes.to_vec())
+                    .map_err(|e| io::Error::new(io::ErrorKind::BrokenPipe, e))?;
+                Ok(bytes.len())
+            }
+        }
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        match self {
+            #[cfg(unix)]
+            Self::Unix(socket) => socket.flush(),
+            Self::Desktop { .. } => Ok(()),
+        }
+    }
+}
+
 /// Holds only Sync members (Mutex/atomics) so `Arc<VoiceStream>` is Send —
 /// the cpal capture callback requires it. Event/mix receivers are returned by
 /// `connect_to` instead of stored here (mpsc::Receiver is !Sync).
 pub struct VoiceStream {
-    writer: Arc<Mutex<UnixStream>>,
+    writer: Arc<Mutex<VoiceSocket>>,
     mic_level_bits: Arc<AtomicU32>,
     mic_acc: Mutex<Vec<f32>>,
     tx_gate: Mutex<TxGate>,
@@ -186,12 +380,19 @@ fn tx_gate_decision(g: &mut TxGate, rms: f32) -> bool {
 impl VoiceStream {
     /// Connect via the discovery file.
     pub fn connect() -> Result<(Self, Receiver<VoiceEvent>, Receiver<Vec<i16>>)> {
-        Self::connect_to(&discover_socket_path()?)
+        Self::from_socket(VoiceSocket::connect()?)
     }
 
+    #[cfg(unix)]
     pub fn connect_to(path: &Path) -> Result<(Self, Receiver<VoiceEvent>, Receiver<Vec<i16>>)> {
         let stream = UnixStream::connect(path)
             .with_context(|| format!("voice socket connect {}", path.display()))?;
+        Self::from_socket(VoiceSocket::Unix(stream))
+    }
+
+    fn from_socket(
+        stream: VoiceSocket,
+    ) -> Result<(Self, Receiver<VoiceEvent>, Receiver<Vec<i16>>)> {
         let reader = stream.try_clone().context("voice socket clone")?;
         let writer = Arc::new(Mutex::new(stream));
         let (ev_tx, ev_rx) = channel::<VoiceEvent>();
@@ -298,7 +499,15 @@ impl VoiceStream {
     }
 }
 
-fn read_loop(mut sock: UnixStream, ev_tx: Sender<VoiceEvent>, mix_tx: Sender<Vec<i16>>) {
+impl Drop for VoiceStream {
+    fn drop(&mut self) {
+        if let Ok(writer) = self.writer.lock() {
+            let _ = writer.shutdown(std::net::Shutdown::Both);
+        }
+    }
+}
+
+fn read_loop(mut sock: VoiceSocket, ev_tx: Sender<VoiceEvent>, mix_tx: Sender<Vec<i16>>) {
     let mut parser = FrameParser::default();
     let mut buf = [0u8; 16 * 1024];
     loop {
@@ -382,7 +591,151 @@ pub fn start_playback(mix_rx: Receiver<Vec<i16>>) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use std::os::unix::net::UnixListener;
+
+    fn desktop_fixture(
+        handler: impl FnOnce(tokio_tungstenite::tungstenite::WebSocket<std::net::TcpStream>)
+            + Send
+            + 'static,
+    ) -> (String, std::thread::JoinHandle<()>) {
+        let config = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let bridge = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", config.local_addr().unwrap());
+        let port = bridge.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            let (mut request, _) = config.accept().unwrap();
+            request
+                .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                .unwrap();
+            let mut bytes = [0; 4096];
+            let count = request.read(&mut bytes).unwrap();
+            assert!(String::from_utf8_lossy(&bytes[..count])
+                .starts_with("GET /api/desktop/voice-config "));
+            let body = format!(r#"{{"port":{port},"path":"/api/desktop/voice"}}"#);
+            write!(
+                request,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            )
+            .unwrap();
+            drop(request);
+            let (stream, _) = bridge.accept().unwrap();
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                .unwrap();
+            let socket = tokio_tungstenite::tungstenite::accept(stream).unwrap();
+            handler(socket);
+        });
+        (base, server)
+    }
+
+    #[test]
+    fn desktop_config_requires_chosen_port_and_local_operator() {
+        let valid = br#"{"port":3099,"path":"/api/desktop/voice"}"#;
+        assert_eq!(
+            desktop_voice_url("http://127.0.0.1:3170", valid).unwrap(),
+            "ws://127.0.0.1:3099/api/desktop/voice"
+        );
+        for base in [
+            "http://remote.example:3170",
+            "http://127.0.0.1.evil:3170",
+            "http://user:pass@localhost:3170",
+            "invalid",
+        ] {
+            assert!(desktop_voice_url(base, valid).is_err(), "{base}");
+        }
+        for config in [
+            r#"{"port":null,"path":"/api/desktop/voice"}"#,
+            r#"{"port":0,"path":"/api/desktop/voice"}"#,
+            r#"{"port":65536,"path":"/api/desktop/voice"}"#,
+            r#"{"port":3076,"path":"//elsewhere"}"#,
+        ] {
+            assert!(
+                desktop_voice_url("http://localhost:3170", config.as_bytes()).is_err(),
+                "{config}"
+            );
+        }
+    }
+
+    #[test]
+    fn desktop_bridge_preserves_operator_bus_and_unblocks_reader_on_shutdown() {
+        use crate::operator_voice_bus as bus;
+        let hello = bus::encode_hello("pui-windows", "tui", None);
+        let expected = hello.clone();
+        let response = encode_frame(
+            bus::OPV_INPUT_TRANSCRIPT,
+            br#"{"text":"hello","final":true}"#,
+        );
+        let expected_response = response.clone();
+        let (base, server) = desktop_fixture(move |mut socket| {
+            assert_eq!(
+                socket.read().unwrap().into_data().as_ref(),
+                expected.as_slice()
+            );
+            socket
+                .send(Message::Binary(response[..3].to_vec().into()))
+                .unwrap();
+            socket
+                .send(Message::Binary(response[3..].to_vec().into()))
+                .unwrap();
+            // Local stop must close the real bridge, even with a cloned reader.
+            assert!(socket.read().is_err());
+        });
+        let mut socket = VoiceSocket::connect_desktop(&base).unwrap();
+        let mut reader = socket.try_clone().unwrap();
+        socket.write_all(&hello).unwrap();
+        let mut bytes = vec![0; expected_response.len()];
+        reader.read_exact(&mut bytes).unwrap();
+        assert_eq!(bytes, expected_response);
+        let reader = std::thread::spawn(move || reader.read(&mut [0; 1]));
+        socket.shutdown(std::net::Shutdown::Both).unwrap();
+        assert_eq!(reader.join().unwrap().unwrap(), 0);
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn desktop_bridge_streams_channel_pcm_and_reports_disconnect() {
+        let (base, server) = desktop_fixture(|mut socket| {
+            let mut parser = FrameParser::default();
+            let frames = parser.push(&socket.read().unwrap().into_data());
+            assert_eq!(frames[0].0, CTRL);
+            assert_eq!(
+                serde_json::from_slice::<serde_json::Value>(&frames[0].1).unwrap()["channel"],
+                "standup"
+            );
+            let status = encode_frame(CTRL, br#"{"ev":"status","status":{"channel":{"id":"vc-1","name":"standup"},"muted":false}}"#);
+            socket.send(Message::Binary(status.into())).unwrap();
+            let frames = parser.push(&socket.read().unwrap().into_data());
+            assert_eq!(frames[0].0, MIC);
+            assert_eq!(frames[0].1.len(), FRAME_SAMPLES * 2);
+            socket
+                .send(Message::Binary(encode_frame(MIX, &frames[0].1).into()))
+                .unwrap();
+            socket.close(None).unwrap();
+        });
+        let socket = VoiceSocket::connect_desktop(&base).unwrap();
+        let (voice, events, mix) = VoiceStream::from_socket(socket).unwrap();
+        voice.join("standup").unwrap();
+        assert!(matches!(
+            events
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap(),
+            VoiceEvent::Status(_)
+        ));
+        voice
+            .push_pcm(&vec![0.5; FRAME_SAMPLES], 1, VOICE_RATE)
+            .unwrap();
+        let pcm = mix.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+        assert_eq!(pcm, vec![16383; FRAME_SAMPLES]);
+        assert_eq!(
+            events
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap(),
+            VoiceEvent::Disconnected
+        );
+        server.join().unwrap();
+    }
 
     #[test]
     fn resample_identity_and_ratio() {
@@ -450,6 +803,7 @@ mod tests {
     /// Mock-operator loopback: CTRL join answered with a status, MIC frames
     /// echoed back as MIX — the full client pipeline without audio hardware.
     #[test]
+    #[cfg(unix)]
     fn loopback_against_mock_operator() {
         let dir = std::env::temp_dir().join(format!("pui-voice-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -540,6 +894,7 @@ mod tests {
     /// `voice_chan`), and a fresh `connect_to` afterwards works cleanly — there
     /// is no lingering per-process state that would block reconnection.
     #[test]
+    #[cfg(unix)]
     fn disconnect_emits_event_then_reconnect_works() {
         use std::time::Duration;
         let dir = std::env::temp_dir().join(format!("pui-voice-recon-{}", std::process::id()));
@@ -611,6 +966,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn push_pcm_resamples_foreign_rates_into_exact_frames() {
         // 44.1k stereo in → 48k mono frames out; verify via a mock socket pair.
         let dir = std::env::temp_dir().join(format!("pui-voice-test2-{}", std::process::id()));

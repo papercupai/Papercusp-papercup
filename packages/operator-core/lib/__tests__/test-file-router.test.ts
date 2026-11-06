@@ -3145,6 +3145,80 @@ describe('failed assertion diagnostics — consume the report before private cle
     });
   });
 
+  it('recovers the timeout message from its completed live trace when JSON retains only a placeholder stack', () => {
+    const timeout = 'Test timed out in 600000ms.\nIf this is a long-running test, pass a timeout value.';
+    const stack = 'Error: STACK_TRACE_ERROR\n    at task (/repo/node_modules/@vitest/runner/index.js:1:1)';
+    const output = 'TEST_FILE_CASE_TRACE ' + JSON.stringify({
+      event: 'finished', state: 'failed', file: '/repo/lib/native.test.ts', name: 'native lifecycle',
+      errors: [{ message: timeout, stack }],
+    }) + '\n';
+    withReport({ testResults: [{ name: '/repo/lib/native.test.ts', assertionResults: [{
+      status: 'failed', fullName: 'native lifecycle', failureMessages: [stack],
+    }] }] }, path => {
+      const failures = failedAssertionsFromReport(path, '/repo', output);
+      expect(failures?.[0]).toMatchObject({ messages: [timeout, stack], assertionEvidence: false });
+      const diagnostics = formatFailedAssertionDiagnostics(failures);
+      expect(diagnostics).toContain('TEST_FILE_NON_ASSERTION_FAILURE');
+      expect(diagnostics).toContain('Test timed out in 600000ms.');
+      expect(diagnostics).not.toContain('TEST_FILE_ASSERTION_FAILURE file=');
+    });
+  });
+
+  it('requires an exact completed failed case match before recovering a missing message', () => {
+    const base = { event: 'finished', state: 'failed', file: '/repo/lib/native.test.ts',
+      name: 'native lifecycle', errors: [{ message: 'AssertionError: unrelated failure' }] };
+    const output = [
+      'TEST_FILE_CASE_TRACE {malformed trace',
+      ...[{ file: '/repo/other/native.test.ts' }, { name: 'other lifecycle' },
+        { event: 'started' }, { state: 'passed' }].map(change =>
+        'TEST_FILE_CASE_TRACE ' + JSON.stringify({ ...base, ...change })),
+    ].join('\n');
+    withReport({ testResults: [{ name: '/repo/lib/native.test.ts', assertionResults: [{
+      status: 'failed', fullName: 'native lifecycle', failureMessages: [],
+    }] }] }, path => {
+      expect(failedAssertionsFromReport(path, '/repo', output)?.[0]).toMatchObject({
+        messages: [], assertionEvidence: false,
+      });
+    });
+    expect(failedAssertionsFromReport('/nope/missing.json', '/repo', output)).toBeNull();
+  });
+
+  it('preserves useful JSON failures and recovers assertion classification only from the matching failed case', () => {
+    const message = 'AssertionError: expected retained native result to be available';
+    const output = 'TEST_FILE_CASE_TRACE ' + JSON.stringify({
+      event: 'finished', state: 'failed', file: 'lib/native.test.ts', name: 'native lifecycle',
+      errors: [{ message }],
+    });
+    for (const failureMessages of [['TypeError: original runtime failure'], ['Error: STACK_TRACE_ERROR']]) {
+      withReport({ testResults: [{ name: '/repo/lib/native.test.ts', assertionResults: [{
+        status: 'failed', fullName: 'native lifecycle', failureMessages,
+      }] }] }, path => {
+        const failure = failedAssertionsFromReport(path, '/repo', output)?.[0];
+        const recovered = failureMessages[0] === 'Error: STACK_TRACE_ERROR';
+        expect(failure?.messages).toEqual(recovered ? [message, ...failureMessages] : failureMessages);
+        expect(failure?.assertionEvidence).toBe(recovered);
+      });
+    }
+  });
+
+  it('matches nested suites using structured JSON titles without confusing another suite', () => {
+    const timeout = 'Test timed out in 600000ms.';
+    const output = [{ name: 'outer > inner > native lifecycle', message: timeout },
+      { name: 'outer inner > native lifecycle', message: 'AssertionError: a different suite' }]
+      .map(trace => 'TEST_FILE_CASE_TRACE ' + JSON.stringify({
+        event: 'finished', state: 'failed', file: '/repo/lib/native.test.ts', name: trace.name,
+        errors: [{ message: trace.message }],
+      })).join('\n');
+    withReport({ testResults: [{ name: '/repo/lib/native.test.ts', assertionResults: [{
+      status: 'failed', fullName: 'outer inner native lifecycle', ancestorTitles: ['outer', 'inner'],
+      title: 'native lifecycle', failureMessages: ['Error: STACK_TRACE_ERROR'],
+    }] }] }, path => {
+      expect(failedAssertionsFromReport(path, '/repo', output)?.[0]).toMatchObject({
+        messages: [timeout, 'Error: STACK_TRACE_ERROR'], assertionEvidence: false,
+      });
+    });
+  });
+
   it('keeps unreadable reports distinct from readable reports with no assertion failures', () => {
     expect(failedAssertionsFromReport(null, '/repo')).toBeNull();
     expect(failedAssertionsFromReport('/nope/missing.json', '/repo')).toBeNull();

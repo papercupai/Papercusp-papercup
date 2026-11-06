@@ -508,10 +508,11 @@ export interface FreshAmendmentReviewerHealth {
  * Inspect a retained fresh reviewer before reporting or reclaiming its amend
  * receipt. A running ledger row is not proof that its native turn can still
  * answer: the latest transcript can end on a provider error while the task row
- * remains running. Missing reads and any later thread post fail closed.
+ * remains running. Missing custody reads fail closed. Only this reviewer's
+ * post after the current evidence boundary settles a retained re-review.
  */
 export async function inspectFreshAmendmentReviewer(
-  input: { workspaceId: string; previewPostRef: string; reviewer: unknown },
+  input: { workspaceId: string; previewPostRef: string; reviewEvidencePost?: string; reviewer: unknown },
   deps: {
     readTaskState?: (taskId: string) => Promise<TaskState | null>;
     resolveSessionStates?: ResolveSessionStates;
@@ -525,7 +526,8 @@ export async function inspectFreshAmendmentReviewer(
   const taskId = typeof reviewer?.taskId === 'string' ? reviewer.taskId : undefined;
   const nativeRef = typeof reviewer?.nativeRef === 'string' ? reviewer.nativeRef : undefined;
   const ownerId = typeof reviewer?.ownerId === 'string' ? reviewer.ownerId : undefined;
-  if (reviewer?.state !== 'launched' || !taskId || !PREVIEW_POST_REF.test(input.previewPostRef)) {
+  if (reviewer?.state !== 'launched' || !taskId || !ownerId || !PREVIEW_POST_REF.test(input.previewPostRef) ||
+    (input.reviewEvidencePost !== undefined && !PREVIEW_POST_REF.test(input.reviewEvidencePost))) {
     return { state: 'unknown', ...(taskId ? { taskId } : {}), reason: 'reviewer or preview identity is incomplete' };
   }
 
@@ -551,6 +553,8 @@ export async function inspectFreshAmendmentReviewer(
     laterPost = await (deps.hasLaterPost ?? previewThreadHasLaterPost)({
       workspaceId: input.workspaceId,
       previewPostRef: input.previewPostRef,
+      authorId: ownerId,
+      ...(input.reviewEvidencePost ? { afterPostRef: input.reviewEvidencePost } : {}),
     });
   } catch {
     return { state: 'unknown', taskId, taskState, reason: 'preview-thread history could not be read' };
@@ -1083,7 +1087,7 @@ async function verifyPreviewPostWithApplyResolver(args: {
 }
 
 export interface OpenAmendmentReviewInput extends AmendmentReviewBriefInput {
-  preview: Pick<AcceptanceBarAmendmentPreview, 'approval' | 'changes' | 'approvalRequired' | 'rubricRevision' | 'subjectPlanRevision'>;
+  preview: Pick<AcceptanceBarAmendmentPreview, 'approval' | 'changes' | 'approvalRequired' | 'rubricRevision' | 'subjectPlanRevision' | 'candidateValidation'>;
   identity: AgentIdentity;
   workspaceId: string;
   harness?: string;
@@ -1094,6 +1098,35 @@ export interface OpenAmendmentReviewInput extends AmendmentReviewBriefInput {
   reviewEvidencePost?: string;
   /** In-memory phase callback shared with the amendment's existing receipt. */
   onPhase?: (phase: string) => void;
+  /** Same repository root the original preview used for check-path validation. */
+  checkPathRoot?: string;
+}
+
+/** Rebuild through the real preflight; a prior pass never authorizes new bytes. */
+export async function verifyAmendmentReviewCandidate(
+  input: OpenAmendmentReviewInput,
+  previewCandidate = async (args: import('../rubrics').AmendRubricInput) =>
+    (await import('../rubrics')).previewAcceptanceBarAmendment(args),
+): Promise<void> {
+  const expected = input.preview.candidateValidation;
+  if (!expected) {
+    throw new Error('acceptance_bar_amendment_review_candidate_missing: obtain a current complete candidate preflight');
+  }
+  const current = await previewCandidate({
+    ...input.patch,
+    rubricId: input.rubricRef,
+    actorId: input.identity.ownerId,
+    reason: input.reason,
+    checkPathRoot: input.checkPathRoot,
+    expectedRubricRevision: input.preview.rubricRevision,
+    expectedSubjectPlanRevision: input.preview.subjectPlanRevision,
+  });
+  if (!current?.candidateValidation ||
+      current.candidateValidation.candidateHash !== expected.candidateHash ||
+      current.approval.proposedPatchHash !== input.preview.approval.proposedPatchHash ||
+      current.approval.proposedSourceHash !== input.preview.approval.proposedSourceHash) {
+    throw new Error('acceptance_bar_amendment_review_candidate_stale: candidate changed after preflight; obtain a fresh preview');
+  }
 }
 
 export interface AmendmentReviewSourceResolveInput {
@@ -1215,6 +1248,8 @@ export type AmendmentReviewRequestResult =
   | { state: 'not-required'; next: string }
   | (AmendmentReviewRouteResult & {
       previewPostRef: string;
+      /** Evidence boundary used for this review, retained for later health checks. */
+      reviewEvidencePost?: string;
       next: string;
       /** WI-10003299: set when the router staffed nobody and a fresh reviewer was attempted. */
       freshReviewer?: FreshAmendmentReviewerResult;
@@ -1234,6 +1269,7 @@ export async function openAcceptanceBarAmendmentReview(
     resolveEvidence?: typeof resolveAmendmentReviewEvidence;
     hasLaterPost?: typeof previewThreadHasLaterPost;
     resolveSources?: typeof resolveAmendmentReviewSources;
+    verifyCandidate?: typeof verifyAmendmentReviewCandidate;
   } = {},
 ): Promise<AmendmentReviewRequestResult> {
   if (!input.preview.approvalRequired) {
@@ -1270,6 +1306,8 @@ export async function openAcceptanceBarAmendmentReview(
     workspaceId: input.workspaceId,
     ...(input.harness ? { harness: input.harness } : {}),
   });
+  input.onPhase?.('review-candidate-revalidation');
+  await (deps.verifyCandidate ?? verifyAmendmentReviewCandidate)(input);
   input.onPhase?.('review-route');
   const routed = await (deps.route ?? routeAcceptanceBarAmendmentReview)({
     rubricRef: input.rubricRef,
@@ -1284,10 +1322,14 @@ export async function openAcceptanceBarAmendmentReview(
     const next =
       `events:await { event:'consult:reply:${routed.conversationId}' }. When the routed reviewer answers \`approve ${previewPostRef}\`, ` +
       `apply with the same patch plus approvalRef:'thread-post:<that answer post id>' (conversations:get { id:'${routed.conversationId}' } lists post ids).`;
-    return { ...routed, previewPostRef, next };
+    return { ...routed, previewPostRef, ...(reviewEvidence ? { reviewEvidencePost: reviewEvidence.postRef } : {}), next };
   }
   // WI-10003299: nobody eligible is not a reason to stop. Launch one fresh
   // outside-lineage reviewer instead of telling the requester to wait for one.
+  // Recruitment may have waited on inference. Its prior pass cannot authorize
+  // a fresh launch against source bytes that changed during that wait.
+  input.onPhase?.('review-candidate-revalidation');
+  await (deps.verifyCandidate ?? verifyAmendmentReviewCandidate)(input);
   let freshReviewer: FreshAmendmentReviewerResult;
   try {
     input.onPhase?.('review-launch');
@@ -1332,6 +1374,7 @@ export async function openAcceptanceBarAmendmentReview(
       return {
         ...routed,
         previewPostRef,
+        ...(reviewEvidence ? { reviewEvidencePost: reviewEvidence.postRef } : {}),
         next,
         freshReviewer: { state: 'not-launched', reason },
       };
@@ -1359,5 +1402,11 @@ export async function openAcceptanceBarAmendmentReview(
           'Do not resume or fork the reviewer yourself: that records your identity as its launcher and can invalidate independence. ' +
           'No decision was obtained. Do not wait for an approval from this rejected turn, countersign it, or post another preview to duplicate the reviewer.'
         : `No eligible outside-lineage reviewer could be routed, and no fresh reviewer was launched: ${freshReviewer.reason}. The reason and screenedOut say why routing failed.`;
-  return { ...routed, previewPostRef, next, freshReviewer };
+  return {
+    ...routed,
+    previewPostRef,
+    ...(reviewEvidence ? { reviewEvidencePost: reviewEvidence.postRef } : {}),
+    next,
+    freshReviewer,
+  };
 }

@@ -294,6 +294,52 @@ describe('readAndEvaluateAcceptanceBarLifecycle — authoritative applicability'
     expect(result.contractCodes).toContain('bar_snapshot_source_unavailable');
   });
 
+  it('keeps independent source failures attributed and redacts their bounded refusal details', async () => {
+    vi.mocked(readAcceptanceBarContractSnapshot).mockResolvedValue(snapshot({
+      completeness: {
+        complete: false,
+        truncated: false,
+        problems: [
+          {
+            code: 'bar_snapshot_source_unavailable',
+            source: 'plan',
+            severity: 'error',
+            detail: 'plan source read failed: token=verylongsecretvalue',
+          },
+          {
+            code: 'bar_snapshot_source_unavailable',
+            source: 'rubric',
+            severity: 'error',
+            detail: 'rubric source timed out',
+          },
+        ],
+      },
+    }));
+
+    const result = await readAndEvaluateAcceptanceBarLifecycle('plan-a', 'pre-start');
+
+    expect(result.satisfied).toBe(false);
+    expect(result.codes).toContain('bar_snapshot_source_unavailable');
+    expect(result.sourceDiagnostics).toEqual([
+      {
+        code: 'bar_snapshot_source_unavailable',
+        source: 'plan',
+        severity: 'error',
+        detail: 'plan source read failed: token=[redacted]',
+      },
+      {
+        code: 'bar_snapshot_source_unavailable',
+        source: 'rubric',
+        severity: 'error',
+        detail: 'rubric source timed out',
+      },
+    ]);
+    expect(result.sourceDiagnosticsOmitted).toBe(0);
+    expect(result.message).toContain('plan [bar_snapshot_source_unavailable]: plan source read failed: token=[redacted]');
+    expect(result.message).toContain('rubric [bar_snapshot_source_unavailable]: rubric source timed out');
+    expect(result.message).not.toContain('verylongsecretvalue');
+  });
+
   it('allows a ready adopted plan through the normal evaluator', async () => {
     vi.mocked(readAcceptanceBarContractSnapshot).mockResolvedValue(snapshot());
     expect(await readAndEvaluateAcceptanceBarLifecycle('plan-a', 'pre-start'))

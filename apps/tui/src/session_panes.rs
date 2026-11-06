@@ -102,6 +102,9 @@ pub fn pane_spec_for(entry: &RosterEntry) -> Option<PaneSpec> {
         return None;
     }
     let mut spec = PaneSpec::new(entry.launch_argv.clone()).titled(pane_title(entry));
+    if let Some(id) = entry.adv_session_id.filter(|id| *id > 0) {
+        spec = spec.for_session(id);
+    }
     if let Some(cwd) = entry.cwd.clone().filter(|c| !c.is_empty()) {
         spec = spec.cwd(cwd);
     }
@@ -179,6 +182,20 @@ mod tests {
             vec!["psu", "--no-picker", "--agent=claude"]
         );
         assert_eq!(out[0].spec.title.as_deref(), Some("claude"));
+        assert_eq!(out[0].spec.adv_session_id, Some(7));
+    }
+
+    #[test]
+    fn fresh_launches_with_identical_commands_keep_distinct_session_bindings() {
+        let out = panes_to_open(
+            &TrackedPanes::new(),
+            &[pending_entry(7, "codex"), pending_entry(8, "codex")],
+            "box-1",
+        );
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].spec.argv, out[1].spec.argv);
+        assert_eq!(out[0].spec.adv_session_id, Some(7));
+        assert_eq!(out[1].spec.adv_session_id, Some(8));
     }
 
     #[test]

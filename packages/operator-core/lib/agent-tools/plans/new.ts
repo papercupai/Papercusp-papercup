@@ -35,8 +35,8 @@ import { resolveAgentIdentity } from '../coordination/identity';
 import { authoringReuse } from '../../code-intelligence/reuse-authoring';
 import { suggestResearchAnchors } from '../../code-intelligence/research-trail';
 import { sessionAllowsAmbientContext } from '../../capability-envelope/session-confinement-port';
-import { productShapingScaffold, productShapingWriteAdvisory, PRODUCT_SHAPING_GUIDANCE } from './product-shaping';
-import { planDeclarationsScaffold, planDeclarationsWriteAdvisory } from './plan-declarations';
+import { productShapingScaffold, productShapingWriteAdvisory } from './product-shaping';
+import { discoveryDeclarationScaffold, planDeclarationsScaffold, planDeclarationsWriteAdvisory } from './plan-declarations';
 import {
   parseBarMappings,
   parseRequirementBars,
@@ -213,6 +213,8 @@ export function buildTemplate(args: {
 (Why this plan exists; what problem it addresses.)
 
 ${productShapingScaffold()}
+
+${discoveryDeclarationScaffold()}
 
 ${planDeclarationsScaffold()}
 
@@ -418,11 +420,11 @@ export default defineTool({
   description:
     "Create a plan with a unique slug. suggestedAnchors come from this caller's trail; pass chosen links to plans:add-item anchors to store them.",
   guidance: {
-    when: 'Starting a plan: plans:new { slug, title, content }. ' + PRODUCT_SHAPING_GUIDANCE + ' Requirements need R-N records with executable requirement JSON (METHOD, check, requiredTestLayers) and Design "### Bar-to-work map for this plan". Fill "## Existing infrastructure reused" and "## Third-party libraries" (scaffolded; or notApplicable).',
+    when: 'Starting a plan: plans:new { slug, title, content }. Shape brief/scenarios before requirements/tasks; plans:audit phase:shaping returns ownerWalkthrough for approval. Finalize incorporated Discovery findings before implementation review. Requirements need R-N plus requirement JSON (METHOD/check/layers) and Design "### Bar-to-work map for this plan". Fill reuse/libraries declarations (scaffolded; or notApplicable).',
     notWhen:
       'Existing plan: plans:set-content / set-now / add-decision / add-item.',
     chaining:
-      'Shape → reuse + libraries → R-N JSON + bar-to-work map + items → audit/spec quality → plans:start. Before a code item, run graph:query impact and graph:query op similar on the symbols it changes; pass anchors (code links).',
+      'Brief → scoped discovery → incorporate findings and reuse + libraries → R-N JSON + map + items → plans:audit phase:discovery → implementation review → activation/spec quality → plans:start. Code-intelligence suggestions are leads, not completed investigation; pass chosen code links as anchors.',
     seeAlso: [
       'plans:add-item (populate the plan with work items)',
       'plans:set-frontmatter (fill/adjust the templated frontmatter)',

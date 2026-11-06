@@ -111,6 +111,10 @@ describe('censusUnregisteredFailedUnits', () => {
     expect(summary.summary).not.toContain('papercusp-dev-api');
     expect(summary.summary).not.toContain('pc-0muw4835z8hks3y1dv8');
     expect(summary.summary).not.toContain('p012-chain12');
+    expect(summary.summary).toContain(
+      'Not in SUPERVISED_PROCESSES, so the reconciler will not restart them',
+    );
+    expect(summary.summary).not.toContain('nothing restarts them');
   });
 
   it('filters unrelated unit types and bounds property reads for a large host census', async () => {

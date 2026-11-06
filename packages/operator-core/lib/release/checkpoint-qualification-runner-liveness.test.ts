@@ -7,6 +7,10 @@ import {
   checkpointPidIdentity,
   configureRunnerLivenessProber,
   probeRunnerLiveness,
+  observeQualificationProgress,
+  qualificationProgressFence,
+  projectCheckpointQualificationState,
+  parseCheckpointQualificationTransaction,
   QUALIFICATION_LAUNCH_GRACE_MS,
   QUALIFICATION_OWNER_ABANDONED_MS,
   reserveQualificationRunner,
@@ -50,6 +54,145 @@ const runningWithRunner = (unit: string | null): CheckpointQualificationTransact
 
 // Well inside the 3h lease: without a liveness term every case below would be a `conflict`.
 const DURING_LEASE = 1_000 + 60_000;
+
+describe('independent qualification semantic progress (P-002)', () => {
+  const target = { workspaceId: 'observer-workspace', installSlug: 'observer-install' };
+  function fixture() {
+    const tx = runningWithRunner('root.scope');
+    tx.runId = 'run-1';
+    tx.currentPhysicalRunner = { ...tx.currentPhysicalRunner!, pid: 42, pidIdentity: 'boot:100',
+      phase: 'suite', phaseEnteredAtMs: 1000, heartbeatAtMs: 1000,
+      childScopeUnits: ['pc-child123.scope'], childScopeReservedAtMs: 1000 };
+    tx.continuation = { schemaVersion: 1, attemptId: tx.attemptId, candidate: tx.candidate!,
+      repairHead: tx.repairHead, root: '/source', taskKey: 'full-gate', retryStates: [],
+      manifest: { schemaVersion: 1, units: [{ id: 'test:a', kind: 'test', path: 'a.test.ts' },
+        { id: 'test:b', kind: 'test', path: 'b.test.ts' }, { id: 'post:c', kind: 'post-suite', path: 'post.ts' }] },
+      receipts: [], supersededReceipts: [] };
+    return tx;
+  }
+  function sample(tx: CheckpointQualificationTransaction, sequence: number, generation = 'observer-1',
+    telemetryHealthy = true, wallOffset = 0) {
+    return observeQualificationProgress(tx, target, { fence: qualificationProgressFence(tx, target),
+      observerGeneration: generation, sequence, sampledAtMs: 10_000 + sequence * 1000 + wallOffset,
+      monotonicAtMs: sequence * 1000, telemetryHealthy }).transaction;
+  }
+
+  it('quiet-progress: only a new relevant selected completion renews useful progress', () => {
+    let tx = sample(fixture(), 1);
+    expect(tx.progressObservation).toMatchObject({ health: 'baseline', semantic: 'unknown' });
+    tx.continuation!.receipts.push({ unitId: 'test:a', completionId: 'first', observedAtMs: 11_500, state: 'pass' });
+    tx = sample(tx, 2);
+    expect(tx.progressObservation).toMatchObject({ health: 'healthy', semantic: 'advancing',
+      completedUnits: ['test:a'], lastUsefulProgressMonotonicMs: 2000 });
+    const runner = structuredClone(tx.currentPhysicalRunner);
+    tx = sample(tx, 3);
+    expect(tx.progressObservation).toMatchObject({ semantic: 'unchanged', lastUsefulProgressMonotonicMs: 2000 });
+    expect(tx.currentPhysicalRunner).toEqual(runner);
+    expect(tx.phase).toBe('running');
+    expect(tx.outcome).toEqual({ kind: 'pending' });
+  });
+
+  it.each(['irrelevant-counter', 'chatter-spin', 'repeated-completion', 'other-phase', 'future-receipt'])(
+    '%s cannot renew useful progress', kind => {
+      let tx = fixture();
+      tx.continuation!.receipts.push({ unitId: 'test:a', completionId: 'first', observedAtMs: 2000, state: 'pass' });
+      tx = sample(tx, 1);
+      tx.currentPhysicalRunner!.heartbeatAtMs = 12_000;
+      tx.lastProgressAtMs = 12_000; // activity writer is deliberately not semantic evidence
+      if (kind === 'repeated-completion') tx.continuation!.receipts[0]!.completionId = 'retried';
+      else tx.continuation!.receipts.push({ unitId: kind === 'other-phase' ? 'post:c'
+        : kind === 'future-receipt' ? 'test:b' : 'unselected', completionId: 'noise',
+        observedAtMs: kind === 'future-receipt' ? 99_000 : 11_500, state: 'pass' });
+      tx = sample(tx, 2);
+      expect(tx.progressObservation).toMatchObject({ health: 'healthy', semantic: 'unchanged',
+        completedUnits: ['test:a'], lastUsefulProgressMonotonicMs: null });
+    });
+
+  it.each(['launching', 'materializing'] as const)('opaque %s remains unknown with custody', phase => {
+    let tx = fixture();
+    tx.currentPhysicalRunner!.phase = phase;
+    tx = sample(sample(tx, 1), 2);
+    expect(tx.progressObservation).toMatchObject({ health: 'healthy', semantic: 'unknown' });
+    expect(tx.currentPhysicalRunner?.childScopeUnits).toEqual(['pc-child123.scope']);
+  });
+
+  it.each(['attempt', 'candidate', 'repair', 'run', 'runner', 'pid', 'boot', 'scope', 'phase', 'epoch', 'workspace', 'install'])(
+    'phase-progress-fence: rejects an old %s probe', identity => {
+      const tx = fixture();
+      const oldFence = qualificationProgressFence(tx, target);
+      const changedTarget = { ...target };
+      if (identity === 'attempt') tx.attemptId = 'successor';
+      if (identity === 'candidate') tx.candidate = 'successor';
+      if (identity === 'repair') tx.repairHead = 'successor';
+      if (identity === 'run') tx.runId = 'successor';
+      if (identity === 'runner') tx.currentPhysicalRunner!.id = 'successor';
+      if (identity === 'pid') tx.currentPhysicalRunner!.pid = 43;
+      if (identity === 'boot') tx.currentPhysicalRunner!.pidIdentity = 'new-boot:100';
+      if (identity === 'scope') tx.currentPhysicalRunner!.childScopeUnits!.push('late.scope');
+      if (identity === 'phase') tx.currentPhysicalRunner!.phase = 'delivering';
+      if (identity === 'epoch') tx.currentPhysicalRunner!.phaseEnteredAtMs = 1001;
+      if (identity === 'workspace') changedTarget.workspaceId = 'other';
+      if (identity === 'install') changedTarget.installSlug = 'other';
+      const result = observeQualificationProgress(tx, changedTarget, { fence: oldFence,
+        observerGeneration: 'observer-1', sequence: 1, sampledAtMs: 11_000, monotonicAtMs: 1000, telemetryHealthy: true });
+      expect(result).toMatchObject({ status: 'conflict', refusalReason: 'observer-fence-mismatch' });
+      expect(result.transaction).toBe(tx);
+    });
+
+  it('observer-partition-restart requires two fresh healthy observations', () => {
+    let tx = sample(sample(fixture(), 1), 2, 'observer-1', false);
+    expect(tx.progressObservation?.health).toBe('unknown');
+    tx = sample(tx, 3);
+    expect(tx.progressObservation?.health).toBe('baseline');
+    tx = sample(tx, 4);
+    expect(tx.progressObservation?.health).toBe('healthy');
+    tx = sample(tx, 1, 'observer-2');
+    expect(tx.progressObservation).toMatchObject({ health: 'baseline', semantic: 'unknown' });
+    tx = sample(tx, 2, 'observer-2');
+    expect(tx.progressObservation?.health).toBe('healthy');
+    const replay = observeQualificationProgress(tx, target, { fence: qualificationProgressFence(tx, target),
+      observerGeneration: 'observer-1', sequence: 99, sampledAtMs: 109_000,
+      monotonicAtMs: 99_000, telemetryHealthy: true });
+    expect(replay).toMatchObject({ status: 'conflict', refusalReason: 'observer-retired-generation' });
+  });
+
+  it('stale-sample-replay and non-increasing monotonic samples are rejected', () => {
+    const tx = sample(fixture(), 2);
+    const base = { fence: qualificationProgressFence(tx, target), observerGeneration: 'observer-1',
+      sampledAtMs: 13_000, monotonicAtMs: 3000, sequence: 2, telemetryHealthy: true };
+    expect(observeQualificationProgress(tx, target, base)).toMatchObject({ refusalReason: 'observer-sample-replay' });
+    expect(observeQualificationProgress(tx, target, { ...base, sequence: 3, monotonicAtMs: 2000 }))
+      .toMatchObject({ refusalReason: 'observer-sample-order' });
+  });
+
+  it.each([-60_000, 60_000, 200_000])('clock-rebase or missed pass (%sms) demands a baseline', offset => {
+    let tx = sample(fixture(), 1);
+    tx = sample(tx, offset === 200_000 ? 202 : 2, 'observer-1', true, offset === 200_000 ? 0 : offset);
+    expect(tx.progressObservation).toMatchObject({ health: 'baseline', semantic: 'unknown', lastUsefulProgressMonotonicMs: null });
+  });
+
+  it('changed frozen manifest cannot silently become new useful progress on the next pass', () => {
+    let tx = sample(fixture(), 1);
+    tx.continuation!.manifest.units.push({ id: 'new', kind: 'test', path: 'new.test.ts' });
+    tx = sample(tx, 2);
+    expect(tx.progressObservation).toMatchObject({ health: 'unknown', reason: 'observer-manifest-changed' });
+    tx = sample(tx, 3);
+    expect(tx.progressObservation).toMatchObject({ health: 'unknown', reason: 'observer-manifest-changed' });
+  });
+
+  it('exposes a missed observer pass independently of a fresh controller heartbeat', () => {
+    // A real-schema row without continuation proof keeps this focused on telemetry projection.
+    let tx = fixture();
+    delete tx.continuation;
+    tx = sample(sample(tx, 1), 2);
+    expect(parseCheckpointQualificationTransaction(tx), 'observer projection fixture must pass the stored schema').not.toBeNull();
+    tx.currentPhysicalRunner!.heartbeatAtMs = 140_000;
+    const state = projectCheckpointQualificationState(tx, 140_000, 'live');
+    expect(state.runnerHealth.state).toBe('progressing');
+    expect(state.runnerHealth.observer).toMatchObject({ health: 'unknown', semantic: 'unknown',
+      reason: 'observer-missed-pass-or-identity-changed' });
+  });
+});
 
 it.each(['live', 'unknown', 'dead'] as const)('checks the confined payload after parent death: %s', async childState => {
   const runner = { ...runningWithRunner('parent.scope').currentPhysicalRunner!,

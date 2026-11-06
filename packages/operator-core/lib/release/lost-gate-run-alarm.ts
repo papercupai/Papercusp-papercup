@@ -25,6 +25,8 @@
  * so the two paths never run the record/emit/clear transaction on the same marker concurrently.
  */
 import type { Sql } from 'postgres';
+import { randomUUID } from 'node:crypto';
+import { performance } from 'node:perf_hooks';
 import type { SevereEventRoute } from '../severe-event-broadcast';
 import { resolveAlarm, type AlarmAttentionDeps } from '../alarm-attention';
 import type { AttentionNotifyInput } from '../attention-notify';
@@ -35,6 +37,8 @@ import {
   isPostVerdictHang,
   parseCheckpointQualificationTransaction,
   probeRunnerLiveness,
+  qualificationProgressFence,
+  recordStoredQualificationProgressObservation,
   projectCheckpointQualificationState,
   recordStoredQualificationVerdict,
   reconcileStoredSupersededRepairVerdict,
@@ -53,6 +57,20 @@ import {
 
 /** R-5 requires the alarm within 10 minutes of the death; a 2-minute sweep leaves wide margin. */
 export const LOST_RUN_SWEEP_INTERVAL_MS = 2 * 60 * 1000;
+const observerGeneration = randomUUID();
+let observerSequence = 0;
+
+/** Bound the external scope probe even when the controller or its transport is wedged. */
+async function boundedQualificationProbe(probe: () => ReturnType<RunnerLivenessProber>, timeoutMs = 5_000) {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([Promise.resolve().then(probe), new Promise<'unknown'>(resolve => {
+      timer = setTimeout(() => resolve('unknown'), Math.min(5_000, Math.max(1, timeoutMs)));
+      timer.unref?.();
+    })]);
+  } catch { return 'unknown' as const; }
+  finally { if (timer) clearTimeout(timer); }
+}
 
 export function lostRunAlarmKey(marker: Pick<StoredInFlightCandidate, 'candidate' | 'pid' | 'observedAtMs'>): string {
   return `${marker.candidate}:${marker.pid}:${marker.observedAtMs}`;
@@ -210,6 +228,11 @@ async function readOwnerFleetSlug(sql: Sql, workspaceId: string, ownerId: string
 
 export interface LostRunSweepDeps {
   nowMs?: number;
+  observerGeneration?: string;
+  observerSequence?: number;
+  monotonicAtMs?: number;
+  probeTimeoutMs?: number;
+  recordProgressObservation?: typeof recordStoredQualificationProgressObservation;
   selfPid?: number;
   pidAlive?: (pid: number) => boolean | null;
   /** Substitutes the whole probeRunnerLiveness verdict, whose reservation-ceiling and
@@ -369,6 +392,8 @@ async function successfulSupersededRepairRound(
 export async function sweepLostGateRuns(sql: Sql, deps: LostRunSweepDeps = {}): Promise<LostRunSweepResult> {
   const out: LostRunSweepResult = { alarmed: [], deduped: [], failed: [] };
   const nowMs = deps.nowMs ?? Date.now();
+  const sequence = deps.observerSequence ?? ++observerSequence;
+  const monotonicAtMs = deps.monotonicAtMs ?? performance.now();
   let rows: { install_slug: string; workspace_id: string; marker: unknown; alarmed_key: string | null; progress_alarmed_key?: string | null; qualification?: unknown }[];
   try {
     rows = await sql<typeof rows>`
@@ -396,13 +421,42 @@ export async function sweepLostGateRuns(sql: Sql, deps: LostRunSweepDeps = {}): 
     // so the old marker's dedup stamp cannot hide a successor's missing heartbeat.
     const transaction = parseCheckpointQualificationTransaction(row.qualification);
     const runner = transaction?.currentPhysicalRunner;
-    const liveness = runner ? await (deps.probeQualificationRunner
-      ? deps.probeQualificationRunner(runner, nowMs) : probeRunnerLiveness(runner, nowMs)) : 'unknown';
+    const fence = transaction ? qualificationProgressFence(transaction, {
+      installSlug: row.install_slug, workspaceId: row.workspace_id,
+    }) : null;
+    const liveness = runner ? await boundedQualificationProbe(() => deps.probeQualificationRunner
+      ? deps.probeQualificationRunner(runner, nowMs) : probeRunnerLiveness(runner, nowMs), deps.probeTimeoutMs) : 'unknown';
+    let observerFailure = false;
+    if (transaction?.phase === 'running' && runner && fence) {
+      try {
+        const observed = await (deps.recordProgressObservation ?? recordStoredQualificationProgressObservation)(
+          { installSlug: row.install_slug, workspaceId: row.workspace_id }, {
+            fence, observerGeneration: deps.observerGeneration ?? observerGeneration, sequence,
+            sampledAtMs: nowMs, monotonicAtMs, telemetryHealthy: liveness !== 'unknown',
+          });
+        if (observed.status === 'updated' || observed.status === 'idempotent') {
+          observerFailure = observed.transaction.progressObservation?.health === 'unknown';
+        } else if (observed.status === 'terminal' || observed.status === 'missing' ||
+            (observed.status === 'conflict' &&
+              (observed.transaction.phase !== 'running' ||
+                qualificationProgressFence(observed.transaction, { installSlug: row.install_slug, workspaceId: row.workspace_id }) !== fence ||
+                ['observer-fence-mismatch', 'observer-runner-missing', 'observer-retired-generation',
+                  'observer-sample-replay', 'observer-sample-order'].includes(observed.refusalReason ?? '')))) {
+          // Identity moved while the probe was running. Its stale result cannot drive recovery.
+          continue;
+        } else {
+          // A queue/storage conflict or invalid telemetry did not prove identity movement.
+          // Alarm UNKNOWN and retain custody rather than silently dropping the observation.
+          observerFailure = true;
+        }
+      } catch { observerFailure = true; }
+      if (observerFailure) out.failed.push(row.install_slug);
+    }
     const qualification = transaction && transaction.phase !== 'terminal' && runner
       ? projectCheckpointQualificationState(transaction, nowMs, liveness)
       : null;
     let terminalNoVerdict: (TerminalQualificationNoVerdict & { reconciliationStatus: string }) | null = null;
-    if (transaction && runner && liveness === 'dead') {
+    if (transaction && runner && liveness === 'dead' && !observerFailure) {
       const boundRunLog = await readBoundQualificationRunLog(runner, deps);
       const terminalOutcome = boundRunLog ? terminalQualificationNoVerdict(runner, boundRunLog) : null;
       if (terminalOutcome) {
@@ -467,7 +521,7 @@ export async function sweepLostGateRuns(sql: Sql, deps: LostRunSweepDeps = {}): 
     // WI-6554700010009616: a live runner parked in `finalizing` keeps a fresh heartbeat (its interval
     // fires through an awaited hang), so runnerHealth reads `progressing`. Only the phase clock sees it.
     const postVerdictHang = !!transaction && transaction.phase !== 'terminal' && isPostVerdictHang(runner, liveness, nowMs);
-    const currentRunnerProgressing = qualification?.runnerHealth.state === 'progressing' && !postVerdictHang;
+    const currentRunnerProgressing = qualification?.runnerHealth.state === 'progressing' && !postVerdictHang && !observerFailure;
     // Read routines even after their marker disappears: otherwise recovery is invisible.
     // A malformed marker or unknown marker PID alone is not evidence of recovery; a healthy
     // current qualification runner is independent evidence that the old marker is stale.
@@ -476,13 +530,14 @@ export async function sweepLostGateRuns(sql: Sql, deps: LostRunSweepDeps = {}): 
       await resolveAlarm(`green-checkpoint-lost-run:${row.install_slug}`, 'lost-gate-run-alarm', deps.attention);
     }
     if (row.progress_alarmed_key && (row.qualification == null || transaction?.phase === 'terminal' ||
-        (liveness === 'live' && qualification?.runnerHealth.state === 'progressing' && !postVerdictHang))) {
+        (liveness === 'live' && qualification?.runnerHealth.state === 'progressing' && !postVerdictHang && !observerFailure))) {
       await resolveAlarm(`green-checkpoint-run-progress:${row.install_slug}`, 'lost-gate-run-alarm', deps.attention);
     }
     const inspect = qualification?.runnerHealth.state === 'stalled' || qualification?.runnerHealth.state === 'dead' ||
-      postVerdictHang;
+      postVerdictHang || observerFailure;
     const progressKey = inspect && transaction && runner
-      ? postVerdictHang && liveness !== 'dead'
+      ? observerFailure ? `qualification:${transaction.attemptId}:${runner.id}:observer-unknown`
+        : postVerdictHang && liveness !== 'dead'
         ? `qualification:${transaction.attemptId}:${runner.id}:post-verdict-hang:${runner.phaseEnteredAtMs}`
         : `qualification:${transaction.attemptId}:${runner.id}:${liveness === 'dead' ? 'dead' : runner.heartbeatAtMs ?? transaction.lastProgressAtMs ?? runner.reservedAtMs}`
       : null;
@@ -516,7 +571,7 @@ export async function sweepLostGateRuns(sql: Sql, deps: LostRunSweepDeps = {}): 
       continue;
     }
 
-    if (progressKey && liveness === 'dead' && transaction && !terminalNoVerdict) {
+    if (progressKey && liveness === 'dead' && transaction && !terminalNoVerdict && !observerFailure) {
       // This requests an ordinary scheduled attempt, which still passes all existing admission
       // and single-flight guards. It never stops a process or creates a code verdict.
       try {
@@ -550,7 +605,9 @@ export async function sweepLostGateRuns(sql: Sql, deps: LostRunSweepDeps = {}): 
             ? `green-checkpoint qualification ended without a verdict on ${row.install_slug}`
             : `green-checkpoint qualification ${liveness === 'dead' ? 'LOST' : 'progress STALE'} on ${row.install_slug}`,
           body: `Qualification ${transaction!.attemptId}, runner ${runner!.id}, candidate ${transaction!.candidate ?? 'unknown'}: ` +
-            (terminalNoVerdict
+            (observerFailure
+              ? 'Independent observer telemetry is UNKNOWN or could not be committed. Investigate observer health and preserve single flight; no cancellation, requeue or custody release is authorized by this observation.'
+              : terminalNoVerdict
               ? `the exact run exited with terminal no-verdict reason '${terminalNoVerdict.reason}'. Stored-attempt reconciliation returned '${terminalNoVerdict.reconciliationStatus}'; no automatic retry was requested. Inspect this exact run and the qualification row before selecting the next action.`
               : liveness === 'dead'
               ? 'the exact runner was proved dead without a terminal verdict; an ordinary guarded retry was requested.'

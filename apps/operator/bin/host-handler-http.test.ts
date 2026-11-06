@@ -6,6 +6,7 @@ import { captureOperatorHttpSecurityPopulation, handler } from './host-handler';
 import { captureRuntimeSecurityCensus, readRuntimeSecurityCensus } from '@papercusp/operator-core/lib/observability/runtime';
 import { _injectPluginHostForTests, _resetPluginHostForTests } from '@papercusp/operator-core/lib/plugin-host-runtime';
 import { registerReactionRule, unregisterReactionRule } from '@papercusp/operator-core/lib/events/registry';
+import { knownQueryNamesV2 } from '@papercusp/operator-core/lib/sync-resolver';
 import { enterGuardHttpRequest, installGuardHttpDiagnostics, markGuardHttpStage } from '@papercusp/operator-core/lib/endpoint-route/telemetry';
 
 const servers: Array<ReturnType<typeof serve>> = [];
@@ -199,6 +200,20 @@ function getHealth(port: number): Promise<{ statusCode: number; body: string }> 
 }
 
 describe('host handler HTTP composition', () => {
+  it('includes the exact sync-query registry in host and immutable discovery without granting closure', async () => {
+    const captured = await captureOperatorHttpSecurityPopulation();
+    const queries = captured.surfaces.filter(row => row.kind === 'sync-query');
+    expect(queries.map(row => row.surfaceId).sort()).toEqual(knownQueryNamesV2());
+    expect(queries.length).toBeGreaterThan(0);
+    expect(queries.every(row => row.schemaRef === undefined)).toBe(true);
+    expect(queries.every(row => row.attrs?.actualEffectCoverage === 'unknown')).toBe(true);
+    const snapshot = await captureRuntimeSecurityCensus();
+    expect(snapshot.rows.filter(row => row.kind === 'sync-query').map(row => row.surfaceId).sort())
+      .toEqual(knownQueryNamesV2());
+    expect(snapshot.unresolved).toContain('sync-query-source-and-adapter-reconciliation-unverified');
+    expect(snapshot).toMatchObject({ populationComplete: false, closureAccepted: false, executionAdmitted: false });
+  });
+
   it('captures newly registered reaction edges without executing conditions or copying private arguments', async () => {
     const id = 'vault-census-omission-control';
     const when = vi.fn(() => { throw Error('discovery executed a condition'); });

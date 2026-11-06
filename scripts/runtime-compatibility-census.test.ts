@@ -164,19 +164,20 @@ describe('native target and caller review', () => {
 
 describe('committed runtime migration inventory discovery', () => {
   const gitFixture = (entries: Array<{ path: string; text: string; mode?: string; size?: number }>) => {
-    const root = process.cwd(), commit = 'a'.repeat(40), reads: string[] = [];
+    const root = process.cwd(), commit = 'a'.repeat(40), reads: string[] = [], batches: string[][] = [];
     const rows = entries.map((entry, index) => ({ ...entry, bytes: Buffer.from(entry.text), oid: (index + 1).toString(16).repeat(40) }));
     const runGit = (_root: string, args: string[], options?: { input: Buffer }) => {
       if (args.includes('--show-toplevel')) return root;
       if (args[0] === 'rev-parse') { expect(args).toContain(`${commit}^{commit}`); return commit; }
       if (args[0] === 'ls-tree') return rows.map(row => `${row.mode ?? '100644'} blob ${row.oid} ${row.size ?? row.bytes.length}\t${row.path}\0`).join('');
       expect(args).toEqual(['cat-file', '--batch']);
+      batches.push(options!.input.toString().trim().split('\n').map(oid => rows.find(row => row.oid === oid)!.path));
       return Buffer.concat(options!.input.toString().trim().split('\n').map(oid => {
         const row = rows.find(row => row.oid === oid)!; reads.push(row.path);
         return Buffer.concat([Buffer.from(`${oid} blob ${row.bytes.length}\n`), row.bytes, Buffer.from('\n')]);
       }));
     };
-    return { root, commit, reads, runGit };
+    return { root, commit, reads, batches, runGit };
   };
 
   it('reads only explicitly selected pinned blobs while retaining opaque and missing paths', () => {
@@ -208,6 +209,42 @@ describe('committed runtime migration inventory discovery', () => {
     expect(files.reads).toEqual(['a.ts']);
     expect(fileLimited.unresolved.map(row => row.path)).toEqual(['b.ts', 'c.ts']);
     expect(fileLimited.unresolved.every(row => row.reason === 'source-reader-file-budget')).toBe(true);
+  });
+
+  it('requires an explicit per-input budget for large pinned blobs and still enforces the total before reading', () => {
+    const text = 'x'.repeat(2 * 1024 * 1024 + 1);
+    const fixture = gitFixture([{ path: 'large.json', text }]);
+    const refused = readCommittedSources(fixture.root, fixture.commit, { runGit: fixture.runGit });
+    expect(fixture.reads).toEqual([]);
+    expect(refused.unresolved).toContainEqual(expect.objectContaining({ path: 'large.json', reason: 'nonregular-or-over-budget-source' }));
+    const totalRefused = readCommittedSources(fixture.root, fixture.commit, {
+      runGit: fixture.runGit, maxInputBytes: text.length, maxBytes: text.length - 1,
+    });
+    expect(fixture.reads).toEqual([]);
+    expect(totalRefused.unresolved).toContainEqual(expect.objectContaining({ path: 'large.json', reason: 'source-reader-byte-budget' }));
+    const admitted = readCommittedSources(fixture.root, fixture.commit, {
+      runGit: fixture.runGit, maxInputBytes: text.length, maxBytes: text.length,
+    });
+    expect(fixture.reads).toEqual(['large.json']);
+    expect(admitted.sources[0].bytes.toString()).toBe(text);
+    expect(admitted.selection).toMatchObject({ maxInputBytes: text.length, bytesRead: text.length, populationComplete: false });
+    expect(admitted.unresolved).toEqual([]);
+    for (const maxInputBytes of [0, -1, NaN, Infinity]) {
+      expect(() => readCommittedSources(fixture.root, fixture.commit, { runGit: fixture.runGit, maxInputBytes })).toThrow('Positive safe-integer');
+    }
+    expect(fixture.reads).toEqual(['large.json']);
+  });
+
+  it('splits explicitly admitted large blobs by byte budget instead of multiplying the old sixteen-file batch', () => {
+    const text = 'x'.repeat(12 * 1024 * 1024);
+    const fixture = gitFixture(['a.json', 'b.json', 'c.json'].map(path => ({ path, text })));
+    const result = readCommittedSources(fixture.root, fixture.commit, {
+      runGit: fixture.runGit, maxInputBytes: text.length, maxBytes: 3 * text.length,
+    });
+    expect(fixture.batches).toEqual([['a.json', 'b.json'], ['c.json']]);
+    expect(result.sources.map(row => row.path)).toEqual(['a.json', 'b.json', 'c.json']);
+    expect(result.selection.bytesRead).toBe(3 * text.length);
+    expect(result.unresolved).toEqual([]);
   });
 
   it('keeps selected submodule paths bound to the parent gitlink instead of the current checkout revision', () => {

@@ -47,6 +47,8 @@ export interface ExecuteDurableReactionDeps<TParent extends { workspaceId?: stri
     /** Trusted executor rejected admission before attempting ANY effect. */
     withheld?: boolean;
   }>;
+  /** Independently read a receiver's exact durable receipt; never repeat its effect. */
+  reconcile?: (payload: DurableReactionPayload<TParent>) => Promise<'completed' | 'uncertain'>;
   /** Optional logger for the no-workspace skip. */
   log?: (msg: string) => void;
 }
@@ -75,6 +77,18 @@ export async function executeDurableReaction<TParent extends { workspaceId?: str
   });
   if (!fresh) {
     if (await deps.store.outcome(payload.dedupId) === 'completed') return;
+    // A receiver can commit its own receipt before this runner acknowledges it.
+    // Only that receiver's positive evidence may close the interrupted claim.
+    try {
+      if (await deps.reconcile?.(payload) === 'completed') {
+        await deps.store.complete(payload.dedupId);
+        return;
+      }
+    } catch (error) {
+      const reason = `reaction ${payload.dedupId} needs reconciliation: receipt read or acknowledgment failed: ${error instanceof Error ? error.message : String(error)}`;
+      await deps.store.uncertain(payload.dedupId, reason);
+      throw new Error(reason, { cause: error });
+    }
     const reason = `reaction ${payload.dedupId} needs reconciliation: prior dispatch has no recorded completion`;
     await deps.store.uncertain(payload.dedupId, reason);
     throw new Error(reason);

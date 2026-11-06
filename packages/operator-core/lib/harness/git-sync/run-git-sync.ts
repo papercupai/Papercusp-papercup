@@ -9230,6 +9230,7 @@ async function runGitSyncPass(
       onPublished: (sha) => {
         const commit = { sha, committedAtMs: Date.now() };
         localCommits.push(commit);
+        notifyRootCommit(commit);
       },
     });
     const commitDurationMs = Math.max(0, Math.round(performance.now() - commitStartedAt));

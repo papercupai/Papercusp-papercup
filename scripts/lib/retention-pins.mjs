@@ -159,5 +159,5 @@ export async function withRetentionPinProtection(work, options = {}) {
     const read = await readRetentionPinsAsync({ ...options, nowMs });
     if (read.errors.length) throw new Error(`retention pins unreadable: ${read.errors.join('; ')}`);
     return work(pinProtection(read.pins, nowMs, options.resolvePath));
-  }, { onWaiting: options.onWaiting });
+  }, { onWaiting: options.onWaiting, timeoutMs: options.timeoutMs });
 }

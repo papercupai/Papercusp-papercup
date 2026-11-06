@@ -4,6 +4,7 @@ import postgres, { type Sql } from 'postgres';
 import { createFreshTestDb, type MigratedTestDb } from '@papercusp/test-config/pg';
 import {
   CODE_RUN_ADOPTION_SQL,
+  readRecipeOutcomeReport,
   spawnRowsFromCalls,
   type CallRow,
   type SpawnAdoptionRow,
@@ -82,5 +83,63 @@ describe('adoption SQL: one turn stream without materialized call reuse', () => 
     // consumers. A live planner guard catches a return to that shape.
     expect(plan).not.toContain('"CTE Name":"calls"');
     expect(plan).not.toContain('"CTE Name":"turned"');
+  });
+});
+
+describe('R13 exact-window recipe outcome report (real PG)', () => {
+  let db: MigratedTestDb;
+  let sql: Sql;
+  const scope = { workspaceId: 'report-ws', harnessSlug: 'app', windowStart: '2026-10-01T00:00:00Z', windowEnd: '2026-10-02T00:00:00Z' };
+  beforeAll(async () => {
+    db = await createFreshTestDb({ prefix: 'recipe-report' });
+    sql = postgres(db.url, { max: 1, onnotice: () => {} });
+    await sql`CREATE SCHEMA harness_shared`;
+    await sql`CREATE TABLE harness_shared.code_recipe_runs (
+      id serial, recipe_id text, workspace_id text, agent_owner text, agent_role text,
+      success boolean, reused boolean, execution_trace jsonb, ts timestamptz)`;
+    await sql`CREATE TABLE harness_shared.tool_invocations (
+      id serial, workspace_id text, harness_slug text, tool_name text, invoked_at timestamptz, metadata_json jsonb)`;
+  });
+  afterAll(async () => { await sql?.end({ timeout: 5 }); await db?.drop(); });
+  const read = () => readRecipeOutcomeReport(async <T>(query: string, params: unknown[]) =>
+    await sql.unsafe(query, params as never) as unknown as T[], scope);
+  const run = async (call: string | null, attempt: number, selection = 'saved-replay', outcome = 'success', mode = 'commit') => {
+    const trace = call ? { usage: { version: 1, choice: 'agent', selection, outcome, mode, settled: true },
+      runEvidence: { version: 1, invocationId: call, attempt, executed: outcome !== 'refused',
+        sourceBytes: 10, intermediateBytes: 5, elapsedBeforeRecordMs: 1 } } : {};
+    await sql`INSERT INTO harness_shared.code_recipe_runs
+      (recipe_id,workspace_id,agent_owner,agent_role,success,reused,execution_trace,ts)
+      VALUES ('recipe','report-ws','agent-one','operator',${outcome === 'success'},true,
+        ${sql.json(trace)},'2026-10-01T12:00:00Z')`;
+  };
+  const host = async (call: string, bytes: number | null, harness = 'app', final = true) => sql`
+    INSERT INTO harness_shared.tool_invocations (workspace_id,harness_slug,tool_name,invoked_at,metadata_json)
+    VALUES ('report-ws',${harness},'recipes:run','2026-10-01T12:00:01Z',
+      ${sql.json({ otel: { callId: call }, returnedContextBytes: bytes,
+        ...(final ? { spillPending: false, resultDoorReason: 'per-result-budget-exceeded' } : {}) })})`;
+
+  it('R13 counts failures and copies honestly while charging bulk returned context once', async () => {
+    await host('bulk', 100); await host('refused', null);
+    for (const call of ['authored', 'automatic', 'preview']) await host(call, 20, 'app', call !== 'authored');
+    await run('bulk', 0); await run('bulk', 0); await run('bulk', 1, 'saved-replay', 'error');
+    await run('refused', 0, 'saved-replay', 'refused');
+    await run('authored', 0, 'authored'); await run('automatic', 0, 'automatic-match');
+    await run('preview', 0, 'saved-replay', 'success', 'preview'); await run(null, 0);
+    await host('foreign', 999, 'other-harness'); await run('foreign', 0);
+    const report = await read();
+    expect(report.measurement).toMatchObject({ sourceRows: 8, attempts: 7, verifiedCopiesExcluded: 1,
+      conflictingReceipts: 0, authored: 1, automaticMatches: 1, deliberateSelections: 4,
+      previews: 1, unknown: 1, replaySuccesses: 1, replayErrors: 1, replayRefusals: 1,
+      replayDenominator: 3, distinctAgents: 1, unscopedWorkspaceReceipts: 1,
+      sourceBytes: 60, intermediateBytes: 30, elapsedBeforeRecordMs: 6,
+      dispatches: 5, contextMeasuredDispatches: 3, returnedContextBytes: 140, recordedContextBytes: 160 });
+    expect(report.coverage).toMatchObject({ state: 'unknown', complete: false });
+    expect(report.benefit.measuredSavings).toBeNull();
+    await run('bulk', 0, 'saved-replay', 'error');
+    expect((await read()).measurement).toMatchObject({ conflictingReceipts: 1, unknown: 2,
+      replaySuccesses: 0, replayErrors: 1, replayRefusals: 1, replayDenominator: 2 });
+    // Two plausible host rows do not authorize choosing the convenient one.
+    await host('authored', 20);
+    expect((await read()).measurement).toMatchObject({ authored: 0, unknown: 3, unscopedWorkspaceReceipts: 2 });
   });
 });

@@ -18,6 +18,7 @@ import {
   rubricCompleteness,
   planRowToRubric,
   normalizeAcceptanceRubricProposal,
+  applyRubricAmendment,
   normalizeAcceptanceBarCriterion,
   computeAcceptanceBarHash,
   normalizeRubricCompositionRefs,
@@ -309,6 +310,64 @@ describe('criterion `replication` field end-to-end (schema + plan-row mapping)',
 });
 
 describe('legacy acceptance successor compatibility normalization (EI-22056951528892875)', () => {
+  it('preserves a canonical omitted METHOD without accepting an explicitly blank amendment', () => {
+    const canonical: ProposeRubricCriterion = {
+      key: 'current', title: 'Current BAR', barKey: 'R-1',
+      model: 'The current outcome survives the amendment.',
+      driftMarkers: 'The current outcome is absent after the amendment.',
+      requiredScope: ['current'], evidencePlane: 'tree',
+    };
+    const stored = rubric([crit({ ...canonical, method: '' })], {
+      kind: 'acceptance', subjectPlan: 'current-bar',
+    });
+    const validate = (input: Parameters<typeof applyRubricAmendment>[1]) => {
+      const amended = applyRubricAmendment(stored, input, [canonical]);
+      const normalized = normalizeAcceptanceRubricProposal(amended.criteria, 'acceptance', stored.ratingScale);
+      return {
+        criteria: normalized.criteria,
+        parsed: rubricTemplateDataAuthoringSchema.safeParse({
+          kind: 'acceptance', subjectPlan: 'current-bar', characteristic: 'current',
+          criteria: normalized.criteria, ratingScale: normalized.ratingScale,
+        }),
+      };
+    };
+    const unchanged = validate({ rubricId: stored.rubricId, classRef: 'plan-class-feature-ship' });
+    expect(unchanged.criteria[0]).not.toHaveProperty('method');
+    expect(unchanged.parsed.success).toBe(true);
+    for (const input of [
+      { rubricId: stored.rubricId, criteria: [{ ...canonical, method: '' }] },
+      { rubricId: stored.rubricId, criterion: {
+        key: 'current', field: 'method' as const, mode: 'replace' as const, text: '',
+      } },
+    ]) {
+      const explicit = validate(input);
+      expect(explicit.criteria[0]?.method).toBe('');
+      expect(explicit.parsed.success).toBe(false);
+      if (!explicit.parsed.success) {
+        expect(explicit.parsed.error.issues.map((issue) => issue.path.join('.'))).toContain('criteria.0.method');
+      }
+    }
+  });
+
+  it('preserves invalid current BAR observables and falsifiers for authoring rejection', () => {
+    const criterion = {
+      key: 'current', title: 'Current BAR', barKey: 'R-1',
+      model: '', method: '', driftMarkers: '', requiredScope: ['current'], evidencePlane: 'tree' as const,
+    };
+    const normalized = normalizeAcceptanceRubricProposal([criterion], 'acceptance', ['pass', 'fail', 'unknown']);
+    expect(normalized.criteria[0]).toMatchObject({ model: '', method: '', driftMarkers: '' });
+    expect(normalized.compatibility).toBeUndefined();
+    const parsed = rubricTemplateDataAuthoringSchema.safeParse({
+      kind: 'acceptance', subjectPlan: 'current-bar', characteristic: 'current',
+      criteria: normalized.criteria, ratingScale: normalized.ratingScale,
+    });
+    expect(parsed.success).toBe(false);
+    if (!parsed.success) {
+      const paths = parsed.error.issues.map((issue) => issue.path.join('.'));
+      expect(paths).toEqual(expect.arrayContaining(['criteria.0.model', 'criteria.0.method', 'criteria.0.driftMarkers']));
+    }
+  });
+
   it('upgrades projected blanks and an old scale without changing the legacy input', () => {
     const legacyCriteria: ProposeRubricCriterion[] = [
       { key: 'outcome', title: 'Outcome', model: '', method: '   ', driftMarkers: '' },
@@ -525,8 +584,6 @@ describe('releaseGating + criterion window end-to-end (EI-12146/EI-12149)', () =
 // applyRubricAmendment is the pure core of rubrics:amend — patch one criterion field /
 // methodRef and shape the whole-doc ProposeRubricInput (status preserved, guards
 // inherited downstream by proposeRubric's assertNoSilentRubricLoss).
-import { applyRubricAmendment } from './rubrics';
-
 describe('applyRubricAmendment kind round-trip (acceptance-rubrics-on-every-plan-2026-08-11)', () => {
   it('binds a missing acceptance class without losing BARs, checks, lifecycle or authorship', () => {
     const stored = rubric([crit({ key: 'r-1', check: { kind: 'tests', files: ['guard.test.ts'] } })], {

@@ -16,6 +16,27 @@ export type GateActionResult<T> =
   | { ok: false; receiptId: string | null; reason: string; effectMayHaveRun: boolean };
 
 /**
+ * Recover a receiver acknowledgment after the reaction runner lost its own one.
+ * An intent, a transport result, and an in-flight unit are insufficient. Require
+ * one settled audit receipt for this exact execution in this exact workspace.
+ */
+export async function reconcileGateActionReceipt(input: {
+  workspaceId: string; action: string; executionId: string;
+}): Promise<'completed' | 'uncertain'> {
+  if (!input.workspaceId.trim() || !input.executionId.trim() || input.action !== 'release:deploy') return 'uncertain';
+  const rows = await getOrgPg().sql.unsafe<{ details: {
+    phase?: string; effect?: { status?: string }; target?: { op?: string };
+  } }[]>(
+    `SELECT details FROM harness_shared.audit_log
+      WHERE workspace_id = $1 AND action = $2 AND details->>'executionId' = $3
+      ORDER BY ts LIMIT 2`, [input.workspaceId, input.action, input.executionId],
+  );
+  const receipt = rows.length === 1 ? rows[0]?.details : null;
+  return receipt?.phase === 'settled' && receipt.effect?.status === 'detached-launch-accepted' &&
+    receipt.target?.op === 'trigger' ? 'completed' : 'uncertain';
+}
+
+/**
  * `run` must contain only the short effect boundary (for example accepting a
  * detached systemd launch). Long-running suite/deploy work happens afterward.
  */
@@ -29,6 +50,8 @@ export async function executeWithGateActionReceipt<T>(input: {
   /** Green actions may have no open incident to claim; retain unknown ownership honestly. */
   allowUnowned?: boolean;
   target: Record<string, unknown>;
+  /** Internal caller execution id, when an interrupted reaction can re-read this receipt. */
+  executionId?: string;
   run: () => Promise<T>;
   summarize: (effect: T) => Record<string, unknown>;
 }): Promise<GateActionResult<T>> {
@@ -39,7 +62,8 @@ export async function executeWithGateActionReceipt<T>(input: {
   const workspaceId = activeWorkspaceId();
   const receiptId = `gate-action-${randomUUID()}`;
   const base = { schemaVersion: 2, phase: 'intent', conditionKey: input.conditionKey,
-    ownerId: input.ownerId, target: input.target, effect: { status: 'unknown' } };
+    ownerId: input.ownerId, target: input.target, effect: { status: 'unknown' },
+    ...(input.executionId ? { executionId: input.executionId } : {}) };
   try {
     await sql.unsafe(
       `INSERT INTO harness_shared.audit_log (id, ts, actor, action, subject, details, workspace_id)

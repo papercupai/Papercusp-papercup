@@ -139,7 +139,8 @@ export const ACKNOWLEDGED_CONTENT_DRIFT: ReadonlyMap<string, string> = new Map<s
   ['959-owned-trigger-source-account-identity.sql', F.unclassified],
   ['972-completion-authority-content-identity-floor.sql', F.unclassified],
   ['978-hosted-customer-rls.sql', 'repaired by 1370-hosted-customer-rls-role-lock.sql (EI-25183160168061907; replayed the role reconciliation with catalog serialization)'],
-  ['992-work-item-dependency-satisfaction.sql', F.unclassified],
+  ['992-work-item-dependency-satisfaction.sql',
+    'forward repair 1621-dependency-reopen-untouched-dependants.sql restores the corrected reopen guard on databases that applied the original c09f2a11 bytes; real-PG upgrade regression pins those exact applied bytes (EI-28017171914991959)'],
   ['996-work-item-completion-settlement-readiness.sql', F.unclassified],
   ['1398-retire-probation-freshness-readiness-reasons.sql', 'comments-only; db:check_drift confirmed the executable SQL matches applied blob 052a9b40960e on 2026-10-06.'],
 ]);

@@ -234,11 +234,14 @@ function createManifestResolutionFixture({
     "  const repoRoot = process.env.NPM_INSTALL_SAFE_TEST_ROOT;",
     "  const lockName = process.env.NPM_INSTALL_SAFE_TEST_LOCK_NAME;",
     "  const record = (value) => fs.appendFileSync(process.env.NPM_INSTALL_SAFE_TEST_TRACE, value + \"\\n\");",
+    "  const diagnose = (event, details = {}) => fs.appendFileSync(process.env.NPM_INSTALL_SAFE_TEST_TRACE + \".phases.jsonl\", JSON.stringify({ phase, event, atMs: Date.now(), ...details }) + \"\\n\");",
+    "  diagnose(\"started\");",
     "  if (phase === \"cache-verify\") { record(phase); return; }",
     "  let writerAcquired = false;",
     "  try {",
-    "    await withFsMutex(lockName, async () => { writerAcquired = true; }, { timeoutMs: phase === \"resolve\" ? 2000 : 250, retryMs: 10 });",
+    "    await withFsMutex(lockName, async () => { writerAcquired = true; }, { timeoutMs: phase === \"resolve\" ? 2000 : 250, retryMs: 10, onAcquired: info => diagnose(\"mutex-acquired\", info), onTimedOut: info => diagnose(\"mutex-timeout\", info) });",
     "  } catch (error) {",
+    "    diagnose(\"mutex-error\", { message: error?.message });",
     "    if (!String(error?.message || error).startsWith(\"Timed out after \")) throw error;",
     "  }",
     "  const foreignWorkspace = process.env.NPM_INSTALL_SAFE_TEST_FOREIGN_WORKSPACE;",
@@ -520,7 +523,7 @@ test("lock-only fallback does not verify or publish the unchanged installed tree
 
 test("manifest resolution includes local archives from other workspaces without a writer fallback", {
   skip: process.platform === "win32",
-}, () => {
+}, (t) => {
   const fixture = createManifestResolutionFixture();
   const consumer = "packages/archive-consumer";
   const archive = "vendor/local.tgz";
@@ -538,6 +541,15 @@ test("manifest resolution includes local archives from other workspaces without 
       encoding: "utf8", timeout: 15_000,
       env: { ...fixture.env, NPM_INSTALL_SAFE_TEST_FOREIGN_WORKSPACE: consumer, NPM_INSTALL_SAFE_TEST_ARCHIVE: archive },
     });
+    if (result.error || result.status !== 0) {
+      const phasePath = fixture.tracePath + ".phases.jsonl";
+      t.diagnostic(JSON.stringify({
+        error: result.error?.message, code: result.error?.code,
+        status: result.status, signal: result.signal,
+        stdout: result.stdout, stderr: result.stderr,
+        phases: existsSync(phasePath) ? readFileSync(phasePath, "utf8") : "not started",
+      }));
+    }
     assert.ifError(result.error);
     assert.equal(result.status, 0, result.stderr + result.stdout);
     const phases = readFileSync(fixture.tracePath, "utf8").trim().split("\n");
@@ -1151,7 +1163,10 @@ test("fs-mutex admission reconciles abandoned staging readers", async (t) => {
     utimesSync(orphan, new Date(0), new Date(0));
     await acquire(name, async () => {
       assert.equal(existsSync(orphan), false, "admission must reconcile an abandoned staging marker");
-    }, { lockRootDir: root, timeoutMs: 100, retryMs: 5 });
+    }, {
+      lockRootDir: root, timeoutMs: 100, retryMs: 5,
+      onTimedOut: info => t.diagnostic(JSON.stringify({ name, ...info })),
+    });
   }
 });
 

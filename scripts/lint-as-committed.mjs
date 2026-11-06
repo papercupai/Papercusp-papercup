@@ -376,10 +376,27 @@ function hasDependentArtifact(workRoot, marker) {
       && entry.path !== workRoot && !entry.path.startsWith(workRoot + sep) && existsSync(entry.path));
 }
 
+// Cleanup is optional; admission to the pin writer must not decide whether the
+// command passed. Never run cleanup without that writer, or swallow an error
+// raised after admission (including a timeout from the destructive operation).
+async function withOptionalRetentionPinProtection(work, deferred, options = {}) {
+  let admitted = false;
+  try {
+    return await withRetentionPinProtection(isPinned => {
+      admitted = true;
+      return work(isPinned);
+    }, { ...options, timeoutMs: options.timeoutMs ?? 1000 });
+  } catch (error) {
+    if (admitted || error?.code !== 'ETIMEDOUT') throw error;
+    console.warn('lint-as-committed: optional cleanup deferred: retention admission timed out; extracted trees preserved');
+    return deferred;
+  }
+}
+
 /** Dispose a command's own extracted tree unless a consumer retained it. */
-export async function cleanupCommittedWorkRoot(workRoot, keep = false) {
+export async function cleanupCommittedWorkRoot(workRoot, keep = false, pinOptions = {}) {
   if (keep) return false;
-  return withRetentionPinProtection(async (isPinned) => {
+  return withOptionalRetentionPinProtection(async (isPinned) => {
     let root;
     try { root = realpathSync(workRoot); }
     catch (error) {
@@ -398,7 +415,7 @@ export async function cleanupCommittedWorkRoot(workRoot, keep = false) {
       rmSync(root, { recursive: true, force: true });
       return true;
     });
-  });
+  }, false, pinOptions);
 }
 
 /**
@@ -565,16 +582,16 @@ export async function sweepStaleWorkRoots({ root = tmpdir(), nowMs = Date.now(),
 /**
  * Run the lint runner's self-sweep under the existing central retention-pin guard.
  * @param {Parameters<typeof sweepStaleWorkRoots>[0]} [options]
- * @param {{dir?: string, nowMs?: number}} [pinOptions]
+ * @param {{dir?: string, nowMs?: number, timeoutMs?: number}} [pinOptions]
  */
 export async function sweepStaleWorkRootsWithRetentionPins(options = {}, pinOptions = {}) {
-  return withRetentionPinProtection((isPinned) => sweepStaleWorkRoots({
+  return withOptionalRetentionPinProtection((isPinned) => sweepStaleWorkRoots({
     ...options,
     beforeRemove: (path) => {
       const refusal = options.beforeRemove?.(path);
       return refusal || (isPinned(path) ? 'pinned' : null);
     },
-  }), pinOptions);
+  }), { removed: [], kept: [], deferred: true }, pinOptions);
 }
 
 /* ─────────────────────────── pure helpers (unit-tested) ─────────────────────────── */

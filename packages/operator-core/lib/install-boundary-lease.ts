@@ -22,7 +22,6 @@
  */
 import { existsSync } from 'node:fs';
 import { withFsMutexRead } from '../../../scripts/lib/fs-mutex.mjs';
-// @ts-expect-error -- same buildless plain-JS module family, no declaration file.
 import { installLockNameForRoot, installMutexIsHeld } from '../../../scripts/lib/install-lock-name.mjs';
 
 /** How long a launch waits for an in-flight install before launching anyway. */

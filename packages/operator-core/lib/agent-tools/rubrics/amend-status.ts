@@ -14,8 +14,56 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { COORD_ROLES } from '../coordination/roles';
+import { activeWorkspaceId } from '../../workspace-registry';
+import {
+  inspectFreshAmendmentReviewer,
+  type FreshAmendmentReviewerHealth,
+} from '../../consult/acceptance-bar-amendment-review';
 import { findAmendmentDecisionByKey } from '../../rubrics';
 import { getAmendReceipt, isRunningReceiptOrphaned } from './amend-receipts';
+
+async function inspectReceiptReviewer(
+  result: Record<string, unknown> | undefined,
+): Promise<FreshAmendmentReviewerHealth | undefined> {
+  const review = result?.review && typeof result.review === 'object' && !Array.isArray(result.review)
+    ? result.review as Record<string, unknown>
+    : undefined;
+  const reviewer = review?.freshReviewer && typeof review.freshReviewer === 'object' && !Array.isArray(review.freshReviewer)
+    ? review.freshReviewer as Record<string, unknown>
+    : undefined;
+  if (reviewer?.state !== 'launched') return undefined;
+
+  const taskId = typeof reviewer.taskId === 'string' ? reviewer.taskId : undefined;
+  const previewPostRef = typeof review?.previewPostRef === 'string' ? review.previewPostRef : undefined;
+  let workspaceId: string | null;
+  try {
+    workspaceId = activeWorkspaceId();
+  } catch {
+    workspaceId = null;
+  }
+  if (!workspaceId || !previewPostRef) {
+    return {
+      state: 'unknown',
+      ...(taskId ? { taskId } : {}),
+      reason: 'reviewer workspace or retained preview identity is unavailable',
+    };
+  }
+
+  try {
+    return await inspectFreshAmendmentReviewer({
+      workspaceId,
+      previewPostRef,
+      ...(typeof review.reviewEvidencePost === 'string' ? { reviewEvidencePost: review.reviewEvidencePost } : {}),
+      reviewer,
+    });
+  } catch {
+    return {
+      state: 'unknown',
+      ...(taskId ? { taskId } : {}),
+      reason: 'fresh reviewer health could not be read',
+    };
+  }
+}
 
 export const rubricsAmendStatusArgs = z
   .object({
@@ -29,12 +77,12 @@ export default defineTool({
   // @not-a-cell This keyed receipt and Decision lookup has one read door; no other resolver derives its per-key status.
   profile: 'engineer',
   description:
-    'Poll a rubrics:amend receipt: running, orphaned (executor restarted and reclaimable now), committed (apply result), previewed (dry-run result), failed, or not_found. Review-bearing previews keep their key and thread/conversation references after the full preview is compacted. not_found does not prove a requestReview or reviewPreviewPost dry-run had no external side effects.',
+    'Poll a rubrics:amend receipt: running, orphaned (executor restarted and reclaimable now), committed (apply result), previewed (dry-run result), failed, or not_found. Review-bearing previews keep their key and thread/conversation references after the full preview is compacted. A launched fresh reviewer includes a current freshReviewerHealth read; its stored state=launched remains the launch-time fact. not_found does not prove a requestReview or reviewPreviewPost dry-run had no external side effects.',
   guidance: {
     when: 'A rubrics:amend returned { pending:true, receipt } and you need its outcome.',
     notWhen: 'You have no receipt — read the rubric with rubrics:get instead.',
     returns:
-      "{ ok, state: 'running'|'orphaned'|'committed'|'previewed'|'failed'|'not_found', source: 'receipt'|'decision'|'none', result?, error?, decisionId?, ageSec?, reclaimableAt? }.",
+      "{ ok, state: 'running'|'orphaned'|'committed'|'previewed'|'failed'|'not_found', source: 'receipt'|'decision'|'none', result?, freshReviewerHealth?, error?, decisionId?, ageSec?, reclaimableAt? }.",
   },
   capability: 'coord:read',
   requirePrincipal: false,
@@ -52,6 +100,14 @@ export default defineTool({
       ageSec: z.number().optional(),
       reclaimableAt: z.number().optional(),
       progress: z.object({ phase: z.string(), phaseStartedAt: z.number(), observedAt: z.number() }).optional(),
+      freshReviewerHealth: z.object({
+        state: z.enum(['unknown', 'no-failure-observed', 'later-post', 'reclaimable']),
+        taskId: z.string().optional(),
+        taskState: z.string().optional(),
+        nativeRef: z.string().optional(),
+        reason: z.string().optional(),
+        evidence: z.string().optional(),
+      }).passthrough().optional(),
     })
     .passthrough(),
   async handler(args) {
@@ -85,14 +141,25 @@ export default defineTool({
       }
     }
     if (receipt) {
+      const freshReviewerHealth = await inspectReceiptReviewer(receipt.result);
+      const notes = [
+        ...(receipt.result?.receiptCompacted === true
+          ? ['The full preview payload was compacted; use result.preview.approvalRef and result.review for the retained thread and conversation references.']
+          : []),
+        ...(freshReviewerHealth?.state === 'reclaimable'
+          ? ['Fresh reviewer health is reclaimable (' + (freshReviewerHealth.reason ?? 'no reply was observed') +
+            '); retry rubrics:amend with the same idempotency key and original arguments. The retry rechecks the retained reviewer and thread before replacement.']
+          : freshReviewerHealth
+            ? ['freshReviewer.state is the launch-time fact; freshReviewerHealth is the current task, transcript, liveness, and thread read.']
+            : []),
+      ];
       return reply({
         state: receipt.state,
         source: 'receipt',
         ageSec: Math.round(((receipt.finishedAt ?? Date.now()) - receipt.startedAt) / 1000),
         ...(receipt.result ? { result: receipt.result } : {}),
-        ...(receipt.result?.receiptCompacted === true ? {
-          note: 'The full preview payload was compacted; use result.preview.approvalRef and result.review for the retained thread and conversation references.',
-        } : {}),
+        ...(freshReviewerHealth ? { freshReviewerHealth } : {}),
+        ...(notes.length > 0 ? { note: notes.join(' ') } : {}),
         ...(receipt.error ? { error: receipt.error } : {}),
         ...(receipt.progress ? { progress: receipt.progress } : {}),
       });

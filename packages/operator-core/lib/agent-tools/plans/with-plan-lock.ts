@@ -477,7 +477,8 @@ export interface RefusedResult {
     | ReturnType<typeof childSeedTemplateRefusalValue>
     | ReturnType<typeof activationGateRefusalValue>
     | VerificationLoweringRefusal
-    | { ok: false; code: 'initial_change_scope_missing'; message: string; problems: string[] };
+    | { ok: false; code: 'initial_change_scope_missing'; message: string; problems: string[] }
+    | { ok: false; code: 'discovery_not_ready'; message: string };
   filePath: string;
   version: number;
   scope: { workspaceId: string; harnessSlug: string };
@@ -738,6 +739,15 @@ export async function withPlanLock<T>(
         !isActivationAuditExemptTemplate(afterIndex.template) &&
         !isAwaitingAcceptanceRestore
       ) {
+        const { withCurrentDiscovery } = await import('../../plan-audits');
+        const discovery = await withCurrentDiscovery({ workspaceId, harnessSlug, planSlug: slug,
+          createdBy: authenticatedActorId ?? 'system:plan-transition' }, async () => undefined,
+          undefined, tx as never);
+        if (!discovery.ok) return { kind: 'refused', value: { ok: false,
+          code: 'discovery_not_ready',
+          message: 'nextAction' in discovery && discovery.nextAction ? discovery.nextAction
+            : 'Finalize current discovery before activating implementation.' },
+          filePath, version: curVersion, scope: { workspaceId, harnessSlug } } satisfies RefusedResult;
         const gate = await evaluateConversationActivationGate(tx as never, {
           workspaceId,
           harnessSlug,

@@ -47,6 +47,18 @@ vi.mock('../../plan-items/anchors', async importOriginal => {
   return { ...actual, resolveHarnessAnchors: async (_workspace: string, _harness: string, inputs: import('../../plan-items/anchors').AnchorInput[]) =>
     actual.resolvePlanItemAnchors(inputs, { root: fixture.root, snapshot: fixture.snapshot, budgetMs: 5000 }) };
 });
+// These tests exercise the initial code-scope gate. Discovery is an independent
+// prerequisite, so accept it here and keep the real scope and anchor checks intact.
+vi.mock('../../plan-audits', async importOriginal => {
+  const actual = await importOriginal<typeof import('../../plan-audits')>();
+  return {
+    ...actual,
+    withCurrentDiscovery: (async (_input: unknown, accept: () => Promise<unknown>) => ({
+      ok: true as const,
+      result: await accept(),
+    })) as typeof actual.withCurrentDiscovery,
+  };
+});
 
 const HARNESS = `zzz-anchors-${Date.now()}`;
 const SLUG = 'zzz-plan-anchors';

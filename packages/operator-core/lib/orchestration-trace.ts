@@ -466,16 +466,23 @@ export async function normalizeExecutionTrace(
     args: normalizeValue(call.args, state, `staticCalls[${ordinal}].args`),
     capabilities: capabilityMap.get(call.tool) ?? [],
   }));
-  const runtimeCalls: OrchestrationRuntimeCall[] = [...(input.callRecords ?? [])]
-    .sort((a, b) => a.ordinal - b.ordinal)
-    .map((call) => ({
-      ordinal: call.ordinal,
-      tool: call.tool,
-      effect: call.effect,
-      disposition: call.disposition,
+  // Ordinals identify dispatches within THIS execution. Repeated receipt copies
+  // are not retries; a retry has a new ordinal. Refuse conflicting copies rather
+  // than choosing whichever outcome happened to arrive first.
+  const runtimeByOrdinal = new Map<number, OrchestrationRuntimeCall>();
+  for (const call of input.callRecords ?? []) {
+    if (!Number.isSafeInteger(call.ordinal) || call.ordinal < 0) throw new Error('invalid_orchestration_call_ordinal');
+    const normalized: OrchestrationRuntimeCall = {
+      ordinal: call.ordinal, tool: call.tool, effect: call.effect, disposition: call.disposition,
       capabilities: capabilityMap.get(call.tool) ?? [],
       outputReferences: call.outputReferences.map(copyOutputReference),
-    }));
+    };
+    const previous = runtimeByOrdinal.get(call.ordinal);
+    if (previous && JSON.stringify(previous) !== JSON.stringify(normalized)) throw new Error('conflicting_orchestration_call_copies');
+    runtimeByOrdinal.set(call.ordinal, normalized);
+  }
+  const runtimeCalls: OrchestrationRuntimeCall[] = [...runtimeByOrdinal.values()]
+    .sort((a, b) => a.ordinal - b.ordinal);
 
   const toolNames = [...new Set([...staticCalls.map((call) => call.tool), ...runtimeCalls.map((call) => call.tool)])].sort();
   const capabilities = [

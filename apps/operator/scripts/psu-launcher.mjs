@@ -311,6 +311,7 @@ Session selection:
   -h, --help                         Show this help and exit
   -V, --version                      Show the psu build version and exit
   --resume[=<id>] [id]               Resume a tracked/native session or an su agent's latest session
+  --resume-host=<hostname>           Refuse resume unless this machine has the exact recorded hostname
   --fork, --fork-session             Fork the selected session (with --resume)
   --brain                            Show the retired brain-session message
 
@@ -1050,6 +1051,8 @@ export function parseArgs(argv) {
     picker: true,
     resume: false,
     resumeId: null,
+    /** @type {string | null} */
+    resumeHost: null,
     fork: false,
     agent: null,
     role: null,
@@ -1127,9 +1130,21 @@ export function parseArgs(argv) {
   let pendingModeInstructions = false;
   let pendingTui = false;
   let pendingRecoveryReason = false;
+  let pendingResumeHost = false;
+  const resumeHostValue = (host) => {
+    if (typeof host !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,252}$/.test(host)) {
+      throw new Error("--resume-host requires an exact hostname (letters, digits, dots, underscores or hyphens)");
+    }
+    return host;
+  };
   for (const a of argv) {
     if (rest) {
       out.passthrough.push(a);
+      continue;
+    }
+    if (pendingResumeHost) {
+      pendingResumeHost = false;
+      out.resumeHost = resumeHostValue(a);
       continue;
     }
     // `--add-dir <dir>` (space form) — the previous token armed this; take the
@@ -1313,6 +1328,8 @@ export function parseArgs(argv) {
       out.resume = true;
       out.resumeId = a.slice("--resume=".length) || null;
     }
+    else if (a === "--resume-host") pendingResumeHost = true;
+    else if (a.startsWith("--resume-host=")) out.resumeHost = resumeHostValue(a.slice("--resume-host=".length));
     // Fork the resumed session instead of appending to it. Claude uses
     // `--fork-session`; Codex uses `codex fork`. Both mint a NEW native session
     // seeded with the original's history, leaving the original id + transcript
@@ -1575,6 +1592,10 @@ export function parseArgs(argv) {
         `psu: warning — unrecognized flag \`${a}\` was ignored (did you mean \`${a}=<value>\`? psu --help lists supported flags).`,
       );
     }
+  }
+  if (pendingResumeHost) resumeHostValue(undefined);
+  if (out.resumeHost && (!out.resume || !out.resumeId)) {
+    throw new Error("--resume-host requires --resume with an exact session id");
   }
   if (out.goalBootstrapSubject && (out.resume || out.mode || out.auto !== null || out.fleet || out.fleetName)) {
     throw new Error("--goal-bootstrap-subject requires a fresh, fleetless launch without separate AUTO or DRAIN flags");
@@ -19084,6 +19105,12 @@ export async function main({
   if (args.version) {
     process.stdout.write(`psu ${psuClientVersion()}\n`);
     return;
+  }
+  // The saved-connection picker can be cancelled or select another machine.
+  // Check on the destination, before reading an adv id or starting a host:
+  // numeric launch ids are local to the operator that recorded them.
+  if (args.resumeHost && args.resumeHost !== hostname()) {
+    throw new Error(`Resume refused: this machine is ${hostname()}, but the selected session belongs to ${args.resumeHost}. Choose its saved psu connection and retry.`);
   }
   // Plain interactive launches have no owner id yet. Reuse the existing bounded
   // boot-log store with a launch-local key; do not capture argv or terminal text.

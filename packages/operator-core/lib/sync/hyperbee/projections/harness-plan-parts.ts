@@ -36,6 +36,7 @@ import { summarizeForcedPast } from '../../../agent-tools/plans/forced-past-stam
 // `agent-tools/locks/configure`, which calls into the stubbed `@papercusp/db-org` at
 // module top level and kills the child before it can emit `ready`.
 import { deriveIndexFromContent } from '../../../agent-tools/plans/derive-index';
+import { preservePlanExecutionProgress } from '../../../agent-tools/plans/plan-execution-progress';
 import { writePlanIndexRows } from '../../../agent-tools/plans/plan-index-rows';
 import { withPlanDependencyAdmissionTransaction } from '../../../agent-tools/plans/plan-dependency-admission-transaction';
 import {
@@ -241,6 +242,12 @@ function defaultRecomposeSink(opts: HarnessPlanPartsProjectionOpts) {
         candidateStatus: fm.status ?? null,
       },
       async (tx) => {
+        const [prior] = await tx<Array<{ content: string; content_hash: string }>>`
+          SELECT content, content_hash FROM harness_shared.harness_plans
+           WHERE workspace_id=${opts.workspaceId} AND harness_slug=${opts.harnessSlug} AND plan_slug=${planSlug}`;
+        if (prior) await preservePlanExecutionProgress(tx as unknown as PlanRevisionSql,
+          { workspaceId: opts.workspaceId, harnessSlug: opts.harnessSlug, planSlug },
+          prior.content, content, prior.content_hash, contentHash);
         const updated = await tx<Array<{ plan_slug: string }>>`
           UPDATE harness_shared.harness_plans
              SET content       = ${content},

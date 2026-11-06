@@ -69,7 +69,7 @@ const {
     listRecipesMock: vi.fn(),
     getRecipeMock: vi.fn(),
     reviseRecipeSourceMock: vi.fn(),
-    recordRecipeRunMock: vi.fn(async () => {}),
+    recordRecipeRunMock: vi.fn<typeof import('../../code-recipes-store').recordRecipeRun>(async () => {}),
     runOrchestrationMock: vi.fn<typeof import('@papercusp/agent-mcp').runToolOrchestration>(async () => ({
       ok: true,
       summary: { done: true },
@@ -688,6 +688,10 @@ describe('recipes:run REUSE ENVELOPE invariant (P-006 / D-004)', () => {
       diagnostic: { code: 'binding_invalid', path: 'bindings.values.count' },
     });
     expect(runOrchestrationMock).not.toHaveBeenCalled();
+    expect(recordRecipeRunMock).toHaveBeenCalledExactlyOnceWith(expect.anything(), expect.objectContaining({
+      recipeId: 'invalid-binding', success: false, reused: true, countTowardRecipe: false,
+      usage: { version: 1, selection: 'saved-replay', choice: 'unknown', mode: 'commit', outcome: 'refused', settled: true },
+    }));
   });
 
   it('fails unavailable declared capabilities in current-caller preflight before execution', async () => {
@@ -719,6 +723,10 @@ describe('recipes:run REUSE ENVELOPE invariant (P-006 / D-004)', () => {
       diagnostic: { capability: 'tools:unavailable:recipe-tool' },
     });
     expect(runOrchestrationMock).not.toHaveBeenCalled();
+    expect(recordRecipeRunMock).toHaveBeenCalledExactlyOnceWith(expect.anything(), expect.objectContaining({
+      recipeId: 'durable-unavailable', success: false, countTowardRecipe: false,
+      usage: expect.objectContaining({ selection: 'saved-replay', outcome: 'refused', settled: true }),
+    }));
   });
 
   it('records the run with reused:true on a successful committing run', async () => {
@@ -755,6 +763,8 @@ describe('recipes:run REUSE ENVELOPE invariant (P-006 / D-004)', () => {
     expect(input.countTowardRecipe).toBe(true);
     expect(recordRecipeRunMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       usage: expect.objectContaining({ selection: 'saved-replay', mode: 'commit', outcome: 'success', settled: true }),
+      runEvidence: expect.objectContaining({ invocationId: null, attempt: 0, executed: true,
+        sourceBytes: Buffer.byteLength('return 1;', 'utf8'), intermediateBytes: null }),
     }));
   });
 
@@ -809,6 +819,46 @@ describe('recipes:run REUSE ENVELOPE invariant (P-006 / D-004)', () => {
     expect(payload.results[0]).toMatchObject({ ok: false, id: 'stale', error: 'recipe_schema_stale' });
     expect(payload.results[0].schemaIssues[0].message).toContain('bogus');
     expect(runOrchestrationMock).not.toHaveBeenCalled();
+    expect(recordRecipeRunMock).toHaveBeenCalledExactlyOnceWith(expect.anything(), expect.objectContaining({
+      recipeId: 'stale', success: false, countTowardRecipe: false,
+      usage: expect.objectContaining({ selection: 'saved-replay', mode: 'commit', outcome: 'refused', settled: true }),
+    }));
+    expect(normalizeExecutionTraceMock).not.toHaveBeenCalled();
+    expect(recordRecipeRunMock.mock.calls[0][1]).not.toHaveProperty('executionTrace');
+    expect(recordRecipeRunMock.mock.calls[0][1]).toMatchObject({
+      runEvidence: { executed: false, intermediateBytes: 0 },
+    });
+  });
+
+  it('keeps a refused preview out of committing reliability and preserves its original diagnostic if receipt storage fails', async () => {
+    getRecipeMock.mockResolvedValue({ id: 'preview-refused', script: 'return 1;', toolsUsed: [],
+      capabilityManifest: emptyManifest(['tools:unavailable:recipe-tool']) });
+    recordRecipeRunMock.mockRejectedValueOnce(new Error('receipt storage unavailable'));
+    const res = await findTool('recipes:run').fn({ id: 'preview-refused', dryRun: true }, mkCtx('worker'));
+    const payload = JSON.parse((res as { content: { text: string }[] }).content[0].text);
+    expect(payload.results[0]).toMatchObject({ ok: false, executed: false, error: 'capability_unavailable' });
+    expect(recordRecipeRunMock).toHaveBeenCalledExactlyOnceWith(expect.anything(), expect.objectContaining({
+      recipeId: 'preview-refused', countTowardRecipe: false,
+      usage: expect.objectContaining({ mode: 'preview', outcome: 'refused', settled: true }),
+    }));
+    expect(runOrchestrationMock).not.toHaveBeenCalled();
+  });
+
+  it.each(['partial', 'in-flight'] as const)('does not report a %s replay as successful popularity', async kind => {
+    getRecipeMock.mockResolvedValue({ id: 'unsettled', script: 'return 1;', toolsUsed: [] });
+    runOrchestrationMock.mockResolvedValueOnce({
+      ok: true, summary: {}, logs: [], dryRun: false, plannedMutations: [],
+      runtimeObservations: NO_RUNTIME_OBSERVATIONS,
+      partial: kind === 'partial',
+      callRecords: kind === 'in-flight'
+        ? [{ ordinal: 0, tool: 'work_items:get', effect: 'read', disposition: 'in_flight', outputReferences: [] }]
+        : [],
+    });
+    await findTool('recipes:run').fn({ id: 'unsettled' }, mkCtx('worker'));
+    expect(recordRecipeRunMock).toHaveBeenCalledExactlyOnceWith(expect.anything(), expect.objectContaining({
+      success: false, countTowardRecipe: false,
+      usage: expect.objectContaining({ outcome: kind === 'partial' ? 'error' : 'unknown', settled: kind === 'partial' }),
+    }));
   });
 
   it('rejects a saved recipe reading an optional current result field before orchestration', async () => {
@@ -970,6 +1020,10 @@ describe('recipes:run REUSE ENVELOPE invariant (P-006 / D-004)', () => {
     // first" (fixable) apart from a permanent authority_unresolved (opaque script) failure.
     expect(missingBody.results[0].reason).toMatch(/recipes:search/);
     expect(runOrchestrationMock).not.toHaveBeenCalled();
+    expect(recordRecipeRunMock).toHaveBeenCalledExactlyOnceWith(expect.anything(), expect.objectContaining({
+      recipeId: 'bound', success: false, countTowardRecipe: false,
+      usage: expect.objectContaining({ selection: 'saved-replay', outcome: 'refused', settled: true }),
+    }));
 
     const authority = {
       version: 1,

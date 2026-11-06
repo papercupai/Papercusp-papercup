@@ -137,11 +137,19 @@ async function main() {
       question, allow_dispatch: false });
     assert.equal(accepted.verdict, 'accepted');
     let persisted: any;
+    let lastObserved: any;
     for (const stop = Date.now() + 35_000; Date.now() < stop;) {
       const [row] = await sql`SELECT state, routing FROM harness_shared.consult_state
         WHERE workspace_id = ${workspace} AND conversation_id = ${accepted.conversation_id}`;
+      lastObserved = row ?? null;
       if (row?.state !== 'routing' && row?.routing?.measurement) { persisted = row; break; }
       await new Promise(done => setTimeout(done, 50));
+    }
+    if (!persisted) {
+      writeFileSync(join(evidenceDir, `embedding-${control}-routing-failure.json`), JSON.stringify({
+        control, workspace, conversationId: accepted.conversation_id, accepted, lastObserved,
+        diagnosticEmbedRequests: diagnosticEmbeds.get(question),
+      }));
     }
     assert.ok(persisted, 'production request did not persist its measured routing result');
     const measurement = persisted.routing.measurement;

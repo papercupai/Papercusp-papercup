@@ -56,10 +56,12 @@ async function observeAsyncPhase<T>(
   phase: LiveLockPathPhase,
   operation: () => Promise<T>,
 ): Promise<T> {
+  // notify-classification: {"id":"packages/operator-core/lib/agent-tools/locks/live-lock-paths.ts#<module>/observeAsyncPhase:22479e25eb9f5221ba9b:1","classification":"safe-to-lose","reason":"This private helper receives only ensureBootstrap. Bootstrap never marks resource-lock-store's transaction-local expiry set, so its shared transaction wrapper passes an empty receipt list to notifyResourceExpiries; there is no expiry notice to lose."}
   if (!observer) return operation();
   const startedAt = Date.now();
   reportLiveLockPathPhase(observer, { phase, state: 'start' });
   try {
+    // notify-classification: {"id":"packages/operator-core/lib/agent-tools/locks/live-lock-paths.ts#<module>/observeAsyncPhase:22479e25eb9f5221ba9b:2","classification":"safe-to-lose","reason":"The observed branch awaits the same bootstrap-only callback. Bootstrap has no resource sweep and cannot mark the expiry receipt set; phase diagnostics do not introduce an expiry notification."}
     return await operation();
   } finally {
     reportLiveLockPathPhase(observer, {
@@ -115,12 +117,16 @@ export interface LiveLockHolding {
  * callers use this strict seam and must fail closed when it throws.
  */
 export async function liveLockHoldingsStrict(options: LiveLockPathReadOptions = {}): Promise<LiveLockHolding[]> {
+  // notify-classification: {"id":"packages/operator-core/lib/agent-tools/locks/live-lock-paths.ts#<module>/liveLockHoldingsStrict:5125ae23e177cc0eb3e3:1","classification":"safe-to-lose","reason":"The awaited bootstrap/migration path does not call a resource sweep. takeResourceExpiryReleases returns [] for its unmarked transaction, so the conservative graph edge to notifyResourceExpiries produces no notice."}
+  // notify-classification: {"id":"packages/operator-core/lib/agent-tools/locks/live-lock-paths.ts#<module>/liveLockHoldingsStrict/<callback>:40e72844df81469ea8c1:1","classification":"safe-to-lose","reason":"This callback supplies only ensureBootstrap to the private observer wrapper; schema bootstrap never marks a resource-expiry transaction. The actual mutating resource-expiry emitter is outside this read path."}
   await observeAsyncPhase(options.onPhase, 'ensureBootstrap', () => ensureBootstrap());
   // readQueue already filters holders to expires_ts > clock_timestamp(), so the set is
   // live by construction. No `paths`/`owner` filter ⇒ the whole active set.
   const pool = observeSyncPhase(options.onPhase, 'pool-lookup', () => getTxPool());
   const queue = options.onPhase
+    // notify-classification: {"id":"packages/operator-core/lib/agent-tools/locks/live-lock-paths.ts#<module>/liveLockHoldingsStrict:0a6b89763cacf8f3d235:1","classification":"safe-to-lose","reason":"readQueue with diagnostics runs only SELECTs and SET LOCAL; it never marks the resource-expiry transaction set, so the shared transaction wrapper has no receipt to notify. The maintained lock-store readQueue regression also exercises this diagnostic branch."}
     ? await readQueue(pool, { coordinationDomain: null, includeWaiting: false }, { onPhase: options.onPhase })
+    // notify-classification: {"id":"packages/operator-core/lib/agent-tools/locks/live-lock-paths.ts#<module>/liveLockHoldingsStrict:9aefc15f92dcab69e0ef:1","classification":"safe-to-lose","reason":"readQueue without diagnostics runs only SELECTs and SET LOCAL; takeResourceExpiryReleases receives an unmarked transaction and returns [], so no expiry notification is discarded. The maintained lock-store readQueue regression covers this branch."}
     : await readQueue(pool, { coordinationDomain: null, includeWaiting: false });
   return queue.active_locks.map((l) => ({
     path: l.path,
@@ -148,6 +154,7 @@ export async function liveLockHoldingsStrict(options: LiveLockPathReadOptions = 
  */
 export async function liveLockHoldings(options: LiveLockPathReadOptions = {}): Promise<LiveLockHolding[]> {
   try {
+    // notify-classification: {"id":"packages/operator-core/lib/agent-tools/locks/live-lock-paths.ts#<module>/liveLockHoldings:02d349c8b353c6bd527a:1","classification":"safe-to-lose","reason":"This fail-soft wrapper awaits bootstrap and a holder-only queue read. Neither marks the transaction-local resource-expiry set, so the underlying shared notification hook receives [] rather than an expiry signal."}
     return await liveLockHoldingsStrict(options);
   } catch {
     return [];
@@ -158,6 +165,7 @@ export async function liveLockHoldings(options: LiveLockPathReadOptions = {}): P
 export async function liveLockedPaths(
   opts: { excludeOwner?: string; onPhase?: LiveLockPathReadOptions['onPhase'] } = {},
 ): Promise<string[]> {
+  // notify-classification: {"id":"packages/operator-core/lib/agent-tools/locks/live-lock-paths.ts#<module>/liveLockedPaths:fe655c2c970224eb176b:1","classification":"safe-to-lose","reason":"This projects the awaited holder-only queue result. The complete local path contains no resource sweep, and the unmarked expiry receipt set prevents the shared transaction hook from emitting any expiry notice."}
   const holdings = await liveLockHoldings({ onPhase: opts.onPhase });
   const seen = new Set<string>();
   for (const h of holdings) {

@@ -7,9 +7,14 @@
  * the cross-module persistence boundary and first-terminal exactly-once rule.
  */
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import postgres from 'postgres';
 import type { OrgTestDb } from '../../test/_org-test-db';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
+import { formatJobLogEndMarker } from '../agent-tools/capability/bash-jobs';
+import bashOutputTool from '../agent-tools/capability/bash_output';
 
 const h = vi.hoisted(() => ({ sql: null as unknown as postgres.Sql, ws: 'ws-task-terminal' }));
 
@@ -28,8 +33,11 @@ const eventStore = await import('../events/await/store');
 const eventEngine = await import('../events/await/engine');
 const { taskTerminalEventKey, emitTaskTerminalEvent } = await import('./task-terminal-events');
 const { createOrgTestDb } = await import('../../test/_org-test-db');
+const bashOutput = bashOutputTool as unknown as {
+  handler: (args: unknown, ctx: unknown) => Promise<{ content: Array<{ text: string }>; isError?: boolean }>;
+};
 
-async function waitForEmission(eventKey: string): Promise<{
+async function waitForEmission(eventKey: string, taskId = 'task-terminal-integration'): Promise<{
   fire: Record<string, any>;
   delivery: Record<string, any>;
 }> {
@@ -51,7 +59,7 @@ async function waitForEmission(eventKey: string): Promise<{
   const taskRows = await h.sql`
     SELECT state, exit_code, exit_reason, ended_at
       FROM harness_shared.task_ledger
-     WHERE task_id = 'task-terminal-integration'
+     WHERE task_id = ${taskId}
   `;
   const fireRows = await h.sql`
     SELECT workspace_id, event_key, fire_count
@@ -110,6 +118,74 @@ describe('task terminal awaited-event bridge (real PG)', () => {
     await expect(taskStore.recoverPendingTaskTerminalEvents(h.ws)).resolves.toBe(0);
     expect(await h.sql`SELECT fire_count FROM harness_shared.event_key_fires WHERE event_key = ${eventKey}`)
       .toEqual([{ fire_count: 1 }]);
+  });
+
+  it('recovers a successful JOB END through BashOutput and wakes an already-armed exact waiter', async () => {
+    const taskId = 'tskterminal1234';
+    const bashJobId = 'bash-terminal-recovery';
+    const scopeUnit = `pc-${taskId}.service`;
+    const invocationId = 'terminal-recovery-invocation';
+    const nonce = 'a'.repeat(64);
+    const eventKey = taskTerminalEventKey(taskId);
+    const stateDir = mkdtempSync(join(tmpdir(), 'bash-output-terminal-event-'));
+    const logPath = join(stateDir, 'terminal.log');
+    const fakeBin = join(stateDir, 'bin');
+    mkdirSync(fakeBin, { recursive: true });
+    const fakeSystemctl = join(fakeBin, 'systemctl');
+    writeFileSync(
+      fakeSystemctl,
+      '#!/bin/sh\nfor unit; do :; done\nprintf "Id=%s\\nLoadState=loaded\\nActiveState=active\\nResult=success\\nExecMainCode=0\\nExecMainStatus=0\\nInvocationID=terminal-recovery-invocation\\n" "$unit"\n',
+    );
+    chmodSync(fakeSystemctl, 0o755);
+    writeFileSync(logPath, `successful output${formatJobLogEndMarker('completed', 0, Date.now(), {
+      taskId, bashJobId, scopeUnit, invocationId, nonce,
+    })}`);
+    const previousPath = process.env.PATH;
+    process.env.PATH = `${fakeBin}:${previousPath ?? ''}`;
+    try {
+      await insertTask(taskId);
+      await h.sql`
+        UPDATE harness_shared.task_ledger
+           SET scope_unit = ${scopeUnit}, log_path = ${logPath},
+               detail = ${JSON.stringify({ bashJobId, runnerMarkerNonceHash: nonce })}::jsonb
+         WHERE task_id = ${taskId}
+      `;
+      await eventStore.registerAwait({
+        subscriberId: 'su-bash-output-terminal-waiter', eventKey, policy: 'wake',
+      });
+
+      const result = await bashOutput.handler({ task_id: taskId }, {
+        workspaceId: h.ws,
+        stateDir,
+        signal: new AbortController().signal,
+        emit: () => {},
+        role: 'su',
+      });
+      const payload = JSON.parse(result.content[0]!.text) as Record<string, unknown>;
+
+      expect(result.isError).toBeUndefined();
+      expect(payload).toMatchObject({
+        task_id: taskId,
+        status: 'completed',
+        exit_code: 0,
+        running: false,
+        recovered_from_log_marker: true,
+        recovered_from_live_runner_marker: true,
+        ledger_state: 'exited',
+        ledger_reconciled: true,
+      });
+      const { fire, delivery } = await waitForEmission(eventKey, taskId);
+      expect(fire.last_payload).toMatchObject({
+        taskId, state: 'exited', exitCode: 0, terminalEventRevision: 1,
+      });
+      expect(delivery.payload).toEqual(fire.last_payload);
+      expect(await h.sql`SELECT state, exit_code FROM harness_shared.task_ledger WHERE task_id = ${taskId}`)
+        .toEqual([{ state: 'exited', exit_code: 0 }]);
+    } finally {
+      if (previousPath === undefined) delete process.env.PATH;
+      else process.env.PATH = previousPath;
+      rmSync(stateDir, { recursive: true, force: true });
+    }
   });
 
   it('backfills an existing terminal row with no pending marker and no exact fire', async () => {

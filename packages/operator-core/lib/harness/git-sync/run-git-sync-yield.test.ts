@@ -59,12 +59,13 @@ describe('WI-10007606 runGitSync cooperative yield', () => {
   it('yields at the next submodule-batch boundary and runs no further git work', async () => {
     const git = recordingGit();
     const probesWithGitInFlight: number[] = [];
-    let probes = 0;
     const shouldYield = async (): Promise<string | null> => {
-      probes++;
       probesWithGitInFlight.push(git.state.inFlight);
-      // Batches are 4 wide: 0-3, 4-7, 8. Yield before the THIRD batch.
-      return probes === 3 ? 'exclusive git-sync drain requested by su-test' : null;
+      // Yield after the first eight children finish, before the final child starts.
+      const firstBatchVisited = SUBMODULES.slice(0, 8).every((path) =>
+        git.calls.some((call) => call.cwd === `/fake/${path}`),
+      );
+      return firstBatchVisited ? 'exclusive git-sync drain requested by su-test' : null;
     };
 
     const err = await runGitSync('test', {
@@ -85,7 +86,8 @@ describe('WI-10007606 runGitSync cooperative yield', () => {
     expect(y.reason).toBe('exclusive git-sync drain requested by su-test');
 
     // The probe never ran while a git command was executing.
-    expect(probesWithGitInFlight).toEqual([0, 0, 0]);
+    expect(probesWithGitInFlight.length).toBeGreaterThan(0);
+    expect(probesWithGitInFlight.every((inFlight) => inFlight === 0)).toBe(true);
     // The yielded batch never started, and the superproject was never staged/committed.
     expect(git.calls.some((c) => c.cwd === '/fake/libs/s8')).toBe(false);
     expect(git.calls.filter((c) => c.cwd === '/fake' && SUPERPROJECT_WRITES.test(c.command))).toEqual([]);
@@ -93,14 +95,16 @@ describe('WI-10007606 runGitSync cooperative yield', () => {
 
   it('yields before the pointer-bump phase once every submodule has synced', async () => {
     const git = recordingGit();
-    let probes = 0;
     const err = await runGitSync('test', {
       repoPath: '/fake',
       runGit: git.run,
       submodulePaths: ['libs/a', 'libs/b'],
       config: { push: false, pushSubmoduleOrigins: false },
-      // Probe 1 = the only batch boundary; probe 2 = before pointer-bump.
-      shouldYield: async () => (++probes === 2 ? 'restart waiting' : null),
+      // Early root guards also probe; request the yield only after both children ran.
+      shouldYield: async () =>
+        ['libs/a', 'libs/b'].every((path) => git.calls.some((call) => call.cwd === `/fake/${path}`))
+          ? 'restart waiting'
+          : null,
       log: () => {},
     }).catch((e: unknown) => e);
 

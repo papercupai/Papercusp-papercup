@@ -178,6 +178,7 @@ export default defineTool({
     // (same helper file-lock-guard.ts already uses for the analogous acquire-path
     // 57014/55P03) rides out the dip instead of surfacing a raw tool error to a
     // diagnostic-only read.
+    // notify-classification: {"id":"packages/operator-core/lib/agent-tools/locks/queue.ts#<module>/handler:0f345df0c0fcf68769cc:1","classification":"durable","reason":"The callback reads file locks and waiters through readQueue. Its beginSuLockTransaction wrapper also drains resource-expiry receipts after commit, although this SELECT-only callback creates none. Keep the shared-wrapper delivery classification conservative until call-context and receipt-empty proof resolve EI-28019593823641196; no durable delivery is verified here.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     const result = await acquireWithContentionRetry(() =>
       readQueue(sql, {
         // WI-5979: this is a diagnostic read, not an enforcement decision.

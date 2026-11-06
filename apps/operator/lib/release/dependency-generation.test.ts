@@ -3712,6 +3712,82 @@ exec /bin/cp "$@"
     expect(existsSync(firstPath)).toBe(false);
   }, NATIVE_SHELL_TIMEOUT_MS);
 
+  it.each(['publish', 'ensure-ref'] as const)(
+    'leases %s before competing retention can prune its newly indexed selector',
+    (mode) => {
+      const integration = makeIntegration();
+      const competitor = makeIntegration();
+      const generationRoot = join(integration, '.papercusp/dependency-generations');
+      const competingResult = join(integration, 'competing-result');
+      writeFileSync(join(competitor, 'node_modules/pkg/index.js'), 'competing-generation\n');
+      const competingLock = join(competitor, 'package-lock.json');
+      writeFileSync(competingLock, JSON.stringify({
+        ...JSON.parse(readFileSync(competingLock, 'utf8')), name: 'competing-inputs',
+      }) + '\n');
+      const candidate = mode === 'ensure-ref' ? commitFixture(integration, 'candidate') : '';
+      const result = spawnSync('bash', ['-c', [
+        'set -euo pipefail',
+        'source "$SCRIPT"',
+        // Run a real second publisher at the formerly unleased boundary, without
+        // timing sleeps or changing the production script. Its newer generation
+        // wins retain-count=1 unless the first publisher already holds a lease.
+        'eval "$(declare -f dependency_generation_publish_input_selector | sed "1s/dependency_generation_publish_input_selector/original_publish_input_selector/")"',
+        'dependency_generation_publish_input_selector() {',
+        '  original_publish_input_selector "$@" || return $?',
+        '  bash "$SCRIPT" --integration "$COMPETITOR" --generation-root "$GENERATION_ROOT" > "$COMPETING_RESULT"',
+        '}',
+        'args=(--integration "$INTEGRATION" --generation-root "$GENERATION_ROOT")',
+        'if [ -n "$CANDIDATE" ]; then',
+        '  args+=(--ensure-ref "$CANDIDATE" --retain-as regression-candidate)',
+        'else',
+        '  args+=(--lease-owner-pid "$CONTROLLER_PID")',
+        'fi',
+        'dependency_generation_main "${args[@]}"',
+      ].join('\n')], {
+        encoding: 'utf8',
+        env: { ...process.env, SCRIPT, INTEGRATION: integration, COMPETITOR: competitor,
+          GENERATION_ROOT: generationRoot, COMPETING_RESULT: competingResult,
+          CANDIDATE: candidate, CONTROLLER_PID: String(process.pid),
+          DEPENDENCY_GENERATION_RETAIN_COUNT: '1' },
+      });
+      expect(result.status, result.stderr).toBe(0);
+      const identity = publishedIdentity(result.stdout);
+      const competing = publishedIdentity(readFileSync(competingResult, 'utf8'));
+      expect(identity).not.toBe(competing);
+      expect(existsSync(publishedPath(result.stdout))).toBe(true);
+      expect(selectPrewarmed(generationRoot, integration).status).toBe(0);
+      if (mode === 'publish') {
+        const leases = readdirSync(join(generationRoot, '.leases'))
+          .map((entry) => readFileSync(join(generationRoot, '.leases', entry), 'utf8'));
+        expect(leases.some((body) => body.includes(`identity=${identity}\n`)
+          && body.includes(`pid=${process.pid}\n`))).toBe(true);
+      } else {
+        const pins = readdirSync(join(generationRoot, '.pins'))
+          .map((entry) => readFileSync(join(generationRoot, '.pins', entry), 'utf8'));
+        expect(pins.some((body) => body.includes(`identity=${identity}\n`)
+          && body.includes(`ref=${candidate}\n`))).toBe(true);
+      }
+    }, NATIVE_SHELL_TIMEOUT_MS,
+  );
+
+  it('releases the publication lease when indexing fails, including controller handoffs', () => {
+    const integration = makeIntegration();
+    const generationRoot = join(integration, '.papercusp/dependency-generations');
+    const result = spawnSync('bash', ['-c', [
+      'set -euo pipefail',
+      'source "$SCRIPT"',
+      'dependency_generation_publish_input_selector() { return 73; }',
+      'dependency_generation_main --integration "$INTEGRATION" --generation-root "$GENERATION_ROOT" --lease-owner-pid "$CONTROLLER_PID"',
+    ].join('\n')], {
+      encoding: 'utf8',
+      env: { ...process.env, SCRIPT, INTEGRATION: integration,
+        GENERATION_ROOT: generationRoot, CONTROLLER_PID: String(process.pid) },
+    });
+    expect(result.status, result.stderr).toBe(73);
+    expect(existsSync(join(generationRoot, '.leases'))
+      ? readdirSync(join(generationRoot, '.leases')) : []).toEqual([]);
+  }, NATIVE_SHELL_TIMEOUT_MS);
+
   it('protects a live exact-identity selector lease and reclaims it after the reader is gone', () => {
     const integration = makeIntegration();
     const generationRoot = join(integration, '.papercusp/dependency-generations');

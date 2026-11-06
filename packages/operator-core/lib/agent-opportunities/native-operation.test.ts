@@ -27,6 +27,41 @@ it('native UNKNOWN observations retain exact output availability for current-sou
   expect(retained).toEqual(lost);
 });
 
+it.each(['claude', 'codex', 'omp'] as const)('R2 native wrapper source remains unmeasured without receipts: %s', provider => {
+  const call = source('wrapper', { provider, tool: 'functions.exec',
+    args: { code: 'await tools.exec_command({cmd:"rg private"})' } });
+  call.result = { ...call.result!, provider, body: { exit_code: 0 } };
+  expect(observe(call)).toMatchObject({ kind: null, fingerprint: null, outcome: 'UNKNOWN' });
+  expect(observe({ ...call, result: null })).toMatchObject({ outcome: 'UNKNOWN', resultAvailable: false });
+  expect(groupNativeOperations([observe(call)]).operations).toEqual([]);
+  const direct = source('actual-child', { provider });
+  direct.result = { ...direct.result!, provider };
+  expect(observe(direct)).toMatchObject({ kind: 'shell', outcome: 'success' });
+  const yielded = { ...direct, result: { ...direct.result!, body: { session_id: 42 } } };
+  const poll = { ...direct, tool: 'write_stdin', args: { session_id: 42 }, callId: 'poll',
+    result: { ...direct.result!, callId: 'poll' } };
+  const grouped = groupNativeOperations([observe(yielded), observe(poll)]);
+  expect(grouped.operations).toHaveLength(1);
+  expect(grouped.operations[0]!.outcome).toBe('UNKNOWN');
+});
+
+it('R2 native retries and settled failures survive exact receipt copy reconciliation', () => {
+  const success = source('success');
+  const failed = source('failed', { result: { ...source('failed').result!, body: { exit_code: 1 } } });
+  const refused = source('refused', { result: { ...source('refused').result!, status: 'refused', body: {} } });
+  const unknown = source('unknown', { result: null });
+  const grouped = groupNativeOperations([success, { ...success, copyRef: 'activity:copy' }, failed, refused, unknown].map(s => observe(s)));
+  expect(grouped.copiesCollapsed).toBe(1);
+  expect(grouped.operations).toHaveLength(4);
+  expect(grouped.chains).toMatchObject([{ logicalDemand: 4, successCount: 1, errorCount: 1, refusedCount: 1, unknownCount: 1 }]);
+  expect(observe(source('hook', { origin: 'system' }))).toBeNull();
+  expect(observe(source('unknown-owner', { verifiedAgent: false }))).toBeNull();
+  const conflict = groupNativeOperations([observe(success), observe({ ...success,
+    result: { ...success.result!, body: { exit_code: 1 } } })]);
+  expect(conflict.operations).toEqual([]);
+  expect(conflict.evidenceGaps).toContain('conflicting-operation-copies');
+});
+
 it('R12-CONTRACT', () => {
   const shell = [source('one'), source('two')].map(s => observe(s));
   const browser = [source('click1', { tool: 'browser_click', args: { selector: '#save' } }),

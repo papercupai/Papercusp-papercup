@@ -319,6 +319,64 @@ describe('private PostgreSQL independent cleanup', () => {
     }
   });
 
+  it.each([false, true])('retains launcher stop and removal evidence without proof IPC (isolated=%s)', async isolatedRuntime => {
+    const f = fixture();
+    const logs: string[] = [];
+    const source = readFileSync(resolve(import.meta.dirname, '../../../scripts/with-test-pg.mjs'), 'utf8');
+    const stages = source.slice(source.indexOf('function cleanupStage('), source.indexOf('function observePrivatePgStop('));
+    const ownedCleanup = source.slice(source.indexOf('async function cleanupOwnedState('), source.indexOf('\nasync function stopPrivateManagedTasks('));
+    const send = vi.fn(() => { throw new Error('ordinary cleanup must not require proof IPC'); });
+    const scope = {
+      ...f.resources, isolatedRuntime, runtimeRoot: isolatedRuntime ? f.resources.runtimeRoot : null,
+      cleanupOwnedTestState, stopPrivatePg: createSingleFlightStop(() => f.resources.pg.stop()),
+      cleanupStartedAt: null, runtimeId: undefined, port: 12345,
+      cleanupReceiptFailures: [], pendingCleanupReceipts: new Set<Promise<void>>(),
+      process: { pid: 123, env: {}, connected: false, send },
+      console: { log: (line: string) => logs.push(line) }, persistIsolatedProgress: vi.fn(),
+    };
+    const launcher = runInNewContext(stages + '\n' + ownedCleanup + '\n({ cleanupOwnedState })', scope);
+    try {
+      const started = Date.now();
+      await launcher.cleanupOwnedState();
+      const receipts = logs.map(line => JSON.parse(line.slice('[with-test-pg] cleanup '.length)));
+      expect(receipts.map(row => row.stage)).toEqual([
+        'start', 'child-group-stop', 'child-group-stopped', 'profile-stop', 'profile-stopped',
+        'pg-stop', 'pg-stopped', 'remove-private-state', 'pg-data-remove', 'pg-data-removed',
+        ...(isolatedRuntime ? ['runtime-remove', 'runtime-removed'] : []), 'complete',
+      ]);
+      expect(receipts.every(row => row.supervisorPid === 123 && row.dataDir === f.resources.dataDir
+        && row.observedAtMs >= started && row.observedAtMs <= Date.now() && row.elapsedMs >= 0)).toBe(true);
+      expect(receipts.at(-1)).toMatchObject({ runtimeRemoved: true, pgDataRemoved: true });
+      expect(existsSync(f.resources.dataDir)).toBe(false);
+      expect(send).not.toHaveBeenCalled();
+    } finally { f.dispose(); }
+  });
+
+  it('retains ordinary launcher failure evidence and private state after an unverified PG stop', async () => {
+    const f = fixture('pg');
+    const logs: string[] = [];
+    const source = readFileSync(resolve(import.meta.dirname, '../../../scripts/with-test-pg.mjs'), 'utf8');
+    const stages = source.slice(source.indexOf('function cleanupStage('), source.indexOf('function observePrivatePgStop('));
+    const ownedCleanup = source.slice(source.indexOf('async function cleanupOwnedState('), source.indexOf('\nasync function stopPrivateManagedTasks('));
+    const scope = {
+      ...f.resources, isolatedRuntime: false, runtimeRoot: null,
+      cleanupOwnedTestState, stopPrivatePg: createSingleFlightStop(() => f.resources.pg.stop()),
+      cleanupStartedAt: null, runtimeId: undefined, port: 12345,
+      cleanupReceiptFailures: [], pendingCleanupReceipts: new Set<Promise<void>>(),
+      process: { pid: 123, env: {}, connected: false },
+      console: { log: (line: string) => logs.push(line) }, persistIsolatedProgress: vi.fn(),
+    };
+    const launcher = runInNewContext(stages + '\n' + ownedCleanup + '\n({ cleanupOwnedState })', scope);
+    try {
+      await expect(launcher.cleanupOwnedState()).rejects.toThrow('unverified resource stops');
+      const receipts = logs.map(line => JSON.parse(line.slice('[with-test-pg] cleanup '.length)));
+      expect(receipts).toContainEqual(expect.objectContaining({ stage: 'pg-stop-error', error: f.failure.message }));
+      expect(receipts.at(-1)).toMatchObject({ stage: 'private-state-retained', pgDataRemoved: false });
+      expect(receipts.some(row => row.stage === 'complete')).toBe(false);
+      expect(existsSync(join(f.resources.dataDir, 'evidence'))).toBe(true);
+    } finally { f.dispose(); }
+  });
+
   it.each(['stopping-throw', 'cleanup-callback', 'disconnected', 'stopping-callback', 'background-callback'] as const)(
     'launcher IPC failure %s cannot skip owned stops or certify successful cleanup', async mode => {
       const f = fixture();

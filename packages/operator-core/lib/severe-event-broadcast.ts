@@ -17,7 +17,6 @@
  */
 import { createHash } from 'node:crypto';
 import { sendMessage } from './agent-tools/coordination/messages';
-import { wakeRecipients } from './agent-tools/coordination/inbox-wake';
 import type { AgentIdentity } from './agent-tools/coordination/identity';
 import { renderSevereEventEmitter, severeEventEmitter } from './severe-event-emitter';
 
@@ -176,6 +175,10 @@ async function deliverRoute(route: SevereEventRoute, summary: string, body: stri
       expectsReply: true,
     });
     if (env.to.length > 0) {
+      // Condition persistence and resolution do not need the wake engine.
+      // Loading it during alarm startup pulls its entire execution graph into
+      // the recovery readiness path, before a routed wake is even requested.
+      const { wakeRecipients } = await import('./agent-tools/coordination/inbox-wake');
       await wakeRecipients(env.to, { summary, source: 'severe-event-broadcast' }).catch(() => {});
     }
   } catch (e) {

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { buildReuseSourcePopulation } from './reuse-source-population';
 import { collectRecordedReuseMetrics, readRecordedReuseWindows } from './reuse-measurement';
+import { readRecipeOutcomeReport } from '../code-run-adoption';
 
 /**
  * code-intel-delivery-and-outcomes-2026-10-26 P-006, SPEC-P-006-C (EI-27013395716645252):
@@ -25,6 +26,15 @@ function recordingSql(answer: (text: string) => unknown[] = () => []) {
 
 const MEASUREMENT_TABLE = 'harness_shared.code_intel_reuse_measurements';
 const PUSH_LOG = 'code_intel_pushes';
+
+it('R9 unknown coverage remains unknown', async () => {
+  const report = await readRecipeOutcomeReport(async <T>() => [{ report: { attempts: 0 } }] as unknown as T[], {
+    workspaceId: 'ws', harnessSlug: 'fixture', windowStart: '2026-10-01T00:00:00Z', windowEnd: '2026-10-02T00:00:00Z',
+  });
+  expect(report.coverage).toMatchObject({ state: 'unknown', complete: false, backlog: null,
+    clients: { claude: 'unknown', codex: 'unknown', omp: 'unknown' } });
+  expect(report.benefit).toMatchObject({ state: 'unknown', measuredSavings: null });
+});
 
 describe('reuse-measurement ledger (P-006, SPEC-P-006-C)', () => {
   it('SPEC-P-006-C: a collected metric population is written to the measurement ledger, not the delivered-push log', async () => {

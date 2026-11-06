@@ -104,7 +104,7 @@ fn helper_path() -> Result<PathBuf> {
     if dir.file_name().is_some_and(|n| n == "deps") {
         dir = dir.parent().context("Cargo deps has no parent")?;
     }
-    Ok(dir.join("pui-audio"))
+    Ok(dir.join(format!("pui-audio{}", std::env::consts::EXE_SUFFIX)))
 }
 
 fn helper_failure(path: &Path, code: Option<i32>, stderr: &str) -> String {
@@ -884,7 +884,8 @@ mod tests {
         wav[4..8].copy_from_slice(&((total - 8) as u32).to_le_bytes());
         let mut i = 12;
         while i + 8 <= total {
-            let size = u32::from_le_bytes([wav[i + 4], wav[i + 5], wav[i + 6], wav[i + 7]]) as usize;
+            let size =
+                u32::from_le_bytes([wav[i + 4], wav[i + 5], wav[i + 6], wav[i + 7]]) as usize;
             if &wav[i..i + 4] == b"data" {
                 wav[i + 4..i + 8].copy_from_slice(&((total - i - 8) as u32).to_le_bytes());
                 break;
@@ -908,7 +909,10 @@ mod tests {
         );
         let (_, samples) = decode_wav(&fixed);
         assert_eq!(samples.len(), 4);
-        assert_eq!(with_real_wav_sizes(b"ID3 not a wav".to_vec()), b"ID3 not a wav".to_vec());
+        assert_eq!(
+            with_real_wav_sizes(b"ID3 not a wav".to_vec()),
+            b"ID3 not a wav".to_vec()
+        );
     }
 
     #[test]
@@ -969,7 +973,10 @@ mod tests {
             .ok()
             .filter(|p| !p.trim().is_empty())
         else {
-            speech_smoke_skip(NAME, "PUI_SMOKE_SPEECH_WAV (a Kokoro speech WAV) is not set");
+            speech_smoke_skip(
+                NAME,
+                "PUI_SMOKE_SPEECH_WAV (a Kokoro speech WAV) is not set",
+            );
             return;
         };
         let expect = std::env::var("PUI_SMOKE_SPEECH_EXPECT")
@@ -991,7 +998,10 @@ mod tests {
             .unwrap_or_else(|e| panic!("operator-stt (mic leg) via {selection}: {e:#}"));
         let wanted = normalize_words(&expect);
         let hits = count_heard(&normalize_words(&text), &wanted);
-        eprintln!("[{NAME}] mic leg heard {text:?} ({hits}/{} words)", wanted.len());
+        eprintln!(
+            "[{NAME}] mic leg heard {text:?} ({hits}/{} words)",
+            wanted.len()
+        );
         assert!(
             hits * 10 >= wanted.len() * 8,
             "mic leg: STT heard {text:?}; expected about {expect:?}"
@@ -1025,7 +1035,9 @@ mod tests {
             };
             let reply_text = rt
                 .block_on(client.stt_transcribe(&heard_reply))
-                .unwrap_or_else(|e| panic!("operator-stt (reply leg, {label}) via {selection}: {e:#}"));
+                .unwrap_or_else(|e| {
+                    panic!("operator-stt (reply leg, {label}) via {selection}: {e:#}")
+                });
             let reply_words = normalize_words(reply);
             let reply_hits = count_heard(&normalize_words(&reply_text), &reply_words);
             eprintln!(
@@ -1041,11 +1053,19 @@ mod tests {
 
     /// Operator client + runtime for the speech smokes (PUI_OPERATOR, default
     /// `staging`). The STT/TTS proxy routes they call write no conversation turn.
-    fn speech_operator() -> (crate::client::OperatorClient, tokio::runtime::Runtime, String) {
+    fn speech_operator() -> (
+        crate::client::OperatorClient,
+        tokio::runtime::Runtime,
+        String,
+    ) {
         let selection = std::env::var("PUI_OPERATOR").unwrap_or_else(|_| "staging".to_string());
         let client = crate::client::OperatorClient::from_selection(&selection)
             .unwrap_or_else(|e| panic!("operator selection {selection:?}: {e:#}"));
-        (client, tokio::runtime::Runtime::new().expect("tokio runtime"), selection)
+        (
+            client,
+            tokio::runtime::Runtime::new().expect("tokio runtime"),
+            selection,
+        )
     }
 
     fn live_audio_or_return(name: &str) -> bool {
@@ -1169,7 +1189,10 @@ mod tests {
             Err(err) => format!("{err:#}"),
         };
         eprintln!("[{NAME}] refused in {took:?}: {err}");
-        assert!(took < Duration::from_secs(10), "{NAME}: refusal took {took:?}");
+        assert!(
+            took < Duration::from_secs(10),
+            "{NAME}: refusal took {took:?}"
+        );
         let lowered = err.to_lowercase();
         assert!(
             ["capture", "input", "mic", "device", "audio"]
@@ -1181,9 +1204,14 @@ mod tests {
             Ok(session) => {
                 std::thread::sleep(Duration::from_millis(300));
                 let result = session.finish().expect("finish capture after recovery");
-                assert!(result.wav.len() > 44, "{NAME}: recovered capture recorded nothing");
+                assert!(
+                    result.wav.len() > 44,
+                    "{NAME}: recovered capture recorded nothing"
+                );
             }
-            Err(err) => panic!("{NAME}: capture still fails after the audio server is back: {err:#}"),
+            Err(err) => {
+                panic!("{NAME}: capture still fails after the audio server is back: {err:#}")
+            }
         }
     }
 
@@ -1200,7 +1228,10 @@ mod tests {
             .ok()
             .filter(|p| !p.trim().is_empty())
         else {
-            speech_smoke_skip(NAME, "PUI_SMOKE_SPEECH_WAV (a Kokoro speech WAV) is not set");
+            speech_smoke_skip(
+                NAME,
+                "PUI_SMOKE_SPEECH_WAV (a Kokoro speech WAV) is not set",
+            );
             return;
         };
         let expect = std::env::var("PUI_SMOKE_SPEECH_EXPECT")
@@ -1224,7 +1255,10 @@ mod tests {
             .unwrap_or_else(|e| panic!("{NAME}: retry transcription via {selection}: {e:#}"));
         let wanted = normalize_words(&expect);
         let hits = count_heard(&normalize_words(&text), &wanted);
-        eprintln!("[{NAME}] retry heard {text:?} ({hits}/{} words)", wanted.len());
+        eprintln!(
+            "[{NAME}] retry heard {text:?} ({hits}/{} words)",
+            wanted.len()
+        );
         assert!(
             hits * 10 >= wanted.len() * 8,
             "{NAME}: retry heard {text:?}; expected about {expect:?}"
@@ -1232,7 +1266,7 @@ mod tests {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod helper_process_tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;

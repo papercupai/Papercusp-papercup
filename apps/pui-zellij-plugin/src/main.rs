@@ -55,6 +55,7 @@ use zellij_tile::prelude::*;
 use zellij_tile::prelude::{PaneManifest, TabInfo};
 
 use pui_companion_proto::{PaneNode, TabNode, Topology};
+use std::collections::BTreeMap;
 
 /// The `--name` `pui` opens the pipe with. We bind only to this name.
 const PIPE_NAME: &str = "pui";
@@ -80,6 +81,10 @@ struct PuiCompanion {
     /// The queue is bounded per pane so a failed open cannot leave stale state
     /// forever; exit/close events remove entries immediately.
     pending_stack_panes: Vec<(u32, u8)>,
+    /// Host-returned terminal id -> (canonical launch id, unseen-update budget).
+    /// A zero budget means the pane has appeared in a manifest. Once observed,
+    /// its absence invalidates the binding; an unobserved open expires too.
+    session_bindings: BTreeMap<u32, (i64, u8)>,
     /// One-shot latch for the EI-9 self-hide retry. zellij launches a
     /// `zellij pipe -p` plugin in a focused **floating** pane by default (the
     /// CLI's `floating_plugin` defaults to floating) — but this companion is
@@ -92,6 +97,46 @@ struct PuiCompanion {
 }
 
 impl PuiCompanion {
+    fn bind_opened_session(&mut self, pane_id: u32, adv_session_id: Option<i64>) {
+        self.session_bindings.remove(&pane_id);
+        if let Some(id) = adv_session_id.filter(|id| *id > 0) {
+            self.session_bindings.insert(pane_id, (id, 64));
+        }
+    }
+
+    fn reconcile_session_bindings(&mut self) {
+        self.session_bindings.retain(|id, (_, remaining)| {
+            let pane = self
+                .panes
+                .panes
+                .values()
+                .flatten()
+                .find(|pane| !pane.is_plugin && pane.id == *id);
+            match pane {
+                Some(pane) if !pane.exited => {
+                    *remaining = 0;
+                    true
+                }
+                Some(_) => false,
+                None if *remaining > 1 => {
+                    *remaining -= 1;
+                    true
+                }
+                None => false,
+            }
+        });
+    }
+
+    fn bound_topology(&self) -> Topology {
+        let mut topology = build_topology(&self.panes, &self.tabs);
+        for pane in &mut topology.panes {
+            if !pane.is_plugin && !pane.exited {
+                pane.adv_session_id = self.session_bindings.get(&pane.id).map(|(id, _)| *id);
+            }
+        }
+        topology
+    }
+
     /// One-shot guard for the post-load `hide_self()` retry (EI-9): returns
     /// `true` exactly the first time it is called, then `false` forever, so the
     /// companion re-suppresses its floating pane on the *first* `PaneUpdate`
@@ -183,6 +228,7 @@ fn build_topology(panes: &PaneManifest, tabs: &[TabInfo]) -> Topology {
                 is_plugin: p.is_plugin,
                 exited: p.exited,
                 command: p.terminal_command.clone(),
+                adv_session_id: None,
             });
         }
     }
@@ -206,8 +252,6 @@ fn plugin_build_version() -> String {
 
 #[cfg(target_arch = "wasm32")]
 use pui_companion_proto::{Command, PluginEvent};
-#[cfg(target_arch = "wasm32")]
-use std::collections::BTreeMap;
 #[cfg(target_arch = "wasm32")]
 use std::path::PathBuf;
 
@@ -254,6 +298,7 @@ impl ZellijPlugin for PuiCompanion {
         match event {
             Event::PaneUpdate(manifest) => {
                 self.panes = manifest;
+                self.reconcile_session_bindings();
                 // EI-9 race insurance: if our floating pane wasn't part of the
                 // session yet when `load()` fired `hide_self()`, it is now.
                 // Re-suppress exactly once (idempotent — a one-shot latch keeps
@@ -275,6 +320,7 @@ impl ZellijPlugin for PuiCompanion {
             // A command pane's command exited (pane is held) — the crash/finish
             // signal `pui` uses to offer/auto-relaunch an agent.
             Event::CommandPaneExited(terminal_pane_id, exit_code, _ctx) => {
+                self.session_bindings.remove(&terminal_pane_id);
                 self.pending_stack_panes
                     .retain(|(pane_id, _)| *pane_id != terminal_pane_id);
                 self.emit(&PluginEvent::PaneExited {
@@ -283,6 +329,9 @@ impl ZellijPlugin for PuiCompanion {
                 });
             }
             Event::PaneClosed(pane_id) => {
+                if let PaneId::Terminal(id) = &pane_id {
+                    self.session_bindings.remove(id);
+                }
                 let id = match pane_id {
                     PaneId::Terminal(i) | PaneId::Plugin(i) => i,
                 };
@@ -354,6 +403,7 @@ impl PuiCompanion {
                 cwd,
                 title,
                 stack,
+                adv_session_id,
             } => {
                 let to_run = CommandToRun {
                     path: PathBuf::from(command),
@@ -368,6 +418,9 @@ impl PuiCompanion {
                     context.insert("pui_title".to_string(), t);
                 }
                 let opened = open_command_pane(to_run, context);
+                if let Some(PaneId::Terminal(id)) = &opened {
+                    self.bind_opened_session(*id, adv_session_id);
+                }
                 // Dockview launch (D-008): stack the new pane into the work group.
                 // zellij returns the new PaneId before the next PaneUpdate, so queue
                 // it and converge from the first manifest that contains it. This is
@@ -500,10 +553,7 @@ impl PuiCompanion {
     }
 
     fn emit_topology(&self) {
-        self.emit(&PluginEvent::Topology(build_topology(
-            &self.panes,
-            &self.tabs,
-        )));
+        self.emit(&PluginEvent::Topology(self.bound_topology()));
     }
 
     /// Emit one event line to `pui` over the captured CLI pipe id. No-op until
@@ -529,6 +579,61 @@ mod tests {
             is_focused: focused,
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn session_binding_survives_delayed_manifest_and_tab_move_but_not_id_reuse() {
+        let mut companion = PuiCompanion::default();
+        companion.bind_opened_session(9, Some(41));
+        companion.reconcile_session_bindings();
+        assert!(companion.bound_topology().panes.is_empty());
+        companion
+            .panes
+            .panes
+            .insert(0, vec![pane(9, "shared title", false)]);
+        companion.reconcile_session_bindings();
+        assert_eq!(companion.bound_topology().panes[0].adv_session_id, Some(41));
+        let moved = companion.panes.panes.remove(&0).unwrap();
+        companion.panes.panes.insert(3, moved);
+        companion.reconcile_session_bindings();
+        assert_eq!(companion.bound_topology().panes[0].adv_session_id, Some(41));
+        companion.panes.panes.clear();
+        companion.reconcile_session_bindings();
+        companion
+            .panes
+            .panes
+            .insert(3, vec![pane(9, "shared title", false)]);
+        companion.reconcile_session_bindings();
+        assert_eq!(companion.bound_topology().panes[0].adv_session_id, None);
+    }
+
+    #[test]
+    fn session_binding_expires_unseen_open_and_rejects_exited_or_plugin_panes() {
+        let mut companion = PuiCompanion::default();
+        companion.bind_opened_session(9, Some(41));
+        for _ in 0..64 {
+            companion.reconcile_session_bindings();
+        }
+        assert!(companion.session_bindings.is_empty());
+        let mut plugin = pane(9, "plugin", false);
+        plugin.is_plugin = true;
+        let mut exited = pane(10, "exited", false);
+        exited.exited = true;
+        companion.panes.panes.insert(0, vec![plugin, exited]);
+        companion.bind_opened_session(9, Some(41));
+        companion.bind_opened_session(10, Some(42));
+        companion.reconcile_session_bindings();
+        assert!(companion
+            .bound_topology()
+            .panes
+            .iter()
+            .all(|p| p.adv_session_id.is_none()));
+        assert!(!companion.session_bindings.contains_key(&10));
+        companion.bind_opened_session(9, Some(0));
+        assert!(!companion.session_bindings.contains_key(&9));
+        companion.bind_opened_session(9, Some(41));
+        companion.bind_opened_session(9, None);
+        assert!(!companion.session_bindings.contains_key(&9));
     }
 
     #[test]

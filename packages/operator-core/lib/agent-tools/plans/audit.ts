@@ -101,7 +101,7 @@ import { conformanceActivationVerdict } from '../../spec-conformance/activation-
 import { PLAN_CLASS_RUBRIC_REFS } from './spec-test-adequacy';
 import { resolveActivationClassRef } from './activation-class-ref';
 import { previewPlanStartConsult } from './get-activation-readiness';
-import { previewProductShaping } from './product-shaping';
+import { discoveryWorkflow, previewProductShaping } from './product-shaping';
 import {
   checkLibraryDeclarations,
   evaluateActivationDeclarations,
@@ -434,12 +434,12 @@ export default defineTool({
   description:
     "Activation: any nonempty `unresolvedBlockers` list refuses the audit and records nothing. Shaping previews product intent/scenario gaps without writes; completion checks actual code. BAR seeding needs requirement JSON and a Design map.",
   guidance: {
-    when: "Before activation read the COMPLETE source conversation; map every requirement, boundary, constraint, correction, rejection, decision, dependency, sequence, acceptance condition, open question, follow-up. ## Requirements: **R-N — Title.** outcome; use a fenced `requirement` JSON block for METHOD/check/layers. Design needs a BAR-to-work map; ordinary bullet lists do not satisfy the BAR parser. Shape brief/scenarios/assumptions before specs; completion cites actual code.",
+    when: "Before activation read the COMPLETE source conversation; map every requirement, boundary, constraint, correction, rejection, decision, dependency, sequence, acceptance condition, open question, follow-up. ## Requirements: **R-N — Title.** outcome; use a fenced `requirement` JSON block for METHOD/check/layers. Design needs a BAR-to-work map; ordinary bullet lists do not satisfy the BAR parser. Finalize incorporated Discovery with { slug, phase:'discovery' } before implementation review. Completion cites actual code.",
     returns:
-      "Shaping: {productShaping}, advisory gaps/trace/reviewerBrief, not semantic proof. Activation: {auditSeq, auditedPlanRevision, mappings, sourceRefsResolved, itemProvenance, barSeed, activationReadiness}; provenance gaps refuse. Completion: {auditSeq, coverage, uncoveredItems, partial, problems, rejectedItemIds}; proposeCitations:true returns {proposals, unresolved, truncatedByLimit} without recording an audit.",
+      `Shaping: provisional discovery brief/intent feedback. Discovery: derived readiness, workflow stage/evidence refs/next action and auditSeq; dryRun never finalizes. Activation: audited/current revision id/seq/contentHash, mappings, provenance and BAR seed; gaps refuse. Re-audit after ${ACTIVATION_REAUDIT_MATERIAL_CHANGES.join(', ')}; not ${ACTIVATION_REAUDIT_COSMETIC_CHANGES.join(', ')}. Completion: coverage, uncoveredItems, problems; proposeCitations:true is read-only.`,
     notWhen: "Rubrics: scorecards:emit. Decisions: plans:add-decision.",
     chaining:
-      `shaping → plans:set-content → independent review → activation → start. Edits preserve audited/current revision id/seq/contentHash; re-audit after ${ACTIVATION_REAUDIT_MATERIAL_CHANGES.join(', ')}; not ${ACTIVATION_REAUDIT_COSMETIC_CHANGES.join(', ')}. completion → rubric/scorecard → shipped.`,
+      'Brief → scoped discovery → findings incorporated via plans:set-content → discovery audit → full independent implementation review → activation → start. Completion → rubric/scorecard → shipped.',
     seeAlso: [
       'plans:set-status (drop an item you intentionally departed from, with a reason)',
       'plans:set-plan-status (the completion gate that reads this audit)',
@@ -537,7 +537,8 @@ export default defineTool({
       const result = await recordCurrentDiscoveryAudit({ workspaceId: sctx.workspaceId ?? activeWorkspaceId(),
         harnessSlug: harnessSlug ?? '', planSlug: args.slug, createdBy: identity.ownerId, dryRun });
       return { data: { ...result, slug: args.slug, harness: harnessSlug, phase: 'discovery',
-        ...('discovery' in result && result.discovery ? { readiness: result.discovery.readiness } : {}),
+        ...('discovery' in result && result.discovery ? { readiness: result.discovery.readiness,
+          workflow: discoveryWorkflow(result.discovery.readiness, 'audit' in result && Boolean(result.audit)) } : {}),
         ...('audit' in result && result.audit ? { auditSeq: result.audit.auditSeq } : {}) } };
     }
 

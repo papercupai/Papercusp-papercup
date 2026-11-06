@@ -105,8 +105,10 @@ export function startAdminTestRun(selection: AdminTestSuiteId | 'all-safe', retu
 
   const restoreHref = returnHref ? withRunId(returnHref, runId) : null;
 
+  // notify-classification: {"id":"packages/operator-core/lib/admin-test-runs-store.ts#<module>/startAdminTestRun:91981a36041d78e93d8c:1","classification":"durable","reason":"The detached suite runner can invoke its desktop-performance completion callback, which persists measures and publishes desktopPerfTrend invalidation. No verified recovery or consumer polling contract exempts that terminal notice.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
   void (async () => {
     try {
+      // notify-classification: {"id":"packages/operator-core/lib/admin-test-runs-store.ts#<module>/startAdminTestRun/<callback>:b877c63ab49bbd34254c:1","classification":"durable","reason":"Awaiting the suite runner inside a detached producer does not retain its async completion callback's desktopPerfTrend notice across producer exit. The persisted measures do not prove delivery of that notice.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       await runAdminTestSuites(selection, {
         suite: (payload) => appendLog(record, payload.suiteId, 'info', `Started ${payload.label}`),
         progress: (payload) => updateProgress(record, payload),
@@ -116,6 +118,7 @@ export function startAdminTestRun(selection: AdminTestSuiteId | 'all-safe', retu
           appendLog(record, payload.suiteId, payload.status === 'fail' ? 'error' : payload.status === 'warn' ? 'warn' : 'info', `${payload.label} finished ${payload.status} in ${(payload.durationMs / 1000).toFixed(1)}s`);
           // P-010: persist the desktop-perf run for trend/regression detection.
           if (payload.suiteId === 'desktop-performance') {
+            // notify-classification: {"id":"packages/operator-core/lib/admin-test-runs-store.ts#<module>/startAdminTestRun/<callback>/done:d573f2588ada65a84959:1","classification":"durable","reason":"The unawaited persistence callback reaches desktopPerfTrend invalidation after storing measures. Logging a rejected promise does not guarantee that terminal notice survives producer exit.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
             void persistDesktopPerfRun(record, payload).catch((err) => {
               appendLog(record, 'desktop-performance', 'warn', `perf-run persist skipped: ${err instanceof Error ? err.message : String(err)}`);
             });
@@ -189,6 +192,7 @@ async function persistDesktopPerfRun(record: RunRecord, done: AdminTestSuiteDone
   });
   try {
     const { notifySyncInvalidate } = await import('./sync-sse');
+    // notify-classification: {"id":"packages/operator-core/lib/admin-test-runs-store.ts#<module>/persistDesktopPerfRun:8477eb60b0616d42b4ea:1","classification":"durable","reason":"This notice reaches the sync bus and PostgreSQL NOTIFY after measures are stored. The surrounding catch and polling comment do not establish replay or a verified consumer refetch guarantee.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     await notifySyncInvalidate('desktopPerfTrend', { workspaceId });
   } catch {
     /* the trend panel polls; sync invalidation is a best-effort nudge */

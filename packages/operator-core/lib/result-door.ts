@@ -2157,10 +2157,16 @@ function spillRecoveryNote(
  * projector supplies the partial marker and recovery cursor; complete thread
  * details should remain inline when a checkpoint or another auxiliary field
  * was clipped upstream. */
-function partialReadPreservePaths(value: unknown, path = '', depth = 0, paths: string[] = []): string[] {
+function partialReadPreservePaths(
+  value: unknown,
+  path = '',
+  depth = 0,
+  paths: string[] = [],
+  toolName?: string,
+): string[] {
   if (depth > 4 || paths.length >= 32 || value == null || typeof value !== 'object') return paths;
   if (Array.isArray(value)) {
-    for (const row of value.slice(0, 12)) partialReadPreservePaths(row, `${path}[]`, depth + 1, paths);
+    for (const row of value.slice(0, 12)) partialReadPreservePaths(row, `${path}[]`, depth + 1, paths, toolName);
     return paths;
   }
   for (const [key, child] of Object.entries(value)) {
@@ -2168,13 +2174,18 @@ function partialReadPreservePaths(value: unknown, path = '', depth = 0, paths: s
     const workItemDetail = path.endsWith('.workItem') &&
       (key === 'posts' || key === 'topics' || key === 'links' || key === 'detailOmitted');
     const threadWindowPosts = path.endsWith('.threadWindow') && key === 'posts';
+    // These are the stable locator and test-runner identity for testing:runs
+    // rows. If the generic partial fallback keeps only `id`/`status`, a failed
+    // test becomes impossible to locate even though the producer emitted both.
+    const testingRunIdentity = toolName === 'testing:runs' && /(?:^|\.)runs\[\]$/.test(path) &&
+      (key === 'filePath' || key === 'framework');
     if ((workItemDetail || threadWindowPosts) && child != null && typeof child === 'object' &&
       !paths.includes(childPath) && paths.length < 32) paths.push(childPath);
-    if ((/^(?:status|state|exitCode|exit_code|passed|failed|skipped|total|count|runId|id|ok)$/.test(key) ||
+    if ((testingRunIdentity || /^(?:status|state|exitCode|exit_code|passed|failed|skipped|total|count|runId|id|ok)$/.test(key) ||
       /truncated$/i.test(key)) &&
       (typeof child === 'string' || typeof child === 'number' || typeof child === 'boolean' || child === null) &&
       !paths.includes(childPath) && paths.length < 32) paths.push(childPath);
-    if (child && typeof child === 'object') partialReadPreservePaths(child, childPath, depth + 1, paths);
+    if (child && typeof child === 'object') partialReadPreservePaths(child, childPath, depth + 1, paths, toolName);
   }
   return paths;
 }
@@ -2696,10 +2707,11 @@ function spillResultAsReferenceEnvelope<T extends DoorableResult>(input: {
   if (input.reason === 'under-budget-partial-result' && input.opts.effect === 'read' && reference) {
     const shape = classifyProjectionBody(input.result.content.filter(isTextItem));
     const body = shape.json?.parsed;
-    const preservePaths = partialReadPreservePaths(body);
+    const targetToolName = input.opts.nestedTargetToolName ?? input.opts.toolName;
+    const preservePaths = partialReadPreservePaths(body, '', 0, [], targetToolName);
     if (isJsonObject(body) && preservePaths.length > 0) {
       const projected = projectBoundedPayload({ ...body, _partial: true }, {
-        toolName: input.opts.nestedTargetToolName ?? input.opts.toolName,
+        toolName: targetToolName,
         tier: 'standard',
         forced: true,
         originalChars: input.sourceBytes,

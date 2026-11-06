@@ -12,4 +12,11 @@ describe('timer-classification guard generated fixture boundary', () => {
   it('keeps maintained source bundles in the scanned population', () => {
     expect(isExcluded('apps/operator/bin/spawner-sidecar.ts')).toBe(false);
   });
+
+  it('excludes helper fixtures in conventional test roots without excluding testing source', () => {
+    expect(isExcluded('packages/operator-core/test/managed-tick-alarm-process.fixture.ts')).toBe(true);
+    expect(isExcluded('packages/operator-core/tests/managed-tick-alarm-process.fixture.ts')).toBe(true);
+    expect(isExcluded('packages/operator-core/__tests__/managed-tick-alarm-process.fixture.ts')).toBe(true);
+    expect(isExcluded('packages/operator-core/lib/testing-domains-registry.ts')).toBe(false);
+  });
 });

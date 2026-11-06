@@ -59,7 +59,7 @@ export function retainCommittedWorkRoot(workRoot: any, expectedSha: any, artifac
     artifact: string;
 }>;
 /** Dispose a command's own extracted tree unless a consumer retained it. */
-export function cleanupCommittedWorkRoot(workRoot: any, keep?: boolean): Promise<boolean>;
+export function cleanupCommittedWorkRoot(workRoot: any, keep?: boolean, pinOptions?: {}): Promise<any>;
 /**
  * Decide one tree's fate. Pure: the caller supplies liveness facts.
  * - `inUse`: some live process has its cwd inside the tree (e.g. a testing:run on the
@@ -124,15 +124,13 @@ export function sweepStaleWorkRoots({ root, nowMs, cwds, isAlive, remove, before
 /**
  * Run the lint runner's self-sweep under the existing central retention-pin guard.
  * @param {Parameters<typeof sweepStaleWorkRoots>[0]} [options]
- * @param {{dir?: string, nowMs?: number}} [pinOptions]
+ * @param {{dir?: string, nowMs?: number, timeoutMs?: number}} [pinOptions]
  */
 export function sweepStaleWorkRootsWithRetentionPins(options?: Parameters<typeof sweepStaleWorkRoots>[0], pinOptions?: {
     dir?: string;
     nowMs?: number;
-}): Promise<{
-    removed: any[];
-    kept: any[];
-}>;
+    timeoutMs?: number;
+}): Promise<any>;
 /**
  * Parse argv. Script names are positional; everything else is a flag.
  *

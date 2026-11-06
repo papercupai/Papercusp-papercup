@@ -332,6 +332,8 @@ export const isExcluded = (f) =>
   f.includes('/dist-sidecar/') ||
   f.includes('/spa/assets/') ||
   f.includes('/holepunch-spike/') ||
+  // Test-root helpers are still tests when their filenames end in .fixture.ts.
+  /(?:^|\/)(?:__tests__|tests?)(?:\/|$)/.test(f) ||
   /\.(test|spec)\.[cm]?tsx?$/.test(f) ||
   // P-026: `.tsx` is no longer excluded — it IS the client population (see the header).
   !/\.(tsx|ts|mjs|cjs)$/.test(f);

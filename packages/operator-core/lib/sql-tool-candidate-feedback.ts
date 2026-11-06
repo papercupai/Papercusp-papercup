@@ -76,8 +76,29 @@ export async function recordSqlCandidateFeedback(input: SqlCandidateFeedbackInpu
     status: 'unknown' as const, disposition: 'insufficient-evidence' as const,
     baselineRate: null, observedRate: null, normalizedFall: null, adoptionRate: null,
   };
+  // Extend the standing repair-outcome ledger check, preserving its existing
+  // normalized SQL adoption verdict. Recipe observations are supplementary raw
+  // evidence; missing identity/census cannot become measured savings.
+  let recipeOutcomes: Record<string, string> | null = null;
+  const query = (deps.client as { unsafe?: (text: string, params: unknown[]) => PromiseLike<unknown[]> } | undefined)?.unsafe;
+  if (accepted && input.repair && scopeMatches && outcome.status !== 'unknown' && typeof query === 'function') {
+    const { readRecipeOutcomeReport } = await import('./code-run-adoption');
+    const read = async (window: SqlRepairMeasurement['baseline']) => {
+      const report = await readRecipeOutcomeReport(async <T>(text: string, params: unknown[]) =>
+        await query(text, params) as T[], {
+        workspaceId: input.workspaceId, harnessSlug: input.harnessSlug,
+        windowStart: window.since, windowEnd: window.until,
+      });
+      report.lineage = { ...report.lineage, rubricRef: SQL_FEEDBACK_RUBRIC,
+        criterionKey: `${identity}:repair-outcome`, instrumentKey: null, checkKind: 'probe' };
+      // Strings retain the complete bounded report through the provenance
+      // writer's node/depth budget; it still hashes and scrubs the snapshots.
+      return JSON.stringify(report);
+    };
+    recipeOutcomes = { baseline: await read(input.repair.baseline), observation: await read(input.repair.observation) };
+  }
   const context = { version: SQL_FEEDBACK_VERSION, identity, sourceRef: input.sourceRef,
-    workItemId: input.review.workItemId, reviewStatus: input.review.status, measurement: input.repair ?? null };
+    workItemId: input.review.workItemId, reviewStatus: input.review.status, measurement: input.repair ?? null, recipeOutcomes };
   const result = (key: string, value: boolean | null, detail: string): RubricCheckResult => ({
     check: { id: `${identity}:${key}:0`, rubricRef: SQL_FEEDBACK_RUBRIC, criterionKey: `${identity}:${key}`,
       kind: 'probe', value, unit: null, provenance: retainMeasurementProvenance({

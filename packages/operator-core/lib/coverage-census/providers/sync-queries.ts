@@ -27,6 +27,7 @@
 import { toJsonSchema } from '@papercusp/tooldef';
 import type { ObservedSurface, SurfaceCensusProvider } from '@papercusp/testing-shell/census';
 import { knownQueryNamesV2, getRegistryEntryV2 } from '../../sync-resolver';
+import { loadedHandlerFingerprint } from '../../observability/runtime';
 import { assertRegistryNonEmpty } from './_non-empty';
 
 /** The surface kind this provider owns — and therefore the only kind it may retire. */
@@ -41,38 +42,48 @@ function schemaOf(argsSchema: unknown): unknown {
   }
 }
 
+/** Security discovery reads the same registry without projecting schemas or
+ * invoking resolvers. A loaded function digest covers only that function text;
+ * its imports, effects and applicability still require reconciliation.
+ */
+export function enumerateSyncQuerySurfaces({ securitySnapshot = false }:
+{ securitySnapshot?: boolean } = {}): ObservedSurface[] {
+  const names = knownQueryNamesV2();
+  const surfaces = names.map((name): ObservedSurface => {
+    const entry = getRegistryEntryV2(name);
+    const backingTables = entry?.backingTables;
+
+    return {
+      kind: SYNC_QUERY_KIND,
+      surfaceId: name,
+      // Entries delegate to helpers without per-query file provenance.
+      sourceFile: null,
+      schemaRef: securitySnapshot ? undefined : schemaOf(entry?.argsSchema),
+      attrs: {
+        // null means undeclared; [] explicitly declares no backing tables.
+        backingTables: backingTables ? [...backingTables] : null,
+        hasArgsSchema: entry?.argsSchema != null,
+        ...(securitySnapshot ? {
+          hasResolver: typeof entry?.resolve === 'function',
+          loadedFunctionSha256: typeof entry?.resolve === 'function'
+            ? loadedHandlerFingerprint(entry.resolve as (...args: never[]) => unknown) : null,
+          functionFingerprintScope: 'loaded-function-text-only',
+          actualEffectCoverage: 'unknown',
+        } : {}),
+      },
+      fidelity: 'declared',
+    };
+  });
+
+  return assertRegistryNonEmpty(
+    surfaces,
+    'knownQueryNamesV2() (sync-resolver)',
+    'The sync-resolver registry is empty — check that lib/sync-resolver/index.ts loaded.',
+  ) as ObservedSurface[];
+}
+
 export const syncQueriesProvider: SurfaceCensusProvider = {
   provider: 'sync-queries',
   kinds: [SYNC_QUERY_KIND],
-
-  enumerate(): ObservedSurface[] {
-    const names = knownQueryNamesV2();
-
-    const surfaces = names.map((name): ObservedSurface => {
-      const entry = getRegistryEntryV2(name);
-      const backingTables = entry?.backingTables;
-
-      return {
-        kind: SYNC_QUERY_KIND,
-        surfaceId: name,
-        // Entries are values in one registry object (many delegating to helper modules), so the
-        // registry carries no per-query file provenance. Asserted as unknown rather than guessed.
-        sourceFile: null,
-        schemaRef: schemaOf(entry?.argsSchema),
-        attrs: {
-          // null = the entry does not DECLARE its backing tables (legacy baseline), which is a
-          // different state from declaring none. Kept distinguishable on purpose.
-          backingTables: backingTables ? [...backingTables] : null,
-          hasArgsSchema: entry?.argsSchema != null,
-        },
-        fidelity: 'declared',
-      };
-    });
-
-    return assertRegistryNonEmpty(
-      surfaces,
-      'knownQueryNamesV2() (sync-resolver)',
-      'The sync-resolver registry is empty — check that lib/sync-resolver/index.ts loaded.',
-    ) as ObservedSurface[];
-  },
+  enumerate: () => enumerateSyncQuerySurfaces(),
 };

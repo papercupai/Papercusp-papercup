@@ -9,31 +9,28 @@
  * │ Do not remove it, and do not let these emits fall back to the bus default.│
  * └───────────────────────────────────────────────────────────────────────────┘
  *
- * The invalidation bus applies a 90s source-side dedupe per `(name, args)`
- * key, and it is FIRST-WINS, not trailing-edge: `shouldFanout()` DROPS a
- * repeat inside the window rather than deferring it
- * (`libs/generic/sync/src/server/invalidation-bus.ts:303-309`).
+ * The invalidation bus defaults to a 90s source-side dedupe floor per
+ * `(name, args)` key. Pure invalidations use `offerNotify()` to retain the
+ * latest repeat for a bounded trailing publish; the default coalesce bound
+ * is 2s. Only byte-identical data-bearing repeats still use the drop path.
  *
  * A plan lock is routinely acquired and released well inside 90s. Both events
- * carry the SAME `(name, args)` key, so on the bus default the RELEASE is
- * discarded — and with the 30s poll gone there is nothing left to correct it.
- * The banner would keep showing a lock that no longer exists until some later
- * event happened to roll the window. That is strictly worse than the poll it
- * replaces (30s worst case, self-correcting by construction), which is the
- * regression D-042 caught before this shipped.
+ * carry the SAME `(name, args)` key. The historical first-wins bus discarded
+ * the release; the current bus retains it for a trailing publish instead.
+ * Keep this producer's 1s override as its tighter latency policy, allowing
+ * transitions beyond that floor through immediately. `usePlanLock` also
+ * refreshes on focus/visibility changes if the transport loses an invalidation.
  *
- * The per-CALL override (`notifyOpts.dedupeWindowMs`, invalidation-bus.ts:339)
+ * The per-CALL override (`notifyOpts.dedupeWindowMs`)
  * is deliberately used instead of the per-NAME bus policy proposed in
  * WI-37446: the owner DEFERRED that change, and it carries a standing
  * constraint not to lower the global default, which would re-arm the WI-840
  * invalidate storm. A per-call window touches nothing shared.
  *
- * ⚠ The PG-trigger + `queryNamesForTriggerEvent` bridge — normally the
- * idiomatic way to do this with no write sites at all — CANNOT be used here.
- * Bridged targets run through the same 90s window (invalidation-bus.ts:252-253)
- * and the bridged path has no per-call override, so it hits precisely the bug
- * WI-37446 documented. Explicit notifies are the only route with a working
- * escape hatch.
+ * The PG-trigger + `queryNamesForTriggerEvent` bridge has its own bounded
+ * trailing-coalesce policy, including per-target overrides. Moving this
+ * producer there would need to preserve the plan-path filter and latency
+ * policy explicitly; the current explicit notify owns both at this call site.
  *
  * ⚠ SCOPED TO PLAN PATHS ON PURPOSE. The file-lock guard this is called from
  * is the generic guard for EVERY agent file edit fleet-wide. Emitting on all
@@ -91,6 +88,7 @@ export function notifyPlanLockChange(paths: readonly string[]): void {
     .then(({ notifySyncInvalidate }) =>
       Promise.all(
         planPaths.map((path) =>
+          // notify-classification: {"id":"packages/operator-core/lib/agent-tools/locks/notify-lock-change.ts#<module>/notifyPlanLockChange/<callback>/<callback>:18fd69a9a6a9b2400ffb:1","classification":"safe-to-lose","reason":"Only invalidates the planLock.byPath banner query after a plan-file lock changes; lock enforcement remains in the lock store. usePlanLock in apps/operator/app/admin/plans/plans-api.ts invokes the current rows.refresh on window focus and when the document becomes visible, recovering a dropped banner invalidation."}
           notifySyncInvalidate(PLAN_LOCK_QUERY, { path }, undefined, {
             dedupeWindowMs: PLAN_LOCK_DEDUPE_MS,
           }),

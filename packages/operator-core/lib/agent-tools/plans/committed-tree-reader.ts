@@ -57,6 +57,20 @@ export interface CommittedTreeSpawnBoundaryRecord extends BlobBatchSpawnBoundary
   toolName: string;
 }
 
+/** Bounded per-request timing for one batched `git ls-tree` call. */
+export interface CommittedTreeLsTreeRecord {
+  repository: string;
+  pathCount: number;
+  pathBytes: number;
+  argumentBytes: number;
+  recursive: boolean;
+  includeSizes: boolean;
+  durationMs: number;
+  outcome: 'success' | 'error';
+  failurePhase?: 'git' | 'parse';
+  errorCode?: string;
+}
+
 export interface CommittedTreeCallerContext {
   requestTraceId?: string | null;
   toolName: string;
@@ -71,6 +85,7 @@ export type BlobBatchReader = (
 ) => Promise<Map<string, Buffer>>;
 
 const MAX_SPAWN_BOUNDARY_RECORDS = 8;
+const MAX_LS_TREE_RECORDS = 8;
 
 /** Request-owned counters, never global cache statistics or a cache reset. */
 export interface CommittedTreeDiagnostics {
@@ -93,6 +108,9 @@ export interface CommittedTreeDiagnostics {
   toolName?: string;
   spawnBoundaryRecords?: CommittedTreeSpawnBoundaryRecord[];
   spawnBoundaryRecordsDropped?: number;
+  /** Present only for a caller-scoped probe; records never retain the path list itself. */
+  lsTreeRecords?: CommittedTreeLsTreeRecord[];
+  lsTreeRecordsDropped?: number;
 }
 
 export function createCommittedTreeDiagnostics(caller?: CommittedTreeCallerContext): CommittedTreeDiagnostics {
@@ -109,8 +127,31 @@ export function createCommittedTreeDiagnostics(caller?: CommittedTreeCallerConte
     diagnostics.toolName = caller.toolName.slice(0, 120);
     diagnostics.spawnBoundaryRecords = [];
     diagnostics.spawnBoundaryRecordsDropped = 0;
+    diagnostics.lsTreeRecords = [];
+    diagnostics.lsTreeRecordsDropped = 0;
   }
   return diagnostics;
+}
+
+function recordLsTree(
+  diagnostics: CommittedTreeDiagnostics | undefined,
+  record: CommittedTreeLsTreeRecord,
+): void {
+  const records = diagnostics?.lsTreeRecords;
+  if (!records) return;
+  if (records.length >= MAX_LS_TREE_RECORDS) {
+    diagnostics!.lsTreeRecordsDropped = (diagnostics!.lsTreeRecordsDropped ?? 0) + 1;
+    return;
+  }
+  records.push(record);
+}
+
+function gitErrorCode(error: unknown): string | undefined {
+  if (error && typeof error === 'object' && 'code' in error && typeof error.code === 'string') {
+    return error.code.slice(0, 40);
+  }
+  const message = error instanceof Error ? error.message : String(error);
+  return /(?:^|[;, ])code=([A-Za-z0-9_-]+)/.exec(message)?.[1]?.slice(0, 40);
 }
 
 export interface CommittedTreeDeps {
@@ -401,10 +442,57 @@ function parseLsTreeZ(output: string): Map<string, { mode: string; type: string;
   return entries;
 }
 
-async function lsTree(git: GitRunner, dir: string, commit: string, paths: readonly string[], recursive = false, includeSizes = false) {
+async function lsTree(
+  git: GitRunner,
+  dir: string,
+  commit: string,
+  paths: readonly string[],
+  recursive = false,
+  includeSizes = false,
+  diagnostics?: CommittedTreeDiagnostics,
+  repository = '.',
+) {
   if (paths.length === 0) return new Map<string, { mode: string; type: string; object: string; size?: number }>();
   const args = ['ls-tree', '-z', ...(includeSizes ? ['-l'] : []), ...(recursive ? ['-r'] : []), commit, '--', ...paths];
-  return parseLsTreeZ(await git(dir, args));
+  const details = {
+    repository: repository.slice(0, 160),
+    pathCount: paths.length,
+    pathBytes: paths.reduce((total, path) => total + Buffer.byteLength(path, 'utf8'), 0),
+    argumentBytes: args.reduce((total, arg) => total + Buffer.byteLength(arg, 'utf8') + 1, 0),
+    recursive,
+    includeSizes,
+  };
+  const startedAt = performance.now();
+  let output: string;
+  try {
+    output = await git(dir, args);
+  } catch (error) {
+    const errorCode = gitErrorCode(error);
+    recordLsTree(diagnostics, {
+      ...details,
+      durationMs: Math.max(0, Math.round(performance.now() - startedAt)),
+      outcome: 'error',
+      failurePhase: 'git',
+      ...(errorCode ? { errorCode } : {}),
+    });
+    throw error;
+  }
+  const durationMs = Math.max(0, Math.round(performance.now() - startedAt));
+  try {
+    const entries = parseLsTreeZ(output);
+    recordLsTree(diagnostics, { ...details, durationMs, outcome: 'success' });
+    return entries;
+  } catch (error) {
+    const errorCode = gitErrorCode(error);
+    recordLsTree(diagnostics, {
+      ...details,
+      durationMs,
+      outcome: 'error',
+      failurePhase: 'parse',
+      ...(errorCode ? { errorCode } : {}),
+    });
+    throw error;
+  }
 }
 
 /**
@@ -420,6 +508,7 @@ async function resolveRepoCommits(
   repos: ReadonlySet<string>,
   git: GitRunner,
   exists: (repo: string) => Promise<boolean>,
+  diagnostics?: CommittedTreeDiagnostics,
 ): Promise<Map<string, { repo: string; commit: string }>> {
   const commits = new Map<string, { repo: string; commit: string }>([['.', { repo: '.', commit }]]);
   const parentOf = new Map<string, string>();
@@ -448,6 +537,10 @@ async function resolveRepoCommits(
         repoDir(root, parentResolution.repo),
         parentResolution.commit,
         children.map((child) => relativeTo(parentResolution.repo, child)),
+        false,
+        false,
+        diagnostics,
+        parentResolution.repo,
       );
       for (const child of children) {
         const entry = entries.get(relativeTo(parentResolution.repo, child));
@@ -515,7 +608,7 @@ export async function locateCommittedBlobs(
   for (const normalized of new Set(paths.map(normalizedRepoPath))) {
     candidateOf.set(normalized, await owningRepo(root, normalized, exists));
   }
-  const repoCommits = await resolveRepoCommits(root, commit, new Set(candidateOf.values()), git, exists);
+  const repoCommits = await resolveRepoCommits(root, commit, new Set(candidateOf.values()), git, exists, deps.diagnostics);
   const ownerOf = new Map<string, string>();
   const committedRepos = new Map<string, string>();
   for (const resolution of repoCommits.values()) committedRepos.set(resolution.repo, resolution.commit);
@@ -530,7 +623,16 @@ export async function locateCommittedBlobs(
       for (const path of repoPaths) located.set(path, null);
       continue;
     }
-    const entries = await lsTree(git, repoDir(root, repo), repoCommit, repoPaths.map((path) => relativeTo(repo, path)), false, includeSizes);
+    const entries = await lsTree(
+      git,
+      repoDir(root, repo),
+      repoCommit,
+      repoPaths.map((path) => relativeTo(repo, path)),
+      false,
+      includeSizes,
+      deps.diagnostics,
+      repo,
+    );
     for (const path of repoPaths) {
       const entry = entries.get(relativeTo(repo, path));
       located.set(

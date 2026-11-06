@@ -31,10 +31,9 @@ use crate::operator_voice_bus::{
     pcm_bytes_to_i16, AudioFormat, OpVoiceIn,
 };
 use crate::voice::{self, Player};
-use crate::voice_stream::{discover_socket_path, FrameParser};
+use crate::voice_stream::{FrameParser, VoiceSocket};
 use std::io::{Read, Write};
 use std::net::Shutdown;
-use std::os::unix::net::UnixStream;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
@@ -83,7 +82,7 @@ pub enum ConvAiUpdate {
 /// Run-loop handle (main.rs owns it; `stop()` detaches this surface).
 pub struct ConvAiHandle {
     stop_tx: UnboundedSender<()>,
-    writer: Arc<Mutex<Option<UnixStream>>>,
+    writer: Arc<Mutex<Option<VoiceSocket>>>,
 }
 
 impl ConvAiHandle {
@@ -121,7 +120,7 @@ pub fn start_session(owner: String, player: Player, tx: UnboundedSender<Event>) 
     ConvAiHandle { stop_tx, writer }
 }
 
-fn write_frame(writer: &Arc<Mutex<Option<UnixStream>>>, frame: &[u8]) -> std::io::Result<()> {
+fn write_frame(writer: &Arc<Mutex<Option<VoiceSocket>>>, frame: &[u8]) -> std::io::Result<()> {
     match writer.lock() {
         Ok(mut w) => match w.as_mut() {
             Some(sock) => sock.write_all(frame),
@@ -139,7 +138,7 @@ async fn session_task(
     player: Player,
     tx: UnboundedSender<Event>,
     mut stop_rx: tokio::sync::mpsc::UnboundedReceiver<()>,
-    writer: Arc<Mutex<Option<UnixStream>>>,
+    writer: Arc<Mutex<Option<VoiceSocket>>>,
 ) {
     let fail = |msg: String| {
         let _ = tx.send(Event::ConvAi(ConvAiUpdate::Error(msg)));
@@ -147,11 +146,7 @@ async fn session_task(
 
     // Attach to the host-owned voice bus (the operator's local-audio-socket —
     // the EL session lives THERE now, not here).
-    let path = match discover_socket_path() {
-        Ok(p) => p,
-        Err(e) => return fail(format!("voice: {e}")),
-    };
-    let stream = match UnixStream::connect(&path) {
+    let stream = match VoiceSocket::connect() {
         Ok(s) => s,
         Err(e) => return fail(format!("voice connect: {e}")),
     };
@@ -266,7 +261,7 @@ async fn session_task(
 
 #[allow(clippy::too_many_arguments)]
 fn reader_loop(
-    mut sock: UnixStream,
+    mut sock: VoiceSocket,
     owner: String,
     player: Player,
     tx: UnboundedSender<Event>,

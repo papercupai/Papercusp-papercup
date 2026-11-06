@@ -2,7 +2,6 @@
 import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import type { AbortCompletionContext, AbortCompletionReceipt, ToolResult } from '@papercusp/tooldef';
-import { RECORDED_TEST_LAYERS } from '@papercusp/test-config/execution-details';
 import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { refineEvenWithShapeIssues } from '../_refine-with-shape-issues';
 import { resolveEffectiveHarnessSlug } from './_ctx-opts';
@@ -11,87 +10,12 @@ import { asRecord, completedResultPayload } from '../abort-completion-payload';
 import { bulkContent, runBulk } from '../_bulk';
 import { ADHOC_WORK_ITEM_SPEC_SCOPE } from './adhoc-spec-scope';
 import {
-  SPEC_BEHAVIOR_CLASSES,
-  SPEC_CAUSAL_PAIRING_MODES,
-  SPEC_LIFECYCLE_STATUSES,
-  SPEC_PROOF_OBLIGATION_ID_RE,
   listSpecClauses,
   setSpecClause,
+  specWriteSchema,
 } from './spec-clauses-store';
 import { verifyPlanAcceptanceRef } from './spec-clause-compiler';
 import { getPlanRevisionSnapshot } from './revisions';
-
-const proofObligationIds = z
-  .array(z.string().trim().min(1).max(200).regex(SPEC_PROOF_OBLIGATION_ID_RE))
-  .min(1)
-  .max(100)
-  .refine((ids) => new Set(ids).size === ids.length, 'proof obligation ids must be unique');
-
-const specWriteSchema = z
-  .object({
-    specId: z.string().min(1).max(200).regex(/^\S+$/, 'specId may not contain whitespace'),
-    expectedRevision: z.number().int().min(0),
-    sourceValId: z
-      .string()
-      .regex(/^VAL-[A-Za-z0-9._-]+$/)
-      .nullable()
-      .optional(),
-    planItemId: z.string().regex(/^P-\d{3,}$/),
-    behavior: z.string().trim().min(1).max(12_000),
-    behaviorClass: z.enum(SPEC_BEHAVIOR_CLASSES),
-    requiredEvidence: z.array(z.string().trim().min(1).max(1000)).max(100).optional(),
-    requiredTestLayers: z.array(z.enum(RECORDED_TEST_LAYERS)).max(50).optional(),
-    mutationRequired: z.boolean().optional(),
-    lifecycleStatus: z.enum(SPEC_LIFECYCLE_STATUSES),
-    supersedes: z
-      .object({ specId: z.string().min(1).max(200), revision: z.number().int().positive() })
-      .nullable()
-      .optional(),
-    exemption: z.record(z.string(), z.unknown()).nullable().optional(),
-    falsifier: z
-      .object({
-        observation: z.string().trim().min(1).max(4000),
-        probeMethod: z.string().trim().min(1).max(4000).nullable().optional(),
-        requiredScenarios: proofObligationIds.nullable().optional(),
-        causalPairing: z.enum(SPEC_CAUSAL_PAIRING_MODES).nullable().optional(),
-      })
-      .nullable()
-      .optional()
-      .describe(
-        'What you would SEE if this clause were violated, how to produce it, and optional immutable scenario/pair completeness obligations for the adequacy evaluator.',
-      ),
-    acceptanceRef: z.string().trim().min(1).max(1000).nullable().optional(),
-    sourceBar: z
-      .object({
-        barKey: z.string().trim().min(1).max(200),
-        barHash: z.string().regex(/^[a-f0-9]{64}$/),
-        barSetHash: z.string().regex(/^[a-f0-9]{64}$/),
-        rubricSlug: z.string().trim().min(1).max(200),
-        rubricRevision: z.number().int().positive(),
-        evidencePlane: z.enum(['tree', 'deployed', 'live']),
-      })
-      .nullable()
-      .optional()
-      .describe(
-        'Acceptance-BAR provenance pin. Preserve this object when promoting an AUTO-BAR draft so the current revision remains mapped to its rubric BAR.',
-      ),
-  })
-  .superRefine((spec, ctx) => {
-    if (spec.lifecycleStatus === 'exempt' && !spec.exemption) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['exemption'],
-        message: 'lifecycleStatus=exempt requires structured exemption provenance',
-      });
-    }
-    if (spec.lifecycleStatus !== 'exempt' && spec.exemption) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['exemption'],
-        message: 'exemption is only valid when lifecycleStatus=exempt',
-      });
-    }
-  });
 
 // RSR-P-008-A: the spec/items rule is reported alongside any shape defect.
 const argsSchema = refineEvenWithShapeIssues(

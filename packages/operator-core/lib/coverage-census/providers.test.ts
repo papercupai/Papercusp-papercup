@@ -26,10 +26,10 @@ import { censusProviders } from './provider-registry';
 import { assertRegistryNonEmpty } from './providers/_non-empty';
 import { enumerateMountedHonoSurfaces, honoRoutesProvider, HTTP_ROUTE_KIND } from './providers/hono-routes';
 import { enumerateProjectedHandlerSurfaces, mcpToolsProvider, MCP_TOOL_KIND } from './providers/mcp-tools';
-import { syncQueriesProvider, SYNC_QUERY_KIND } from './providers/sync-queries';
+import { enumerateSyncQuerySurfaces, syncQueriesProvider, SYNC_QUERY_KIND } from './providers/sync-queries';
 import { routeRegistrationOrder } from '../endpoint-route/register';
 import { ALL_ROUTES } from '../endpoint-route/routes';
-import { knownQueryNamesV2 } from '../sync-resolver';
+import { getRegistryEntryV2, knownQueryNamesV2 } from '../sync-resolver';
 
 const repoRoot = fileURLToPath(new URL('../../../..', import.meta.url));
 
@@ -289,6 +289,38 @@ describe('mcp-tools population', () => {
 });
 
 describe('sync-queries population', () => {
+  it('snapshots resolver identities without executing resolvers or inspecting schema internals', () => {
+    const names = knownQueryNamesV2(), name = names[0]!;
+    expect(names.length).toBeGreaterThan(0);
+    const entry = getRegistryEntryV2(name)!;
+    const originalResolve = entry.resolve, originalSchema = entry.argsSchema;
+    let resolverCalls = 0, schemaTouches = 0;
+    entry.resolve = async () => { resolverCalls++; return []; };
+    entry.argsSchema = new Proxy({} as NonNullable<typeof originalSchema>, {
+      get() { schemaTouches++; throw Error('security snapshot inspected schema internals'); },
+    });
+    try {
+      const surfaces = enumerateSyncQuerySurfaces({ securitySnapshot: true });
+      expect(surfaces.map(row => row.surfaceId).sort()).toEqual(names);
+      const first = surfaces.find(row => row.surfaceId === name)!;
+      expect(first.schemaRef).toBeUndefined();
+      expect(first.attrs).toMatchObject({ hasArgsSchema: true, hasResolver: true,
+        loadedFunctionSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+        functionFingerprintScope: 'loaded-function-text-only', actualEffectCoverage: 'unknown' });
+      entry.resolve = async () => { resolverCalls += 2; return []; };
+      const replacement = enumerateSyncQuerySurfaces({ securitySnapshot: true })
+        .find(row => row.surfaceId === name)!;
+      expect(replacement.surfaceId).toBe(first.surfaceId);
+      expect(replacement.attrs?.loadedFunctionSha256).not.toBe(first.attrs?.loadedFunctionSha256);
+      expect(resolverCalls).toBe(0);
+      expect(schemaTouches).toBe(0);
+    } finally {
+      entry.resolve = originalResolve;
+      if (originalSchema === undefined) delete entry.argsSchema;
+      else entry.argsSchema = originalSchema;
+    }
+  });
+
   it('is exactly the sync-resolver dispatch registry', async () => {
     const surfaces = await syncQueriesProvider.enumerate(ctx);
     expect(surfaces.map((s) => s.surfaceId).sort()).toEqual([...knownQueryNamesV2()].sort());

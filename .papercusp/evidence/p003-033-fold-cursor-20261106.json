@@ -1,0 +1,45 @@
+{
+  "at": "2026-11-06T06:00:28.106Z",
+  "expectedPid": 77163,
+  "startTicks": "33403271",
+  "expectedEntry": "/home/marsh-office/papercupai-workspace/papercusp/apps/operator/dist-host/hono-host.mjs",
+  "identity": {
+    "pid": 77163,
+    "entry": "/home/marsh-office/papercupai-workspace/papercusp/apps/operator/dist-host/hono-host.mjs",
+    "timeOrigin": 1793914996126.784
+  },
+  "source": {
+    "scriptId": "87",
+    "foldLine": 260140,
+    "probeLine": 260155,
+    "bindings": [
+      "log6",
+      "folder",
+      "from",
+      "to",
+      "opts"
+    ],
+    "loop": "start3"
+  },
+  "breakpoint": {
+    "scriptId": "87",
+    "lineNumber": 260155,
+    "columnNumber": 24
+  },
+  "measurement": {
+    "until": 1793944843694,
+    "rows": [],
+    "errors": 0,
+    "last": 0
+  },
+  "cleanup": {
+    "breakpointRemoved": true,
+    "rootDeleted": true,
+    "debuggerDisabled": true,
+    "inspector": {
+      "closed": true
+    }
+  },
+  "openedInspector": true,
+  "finishedAt": "2026-11-06T06:00:45.851Z"
+}

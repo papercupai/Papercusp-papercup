@@ -63659,22 +63659,6 @@
       "deliveryState": "unverified"
     },
     {
-      "id": "packages/operator-core/lib/admin-test-runs-store.ts#<module>/persistDesktopPerfRun:8477eb60b0616d42b4ea:1",
-      "path": "packages/operator-core/lib/admin-test-runs-store.ts",
-      "classification": "durable",
-      "reason": "No safe-to-lose proof recorded. This call reaches notifyInvalidate, notifySyncInvalidate; retain its terminal delivery obligation, including through aliases/wrappers.",
-      "durablePath": "UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009",
-      "deliveryState": "unverified"
-    },
-    {
-      "id": "packages/operator-core/lib/admin-test-runs-store.ts#<module>/startAdminTestRun/<callback>/done:d573f2588ada65a84959:1",
-      "path": "packages/operator-core/lib/admin-test-runs-store.ts",
-      "classification": "durable",
-      "reason": "No safe-to-lose proof recorded. This call reaches notifyInvalidate, notifySyncInvalidate; retain its terminal delivery obligation, including through aliases/wrappers.",
-      "durablePath": "UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009",
-      "deliveryState": "unverified"
-    },
-    {
       "id": "packages/operator-core/lib/admin-test-suites.ts#<module>/runAdminTestSuites:1067acf475b39eb97822:1",
       "path": "packages/operator-core/lib/admin-test-suites.ts",
       "classification": "durable",
@@ -69427,54 +69411,6 @@
       "deliveryState": "unverified"
     },
     {
-      "id": "packages/operator-core/lib/agent-tools/locks/acquire_granular.ts#<module>/handler:0df2b796fc7a1af16377:1",
-      "path": "packages/operator-core/lib/agent-tools/locks/acquire_granular.ts",
-      "classification": "durable",
-      "reason": "No safe-to-lose proof recorded. This call reaches notifyPlanLockChange; retain its terminal delivery obligation, including through aliases/wrappers.",
-      "durablePath": "UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009",
-      "deliveryState": "unverified"
-    },
-    {
-      "id": "packages/operator-core/lib/agent-tools/locks/acquire_granular.ts#<module>/handler:cbce15658d71335cc22e:1",
-      "path": "packages/operator-core/lib/agent-tools/locks/acquire_granular.ts",
-      "classification": "durable",
-      "reason": "No safe-to-lose proof recorded. This call reaches <unresolved-computed-dispatch>, createEscalation, escalateDeadLoop, escalateLifecycleDeath, escalateNoTurnWedge, notify; retain its terminal delivery obligation, including through aliases/wrappers.",
-      "durablePath": "UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009",
-      "deliveryState": "unverified"
-    },
-    {
-      "id": "packages/operator-core/lib/agent-tools/locks/acquire_resource.ts#<module>/handler:1068c468caba131ea074:1",
-      "path": "packages/operator-core/lib/agent-tools/locks/acquire_resource.ts",
-      "classification": "durable",
-      "reason": "No safe-to-lose proof recorded. This call reaches <unresolved-computed-dispatch>, createEscalation, escalateDeadLoop, escalateLifecycleDeath, escalateNoTurnWedge, notify; retain its terminal delivery obligation, including through aliases/wrappers.",
-      "durablePath": "UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009",
-      "deliveryState": "unverified"
-    },
-    {
-      "id": "packages/operator-core/lib/agent-tools/locks/acquire_resource.ts#<module>/handler:3889dfbacffe1148779e:1",
-      "path": "packages/operator-core/lib/agent-tools/locks/acquire_resource.ts",
-      "classification": "durable",
-      "reason": "No safe-to-lose proof recorded. This call reaches <unresolved-computed-dispatch>, createEscalation, escalateDeadLoop, escalateLifecycleDeath, escalateNoTurnWedge, notify; retain its terminal delivery obligation, including through aliases/wrappers.",
-      "durablePath": "UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009",
-      "deliveryState": "unverified"
-    },
-    {
-      "id": "packages/operator-core/lib/agent-tools/locks/acquire_resource.ts#<module>/handler/<callback>:e0f84d9db163740289af:1",
-      "path": "packages/operator-core/lib/agent-tools/locks/acquire_resource.ts",
-      "classification": "durable",
-      "reason": "No safe-to-lose proof recorded. This call reaches <unresolved-computed-dispatch>, createEscalation, escalateDeadLoop, escalateLifecycleDeath, escalateNoTurnWedge, notify; retain its terminal delivery obligation, including through aliases/wrappers.",
-      "durablePath": "UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009",
-      "deliveryState": "unverified"
-    },
-    {
-      "id": "packages/operator-core/lib/agent-tools/locks/acquire_resource.ts#<module>/handler/<callback>/onDrainStart:b8b81d15648c4944b7c6:1",
-      "path": "packages/operator-core/lib/agent-tools/locks/acquire_resource.ts",
-      "classification": "durable",
-      "reason": "No safe-to-lose proof recorded. This call reaches <unresolved-computed-dispatch>, createEscalation, escalateDeadLoop, escalateLifecycleDeath, escalateNoTurnWedge, notify; retain its terminal delivery obligation, including through aliases/wrappers.",
-      "durablePath": "UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009",
-      "deliveryState": "unverified"
-    },
-    {
       "id": "packages/operator-core/lib/agent-tools/locks/acquire.ts#<module>/handler:66fb720fdf3952c2e281:1",
       "path": "packages/operator-core/lib/agent-tools/locks/acquire.ts",
       "classification": "durable",
@@ -69675,54 +69611,6 @@
       "deliveryState": "unverified"
     },
     {
-      "id": "packages/operator-core/lib/agent-tools/locks/list.ts#<module>/handler:197f9f3d6a32befc2b61:1",
-      "path": "packages/operator-core/lib/agent-tools/locks/list.ts",
-      "classification": "durable",
-      "reason": "No safe-to-lose proof recorded. This call reaches <unresolved-computed-dispatch>, createEscalation, escalateDeadLoop, escalateLifecycleDeath, escalateNoTurnWedge, notify; retain its terminal delivery obligation, including through aliases/wrappers.",
-      "durablePath": "UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009",
-      "deliveryState": "unverified"
-    },
-    {
-      "id": "packages/operator-core/lib/agent-tools/locks/list.ts#<module>/handler:6ec0af209fa17fe4a5ee:1",
-      "path": "packages/operator-core/lib/agent-tools/locks/list.ts",
-      "classification": "durable",
-      "reason": "No safe-to-lose proof recorded. This call reaches <unresolved-computed-dispatch>, createEscalation, escalateDeadLoop, escalateLifecycleDeath, escalateNoTurnWedge, notify; retain its terminal delivery obligation, including through aliases/wrappers.",
-      "durablePath": "UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009",
-      "deliveryState": "unverified"
-    },
-    {
-      "id": "packages/operator-core/lib/agent-tools/locks/list.ts#<module>/handler:7ae81ea6e6cd21aa95ab:1",
-      "path": "packages/operator-core/lib/agent-tools/locks/list.ts",
-      "classification": "durable",
-      "reason": "No safe-to-lose proof recorded. This call reaches <unresolved-computed-dispatch>, createEscalation, escalateDeadLoop, escalateLifecycleDeath, escalateNoTurnWedge, notify; retain its terminal delivery obligation, including through aliases/wrappers.",
-      "durablePath": "UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009",
-      "deliveryState": "unverified"
-    },
-    {
-      "id": "packages/operator-core/lib/agent-tools/locks/list.ts#<module>/handler:c459a129a7d64776b955:1",
-      "path": "packages/operator-core/lib/agent-tools/locks/list.ts",
-      "classification": "durable",
-      "reason": "No safe-to-lose proof recorded. This call reaches <unresolved-computed-dispatch>, createEscalation, escalateDeadLoop, escalateLifecycleDeath, escalateNoTurnWedge, notify; retain its terminal delivery obligation, including through aliases/wrappers.",
-      "durablePath": "UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009",
-      "deliveryState": "unverified"
-    },
-    {
-      "id": "packages/operator-core/lib/agent-tools/locks/list.ts#<module>/handler/<callback>:db18592300882e5a89b7:1",
-      "path": "packages/operator-core/lib/agent-tools/locks/list.ts",
-      "classification": "durable",
-      "reason": "No safe-to-lose proof recorded. This call reaches <unresolved-computed-dispatch>, createEscalation, escalateDeadLoop, escalateLifecycleDeath, escalateNoTurnWedge, notify; retain its terminal delivery obligation, including through aliases/wrappers.",
-      "durablePath": "UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009",
-      "deliveryState": "unverified"
-    },
-    {
-      "id": "packages/operator-core/lib/agent-tools/locks/notify-lock-change.ts#<module>/notifyPlanLockChange/<callback>/<callback>:18fd69a9a6a9b2400ffb:1",
-      "path": "packages/operator-core/lib/agent-tools/locks/notify-lock-change.ts",
-      "classification": "durable",
-      "reason": "No safe-to-lose proof recorded. This call reaches notifySyncInvalidate; retain its terminal delivery obligation, including through aliases/wrappers.",
-      "durablePath": "UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009",
-      "deliveryState": "unverified"
-    },
-    {
       "id": "packages/operator-core/lib/agent-tools/locks/owner-lock-domains.ts#<module>/domainsHoldingLocks:58910b9de4587628725a:1",
       "path": "packages/operator-core/lib/agent-tools/locks/owner-lock-domains.ts",
       "classification": "durable",
@@ -69733,38 +69621,6 @@
     {
       "id": "packages/operator-core/lib/agent-tools/locks/owner-lock-domains.ts#<module>/ownedLocksForPaths:bf132f9b2aa85dfac8fb:1",
       "path": "packages/operator-core/lib/agent-tools/locks/owner-lock-domains.ts",
-      "classification": "durable",
-      "reason": "No safe-to-lose proof recorded. This call reaches <unresolved-computed-dispatch>, createEscalation, escalateDeadLoop, escalateLifecycleDeath, escalateNoTurnWedge, notify; retain its terminal delivery obligation, including through aliases/wrappers.",
-      "durablePath": "UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009",
-      "deliveryState": "unverified"
-    },
-    {
-      "id": "packages/operator-core/lib/agent-tools/locks/queue.ts#<module>/handler:0f345df0c0fcf68769cc:1",
-      "path": "packages/operator-core/lib/agent-tools/locks/queue.ts",
-      "classification": "durable",
-      "reason": "No safe-to-lose proof recorded. This call reaches <unresolved-computed-dispatch>, createEscalation, escalateDeadLoop, escalateLifecycleDeath, escalateNoTurnWedge, notify; retain its terminal delivery obligation, including through aliases/wrappers.",
-      "durablePath": "UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009",
-      "deliveryState": "unverified"
-    },
-    {
-      "id": "packages/operator-core/lib/agent-tools/locks/release_resource.ts#<module>/handler/<callback>:86633dc43d5c7cdc1634:1",
-      "path": "packages/operator-core/lib/agent-tools/locks/release_resource.ts",
-      "classification": "durable",
-      "reason": "No safe-to-lose proof recorded. This call reaches <unresolved-computed-dispatch>, createEscalation, escalateDeadLoop, escalateLifecycleDeath, escalateNoTurnWedge, notify; retain its terminal delivery obligation, including through aliases/wrappers.",
-      "durablePath": "UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009",
-      "deliveryState": "unverified"
-    },
-    {
-      "id": "packages/operator-core/lib/agent-tools/locks/release_resource.ts#<module>/handler/releaseOne:b0ee9a5cfe83a52d507f:1",
-      "path": "packages/operator-core/lib/agent-tools/locks/release_resource.ts",
-      "classification": "durable",
-      "reason": "No safe-to-lose proof recorded. This call reaches <unresolved-computed-dispatch>, createEscalation, escalateDeadLoop, escalateLifecycleDeath, escalateNoTurnWedge, notify; retain its terminal delivery obligation, including through aliases/wrappers.",
-      "durablePath": "UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009",
-      "deliveryState": "unverified"
-    },
-    {
-      "id": "packages/operator-core/lib/agent-tools/locks/release_resource.ts#<module>/handler/releaseOne:c39cc0947b4182b78771:1",
-      "path": "packages/operator-core/lib/agent-tools/locks/release_resource.ts",
       "classification": "durable",
       "reason": "No safe-to-lose proof recorded. This call reaches <unresolved-computed-dispatch>, createEscalation, escalateDeadLoop, escalateLifecycleDeath, escalateNoTurnWedge, notify; retain its terminal delivery obligation, including through aliases/wrappers.",
       "durablePath": "UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009",

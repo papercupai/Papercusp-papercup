@@ -24,6 +24,10 @@
  *  1. require a SIGNATURE tag (`@param`/`@returns`) — only those document a declaration;
  *  2. match tags at LINE START. A first cut matched `@param` anywhere and false-fired on a
  *     `@typedef` block whose PROSE reads "NOT as an inline `@param`".
+ *
+ * TypeScript's `@overload` signature blocks also legitimately precede one another and the
+ * implementation's JSDoc. Recognize the tag both on the opening line and on a following line;
+ * merely mentioning `@overload` in prose must not exempt an accidental orphan.
  */
 
 /** One orphaned block: the file it is in, its 1-based opening line, and the tags it strands. */
@@ -33,6 +37,8 @@ export type OrphanedJsdoc = { file: string; line: number; tags: string[] };
 const SIGNATURE_TAG = /^\s*\*\s*@(?:param|returns|return)\b/;
 /** A tag that documents something OTHER than the next declaration — legitimately adjacent. */
 const STANDALONE_TAG = /^\s*\*\s*@(?:typedef|callback|module|enum|namespace|property|template)\b/;
+/** TypeScript binds explicit overload signatures across adjacent JSDoc blocks. */
+const OVERLOAD_TAG = /^\s*(?:\/\*\*|\*)\s*@overload\b/;
 
 type Block = { start: number; end: number; lines: string[] };
 
@@ -69,6 +75,7 @@ export function orphanedJsdocProblems(sources: Map<string, string>): OrphanedJsd
       while (k < lines.length && (lines[k] as string).trim() === '') k++;
       if (k !== next.start) continue; // real code between: correctly attached
       if (block.lines.some((l) => STANDALONE_TAG.test(l))) continue;
+      if (block.lines.some((l) => OVERLOAD_TAG.test(l))) continue;
       const tags = block.lines.filter((l) => SIGNATURE_TAG.test(l)).map((l) => l.trim());
       if (tags.length === 0) continue;
       problems.push({ file, line: block.start + 1, tags });

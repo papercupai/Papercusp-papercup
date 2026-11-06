@@ -23,9 +23,10 @@
  * those cannot reach.
  */
 
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { defineTool } from '@papercusp/agent-mcp';
 import { withPriorityOrgPg } from '@papercusp/db-org';
-import { pgResultDiagnosticSnapshot } from '@papercusp/db-org/acquire-registry';
+import { pgAcquireTimingSnapshot, pgResultDiagnosticSnapshot, withPgAcquireDiagnostics } from '@papercusp/db-org/acquire-registry';
 import { withNamedQueryDiagnosticContext } from '../../../agent-tools/db-diagnostic-correlation-wiring';
 import { tagTurnForInjection } from '../../../turn-provenance/turn-provenance';
 import { checkPlanExecutionGuard, type PlanExecutionTimingObserver } from '../../../agent-tools/plans/plan-execution-guard';
@@ -118,6 +119,22 @@ function toolGuardPgTimings(requestId: string) {
     };
   } catch {
     // Diagnostic collection must never replace the authority verdict.
+    return { coverage: 'unavailable' };
+  }
+}
+
+/** This bounded history excludes bare SQL users and waits still in progress. */
+function toolGuardPgAcquisitions(snapshot: typeof pgAcquireTimingSnapshot) {
+  try {
+    const timing = snapshot();
+    return timing ? {
+      coverage: 'instrumented-acquisition-seam-only',
+      timing: 'begin-to-acquired-or-release-not-query-time',
+      pendingAcquisitions: 'not-retained',
+      ...timing,
+    } : { coverage: 'unavailable' };
+  } catch {
+    // A failed diagnostic cannot change the guard's verdict or original error.
     return { coverage: 'unavailable' };
   }
 }
@@ -222,6 +239,7 @@ const toolGuard = defineTool({
     const workspaceId = await resolveWorkspace(body);
     const setupMs = performance.now() - startedAt;
     let text;
+    let requestAcquireSnapshot: typeof pgAcquireTimingSnapshot = () => null;
     try {
       const run = () => withPriorityOrgPg(() => toolGuardText({
         ownerId,
@@ -234,7 +252,12 @@ const toolGuard = defineTool({
         },
       }, readAppliedWornRules, (phase, durationMs) => { phases[phase] = durationMs; }, observePlanTiming, observeIdentityTiming));
       text = guardRequestId
-        ? await withNamedQueryDiagnosticContext('native-tool-guard', run, guardRequestId)
+        ? await withPgAcquireDiagnostics('native-tool-guard', () => {
+          // Finally resumes outside this context; late callbacks may run in a
+          // different request too. Retain the originating request, not its caller.
+          requestAcquireSnapshot = AsyncLocalStorage.bind(pgAcquireTimingSnapshot);
+          return withNamedQueryDiagnosticContext('native-tool-guard', run, guardRequestId);
+        })
         : await run();
     } finally {
       const totalMs = performance.now() - startedAt;
@@ -248,7 +271,8 @@ const toolGuard = defineTool({
         aborted: req.signal.aborted,
         ...(Object.keys(planStages).length ? { planStages } : {}),
         ...(Object.keys(identityStages).length ? { identityStages } : {}),
-        ...(guardRequestId ? { pgTimings: toolGuardPgTimings(guardRequestId) } : {}),
+        ...(guardRequestId ? { pgTimings: toolGuardPgTimings(guardRequestId),
+          pgAcquisitions: toolGuardPgAcquisitions(requestAcquireSnapshot) } : {}),
       }));
     }
     const timings = { guard: performance.now() - startedAt, setup: setupMs, ...phases,

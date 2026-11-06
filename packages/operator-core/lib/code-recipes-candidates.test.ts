@@ -11,8 +11,29 @@
  * "don't regenerate an existing tool" damp never fired. The slug set fixes it.
  */
 import { describe, expect, it } from 'vitest';
-import { slugifyToolName, existingToolSlugSet, recipePromotionScore } from './code-recipes-candidates';
+import { slugifyToolName, existingToolSlugSet, recipePromotionScore, recipeSubstance } from './code-recipes-candidates';
 import { compareDemandRank } from './demand-score';
+
+it('R10 meaningful single-tool recipe can qualify without admitting trivial wrappers', async () => {
+  const tools = ['work_items:list'];
+  const meaningful = 'const result = await tools.workItems.list({}); return result.rows.filter(row => row.state === "open").map(row => ({ id: row.id }));';
+  expect(await recipeSubstance(meaningful, tools)).toBe('result-processing');
+  const score = recipePromotionScore({ runCount: 12, distinctAgents: 5, successRate: 1, toolCount: 1, redundant: false });
+  expect(score).toBeGreaterThan(.45);
+  for (const script of [
+    'return await tools.workItems.list({});',
+    'const result = await tools.workItems.list({}); return result;',
+    'const result = await tools.workItems.list({}); return result.rows.map(row => row);',
+    'const result = await tools.workItems.list({}); return result.rows.map(row => (row));',
+    'const result = await tools.workItems.list({}); return result.rows.map(row => ({row: 1}));',
+    'const result = await tools.workItems.list({}); return result.rows.filter(() => true);',
+    'const result = await tools.workItems.list({}); const unused = result.rows.filter(row => row.state === "open"); return result;',
+    'function unused() { return tools.workItems.list({}).rows.filter(row => row.active); } return 1;',
+    '// result.rows.filter(row => row.active)\nreturn await tools.workItems.list({});',
+  ]) expect(await recipeSubstance(script, tools)).toBe('primitive');
+  expect(await recipeSubstance('const result = await tools.workItems.list({}); result = inputs.other; return result.rows.filter(row => row.active);', tools)).toBe('unknown');
+  expect(await recipeSubstance('return (', tools)).toBe('unknown');
+});
 
 it('OUTCOME-P-003', () => {
   const corpus = [

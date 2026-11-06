@@ -115,6 +115,31 @@ describe('executeDurableReaction', () => {
     expect(d.store.uncertain).toHaveBeenCalled();
   });
 
+  it('recovers only a positive receiver receipt without dispatching the effect again', async () => {
+    d.store.claim.mockResolvedValue(false);
+    d.store.outcome.mockResolvedValue('uncertain');
+    const reconcile = vi.fn(async () => 'completed' as const);
+    await executeDurableReaction(payload(), { ...d, reconcile });
+    expect(reconcile).toHaveBeenCalledWith(payload());
+    expect(d.store.complete).toHaveBeenCalledWith(payload().dedupId);
+    expect(d.fire).not.toHaveBeenCalled();
+    expect(d.store.uncertain).not.toHaveBeenCalled();
+  });
+
+  it.each(['unknown', 'unreadable', 'ack-lost'] as const)('retains custody when receiver recovery is %s', async scenario => {
+    d.store.claim.mockResolvedValue(false);
+    d.store.outcome.mockResolvedValue('uncertain');
+    const reconcile = vi.fn(async () => {
+      if (scenario === 'unreadable') throw new Error('receipt unavailable');
+      return scenario === 'ack-lost' ? 'completed' as const : 'uncertain' as const;
+    });
+    if (scenario === 'ack-lost') d.store.complete.mockRejectedValue(new Error('ack unavailable'));
+    await expect(executeDurableReaction(payload(), { ...d, reconcile })).rejects.toThrow('needs reconciliation');
+    expect(d.fire).not.toHaveBeenCalled();
+    expect(d.store.release).not.toHaveBeenCalled();
+    expect(d.store.uncertain).toHaveBeenCalledOnce();
+  });
+
   it('records a thrown dispatch as uncertain and never releases its identity', async () => {
     d.fire.mockRejectedValue(new Error('connection lost after dispatch'));
     await expect(executeDurableReaction(payload(), d)).rejects.toThrow(/needs reconciliation/);

@@ -10,7 +10,11 @@ vi.mock('./revisions', () => ({ planRevisionCapture: vi.fn(() => ({ recorded: { 
 vi.mock('../coordination/plan-events', () => ({ emitPlanEventForCaller: vi.fn(async () => {}) }));
 vi.mock('../../harness/usage-emitters', () => ({ emitPlanAuthored: vi.fn(async () => {}) }));
 vi.mock('../../modes/goal-context', () => ({ resolveGoalContext: vi.fn(async () => null), stampPlanGoalProvenance: vi.fn(async () => null) }));
-vi.mock('../coordination/identity', () => ({ resolveAgentIdentity: vi.fn(() => { throw new Error('no transport identity in unit test'); }) }));
+vi.mock('../coordination/identity', () => ({ resolveAgentIdentity: vi.fn(() => ({ ownerId: 'su-shaping-fixture' })) }));
+vi.mock('../../capability-envelope/session-confinement-port', async original => ({
+  ...await original<typeof import('../../capability-envelope/session-confinement-port')>(),
+  sessionAllowsAmbientContext: vi.fn(async () => false),
+}));
 vi.mock('../../plan-items/text-drift-report', () => ({ planItemTextDriftForWrite: vi.fn(async () => null) }));
 import audit from './audit';
 import create, { buildTemplate } from './new';
@@ -32,6 +36,12 @@ describe('product shaping authoring and audit consumer paths', () => {
     expect(body.indexOf('## Product shaping')).toBeLessThan(body.indexOf('## Phase 1'));
     expect(body).toContain('"sourceRefs"');
     expect(body).toContain('"scenarios"');
+    expect(body).toContain('## Discovery');
+    expect(body.indexOf('## Product shaping')).toBeLessThan(body.indexOf('## Discovery'));
+    expect(body.indexOf('## Discovery')).toBeLessThan(body.indexOf('## Phase 1'));
+    expect(body).toContain('"current-behavior"');
+    expect(body).toContain('"feasibility"');
+    expect(body).toContain('provisional discovery brief');
   });
 
   it('preserves custom owner content verbatim rather than inventing a brief', () => {
@@ -111,7 +121,7 @@ describe('product shaping authoring and audit consumer paths', () => {
   });
 
   it('keeps the changed tools within the existing guidance budget', () => {
-    expect(promptWeight(audit as unknown as Parameters<typeof promptWeight>[0])).toBeLessThanOrEqual(BUDGET);
-    expect(promptWeight(create as unknown as Parameters<typeof promptWeight>[0])).toBeLessThanOrEqual(BUDGET);
+    expect(promptWeight(audit as unknown as Parameters<typeof promptWeight>[0]), 'plans:audit').toBeLessThanOrEqual(BUDGET);
+    expect(promptWeight(create as unknown as Parameters<typeof promptWeight>[0]), 'plans:new').toBeLessThanOrEqual(BUDGET);
   });
 });

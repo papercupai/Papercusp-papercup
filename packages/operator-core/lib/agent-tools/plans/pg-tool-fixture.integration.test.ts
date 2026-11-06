@@ -2,6 +2,8 @@ import { expect, it, vi } from 'vitest';
 import postgres from 'postgres';
 import { getTestPg } from '@papercusp/test-config/pg';
 import { getOrgPg } from '@papercusp/db-org';
+import { DEFAULT_BRIDGE_COALESCE_WINDOW_MS } from '@papercusp/sync/server';
+import { notifySyncInvalidate } from '../../sync-sse';
 import { setupPlanPgFixture, type PlanPgFixture } from './__tests__/_pg-tool-fixture';
 
 const failedProbe = vi.hoisted(() => ({ error: undefined as Error | undefined, dsn: '' }));
@@ -43,6 +45,26 @@ it('opens an isolated plan database and removes it after all fixture clients clo
   } finally {
     try { await fixture?.dispose(); }
     finally { await server.end({ timeout: 5 }); }
+  }
+}, 120_000);
+
+it('drains trailing sync invalidations before restoring ambient database URLs', async () => {
+  let fixture: PlanPgFixture | undefined;
+  const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+  try {
+    fixture = await setupPlanPgFixture({ isolated: true });
+    await notifySyncInvalidate('planFixture.disposeProbe');
+    await notifySyncInvalidate('planFixture.disposeProbe'); // held for the trailing publish
+    await fixture.dispose();
+    fixture = undefined;
+
+    // The old timer must not resolve getOrgPg() after the fixture restores the
+    // captured live URL. Its guard refusal used to surface as a sync-sse error.
+    await new Promise(resolve => setTimeout(resolve, DEFAULT_BRIDGE_COALESCE_WINDOW_MS + 50));
+    expect(error).not.toHaveBeenCalledWith('[sync-sse] notify failed:', expect.anything());
+  } finally {
+    await fixture?.dispose();
+    error.mockRestore();
   }
 }, 120_000);
 

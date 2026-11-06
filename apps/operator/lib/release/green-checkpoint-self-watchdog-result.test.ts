@@ -65,12 +65,7 @@ describe('P-033: watchdog expiry diagnostics', () => {
     expect(kill).toHaveBeenCalledWith(-999, 'SIGKILL');
   });
 
-  // WI-6554700010042457 (Avi #2574): the main-greening CLI arms the watchdog with
-  // hardCeilingMs:null. A run that keeps making progress must never be killed for being slow;
-  // only going SILENT for the idle budget stops it. tighten() can still pull a finite ceiling in
-  // (the post-verdict funnel), and remainingMs() reports Infinity until it does — every consumer
-  // treats a non-finite remainder as "no ceiling known" (repairTickLegsDeadline, fork inheritance).
-  it('with hardCeilingMs:null, a progressing run is never killed and only silence fires', () => {
+  it('quiet-progress: unlimited work retains custody across both activity and prolonged silence', () => {
     const onFire = vi.fn();
     const kill = vi.fn();
     const watchdog = armSelfWatchdog({ release: vi.fn() }, {
@@ -92,15 +87,15 @@ describe('P-033: watchdog expiry diagnostics', () => {
     expect(kill).not.toHaveBeenCalled();
     expect(watchdog.remainingMs()).toBe(Number.POSITIVE_INFINITY);
 
-    // Silence for the idle budget is still a stop.
-    vi.advanceTimersByTime(999);
+    // Silence is opaque, not independent evidence that an operation failed.
+    vi.advanceTimersByTime(100_000);
     expect(onFire).not.toHaveBeenCalled();
-    vi.advanceTimersByTime(1);
-    expect(onFire.mock.calls[0]?.[0]).toBe('idle-timeout');
-    expect(kill).toHaveBeenCalledWith(-999, 'SIGKILL');
+    expect(kill).not.toHaveBeenCalled();
+    expect(watchdog.remainingMs()).toBe(Number.POSITIVE_INFINITY);
+    watchdog.cancel();
   });
 
-  it('with hardCeilingMs:null, tighten() still installs a finite ceiling that progress cannot extend', () => {
+  it('unlimited work cannot acquire an aggregate cap through finalization tightening', () => {
     const onFire = vi.fn();
     const kill = vi.fn();
     const watchdog = armSelfWatchdog({ release: vi.fn() }, {
@@ -115,8 +110,8 @@ describe('P-033: watchdog expiry diagnostics', () => {
 
     vi.advanceTimersByTime(900); // under the 1000ms idle budget
     watchdog.progress();
-    expect(watchdog.tighten({ hardCeilingMs: 2000, reason: 'post-verdict return funnel' })).toBe(true);
-    expect(watchdog.remainingMs()).toBe(2000);
+    expect(watchdog.tighten({ hardCeilingMs: 2000, reason: 'post-verdict return funnel' })).toBe(false);
+    expect(watchdog.remainingMs()).toBe(Number.POSITIVE_INFINITY);
     vi.advanceTimersByTime(900);
     watchdog.progress();
     vi.advanceTimersByTime(900);
@@ -124,10 +119,9 @@ describe('P-033: watchdog expiry diagnostics', () => {
     vi.advanceTimersByTime(199);
     expect(onFire).not.toHaveBeenCalled();
     vi.advanceTimersByTime(1);
-    expect(onFire).toHaveBeenCalledWith('absolute-hard-ceiling', expect.objectContaining({
-      tightenedBecause: 'post-verdict return funnel',
-    }));
-    expect(kill).toHaveBeenCalledWith(-999, 'SIGKILL');
+    expect(onFire).not.toHaveBeenCalled();
+    expect(kill).not.toHaveBeenCalled();
+    watchdog.cancel();
   });
 
   it('persists the actual idle interval and trigger through the terminal event writer', () => {

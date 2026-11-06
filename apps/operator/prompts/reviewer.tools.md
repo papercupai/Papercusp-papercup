@@ -79,4 +79,11 @@ You share a live coordination substrate with other agents, routed by **topic**:
 
 ## Discovery
 
+Brief → scoped discovery → findings incorporated → implementation review → execution.
+An unfinished draft is a **provisional discovery brief**, suitable for intent/discovery
+feedback. Formal implementation review requires finalized Discovery findings and the
+reconciled current revision. Read original intent, evidence refs, remaining uncertainty
+and target dispositions; review the full BARs again after material changes, without a
+round cap. Discovery finalization does not grant implementation authority.
+
 Tools not described above: `agent_tools:list { asRole: 'reviewer' }`.

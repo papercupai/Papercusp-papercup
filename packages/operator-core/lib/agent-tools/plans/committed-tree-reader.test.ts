@@ -364,6 +364,52 @@ describe('batched reads', () => {
       pid: process.pid,
       route: 'local',
     });
+    expect(diagnostics.lsTreeRecords).toHaveLength(8);
+    expect(diagnostics.lsTreeRecordsDropped).toBe(2);
+    expect(diagnostics.lsTreeRecords?.[0]).toMatchObject({
+      repository: '.',
+      pathCount: 1,
+      pathBytes: Buffer.byteLength('src/a.ts'),
+      recursive: false,
+      includeSizes: false,
+      outcome: 'success',
+    });
+    expect(diagnostics.lsTreeRecords?.[0]).not.toHaveProperty('paths');
+  });
+
+  it('records the batched ls-tree size and elapsed time when the git read times out', async () => {
+    const commit = git(root, 'rev-parse', 'HEAD');
+    const diagnostics = createCommittedTreeDiagnostics({
+      requestTraceId: 'trace-plans-get-spec-evidence-timeout',
+      toolName: 'plans:get-spec-evidence',
+    });
+    const timeout = Object.assign(new Error('git ls-tree timed out'), { code: 'ETIMEDOUT' });
+    const gitRunner: GitRunner = async (dir, args) => {
+      if (args[0] === 'ls-tree') {
+        await new Promise<void>((resolve) => setTimeout(resolve, 8));
+        throw timeout;
+      }
+      return defaultGitRunner(dir, args);
+    };
+
+    await expect(readCommittedFiles(root, commit, ['src/a.ts', 'src/b.ts'], {
+      diagnostics,
+      git: gitRunner,
+    })).rejects.toBe(timeout);
+
+    expect(diagnostics.lsTreeRecords).toHaveLength(1);
+    expect(diagnostics.lsTreeRecords?.[0]).toMatchObject({
+      repository: '.',
+      pathCount: 2,
+      pathBytes: Buffer.byteLength('src/a.ts') + Buffer.byteLength('src/b.ts'),
+      recursive: false,
+      includeSizes: false,
+      outcome: 'error',
+      failurePhase: 'git',
+      errorCode: 'ETIMEDOUT',
+    });
+    expect(diagnostics.lsTreeRecords?.[0]?.durationMs).toBeGreaterThan(0);
+    expect(diagnostics.lsTreeRecords?.[0]).not.toHaveProperty('paths');
   });
 
   it('counts unique repository/blob lookups, including aliases and repeated reads', async () => {

@@ -21,6 +21,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const M = vi.hoisted(() => ({
   sendMessage: vi.fn(async (..._args: unknown[]) => ({ to: [] }) as unknown),
   wakeRecipients: vi.fn(async (..._args: unknown[]) => ({}) as unknown),
+  wakeModuleLoads: 0,
   // WI-37625: the retirement flag the `@role:mug` delivery gate reads. Defaults to
   // FALSE because default-OFF IS the delivered end state (D-020) — the tier being ON is
   // the reversible testing escape hatch, not the baseline.
@@ -33,7 +34,10 @@ vi.mock('./agent-tools/coordination/messages', () => ({ sendMessage: M.sendMessa
 vi.mock('./agent-tools/coordination/condition-state', () => ({
   readLatestConditionEnvelope: M.readLatestConditionEnvelope,
 }));
-vi.mock('./agent-tools/coordination/inbox-wake', () => ({ wakeRecipients: M.wakeRecipients }));
+vi.mock('./agent-tools/coordination/inbox-wake', () => {
+  M.wakeModuleLoads++;
+  return { wakeRecipients: M.wakeRecipients };
+});
 vi.mock('./pot/started', () => ({ mugKettleSystemEnabled: M.mugKettleSystemEnabled }));
 
 import {
@@ -43,6 +47,8 @@ import {
   isRepeatOfOpenOneShotAlarm,
 } from './severe-event-broadcast';
 
+const wakeModuleLoadsOnImport = M.wakeModuleLoads;
+
 beforeEach(() => {
   vi.clearAllMocks();
   M.readLatestConditionEnvelope.mockImplementation(async () => null);
@@ -51,6 +57,10 @@ beforeEach(() => {
 });
 
 describe('broadcastSevereEvent', () => {
+  it('loads condition delivery without loading the optional wake engine', () => {
+    expect(wakeModuleLoadsOnImport).toBe(0);
+  });
+
   it('reuses the atomic message identity only for the same original alarm resolution', async () => {
     for (const alarmMessageId of ['original-1', 'original-1', 'original-2'])
       await broadcastSevereEventResolved({ conditionKey: 'alarm:test', summary: 'ended', alarmMessageId });

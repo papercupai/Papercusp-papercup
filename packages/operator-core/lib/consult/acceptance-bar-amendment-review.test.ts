@@ -27,6 +27,16 @@ import {
 import { ACCEPTANCE_BAR_AMENDMENT_REVIEW_POLICY } from './selection-policies';
 import { analyzeClaudeResumeTranscript } from '../claude-resume-tool-references.mjs';
 
+// These routing tests isolate recruitment from preflight; integration tests use
+// the real validator and database, including a changed candidate after a pass.
+vi.mock('../rubrics', async (original) => ({
+  ...(await original<typeof import('../rubrics')>()),
+  previewAcceptanceBarAmendment: vi.fn(async () => ({
+    candidateValidation: { candidateHash: 'a'.repeat(64), generatedSpecCount: 1 },
+    approval: {},
+  })),
+}));
+
 // Directed lineage edges: rebind predecessor -> implementer -> spawned child;
 // a common parent launched both the implementer and a sibling.
 const EDGES: Array<[string, string]> = [
@@ -256,6 +266,7 @@ describe('openAcceptanceBarAmendmentReview (P-006)', () => {
     previewPostRef: 'thread-post:42',
     preview: {
       approvalRequired: true,
+      candidateValidation: { candidateHash: 'a'.repeat(64), generatedSpecCount: 1 },
       approval,
       changes: [{ barKey: 'R-1', kinds: ['bar-meaning'], fields: ['falsifier'] }],
     },
@@ -424,6 +435,33 @@ describe('openAcceptanceBarAmendmentReview (P-006)', () => {
     expect(routed.brief).toBe(buildAmendmentReviewBrief({ ...baseInput }));
     expect(routed.brief).toContain('Current rubric baseline: acceptance-demo@revision 12; criteria hash criteria-hash-12.');
     expect(routed.brief).toContain('Current R-37 details.');
+  });
+
+  it('revalidates after source resolution before dispatching review', async () => {
+    let sourceChanged = false;
+    const resolveSources = vi.fn(async () => { sourceChanged = true; return reviewSources; });
+    const verifyCandidate = vi.fn(async () => {
+      if (sourceChanged) throw new Error('acceptance_bar_amendment_review_candidate_stale');
+    });
+    const route = vi.fn();
+    await expect(openAcceptanceBarAmendmentReview({ ...baseInput, reviewSources: undefined }, {
+      verifyPreviewPost: vi.fn(), resolveSources, verifyCandidate, route,
+    })).rejects.toThrow('candidate_stale');
+    expect(resolveSources).toHaveBeenCalledTimes(1);
+    expect(route).not.toHaveBeenCalled();
+  });
+
+  it('refuses a fresh launch when the candidate changed during recruitment', async () => {
+    const route = vi.fn(async () => ({ state: 'no-eligible-reviewer' as const, conversationId: null,
+      reason: 'all screened out', screenedOut: [] }));
+    const verifyCandidate = vi.fn().mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new Error('acceptance_bar_amendment_review_candidate_stale'));
+    const launchFresh = vi.fn();
+    await expect(openAcceptanceBarAmendmentReview(baseInput, {
+      verifyPreviewPost: vi.fn(), route, verifyCandidate, launchFresh,
+    })).rejects.toThrow('candidate_stale');
+    expect(route).toHaveBeenCalledTimes(1);
+    expect(launchFresh).not.toHaveBeenCalled();
   });
 
   it('identifies a pending fresh launch after preserving the screened routing result', async () => {
@@ -608,8 +646,9 @@ describe('openAcceptanceBarAmendmentReview (P-006)', () => {
     const resolveEvidence = vi.fn().mockResolvedValue(reviewEvidence);
     const route = vi.fn().mockResolvedValue({ state: 'no-eligible-reviewer', conversationId: null, reason: 'none', screenedOut: [] });
     const launchFresh = vi.fn().mockResolvedValue({ state: 'not-launched', reason: 'test' });
-    await openAcceptanceBarAmendmentReview({ ...baseInput, reviewEvidencePost: reviewEvidence.postRef },
+    const result = await openAcceptanceBarAmendmentReview({ ...baseInput, reviewEvidencePost: reviewEvidence.postRef },
       { verifyPreviewPost: vi.fn(), resolveEvidence, route, launchFresh });
+    expect(result).toMatchObject({ reviewEvidencePost: reviewEvidence.postRef });
     expect(resolveEvidence).toHaveBeenCalledWith({ workspaceId: 'ws', previewPostRef: 'thread-post:42',
       evidencePostRef: 'thread-post:50', applierId: 'su-implementer' });
     expect(route.mock.calls[0]![0].brief).toContain(reviewEvidence.body);
@@ -1553,7 +1592,31 @@ describe('inspectFreshAmendmentReviewer', () => {
       nativeRef: '/retained/reviewer-1.jsonl', reason: 'provider-error',
       evidence: 'provider rejected the last turn',
     });
-    expect(hasLaterPost).toHaveBeenCalledWith({ workspaceId: 'ws-review-recovery', previewPostRef: 'thread-post:42' });
+    expect(hasLaterPost).toHaveBeenCalledWith({ workspaceId: 'ws-review-recovery', previewPostRef: 'thread-post:42',
+      authorId: 'reviewer-owner' });
+  });
+
+  it('reclaims re-review after an old objection and requester evidence, retaining the reviewer boundary', async () => {
+    const request = { ...input, reviewEvidencePost: 'thread-post:50' };
+    const hasLaterPost = vi.fn(async (args: { authorId?: string; afterPostRef?: string }) =>
+      args.authorId !== 'reviewer-owner' || args.afterPostRef !== 'thread-post:50');
+    const result = await inspectFreshAmendmentReviewer(request, {
+      readTaskState: vi.fn(async () => 'ended_unobserved' as const), hasLaterPost,
+    });
+    expect(result).toMatchObject({ state: 'reclaimable', taskId: 'reviewer-1' });
+    expect(hasLaterPost).toHaveBeenCalledWith({ workspaceId: input.workspaceId,
+      previewPostRef: input.previewPostRef, authorId: 'reviewer-owner', afterPostRef: 'thread-post:50' });
+  });
+
+  it('keeps missing reviewer custody and invalid evidence boundaries unknown', async () => {
+    for (const request of [{ ...input, reviewer: { ...input.reviewer, ownerId: undefined } },
+      { ...input, reviewEvidencePost: 'not-a-post' }]) {
+      const hasLaterPost = vi.fn(async () => false);
+      expect(await inspectFreshAmendmentReviewer(request, {
+        readTaskState: vi.fn(async () => 'ended_unobserved' as const), hasLaterPost,
+      })).toMatchObject({ state: 'unknown' });
+      expect(hasLaterPost).not.toHaveBeenCalled();
+    }
   });
 
   it('does not reclaim a running reviewer whose live session has no failure evidence', async () => {

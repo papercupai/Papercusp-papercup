@@ -42,9 +42,106 @@ import {
   clusterTurns,
   sqlNormList,
 } from './code-run-batch-nudge';
+import { RECIPE_RUN_RECEIPTS_CTE } from './code-recipes-store';
 
 /** Injectable query runner (mirrors harness-insights/load-token-rollups.ts). */
 export type RunQuery = <T = unknown>(query: string, params: unknown[]) => Promise<T[]>;
+
+export interface RecipeOutcomeScope {
+  workspaceId: string; harnessSlug: string; windowStart: string; windowEnd: string;
+}
+
+/** Exact-window raw evidence for the standing reuse/SQL rubric checks. Receipt
+ * costs and final dispatch costs have different units: a bulk invocation's
+ * returned context is counted once, never charged once per recipe selection.
+ * No payload column, script text or guessed client identity is selected. */
+export const RECIPE_OUTCOME_REPORT_SQL = `
+WITH recipe_run_source AS (
+  SELECT * FROM harness_shared.code_recipe_runs
+   WHERE workspace_id = $1 AND ts >= $3::timestamptz AND ts < $4::timestamptz
+), ${RECIPE_RUN_RECEIPTS_CTE}, with_host AS (
+  SELECT c.*, h.host_rows, h.host_harness, h.host_ref, h.context_bytes, h.recorded_context_bytes
+  FROM classified c LEFT JOIN LATERAL (
+    SELECT count(*) AS host_rows, min(harness_slug) AS host_harness,
+      min(id)::text AS host_ref,
+      CASE WHEN count(*) = 1 THEN min(CASE
+        WHEN metadata_json->>'returnedContextBytes' ~ '^[0-9]{1,15}$'
+          THEN (metadata_json->>'returnedContextBytes')::bigint END) END AS recorded_context_bytes,
+      CASE WHEN count(*) = 1 THEN min(CASE
+        WHEN metadata_json->>'spillPending' = 'false' AND metadata_json->>'resultDoorReason' IS NOT NULL
+          AND metadata_json->>'returnedContextBytes' ~ '^[0-9]{1,15}$'
+          THEN (metadata_json->>'returnedContextBytes')::bigint END) END AS context_bytes
+    FROM harness_shared.tool_invocations t
+    WHERE t.workspace_id = $1
+      AND t.invoked_at >= $3::timestamptz - interval '1 day'
+      AND t.invoked_at < $4::timestamptz + interval '1 day'
+      AND t.metadata_json->'otel'->>'callId' = c.evidence->>'invocationId'
+      AND lower(replace(replace(t.tool_name, ':', ''), '_', '')) IN ('coderun', 'recipesrun')
+  ) h ON true
+), scoped AS (
+  SELECT *, host_rows = 1 AND host_harness = $2 AS attributed,
+    known AND usage->>'choice' = 'agent' AND usage->>'mode' = 'commit'
+      AND usage->>'selection' = 'saved-replay' AS replay
+  FROM with_host WHERE host_harness = $2 OR host_rows <> 1 OR host_harness IS NULL
+), dispatches AS (
+  SELECT DISTINCT host_ref, context_bytes, recorded_context_bytes FROM scoped WHERE attributed AND variants = 1
+)
+SELECT jsonb_build_object(
+  'sourceRows', COALESCE(sum(source_rows), 0),
+  'attempts', count(*),
+  'verifiedCopiesExcluded', COALESCE(sum(source_rows - 1) FILTER (WHERE variants = 1), 0),
+  'conflictingReceipts', count(*) FILTER (WHERE variants > 1),
+  'unscopedWorkspaceReceipts', count(*) FILTER (WHERE NOT COALESCE(attributed, false)),
+  'authored', count(*) FILTER (WHERE attributed AND known AND usage->>'selection' = 'authored'),
+  'automaticMatches', count(*) FILTER (WHERE attributed AND known AND usage->>'selection' = 'automatic-match'),
+  'deliberateSelections', count(*) FILTER (WHERE attributed AND known AND usage->>'selection' = 'saved-replay'),
+  'previews', count(*) FILTER (WHERE attributed AND usage->>'mode' = 'preview'),
+  'hookChoices', count(*) FILTER (WHERE attributed AND known AND usage->>'choice' = 'hook'),
+  'systemChoices', count(*) FILTER (WHERE attributed AND known AND usage->>'choice' = 'system'),
+  'unknown', count(*) FILTER (WHERE NOT COALESCE(attributed AND known AND usage->>'choice' <> 'unknown', false)),
+  'replaySuccesses', count(*) FILTER (WHERE attributed AND replay AND usage->>'outcome' = 'success'),
+  'replayErrors', count(*) FILTER (WHERE attributed AND replay AND usage->>'outcome' = 'error'),
+  'replayRefusals', count(*) FILTER (WHERE attributed AND replay AND usage->>'outcome' = 'refused'),
+  'replayDenominator', count(*) FILTER (WHERE attributed AND replay),
+  'distinctAgents', count(DISTINCT agent_owner) FILTER (WHERE attributed AND known AND usage->>'choice' = 'agent' AND usage->>'mode' = 'commit'),
+  'sourceBytes', sum(CASE WHEN attributed AND variants = 1 AND evidence->>'sourceBytes' ~ '^[0-9]{1,15}$' THEN (evidence->>'sourceBytes')::bigint END),
+  'intermediateBytes', sum(CASE WHEN attributed AND variants = 1 AND evidence->>'intermediateBytes' ~ '^[0-9]{1,15}$' THEN (evidence->>'intermediateBytes')::bigint END),
+  'elapsedBeforeRecordMs', sum(CASE WHEN attributed AND variants = 1 AND evidence->>'elapsedBeforeRecordMs' ~ '^[0-9]{1,15}$' THEN (evidence->>'elapsedBeforeRecordMs')::bigint END),
+  'dispatches', (SELECT count(*) FROM dispatches),
+  'contextMeasuredDispatches', (SELECT count(context_bytes) FROM dispatches),
+  'returnedContextBytes', (SELECT sum(context_bytes) FROM dispatches),
+  'recordedContextBytes', (SELECT sum(recorded_context_bytes) FROM dispatches),
+  'latestReceiptAt', max(ts),
+  'sourceRefs', ARRAY(SELECT 'code-recipe-run:' || id::text FROM scoped ORDER BY id LIMIT 10),
+  'dispatchRefs', ARRAY(SELECT 'tool-invocation:' || host_ref FROM dispatches ORDER BY host_ref LIMIT 10)
+) AS report FROM scoped`;
+
+export async function readRecipeOutcomeReport(runQuery: RunQuery, scope: RecipeOutcomeScope) {
+  const start = Date.parse(scope.windowStart), end = Date.parse(scope.windowEnd);
+  if (!scope.workspaceId.trim() || !scope.harnessSlug.trim() || !Number.isFinite(start)
+    || !Number.isFinite(end) || start >= end || end > Date.now()) throw new Error('Exact scope and closed recipe outcome window required');
+  const [row] = await runQuery<{ report: Record<string, unknown> }>(RECIPE_OUTCOME_REPORT_SQL,
+    [scope.workspaceId, scope.harnessSlug, new Date(start).toISOString(), new Date(end).toISOString()]);
+  return {
+    scope, boundary: 'recipe-run-recorded-at' as const,
+    measurement: row?.report ?? null,
+    units: { counts: 'canonical-execution-receipts', sourceBytes: 'utf8-bytes-per-receipt',
+      intermediateBytes: 'utf8-bytes-per-receipt', elapsedBeforeRecordMs: 'milliseconds-per-receipt',
+      returnedContextBytes: 'utf8-bytes-per-dispatch-at-settled-result-door',
+      recordedContextBytes: 'utf8-bytes-per-dispatch-at-recorded-boundary' },
+    lineage: { rubricRef: 'code-intel-reuse-measurement', criterionKey: 'provider-outcomes',
+      instrumentKey: 'code-intel:reuse-provider-outcomes' as string | null,
+      checkKind: 'instrument' as 'instrument' | 'probe',
+      receiptFields: 'code_recipe_runs.execution_trace.usage+runEvidence',
+      dispatchFields: 'tool_invocations.metadata_json.otel.callId+returnedContextBytes',
+      sourceRefLimit: 10 },
+    coverage: { state: 'unknown' as const, complete: false, backlog: null,
+      clients: { claude: 'unknown', codex: 'unknown', omp: 'unknown' },
+      reason: 'Receipt positives do not certify a completed source/client census; missing host identity is unscoped, not zero demand.' },
+    benefit: { state: 'unknown' as const, measuredSavings: null,
+      reason: 'No compatible measured baseline or holdout is established by these receipts.' },
+  };
+}
 
 /** P-008 run-quality rollup. Every value is derived from metadata_json written
  * by code:run/result-door; payload text is never selected or logged. */

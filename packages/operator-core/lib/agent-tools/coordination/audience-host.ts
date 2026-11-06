@@ -155,7 +155,9 @@ export const hostAudienceResolvers: AudienceResolvers = {
       // both match the stored row. Throws on absolute/traversal paths — caught below.
       const canonical = normalizePaths([path])[0];
       if (!canonical) return [];
+      // notify-classification: {"id":"packages/operator-core/lib/agent-tools/coordination/audience-host.ts#<module>/listPathLockAgents:40e72844df81469ea8c1:1","classification":"safe-to-lose","reason":"Bootstrap only applies schema migrations; it never marks the transaction-local resource-expiry receipt set. Its shared transaction wrapper therefore has no expiry notice to deliver."}
       await ensureBootstrap();
+      // notify-classification: {"id":"packages/operator-core/lib/agent-tools/coordination/audience-host.ts#<module>/listPathLockAgents:601641c4d2f8bfbf7ba5:1","classification":"safe-to-lose","reason":"readQueue only sets a local timeout and selects live locks and waiters. It never sweeps resource expiry or marks expiry receipts, so the shared transaction wrapper has no notice to deliver."}
       const queue = await readQueue(getTxPool(), {
         coordinationDomain: null,
         paths: [canonical],

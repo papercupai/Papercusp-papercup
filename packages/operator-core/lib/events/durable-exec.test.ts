@@ -15,9 +15,13 @@ vi.mock('./dispatch-reaction', () => ({
   reactionBackgroundActivityAllowed: vi.fn(async () => true),
   buildReactionCtx: vi.fn(),
 }));
+vi.mock('../release/gate-action-receipt', () => ({
+  reconcileGateActionReceipt: vi.fn(async () => 'completed'),
+}));
 
 import { executeDurableReaction, type DurableReactionPayload } from './durable-exec';
-import { claimReaction, releaseReaction } from './reaction-dedup';
+import { claimReaction, releaseReaction, reactionOutcome } from './reaction-dedup';
+import { reconcileGateActionReceipt } from '../release/gate-action-receipt';
 import { fireReactionInProcess, reactionBackgroundActivityAllowed } from './dispatch-reaction';
 import { completeReaction, markReactionUncertain } from './reaction-dedup';
 
@@ -45,9 +49,21 @@ beforeEach(() => {
   vi.mocked(reactionBackgroundActivityAllowed).mockReset().mockResolvedValue(true);
   vi.mocked(completeReaction).mockClear();
   vi.mocked(markReactionUncertain).mockClear();
+  vi.mocked(reactionOutcome).mockReset().mockResolvedValue('completed');
+  vi.mocked(reconcileGateActionReceipt).mockClear();
 });
 
 describe('executeDurableReaction', () => {
+  it('does not acknowledge force deployment from its short launch receipt', async () => {
+    claim.mockResolvedValue(false);
+    vi.mocked(reactionOutcome).mockResolvedValue('uncertain');
+    await expect(executeDurableReaction(payload({ fire: 'release:deploy', args: { op: 'force', confirm: true } })))
+      .rejects.toThrow('needs reconciliation');
+    expect(reconcileGateActionReceipt).not.toHaveBeenCalled();
+    expect(completeReaction).not.toHaveBeenCalled();
+    expect(fire).not.toHaveBeenCalled();
+  });
+
   it('checks current policy before claiming a queued reaction, and permits a later resumed execution', async () => {
     vi.mocked(reactionBackgroundActivityAllowed).mockResolvedValueOnce(false).mockResolvedValueOnce(true);
     await executeDurableReaction(payload());

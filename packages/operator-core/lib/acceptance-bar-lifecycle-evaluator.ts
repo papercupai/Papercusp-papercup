@@ -10,6 +10,7 @@
 import type {
   AcceptanceBarContractSnapshot,
   AcceptanceBarSnapshotCode,
+  AcceptanceBarSnapshotProblem,
   AcceptanceBarSnapshotSource,
   AcceptanceBarTrace,
 } from './acceptance-bar-contract-snapshot';
@@ -22,6 +23,7 @@ import { evidenceRuntimeUnmet } from './acceptance-bar-evidence-runtime';
 import type { EvidenceCurrentInput } from './agent-tools/plans/spec-evidence-store';
 import { deriveNonCodeItemProofs, type NonCodeItemProof } from './plan-requirement-realization';
 import { acceptanceBarContractGaps, type AcceptanceBarContractGap } from './acceptance-bar-contract-completeness';
+import { redactSensitiveText } from './sensitive-text';
 
 export type AcceptanceBarLifecyclePhase = 'pre-start' | 'pre-vetting' | 'pre-grading' | 'ship';
 
@@ -46,6 +48,10 @@ export interface AcceptanceBarLifecycleVerdict {
   contractCodes: AcceptanceBarSnapshotCode[];
   /** Every blocking code with the BAR keys that produced it; empty keys mean contract-level. */
   codeAttribution: Array<{ code: AcceptanceBarSnapshotCode; barKeys: string[] }>;
+  /** Bounded, phase-relevant source failures with credential-safe detail for refusal receipts. */
+  sourceDiagnostics?: Array<Pick<AcceptanceBarSnapshotProblem, 'code' | 'source' | 'severity' | 'detail' | 'barKey'>>;
+  /** Number of additional phase-relevant source diagnostics omitted by the bounded view. */
+  sourceDiagnosticsOmitted?: number;
   /**
    * WI-10002509: the authoritative grading card that a `bar_snapshot_grading_stale`
    * BAR has judged stale, or null when no gating BAR reports one.
@@ -219,6 +225,39 @@ function attributeCodes(
   };
 }
 
+const MAX_LIFECYCLE_SOURCE_DIAGNOSTICS = 12;
+const MAX_LIFECYCLE_SOURCE_DETAIL_CHARS = 240;
+
+function safeSourceDetail(detail: string): string {
+  const safe = redactSensitiveText(detail)
+    .replace(/[\u0000-\u001f\u007f]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!safe) return 'source detail omitted';
+  return safe.length > MAX_LIFECYCLE_SOURCE_DETAIL_CHARS
+    ? `${safe.slice(0, MAX_LIFECYCLE_SOURCE_DETAIL_CHARS - 3)}...`
+    : safe;
+}
+
+function phaseSourceDiagnostics(
+  snapshot: AcceptanceBarContractSnapshot,
+  codes: readonly AcceptanceBarSnapshotCode[],
+): { diagnostics: NonNullable<AcceptanceBarLifecycleVerdict['sourceDiagnostics']>; omitted: number } {
+  const phaseCodes = new Set(codes);
+  const relevant = snapshot.completeness.problems
+    .filter((problem) => problem.severity === 'error' && phaseCodes.has(problem.code))
+    .sort((a, b) => `${a.source}\0${a.barKey ?? ''}\0${a.code}`
+      .localeCompare(`${b.source}\0${b.barKey ?? ''}\0${b.code}`));
+  const diagnostics = relevant.slice(0, MAX_LIFECYCLE_SOURCE_DIAGNOSTICS).map((problem) => ({
+    code: problem.code,
+    source: problem.source,
+    severity: problem.severity,
+    detail: safeSourceDetail(problem.detail),
+    ...(problem.barKey ? { barKey: problem.barKey.slice(0, 100) } : {}),
+  }));
+  return { diagnostics, omitted: Math.max(0, relevant.length - diagnostics.length) };
+}
+
 /**
  * Render the attributed verdict. Contract-level codes are labelled as such, and the
  * clean-BAR count is stated explicitly so "one BAR is blocked" cannot be read as
@@ -233,6 +272,8 @@ function attributedMessage(
   // that to a repair whose code is actually in THIS phase's blocking set. Rendering the
   // contract-wide one can name a repair that is not among the codes printed beside it.
   nextRepair: AcceptanceBarLifecycleVerdict['nextRepair'],
+  sourceDiagnostics: NonNullable<AcceptanceBarLifecycleVerdict['sourceDiagnostics']> = [],
+  sourceDiagnosticsOmitted = 0,
 ): string {
   const segments = blockingBars.map((bar) => `${bar.barKey}: ${bar.codes.join(', ')}`);
   if (contractCodes.length > 0) segments.push(`contract-level: ${contractCodes.join(', ')}`);
@@ -264,7 +305,17 @@ function attributedMessage(
     + 'A missing or stale independent grading is grader work; record the author verdict after reading that grading. '
     + 'Never self-grade or launch a parallel reviewer.';
 
-  return `${head}${repairLine}${recruitmentLine}`;
+  const sourceDiagnosticItems = sourceDiagnostics.map((diagnostic) =>
+    `${diagnostic.source}${diagnostic.barKey ? ` (${diagnostic.barKey})` : ''} ` +
+      `[${diagnostic.code}]: ${diagnostic.detail}`);
+  if (sourceDiagnosticsOmitted > 0) {
+    sourceDiagnosticItems.push(`${sourceDiagnosticsOmitted} additional source diagnostic(s) omitted`);
+  }
+  const sourceDiagnosticsLine = sourceDiagnosticItems.length > 0
+    ? `\nSOURCE DIAGNOSTICS: ${sourceDiagnosticItems.join('; ')}`
+    : '';
+
+  return `${head}${repairLine}${recruitmentLine}${sourceDiagnosticsLine}`;
 }
 
 function allSnapshotCodes(snapshot: AcceptanceBarContractSnapshot): AcceptanceBarSnapshotCode[] {
@@ -447,6 +498,8 @@ export function evaluateAcceptanceBarLifecycle(
       blockingBars: [],
       contractCodes: [],
       codeAttribution: [],
+      sourceDiagnostics: [],
+      sourceDiagnosticsOmitted: 0,
       nextRepair: null,
       staleGradingScorecardId: null,
       message: null,
@@ -567,6 +620,7 @@ export function evaluateAcceptanceBarLifecycle(
   const staleGradingScorecardId = codes.includes('bar_snapshot_grading_stale')
     ? snapshot.grading.authoritativeScorecardId
     : null;
+  const sourceDiagnostics = phaseSourceDiagnostics(snapshot, codes);
   return {
     phase,
     applicable: true,
@@ -575,12 +629,15 @@ export function evaluateAcceptanceBarLifecycle(
     blockingBars,
     contractCodes,
     codeAttribution,
+    sourceDiagnostics: sourceDiagnostics.diagnostics,
+    sourceDiagnosticsOmitted: sourceDiagnostics.omitted,
     nextRepair,
     staleGradingScorecardId,
     message:
       codes.length === 0
         ? null
-        : attributedMessage(snapshot, phaseLabel, blockingBars, contractCodes, nextRepair),
+        : attributedMessage(snapshot, phaseLabel, blockingBars, contractCodes, nextRepair,
+          sourceDiagnostics.diagnostics, sourceDiagnostics.omitted),
     ...(contractGaps !== undefined ? { contractGaps, contractGapsBlocking } : {}),
     ...(pending.size > 0 ? { pendingDeliveryBarKeys: [...pending] } : {}),
     ...(pending.size > 0 && codes.length === 0 ? {

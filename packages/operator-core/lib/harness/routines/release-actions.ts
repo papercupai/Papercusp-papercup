@@ -44,6 +44,8 @@ import { emitAwaitedEvent } from '../../events/await/engine';
 import { getResolvedBuild } from '../../build-info';
 import { withInstallBoundaryBootWindow } from '../../install-boundary-lease';
 import { gateVerdictEnv, isRecordableVerdict, type GateVerdictTarget } from '../../release/gate-verdict-target';
+import { checkpointTerminalDelivery, attachCheckpointTerminalDelivery, recoverCheckpointTerminalEvents,
+  type CheckpointTerminalEvent } from '../../release/checkpoint-qualification-terminal-events';
 import { pipelineName, pipelineRef, pipelineTag } from '../../release/pipeline-name';
 import { releaseRef as defaultReleaseRef } from '../../release/judged-sha-containment';
 import { isAdmissionSyntheticCommitDate } from '../../release/admission-commit-date';
@@ -1815,6 +1817,8 @@ export async function publishSignedGateVerdictsWithDeadline(
 
 /** WI-6554700010009547: per-call knobs for {@link recordCheckpointVerdict}. */
 export interface RecordCheckpointVerdictOptions {
+  /** Persist the terminal wake batch with this exact verdict before notifying subscribers. */
+  terminalEvents?: CheckpointTerminalEvent[];
   /** Ephemeral source-owned context from this physical suite. The final row
    * lock reauthenticates every artifact; an earlier green check grants nothing. */
   qualificationWork?: {
@@ -2583,8 +2587,14 @@ export async function recordCheckpointVerdict(
     options.qualificationWork?.input.attemptId || undefined;
   const pinned = isPinnedCheckpointVerdict(verdict);
   const recordable = isRecordableVerdict(verdict.reason);
+  const terminalDelivery = transportedAttemptId && !pinned && recordable && verdict.candidate && verdict.runId &&
+    typeof verdict.green === 'boolean' && options.terminalEvents?.length
+    ? checkpointTerminalDelivery({ ...target, attemptId: transportedAttemptId, candidate: verdict.candidate,
+        runId: verdict.runId, green: verdict.green, candidates: [...new Set([verdict.candidate, verdict.advancedTo,
+          verdict.repairQueue?.repairHead].filter((sha): sha is string => !!sha))] }, options.terminalEvents)
+    : undefined;
   const atomicTerminalEvent = transportedAttemptId && !pinned && recordable
-    ? { status: verdict.reason, detail: buildCheckpointDetail(verdict) }
+    ? { status: verdict.reason, detail: { ...buildCheckpointDetail(verdict), ...(terminalDelivery ? { terminalDelivery } : {}) } }
     : undefined;
   const settle = {
         ...(transportedAttemptId ? { attemptId: transportedAttemptId } : {}),
@@ -2640,7 +2650,9 @@ export async function recordCheckpointVerdict(
   if (!recordable) return false;
   // An exact replay finds the already-terminal qualification. The first producer's
   // result and pipeline event committed together, so do not append or count it twice.
-  if (transportedAttemptId && qualificationSettlement?.status === 'terminal') return true;
+  if (transportedAttemptId && qualificationSettlement?.status === 'terminal') {
+    return !terminalDelivery || await attachCheckpointTerminalDelivery(target, terminalDelivery);
+  }
   if (!atomicTerminalEvent) {
     const attemptId = verdictQualificationAttemptId(transportedAttemptId, qualificationSettlement);
     await appendPipelineEvent({
@@ -2797,6 +2809,11 @@ export async function recordPendingCheckpointVerdict(
  * suite can't wedge the routines tick.
  */
 registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
+  // Resume pending admission from a controller that died after its durable verdict.
+  // The existing routine owns this retry; no parallel scheduler is introduced.
+  await recoverCheckpointTerminalEvents(ctx).then(result => {
+    if (result.failed.length) console.warn(`${orchestratorStdoutTag()} terminal wakes remain pending: ${result.failed.join('; ')}`);
+  }).catch(error => console.warn(`${orchestratorStdoutTag()} terminal wake recovery unavailable: ${String(error)}`));
   // WI-38150: bind the self-heal graph NOW, while the tree still matches the state this run is
   // about to judge. By the time the suite ends (30-55min) the checkout has moved under us, and a
   // late `await import` of the notify/dispatch path can bind across the mutation and throw. Awaited

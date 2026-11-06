@@ -8386,6 +8386,7 @@ mod tests {
                     is_plugin: false,
                     exited: false,
                     command: None,
+                    adv_session_id: None,
                 },
                 PaneNode {
                     id: 2,
@@ -8395,6 +8396,7 @@ mod tests {
                     is_plugin: false,
                     exited: false,
                     command: None,
+                    adv_session_id: None,
                 },
             ],
         });

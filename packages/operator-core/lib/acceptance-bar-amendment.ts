@@ -23,6 +23,7 @@ import { specBehaviorNonAtomicReason, specBehaviorNonFalsifiableReason } from '.
 import {
   setSpecClause,
   specClauseWriteIssues,
+  specWriteSchema,
   specClauseContentHash,
   type SpecClauseSql,
   type SpecClauseWrite,
@@ -1016,10 +1017,15 @@ export async function validateAcceptanceBarRevisionProjectionPreview(
   },
 ): Promise<{ candidateHash: string; generatedSpecCount: number } | undefined> {
   const parsed = rubricTemplateDataAuthoringSchema.safeParse(args.templateData);
-  if (!parsed.success || parsed.data.kind !== 'acceptance' || !parsed.data.barContract || !parsed.data.subjectPlan) {
-    return;
+  if (!parsed.success) {
+    throw new AcceptanceBarCandidateError(args, parsed.error.issues.map(
+      (issue) => `${issue.path.join('.')}: ${issue.message}`,
+    ));
   }
   const data = parsed.data;
+  if (data.kind !== 'acceptance' || !data.barContract || !data.subjectPlan) {
+    return;
+  }
   const previous = rubricTemplateDataAuthoringSchema.safeParse(args.previousTemplateData);
   const previousByKey = new Map(previous.success && previous.data.subjectPlan === data.subjectPlan
     ? previous.data.criteria.map((criterion) => [criterion.barKey ?? criterion.key, criterion])
@@ -1149,13 +1155,17 @@ export async function validateAcceptanceBarRevisionProjectionPreview(
     rubricSlug: args.rubricSlug, rubricRevision: args.rubricRevision,
     templateData: parsed.data, subjectContent, generatedSpecifications: candidateWrites,
   };
-  const issues = candidateWrites.flatMap((write) => [
-    ...specClauseWriteIssues(write).map((issue) => JSON.stringify(issue)),
-    ...[
-      ['behavior.atomicity', specBehaviorNonAtomicReason(write.behavior)],
-      ['behavior.falsifiability', specBehaviorNonFalsifiableReason(write.behavior)],
-    ].flatMap(([field, reason]) => reason ? [`${write.specId}.${field}: ${reason}`] : []),
-  ]);
+  const issues = candidateWrites.flatMap((write) => {
+    const shape = specWriteSchema.safeParse(write);
+    return [
+      ...(!shape.success ? shape.error.issues.map((issue) => `${write.specId}.${issue.path.join('.')}: ${issue.message}`) : []),
+      ...specClauseWriteIssues(write).map((issue) => JSON.stringify(issue)),
+      ...[
+        ['behavior.atomicity', specBehaviorNonAtomicReason(write.behavior)],
+        ['behavior.falsifiability', specBehaviorNonFalsifiableReason(write.behavior)],
+      ].flatMap(([field, reason]) => reason ? [`${write.specId}.${field}: ${reason}`] : []),
+    ];
+  });
   if (issues.length) {
     throw new AcceptanceBarCandidateError(candidate, issues);
   }

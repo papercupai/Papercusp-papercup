@@ -33,6 +33,7 @@ import { guardAcceptanceBarTemplateDataWrite } from '../../../agent-tools/plans/
 // `agent-tools/locks/configure`, which calls into the stubbed `@papercusp/db-org` at
 // module top level and kills the child before it can emit `ready`.
 import { deriveIndexFromContent } from '../../../agent-tools/plans/derive-index';
+import { preservePlanExecutionProgress } from '../../../agent-tools/plans/plan-execution-progress';
 import { writePlanIndexRows } from '../../../agent-tools/plans/plan-index-rows';
 import {
   resolveNewPlanVerificationProfile,
@@ -401,8 +402,8 @@ async function writeToPg(
       // this read and the upsert. `null` = no prior row (the upsert inserts).
       let prior: { content_differs: boolean } | null = null;
       if (!partFederationOn) {
-        const currentRows = await tx<Array<{ template_data: unknown; content_differs: boolean }>>`
-          SELECT template_data,
+        const currentRows = await tx<Array<{ template_data: unknown; content: string; content_hash: string; content_differs: boolean }>>`
+          SELECT template_data, content, content_hash,
                  content IS DISTINCT FROM ${row.content} AS content_differs
             FROM harness_shared.harness_plans
            WHERE workspace_id = ${opts.workspaceId}
@@ -411,6 +412,9 @@ async function writeToPg(
            LIMIT 1
         `;
         prior = currentRows[0] ? { content_differs: currentRows[0].content_differs } : null;
+        if (currentRows[0]) await preservePlanExecutionProgress(tx as unknown as PlanRevisionSql,
+          { workspaceId: opts.workspaceId, harnessSlug: row.harness_slug, planSlug: row.plan_slug },
+          currentRows[0].content, row.content, currentRows[0].content_hash, row.content_hash);
         const currentTemplateData = currentRows[0]?.template_data;
         if (row.template_data !== undefined && currentTemplateData !== undefined && currentTemplateData !== null) {
           const guarded = guardAcceptanceBarTemplateDataWrite({

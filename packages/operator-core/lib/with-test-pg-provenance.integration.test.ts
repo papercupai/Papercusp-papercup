@@ -5,6 +5,8 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { describe, expect, it } from 'vitest';
 import { observeIsolatedWorkerLifetime } from '../test/isolated-integration-proof';
+import { runVitestRootPreflight, RESTRICTED_HOLD_PREFLIGHT_ENV,
+  RESTRICTED_HOLD_PREFLIGHT_MARKER } from '../../../scripts/lib/restricted-hold-preflight.mjs';
 
 const run = promisify(execFile);
 const root = resolve(import.meta.dirname, '../../..');
@@ -130,6 +132,40 @@ describe('private PostgreSQL pool admission', () => {
 });
 
 describe('isolated PostgreSQL mutation evidence', () => {
+  it('retains the upstream admission decision instead of repeating policy in the private product database', async () => {
+    // The fixture replaces only the host census provider. Obtain the admission
+    // channel from the real policy function; the child runs assertions, not tests.
+    const admitted = runVitestRootPreflight({ repoRoot: root, files: [import.meta.filename], env: {},
+      spawn: (() => ({ status: 0, stdout: `${RESTRICTED_HOLD_PREFLIGHT_MARKER} {"verdict":"admit"}\n` })) as never });
+    expect(admitted.verdict).toBe('admit');
+    if (admitted.verdict !== 'admit') throw new Error('host admission fixture refused');
+    const marker = admitted.setEnv[RESTRICTED_HOLD_PREFLIGHT_ENV];
+    const child = `
+      import assert from 'node:assert/strict';
+      import { runVitestRootPreflight } from './scripts/lib/restricted-hold-preflight.mjs';
+      assert.equal(process.env.PAPERCUSP_RESTRICTED_HOLD_PREFLIGHT, ${JSON.stringify(marker)});
+      assert.equal(process.env.PAPERCUSP_SUBSTRATE_IPC_SOCKET, undefined);
+      assert.notEqual(process.env.HARNESS_ADMIN_DATABASE_URL, 'postgresql://unused@localhost:5432/ambient');
+      const verdict = runVitestRootPreflight({ repoRoot: process.cwd(), files: [], env: process.env,
+        spawn() { throw new Error('PRIVATE_PRODUCT_DB_MUST_NOT_AUTHORIZE_SHARED_TREE'); } });
+      assert.deepEqual(verdict, { verdict: 'skipped', reason: 'admitted-upstream' });
+      const unknown = runVitestRootPreflight({ repoRoot: process.cwd(), files: [],
+        env: { PAPERCUSP_RESTRICTED_HOLD_PREFLIGHT: 'not-an-admission' },
+        spawn() { return { status: 3, stdout: 'RESTRICTED_HOLD_PREFLIGHT {"verdict":"refuse","error":"restricted_hold_state_unknown","hint":"unavailable"}\\n' }; } });
+      assert.equal(unknown.verdict, 'refuse');
+      console.log('PRIVATE_UPSTREAM_ADMISSION_RETAINED');
+    `;
+    const { stdout } = await run(process.execPath, [join(root, 'scripts/with-test-pg.mjs'),
+      '--isolated-runtime', '--', process.execPath, '--input-type=module', '-e', child], {
+      cwd: root, env: { ...process.env, ...admitted.setEnv,
+        PAPERCUSP_SUBSTRATE_IPC_SOCKET: '/ambient/operator.sock',
+        HARNESS_ADMIN_DATABASE_URL: 'postgresql://unused@localhost:5432/ambient' },
+      timeout: 180_000, maxBuffer: 8 * 1024 * 1024,
+    });
+    expect(stdout).toContain('PRIVATE_UPSTREAM_ADMISSION_RETAINED');
+    expect(stdout).toContain('"runtimeRemoved":true,"pgDataRemoved":true');
+  }, 200_000);
+
   it.each([true, false])('keeps committed-source receipts and router deadlines optional across the private runtime (configured=%s)', async configured => {
     const directory = mkdtempSync(join(tmpdir(), 'private-pg-source-audit-'));
     const auditPath = join(directory, 'load-receipts.jsonl');

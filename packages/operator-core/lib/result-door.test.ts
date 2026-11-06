@@ -4017,6 +4017,45 @@ describe('applyResultDoor', () => {
       expect(inline._projection.cursor).toMatchObject({ tool: 'capability:read', bodyComplete: false });
     });
 
+    it.each([false, true])('testing:runs keeps failed-row filePath and framework through upstream partial reads (nested=%s)', (nested) => {
+      const rowCount = 6;
+      const outputTailChars = Math.floor((BUDGET_CHARS - 900) / rowCount);
+      const filePaths = Array.from({ length: rowCount }, (_, index) => `packages/example/failure-${index}.test.ts`);
+      const body = {
+        ok: true,
+        count: rowCount,
+        runs: filePaths.map((filePath, index) => ({
+          id: 22_897_000 + index,
+          filePath,
+          framework: 'vitest',
+          status: 'fail',
+          outputTail: 'x'.repeat(outputTailChars),
+        })),
+      };
+      const text = JSON.stringify(body);
+      expect(Buffer.byteLength(text, 'utf8')).toBeLessThanOrEqual(BUDGET_CHARS);
+
+      const doored = applyResultDoor({
+        content: [{ type: 'text' as const, text }],
+        _meta: { payloadProjection },
+      }, {
+        toolName: nested ? 'tools:invoke' : 'testing:runs',
+        ...(nested ? { nestedTargetToolName: 'testing:runs' } : {}),
+        effect: 'read', workspaceId: 'ws-1', runId: RUN_ID,
+      });
+      const inline = boundedBody(doored) as {
+        _partial: boolean;
+        _projection: { cursor: { bodyComplete?: boolean } };
+        runs: Array<{ filePath?: string; framework?: string }>;
+      };
+
+      expect(inline._partial).toBe(true);
+      expect(inline._projection.cursor.bodyComplete).toBe(false);
+      expect(inline.runs.map((row) => row.filePath)).toEqual(filePaths);
+      expect(inline.runs.map((row) => row.framework)).toEqual(Array(rowCount).fill('vitest'));
+      expect(Buffer.byteLength(JSON.stringify(inline), 'utf8')).toBeLessThanOrEqual(BUDGET_CHARS);
+    });
+
     it('keeps requested work-item thread details inline when a sibling checkpoint is clipped', () => {
       const post = { id: 17, body: 'the complete thread reply', createdAt: '2026-11-03T03:00:00Z' };
       const detailRow = {

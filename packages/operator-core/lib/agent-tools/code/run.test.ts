@@ -168,164 +168,20 @@ describe('code:run registration (B-CX-2A)', () => {
     }
   });
 
-  it('documents explicit held-item attribution before multi-claim shell dispatch', () => {
-    const tool = listAllProjectedTools().find((t) => t.expose.mcp?.name === 'code:run');
-    const scriptDescription =
-      (tool?.inputSchema as { properties?: { script?: { description?: string } } })?.properties?.script?.description ??
-      '';
-    expect(scriptDescription).toContain('If you hold multiple work-items');
-    expect(scriptDescription).toContain('work-item you currently hold');
-    expect(scriptDescription).toContain('tools.capability.bash({ command, work_item_id: "WI-1234" })');
-    expect(scriptDescription).toContain('`work_item_id_required` before dispatch');
-    expect(scriptDescription).toContain('a single held claim can remain implicit');
-  });
-
-  it('distinguishes code:run dynamic dispatch from the outer tools.invoke wrapper', () => {
-    const tool = listAllProjectedTools().find((t) => t.expose.mcp?.name === 'code:run');
-    const scriptDescription =
-      (tool?.inputSchema as { properties?: { script?: { description?: string } } })?.properties?.script?.description ??
-      '';
-    expect(scriptDescription).toContain('There is no tools.invoke shortcut in this sandbox');
-    expect(scriptDescription).toContain('dynamic dispatch is tools.tools.invoke({ name, args })');
-    expect(scriptDescription).toContain('or use tools.ns.verb(args) directly');
-  });
-
-  it('documents JavaScript escaping for shell backslash-zero commands', () => {
-    const tool = listAllProjectedTools().find((t) => t.expose.mcp?.name === 'code:run');
-    const scriptDescription =
-      (tool?.inputSchema as { properties?: { script?: { description?: string } } })?.properties?.script?.description ??
-      '';
-    expect(scriptDescription).toContain("tr '\\\\0' ' '");
-    expect(scriptDescription).toContain('two backslashes in the script source');
-    expect(scriptDescription).toContain('a NUL and is rejected before bash runs');
-  });
-
-  it('documents typed nested tool results rather than the MCP content envelope', () => {
-    const tool = listAllProjectedTools().find((t) => t.expose.mcp?.name === 'code:run');
-    const scriptDescription =
-      (tool?.inputSchema as { properties?: { script?: { description?: string } } })?.properties?.script?.description ??
-      '';
-    expect(scriptDescription).toContain('Nested tool calls return their typed result root');
-    expect(scriptDescription).toContain('read `result.output`, `result.exit_code`, and `result.status`');
-    expect(scriptDescription).toContain('do not read `result.content[0].text`');
-    expect(scriptDescription).toContain('`dev:pg_query`, query results expose `result.rows`, `result.fields`, and `result.rowCount`');
-    expect(scriptDescription).toContain('relation descriptions expose `result.columns`, `result.indexes`, and `result.constraints`');
-  });
-
-  it('documents bounded read-only results recovered after a script timeout', () => {
-    const tool = listAllProjectedTools().find((t) => t.expose.mcp?.name === 'code:run');
-    const scriptDescription =
-      (tool?.inputSchema as { properties?: { script?: { description?: string } } })?.properties?.script?.description ??
-      '';
-    expect(scriptDescription).toContain('timeoutSettledReadRecovery.calls');
-    expect(scriptDescription).toContain('omittedReadCount');
-    expect(scriptDescription).toContain('Write results are never included in timeout recovery');
-  });
-
-  it('documents JavaScript escaping for literal shell backslashes', () => {
-    const tool = listAllProjectedTools().find((t) => t.expose.mcp?.name === 'code:run');
-    const scriptDescription =
-      (tool?.inputSchema as { properties?: { script?: { description?: string } } })?.properties?.script?.description ??
-      '';
-    expect(scriptDescription).toContain('Literal shell backslashes need the same JS escaping');
-    expect(scriptDescription).toContain('use String.raw for the script or double each backslash in a JS string');
-    expect(scriptDescription).toContain("find /tmp \\\\( -name '*.unlikely-no-match' \\\\)");
-    expect(scriptDescription).toContain('a single `\\(` becomes `(` before bash runs');
-    expect(scriptDescription).toContain('breaking grouped predicates');
-  });
-
-  it('documents JavaScript escaping for shell parameter expansion', () => {
-    const tool = listAllProjectedTools().find((t) => t.expose.mcp?.name === 'code:run');
-    const scriptDescription =
-      (tool?.inputSchema as { properties?: { script?: { description?: string } } })?.properties?.script?.description ??
-      '';
-    expect(scriptDescription).toContain('Shell parameter expansion needs the same template-layer escape');
-    expect(scriptDescription).toContain('`\\${f##*/}`');
-    expect(scriptDescription).toContain('code:run returns `compile_error` before bash is dispatched');
-  });
-
-  it('documents the valid multiline shell-command string forms', () => {
-    const tool = listAllProjectedTools().find((t) => t.expose.mcp?.name === 'code:run');
-    const scriptDescription =
-      (tool?.inputSchema as { properties?: { script?: { description?: string } } })?.properties?.script?.description ??
-      '';
-    expect(scriptDescription).toContain('backtick template literal for `command`');
-    expect(scriptDescription).toContain('escape each line break as `\\n`');
-    expect(scriptDescription).toContain('literal newline inside a single/double-quoted string');
-    expect(scriptDescription).toContain('before bash dispatch');
-  });
-
-  it('documents regex path-slash escaping and safer alternatives', () => {
-    const tool = listAllProjectedTools().find((t) => t.expose.mcp?.name === 'code:run');
-    const scriptDescription =
-      (tool?.inputSchema as { properties?: { script?: { description?: string } } })?.properties?.script?.description ??
-      '';
-    expect(scriptDescription).toContain('Invalid regular expression flags');
-    expect(scriptDescription).toContain('String.includes(...)');
-    expect(scriptDescription).toContain('new RegExp("...")');
-  });
-
-  it('documents nested shell quoting for regexes containing apostrophes', () => {
-    const tool = listAllProjectedTools().find((t) => t.expose.mcp?.name === 'code:run');
-    const scriptDescription =
-      (tool?.inputSchema as { properties?: { script?: { description?: string } } })?.properties?.script?.description ??
-      '';
-    expect(scriptDescription).toContain('apostrophe regexes break single-quoted arguments');
-    expect(scriptDescription).toContain('use rg -F');
-    expect(scriptDescription).toContain('-e per pattern');
-    expect(scriptDescription).toContain('quoted stdin/file');
-  });
-
-  it('documents runtime concatenation for JSON data in nested shell commands', () => {
-    const tool = listAllProjectedTools().find((t) => t.expose.mcp?.name === 'code:run');
-    const scriptDescription =
-      (tool?.inputSchema as { properties?: { script?: { description?: string } } })?.properties?.script?.description ??
-      '';
-    expect(scriptDescription).toContain('do not interpolate `JSON.stringify(ids)` into a JavaScript double-quoted command literal');
-    expect(scriptDescription).toContain('cause `compile_error` before bash is dispatched');
-    expect(scriptDescription).toContain('keep the serialized value in a script variable and concatenate it into the command at runtime');
-    expect(scriptDescription).toContain('quoted stdin, a heredoc, or an argument');
-  });
-
-  it('documents quote-safe inline Python -c commands', () => {
-    const tool = listAllProjectedTools().find((t) => t.expose.mcp?.name === 'code:run');
-    const scriptDescription =
-      (tool?.inputSchema as { properties?: { script?: { description?: string } } })?.properties?.script?.description ??
-      '';
-    expect(scriptDescription).toContain('For inline Python `-c`');
-    expect(scriptDescription).toContain("String.raw`journalctl -u app.service | python3 -c 'import sys;");
-    expect(scriptDescription).toContain('prevents `compile_error` before bash is dispatched');
-  });
-
-  it('warns against literal backslash-n Python source in shell-quoted -c programs', () => {
+  it.each([
+    ['work_item_id', ['Default attribution for nested capability:bash', 'holding several items']],
+    ['script', ['Plain JavaScript only', 'TypeScript annotations are unsupported']],
+    ['script', ['Dynamic dispatch is `tools.tools.invoke({ name, args })`', 'recursive `code:run` and `orchestrate:run` calls are excluded']],
+    ['script', ['Nested calls return typed result roots', '`output`, `exit_code`, `status`', '`rows`, `fields`, and `rowCount`']],
+    ['script', ['timeoutSettledReadRecovery.calls', 'omittedReadCount', 'writes are never recovered']],
+    ['script', ['preserve backslashes and `${...}` at each layer', 'a template literal or quoted heredoc', 'instead of interpolating it into a shell string']],
+    ['script', ['Use fixed-string search or separate `-e` patterns']],
+  ])('preserves the concise %s discovery contract: %j', (field, required) => {
     const tool = listAllProjectedTools().find((candidate) => candidate.expose.mcp?.name === 'code:run');
-    const scriptDescription =
-      (tool?.inputSchema as { properties?: { script?: { description?: string } } })?.properties?.script?.description ??
-      '';
-    expect(scriptDescription).toContain('literal `\\n` inside the shell-quoted program');
-    expect(scriptDescription).toContain('line-continuation SyntaxError');
-    expect(scriptDescription).toContain('quoted heredoc');
-    expect(scriptDescription).toContain('semicolon-delimited one-liner');
+    const schema = tool?.inputSchema as { properties?: Record<string, { description?: string }> } | undefined;
+    const description = schema?.properties?.[field as string]?.description ?? '';
+    for (const fragment of required as string[]) expect(description).toContain(fragment);
   });
-
-  it('documents that scripts are plain JavaScript rather than TypeScript', () => {
-    const tool = listAllProjectedTools().find((t) => t.expose.mcp?.name === 'code:run');
-    const scriptDescription =
-      (tool?.inputSchema as { properties?: { script?: { description?: string } } })?.properties?.script?.description ??
-      '';
-    expect(scriptDescription).toContain('Plain JavaScript body only');
-    expect(scriptDescription).toContain('TypeScript annotations such as `: any` are not supported');
-  });
-
-  it('documents the recursive execution doors excluded from the script facade', () => {
-    const tool = listAllProjectedTools().find((t) => t.expose.mcp?.name === 'code:run');
-    const scriptDescription =
-      (tool?.inputSchema as { properties?: { script?: { description?: string } } })?.properties?.script?.description ??
-      '';
-    expect(scriptDescription).toContain('tools.code.run');
-    expect(scriptDescription).toContain('tools.orchestrate.run');
-  });
-
   it('lets malformed shell text reach the VM compile error instead of static arg preflight', async () => {
     const tool = listAllProjectedTools().find((candidate) => candidate.expose.mcp?.name === 'code:run');
     if (!tool) throw new Error('code:run not registered');

@@ -21,7 +21,6 @@ import { createScratchClone, runLocalGit } from '../../scratch-git-clone';
 import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
-import { boundedOrgTxn } from '../../pg-bounded-txn';
 import {
   parseTestRunExecutionDetails,
   isRecordedCaseTitle,
@@ -99,12 +98,6 @@ const operationalEvidenceArtifactSchema = z
       // Preserve raw proof in Git when the published working copy is redacted.
       rawLogCommit: z.string().regex(/^[a-f0-9]{40}$/).optional(),
     }).optional(),
-    deferredMutation: z.object({
-      receiptFile: z.string().min(1).max(400),
-      receiptSha256: sha256Schema,
-      rawLogFile: z.string().min(1).max(400),
-      rawLogSha256: sha256Schema,
-    }).optional(),
   })
   .passthrough();
 
@@ -117,7 +110,6 @@ export interface CommittedOperationalEvidence {
   commit: string;
   /** Exact bytes from HEAD or rawLogCommit, never the redacted publication. */
   archiveLog?: string;
-  deferredReceipt?: string;
 }
 
 export interface ArchivedMutationRun {
@@ -216,8 +208,7 @@ export function parseOperationalEvidenceArtifact(bytes: Buffer): OperationalEvid
     throw new Error(`evidence_schema_invalid: ${issues.join('; ') || 'invalid'}${more}`);
   }
   const artifact = result.data;
-  if (artifact.archivedMutation && artifact.deferredMutation) throw new Error('evidence_mutation_recovery_ambiguous');
-  if ((artifact.archivedMutation || artifact.deferredMutation) && !artifact.mutationProbes?.length) {
+  if (artifact.archivedMutation && !artifact.mutationProbes?.length) {
     throw new Error('evidence_archived_mutation_probe_required');
   }
   // Classify by the RUNNER's own signatures, not the phrase "mutation probe" (EI-25254538716868224):
@@ -329,15 +320,14 @@ export async function inspectCommittedOperationalEvidence(
   }
 
   let archiveLog: string | undefined;
-  if (artifact.archivedMutation || artifact.deferredMutation) {
-    const archive = artifact.archivedMutation ?? artifact.deferredMutation!;
-    const rawLogCommit = 'rawLogCommit' in archive ? archive.rawLogCommit : undefined;
+  if (artifact.archivedMutation) {
+    const archive = artifact.archivedMutation;
     const path = archive.rawLogFile;
     if (!path.startsWith('docs/evidence/') || !path.endsWith('.log') || path.includes('\\')
       || path.split('/').includes('..') || path.includes('\0')) throw new Error('evidence_archive_path_invalid');
     let logBytes: Buffer;
-    if (rawLogCommit) {
-      const object = `${rawLogCommit}:${path}`;
+    if (archive.rawLogCommit) {
+      const object = `${archive.rawLogCommit}:${path}`;
       let size: number;
       try {
         size = Number((await gitOutput(realRoot, ['cat-file', '-s', object])).toString('utf8').trim());
@@ -356,28 +346,10 @@ export async function inspectCommittedOperationalEvidence(
     if (createHash('sha256').update(logBytes).digest('hex') !== archive.rawLogSha256) {
       throw new Error('evidence_archive_sha256_mismatch');
     }
-    if (!rawLogCommit && !(await gitOutput(realRoot, ['show', `HEAD:${path}`])).equals(logBytes)) {
+    if (!archive.rawLogCommit && !(await gitOutput(realRoot, ['show', `HEAD:${path}`])).equals(logBytes)) {
       throw new Error('evidence_archive_not_committed');
     }
     archiveLog = logBytes.toString('utf8');
-  }
-  let deferredReceipt: string | undefined;
-  if (artifact.deferredMutation) {
-    const receipt = artifact.deferredMutation;
-    const path = receipt.receiptFile;
-    if (!path.startsWith('docs/evidence/') || !path.endsWith('.jsonl') || path.includes('\\')
-      || path.split('/').includes('..') || path.includes('\0')) throw new Error('evidence_receipt_path_invalid');
-    const absoluteReceipt = realpathSync(resolve(realRoot, path));
-    if (!insideRoot(realRoot, absoluteReceipt) || !statSync(absoluteReceipt).isFile()
-      || statSync(absoluteReceipt).size > MAX_OPERATIONAL_EVIDENCE_BYTES) throw new Error('evidence_receipt_path_invalid');
-    const receiptBytes = readFileSync(absoluteReceipt);
-    if (createHash('sha256').update(receiptBytes).digest('hex') !== receipt.receiptSha256) {
-      throw new Error('evidence_receipt_sha256_mismatch');
-    }
-    if (!(await gitOutput(realRoot, ['show', `HEAD:${path}`])).equals(receiptBytes)) {
-      throw new Error('evidence_receipt_not_committed');
-    }
-    deferredReceipt = receiptBytes.toString('utf8');
   }
   return {
     artifact,
@@ -385,142 +357,7 @@ export async function inspectCommittedOperationalEvidence(
     sha256,
     commit,
     ...(archiveLog === undefined ? {} : { archiveLog }),
-    ...(deferredReceipt === undefined ? {} : { deferredReceipt }),
   };
-}
-
-/** Recover the reporter's original failed measurement, never an inferred run.
- * The archived JSONL must include a settled rejected INSERT and the log must
- * independently expose the same assertion and immutable mutation descriptor. */
-export function recoverDeferredMutationReceipt(
-  evidence: CommittedOperationalEvidence,
-  scope: { workspaceId: string; harnessSlug: string },
-) {
-  if (!evidence.artifact.deferredMutation || !evidence.deferredReceipt || !evidence.archiveLog) {
-    throw new Error('evidence_deferred_receipt_missing');
-  }
-  const receipts = evidence.deferredReceipt.trim().split('\n').map(line => JSON.parse(line));
-  const receipt = receipts.at(-1);
-  const row = receipt?.row;
-  const detail = parseTestRunExecutionDetails(row?.executionDetails);
-  const diagnostics = receipt?.insertDiagnostics;
-  const startedAt = new Date(row?.startedAt);
-  const finishedAt = new Date(row?.finishedAt);
-  if (!detail || !row || receipts.length > 8 || receipts.some(prior =>
-    prior.receiptId !== receipt.receiptId || prior.outcome === 'inserted'
-    || JSON.stringify(prior.row) !== JSON.stringify(row))
-    || receipt.outcome !== 'failed' || receipt.errorCode !== 'CONNECTION_DESTROYED'
-    || typeof receipt.receiptId !== 'string' || !receipt.receiptId
-    || row.receiptId !== receipt.receiptId || receipt.attempt !== 0 || row.receiptAttempt !== 0
-    || receipt.filePath !== row.filePath || row.filePath !== detail.filePath
-    || receipt.status !== 'fail' || row.status !== 'fail' || (row.framework ?? 'vitest') !== 'vitest'
-    || row.worktreeDirty !== false || detail.worktreeDirty !== false || row.isScratchConfig !== false
-    || detail.workspaceId !== scope.workspaceId || detail.harnessSlug !== scope.harnessSlug
-    || !detail.runGroupId || !detail.commitSha || row.commitSha !== detail.commitSha
-    || !/^[a-f0-9]{40}$/.test(detail.commitSha)
-    || detail.mutationPhase !== 'mutant' || detail.collectionFailed !== false
-    || detail.failed < 1 || detail.failedCaseTitles?.length !== detail.failed
-    || !Number.isFinite(startedAt.getTime()) || !Number.isFinite(finishedAt.getTime())
-    || finishedAt < startedAt || row.durationMs !== finishedAt.getTime() - startedAt.getTime()
-    || diagnostics?.schemaVersion !== 1 || !Number.isSafeInteger(diagnostics.backendPid)
-    || diagnostics.backendPid <= 0 || !Number.isFinite(Date.parse(diagnostics.startedAt))
-    || !Number.isFinite(Date.parse(diagnostics.settledAt))
-    || Date.parse(diagnostics.settledAt) < Date.parse(diagnostics.startedAt)) {
-    throw new Error('evidence_deferred_receipt_mismatch');
-  }
-  const probes = evidence.archiveLog.split('\n').filter(line => line.startsWith('MUTATION_PROBE_EVIDENCE_JSON='));
-  if (probes.length !== 1 || evidence.artifact.mutationProbes?.length !== 1) {
-    throw new Error('evidence_deferred_probe_mismatch');
-  }
-  const probe = mutationProbeReplaySchema.parse(JSON.parse(probes[0].slice('MUTATION_PROBE_EVIDENCE_JSON='.length)));
-  const mutation = detail.mutation;
-  const option = (name: string) => probe.argv[probe.argv.indexOf(name) + 1];
-  if (!mutation || mutation.leg !== 'mutant' || mutation.mode !== 'copy-out'
-    || JSON.stringify(probe) !== JSON.stringify(evidence.artifact.mutationProbes[0])
-    || probe.runnerCommit !== detail.commitSha || probe.result.verdict !== 'caught-ledger-unconfirmed'
-    || probe.result.expected !== 'caught' || probe.result.baselineExit !== 0 || probe.result.guardExit !== 2
-    || probe.result.assertionEvidence !== 'test-file-assertion-failure'
-    || option('--file') !== mutation.subjectPath || option('--mutate') !== mutation.mutateExpression
-    || option('--test') !== mutation.testCommand || mutation.mutantDiffTruncated
-    || !mutation.mutantDiff || mutation.subjectBeforeSha256 === mutation.subjectAfterSha256) {
-    throw new Error('evidence_deferred_probe_mismatch');
-  }
-  // The reporter emits flat display names while the canonical case ledger uses
-  // suite separators. Resolve each displayed assertion to ONE recorded identity.
-  const failures = evidence.archiveLog.split('\n').filter(line => line.startsWith('TEST_FILE_ASSERTION_FAILURE '));
-  const titles = detail.failedCaseTitles!;
-  const matched = new Set<string>();
-  for (const failure of failures) {
-    const match = /^TEST_FILE_ASSERTION_FAILURE file=("(?:[^"\\]|\\.)*") name=("(?:[^"\\]|\\.)*") message=/.exec(failure);
-    if (!match || JSON.parse(match[1]) !== resolve(detail.root, detail.filePath)) {
-      throw new Error('evidence_deferred_assertion_mismatch');
-    }
-    const name = JSON.parse(match[2]);
-    const candidates = titles.filter(title => title === name || title.split(' > ').join(' ') === name);
-    if (candidates.length !== 1 || matched.has(candidates[0])) throw new Error('evidence_deferred_assertion_mismatch');
-    matched.add(candidates[0]);
-  }
-  if (matched.size !== titles.length || failures.length !== detail.failed
-    || !evidence.archiveLog.includes('TEST_FILE_LEDGER_RECEIPT_MISSING ')) {
-    throw new Error('evidence_deferred_assertion_mismatch');
-  }
-  const stamps = evidence.archiveLog.split('\n').filter(line => line.startsWith('TEST_FILE_PROVENANCE ')).slice(-2);
-  const pre = /phase=pre-run startedAt=(\S+)/.exec(stamps[0] ?? '');
-  const post = /phase=post-run startedAt=(\S+)/.exec(stamps[1] ?? '');
-  if (!pre || !post || stamps.some(line => !line.includes(`head=${detail.commitSha!.slice(0, 10)} `)
-    || !line.includes('uncommitted=0 unknown=0 '))
-    || !(Date.parse(pre[1]) <= startedAt.getTime() && finishedAt.getTime() <= Date.parse(post[1]))) {
-    throw new Error('evidence_deferred_provenance_mismatch');
-  }
-  return { row, detail, startedAt, finishedAt, receiptId: receipt.receiptId as string,
-    backendPid: diagnostics.backendPid as number, insertStartedAt: diagnostics.startedAt as string };
-}
-
-export async function recordDeferredMutation(
-  evidence: CommittedOperationalEvidence,
-  scope: { workspaceId: string; harnessSlug: string },
-  root: string,
-  deps: { git: typeof gitOutput; transact: typeof boundedOrgTxn; persist: typeof persistHarnessTestRunsWithIds } = {
-    git: gitOutput, transact: boundedOrgTxn, persist: persistHarnessTestRunsWithIds,
-  },
-) {
-  const recovered = recoverDeferredMutationReceipt(evidence, scope);
-  const { detail, row } = recovered;
-  const mutation = detail.mutation!;
-  // Verify the original source and test against Git, not current working bytes.
-  for (const [path, hash] of [[mutation.subjectPath, mutation.subjectBeforeSha256],
-    [detail.filePath, mutation.testFileSha256]]) {
-    if (!hash || createHash('sha256').update(await deps.git(root, ['show', `${detail.commitSha}:${path}`])).digest('hex') !== hash) {
-      throw new Error('evidence_deferred_source_mismatch');
-    }
-  }
-  return deps.transact(async tx => {
-    await tx`SELECT pg_advisory_xact_lock(hashtextextended(${`test-receipt:${scope.workspaceId}:${detail.runGroupId}:${detail.filePath}`}, 0))`;
-    const active = await tx`SELECT pid FROM pg_stat_activity WHERE pid = ${recovered.backendPid}
-      AND backend_start <= ${recovered.insertStartedAt}::timestamptz`;
-    if (active.length) throw new Error('evidence_deferred_insert_still_active');
-    const existing = await tx`SELECT id, status, commit_sha, execution_details FROM harness_shared.test_runs
-      WHERE workspace_id = ${scope.workspaceId} AND harness_slug = ${scope.harnessSlug}
-        AND run_group_id = ${detail.runGroupId} AND file_path = ${detail.filePath}`;
-    if (existing.length) {
-      if (existing.length !== 1 || existing[0].status !== 'fail' || existing[0].commit_sha !== detail.commitSha
-        || JSON.stringify(parseTestRunExecutionDetails(existing[0].execution_details)) !== JSON.stringify(detail)) {
-        throw new Error('evidence_deferred_existing_receipt_mismatch');
-      }
-      return { ok: true, alreadyRecorded: true, testRunIds: [Number(existing[0].id)], status: 'fail' as const };
-    }
-    const result = await deps.persist({ ...scope, runGroupId: detail.runGroupId!, root: detail.root,
-      testNamePattern: detail.testNamePattern, mutationPhase: detail.mutationPhase,
-      source: 'mutation-probe', commit: detail.commitSha, worktreeDirty: false,
-      sql: tx as unknown as NonNullable<PersistHarnessTestRunsParams['sql']>,
-      rows: [{ filePath: detail.filePath, framework: 'vitest', status: 'fail', startedAt: recovered.startedAt,
-        finishedAt: recovered.finishedAt, durationMs: row.durationMs,
-        outputTail: `DEFERRED RECEIPT: ${recovered.receiptId}; artifact=${evidence.filePath}; sha256=${evidence.sha256}. No new test execution.`,
-        execution: detail }],
-    });
-    if (result.written !== 1 || result.ids.length !== 1) throw new Error('ledger_write_failed');
-    return { ok: true, alreadyRecorded: false, testRunIds: result.ids, status: 'fail' as const };
-  }, { statementTimeoutMs: 10_000, lockTimeoutMs: 1_000 });
 }
 
 /** Validate a saved machine log against an exact scoped receipt. No historical row is updated. */
@@ -830,15 +667,6 @@ export async function recordOperationalRun(
     return { ok: false, error: error instanceof Error ? error.message : 'evidence_unreadable' };
   }
 
-  if (evidence.artifact.deferredMutation) {
-    try {
-      return { ...await recordDeferredMutation(evidence, { workspaceId, harnessSlug }, resolveAgentWorkspaceRoot(ctx)),
-        recoveredFromReceipt: evidence.artifact.deferredMutation.receiptSha256,
-        evidence: { filePath: evidence.filePath, sha256: evidence.sha256, commit: evidence.commit } };
-    } catch (error) {
-      return { ok: false, error: error instanceof Error ? error.message : 'evidence_deferred_recovery_invalid' };
-    }
-  }
   if (evidence.artifact.archivedMutation) {
     const archive = evidence.artifact.archivedMutation;
     try {
@@ -1228,7 +1056,7 @@ export default defineTool({
   description:
     'Native checks execute and record directly: planTerminalCensus:{slug}, gitScratchPlacement:{ref}, syncBatchCoverageAccounting:{} (see each arg). ' +
     'Register completed non-Vitest runs in test_runs; bind returned IDs with plans:bind-spec-evidence. ' +
-    'Evidence-file mode records an already-completed check; archivedMutation and deferredMutation never rerun it. deferredMutation recovers a settled failed reporter INSERT from committed hash-pinned JSONL/logs, verifies original source/test hashes and excludes an active backend or conflicting ledger row. Commit docs/evidence/*.json with schemaVersion:1, kind:"operational-test-evidence", command, timestamps, exitCode, summary, and assertions; pass expectedSha256. ' +
+    'Evidence-file mode records an already-completed check; archivedMutation never reruns it. Commit docs/evidence/*.json with schemaVersion:1, kind:"operational-test-evidence", command, timestamps, exitCode, summary, and assertions; pass expectedSha256. ' +
     'Mutation probes require exact MUTATION_PROBE_EVIDENCE_JSON records; shared .papercusp/scratch is refused. archivedMutation restores failed-case identities from a committed raw log after validating its hash and scoped receipt; rawLogCommit pins redacted logs. Legacy NULL-execution receipts restore only when scope, outcome, timestamps, and committed bytes match. ' +
     `Evidence limit: ${MAX_OPERATIONAL_EVIDENCE_BYTES} bytes; pin bulky logs by SHA-256. Verdict uses exitCode + assertions; idempotent by artifact hash.`,
   guidance: {

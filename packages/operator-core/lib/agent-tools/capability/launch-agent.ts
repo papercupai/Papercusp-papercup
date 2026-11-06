@@ -43,7 +43,7 @@ import type { AbortCompletionReceipt, ToolResult } from '@papercusp/tooldef';
 import { assembleRolePrompt } from '@papercusp/orchestrator/role-prompt';
 import { parseBindingRef } from '@papercusp/orchestrator/blueprint';
 import { buildConsoleEnvelope } from '../../console-launcher';
-import { spawnConsole, spawnHeadless, type SpawnChildExit } from '../../console-spawn';
+import { spawnConsole, spawnHeadless, type SpawnChildExit, type SpawnConsoleResult } from '../../console-spawn';
 import { AGENT_LAUNCH_HANDLER_TIMEOUT_SEC, RESUME_VERIFY_TIMEOUT_MS } from '../../agent-kickoff/launch-budgets.mjs';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { papercuspPathForWorkspace } from '../../papercusp-root';
@@ -116,6 +116,8 @@ import {
   readAdvSessionLaunchRecordByOwner,
   releaseAdvSessionResume,
   RESUME_RESERVATION_MAX_LEASE_SEC,
+  type AdvSessionLocalLivenessEvidence,
+  type AdvSessionResumePin,
 } from '../../adv-sessions';
 import { resolveSessionStates } from '../coordination/liveness-oracle';
 import { listTasks } from '../../task-manager/store';
@@ -132,10 +134,11 @@ import {
   readPsuLaunchLogTail,
 } from '../../psu-launch-log.mjs';
 import { assertOriginalCodexRouting, codexThreadWriterHolder, GOVERNED_RESUME_RESERVATION_ENV,
+  normalizeArgvProbeResumeLocalLivenessEvidence, normalizeCodexResumeLocalLivenessEvidence, sessionProcessHolder,
   ORIGINAL_CODEX_ROUTING_ENV, supportsTrackedFork } from '../../../../../apps/operator/scripts/psu-launcher.mjs';
 import { LaunchModelAliasError, resolveCodexModelSelection, resolveLaunchModelAlias } from '../../model-context-budget.mjs';
 import { isSuTierRole } from '../../su-role-addendum';
-import { spawnGovernedAgentProcess } from '../../resource-governor/spawn-execution';
+import { spawnGovernedAgentProcess, type GovernedSpawnResult } from '../../resource-governor/spawn-execution';
 import {
   resolveSavedFleetLaunchSpec,
   savedOriginalMemberLaunchSpec,
@@ -1252,6 +1255,8 @@ export default defineTool({
     let resumeHarnessSlug: string | null = null;
     let resumeSourceAdvSessionId: number | null = null;
     let resumeNeedsStartupReservation = false;
+    let resumeLocalLivenessEvidence: AdvSessionLocalLivenessEvidence | undefined;
+    let resumeStartupPin: AdvSessionResumePin | undefined;
     let resumeModel: string | null = null;
     let resumeModelSource: CodexModelSource | null = null;
     let resumeAccount: string | null = null;
@@ -1775,13 +1780,24 @@ export default defineTool({
             if (!current.ok || custody(current) !== sourceCustody) {
               throw new Error(refusal + 'source custody changed during preparation; no replacement was launched.');
             }
-            if (current.live || await findLiveHostAsync(target.ownerId!)) {
+            const liveHost = await findLiveHostAsync(target.ownerId!);
+            if (current.live || liveHost) {
               throw new Error(refusal + 'the source session became LIVE during preparation; no replacement was launched.');
             }
             const writer = readSourceCodexWriter();
             if (target.agent === 'codex' && (!writer || writer.held || !['free', 'no-lock-file'].includes(writer.reason))) {
               throw new Error(refusal + 'the Codex writer is live or unknown; no replacement was launched.');
             }
+            // A hard kill leaves a recent ADV row without an end stamp. Carry
+            // the same backend-specific absence witness used by native resume
+            // into its row-locked reservation; host absence alone is insufficient.
+            resumeLocalLivenessEvidence = hasAdvSessionTerminalEvidence(current) ? undefined
+              : (target.agent === 'codex'
+                ? normalizeCodexResumeLocalLivenessEvidence({ agent: target.agent, liveHost, writerHolder: writer })
+                : normalizeArgvProbeResumeLocalLivenessEvidence({ agent: target.agent ?? undefined, liveHost,
+                  processHolder: sessionProcessHolder(resumeSessionId) })) ?? undefined;
+            resumeStartupPin = current.binding
+              ? { workspaceId, binding: current.binding } : undefined;
             resumeNeedsStartupReservation = hasAdvSessionTerminalEvidence(current) || current.live === false;
           };
           try { await recheckInPlaceResume(); } catch (error) {
@@ -2947,7 +2963,7 @@ export default defineTool({
       );
       return progressWriteQueue;
     };
-    const persistMemberLaunchResult = async (memberIndex: number, result: SpawnChildExit) => {
+    const persistMemberLaunchResult = async (memberIndex: number, result: SpawnConsoleResult) => {
       const key = String(memberIndex);
       const member: Record<string, unknown> = {
         memberIndex,
@@ -2956,11 +2972,11 @@ export default defineTool({
         headless: !!foldedConfigs[memberIndex].headless,
         status: result.status,
         outcome: result.status === 'ok' ? 'opened' : 'failed',
-        ...(result.pid != null ? { pid: result.pid } : {}),
-        ...(result.terminalPid != null ? { terminalPid: result.terminalPid } : {}),
+        ...(result.status === 'ok' && result.pid != null ? { pid: result.pid } : {}),
+        ...(result.status === 'ok' && result.terminalPid != null ? { terminalPid: result.terminalPid } : {}),
         ...(result.taskId != null ? { taskId: result.taskId } : {}),
         ...(result.logPath != null ? { logPath: result.logPath } : {}),
-        ...(result.normalizedLogPath != null ? { normalizedLogPath: result.normalizedLogPath } : {}),
+        ...(result.status === 'ok' && result.normalizedLogPath != null ? { normalizedLogPath: result.normalizedLogPath } : {}),
         ...(result.status === 'error' ? { code: result.code, error: result.error } : {}),
       };
       launchMemberResults[key] = member;
@@ -3065,7 +3081,7 @@ export default defineTool({
               throw new Error('Ended-source resume requires exact source and launcher identities before admission.');
             const claimKey = `governed-resume:${randomUUID()}`;
             const reservation = await acquireAdvSessionResume(resumeSourceAdvSessionId, claimKey,
-              RESUME_RESERVATION_MAX_LEASE_SEC, undefined, undefined, true);
+              RESUME_RESERVATION_MAX_LEASE_SEC, undefined, resumeLocalLivenessEvidence, true, resumeStartupPin);
             if (!reservation.acquired) throw new Error(`Ended-source resume reservation refused: ${reservation.status}`);
             startupReservation = { advSessionId: resumeSourceAdvSessionId, ownerId: targetOwnerId,
               claimKey, expiresAtMs: new Date(reservation.leaseExpiresAt).getTime() };
@@ -3201,7 +3217,7 @@ export default defineTool({
           // its durable receipt cannot be persisted). Keep the attempt in its member
           // slot so a partial batch still reports the right member labels, while
           // making the rejection eligible for the zero-open rollback below.
-          const failedResult: SpawnChildExit = {
+          const failedResult: GovernedSpawnResult = {
             status: 'error' as const,
             code: 500,
             error: `governed spawn failed: ${(error as Error)?.message ?? error}`,
@@ -3693,7 +3709,7 @@ export default defineTool({
             },
           }
         : {}),
-      tasks: results.flatMap((result, i) => {
+      tasks: results.flatMap<Record<string, unknown>>((result, i) => {
         if (result.status !== 'ok') {
           const handle = launchProcessHandles[String(i)];
           return handle ? [{ ...handle, status: 'error' }] : [];

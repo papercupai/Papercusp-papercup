@@ -27,8 +27,9 @@ import { join } from 'node:path';
 import { bootHarnessSubstrate, type BootHarnessOpts } from '../boot';
 import { CURRENT_SCHEMA_VERSION } from '../schema-version';
 import { findLatestSnapshotIndex } from '../read-merge';
-import { isSnapshotOp, type SnapshotPayload } from '../log-snapshot';
-import { listBootHistory } from '../boot-history';
+import { isSnapshotOp, SNAPSHOT_READ_CONCURRENCY, type SnapshotPayload } from '../log-snapshot';
+import { _resetBootHistoryForTests, _setPgWriteForTests, listBootHistory } from '../boot-history';
+import * as ownCompactionAnchor from '../own-compaction-anchor';
 import type { PeerLogOp } from '../peer-log';
 
 const cleanups: Array<() => void | Promise<void>> = [];
@@ -51,7 +52,7 @@ function tmpWorkspaceRoot(): string {
 async function bootWithOps(
   slug: string,
   opCount: number,
-  extra: Pick<BootHarnessOpts, 'loadOwnCompactionGovernorReceiptKeys'> = {},
+  extra: Pick<BootHarnessOpts, 'loadOwnCompactionGovernorReceiptKeys' | 'ownCompactionProgressIntervalMs'> = {},
 ) {
   const handle = await bootHarnessSubstrate({
     workspaceRoot: tmpWorkspaceRoot(),
@@ -131,6 +132,74 @@ describe('produceHeadSnapshotNow (P-019 / D-012)', () => {
     const snap = await handle.produceHeadSnapshotNow();
     expect(snap.appended).toBe(false);
     expect(handle.ownLog.length).toBe(0);
+  });
+
+  it('rejects an unreadable anchor without folding history and permits a later recovered request', async () => {
+    const anchor = vi.spyOn(ownCompactionAnchor, 'discoverOwnCompactionAnchor').mockResolvedValue({
+      known: false,
+      outcome: 'unreadable(atIndex=1,cause=timeout)',
+    });
+    cleanups.push(() => anchor.mockRestore());
+    const handle = await bootWithOps('head-unreadable-anchor', 2);
+    const lengthBefore = handle.ownLog.length;
+    const reads = vi.spyOn(handle.ownLog, 'get');
+
+    await expect(handle.produceHeadSnapshotNow()).rejects.toThrow(/anchor.*unreadable/);
+
+    // The normal merge can still read the tail. It must not start the snapshot's
+    // fallback scan at block zero or append a replacement set on unknown history.
+    expect(reads.mock.calls.map(([index]) => index)).not.toContain(0);
+    expect(handle.ownLog.length).toBe(lengthBefore);
+    reads.mockRestore();
+    anchor.mockRestore();
+
+    // The failed request must release both its coalescing slot and merge pass.
+    await handle.mergeNow();
+    const recovered = await handle.produceHeadSnapshotNow();
+    expect(recovered).toMatchObject({ appended: true, coversUpTo: lengthBefore });
+    expect(await findLatestSnapshotIndex(handle.ownLog)).toBe(lengthBefore);
+  });
+
+  it.each([0, 60_000])('reports real head-fold cursors with a %ims progress throttle', async (interval) => {
+    const slug = `head-progress-${interval}`;
+    const rows: Array<{ harnessSlug: string; message?: string }> = [];
+    _setPgWriteForTests((entry) => rows.push(entry));
+    cleanups.push(() => _resetBootHistoryForTests());
+    const count = SNAPSHOT_READ_CONCURRENCY * 3 + 1;
+    const handle = await bootWithOps(slug, count, { ownCompactionProgressIntervalMs: interval });
+    // Freeze only the wall clock, keeping the real Corestore and event loop. A
+    // short fold must stay quiet under the production throttle, while interval 0
+    // exposes every completed read window for the behavioral wiring check.
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.now());
+    try {
+      const snap = await handle.produceHeadSnapshotNow();
+      expect(snap).toMatchObject({ appended: true, coversUpTo: count });
+      const messages = rows.filter((event) => event.harnessSlug === slug)
+        .map((event) => event.message ?? '');
+      const progress = messages.filter((message) => message.startsWith('on-demand head snapshot progress: '));
+      if (interval === 0) {
+        const cursors = progress.map((message) => Number(/cursor=(\d+)\//.exec(message)?.[1]));
+        expect(cursors).toEqual([
+          SNAPSHOT_READ_CONCURRENCY,
+          SNAPSHOT_READ_CONCURRENCY * 2,
+          SNAPSHOT_READ_CONCURRENCY * 3,
+          count,
+        ]);
+        expect(progress.every((message) => message.includes(`/${count} `))).toBe(true);
+        expect(progress.at(-1)).toContain(`decodedOps=${count}`);
+        const chronological = listBootHistory({ workspaceId: 'ws-p019', harnessSlug: slug })
+          .reverse().map((event) => event.message ?? '');
+        const completedAt = chronological.findIndex((message) => message.startsWith('on-demand head snapshot: '));
+        expect(completedAt).toBeGreaterThan(0);
+        // The durable writer observes progress in arrival order. The ring also
+        // holds the completion: every cursor must precede it.
+        expect(chronological.slice(0, completedAt).filter((message) => progress.includes(message))).toEqual(progress);
+      } else {
+        expect(progress).toEqual([]);
+      }
+    } finally {
+      clock.mockRestore();
+    }
   });
 
   it('CONCURRENT callers coalesce onto ONE snapshot — neither waiter is orphaned', async () => {

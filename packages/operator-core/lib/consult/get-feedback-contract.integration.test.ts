@@ -142,6 +142,7 @@ describe('registered consult contract and persisted recovery', () => {
     const accepted = await acceptFeedbackRequestCore(input, deps);
     if ('error' in accepted) throw new Error(`unexpected acceptance refusal: ${accepted.error}`);
     const retry = await acceptFeedbackRequestCore(request(input.requestKey!), deps);
+    if ('error' in retry) throw new Error(`unexpected acceptance refusal: ${retry.error}`);
     expect(accepted).toMatchObject({ verdict: 'accepted', state: 'routing', pending: true });
     expect(retry.conversation_id).toBe(accepted.conversation_id);
     const rows = await db.sql`SELECT conversation_id, routing FROM harness_shared.consult_state

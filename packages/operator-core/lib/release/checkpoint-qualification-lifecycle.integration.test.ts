@@ -33,6 +33,8 @@ import {
   probeRunnerLiveness,
   readStoredQualification,
   recordStoredQualificationRunnerProgress,
+  recordStoredQualificationProgressObservation,
+  qualificationProgressFence,
   recordStoredQualificationWorkProgress,
   recordStoredQualificationWorkYield,
   recordStoredQualificationNativeCompletion,
@@ -101,6 +103,54 @@ async function metadata(): Promise<Record<string, unknown>> {
 }
 
 describe('checkpoint qualification lifecycle (real row lock and JSONB)', () => {
+  it('independent observer persists selected work and rejects retired generations in real JSONB', async () => {
+    const nowMs = Date.now();
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(nowMs);
+    try {
+      const owner = { attemptId: 'observer-attempt', candidate: 'observer-candidate', runnerId: 'observer-runner',
+        runId: 'observer-run', pid: 42, pidIdentity: 'boot:42', unit: 'pc-observerroot.scope',
+        leaseDurationMs: 60_000, started: true, nowMs: nowMs - 1000 };
+      const current = reserveQualificationRunner(beginQualificationTransaction(null, {
+        ...owner, nowMs: nowMs - 2000,
+      }).transaction, owner).transaction;
+      current.currentPhysicalRunner = { ...current.currentPhysicalRunner!, phase: 'suite', phaseEnteredAtMs: nowMs - 1000 };
+      await seed({ qualificationTransaction: current });
+      const input: QualificationWorkProgressInput = { ...owner, repairHead: null, root: '/repo', taskKey: 'observer-work',
+        runContext: 'ci', runnerIdentity: 'proof-v3 node', retryStates: [], nowMs,
+        manifest: { schemaVersion: 1, units: [{ id: 'selected', kind: 'test', path: 'selected.test.ts' }] }, updates: [] };
+      expect((await recordStoredQualificationWorkProgress(target, input)).status).toBe('updated');
+      const sample = { fence: qualificationProgressFence(current, target), observerGeneration: 'first-observer',
+        sequence: 1, sampledAtMs: nowMs, monotonicAtMs: 1000, telemetryHealthy: true };
+      expect((await recordStoredQualificationProgressObservation(target, sample)).status).toBe('updated');
+      expect((await metadata()).qualificationTransaction).toMatchObject({
+        progressObservation: { health: 'baseline', semantic: 'unknown', completedUnits: [] },
+      });
+      expect((await recordStoredQualificationWorkProgress(target, { ...input, nowMs: nowMs + 500, updates: [
+        { receipt: { unitId: 'selected', completionId: 'first-completion', observedAtMs: nowMs + 500,
+          state: 'pass', firstAttemptVerdict: 'pass', worktreeDirty: false, observedCount: 1,
+          proof: { recordedSha: owner.candidate, runContext: 'ci', runnerIdentity: input.runnerIdentity,
+            executedModules: ['selected.test.ts'], readPaths: [], inputsCaptured: true, opaqueReasons: [] } } },
+      ] })).status).toBe('updated');
+      expect((await recordStoredQualificationProgressObservation(target, {
+        ...sample, sequence: 2, sampledAtMs: nowMs + 1000, monotonicAtMs: 2000,
+      })).status).toBe('updated');
+      const beforeRestart = (await metadata()).qualificationTransaction;
+      expect(beforeRestart).toMatchObject({ progressObservation: { health: 'healthy', semantic: 'advancing',
+        completedUnits: ['selected'], lastUsefulProgressMonotonicMs: 2000 },
+        currentPhysicalRunner: current.currentPhysicalRunner });
+      expect((await recordStoredQualificationProgressObservation(target, {
+        ...sample, observerGeneration: 'replacement-observer', sampledAtMs: nowMs + 2000, monotonicAtMs: 1,
+      })).status).toBe('updated');
+      const restarted = (await metadata()).qualificationTransaction;
+      expect(restarted).toMatchObject({ progressObservation: { health: 'baseline', semantic: 'unknown',
+        retiredObserverGenerations: ['first-observer'], lastUsefulProgressMonotonicMs: null } });
+      expect(await recordStoredQualificationProgressObservation(target, {
+        ...sample, sequence: 3, sampledAtMs: nowMs + 3000, monotonicAtMs: 4000,
+      })).toMatchObject({ status: 'conflict', refusalReason: 'observer-retired-generation' });
+      expect((await metadata()).qualificationTransaction).toEqual(restarted);
+    } finally { clock.mockRestore(); }
+  });
+
   it.each(['complete', 'live-predecessor', 'unknown-predecessor', 'missing-terminal', 'terminal-error',
     'prefix-error', 'missing-post', 'old-fence', 'source-drift', 'different-task'] as const)(
     'composes a dead native prefix with only its remaining file: %s', async scenario => {

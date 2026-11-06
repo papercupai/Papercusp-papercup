@@ -164,6 +164,8 @@ export async function fireReactionInProcess(opts: {
   cause: ReactionCause;
   /** Capability scope for a plugin/blueprint rule (D-012). Unset ⇒ first-party trusted. */
   capability?: string;
+  /** Internal durable receiver correlation, bound by the executor to its stored request. */
+  executionId?: string;
 }): Promise<FireReactionResult> {
   const workspaceId =
     opts.parentCtx.workspaceId ?? opts.parentCtx.principal?.workspaceId ?? activeWorkspaceId();
@@ -218,6 +220,7 @@ export async function fireReactionInProcess(opts: {
         return { ok: true as const, withheld: true as const };
       const ctx: UnifiedToolContext = {
         ...buildReactionCtx(opts.parentCtx, workspaceId, opts.cause, opts.capability),
+        ...(opts.executionId ? { runId: opts.executionId } : {}),
         tx,
       };
       return runObservedBackgroundActivity({ workspaceId,

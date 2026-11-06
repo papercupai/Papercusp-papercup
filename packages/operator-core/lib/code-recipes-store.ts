@@ -109,9 +109,53 @@ export interface RecipeRunUsage {
   settled: boolean;
 }
 
+/** Raw measurements at the run-record cutoff. Missing fields stay unknown;
+ * these are neither final returned-context bytes nor estimated token savings. */
+export interface RecipeRunEvidence {
+  version: 1;
+  /** Dispatcher-issued identity, never reconstructed from script text. */
+  invocationId: string | null;
+  /** Zero-based selection within a bulk invocation; repeated ids are separate attempts. */
+  attempt: number;
+  executed: boolean;
+  sourceBytes: number;
+  intermediateBytes: number | null;
+  elapsedBeforeRecordMs: number;
+}
+
+/** Shared receipt reconciliation for candidate scoring and rubric reporting.
+ * Callers supply a scoped recipe_run_source CTE. Identity is dispatcher-issued;
+ * legacy rows remain separate, exact copies count once, conflicts stay unknown. */
+export const RECIPE_RUN_RECEIPTS_CTE = `observed AS (
+  SELECT *, execution_trace->'usage' AS usage, execution_trace->'runEvidence' AS evidence,
+    CASE WHEN execution_trace->'runEvidence'->>'version' = '1'
+      AND execution_trace->'runEvidence'->>'invocationId' ~ '^[A-Za-z0-9_.:-]{1,200}$'
+      AND execution_trace->'runEvidence'->>'attempt' ~ '^[0-9]{1,15}$'
+      THEN 'dispatch:' || (execution_trace->'runEvidence'->>'invocationId') || ':' || (execution_trace->'runEvidence'->>'attempt')
+      ELSE 'row:' || id::text END AS receipt_key
+    FROM recipe_run_source
+), copies AS (
+  SELECT MIN(id) AS first_id, COUNT(*) AS source_rows,
+    COUNT(DISTINCT jsonb_build_array(execution_trace, success, reused, agent_owner, agent_role)) AS variants
+    FROM observed GROUP BY recipe_id, workspace_id, receipt_key
+), receipts AS (
+  SELECT observed.*, copies.source_rows, copies.variants FROM observed
+    JOIN copies ON observed.id = copies.first_id
+), classified AS (
+  SELECT *, COALESCE(
+    variants = 1 AND usage->>'version' = '1'
+    AND usage->>'selection' IN ('authored', 'automatic-match', 'saved-replay')
+    AND usage->>'choice' IN ('agent', 'hook', 'system', 'unknown')
+    AND usage->>'mode' IN ('commit', 'preview')
+    AND usage->>'settled' = 'true'
+    AND usage->>'outcome' IN ('success', 'error', 'refused'), false) AS known
+    FROM receipts
+)`;
+
 export function recipeRunChoice(identity: { source?: string; ownerId?: string | null }): RecipeRunUsage['choice'] {
   if (identity.ownerId?.startsWith('hook:')) return 'hook';
   if (identity.source === 'event-reaction' || identity.ownerId?.startsWith('system:')) return 'system';
+  if (!identity.ownerId?.trim()) return 'unknown';
   return ['omp-hook-session', 'power-user-token', 'fleet-spawn', 'signed-spawn'].includes(identity.source ?? '')
     ? 'agent' : 'unknown';
 }
@@ -134,6 +178,7 @@ export interface RecordRecipeRunInput {
   /** Secret-free normalized P-013 trace. Its fingerprint is stored alongside it for indexed dedup. */
   executionTrace?: NormalizedExecutionTrace | null;
   usage?: RecipeRunUsage;
+  runEvidence?: RecipeRunEvidence;
   /**
    * Preserve the existing recipe popularity semantics for failed and dry-run traces:
    * their execution row is durable, but the parent recipe counters do not move.
@@ -313,6 +358,7 @@ export async function recordRecipeRun(sql: postgres.Sql, input: RecordRecipeRunI
   const success = input.success ?? true;
   const countTowardRecipe = input.countTowardRecipe ?? recipeId !== null;
   const usage = input.usage;
+  const evidence = input.runEvidence;
   if (usage && (usage.version !== 1
     || !['authored', 'automatic-match', 'saved-replay'].includes(usage.selection)
     || !['agent', 'hook', 'system', 'unknown'].includes(usage.choice)
@@ -320,10 +366,19 @@ export async function recordRecipeRun(sql: postgres.Sql, input: RecordRecipeRunI
     || !['success', 'error', 'refused', 'unknown'].includes(usage.outcome)
     || typeof usage.settled !== 'boolean')) throw new Error('invalid_recipe_run_usage');
   // Select fields so extra runtime properties cannot carry raw inputs or secrets.
-  const traceJson = executionTrace || usage ? JSON.stringify({
+  if (evidence && (evidence.version !== 1
+    || (evidence.invocationId !== null && !/^[A-Za-z0-9_.:-]{1,200}$/.test(evidence.invocationId))
+    || typeof evidence.executed !== 'boolean'
+    || ![evidence.attempt, evidence.sourceBytes, evidence.elapsedBeforeRecordMs,
+      ...(evidence.intermediateBytes === null ? [] : [evidence.intermediateBytes])]
+      .every(value => Number.isSafeInteger(value) && value >= 0))) throw new Error('invalid_recipe_run_evidence');
+  const traceJson = executionTrace || usage || evidence ? JSON.stringify({
     ...executionTrace,
     ...(usage ? { usage: { version: 1, selection: usage.selection, choice: usage.choice,
       mode: usage.mode, outcome: usage.outcome, settled: usage.settled } } : {}),
+    ...(evidence ? { runEvidence: { version: 1, invocationId: evidence.invocationId,
+      attempt: evidence.attempt, executed: evidence.executed, sourceBytes: evidence.sourceBytes,
+      intermediateBytes: evidence.intermediateBytes, elapsedBeforeRecordMs: evidence.elapsedBeforeRecordMs } } : {}),
   }) : null;
   await sql.begin(async (tx) => {
     await tx`

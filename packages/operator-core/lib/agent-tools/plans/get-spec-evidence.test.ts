@@ -37,7 +37,7 @@ vi.mock('./spec-evidence-store', async (original) => ({
 }));
 
 import tool from './get-spec-evidence';
-import { listSpecEvidence } from './spec-evidence-store';
+import { classifySpecEvidenceCurrentness, listSpecEvidence } from './spec-evidence-store';
 import { createCommittedTreeDiagnostics } from './committed-tree-reader';
 import { mockResolvedTyped } from '../../testing/typed-mock';
 import { listSpecClauses, type SpecClauseRevision } from './spec-clauses-store';
@@ -214,9 +214,65 @@ describe('criterion evidence applicability', () => {
   it('bounded-coverage: returns one bounded row and cannot certify a truncated evidence selection', async () => {
     listEvidence.mockResolvedValue([binding(1, 'SPEC-A', 'current'), binding(2, 'SPEC-A', 'current')]);
     const result = await call({ slug: 'plan-a', limit: 1 });
+    expect(result.bounded).toEqual({ limit: 1, truncatedByLimit: true });
     expect(result.applicability.criteria).toHaveLength(1);
     expect(result.applicability.criteria[0]).toMatchObject({ state: 'unknown', coverage: { complete: false } });
     expect(result.applicability.coverage.evidenceTruncated).toBe(true);
+    expect(result.applicability.criteria[0].nextEvidenceAction).toContain('narrow');
+
+    const exact = binding(2, 'SPEC-A', 'current');
+    exact.details = { evidencePlane: 'tree' };
+    listEvidence.mockResolvedValue([exact]);
+    const narrowed = await call({ slug: 'plan-a', bindingIds: [2], limit: 1 });
+    expect(listEvidence).toHaveBeenLastCalledWith(expect.objectContaining({ bindingIds: [2], limit: 2 }));
+    expect(narrowed.bounded).toEqual({ limit: 1, truncatedByLimit: false });
+    expect(narrowed.applicability.criteria[0]).toMatchObject({ state: 'unknown',
+      coverage: { bindings: 1, complete: false }, receipts: [{ bindingId: 2, state: 'current' }] });
+    expect(narrowed.applicability.coverage).toMatchObject({ evidenceTruncated: false, filteredEvidence: true });
+  });
+  const dimensions = ['source', 'test', 'fixture', 'environment', 'rubric'] as const;
+  it.each(dimensions)('fingerprint applicability: %s present and missing required values retain distinct verdicts', async dimension => {
+    for (const present of [true, false]) {
+      const row = binding(1, 'SPEC-A', 'current');
+      row.details = { evidencePlane: 'tree' };
+      row.fingerprints = { sourceFingerprint: 'source-v1', testFingerprint: 'test-v1',
+        fixtureFingerprint: 'fixture-v1', environmentFingerprint: 'environment-v1', rubricFingerprint: 'rubric-v1' };
+      const current = { evidenceKind: row.evidenceKind, evidenceRef: row.evidenceRef, ...row.fingerprints,
+        [`${dimension}Fingerprint`]: present ? row.fingerprints[`${dimension}Fingerprint`] : null };
+      row.currentness = classifySpecEvidenceCurrentness({
+        spec_is_current: true, source_fingerprint: row.fingerprints.sourceFingerprint,
+        test_fingerprint: row.fingerprints.testFingerprint ?? null,
+        fixture_fingerprint: row.fingerprints.fixtureFingerprint ?? null,
+        environment_fingerprint: row.fingerprints.environmentFingerprint ?? null,
+        rubric_fingerprint: row.fingerprints.rubricFingerprint ?? null,
+        coverage_evidence_ref: null, coverage_evidence_present: false,
+        test_run_id: row.testRunId, test_run_present: true, test_run_worktree_dirty: false,
+      }, current, { provenance: 'server-measured' });
+      listEvidence.mockResolvedValue([row]);
+
+      const criterion = (await call({ slug: 'plan-a' })).applicability.criteria[0];
+
+      expect(criterion.state).toBe(present ? 'current' : 'unknown');
+      expect(criterion.receipts[0].currentness.dimensions[dimension]).toBe(present ? 'current' : 'unknown');
+      if (!present) expect(criterion.reasons).toContain(`${dimension}-current-fingerprint-not-supplied`);
+    }
+  });
+  it.each(['test', 'fixture', 'environment', 'rubric'] as const)('fingerprint applicability: %s absent from the evidence basis is not applicable', async dimension => {
+    const row = binding(1, 'SPEC-A', 'current');
+    row.details = { evidencePlane: 'tree' };
+    row.currentness = classifySpecEvidenceCurrentness({
+      spec_is_current: true, source_fingerprint: row.fingerprints.sourceFingerprint,
+      test_fingerprint: null, fixture_fingerprint: null, environment_fingerprint: null, rubric_fingerprint: null,
+      coverage_evidence_ref: null, coverage_evidence_present: false,
+      test_run_id: null, test_run_present: false,
+    }, { evidenceKind: row.evidenceKind, evidenceRef: row.evidenceRef, sourceFingerprint: row.fingerprints.sourceFingerprint },
+    { provenance: 'server-measured' });
+    listEvidence.mockResolvedValue([row]);
+
+    const criterion = (await call({ slug: 'plan-a' })).applicability.criteria[0];
+
+    expect(criterion.state).toBe('current');
+    expect(criterion.receipts[0].currentness.dimensions[dimension]).toBe('not-applicable');
   });
   it('live target/window applicability: missing identity remains unknown even when fingerprints match', async () => {
     const row = binding(1, 'SPEC-A', 'current'); row.details = { evidencePlane: 'live' };

@@ -208,7 +208,7 @@ export function captureSecuritySourceShard(root: string, progress: SecuritySourc
   if (!paths.length || new Set(paths).size !== paths.length
     || paths.some(path => !progress.pending.some(row => row.path === path))) throw new Error('security_source_shard_not_pending');
   const snapshot = readCommittedSources(root, progress.repositories.find(repo => repo.path === '.')!.commit,
-    { includePaths: paths, maxFiles: budget.maxFiles, maxBytes: budget.maxBytes });
+    { includePaths: paths, maxFiles: budget.maxFiles, maxBytes: budget.maxBytes, maxInputBytes: budget.maxInputBytes });
   return prepareSecuritySourceShard(progress, paths, snapshot, budget);
 }
 

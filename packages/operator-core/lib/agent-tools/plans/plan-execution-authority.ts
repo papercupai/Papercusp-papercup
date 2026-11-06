@@ -7,16 +7,38 @@ import { planExecutionMeaning } from './plan-execution-meaning';
 import { checkPlanExecutionReadiness, type ExecutionPlanBinding } from './plan-execution-guard';
 import { readPlanLineItems } from './plan-line-graph';
 import { renderPlanLines } from './plan-line-render';
+export { preservePlanExecutionProgress } from './plan-execution-progress';
 
 export interface ExecutionStartScope { workspaceId: string; harnessSlug: string; planSlug: string }
 export type ExecutionPlanRow = Record<string, unknown> & { content: string; content_hash: string };
-const progressFields = ['execution_start_revision_seq', 'rendered_content', 'content', 'content_hash', 'version', 'updated_at',
+const progressFields = ['execution_start_revision_seq', 'execution_start_invalidation', 'rendered_content', 'content', 'content_hash', 'version', 'updated_at',
   'updated', 'status', 'op_status', 'op_updated_at', 'op_started_at', 'items', 'decisions', 'title',
   'now_state', 'now_next', 'now_note', 'now_note_version', 'now_note_updated_at', 'fed_ts', 'fed_hlc', 'origin'];
 
 /** Structured execution inputs are part of the immutable start snapshot. */
 export function executionPlanInputs(row: ExecutionPlanRow): Record<string, unknown> {
   return Object.fromEntries(Object.entries(row).filter(([key]) => !progressFields.includes(key)));
+}
+
+/** Normalize only catalog-typed timestamps, including pre-normalization receipts.
+ * PostgreSQL keeps microseconds; Date.parse/toISOString would discard authority
+ * inputs below a millisecond. Nested JSON and timestamp-looking text stay opaque. */
+async function normalizeExecutionTimestamps(sql: PlanRevisionSql, input: Record<string, unknown>): Promise<ExecutionPlanRow> {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('invalid_execution_inputs');
+  const [result] = await sql<{ normalized: ExecutionPlanRow }[]>`
+    SELECT COALESCE(jsonb_object_agg(e.key, CASE
+      WHEN a.atttypid='timestamptz'::regtype AND jsonb_typeof(e.value)='string' THEN
+        CASE WHEN isfinite((e.value #>> '{}')::timestamptz) THEN
+          to_jsonb(to_char((e.value #>> '{}')::timestamptz AT TIME ZONE 'UTC',
+            'YYYY-MM-DD"T"HH24:MI:SS.US') || '+00:00')
+        ELSE to_jsonb((e.value #>> '{}')::timestamptz) END
+      WHEN a.atttypid='timestamp'::regtype AND jsonb_typeof(e.value)='string'
+        THEN to_jsonb((e.value #>> '{}')::timestamp)
+      ELSE e.value END), '{}'::jsonb) AS normalized
+      FROM jsonb_each(${JSON.stringify(input)}::text::jsonb) e
+      LEFT JOIN pg_attribute a ON a.attrelid='harness_shared.harness_plans'::regclass
+        AND a.attname=e.key AND a.attnum>0 AND NOT a.attisdropped`;
+  return result!.normalized;
 }
 
 export async function readExecutionPlanRow(scope: ExecutionStartScope): Promise<ExecutionPlanRow | null> {
@@ -39,15 +61,7 @@ async function readExecutionSnapshot(sql: PlanRevisionSql, scope: ExecutionStart
     { ...scope, slug: scope.planSlug },
     { items: row.items, content: row.content },
   );
-  return { ...row, rendered_content: renderPlanLines(row.content, items) };
-}
-
-/** Preserve only equivalent local edits, fenced to the exact old and new body hashes. */
-export async function preservePlanExecutionProgress(tx: PlanRevisionSql, scope: ExecutionStartScope,
-  before: string, after: string, beforeHash: string, afterHash: string): Promise<void> {
-  if (planExecutionMeaning(before) !== planExecutionMeaning(after)) return;
-  await tx`SELECT set_config('papercusp.execution_progress',
-    ${JSON.stringify([scope.workspaceId, scope.harnessSlug, scope.planSlug, beforeHash, afterHash])}, true)`;
+  return { ...await normalizeExecutionTimestamps(sql, row), rendered_content: renderPlanLines(row.content, items) };
 }
 
 /** Canonical start calls this after its final promotion, admission and binding legs. */
@@ -109,7 +123,8 @@ export async function readPlanExecutionStart(binding: ExecutionPlanBinding, work
       { items: row.items, content: row.content },
     );
     if (planExecutionMeaning(receipt.body) !== planExecutionMeaning(renderPlanLines(row.content, items))
-      || !isDeepStrictEqual(receipt.inputs, executionPlanInputs(row))) return ['plan_start_revision_stale'];
+      || !isDeepStrictEqual(await normalizeExecutionTimestamps(sql, receipt.inputs),
+        executionPlanInputs(await normalizeExecutionTimestamps(sql, row)))) return ['plan_start_revision_stale'];
     return [];
   } catch { return ['plan_start_revision_invalid']; }
 }

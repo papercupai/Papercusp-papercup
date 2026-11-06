@@ -585,6 +585,30 @@ describe('recipe recommendation authority (P-008)', () => {
     });
   });
 
+  it('binds a hardcoded planSlug filter target even when it follows the plan tool call', async () => {
+    const planSlug = 'code-intel-reuse-signals-2026-10-21';
+    const script = `
+      const r = await tools.plans.conformance({ op: 'report', harness: 'papercusp' });
+      return { keys: Object.keys(r), plans: r.plans?.filter(p => p.planSlug === '${planSlug}') };
+    `;
+    const descriptor = await deriveRecipeAuthority(script);
+    expect(descriptor).toMatchObject({
+      refs: { plans: [planSlug], harnesses: ['papercusp'] },
+      unresolved: false,
+      bound: true,
+    });
+    await expect(buildRecipeAuthorityRecommendation({
+      script,
+      updatedAt: '2026-11-06T00:00:00.000Z',
+      context: { harness: 'papercusp', plan: 'agent-session-tooling-recovery-2026-10-31' },
+    })).resolves.toBeNull();
+    await expect(buildRecipeAuthorityRecommendation({
+      script,
+      updatedAt: '2026-11-06T00:00:00.000Z',
+      context: { harness: 'papercusp', plan: planSlug },
+    })).resolves.toMatchObject({ proof: { context: { harness: 'papercusp', plan: planSlug } } });
+  });
+
   it('captures a coord:orient planItems plan-lane claim as an item authority ref (EI-12213)', async () => {
     // A "monitor" recipe whose script claims a plan lane via coord:orient({ planSlug, planItems })
     // must record BOTH the plan AND the item so the recommendation filter requires the caller to

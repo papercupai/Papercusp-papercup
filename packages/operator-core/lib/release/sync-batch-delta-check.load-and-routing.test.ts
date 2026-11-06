@@ -439,12 +439,12 @@ describe('coverage record + alarm (R-2)', () => {
   });
 
   it('counts missed five-minute opportunities around a long action and raises the coverage alarm', async () => {
-    const startedAt = NOW;
-    const completedAt = NOW + 30 * 60_000;
+    const startedAt = Math.floor(NOW / COVERAGE_EXPECTED_INTERVAL_MS) * COVERAGE_EXPECTED_INTERVAL_MS;
+    const completedAt = startedAt + 30 * 60_000;
     // 133 judged slots of history ending 30 min before this run: with the 11 slots
     // below that is exactly COVERAGE_ALARM_MIN_TICKS (144), 133/144 = 92% < 95%.
     const history: CoverageTick[] = Array.from({ length: 133 }, (_, i) => ({
-      atMs: NOW - 30 * 60_000 - (132 - i) * 5 * 60_000,
+      atMs: startedAt - 30 * 60_000 - (132 - i) * 5 * 60_000,
       evaluated: true,
       status: 'green' as const,
     }));
@@ -567,6 +567,38 @@ describe('coverage record + alarm (R-2)', () => {
 // per schedule slot over 24h at a 95% target, crediting a slot whose commits a later run
 // judged within the derived deadline (D-031: 2 x one run's leg budget + the slot interval),
 // and never crediting slots whose commits nobody judged.
+describe('canonical five-minute coverage opportunities (WI-6554700010045766)', () => {
+  const interval = COVERAGE_EXPECTED_INTERVAL_MS;
+  const tick = (atMs: number): CoverageTick => ({ atMs, evaluated: true, status: 'green' });
+
+  it('records the bucket skipped by the measured lint timestamp phase transition', () => {
+    const priorAt = Date.parse('2026-11-06T04:24:14.228Z');
+    const nextAt = Date.parse('2026-11-06T04:30:15.897Z');
+    const prior = { ticks: [tick(priorAt)] };
+    const coverage = recordCoverageOpportunities(prior, tick(nextAt), nextAt);
+    expect(coverage.ticks).toEqual([tick(priorAt),
+      { atMs: Date.parse('2026-11-06T04:25:00.000Z'), evaluated: false, status: 'missed-opportunity' },
+      tick(nextAt)]);
+    expect(prior.ticks).toEqual([tick(priorAt)]);
+  });
+
+  it('records a crossed schedule boundary during a short invocation', () => {
+    const startedAt = 10 * interval - 1;
+    const coverage = recordCoverageOpportunities({ ticks: [tick(9 * interval - 1)] }, tick(startedAt), 10 * interval + 1);
+    expect(coverage.ticks.at(-1)).toEqual({ atMs: 10 * interval, evaluated: false, status: 'missed-opportunity' });
+    expect(coverage.ticks.filter(t => t.status === 'missed-opportunity')).toHaveLength(1);
+  });
+
+  it('leaves the completion boundary and an unobserved earlier history out of the accounting', () => {
+    const startedAt = 10 * interval - 1;
+    const prior = { ticks: [tick(9 * interval - 1)] };
+    expect(recordCoverageOpportunities(prior, tick(startedAt), 10 * interval).ticks)
+      .toEqual([...prior.ticks, tick(startedAt)]);
+    expect(recordCoverageOpportunities(undefined, tick(startedAt), 12 * interval).ticks)
+      .toEqual([tick(startedAt)]);
+  });
+});
+
 describe('slot coverage with late-judgment crediting (P-009 / D-017 / D-031)', () => {
   const MIN = 60_000;
   const D = COVERAGE_JUDGE_DEADLINE_MS;

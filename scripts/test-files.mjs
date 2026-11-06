@@ -1432,9 +1432,10 @@ const MAX_FAILED_ASSERTION_OUTPUT_CHARS = 12_000;
  *
  * @param {string | null} reportPath value of --outputFile, if any
  * @param {string} [cwd] the group's cwd — vitest resolves a relative --outputFile against it
+ * @param {string} [runOutput] captured output from this same group, including live case traces
  * @returns {Array<{ file: string, name: string, messages: string[], assertionEvidence: boolean }> | null}
  */
-export function failedAssertionsFromReport(reportPath, cwd) {
+export function failedAssertionsFromReport(reportPath, cwd, runOutput = '') {
   if (!reportPath) return null;
   const resolved = isAbsolute(reportPath) ? reportPath : resolve(cwd ?? process.cwd(), reportPath);
   let report;
@@ -1444,6 +1445,26 @@ export function failedAssertionsFromReport(reportPath, cwd) {
     return null;
   }
   if (!report || typeof report !== 'object' || !Array.isArray(report.testResults)) return null;
+  // Vitest's JSON reporter prefers error.stack over error.message. Timeout
+  // stacks can be only STACK_TRACE_ERROR, although our existing live reporter
+  // retained the real message. Recover it only from the same failed case;
+  // traces never supply a verdict when the final report is absent or unreadable.
+  const tracedFailures = new Map();
+  for (const match of runOutput.matchAll(/^TEST_FILE_CASE_TRACE ([^\r\n]+)$/gm)) {
+    if (match[1].length > 16_384) continue;
+    try {
+      const trace = JSON.parse(match[1]);
+      if (trace.event !== 'finished' || trace.state !== 'failed' ||
+          typeof trace.file !== 'string' || !trace.file ||
+          typeof trace.name !== 'string' || !Array.isArray(trace.errors)) continue;
+      const messages = trace.errors.slice(0, 3)
+        .map(error => error?.message)
+        .filter(message => typeof message === 'string' && message.trim() !== '')
+        .map(message => message.slice(0, MAX_FAILED_ASSERTION_MESSAGE_CHARS));
+      const key = JSON.stringify([resolve(cwd ?? process.cwd(), trace.file), trace.name]);
+      if (messages.length && tracedFailures.size < MAX_FAILED_ASSERTION_DIAGNOSTICS) tracedFailures.set(key, messages);
+    } catch { /* A malformed diagnostic must never change a test verdict. */ }
+  }
   const failures = [];
   for (const fileResult of report.testResults) {
     const file = typeof fileResult?.name === 'string' ? fileResult.name : '';
@@ -1455,14 +1476,31 @@ export function failedAssertionsFromReport(reportPath, cwd) {
           : typeof assertion?.title === 'string'
             ? assertion.title
             : '';
-      const messages = Array.isArray(assertion?.failureMessages)
+      let messages = Array.isArray(assertion?.failureMessages)
         ? assertion.failureMessages.filter((message) => typeof message === 'string' && message.trim() !== '')
         : [];
+      let assertionMessages = messages;
+      if (messages.length === 0 || messages.every(message => /^\s*(?:Error:\s*)?STACK_TRACE_ERROR(?:\r?\n|$)/.test(message))) {
+        // JSON joins suite titles with spaces; the live TestCase API uses >.
+        // Use the structured titles rather than rewriting arbitrary name text.
+        const traceName = Array.isArray(assertion?.ancestorTitles) &&
+            assertion.ancestorTitles.every(title => typeof title === 'string') &&
+            typeof assertion?.title === 'string'
+          ? [...assertion.ancestorTitles, assertion.title].join(' > ')
+          : name;
+        const traced = tracedFailures.get(JSON.stringify([resolve(cwd ?? process.cwd(), file), traceName]));
+        if (traced) {
+          messages = [...traced, ...messages];
+          // Retain the placeholder stack for location diagnostics, but it is
+          // not an additional error that can invalidate the recovered class.
+          assertionMessages = traced;
+        }
+      }
       failures.push({
         file,
         name,
         messages,
-        assertionEvidence: isVitestAssertionFailure(messages),
+        assertionEvidence: isVitestAssertionFailure(assertionMessages),
       });
     }
   }
@@ -4103,7 +4141,7 @@ export async function main(
       if (nodeLedger) {
         const ledgerOutcome = await nodeLedger.record({ testNamePattern: nameFilter?.pattern ?? null });
         nodeCounts = ledgerOutcome.counts ?? null;
-        console.log(`TEST_FILE_LEDGER runner=node:test rows=${ledgerOutcome.recorded}${ledgerOutcome.reason ? ` reason=${JSON.stringify(ledgerOutcome.reason)}` : ''}`);
+        console.log(`TEST_FILE_LEDGER runner=node:test rows=${ledgerOutcome.recorded} attemptedRows=${ledgerOutcome.attempted ?? 0}${ledgerOutcome.reason ? ` reason=${JSON.stringify(ledgerOutcome.reason)}` : ''}`);
         // Same TEST_FILE_ASSERTION_FAILURE contract as the Vitest route: mutation-probe scores a
         // run CAUGHT only on measured assertion failures (EI-24836213046334894).
         const nodeAssertionDiagnostics = formatFailedAssertionDiagnostics(ledgerOutcome.assertionFailures ?? null);
@@ -4437,7 +4475,7 @@ export async function main(
     // the file-level collection-failure recovery below: a report with no assertionResults has no
     // assertion detail to print, and must not turn a collection error into a test-name failure.
     const failedAssertionDiagnostics = groupFailed
-      ? formatFailedAssertionDiagnostics(failedAssertionsFromReport(reportPath, group.cwd))
+      ? formatFailedAssertionDiagnostics(failedAssertionsFromReport(reportPath, group.cwd, runOutput))
       : '';
     if (!result.timedOut && result.status === 0 && groupFailed) {
       const summary = parseSummaryFailedCounts(runOutput);

@@ -25,6 +25,8 @@
  */
 import type postgres from 'postgres';
 import { listAllProjectedTools } from '@papercusp/agent-mcp';
+import { checkScript, ensureParseCheckReady } from '@papercusp/tooldef';
+import { RECIPE_RUN_RECEIPTS_CTE } from './code-recipes-store';
 import { searchSimilarRecipes } from './code-recipes-search';
 import { clampDemandScore as clamp01, logDemandScore, linearDemandScore, explainDemandScore, compareDemandRank } from './demand-score';
 
@@ -68,8 +70,9 @@ import { clampDemandScore as clamp01, logDemandScore, linearDemandScore, explain
 //     toolCount 1→COHESION_SATURATION(=3): 1 tool ⇒ 0, 2 ⇒ 0.5, ≥3 ⇒ 1.0.
 //
 // Redundancy damp (multiplicative, applied AFTER the weighted sum):
-//   • TRIVIAL  — toolCount ≤ 1: not batch-worthy. damp = 0 ⇒ EXCLUDED from
-//     promote candidates entirely (a 1-tool wrapper never promotes).
+//   • TRIVIAL — a primitive wrapper without supported result processing. A
+//     one-tool recipe can qualify when its executable source transforms the
+//     tool result it actually returns; frequency alone cannot establish this.
 //   • NAME COLLISION — an existing defineTool already projects a tool whose name
 //     matches the recipe id/slug (listAllProjectedTools names): the tool already
 //     exists, so promoting would regenerate it (D-007). damp = 0 ⇒ EXCLUDED.
@@ -131,7 +134,9 @@ export interface RecipeSignal {
   toolCount: number;
   /** Deterministic 0..1 rubric score (post-redundancy damp). */
   promotionScore: number;
-  /** True ⇒ EXCLUDED from promote candidates (trivial 1-tool OR name-collides an existing tool). */
+  /** Source-based substance, independent of popularity and tool count. */
+  substance: RecipeSubstance;
+  /** True ⇒ EXCLUDED from promote candidates (primitive wrapper or name collision). */
   redundant: boolean;
   /** Human-readable redundancy cause when redundant, else null. */
   redundancyReason: string | null;
@@ -150,8 +155,11 @@ export interface PromoteCandidate {
 }
 
 export interface RecipeUsageSummary {
-  unit: 'execution-rows';
+  unit: 'execution-receipts';
   observations: number;
+  sourceRows: number;
+  verifiedCopiesExcluded: number;
+  conflictingReceipts: number;
   authored: number;
   automaticMatches: number;
   savedReplays: number;
@@ -159,6 +167,19 @@ export interface RecipeUsageSummary {
   unknown: number;
   agentDemand: number;
   reliability: { state: 'measured' | 'unknown'; successes: number; errors: number; refused: number; denominator: number };
+  costs: {
+    source: 'code_recipe_runs.execution_trace.runEvidence';
+    unit: 'utf8-bytes-and-milliseconds';
+    sourceBytes: number | null;
+    intermediateBytes: number | null;
+    elapsedBeforeRecordMs: number | null;
+    sourceMeasuredRows: number;
+    intermediateMeasuredRows: number;
+    elapsedMeasuredRows: number;
+    returnedContextBytes: null;
+    measuredSavings: null;
+  };
+  coverage: { state: 'unknown'; complete: false; reason: string };
 }
 
 export interface MergeCluster {
@@ -198,6 +219,7 @@ type RecipeRow = {
   id: string;
   title: string;
   description: string;
+  script: string;
   status: string;
   tools_used: string[] | null;
   run_count: number | string;
@@ -237,6 +259,78 @@ export function existingToolSlugSet(
     slugs.add(slugifyToolName(n));
   }
   return { names, slugs };
+}
+
+export type RecipeSubstance = 'multi-tool' | 'result-processing' | 'primitive' | 'unknown';
+
+/** Reuse the facade parser's resolved call positions, then follow a conservative
+ * straight-line result flow. This is ranking evidence, never execution proof or
+ * authorization. Comments, unused helpers and unused transformations add no
+ * value. Unsupported control flow stays unknown rather than earning a bonus.
+ * The compiler stays lazy, as in the existing facade parser. */
+export async function recipeSubstance(script: string, toolsUsed: readonly string[]): Promise<RecipeSubstance> {
+  if (new Set(toolsUsed).size > 1) return 'multi-tool';
+  if (!toolsUsed.length) return 'primitive';
+  await ensureParseCheckReady();
+  const checked = checkScript(script, []);
+  if (checked.hasParseErrors) return 'unknown';
+  const ts = (await import('typescript')).default;
+  const source = ts.createSourceFile('recipe.ts', script, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  const calls = new Set(checked.calls.flatMap(call => call.position ? [call.position.offset] : []));
+  type Flow = 'raw' | 'processed' | null;
+  const bindings = new Map<string, Flow>();
+  const flow = (expression: import('typescript').Expression): Flow => {
+    if (ts.isParenthesizedExpression(expression) || ts.isAwaitExpression(expression)
+      || ts.isAsExpression(expression) || ts.isNonNullExpression(expression)) return flow(expression.expression);
+    if (ts.isIdentifier(expression)) return bindings.get(expression.text) ?? null;
+    if (ts.isPropertyAccessExpression(expression) || ts.isElementAccessExpression(expression)) return flow(expression.expression);
+    if (ts.isCallExpression(expression)) {
+      if (calls.has(expression.getStart(source))) return 'raw';
+      if (!ts.isPropertyAccessExpression(expression.expression)) return null;
+      const input = flow(expression.expression.expression);
+      if (!input) return null;
+      const method = expression.expression.name.text;
+      const callback = expression.arguments[0];
+      if (!['filter', 'map', 'reduce', 'flatMap'].includes(method) || !callback
+        || !ts.isArrowFunction(callback) || ts.isBlock(callback.body)) return null;
+      // Identity maps and constant predicates do not establish useful work.
+      // Require a callback parameter to participate in a computed expression.
+      const parameters = new Set(callback.parameters.flatMap(parameter =>
+        ts.isIdentifier(parameter.name) ? [parameter.name.text] : []));
+      let body = callback.body;
+      while (ts.isParenthesizedExpression(body)) body = body.expression;
+      if (!ts.isObjectLiteralExpression(body) && !ts.isPropertyAccessExpression(body)
+        && !ts.isElementAccessExpression(body) && !ts.isBinaryExpression(body)) return input;
+      let readsParameter = false;
+      const visit = (node: import('typescript').Node): void => {
+        const isPropertyName = (ts.isPropertyAssignment(node.parent) || ts.isPropertyAccessExpression(node.parent))
+          && node.parent.name === node;
+        if (ts.isIdentifier(node) && parameters.has(node.text) && !isPropertyName) readsParameter = true;
+        ts.forEachChild(node, visit);
+      };
+      visit(body);
+      if (!readsParameter) return input;
+      return 'processed';
+    }
+    if (ts.isObjectLiteralExpression(expression)) {
+      return expression.properties.some(property => ts.isPropertyAssignment(property)
+        && flow(property.initializer) === 'processed') ? 'processed' : null;
+    }
+    return null;
+  };
+  for (const statement of source.statements) {
+    if (ts.isVariableStatement(statement)) {
+      for (const declaration of statement.declarationList.declarations) {
+        if (!ts.isIdentifier(declaration.name)) return 'unknown';
+        bindings.set(declaration.name.text, declaration.initializer ? flow(declaration.initializer) : null);
+      }
+    } else if (ts.isReturnStatement(statement)) {
+      return statement.expression && flow(statement.expression) === 'processed' ? 'result-processing' : 'primitive';
+    } else if (!ts.isFunctionDeclaration(statement) && !ts.isEmptyStatement(statement)) {
+      return 'unknown';
+    }
+  }
+  return 'primitive';
 }
 
 /** freqScore — log-saturating on run_count (run ~20× ⇒ ~1.0). See RECIPE RUBRIC. */
@@ -279,23 +373,32 @@ export async function recipeCandidates(
   // role/name guess. Missing historical provenance remains explicitly unknown.
   const rows = await sql<(RecipeRow & Record<'distinct_agents' | 'observations' | 'authored'
     | 'automatic_matches' | 'saved_replays' | 'previews' | 'unknown' | 'agent_demand'
-    | 'replay_successes' | 'replay_errors' | 'replay_refused', number | string>)[]>`
-        WITH observed AS (
-          SELECT *, execution_trace->'usage' AS usage
-            FROM harness_shared.code_recipe_runs
-        ), classified AS (
-          SELECT *, COALESCE(
-            usage->>'version' = '1'
-            AND usage->>'selection' IN ('authored', 'automatic-match', 'saved-replay')
-            AND usage->>'choice' IN ('agent', 'hook', 'system', 'unknown')
-            AND usage->>'mode' IN ('commit', 'preview')
-            AND usage->>'settled' = 'true'
-            AND usage->>'outcome' IN ('success', 'error', 'refused'), false) AS known
-            FROM observed
+    | 'replay_successes' | 'replay_errors' | 'replay_refused' | 'source_rows' | 'copies_excluded'
+    | 'conflicts' | 'source_bytes' | 'intermediate_bytes' | 'elapsed_ms'
+    | 'source_measured' | 'intermediate_measured' | 'elapsed_measured', number | string>)[]>`
+        WITH recipe_run_source AS (SELECT * FROM harness_shared.code_recipe_runs),
+        ${sql.unsafe(RECIPE_RUN_RECEIPTS_CTE)}, measured AS (
+          SELECT *,
+            CASE WHEN variants = 1 AND evidence->>'version' = '1' AND evidence->>'sourceBytes' ~ '^[0-9]{1,16}$'
+              THEN (evidence->>'sourceBytes')::numeric END AS source_bytes_value,
+            CASE WHEN variants = 1 AND evidence->>'version' = '1' AND evidence->>'intermediateBytes' ~ '^[0-9]{1,16}$'
+              THEN (evidence->>'intermediateBytes')::numeric END AS intermediate_bytes_value,
+            CASE WHEN variants = 1 AND evidence->>'version' = '1' AND evidence->>'elapsedBeforeRecordMs' ~ '^[0-9]{1,16}$'
+              THEN (evidence->>'elapsedBeforeRecordMs')::numeric END AS elapsed_value
+            FROM classified
         )
-      SELECT r.id, r.title, r.description, r.status, r.tools_used,
+      SELECT r.id, r.title, r.description, r.script, r.status, r.tools_used,
              r.run_count, r.success_count, r.last_run_at, r.promoted_tool, r.merged_into,
              COUNT(run.id) AS observations,
+             COALESCE(SUM(run.source_rows), 0) AS source_rows,
+             COALESCE(SUM(run.source_rows - 1) FILTER (WHERE run.variants = 1), 0) AS copies_excluded,
+             COUNT(*) FILTER (WHERE run.variants > 1) AS conflicts,
+             COALESCE(SUM(source_bytes_value), 0) AS source_bytes,
+             COALESCE(SUM(intermediate_bytes_value), 0) AS intermediate_bytes,
+             COALESCE(SUM(elapsed_value), 0) AS elapsed_ms,
+             COUNT(source_bytes_value) AS source_measured,
+             COUNT(intermediate_bytes_value) AS intermediate_measured,
+             COUNT(elapsed_value) AS elapsed_measured,
              COUNT(*) FILTER (WHERE run.known AND usage->>'selection' = 'authored') AS authored,
              COUNT(*) FILTER (WHERE run.known AND usage->>'selection' = 'automatic-match') AS automatic_matches,
              COUNT(*) FILTER (WHERE run.known AND usage->>'selection' = 'saved-replay') AS saved_replays,
@@ -307,11 +410,11 @@ export async function recipeCandidates(
              COUNT(*) FILTER (WHERE run.known AND usage->>'mode' = 'commit' AND usage->>'selection' = 'saved-replay' AND usage->>'choice' = 'agent' AND usage->>'outcome' = 'error') AS replay_errors,
              COUNT(*) FILTER (WHERE run.known AND usage->>'mode' = 'commit' AND usage->>'selection' = 'saved-replay' AND usage->>'choice' = 'agent' AND usage->>'outcome' = 'refused') AS replay_refused
         FROM harness_shared.code_recipes r
-   LEFT JOIN classified run
+   LEFT JOIN measured run
           ON run.recipe_id = r.id
        WHERE r.status = 'active'
-         AND r.run_count >= ${minRunCount}
-    GROUP BY r.id`;
+    GROUP BY r.id
+      HAVING COUNT(run.id) >= ${minRunCount}`;
 
   // Existing-tool lookups for the D-007 name-collision damp (raw names + kebab slugs).
   // A recipe id is a kebab slug, never `ns:verb`, so comparing the id to the RAW tool
@@ -333,20 +436,33 @@ export async function recipeCandidates(
     const denominator = successes + errors + refused;
     const successRate = denominator > 0 ? clamp01(successes / denominator) : 0;
     const usage: RecipeUsageSummary = {
-      unit: 'execution-rows', observations: asInt(r.observations), authored: asInt(r.authored),
+      unit: 'execution-receipts', observations: asInt(r.observations), sourceRows: asInt(r.source_rows),
+      verifiedCopiesExcluded: asInt(r.copies_excluded), conflictingReceipts: asInt(r.conflicts), authored: asInt(r.authored),
       automaticMatches: asInt(r.automatic_matches), savedReplays: asInt(r.saved_replays),
       previews: asInt(r.previews), unknown: asInt(r.unknown), agentDemand: asInt(r.agent_demand),
       reliability: { state: denominator > 0 ? 'measured' : 'unknown', successes, errors, refused, denominator },
+      costs: {
+        source: 'code_recipe_runs.execution_trace.runEvidence', unit: 'utf8-bytes-and-milliseconds',
+        sourceBytes: asInt(r.source_measured) > 0 ? asInt(r.source_bytes) : null,
+        intermediateBytes: asInt(r.intermediate_measured) > 0 ? asInt(r.intermediate_bytes) : null,
+        elapsedBeforeRecordMs: asInt(r.elapsed_measured) > 0 ? asInt(r.elapsed_ms) : null,
+        sourceMeasuredRows: asInt(r.source_measured), intermediateMeasuredRows: asInt(r.intermediate_measured),
+        elapsedMeasuredRows: asInt(r.elapsed_measured), returnedContextBytes: null, measuredSavings: null,
+      },
+      coverage: { state: 'unknown', complete: false,
+        reason: 'Recipe run receipts alone do not establish a completed source/client census or a compatible baseline.' },
     };
 
-    // Redundancy (excludes from promote candidates):
-    //   • TRIVIAL — toolCount ≤ 1: a 1-tool wrapper isn't batch-worthy.
-    //   • NAME COLLISION — an existing defineTool already owns this name/slug.
+    const substance = await recipeSubstance(r.script, toolsUsed);
+    // A source-backed one-tool reduction can qualify. Trivial wrappers and
+    // unsupported source never acquire substance from repeated use alone.
     let redundant = false;
     let redundancyReason: string | null = null;
-    if (toolCount <= 1) {
+    if (substance === 'primitive' || substance === 'unknown') {
       redundant = true;
-      redundancyReason = 'trivial: batches ≤1 distinct tool (not worth a tool over the primitive)';
+      redundancyReason = substance === 'unknown'
+        ? 'unknown: unsupported result-processing evidence'
+        : 'trivial: no supported processing beyond the primitive';
     } else if (existingToolNames.has(r.id) || existingToolSlugs.has(r.id)) {
       redundant = true;
       redundancyReason = `name_collision: recipe id "${r.id}" maps to an existing tool (D-007 — promoting would regenerate it)`;
@@ -381,6 +497,7 @@ export async function recipeCandidates(
       lastRunAt: asIsoOrNull(r.last_run_at),
       toolsUsed,
       toolCount,
+      substance,
       promotionScore,
       redundant,
       redundancyReason,

@@ -116,7 +116,7 @@ const PEER_OWNER_SUBJECT_RE = /\b(?:peer|item|work[-\s]?item)\s+owner\b/i;
  *  exemption narrow and adjacent to that trigger so it cannot mask an
  *  independent human approval question later in the clause. */
 const SOURCE_BOUND_RUNTIME_OWNER_REPLY_RE =
-  /^\s+answer\s+from\s+(?:a|the)\s+source-bound\s+qualification\s+reply\s+from\s+named\s+runtime\s+owner\s+(?:su|claude)-[0-9a-f]{4,}(?:-[0-9a-f]{4,})*\b/i;
+  /^\s+(?:answer\s+)?from\s+(?:a|the)\s+source-bound\s+qualification\s+reply\s+from\s+named\s+runtime\s+owner\s+(?:su|claude)-[0-9a-f]{4,}(?:-[0-9a-f]{4,})*\b/i;
 
 /** A conditional procedure describes a possible owner wait, not the writer's
  *  current question. Keep this clause-scoped so a real ask later on the same

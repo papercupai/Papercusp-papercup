@@ -26,6 +26,7 @@ import { assertPgReachable } from '@papercusp/test-config/pg';
 import { _resetForTests } from '@papercusp/db-org';
 import { createOrgTestDb } from '../../../../test/_org-test-db';
 import { _resetHarnessAdminUrlCacheForTests } from '../../../embedded-pg-discovery';
+import { stopInvalidationListener } from '../../../sync-sse';
 // eslint-disable-next-line import/no-relative-packages -- clears the env-URL cache the pool resolver memoizes
 import { _resetUrlCacheForTests } from '../../../../../../libs/papercusp/libs/db/src/connection';
 // eslint-disable-next-line import/no-relative-packages -- mirror the canonical client's jsonb serializer (see restoreRawJsonbSerializer's doc)
@@ -99,21 +100,28 @@ export async function setupPlanPgFixture(options: { isolated?: boolean } = {}): 
   restoreRawJsonbSerializer(admin);
 
   const dispose = async () => {
-    await admin.end({ timeout: 5 }).catch(() => {});
-    if (prevAppUrl === undefined) delete process.env.HARNESS_DATABASE_URL;
-    else process.env.HARNESS_DATABASE_URL = prevAppUrl;
-    if (prevAdminUrl === undefined) delete process.env.HARNESS_ADMIN_DATABASE_URL;
-    else process.env.HARNESS_ADMIN_DATABASE_URL = prevAdminUrl;
-    if (prevPgb === undefined) delete process.env.PAPERCUSP_PGBOUNCER;
-    else process.env.PAPERCUSP_PGBOUNCER = prevPgb;
-    if (prevSkipDisc === undefined) delete process.env.PAPERCUSP_SKIP_PG_DISCOVERY;
-    else process.env.PAPERCUSP_SKIP_PG_DISCOVERY = prevSkipDisc;
-    // Dedicated pools (including lock bootstrap) resolve through a separate
-    // memoized admin URL. Retire that pin before deleting the owned database.
-    _resetHarnessAdminUrlCacheForTests();
-    _resetUrlCacheForTests();
-    await _resetForTests();
-    await privateDb?.cleanup();
+    try {
+      // The process-wide sync bus can still hold a trailing pg_notify after a
+      // test mutation returns. Flush it while getOrgPg() still resolves to this
+      // fixture; otherwise its timer can publish after ambient live URLs return.
+      await stopInvalidationListener();
+    } finally {
+      await admin.end({ timeout: 5 }).catch(() => {});
+      if (prevAppUrl === undefined) delete process.env.HARNESS_DATABASE_URL;
+      else process.env.HARNESS_DATABASE_URL = prevAppUrl;
+      if (prevAdminUrl === undefined) delete process.env.HARNESS_ADMIN_DATABASE_URL;
+      else process.env.HARNESS_ADMIN_DATABASE_URL = prevAdminUrl;
+      if (prevPgb === undefined) delete process.env.PAPERCUSP_PGBOUNCER;
+      else process.env.PAPERCUSP_PGBOUNCER = prevPgb;
+      if (prevSkipDisc === undefined) delete process.env.PAPERCUSP_SKIP_PG_DISCOVERY;
+      else process.env.PAPERCUSP_SKIP_PG_DISCOVERY = prevSkipDisc;
+      // Dedicated pools (including lock bootstrap) resolve through a separate
+      // memoized admin URL. Retire that pin before deleting the owned database.
+      _resetHarnessAdminUrlCacheForTests();
+      _resetUrlCacheForTests();
+      await _resetForTests();
+      await privateDb?.cleanup();
+    }
   };
 
   return { admin, workspaceId: 'default', dispose };

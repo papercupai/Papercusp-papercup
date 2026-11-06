@@ -48,6 +48,36 @@ const RECOVERY_STOP_REFS = [
   'session_turn:claude:1205c31b-3da8-473e-964a-81fe978b97ef:75',
 ];
 
+function summarizeTimings(
+  setupTimings: Array<{ phase: string; elapsedMs: number }>,
+  measuredCalls: Array<{ tool: string; elapsedMs: number }>,
+) {
+  const roundMs = (value: number) => Math.round(value * 10) / 10;
+  const byTool = new Map<string, { count: number; totalMs: number; maxMs: number }>();
+  for (const call of measuredCalls) {
+    const timing = byTool.get(call.tool) ?? { count: 0, totalMs: 0, maxMs: 0 };
+    timing.count += 1;
+    timing.totalMs += call.elapsedMs;
+    timing.maxMs = Math.max(timing.maxMs, call.elapsedMs);
+    byTool.set(call.tool, timing);
+  }
+  return {
+    setup: setupTimings.map(({ phase, elapsedMs }) => ({ phase, elapsedMs: roundMs(elapsedMs) })),
+    callsByTool: [...byTool.entries()]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([tool, timing]) => ({
+        tool,
+        count: timing.count,
+        totalMs: roundMs(timing.totalMs),
+        maxMs: roundMs(timing.maxMs),
+      })),
+    slowestCalls: [...measuredCalls]
+      .sort((a, b) => b.elapsedMs - a.elapsedMs)
+      .slice(0, 8)
+      .map(({ tool, elapsedMs }) => ({ tool, elapsedMs: roundMs(elapsedMs) })),
+  };
+}
+
 const selectedRecovery = inject('sessionRecoveryRuntime');
 // A normal isolated-PG run is component evidence only. The two maintained live
 // profiles collect the real case; missing history/identity must then fail.
@@ -135,7 +165,11 @@ describe.skipIf(!selectedRecovery)('sessions:digest selected-operator acceptance
         return decoded;
       };
       const query = 'what were agents working on before their accounts hit usage limits?';
-      const discovery = await call('tools:find', { query, limit: 3 });
+      const discovery = await call('tools:find', {
+        query,
+        limit: 3,
+        projection: { pick: ['hits[].tool', 'servingGeneration'] },
+      });
       expect(Array.isArray(discovery.hits), `discovery response: ${JSON.stringify(discovery)}`).toBe(true);
       expect(discovery.hits.slice(0, 3).map((hit: { tool: string }) => hit.tool)).toContain('sessions:digest');
       const inputs = { since: '2026-10-30T00:00:00.000Z', until: '2026-10-31T23:59:59.000Z',
@@ -204,14 +238,29 @@ describe.skipIf(!selectedRecovery)('sessions:digest selected-operator acceptance
       expect(await measureSetup('health-after', health)).toBe(buildSha);
       const elapsedMs = performance.now() - started;
       expect(elapsedMs).toBeLessThan(120_000);
+      const coverage = pages.at(-1).coverage;
       process.stdout.write('SESSION_RECOVERY_JOURNEY ' + JSON.stringify({
         url: selected.url, buildSha, runtime: selected.runtime, inputs,
         discovery: { query, hits: discovery.hits.map((hit: any) => hit.tool), servingGeneration: discovery.servingGeneration },
-        pages, resolvedReferences: refs, setupTimings, measuredCalls, elapsedMs,
+        coverage: {
+          status: coverage.status,
+          candidateIncidents: coverage.candidateIncidents,
+          scannedThrough: coverage.scannedThrough,
+          hostOnlyOwners: coverage.hostOnlyOwners,
+          snapshotAt,
+          pages: pages.length,
+          digestRows: incidents.length,
+          referencesExpected: refs.length,
+          referencesResolved: references.size,
+        },
+        timings: summarizeTimings(setupTimings, measuredCalls),
+        elapsedMs: Math.round(elapsedMs * 10) / 10,
       }) + '\n');
     } finally {
       process.stdout.write('SESSION_RECOVERY_CALL_TIMINGS ' + JSON.stringify({
-        url: selected.url, elapsedMs: performance.now() - started, setupTimings, measuredCalls,
+        url: selected.url,
+        elapsedMs: Math.round((performance.now() - started) * 10) / 10,
+        timings: summarizeTimings(setupTimings, measuredCalls),
       }) + '\n');
       await client.close();
     }

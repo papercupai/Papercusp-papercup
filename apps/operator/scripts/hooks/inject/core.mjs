@@ -238,6 +238,9 @@ export async function postInjection(port, body, opts = {}) {
           operatorOrigin: attemptedOperatorOrigin,
           timeoutMs: spec.timeoutMs,
           elapsedMs: Math.max(0, now() - startedAt),
+          preFetchMs: fetchStartedAt === null ? null : Math.max(0, fetchStartedAt - startedAt),
+          fetchMs: fetchStartedAt === null ? null : Math.max(0, (headersReceivedAt ?? now()) - fetchStartedAt),
+          responseStatus,
           headersElapsedMs: headersReceivedAt === null ? null : Math.max(0, headersReceivedAt - startedAt),
           responseBodyMs: bodyStartedAt === null ? null : Math.max(0, (bodyFinishedAt ?? now()) - bodyStartedAt),
         },
@@ -258,6 +261,7 @@ export async function postInjection(port, body, opts = {}) {
   let bodyStartedAt = null;
   let bodyFinishedAt = null;
   let transportPhase = null;
+  let responseStatus = null;
   const collectErrors = [];
   let hookOutcomeReported = false;
   const reportHookOutcome = (stage, extra = {}) => {
@@ -348,6 +352,7 @@ export async function postInjection(port, body, opts = {}) {
           signal: controller.signal,
         });
         headersReceivedAt = now();
+        responseStatus = res.status;
         transportPhase = 'headers-received';
         break;
       } catch (err) {

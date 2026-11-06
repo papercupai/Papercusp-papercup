@@ -1759,7 +1759,7 @@ export async function censusUnregisteredFailedUnits(
       .notify({
         summary:
           `⚠ supervision: ${fresh.length} unsupervised user unit(s) FAILED on this host — ${list}. ` +
-          'Not in SUPERVISED_PROCESSES, so nothing restarts them; inspect with ' +
+          'Not in SUPERVISED_PROCESSES, so the reconciler will not restart them; inspect with ' +
           '`systemctl --user status <unit>`, then fix the cause or `systemctl --user reset-failed <unit>` if retired.',
         category: 'supervision',
       })

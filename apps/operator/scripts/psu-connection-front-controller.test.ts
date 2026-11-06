@@ -1008,6 +1008,14 @@ describe("psu Papercusp cloud connections (WI-10002874)", () => {
       return { run, terminals, bodies, notice };
     }
 
+    it("preserves the exact resume host restriction through the saved cloud profile", async () => {
+      const argv = ["--resume=42", "--resume-host=remote-1"];
+      const t = connect(argv, [{ exit: { code: 2, signal: 0 }, bound: true }]);
+      await expect(t.run).resolves.toEqual({ handled: true, argv, exitCode: 2 });
+      expect(t.bodies()).toEqual([expect.objectContaining({ program: "psu", argv })]);
+      expect(t.terminals[0]).toMatchObject({ initialInput: null, expectKind: "psu" });
+    });
+
     it("asks for the psu kind with the argv and types nothing", async () => {
       const t = connect(["--agent", "codex"], [{ exit: { code: 3, signal: 0 }, bound: true }]);
       await expect(t.run).resolves.toEqual({ handled: true, argv: ["--agent", "codex"], exitCode: 3 });
@@ -1035,7 +1043,7 @@ describe("psu Papercusp cloud connections (WI-10002874)", () => {
     it("refuses a flag outside the allowlist before asking the cloud for anything", async () => {
       const t = connect(["--role=su"], []);
       await expect(t.run).rejects.toThrow(
-        "psu on a Papercusp cloud workspace takes only --agent, --model, --label, --no-picker, --resume and --fork; --role is not available there.",
+        "psu on a Papercusp cloud workspace takes only --agent, --model, --label, --no-picker, --resume, --resume-host and --fork; --role is not available there.",
       );
       expect(t.bodies()).toEqual([]);
       expect(t.terminals).toEqual([]);

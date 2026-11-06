@@ -73,7 +73,10 @@ fn writers_of(program: &Path) -> Vec<String> {
     let mut writers = Vec::new();
     for entry in procs.flatten() {
         let name = entry.file_name();
-        let Some(pid) = name.to_str().filter(|n| n.bytes().all(|b| b.is_ascii_digit())) else {
+        let Some(pid) = name
+            .to_str()
+            .filter(|n| n.bytes().all(|b| b.is_ascii_digit()))
+        else {
             continue;
         };
         let Ok(fds) = std::fs::read_dir(entry.path().join("fd")) else {
@@ -113,10 +116,105 @@ pub fn spawn(command: &mut Command) -> io::Result<Child> {
     retry_text_busy(&program, BUSY_DEADLINE, || command.spawn())
 }
 
+/// Resolve a bundled or PATH program in one directory using the host's executable forms.
+/// Windows CLI launchers include the desktop's maintained `psu.cmd` WSL shim.
+pub fn executable_in(directory: &Path, program: &str) -> Option<PathBuf> {
+    #[cfg(windows)]
+    let names = [
+        format!("{program}.exe"),
+        format!("{program}.com"),
+        format!("{program}.cmd"),
+        format!("{program}.bat"),
+    ];
+    #[cfg(not(windows))]
+    let names = [program.to_string()];
+    names
+        .into_iter()
+        .map(|name| directory.join(name))
+        .find(|path| {
+            let Ok(metadata) = std::fs::metadata(path) else {
+                return false;
+            };
+            if !metadata.is_file() {
+                return false;
+            }
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                metadata.permissions().mode() & 0o111 != 0
+            }
+            #[cfg(not(unix))]
+            {
+                true
+            }
+        })
+}
+
+/// Replace this process on Unix; on Windows retain the console until the child exits,
+/// then propagate its exit status. Like Unix exec, only launch failures return.
+pub fn replace(command: &mut Command) -> io::Error {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.exec()
+    }
+    #[cfg(not(unix))]
+    {
+        match command.status() {
+            Ok(status) => std::process::exit(status.code().unwrap_or(1)),
+            Err(error) => error,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn executable_lookup_rejects_missing_paths_and_directories() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(executable_in(dir.path(), "psu"), None);
+        #[cfg(windows)]
+        let name = "psu.exe";
+        #[cfg(not(windows))]
+        let name = "psu";
+        std::fs::create_dir(dir.path().join(name)).unwrap();
+        assert_eq!(executable_in(dir.path(), "psu"), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn executable_lookup_requires_unix_execute_permission() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("psu");
+        std::fs::write(&file, "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert_eq!(executable_in(dir.path(), "psu"), None);
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(executable_in(dir.path(), "psu"), Some(file));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn executable_lookup_supports_the_windows_cli_shim_and_prefers_an_exe() {
+        let dir = tempfile::tempdir().unwrap();
+        let shim = dir.path().join("psu.cmd");
+        std::fs::write(&shim, "@exit /b 0\r\n").unwrap();
+        assert_eq!(executable_in(dir.path(), "psu"), Some(shim));
+        let exe = dir.path().join("psu.exe");
+        std::fs::write(&exe, b"MZ").unwrap();
+        assert_eq!(executable_in(dir.path(), "psu"), Some(exe));
+    }
+
+    #[test]
+    fn failed_replacement_returns_the_launch_error_for_setup_recovery() {
+        let dir = tempfile::tempdir().unwrap();
+        let error = replace(&mut Command::new(dir.path().join("missing-program")));
+        assert_eq!(error.kind(), io::ErrorKind::NotFound);
+    }
 
     #[cfg(target_os = "linux")]
     #[test]

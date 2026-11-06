@@ -199,8 +199,10 @@ export default defineTool({
     // raised before its queued SELECT reaches PostgreSQL, so replaying this
     // bounded read is safe and absorbs a transient pool reconnect blip.
     const considered = resource
+      // notify-classification: {"id":"packages/operator-core/lib/agent-tools/locks/list.ts#<module>/handler:197f9f3d6a32befc2b61:1","classification":"durable","reason":"This retry callback only selects one agent_resource_registry row via getResource. The census merges notification roots from other instantiations of withPgRetry; retain a conservative unverified classification pending call-context separation in EI-28019593823641196 rather than claiming a lossy exemption.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       ? [await withPgRetry(() => getResource(pool, resource), { label: 'locks:list:get-resource' })]
           .filter((r): r is ResourceRegistryRow => r !== null)
+      // notify-classification: {"id":"packages/operator-core/lib/agent-tools/locks/list.ts#<module>/handler:7ae81ea6e6cd21aa95ab:1","classification":"durable","reason":"This retry callback only selects agent_resource_registry rows via listResources. Shared withPgRetry parameter binding imports unrelated notification roots into its census result; keep the classification conservative and unverified until EI-28019593823641196 isolates this callback's effects.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       : await withPgRetry(() => listResources(pool), { label: 'locks:list:list-resources' });
 
     // EI-20197228449443651: `q`/`limit` narrow the REGISTRY view only, and
@@ -258,6 +260,7 @@ export default defineTool({
     // exclusive. Union in every domain that actually holds a live lease.
     const hgDomain = hostGlobalLockDomain();
     const wsDomain = workspaceScopedLockDomain();
+    // notify-classification: {"id":"packages/operator-core/lib/agent-tools/locks/list.ts#<module>/handler:c459a129a7d64776b955:1","classification":"durable","reason":"listLiveResourceDomains selects distinct domains holding unexpired leases; it does not expire locks or send notices. The generic retry wrapper still carries merged notification roots, so preserve the conservative unverified requirement pending call-context proof in EI-28019593823641196.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     const liveDomains = await withPgRetry(
       () => listLiveResourceDomains(pool, resource),
       { label: 'locks:list:live-domains' },
@@ -267,6 +270,7 @@ export default defineTool({
     const queues = await Promise.all(
       domains.map(async (coordinationDomain) => ({
         coordinationDomain,
+        // notify-classification: {"id":"packages/operator-core/lib/agent-tools/locks/list.ts#<module>/handler/<callback>:db18592300882e5a89b7:1","classification":"durable","reason":"readResourceQueue and readLiveExclusiveQueue only select current holders and queued requests. No expiry mutation occurs in this callback, but shared retry binding merges other callbacks' notification roots. Retain the conservative unverified classification until EI-28019593823641196 resolves that reachability ambiguity.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
         queue: await withPgRetry(
           () => readResourceQueue(pool, { coordinationDomain, resource }),
           { label: 'locks:list:resource-queue' },
@@ -304,6 +308,7 @@ export default defineTool({
     // anything MORE likely to read the resulting `holders: []` as a verdict
     // about their file. Failure is reported as `activeCount: null` +
     // `unreadable`, never as `0`.
+    // notify-classification: {"id":"packages/operator-core/lib/agent-tools/locks/list.ts#<module>/handler:6ec0af209fa17fe4a5ee:1","classification":"durable","reason":"readFileLockSummary retries readQueue and converts read errors into an explicit unreadable result. Its SELECT-only transaction marks no resource-expiry receipts, while beginSuLockTransaction still invokes the shared receipt drain. Keep the conservative unverified wrapper classification pending EI-28019593823641196; a readable summary does not verify notification delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     const fileLocks = await readFileLockSummary(pool);
 
     // {data} envelope so the payload-tier shapers apply.

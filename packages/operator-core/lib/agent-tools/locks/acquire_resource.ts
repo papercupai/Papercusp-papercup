@@ -235,6 +235,7 @@ export default defineTool({
         // must not turn a recoverable contention dip into a user-visible
         // acquire failure. Retry the complete transaction so each attempt
         // gets a fresh serialization boundary.
+        // notify-classification: {"id":"packages/operator-core/lib/agent-tools/locks/acquire_resource.ts#<module>/handler:3889dfbacffe1148779e:1","classification":"durable","reason":"Shared acquisition sweeps expired resource locks. Exclusive expiry receipts reach configure.onResourceExpired after commit and emitResourceReleasedEvent; preserving lock state alone does not prove this release signal survives restart.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
         r = await acquireWithContentionRetry(() =>
           inWorkspaceTxn(coordinationDomain, ownerId, (tx) =>
             tryAcquireResource(tx, {
@@ -273,7 +274,9 @@ export default defineTool({
       // Retry the whole exclusive protocol: contention can happen while
       // acquiring its workspace transaction, and each retry must rebuild the
       // wait/listen lifecycle from a clean attempt.
+      // notify-classification: {"id":"packages/operator-core/lib/agent-tools/locks/acquire_resource.ts#<module>/handler:1068c468caba131ea074:1","classification":"durable","reason":"The exclusive retry runs expiry-capable transactions and the holder drain broadcast. Preserve the resource-release event and targeted holder notice obligations across retry and restart.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       r = await acquireWithContentionRetry(() =>
+        // notify-classification: {"id":"packages/operator-core/lib/agent-tools/locks/acquire_resource.ts#<module>/handler/<callback>:e0f84d9db163740289af:1","classification":"durable","reason":"The exclusive wait helper sweeps resource expiry and invokes onDrainStart. Its post-commit release signal and shared-holder inbox consequences remain unverified; wrappers share those terminal paths.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
         acquireResourceExclusiveWithWait({
           coordinationDomain,
           owner: ownerId,
@@ -284,6 +287,7 @@ export default defineTool({
           maxWaitSec,
           // P-009: tell the shared holders to release when the drain begins.
           onDrainStart: (holders) =>
+            // notify-classification: {"id":"packages/operator-core/lib/agent-tools/locks/acquire_resource.ts#<module>/handler/<callback>/onDrainStart:b8b81d15648c4944b7c6:1","classification":"durable","reason":"broadcastResourceDrainStart sends a targeted sendMessage to current shared holders. Its best-effort catch does not establish delivery or preserve the resource/drain episode across producer exit.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
             broadcastResourceDrainStart({ source: coordId, resource: args.resource, holders, reason }),
           onTick: ({ waited_sec, holders }) => {
             emitProgress(

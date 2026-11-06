@@ -2358,6 +2358,8 @@ describe('template_data persistence boundary — the set-template-data door', ()
       body?: string;
       /** Plan items to insert for `body`; defaults to the two-BAR fixture's P-001/P-002. */
       itemIds?: string[];
+      /** Additional declaration required by tests that exercise activation. */
+      discovery?: string;
     } = {},
   ) {
     const { seedAcceptanceBarsInTransaction } = await import('./acceptance-bar-seed');
@@ -2365,7 +2367,7 @@ describe('template_data persistence boundary — the set-template-data door', ()
     const workspaceId = activeWorkspaceId();
     const planStatus = opts.planStatus ?? 'active';
     const body = opts.body ?? `## Requirements\n\n**R-1 — First outcome.** The first outcome holds.\n\n**R-2 — Second outcome.** The second outcome holds.\n\n## Design\n\n### Bar-to-work map for this plan\n\n| bar | implementing plan items | evidence plane |\n|---|---|---|\n| R-1 | P-001 | tree |\n| R-2 | P-002 | tree |\n\n## Work\n\n- **P-001** \`done\` first outcome\n- **P-002** \`done\` second outcome\n`;
-    const content = `---\ntitle: METHOD pins\nslug: ${subject}\nstatus: ${planStatus}\n---\n\n${body}`;
+    const content = `---\ntitle: METHOD pins\nslug: ${subject}\nstatus: ${planStatus}\n---\n\n${body}${opts.discovery ?? ''}`;
     const seededContent = opts.evidencePlane === 'live' ? content.replaceAll('| tree |', '| live |') : content;
     await db.adminSql`
       INSERT INTO harness_shared.harness_plans
@@ -2700,6 +2702,31 @@ describe('template_data persistence boundary — the set-template-data door', ()
     })).rejects.toThrow(/acceptance_bar_amendment_mapping_invalid:bar_mapping_requirement_missing.*R-8.*no Requirements record/);
   });
 
+  it('consolidates independent behavior, schema, method, case and scope defects before review', async () => {
+    const seeded = await seedBarContract('amendment-complete-candidate', { authorMethods: true });
+    const before = (await rubrics.getRubric(seeded.rubricSlug))!;
+    const criteria = before.criteria.map((criterion, index) => index === 0 ? {
+      ...criterion, bar: undefined,
+      model: 'The writer stores the BAR. The server emits an event.',
+      method: 'Read `packages/operator-core/lib/absent-candidate-module.ts`.',
+      driftMarkers: '', requiredScope: [''],
+      check: { kind: 'tests' as const, files: ['packages/operator-core/lib/acceptance-bar-amendment.test.ts'],
+        cases: [{ file: 'packages/operator-core/lib/acceptance-bar-amendment.test.ts', testName: 'absent candidate case' }] },
+    } : criterion);
+    const failure = await rubrics.previewAcceptanceBarAmendment({
+      rubricId: seeded.rubricSlug, actorId: 'candidate-author', criteria,
+      reason: 'Report independent failures in one repair round.',
+    }).catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(Error);
+    for (const defect of ['non_atomic_projection', 'driftMarkers', 'requiredScope', 'absent-candidate-module', 'absent candidate case']) {
+      expect((failure as Error).message).toContain(defect);
+    }
+    expect(failure).toMatchObject({ candidateValidation: {
+      status: 'failed', candidateHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+    } });
+    expect((await rubrics.getRubric(seeded.rubricSlug))!.revision).toBe(before.revision);
+  });
+
   it('refuses a changed automated BAR without a test layer before approval or proof', async () => {
     const seeded = await seedBarContract('amendment-missing-proof-layer');
     const before = (await rubrics.getRubric(seeded.rubricSlug))!;
@@ -2910,10 +2937,25 @@ describe('template_data persistence boundary — the set-template-data door', ()
   it.each(['active', 'accepted', 'exempt'] as const)(
     'activation re-audit preserves an unchanged %s clause and its exact evidence revision',
     async (lifecycleStatus) => {
-      const { workspaceId, subject, rubricSlug } = await seedBarContract(`reaudit-${lifecycleStatus}`);
+      const discovery = {
+        questions: [],
+        notApplicable: 'This preservation fixture reuses the existing clause store; no implementation choices remain.',
+        findings: [{
+          id: 'F-1', questions: [],
+          conclusion: 'Re-audit must preserve the reviewed clause and its sibling exactly.',
+          evidenceRefs: ['source:reviewed-clauses'],
+          dispositions: ['P-001', 'P-002', 'R-1', 'R-2', 'section:Requirements', 'section:Design'].map((target) => ({
+            target, decision: 'unchanged', reason: 'Exercise the existing two-outcome preservation contract.',
+          })),
+        }],
+      };
+      const { workspaceId, subject, rubricSlug } = await seedBarContract(`reaudit-${lifecycleStatus}`, {
+        discovery: `\n## Discovery\n\n\`\`\`discovery\n${JSON.stringify(discovery)}\n\`\`\`\n`,
+      });
       const { listSpecClauses, setSpecClause, specClauseContentHash } =
         await import('./agent-tools/plans/spec-clauses-store');
-      const { recordCurrentActivationAudit } = await import('./plan-audits');
+      const { recordCurrentActivationAudit, recordCurrentDiscoveryAudit, discoverySubjectSnapshot } =
+        await import('./plan-audits');
       const scope = { harnessSlug: 'papercusp', planSlug: subject };
       const initial = await listSpecClauses(scope);
       expect(initial).toHaveLength(2);
@@ -2957,6 +2999,19 @@ describe('template_data persistence boundary — the set-template-data door', ()
           FROM harness_shared.harness_plans
          WHERE workspace_id=${workspaceId} AND harness_slug='papercusp' AND plan_slug=${subject}`;
       const rubricBefore = await rubrics.getRubric(rubricSlug);
+      // Finalize the real discovery audit before activation. Only its evidence
+      // provider is scoped to this private database's actual clause snapshot.
+      const discoveryEffects = {
+        context: async (content: string) => ({
+          targets: Object.keys(discoverySubjectSnapshot(content)).map((ref) => ({ ref, change: 'proposed' as const })),
+          evidence: [{ ref: 'source:reviewed-clauses', state: 'current' as const, usable: true,
+            fingerprint: hashPlanContent(JSON.stringify(await listSpecClauses(scope))) }],
+        }),
+      };
+      const finalized = await recordCurrentDiscoveryAudit({
+        workspaceId, harnessSlug: 'papercusp', planSlug: subject, createdBy: 'audit-reviewer',
+      }, discoveryEffects);
+      expect(finalized, JSON.stringify(finalized)).toMatchObject({ ok: true, discovery: { readiness: { ready: true } } });
       const audit = await recordCurrentActivationAudit({
         workspaceId,
         harnessSlug: 'papercusp',
@@ -2976,8 +3031,8 @@ describe('template_data persistence boundary — the set-template-data door', ()
           rejectedOrSuperseded: [],
           unresolvedBlockers: [],
         },
-      });
-      expect(audit.ok).toBe(true);
+      }, discoveryEffects);
+      expect(audit, JSON.stringify(audit)).toMatchObject({ ok: true });
       // Exact equality includes the revision, content hash, acceptance author,
       // acceptance time, and the untouched sibling's draft lifecycle.
       expect(await listSpecClauses(scope)).toEqual(before);
@@ -5742,7 +5797,7 @@ describe('template_data persistence boundary — the set-template-data door', ()
   // wrapping transaction) AND on apply. The R-27 population here is a Bar-to-work map row
   // for a BAR with no Requirements record.
   it('R-33: a malformed-source refusal on preview and on apply leaves the complete durable state unchanged', async () => {
-    const seeded = await seedBarContract('malformed-source-no-write-subject');
+    const seeded = await seedBarContract('malformed-source-no-write-subject', { authorMethods: true });
     const original = await subjectSource(seeded.subject);
     const malformed = original.replace('| R-2 | P-002 | tree |', '| R-2 | P-002 | tree |\n| R-8 | P-001 | tree |');
     expect(malformed).not.toBe(original);
@@ -5775,7 +5830,9 @@ describe('template_data persistence boundary — the set-template-data door', ()
   const R2_MAP_ROW = '| R-2 | P-002 | tree |';
 
   async function seedMalformedSource(subject: string, malform: (source: string) => string) {
-    const seeded = await seedBarContract(subject);
+    // This full-set resubmission must itself be valid before it can exercise
+    // the source parser. The legacy read projection fills omitted METHOD with ''.
+    const seeded = await seedBarContract(subject, { authorMethods: true });
     const original = await subjectSource(seeded.subject);
     const malformed = malform(original);
     expect(malformed).not.toBe(original);

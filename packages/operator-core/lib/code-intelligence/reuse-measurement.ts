@@ -489,6 +489,9 @@ export async function measureRecordedReuseMetric(sql: Sql, scope: {
   if (!scope.workspaceId.trim() || !scope.harnessSlug?.trim()
     || time(scope.windowStart) >= time(scope.windowEnd)) return { verdict: 'unknown', detail: 'Exact workspace, harness and valid window required.' };
   if (metric === 'providerOutcomes') {
+    const { readRecipeOutcomeReport } = await import('../code-run-adoption');
+    const recipeOutcomes = await readRecipeOutcomeReport(async <T>(query: string, params: unknown[]) =>
+      await sql.unsafe(query, params as never) as unknown as T[], { ...scope, harnessSlug: scope.harnessSlug });
     const { loadHarnessRegistry } = await import('../harness-registry');
     const { REUSE_PROVIDER_POLICY, REUSE_PROVIDER_FLAGS } = await import('./reuse-brief-providers');
     const roots = new Map<string, string>();
@@ -508,8 +511,8 @@ export async function measureRecordedReuseMetric(sql: Sql, scope: {
         experimentStartedAt: first, now: scope.windowEnd }),
       reversal: { flag: REUSE_PROVIDER_FLAGS[provider as keyof typeof REUSE_PROVIDER_FLAGS], enabled: true } };
     }));
-    return { verdict: notObserved.length || collected.rejected.length ? 'unknown' : 'pass',
-      detail: JSON.stringify({ scope, byProvider, notObserved, recommendations, rejected: collected.rejected,
+    return { verdict: notObserved.length || collected.rejected.length || !recipeOutcomes.coverage.complete ? 'unknown' : 'pass',
+      detail: JSON.stringify({ scope, byProvider, notObserved, recommendations, rejected: collected.rejected, recipeOutcomes,
         sourceRefs: windows.map(w => w.exposure.id),
         cannotObserve: ['No independent client receipt source is registered; delivery remains unknown.',
           'Activity ledger completeness is not certified; absent follow-through remains unknown.'] }) };

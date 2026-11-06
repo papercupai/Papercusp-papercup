@@ -1,16 +1,18 @@
 import { readFile } from 'node:fs/promises';
+import postgres from 'postgres';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createFreshPgDb, type FreshPgDb } from '../../../test/_pg-helpers';
 import { hashPlanContent } from './content-hash';
 
 const gates = vi.hoisted(() => ({ blocker: '', unavailable: false,
   beforeReadiness: null as (() => Promise<void>) | null }));
-const connection = vi.hoisted(() => ({ sql: null as unknown, idleTimeout: '0' }));
+const connection = vi.hoisted(() => ({ sql: null as unknown, idleTimeout: '0', timeZone: 'UTC' }));
 vi.mock('@papercusp/db-org', async original => ({
   ...(await original<typeof import('@papercusp/db-org')>()),
   getOrgPg: () => ({ sql: connection.sql }),
   withWorkspace: async (_workspace: string, fn: (tx: unknown) => Promise<unknown>) => db.sql.begin(async tx => {
     await tx`SELECT set_config('idle_in_transaction_session_timeout', ${connection.idleTimeout}, true)`;
+    await tx`SELECT set_config('TimeZone', ${connection.timeZone}, true)`;
     return fn(tx);
   }),
 }));
@@ -90,7 +92,7 @@ beforeAll(async () => {
       PRIMARY KEY(workspace_id,harness_slug,plan_slug));
     ALTER TABLE harness_shared.harness_plans
       ADD COLUMN title text, ADD COLUMN created text, ADD COLUMN updated text, ADD COLUMN owner text,
-      ADD COLUMN initiative text, ADD COLUMN supersedes text, ADD COLUMN superseded_by text,
+      ADD COLUMN initiative text, ADD COLUMN supersedes text[] DEFAULT '{}', ADD COLUMN superseded_by text,
       ADD COLUMN op_started_at timestamptz, ADD COLUMN op_updated_at timestamptz,
       ADD COLUMN current_wave integer, ADD COLUMN op_priority integer, ADD COLUMN is_legacy boolean DEFAULT false,
       ADD COLUMN items jsonb DEFAULT '[]', ADD COLUMN now_state text, ADD COLUMN now_next text,
@@ -98,7 +100,17 @@ beforeAll(async () => {
       ADD COLUMN scheduled_at timestamptz, ADD COLUMN expires_at timestamptz, ADD COLUMN tzid text,
       ADD COLUMN template_slug text, ADD COLUMN run_seq integer, ADD COLUMN template text,
       ADD COLUMN output_schema jsonb, ADD COLUMN forced_past jsonb,
-      ADD COLUMN verification_profile text, ADD COLUMN verification_profile_source text;
+      ADD COLUMN verification_profile text, ADD COLUMN verification_profile_source text,
+      ADD COLUMN acceptance_bar_seeded_at timestamptz, ADD COLUMN decisions jsonb DEFAULT '[]',
+      ADD COLUMN acceptance_bar_epoch integer, ADD COLUMN acceptance_bar_cohort text,
+      ADD COLUMN property_schema jsonb DEFAULT '{}', ADD COLUMN properties jsonb DEFAULT '{}',
+      ADD COLUMN author_pubkey text, ADD COLUMN owner_author_pubkey text,
+      ADD COLUMN origin text, ADD COLUMN fed_ts bigint, ADD COLUMN fed_hlc text;
+    CREATE TABLE harness_shared.plan_items (workspace_id text,harness_slug text,plan_slug text,
+      item_id text,seq integer,item_text text,status text,importance text,phase text,
+      owner_gate_marker text,deliverable text,blocked_by text[],decision_refs text[]);
+    CREATE TABLE harness_shared.plan_decisions (workspace_id text,harness_slug text,plan_slug text,
+      decision_id text,seq integer,title text,body text,decision_date text,item_refs text[],affects text[]);
     CREATE TABLE harness_shared.plan_revisions (id bigserial PRIMARY KEY, workspace_id text, harness_slug text,
       plan_slug text, seq integer, content_hash text, content_snapshot text, rationale text, author_kind text,
       author_id text, session_id text, session_kind text, created_at bigint,
@@ -115,6 +127,9 @@ beforeAll(async () => {
     CREATE TABLE harness_shared.work_item_deps (workspace_id text,dep_type text,blocked_kind text,blocked_ref text,blocker_kind text,blocker_ref text);
   `);
   await db.sql.unsafe(await readFile(new URL('../../../../../libs/papercusp/libs/db/sql/1613-plan-execution-start-revision.sql', import.meta.url), 'utf8'));
+  const invalidationMigration = await readFile(new URL('../../../../../libs/papercusp/libs/db/sql/1620-plan-execution-invalidation-reasons.sql', import.meta.url), 'utf8');
+  await db.sql.unsafe(invalidationMigration);
+  await db.sql.unsafe(invalidationMigration); // idempotent replay must not restore authority
   // Fail at fixture setup if the authority census or readiness readers drift
   // beyond this migrated-PG schema. Otherwise their callers collapse a SQL
   // shape error into `plan_authority_unavailable`, obscuring the missing column.
@@ -122,12 +137,15 @@ beforeAll(async () => {
     (workspace_id,harness_slug,plan_slug,content,content_hash,status)
     VALUES (${scope.workspaceId},${scope.harnessSlug},${scope.planSlug},${body},${hashPlanContent(body)},'ready')`;
   expect(await readExecutionPlanBindings(identity.ownerId, scope.workspaceId)).toEqual([]);
+  await expect(readExecutionPlanRow(scope)).resolves.toMatchObject({ content: body });
+  const { seedAcceptanceBarsOnFederatedApply } = await import('../../acceptance-bar-receiver-seed');
+  expect((await seedAcceptanceBarsOnFederatedApply(db.sql, scope)).status).not.toBe('failed');
   await expect(checkPlanExecutionReadiness(binding, scope.workspaceId)).resolves.toEqual([]);
 }, 120_000);
 afterAll(async () => { connection.sql = null; await db?.cleanup(); });
 beforeEach(async () => {
   gates.blocker = ''; gates.unavailable = false;
-  gates.beforeReadiness = null; connection.idleTimeout = '0';
+  gates.beforeReadiness = null; connection.idleTimeout = '0'; connection.timeZone = 'UTC';
   await db.sql.unsafe('TRUNCATE harness_shared.harness_plans,harness_shared.plan_revisions,harness_shared.plan_audits,harness_shared.session_briefs,harness_shared.work_items,harness_shared.work_item_deps RESTART IDENTITY');
   await db.sql`INSERT INTO harness_shared.harness_plans (workspace_id,harness_slug,plan_slug,content,content_hash,status)
     VALUES (${scope.workspaceId},${scope.harnessSlug},${scope.planSlug},${body},${hashPlanContent(body)},'ready')`;
@@ -138,6 +156,128 @@ describe('canonical successful-start revision authority (real PG)', () => {
     INSERT INTO harness_shared.work_items (workspace_id,harness_slug,feature_id,item_kind,status,
       plan_slug,plan_line_id,plan_line_text,plan_importance,plan_decision_refs,plan_deliverable,plan_seq)
     VALUES ('execution-ws','project',${id},'feature','open','feature',${id},'Preserve findings','normal','{}','doc',${seq})`;
+
+  it.each(['America/New_York', 'Asia/Kathmandu'])('preserves timestamp instants across %s start and UTC admission', async timeZone => {
+    await db.sql`UPDATE harness_shared.harness_plans SET created_at='2026-11-05T18:19:03.691104Z',
+      acceptance_bar_seeded_at='2026-11-06T00:35:06.875123Z'`;
+    const reader = postgres(db.url, { max: 1, prepare: false, connection: { TimeZone: timeZone } });
+    connection.sql = reader;
+    connection.timeZone = timeZone;
+    try {
+      const receipt = await issue();
+      connection.sql = db.sql;
+      expect((await readExecutionPlanRow(scope))?.execution_start_revision_seq).toBe(receipt.seq);
+      expect(await readPlanExecutionStart(binding, scope.workspaceId)).toEqual([]);
+      expect(await checkExecutionPlan(binding, scope.workspaceId)).toEqual([]);
+    } finally {
+      connection.sql = db.sql;
+      await reader.end();
+    }
+  });
+
+  it('does not clear an immutable start on a dependency bookkeeping replay', async () => {
+    await seedLine('P-001'); await seedLine('P-002', 1);
+    await db.sql`INSERT INTO harness_shared.work_item_deps VALUES ('default','blocks','feature','project#P-002','feature','project#P-001')`;
+    const receipt = await issue();
+    await db.sql`UPDATE harness_shared.work_item_deps SET dep_type=dep_type`;
+    expect((await readExecutionPlanRow(scope))?.execution_start_revision_seq).toBe(receipt.seq);
+    expect(await checkExecutionPlan(binding, scope.workspaceId)).toEqual([]);
+  });
+
+  it('reads an existing offset-formatted receipt without losing microseconds or granting an orphaned start', async () => {
+    await db.sql`UPDATE harness_shared.harness_plans SET created_at='2026-11-05T18:19:03.691104Z'`;
+    await issue();
+    await db.sql`UPDATE harness_shared.plan_revisions SET content_snapshot=jsonb_set(content_snapshot::jsonb,
+      '{inputs,created_at}', '"2026-11-05T13:19:03.691104-05:00"')::text`;
+    expect(await readPlanExecutionStart(binding, scope.workspaceId)).toEqual([]);
+    await db.sql`UPDATE harness_shared.plan_revisions SET content_snapshot=jsonb_set(content_snapshot::jsonb,
+      '{inputs,created_at}', '"2026-11-05T13:19:03.691105-05:00"')::text`;
+    expect(await readPlanExecutionStart(binding, scope.workspaceId)).toEqual(['plan_start_revision_stale']);
+    await db.sql`UPDATE harness_shared.harness_plans SET execution_start_revision_seq=NULL`;
+    expect(await readPlanExecutionStart(binding, scope.workspaceId)).toEqual(['plan_not_started']);
+  });
+
+  it('normalizes the final locked start snapshot across reader and writer TimeZone', async () => {
+    const reader = postgres(db.url, { max: 1, prepare: false, connection: { TimeZone: 'America/New_York' } });
+    connection.sql = reader;
+    try { await expect(issue()).resolves.toMatchObject({ seq: 1 }); }
+    finally { connection.sql = db.sql; await reader.end(); }
+  });
+
+  it('carries accepted start through real federation, bookkeeping and native source admission', async () => {
+    await seedLine('P-001'); await seedLine('P-002', 1);
+    await db.sql`INSERT INTO harness_shared.work_item_deps VALUES ('default','blocks','feature','project#P-002','feature','project#P-001')`;
+    await db.sql`INSERT INTO harness_shared.session_briefs VALUES (${identity.ownerId},${scope.workspaceId},'feature','project',NULL)`;
+    await db.sql`UPDATE harness_shared.harness_plans SET author_pubkey='peer'`;
+    const receipt = await issue();
+    const { buildHarnessPlansProjection } = await import('../../sync/hyperbee/projections/harness-plans');
+    const projection = buildHarnessPlansProjection({ workspaceId: scope.workspaceId, harnessSlug: scope.harnessSlug,
+      sql: db.sql, isFlagOn: async () => false });
+    const progress = body.replace('Building', 'Testing');
+    const incoming = { harness_slug: scope.harnessSlug, plan_slug: scope.planSlug,
+      content: progress, content_hash: hashPlanContent(progress), title: null, status: 'ready',
+      created: null, updated: null, owner: null, supersedes: [], superseded_by: null,
+      archived: false, is_legacy: false };
+    await projection.writeToPg(incoming, { origin: 'remote', ts: 10, authorPubkey: 'peer' });
+    await db.sql`UPDATE harness_shared.work_items SET status='wip',updated_ts=42`;
+    await db.sql`UPDATE harness_shared.work_item_deps SET dep_type=dep_type`;
+    expect((await readExecutionPlanRow(scope))?.execution_start_revision_seq).toBe(receipt.seq);
+    expect(await checkPlanExecutionGuard({ ownerId: identity.ownerId, workspaceId: scope.workspaceId,
+      toolName: 'apply_patch', args: {} })).toBeNull();
+    const changed = progress.replace('Preserve findings', 'Discard findings');
+    await projection.writeToPg({ ...incoming, content: changed, content_hash: hashPlanContent(changed) },
+      { origin: 'remote', ts: 20, authorPubkey: 'peer' });
+    expect(await checkPlanExecutionGuard({ ownerId: identity.ownerId, workspaceId: scope.workspaceId,
+      toolName: 'apply_patch', args: {} })).toMatchObject({ blockers: ['plan_not_started'] });
+    const row = await readExecutionPlanRow(scope);
+    expect(row?.execution_start_invalidation).toMatchObject({ schema: 'plan-execution-invalidation-v1',
+      startRevisionSeq: receipt.seq, scope, reason: 'plan_body_changed' });
+  });
+
+  it('ignores unrelated dependency scopes and kinds but records real dependency and line invalidations', async () => {
+    await seedLine('P-001'); await seedLine('P-002', 1);
+    const receipt = await issue();
+    await db.sql`INSERT INTO harness_shared.work_item_deps VALUES ('foreign','blocks','feature','project#P-002','feature','project#P-001')`;
+    await db.sql`INSERT INTO harness_shared.work_item_deps VALUES ('default','blocks','issue','P-002','issue','P-001')`;
+    expect((await readExecutionPlanRow(scope))?.execution_start_revision_seq).toBe(receipt.seq);
+    await db.sql`INSERT INTO harness_shared.work_item_deps VALUES ('default','blocks','feature','project#P-002','feature','project#P-001')`;
+    expect((await readExecutionPlanRow(scope))?.execution_start_invalidation).toMatchObject({
+      scope, reason: 'dependency_changed', startRevisionSeq: receipt.seq });
+    await issue();
+    await db.sql`UPDATE harness_shared.work_items SET plan_line_text='Discard findings' WHERE plan_line_id='P-001'`;
+    expect((await readExecutionPlanRow(scope))?.execution_start_invalidation).toMatchObject({ scope, reason: 'plan_line_changed' });
+  });
+
+  it('preserves local start through per-part progress recomposition and invalidates a requirements edit', async () => {
+    // A canonical plan has a slug. Otherwise recomposition legitimately changes
+    // is_legacy, which is a structured authority input rather than progress.
+    const canonicalBody = body.replace('title: Feature', 'slug: feature\ntitle: Feature');
+    await db.sql`UPDATE harness_shared.harness_plans SET content=${canonicalBody},content_hash=${hashPlanContent(canonicalBody)}`;
+    const receipt = await issue();
+    const { buildHarnessPlanPartsProjection } = await import('../../sync/hyperbee/projections/harness-plan-parts');
+    const { InMemoryPlanPartsStore } = await import('../../plan-parts/store');
+    const { splitPlanIntoParts } = await import('./parser');
+    // The in-process LWW part store is the maintained projection seam; the
+    // production recomposition, admission, PG writes and authority stay real.
+    const projection = buildHarnessPlanPartsProjection({ workspaceId: scope.workspaceId, harnessSlug: scope.harnessSlug,
+      sql: db.sql, store: new InMemoryPlanPartsStore(), isFlagOn: async () => true,
+      readLocalContent: async () => canonicalBody });
+    const parts = splitPlanIntoParts(canonicalBody);
+    const apply = async (part: (typeof parts)[number], text: string, ts: number) => projection.writeToPg({
+      harness_slug: scope.harnessSlug, plan_slug: scope.planSlug, part_key: part.key,
+      kind: part.kind, body: text, ordinal: part.order, tombstone: false,
+    }, { origin: 'remote', authorPubkey: 'peer', ts });
+    const now = parts.find(part => part.text.includes('Building'))!;
+    await apply(now, now.text.replace('Building', 'Testing'), 10);
+    expect(await readExecutionPlanRow(scope)).toMatchObject({
+      execution_start_revision_seq: receipt.seq, execution_start_invalidation: null });
+    expect(await checkExecutionPlan(binding, scope.workspaceId)).toEqual([]);
+    const requirements = parts.find(part => part.text.includes('Preserve findings'))!;
+    await apply(requirements, requirements.text.replace('Preserve', 'Discard'), 20);
+    expect(await readPlanExecutionStart(binding, scope.workspaceId)).toEqual(['plan_not_started']);
+    expect((await readExecutionPlanRow(scope))?.execution_start_invalidation).toMatchObject({
+      scope, startRevisionSeq: receipt.seq, reason: 'plan_body_changed' });
+  });
 
   it('survives independent readiness slower than the write transaction idle timeout', async () => {
     const slowRead = async () => { await db.sql`SELECT pg_sleep(0.3)`; };
@@ -317,7 +457,8 @@ describe('canonical successful-start revision authority (real PG)', () => {
         tx, scope, original, progress, hashPlanContent(original), hashPlanContent(progress),
       );
       await tx`UPDATE harness_shared.harness_plans SET content=${progress},content_hash=${hashPlanContent(progress)}`;
-      return writePlanLineNodes(tx, graphScope, beforeNodes, deriveIndexFromContent(progress).items);
+      return writePlanLineNodes(tx as unknown as Parameters<typeof writePlanLineNodes>[0],
+        graphScope, beforeNodes, deriveIndexFromContent(progress).items);
     });
     expect(progressMutations).toEqual([]);
     expect((await readExecutionPlanRow(scope))?.execution_start_revision_seq).toBe(receipt.seq);
@@ -333,7 +474,8 @@ describe('canonical successful-start revision authority (real PG)', () => {
         tx, scope, progress, author, hashPlanContent(progress), hashPlanContent(author),
       );
       await tx`UPDATE harness_shared.harness_plans SET content=${author},content_hash=${hashPlanContent(author)}`;
-      return writePlanLineNodes(tx, graphScope, progressNodes, deriveIndexFromContent(author).items);
+      return writePlanLineNodes(tx as unknown as Parameters<typeof writePlanLineNodes>[0],
+        graphScope, progressNodes, deriveIndexFromContent(author).items);
     });
     expect(authorMutations).toEqual([]);
     expect((await readExecutionPlanRow(scope))?.execution_start_revision_seq).toBeNull();

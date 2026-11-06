@@ -28,7 +28,7 @@ import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { getOrgPg } from '@papercusp/db-org';
 import { Client } from 'pg';
-import { beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   judgeR17,
   parseR17Row,
@@ -38,6 +38,7 @@ import {
   type R17Row,
 } from '../../../../../scripts/lib/sync-batch-coverage-accounting-oracle.mjs';
 import { getHarnessAdminUrl } from '../../embedded-pg-discovery';
+import { COVERAGE_EXPECTED_INTERVAL_MS } from '../../release/sync-batch-delta-check';
 import { allowRealPgForLiveSuite } from '../../testing/live-suite-real-pg';
 import { captureWorktreeSnapshotAsync } from '../../testing-worktree';
 import { executeSyncBatchCoverageAccounting } from './record-run';
@@ -71,17 +72,25 @@ interface ServerIdentity { database: string; port: number; started: string }
 
 /**
  * The probe's six-field row, recomputed from the raw records without its SQL: per routine, the
- * ticks inside the 24h window, how many were evaluated, how many carry no cause, and whether a
+ * distinct five-minute slots inside the 24h window, how many were evaluated, how many carry no cause, and whether a
  * coverage-low alarm is both open on the routine and fresh on its non-terminal work-item.
  */
 function recompute(nowMs: number, routines: RoutineRow[], alarms: AlarmRow[]): R17Row {
   const per = routines.map(({ name, metadata }) => {
     const cov = metadata?.sync_delta?.coverage ?? metadata?.sync_lint_guards?.coverage ?? {};
-    const ticks = (Array.isArray(cov.ticks) ? cov.ticks : [])
-      .filter((tick: { atMs?: unknown }) => Number(tick?.atMs) > nowMs - WINDOW_MS);
-    const slots = ticks.length;
-    const evaluated = ticks.filter((tick: { evaluated?: unknown }) => tick.evaluated === true).length;
-    const unaccounted = ticks.filter((tick: { status?: unknown }) => (tick.status ?? '') === '').length;
+    const bySlot = new Map<number, { evaluated: boolean; accounted: boolean }>();
+    for (const tick of Array.isArray(cov.ticks) ? cov.ticks : []) {
+      const atMs = Number(tick?.atMs);
+      if (!Number.isFinite(atMs) || atMs <= nowMs - WINDOW_MS || atMs > nowMs) continue;
+      const key = Math.floor(atMs / COVERAGE_EXPECTED_INTERVAL_MS);
+      const prior = bySlot.get(key);
+      // Each opportunity needs a judgment/cause once, independently of duplicate record order.
+      bySlot.set(key, { evaluated: prior?.evaluated === true || tick.evaluated === true,
+        accounted: prior?.accounted === true || (tick.status ?? '') !== '' });
+    }
+    const slots = bySlot.size;
+    const evaluated = [...bySlot.values()].filter(slot => slot.evaluated).length;
+    const unaccounted = [...bySlot.values()].filter(slot => !slot.accounted).length;
     const alarmOpen = Object.hasOwn(cov, 'alarmOpenSinceMs');
     const alarmFresh = alarms.some(alarm => alarm.condition_key === ALARM_CONDITION[name]
       && !TERMINAL.has(alarm.status) && alarm.last_seen !== null
@@ -100,6 +109,99 @@ function recompute(nowMs: number, routines: RoutineRow[], alarms: AlarmRow[]): R
 }
 
 const line = (row: Record<string, unknown>) => R17_COLUMNS.map(column => String(row[column])).join('|');
+
+const FIXTURE_NOW = Date.UTC(2026, 9, 20, 12);
+type Tick = { atMs: number; evaluated: boolean; status?: string };
+const tick = (atMs: number, evaluated = true): Tick => ({ atMs, evaluated, status: evaluated ? 'green' : 'skipped' });
+const recent = FIXTURE_NOW - COVERAGE_EXPECTED_INTERVAL_MS;
+const distinct = (evaluated = true) => Array.from({ length: R17_MIN_SLOTS }, (_, i) =>
+  tick(recent - i * COVERAGE_EXPECTED_INTERVAL_MS, evaluated));
+const fixtures = [
+  { name: 'duplicate ticks in one slot count once', ticks: [tick(recent), tick(recent + 1)], slots: 1, ratio: 1 },
+  { name: 'ticks in separate slots count separately', ticks: [tick(recent - 1), tick(recent)], slots: 2, ratio: 1 },
+  { name: 'duplicates cannot manufacture the 276-slot floor',
+    ticks: Array.from({ length: R17_MIN_SLOTS }, (_, i) => tick(recent + i)), slots: 1, ratio: 1 },
+  { name: '276 distinct slots satisfy the unchanged floor', ticks: distinct(), slots: R17_MIN_SLOTS, ratio: 1, accounted: 1 },
+  { name: 'evaluated duplicates cannot inflate the coverage ratio',
+    ticks: [...Array.from({ length: 20 }, (_, i) => tick(recent + i)), tick(recent - COVERAGE_EXPECTED_INTERVAL_MS, false)],
+    slots: 2, ratio: 0.5, low: 2 },
+  { name: 'a judged duplicate credits its slot once', ticks: [tick(recent, false), tick(recent + 1)], slots: 1, ratio: 1 },
+  { name: 'mixed-status duplicates account for their slot with a nonempty cause',
+    ticks: [{ atMs: recent, evaluated: true }, { ...tick(recent + 1), status: 'red' }], slots: 1, ratio: 1 },
+  { name: 'mixed-status duplicates account for their slot in either record order',
+    ticks: [{ ...tick(recent + 1), status: 'red' }, { atMs: recent, evaluated: true }], slots: 1, ratio: 1 },
+  { name: 'duplicates without any cause leave their slot unaccounted',
+    ticks: [{ atMs: recent, evaluated: true }, { atMs: recent + 1, evaluated: true, status: '' }],
+    slots: 1, ratio: 1, unaccounted: 2 },
+  { name: 'a cause in another slot cannot account for an empty slot',
+    ticks: [{ atMs: recent, evaluated: true }, tick(recent - COVERAGE_EXPECTED_INTERVAL_MS)],
+    slots: 2, ratio: 1, unaccounted: 2 },
+  { name: 'the 24h window excludes its lower bound and future ticks, and includes now',
+    ticks: [tick(FIXTURE_NOW - WINDOW_MS - 1), tick(FIXTURE_NOW - WINDOW_MS), tick(FIXTURE_NOW), tick(FIXTURE_NOW + 1)],
+    slots: 1, ratio: 1 },
+  { name: 'empty histories retain both routine identities', ticks: [], slots: 0, ratio: 0, low: 2 },
+  { name: 'fresh alarms still account for low coverage at the unchanged floor',
+    ticks: distinct(false), slots: R17_MIN_SLOTS, ratio: 0, alarm: true, accounted: 1 },
+];
+
+function fixtureRows(ticks: Tick[], alarm = false): RoutineRow[] {
+  return Object.keys(ALARM_CONDITION).map((name, i) => ({ name, metadata: {
+    [i === 0 ? 'sync_delta' : 'sync_lint_guards']: {
+      coverage: { ticks, ...(alarm ? { alarmOpenSinceMs: recent } : {}) },
+    },
+  } }));
+}
+function fixtureAlarms(alarm = false): AlarmRow[] {
+  return alarm ? Object.values(ALARM_CONDITION).map(condition_key => ({
+    condition_key, status: 'open', last_seen: new Date(recent).toISOString(),
+  })) : [];
+}
+function expectedFixture(fixture: typeof fixtures[number]): R17Row {
+  return { routines: 2, min_slots: fixture.slots, min_ratio: fixture.ratio,
+    unaccounted_slots: fixture.unaccounted ?? 0, low_without_current_alarm: fixture.low ?? 0,
+    accounted: fixture.accounted ?? 0 };
+}
+
+describe('R17 distinct five-minute slots: independent recomputation', () => {
+  it.each(fixtures)('$name', fixture => {
+    expect(recompute(FIXTURE_NOW, fixtureRows(fixture.ticks, fixture.alarm), fixtureAlarms(fixture.alarm)))
+      .toEqual(expectedFixture(fixture));
+  });
+});
+
+describe.skipIf(!LIVE)('R17 distinct five-minute slots: committed SQL on read-only PostgreSQL', () => {
+  let client: Client;
+  beforeAll(async () => {
+    client = new Client({ connectionString: getHarnessAdminUrl(), connectionTimeoutMillis: 5000 });
+    await client.connect();
+    await client.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
+    await client.query("SET LOCAL statement_timeout = '15s'");
+  }, 60_000);
+  afterAll(async () => {
+    if (client) {
+      await client.query('ROLLBACK').catch(() => {});
+      await client.end();
+    }
+  });
+  it.each(fixtures)('$name', async fixture => {
+    // Execute the committed SQL unchanged apart from its input relations and clock.
+    // JSON parameters feed a read-only fixture; no live routine or alarm row is written.
+    const probe = readFileSync(resolve(ROOT, PROBE), 'utf8')
+      .replaceAll('harness_shared.routines',
+        'jsonb_to_recordset($1::jsonb) AS fixture_routines(workspace_id text, name text, metadata jsonb)')
+      .replaceAll('harness_shared.work_items w',
+        'jsonb_to_recordset($2::jsonb) AS w(workspace_id text, condition_key text, status text, payload jsonb)')
+      .replaceAll('now()', 'to_timestamp($3::double precision / 1000)');
+    const routines = fixtureRows(fixture.ticks, fixture.alarm).map(row => ({ ...row, workspace_id: WORKSPACE }));
+    const alarms = fixtureAlarms(fixture.alarm).map(({ last_seen, ...row }) => ({ ...row,
+      workspace_id: WORKSPACE, payload: { _conditionUpsert: { lastSeenAt: last_seen } },
+    }));
+    // Foreign workspace/routine rows must never contribute slots or satisfy an alarm.
+    const foreign = routines.map(row => ({ ...row, workspace_id: 'foreign-workspace' }));
+    const [row] = (await client.query(probe, [JSON.stringify([...routines, ...foreign]), JSON.stringify(alarms), FIXTURE_NOW])).rows;
+    expect(parseR17Row(line(row))).toEqual(expectedFixture(fixture));
+  });
+});
 
 describe.skipIf(!LIVE)('LIVE: sync-batch slot accounting on the operator database (AUTO-BAR-R-17-P-009)', () => {
   let identity: ServerIdentity;

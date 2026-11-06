@@ -599,6 +599,7 @@ export default defineTool({
       }
       const accepted = await executeWithGateActionReceipt({
         action: 'release:deploy', actor, ownerId: identity.ownerId,
+        executionId: ctx.runId,
         conditionKey: gateOwnership.receipt.conditionKey ?? '',
         allowUnowned: true,
         target: { op: 'trigger', greenPinSha: status.deploy.greenPinSha },
@@ -711,6 +712,7 @@ export default defineTool({
     // notification can truthfully say a force deploy was triggered.
     const accepted = await executeWithGateActionReceipt({
       action: 'release:deploy', actor, ownerId: identity.ownerId,
+      executionId: ctx.runId,
       conditionKey: gateOwnership.receipt.conditionKey ?? '',
       allowUnowned: true,
       target: { op: 'force', commit, ownerSignoffRef: args.ownerSignoffRef,

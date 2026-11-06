@@ -209,7 +209,14 @@ function run(cmd, args, opts = {}) {
   return r.stdout;
 }
 
-const git = (repo, args, opts) => run('git', ['-C', repo, ...args], opts);
+const git = (repo, args, opts) => {
+  // Verifier snapshots can live below the Git worktree they attest. Our paths
+  // are repository-root relative, so keep ls-tree from silently scoping itself
+  // to that nested current-directory prefix.
+  const rootScopedArgs = args[0] === 'ls-tree' && !args.includes('--full-tree')
+    ? [args[0], '--full-tree', ...args.slice(1)] : args;
+  return run('git', ['-C', repo, ...rootScopedArgs], opts);
+};
 
 /** Read GitHub JSON plus pagination headers without requiring a recent gh CLI. */
 function githubPage(endpoint) {
@@ -2208,8 +2215,10 @@ export async function prepareVerifierDependencies({ donor, dest, receipt, runPha
   const nodeArgs = ['--import', 'tsx', script];
   await runPhase('deps.inputs', () => run(process.execPath, [...nodeArgs, 'verifier-inputs-check', '--repo', dest,
     '--ref', receipt.sourceCommit, '--inputs', receipt.testedInputs.map(input => input.path).join(',')]));
+  // The materialized snapshot has no submodule Git databases. Measure the
+  // pinned source tree from its dependency donor, which owns those gitlinks.
   await runPhase('deps.measure', async () => {
-    const bytes = (await run(process.execPath, [...nodeArgs, 'verifier-measure', '--repo', dest,
+    const bytes = (await run(process.execPath, [...nodeArgs, 'verifier-measure', '--repo', realpathSync(donor),
       '--ref', receipt.sourceCommit])).trim();
     if (!/^\d+$/.test(bytes) || Number(bytes) <= 0)
       throw new PreviewError('verifier dependency preflight returned no source size', 2);

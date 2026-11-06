@@ -44,7 +44,7 @@ import {
   type RecipeAuthorityContext,
 } from '../../recipe-authority';
 import { bindCurrentCallerDispatch, withNestedWorkItemId } from '../orchestration/current-caller-dispatch';
-import { recordRecipeRun, recipeRunChoice, type RecipeRunUsage } from '../../code-recipes-store';
+import { recordRecipeRun, recipeRunChoice, type RecipeRunUsage, type RecipeRunEvidence } from '../../code-recipes-store';
 import { withBoundedTimeout, type BoundedTimeoutResult } from '../../bounded-timeout';
 import { buildScratchUri, safeScratchFilesystemPath } from '../../scratch-uri';
 import { storeVolatileScratchReference, writeScratchReference } from '../../scratch-reference';
@@ -405,6 +405,19 @@ export default defineTool({
       const allowed = roleScopedToolNames(all, ctx.role, ORCHESTRATION_RECURSION_EXCLUSIONS);
       return { all, allowed, contract: codeRunContract(ctx) };
     });
+    // A refused request is evidence of an attempt, never evidence that its
+    // statically mentioned calls executed. Reuse the same bounded run ledger.
+    const recordUnexecuted = async (outcome: 'refused' | 'unknown') => {
+      await withCodeRunResponseBudget(async () => {
+        const trace = await normalizeExecutionTrace({ script, backend: 'server', tools: all, allowed, callRecords: [] });
+        await maybeRecordTraceOnly(ctx, trace, { outcome, settled: true }, args.dryRun ?? false, {
+          version: 1, invocationId: ctx.dispatchCallId ?? null, attempt: 0, executed: false,
+          sourceBytes: Buffer.byteLength(script, 'utf8'), intermediateBytes: 0,
+          elapsedBeforeRecordMs: Math.max(0, Date.now() - runStartedAtMs),
+        });
+      }, { deadlineAtMs: Math.min(responseDeadlineAtMs - 250, Date.now() + 750),
+        fallback: undefined, label: 'code:run refusal receipt' });
+    };
 
     // EI-19449316000499177: PRE-VALIDATE statically-known tool args BEFORE anything dispatches.
     //
@@ -443,6 +456,7 @@ export default defineTool({
       ),
     );
     if (preflight.degraded || !preflight.value) {
+      await recordUnexecuted('unknown');
       return {
         content: [{ type: 'text' as const, text: JSON.stringify({
           ok: false,
@@ -487,6 +501,7 @@ export default defineTool({
         codeRunArgPreflight: 'refused',
         codeRunArgPreflightIssueCount: blockingArgIssues.length,
       });
+      await recordUnexecuted('refused');
       return {
         content: [
           {
@@ -513,6 +528,7 @@ export default defineTool({
     // the *remaining* absolute response window, leaving a second for shaping.
     const remainingWorkerMs = responseDeadlineAtMs - Date.now() - 1_000;
     if (remainingWorkerMs <= 0) {
+      await recordUnexecuted('unknown');
       return {
         content: [{ type: 'text' as const, text: JSON.stringify({
           ok: false, error: 'script_timeout before execution', executed: false,
@@ -632,6 +648,18 @@ export default defineTool({
     // "recipes X/Y already do this — next time recipes:run(X) instead of re-authoring".
     let similarRecipes: SimilarRecipe[] = [];
     let recipeCapture: CodeRunRecipeCapture | null = null;
+    const runEvidence: RecipeRunEvidence = {
+      version: 1, invocationId: ctx.dispatchCallId ?? null, attempt: 0, executed: true,
+      sourceBytes: Buffer.byteLength(script, 'utf8'), intermediateBytes: result.intermediateBytes ?? null,
+      elapsedBeforeRecordMs: Math.max(0, Date.now() - runStartedAtMs),
+    };
+    const settled = !result.detachedCalls?.length
+      && !result.callRecords?.some(call => call.disposition === 'in_flight');
+    const successfulAttempt = settled && Boolean(result.ok) && !result.partial
+      && !result.childFailures?.length && !result.fieldMisses?.length && !result.unknownRefs?.length;
+    const outcome: Pick<RecipeRunUsage, 'outcome' | 'settled'> = {
+      outcome: !settled ? 'unknown' : successfulAttempt ? 'success' : 'error', settled,
+    };
     // Don't SAVE a recipe that references an unknown tool (F8): the run may have limped through by
     // isolating the bad ref, but a captured recipe with a known-bad name is a poor thing to reuse.
     // EI-7669: also don't save one where a write-effect call reported ok:false — a "successful"
@@ -641,7 +669,7 @@ export default defineTool({
     // time, and that refusal is permanent — capturing it anyway mints a recipe that
     // can never run, then lets it accrue run/success counts that certify it.
     // A live cell depends on process-local objects; saving it as a portable recipe would lose that state.
-    if (!args.kernel && codeRunCaptureMode(ctx) !== 'never' && !(args.dryRun ?? false) && isRecipeCaptureEligible(result, all)) {
+    if (successfulAttempt && !args.kernel && codeRunCaptureMode(ctx) !== 'never' && !(args.dryRun ?? false) && isRecipeCaptureEligible(result, all)) {
       const authority = await runPostprocessing(
         'recipe authority check',
         () => isRecipeCaptureAuthorityEligible(script),
@@ -650,7 +678,7 @@ export default defineTool({
       if (authority.value && !authority.degraded) {
         const capture = await runPostprocessing(
           'recipe capture',
-          () => maybeCaptureRecipe({ ...args, script }, ctx, all, allowed, executionTrace, contract),
+          () => maybeCaptureRecipe({ ...args, script }, ctx, all, allowed, executionTrace, contract, runEvidence),
           null,
         );
         recipeCapture = capture.value;
@@ -682,7 +710,7 @@ export default defineTool({
       const traceRecord = await runPostprocessing(
         'trace-only recording',
         () => maybeRecordTraceOnly(ctx, executionTrace as NormalizedExecutionTrace,
-          Boolean(result.ok) && !(result.fieldMisses?.length), args.dryRun ?? false),
+          outcome, args.dryRun ?? false, runEvidence),
         undefined,
       );
       if (traceRecord.degraded) {
@@ -2997,6 +3025,7 @@ async function maybeCaptureRecipe(
   allowed: ReadonlySet<string>,
   executionTrace: NormalizedExecutionTrace | null,
   contract?: CodeRunContract,
+  runEvidence?: RecipeRunEvidence,
 ): Promise<CodeRunRecipeCapture | null> {
   try {
     const workspaceId = ctx.workspaceId;
@@ -3071,6 +3100,7 @@ async function maybeCaptureRecipe(
         ownerId,
         role: ctx.role ?? null,
         choice,
+        runEvidence,
         title: args.title,
         description: args.description,
         ...(contract?.bindingSchema ? { bindingSchema: contract.bindingSchema } : {}),
@@ -3100,8 +3130,9 @@ async function maybeCaptureRecipe(
 async function maybeRecordTraceOnly(
   ctx: UnifiedToolContext,
   executionTrace: NormalizedExecutionTrace,
-  success: boolean,
+  outcome: Pick<RecipeRunUsage, 'outcome' | 'settled'>,
   dryRun: boolean,
+  runEvidence?: RecipeRunEvidence,
 ): Promise<void> {
   try {
     const workspaceId = ctx.workspaceId;
@@ -3127,12 +3158,13 @@ async function maybeRecordTraceOnly(
       potSlug,
       agentOwner: ownerId,
       agentRole: ctx.role ?? null,
-      success,
+      success: outcome.settled && outcome.outcome === 'success',
       reused: false,
       executionTrace,
       countTowardRecipe: false,
+      runEvidence,
       usage: { version: 1, selection: 'authored', choice, mode: dryRun ? 'preview' : 'commit',
-        outcome: success ? 'success' : 'error', settled: true },
+        ...outcome },
     });
   } catch (err) {
     ctx.log(`code:run trace record failed (swallowed): ${(err as Error)?.message ?? String(err)}`);

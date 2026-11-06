@@ -5,7 +5,7 @@
  * item-start gate BEFORE taking the plan-item lease, so a refused pickup on an
  * unaudited draft plan leaves no claim behind. The gate's own decision logic is
  * covered by agent-tools/plans/draft-item-start-gate.test.ts; this suite pins the
- * wiring: order, arguments, refusal shape, and fail-open on a lookup error.
+ * wiring: order, arguments, refusal shape, and fail-closed on a lookup error.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -37,7 +37,7 @@ const DRAFT_BODY = '---\nstatus: draft\n---\n# Plan\n\n## Phase 1\n\n- **P-001**
 
 function planRead(content: string | undefined) {
   return {
-    parsed: { items: [] },
+    parsed: { frontmatter: {}, items: [] },
     archived: false,
     row: { items: [{ id: 'P-001', status: 'todo', text: 'Build it' }], ...(content === undefined ? {} : { content }) },
   };
@@ -126,7 +126,7 @@ describe('convertPlanItem — draft-plan item-start gate (WI-10008137)', () => {
     expect(gateM.mock.calls[0]?.[0]).toMatchObject({ planContent: null });
   });
 
-  it('fails OPEN on a gate lookup error: logs and still takes the lease', async () => {
+  it('fails closed on a gate lookup error before taking a lease', async () => {
     readPlanM.mockResolvedValue(planRead(DRAFT_BODY));
     gateM.mockRejectedValue(new Error('db unavailable'));
     claimM.mockResolvedValue(LEASE_CONFLICT);
@@ -134,9 +134,9 @@ describe('convertPlanItem — draft-plan item-start gate (WI-10008137)', () => {
 
     const result = await convertPlanItem(opts);
 
-    expect(result).toEqual(LEASE_CONFLICT);
-    expect(claimM).toHaveBeenCalledTimes(1);
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining('draft item-start gate skipped for draft-plan#P-001'));
+    expect(result).toMatchObject({ status: 'refused', code: 'discovery_not_ready' });
+    expect(claimM).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('item-start gate unavailable for draft-plan#P-001'));
   });
 
   it('does not consult the gate for an item that is already done (the existing refusal wins)', async () => {

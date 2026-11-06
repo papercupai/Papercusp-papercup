@@ -1817,7 +1817,7 @@ describe('openSourceStoreForCut (WI-4487 — readOnly is a point-in-time snapsho
       expect(headSnapshotImpl).toHaveBeenCalledWith(expect.objectContaining({ timeoutMs: 12_345 }));
     });
 
-    it('P-019: REFUSES when no process on the box holds the hive — and refuses BEFORE backfill', async () => {
+    it('P-019: REFUSES incomplete holder discovery before backfill without claiming a boot invariant violation', async () => {
       // The P-014 fail-before-mutating invariant survives P-019 only because discovery is
       // a separate, side-effect-free probe. Rolling it into the expensive request would
       // have quietly handed that invariant back: backfillLocalState INSERTs into
@@ -1846,11 +1846,10 @@ describe('openSourceStoreForCut (WI-4487 — readOnly is a point-in-time snapsho
         (e: unknown) => e,
       )) as Error;
       expect(err.message).toMatch(/--sparse requires a fresh head snapshot/);
-      // P-015 / D-025: the lock is PROVEN held here (openStore threw corestore-locked), so the
-      // refusal must name the inconsistency rather than report an absence of holders — the
-      // misreading that points at the quiesce-the-operator outage.
-      expect(err.message).toMatch(/D-025 INVARIANT VIOLATED — holder-without-boot/);
-      expect(err.message).toMatch(/do NOT quiesce the operator/i);
+      // The lock is held, but 3170 did not answer. Its boot state is unknown:
+      // another sibling's negative answer cannot prove that the holder denies boot.
+      expect(err.message).toContain('undetermined, NOT a D-025 violation');
+      expect(err.message).not.toContain('D-025 INVARIANT VIOLATED');
       // Names the ports it looked at, so the verdict is diagnosable rather than bare.
       expect(err.message).toMatch(/3070 of probed 3070, 3170/);
       expect(ran).toEqual([]);

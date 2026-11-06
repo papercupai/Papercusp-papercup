@@ -2093,10 +2093,7 @@ _checkpoint_process_start_sec() {
   printf '%s\n' "$(( $(date +%s) - _uptime + _ticks / 100 ))"
 }
 
-_gate_reserve_active() {
-  case "${PC_HEAVY_GATE_RESERVE:-1}" in
-    0|off|OFF|false|FALSE|no|NO) return 1 ;;
-  esac
+_gate_reserve_discover() {
   local _logdir="${PAPERCUSP_CHECKPOINT_LOG_DIR:-${HOME:-}/.papercusp/checkpoint-logs}"
   [ -d "$_logdir" ] || return 1
   local _owner _raw _pid _started_at _started_sec _process_started_sec _now_sec
@@ -2144,11 +2141,46 @@ _gate_reserve_active() {
         esac
       fi
       # Remember WHICH lock dir won, so the phase read below looks at the same run.
-      _gate_lockdir="${_owner%/owner.json}"
+      printf '%s\n' "${_owner%/owner.json}"
       return 0
     fi
   done
   return 1
+}
+
+# Directory enumeration and owner reads can block before the slot queue's
+# deadline exists (EI-28012704677674257). Reuse the supervised Bash-worker
+# pattern below: bound the WHOLE discovery, including the glob, not just head.
+_gate_reserve_active() {
+  _gate_lockdir=""
+  case "${PC_HEAVY_GATE_RESERVE:-1}" in
+    0|off|OFF|false|FALSE|no|NO) return 1 ;;
+  esac
+  local _result="" _rc=125
+  if command -v timeout >/dev/null 2>&1 &&
+     _result=$(mktemp "${TMPDIR:-/tmp}/pc-heavy-gate-discovery.XXXXXX" 2>/dev/null); then
+    export -f _gate_reserve_discover _checkpoint_process_start_sec
+    export _CHECKPOINT_RUN_LOCK_STALE_SEC _CHECKPOINT_PROCESS_START_TOLERANCE_SEC
+    # Keep worker stdout on a file, never a command-substitution pipe: even a
+    # killed worker stuck in kernel I/O must not retain a pipe the caller waits on.
+    if timeout --signal=TERM --kill-after=1s 2s \
+      bash -c '_gate_reserve_discover' > "$_result" 2>/dev/null; then
+      _rc=0
+      IFS= read -r _gate_lockdir < "$_result" || true
+    else
+      _rc=$?
+    fi
+    rm -f "$_result" 2>/dev/null || true
+    case "$_rc" in
+      0) [ -n "$_gate_lockdir" ] && return 0 ;;
+      1) return 1 ;; # Complete discovery found no live run.
+    esac
+  fi
+  # Unknown discovery retains the existing /4 fallback, without inventing a
+  # live lock identity or reading a phase from an earlier successful call.
+  _gate_lockdir=""
+  echo "[pc-heavy] checkpoint reserve discovery incomplete (status=$_rc); retaining conservative reserve" >&2
+  return 0
 }
 
 # EI-19328677512071640 — phase-aware clamp DEPTH. v1 clamped for a run's whole

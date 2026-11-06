@@ -9,6 +9,53 @@ import { captureIsolatedWorker, isolatedWorkerFailureDetail, isolatedWorkerOptio
 
 const root = resolve(import.meta.dirname, '../../../..');
 const options = isolatedWorkerOptions(480_000, process.env, 720_000);
+const controlOptions = isolatedWorkerOptions(240_000, process.env, 300_000);
+
+it('runs the unauthenticated census control preflight through the real private route without building a host', async context => {
+  const runId = await recordIsolatedIntegrationProof({ root,
+    filePath: 'packages/operator-core/lib/personal-vault/privacy-recovery-baseline.integration.test.ts',
+    sourcePaths: ['packages/operator-core/test/vault-runtime-census-fixture.ts',
+      'packages/operator-core/test/private-http-workspace-preflight.ts',
+      'packages/operator-core/lib/endpoint-route/routes/agent-mcp/run-tool.ts',
+      'packages/operator-core/lib/capabilities/invoke.ts',
+      'packages/operator-core/lib/coverage-census/security-qualification.ts',
+      'scripts/with-test-pg.mjs'],
+    execute: async (observe, evidenceDir) => {
+      await symlink(join(root, 'node_modules'), join(evidenceDir, 'node_modules'), 'dir');
+      const child = fork(join(root, 'scripts/with-test-pg.mjs'), ['--isolated-runtime', '--',
+        process.execPath, '--import', 'tsx', join(root, 'packages/operator-core/test/vault-runtime-census-fixture.ts')],
+      { cwd: root, detached: true, execArgv: [], stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
+        env: { ...process.env, PC_ISOLATED_RUNTIME_PROOF: '1', FORCE_COLOR: '0',
+          VAULT_CENSUS_CONTROL_PREFLIGHT: '1', VAULT_CENSUS_EVIDENCE_DIR: evidenceDir } });
+      observe(child);
+      let result: Awaited<ReturnType<typeof captureIsolatedWorker>>;
+      try { result = await captureIsolatedWorker(child, evidenceDir, controlOptions); }
+      finally { await rm(join(evidenceDir, 'node_modules')); }
+      expect(result, isolatedWorkerFailureDetail(result.output, result)).toMatchObject({ code: 0,
+        signal: null, timedOut: false, exitWaitTimedOut: false, stdioDrainTimedOut: false });
+      const line = result.output.split('\n').find(row => row.startsWith('VAULT_CENSUS_CONTROL_PREFLIGHT '));
+      expect(line, isolatedWorkerFailureDetail(result.output)).toBeTruthy();
+      expect(JSON.parse(line!.slice('VAULT_CENSUS_CONTROL_PREFLIGHT '.length))).toMatchObject({
+        transport: 'in-process-real-route-stack', unauthenticatedRejected: true,
+        operatorBundleBuilt: false, authenticatedCaptureAttempted: false, qualifyingBaselineAccepted: false });
+      const observed = JSON.parse(readFileSync(join(evidenceDir, 'unauthenticated-response.json'), 'utf8'));
+      expect(observed).toMatchObject({ httpStatus: 200, response: { result: { isError: true } } });
+      expect(JSON.stringify(observed.response)).toContain('security_qualification_authenticated_actor_required');
+      const cleanup = JSON.parse(readFileSync(join(evidenceDir, 'cleanup.json'), 'utf8'));
+      // The report is taken before libuv has finished every socket-close
+      // callback. The exit/no-timeout assertions above observe retirement;
+      // a point-in-time handle snapshot alone cannot establish a leak.
+      expect(cleanup).toMatchObject({ exitCode: 0 });
+      expect(cleanup.steps.map((step: { phase: string; ok: boolean }) => [step.phase, step.ok])).toEqual([
+        ['host', true], ['managed-observers', true], ['principal-invalidation', true],
+        ['sync-invalidation', true], ['listen-hub', true], ['database-pools', true],
+      ]);
+      console.info('VAULT_CENSUS_CONTROL_VERIFIED ' + JSON.stringify(observed));
+    },
+  });
+  Object.assign(context.task.meta, { papercuspIsolatedRuntimeRunId: runId });
+  console.info('VAULT_CENSUS_CONTROL_PROOF_RUN ' + runId);
+}, controlOptions.testTimeoutMs);
 
 it('retains the actual private operator population, signed custody and migrated schema without claiming closure', async context => {
   const runId = await recordIsolatedIntegrationProof({ root,

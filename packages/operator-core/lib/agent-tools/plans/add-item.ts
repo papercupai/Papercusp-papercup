@@ -576,7 +576,7 @@ export default defineTool({
   description:
     "Append one OR many new items to a phase. Allocates the next P-NNN id inside a lock. Creates the phase section if it doesn't exist. Auto-bumps frontmatter updated:. Single: { slug, phase, text, importance }. Many to one phase: { slug, phase, importance, items:[{ text, blockedBy? }] }. Heterogeneous: items:[{ slug, phase, text, importance }]. Returns { ok, results:[{ ok, slug, itemId, createdPhase | error }], counts } — each result embeds the NEW itemId; correlate by { slug, itemId }, not position; one failure never fails the rest.",
   guidance: {
-    when: 'Append new work to a phase; batch with items. suggestedAnchors are caller-session suggestions; only explicit anchors are stored. Manual anchors remain available.',
+    when: 'Append new work to a phase; batch with items. Incorporate scoped discovery findings before implementation review/start. Discovery about a draft is ordinary task work. suggestedAnchors are investigation leads; only explicit anchors are stored. Manual anchors remain available.',
     notWhen:
       "Updating an existing item — that's a direct edit, not an assisted write (the format is stable). Or status flip — plans:set-status.",
     chaining:

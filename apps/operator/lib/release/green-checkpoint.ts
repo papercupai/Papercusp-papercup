@@ -1392,6 +1392,7 @@ export interface CheckpointDeps {
   }): Promise<void>;
   /** Production defers green/red wakes until the exact terminal result is durable. */
   flushTerminalEvents?(result: CheckpointResult, recorded: boolean): Promise<void>;
+  terminalEventsForVerdict?(result: CheckpointResult): CheckpointEvent[];
   /** EI-13992/WI-41490: apply pending migrations from the exact prepared candidate to
    *  the live dev PG the suite is about to run against, BEFORE dependency materialization
    *  and again before runGreen — breaks the
@@ -3040,7 +3041,8 @@ export const MATERIALIZATION_HEARTBEAT_INTERVAL_MS = 15_000;
 /** Default idle/no-progress budget for the checkpoint's own watchdog. The main-
  * greening CLI explicitly passes hardCeilingMs:null: scheduled and manual runs
  * have no aggregate execution-age limit or parent runtime fuse. This watchdog
- * still detects silence and owns terminal publication and process-group cleanup.
+ * does not infer a stall from silence in that mode. Independent observation
+ * diagnoses controller/worker health while scoped guards own their operations.
  * Explicit bounded-validation callers may retain this value as a hard ceiling;
  * their fixed cutoff is separate from detached qualification ownership. */
 export const SELF_WATCHDOG_MS = 3 * 60 * 60_000;
@@ -3463,10 +3465,8 @@ export function armSelfWatchdog(
   opts: {
     /** Maximum permitted idle interval between real phase/command/output progress. */
     ms?: number;
-    /** Absolute wall-clock ceiling. Progress can never extend this deadline. `null` means NO
-     *  absolute ceiling: only the idle (no-progress) budget can fire, until tighten() sets one.
-     *  WI-6554700010042457: the main-greening CLI run passes null — a run that keeps making
-     *  progress is never killed for being slow. */
+    /** Absolute wall-clock ceiling. `null` disables both aggregate and silence-only
+     *  stop authority, including tighten(). Scoped operation guards remain independent. */
     hardCeilingMs?: number | null;
     kill?: (pid: number, signal: NodeJS.Signals) => void;
     pid?: number;
@@ -3600,7 +3600,7 @@ export function armSelfWatchdog(
     }
   };
   const scheduleIdleTimer = () => {
-    if (cancelled || firedAlready) return;
+    if (cancelled || firedAlready || hardCeilingMs === null) return;
     const remainingMs = hardDeadlineAtMs - Date.now();
     if (remainingMs <= 0) {
       fire("absolute-hard-ceiling");
@@ -3637,7 +3637,7 @@ export function armSelfWatchdog(
       scheduleIdleTimer();
     },
     tighten: ({ hardCeilingMs: capMs, reason }) => {
-      if (cancelled || firedAlready) return false;
+      if (cancelled || firedAlready || hardCeilingMs === null) return false;
       const nowMs = Date.now();
       const cappedAtMs = nowMs + Math.max(1, capMs);
       if (cappedAtMs >= hardDeadlineAtMs) return false;
@@ -5226,10 +5226,23 @@ export function createCheckpointTerminalEventBuffer(
   warn: (message: string) => void,
 ): {
   emit(event: CheckpointEvent): Promise<void>;
+  snapshot(result: CheckpointResult): CheckpointEvent[];
   flush(result: CheckpointResult, recorded: boolean): Promise<void>;
 } {
   const pending = new Map<string, CheckpointEvent>();
   return {
+    snapshot(result) {
+      if (typeof result.green !== 'boolean') return [];
+      const shas = new Set([result.candidate, result.advancedTo, result.repairQueue?.repairHead].filter(Boolean));
+      const family = result.green ? 'release:green' : 'green-checkpoint:red';
+      const selected = new Map<string, CheckpointEvent>();
+      for (const event of pending.values()) {
+        const payload = event.payload as Record<string, unknown> | null;
+        if ((event.key === family || event.key.startsWith(family + ':')) && payload &&
+            shas.has(payload.sha as string) && payload.runId === result.runId) selected.set(event.key, event);
+      }
+      return structuredClone([...selected.values()]);
+    },
     async emit(event) {
       if (event.key === 'release:green' || event.key.startsWith('release:green:') ||
           event.key === 'green-checkpoint:red' || event.key.startsWith('green-checkpoint:red:')) {
@@ -23923,7 +23936,16 @@ export function realCheckpointDeps(
     // awaiter. Awaiting couples the emit's fireAwaitsForKey/insertDeliveries to the caller's
     // lifetime (the caller stays alive to record the pipeline_event, so the fire is durable).
     emitEvent: terminalEvents.emit,
-    flushTerminalEvents: terminalEvents.flush,
+    terminalEventsForVerdict: terminalEvents.snapshot,
+    async flushTerminalEvents(result, recorded) {
+      if (recorded && repairTarget && process.env[CHECKPOINT_QUALIFICATION_ATTEMPT_ENV]?.trim() && result.candidate && result.runId) {
+        const { recoverCheckpointTerminalEvents } = await import('@papercusp/operator-core/lib/release/checkpoint-qualification-terminal-events');
+        const recovered = await recoverCheckpointTerminalEvents(repairTarget);
+        for (const failure of recovered.failed) console.warn(`${orchestratorStdoutTag()} terminal wake remains pending: ${failure}`);
+        return;
+      }
+      await terminalEvents.flush(result, recorded);
+    },
     // WI-6554700010010213: a post-verdict deadline overrun becomes one durable pipeline event, so
     // a step that times out on every run is queryable rather than a line in one run's log. Its
     // own kind (migration 1491): on 'green_checkpoint' it would read as a gate outcome. A
@@ -24117,7 +24139,7 @@ export function realCheckpointDeps(
         return await recordCheckpointVerdict(
           target,
           checkpointVerdictFromResult(r),
-          { qualificationWork: await qualificationWorkForVerdict(r) },
+          { qualificationWork: await qualificationWorkForVerdict(r), terminalEvents: terminalEvents.snapshot(r) },
         );
       } catch (e) {
         console.error(
@@ -26816,6 +26838,7 @@ if (require.main === module) {
    */
   let stopQualificationProgress: (() => Promise<void>) | undefined;
   let flushTerminalEvents: CheckpointDeps['flushTerminalEvents'];
+  let terminalEventsForVerdict: CheckpointDeps['terminalEventsForVerdict'];
   let verdictRecordedAtMs: number | null = null;
   const emitResult = async (
     r: CheckpointResult,
@@ -26923,7 +26946,8 @@ if (require.main === module) {
       return await recordCheckpointVerdict(
         target,
         checkpointVerdictFromResult(r),
-        { ...recordOpts, qualificationWork: await qualificationWorkForFinalVerdict?.(r) },
+        { ...recordOpts, qualificationWork: await qualificationWorkForFinalVerdict?.(r),
+          terminalEvents: terminalEventsForVerdict?.(r) },
       );
     } catch (e) {
       console.error(
@@ -27211,11 +27235,9 @@ if (require.main === module) {
       // canceled on every normal exit path below, so it only ever fires when this run
       // misses its configured deadline (see armSelfWatchdog's doc comment).
       const selfWatchdog = selfWatchdogConfigFromEnv();
-      // The transported manual deadline is the resettable IDLE budget: the run dies only after
-      // that long with NO phase/command/output progress. WI-6554700010042457 (Avi #2574): there
-      // is no absolute wall-clock ceiling on a main-greening run. A run that keeps progressing
-      // runs to its verdict however long it takes. The post-verdict funnel still tightens a
-      // finite ceiling once the verdict exists (enterPostVerdictPhase).
+      // Unlimited main-greening has no aggregate or silence-only stop. Neither output
+      // nor a quiet opaque computation proves a stall; the external sweep investigates.
+      // Individual test/hook/RPC/I/O guards retain their own bounded authority.
       const hardCeilingMs = null;
       // WI-6554700010019444: the verdict the return funnel already rendered (set by
       // enterPostVerdictPhase below). Non-null means a kill from here on is post-verdict.
@@ -27450,6 +27472,7 @@ if (require.main === module) {
       );
       qualificationWorkForFinalVerdict = checkpointDeps.qualificationWorkForVerdict;
       flushTerminalEvents = checkpointDeps.flushTerminalEvents;
+      terminalEventsForVerdict = checkpointDeps.terminalEventsForVerdict;
       // WI-6554700010009615 stage 1: past the admission refire the run is post-verdict.
       checkpointDeps.enterPostVerdictPhase = (verdict) => {
         if (verdict) postVerdictResult = verdict;

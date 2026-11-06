@@ -36,6 +36,58 @@ export function f(x) { return x; }
     ).toEqual([]);
   });
 
+  it.each(['/** @overload', '/**\n * @overload'])(
+    'does NOT fire on an intentional overload chain starting with %s',
+    (opening) => {
+      expect(
+        one(`${opening}
+ * @param {string} value
+ * @returns {string}
+ */
+${opening}
+ * @param {number} value
+ * @returns {number}
+ */
+/**
+ * @param {string | number} value
+ * @returns {string | number}
+ */
+export function identity(value) { return value; }
+`),
+      ).toEqual([]);
+    },
+  );
+
+  it('still catches an ordinary signature stranded after an overload block', () => {
+    const problems = one(`/** @overload
+ * @param {string} value
+ * @returns {string}
+ */
+/**
+ * @param {string | number} value
+ * @returns {string | number}
+ */
+/**
+ * Another declaration.
+ */
+export const OTHER = 1;
+`);
+    expect(problems.map((problem) => problem.line)).toEqual([5]);
+  });
+
+  it('does NOT mistake an @overload mentioned in prose for an overload tag', () => {
+    const problems = one(`/**
+ * This is not an @overload signature.
+ * @param {string} value
+ */
+/**
+ * Another declaration.
+ */
+export const OTHER = 1;
+`);
+    expect(problems.map((problem) => problem.line)).toEqual([1]);
+  });
+
   it('does NOT fire on a @typedef block that legitimately precedes another block', () => {
     expect(
       one(`/**

@@ -251,7 +251,7 @@ function reviewerModelNotAllowedRefusal(error: unknown): {
 
 /** The amendment fields exactly as requested, so a routed reviewer can reproduce the preview. */
 function amendmentPatch(args: z.infer<typeof rubricsAmendArgs>): Record<string, unknown> {
-  const fields = ['requirement', 'criteria', 'criterion', 'criterionClass', 'criterionEvidencePlane', 'methodRef', 'classRef', 'composes', 'restoreOrphanedBarContract', 'barMappingDelta'] as const;
+  const fields = ['requirement', 'criteria', 'criterion', 'criterionClass', 'criterionEvidencePlane', 'methodRef', 'classRef', 'composes', 'allowMethodShrink', 'shrinkReason', 'restoreOrphanedBarContract', 'barMappingDelta'] as const;
   return Object.fromEntries(fields.filter((field) => args[field] !== undefined).map((field) => [field, args[field]]));
 }
 
@@ -818,6 +818,7 @@ export default defineTool({
             patch: amendmentPatch(args),
             identity,
             workspaceId: identity.workspaceId,
+            checkPathRoot: input.checkPathRoot,
             // WI-10003299: a fresh-reviewer launch reuses this call's context,
             // re-attributed to the review's system principal.
             launchCtx: ctx,
@@ -846,6 +847,7 @@ export default defineTool({
           const health = await inspectFreshAmendmentReviewer({
             workspaceId: identity.workspaceId,
             previewPostRef,
+            ...(args.reviewEvidencePost ? { reviewEvidencePost: args.reviewEvidencePost } : {}),
             reviewer: freshReviewer,
           });
           if (health.state !== 'reclaimable' || !health.taskId) return null;

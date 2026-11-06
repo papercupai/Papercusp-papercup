@@ -15,7 +15,12 @@
  * I/O. `recipe-authority.ts` re-exports everything here, so existing callers are
  * unchanged. A guard test pins the import allowlist.
  */
-import { checkScript, ensureParseCheckReady, type StaticToolCall } from '@papercusp/tooldef/parse-check';
+import {
+  checkScript,
+  collectStaticPropertyStringComparisons,
+  ensureParseCheckReady,
+  type StaticToolCall,
+} from '@papercusp/tooldef/parse-check';
 
 export interface RecipeAuthorityRefs {
   workspaces: string[];
@@ -443,6 +448,15 @@ export async function deriveRecipeAuthority(script: string): Promise<RecipeAutho
   for (const call of analysis.calls) {
     const cause = inspectCall(call, sets);
     if (cause && !unresolvedCause) unresolvedCause = cause;
+  }
+
+  // A fixed target can be applied after a broad plan report is fetched, so it never appears in
+  // the tool call's argument object. Keep literal planSlug comparisons in the authority proof;
+  // otherwise a recipe can be recommended to another plan while silently filtering to this one.
+  for (const comparison of collectStaticPropertyStringComparisons(script)) {
+    if (normPart(comparison.property) === 'planslug' && comparison.value.trim()) {
+      sets.plans.add(comparison.value.trim());
+    }
   }
 
   // A pinned run-scoped artifact path is invisible to call inspection when it

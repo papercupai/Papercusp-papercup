@@ -1002,7 +1002,7 @@ export function hostedForwardInput(program, forwardedArgv) {
 
 /** Why a cloud workspace will not start psu with these arguments, in the customer's terms. */
 export function hostedPsuArgvRefusal(reason) {
-  const allowed = "--agent, --model, --label, --no-picker, --resume and --fork";
+  const allowed = "--agent, --model, --label, --no-picker, --resume, --resume-host and --fork";
   const [kind, flag] = String(reason ?? "").split(":");
   const what =
     kind === "flag_not_allowed" ? `${flag} is not available there`

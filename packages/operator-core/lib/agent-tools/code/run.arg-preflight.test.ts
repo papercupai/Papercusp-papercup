@@ -18,12 +18,18 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { listAllProjectedTools } from '@papercusp/agent-mcp';
 
-const { captureRecipeMock } = vi.hoisted(() => ({
+const { captureRecipeMock, recordRecipeRunMock } = vi.hoisted(() => ({
   captureRecipeMock: vi.fn(async () => null),
+  recordRecipeRunMock: vi.fn<typeof import('../../code-recipes-store').recordRecipeRun>(async () => {}),
 }));
 vi.mock('./capture-recipe', () => ({
   captureRecipe: captureRecipeMock,
 }));
+vi.mock('../../code-recipes-store', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../code-recipes-store')>()),
+  recordRecipeRun: recordRecipeRunMock,
+}));
+vi.mock('../../learning/pot-scope', () => ({ resolveLearningPotSlug: async () => 'alpha' }));
 const { withWorkspaceMock, synthesizeDispatchPrincipalMock, runWithWorkspaceIfConcreteMock } = vi.hoisted(() => ({
   withWorkspaceMock: vi.fn(async (workspaceId: string, fn: (tx: unknown) => unknown) => fn({ __tx: workspaceId })),
   synthesizeDispatchPrincipalMock: vi.fn(async (tx: unknown, spawnCtx: { workspaceId: string; role: string }) => ({
@@ -128,6 +134,8 @@ const UNKNOWN_KEY_ISSUE = {
 
 describe('code:run static arg preflight (EI-19449316000499177)', () => {
   beforeEach(() => {
+    recordRecipeRunMock.mockClear();
+    captureRecipeMock.mockClear();
     runToolOrchestrationMock.mockReset();
     runToolOrchestrationMock.mockResolvedValue(orchestration());
     validateMock.mockReset();
@@ -222,6 +230,40 @@ describe('code:run static arg preflight (EI-19449316000499177)', () => {
     expect(payload.error).toBe('script_invalid');
     expect(payload.executed).toBe(false);
     expect(payload.dispatchCount).toBe(0);
+  });
+
+  it('retains one preflight refusal receipt without inventing executed calls or popularity', async () => {
+    validateMock.mockResolvedValueOnce({ ok: false, issues: [UNKNOWN_KEY_ISSUE], staticToolNames: [] });
+    const script = 'return "refusé";';
+    await codeRun().fn({ script }, { ...(mkCtx() as Record<string, unknown>), dispatchCallId: 'dispatch-refused-1' } as never);
+    expect(runToolOrchestrationMock).not.toHaveBeenCalled();
+    expect(captureRecipeMock).not.toHaveBeenCalled();
+    expect(recordRecipeRunMock).toHaveBeenCalledTimes(1);
+    expect(recordRecipeRunMock.mock.calls[0]?.[1]).toMatchObject({
+      recipeId: null, success: false, countTowardRecipe: false,
+      executionTrace: { toolGraph: { runtimeCalls: [] } },
+      usage: { selection: 'authored', mode: 'commit', outcome: 'refused', settled: true },
+      runEvidence: { invocationId: 'dispatch-refused-1', attempt: 0, executed: false,
+        sourceBytes: Buffer.byteLength(script, 'utf8'), intermediateBytes: 0 },
+    });
+  });
+
+  it.each([
+    ['partial effects', { partial: true }, 'error', true],
+    ['failed child', { childFailures: [{ tool: 'x:y', kind: 'semantic' }] }, 'error', true],
+    ['missing returned field', { fieldMisses: [{ tool: 'x:y', read: 'missing', path: '$', available: [] }] }, 'error', true],
+    ['detached child', { detachedCalls: [{ tool: 'x:y' }] }, 'unknown', false],
+    ['in-flight child', { callRecords: [{ ordinal: 0, tool: 'x:y', effect: 'read', disposition: 'in_flight', outputReferences: [] }] }, 'unknown', false],
+  ])('retains %s as an unsuccessful receipt with its settlement state', async (_label, extra, outcome, settled) => {
+    runToolOrchestrationMock.mockResolvedValueOnce(orchestration(extra));
+    await codeRun().fn({ script: 'return 1;' }, mkCtx());
+    expect(captureRecipeMock).not.toHaveBeenCalled();
+    expect(recordRecipeRunMock).toHaveBeenCalledTimes(1);
+    expect(recordRecipeRunMock.mock.calls[0]?.[1]).toMatchObject({
+      success: false, countTowardRecipe: false,
+      usage: { selection: 'authored', outcome, settled },
+      runEvidence: { executed: true },
+    });
   });
 
   it('the refusal names the rejected arg and the accepted keys, so it is fixable in one edit', async () => {

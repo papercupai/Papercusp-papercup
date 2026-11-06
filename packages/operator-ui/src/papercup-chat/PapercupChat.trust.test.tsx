@@ -18,6 +18,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CardPresentation, ChatResultBlock, ChatTurn, OpenCardSnapshot, ReportBlock } from '@papercusp/chat-protocol';
 import { ChatMarkdown, PapercupChat, askTranscriptPlaceholder, lookedAtTools, papercupChatUrlTransform } from './PapercupChat';
 import type { PapercupChatController } from './use-papercup-chat';
+import { configureOperatorUi, operatorUi } from '../seam';
+import { chatAppHref, remarkWorkRefs } from './remark-work-refs';
 
 const reportMarkdownParses = vi.hoisted(() => vi.fn());
 vi.mock('./remark-work-refs', async (importOriginal) => {
@@ -97,19 +99,22 @@ describe('ChatMarkdown — D-005 on both hosts', () => {
         expect(c.textContent).toContain('<!-- hidden -->');
       });
 
-      it('an https link renders as a new-tab link; javascript:/data:/relative links are inert text', () => {
+      it('keeps external links separate from host-authorized app navigation', () => {
         const c = md(
           '[ok](https://example.com) [mail](mailto:a@b.c) [js](javascript:alert(1)) [data](data:text/html,x) [rel](/settings)',
           host,
         );
         const links = [...c.querySelectorAll('a')];
-        expect(links.map((a) => a.getAttribute('href'))).toEqual(['https://example.com', 'mailto:a@b.c']);
-        for (const a of links) {
+        expect(links.map((a) => a.getAttribute('href'))).toEqual([
+          'https://example.com', 'mailto:a@b.c', ...(host === 'owner' ? ['/settings'] : []),
+        ]);
+        for (const a of links.slice(0, 2)) {
           expect(a.getAttribute('target')).toBe('_blank');
           expect(a.getAttribute('rel')).toContain('noopener');
         }
         const inert = [...c.querySelectorAll('.pc-chat__link-inert')].map((s) => s.textContent);
-        expect(inert).toEqual(['js', 'data', 'rel']);
+        expect(inert).toEqual(host === 'owner' ? ['js', 'data'] : ['js', 'data', 'rel']);
+        if (host === 'owner') expect(links[2].getAttribute('target')).toBeNull();
         expect(c.querySelector('a[href^="javascript"]')).toBeNull();
       });
 
@@ -124,14 +129,16 @@ describe('ChatMarkdown — D-005 on both hosts', () => {
           host, { allowImages: true },
         );
         const links = [...c.querySelectorAll('a')];
-        expect(links.map(a => a.getAttribute('href'))).toEqual([citation, '/docs', '/docs/getting-started/cloud/']);
+        expect(links.map(a => a.getAttribute('href'))).toEqual([
+          citation, '/docs', '/docs/getting-started/cloud/', ...(host === 'owner' ? ['/settings'] : []),
+        ]);
         expect(links[0].textContent).toBe('Public FAQ');
         for (const link of links) {
-          expect(link.getAttribute('target')).toBe('_blank');
-          expect(link.getAttribute('rel')).toContain('noopener');
+          expect(link.getAttribute('target')).toBe(host === 'owner' ? null : '_blank');
+          if (host === 'public') expect(link.getAttribute('rel')).toContain('noopener');
         }
         expect([...c.querySelectorAll('.pc-chat__link-inert')].map(e => e.textContent))
-          .toEqual(['settings', 'escape', 'encoded', 'authority']);
+          .toEqual(host === 'owner' ? ['escape', 'encoded', 'authority'] : ['settings', 'escape', 'encoded', 'authority']);
         expect(c.querySelector('img')).toBeNull();
         expect(c.querySelector('.pc-chat__img-inert')?.textContent).toBe('[image: relative image]');
       });
@@ -206,6 +213,107 @@ describe('pure view helpers', () => {
     expect(
       lookedAtTools([{ name: 'work_items:get' }, { name: 'work_items:get' }, { name: 'chat:ask_choice' }, { name: 'plans:get' }, { name: 'work_items:get' }]),
     ).toEqual(['work_items:get', 'plans:get', 'work_items:get']);
+  });
+});
+
+describe('ChatMarkdown — deterministic app references before display', () => {
+  const reportId = 'rpt_c6a650d3-4b68-4bef-9169-8bf4fe69f998';
+  const reportHref = `/reports?sel=${reportId}`;
+
+  it('links a plain-text citation without changing its surrounding prose', () => {
+    const source = `Reader, the audit is complete and its full report verified (${reportHref}).`;
+    const c = md(source, 'owner');
+    expect(c.textContent).toBe(source);
+    const link = c.querySelector('a')!;
+    expect(link.getAttribute('href')).toBe(reportHref);
+    expect(link.getAttribute('target')).toBeNull();
+    expect(c.querySelectorAll('a')).toHaveLength(1);
+  });
+
+  it('resolves a bare report ID with no agent-authored URL or Markdown', () => {
+    const c = md(`Read ${reportId}, then continue.`, 'owner');
+    expect(c.querySelector('a')?.getAttribute('href')).toBe(reportHref);
+    expect(c.querySelector('a')?.textContent).toBe(reportId);
+    expect(c.textContent).toBe(`Read ${reportId}, then continue.`);
+  });
+
+  it('canonicalizes old report paths while retaining filters and anchors', () => {
+    const c = md(`Read /reports/${reportId}?scope=workspace#findings.`, 'owner');
+    expect(c.querySelector('a')?.getAttribute('href')).toBe(`/reports?scope=workspace&sel=${reportId}#findings`);
+    expect(c.textContent).toBe(`Read /reports/${reportId}?scope=workspace#findings.`);
+  });
+
+  it('passes the exact app destination through the existing host navigation seam', () => {
+    const original = operatorUi().Link;
+    const navigate = vi.fn();
+    configureOperatorUi({ Link: ({ to, children }) => (
+      <a href={to} onClick={event => { event.preventDefault(); navigate(to); }}>{children}</a>
+    ) });
+    try {
+      const href = '/adv?tab=plans&plan=reference-links#decisions';
+      const c = md(`See (${href}), then [Settings](/settings/plugins).`, 'owner');
+      const links = [...c.querySelectorAll('a')];
+      expect(links.map(link => link.getAttribute('href'))).toEqual([href, '/settings/plugins']);
+      fireEvent.click(links[0]);
+      expect(navigate).toHaveBeenCalledExactlyOnceWith(href);
+    } finally {
+      configureOperatorUi({ Link: original });
+    }
+  });
+
+  it('does not invent links from ambiguous titles or incomplete report IDs', async () => {
+    const partial = reportId.slice(0, -4);
+    const view = render(<ChatMarkdown content={`Read the audit: ${partial}`} hostTrust="owner" />);
+    expect(view.container.querySelector('a')).toBeNull();
+    view.rerender(<ChatMarkdown content={`Read the audit: ${reportId}`} hostTrust="owner" />);
+    await waitFor(() => expect(view.container.querySelector('a')?.getAttribute('href')).toBe(reportHref));
+    view.rerender(<ChatMarkdown content={`Read the audit: ${reportId}-unrelated`} hostTrust="owner" />);
+    await waitFor(() => expect(view.container.querySelector('a')).toBeNull());
+  });
+
+  it('waits for a complete selected report in a streaming app path', async () => {
+    const view = render(<ChatMarkdown content={`/reports?sel=${reportId.slice(0, -4)}`} hostTrust="owner" />);
+    expect(view.container.querySelector('a')).toBeNull();
+    view.rerender(<ChatMarkdown content={reportHref} hostTrust="owner" />);
+    await waitFor(() => expect(view.container.querySelector('a')?.getAttribute('href')).toBe(reportHref));
+  });
+
+  it('leaves code and existing links intact instead of creating nested anchors', () => {
+    const c = md(`\`${reportId}\`\n\n\`\`\`\n${reportHref}\n\`\`\`\n\n[${reportId}](https://example.com)`, 'owner');
+    expect(c.querySelectorAll('a')).toHaveLength(1);
+    expect(c.querySelector('a')?.getAttribute('href')).toBe('https://example.com');
+    expect(c.querySelector('a a')).toBeNull();
+    expect(c.querySelector('pre code')?.textContent).toContain(reportHref);
+  });
+
+  it('keeps enrichment idempotent when the same syntax tree is processed again', () => {
+    const tree = { type: 'root' as const, children: [{ type: 'paragraph' as const,
+      children: [{ type: 'text' as const, value: `${reportId} ${reportHref}` }] }] };
+    const transform = remarkWorkRefs();
+    transform(tree);
+    const first = JSON.stringify(tree);
+    transform(tree);
+    expect(JSON.stringify(tree)).toBe(first);
+  });
+
+  it('validates each path segment without backtracking across long malformed input', () => {
+    expect(chatAppHref(`/settings/${'a'.repeat(8000)}%`)).toBeNull();
+    expect(chatAppHref('/settings/plugins')).toBe('/settings/plugins');
+  });
+
+  it.each([
+    '//evil.example/reports', '/reports/../settings', '/reports/%2e%2e/settings',
+    '/reports/%2f%2fevil.example', '/reports//settings', '/tmp/reader/reports',
+    '/api/reports', '/settings\\evil', '/unknown?report=',
+  ])('keeps an unsafe or unrecognized path inert: %s', path => {
+    const source = path.endsWith('=') ? `${path}${reportId}` : path;
+    expect(md(source, 'owner').querySelector('a')).toBeNull();
+  });
+
+  it('keeps bare private references and explicit private links inert on the public host', () => {
+    const c = md(`${reportId} ${reportHref} [Report](${reportHref}) [Settings](/settings)`, 'public');
+    expect(c.querySelector('a')).toBeNull();
+    expect(c.textContent).toContain(reportId);
   });
 });
 

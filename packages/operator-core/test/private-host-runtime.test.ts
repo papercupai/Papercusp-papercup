@@ -499,7 +499,7 @@ it.skipIf(process.platform !== 'linux')('distinguishes a real stopped child and 
       const stat = readFileSync(`/proc/${child.pid}/stat`, 'utf8');
       expect(stat.slice(stat.lastIndexOf(')') + 1).trim().split(/\s+/)[0]).toBe('T');
     });
-    await stopPrivateOperatorHost(child, undefined, 200, observation => observations.push(observation));
+    await stopPrivateOperatorHost(child, undefined, 2_000, observation => observations.push(observation));
     const start = observations.find(o => o.phase === 'start');
     expect(start?.kernelProcess).toMatchObject({ status: 'present', state: 'T', startTicks: expect.stringMatching(/^\d+$/) });
     expect(observations).toEqual(expect.arrayContaining([

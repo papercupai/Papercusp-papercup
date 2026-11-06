@@ -17,7 +17,10 @@ vi.mock('@papercusp/db-org', async original => ({
 vi.mock('../../../packages/operator-core/lib/workspace-registry', async original => ({
   ...await original<object>(), activeWorkspaceId: () => m.ws,
 }));
-vi.mock('@papercusp/flags/server', () => ({ getFlag: async (flag: string) => flag === 'papercusp-fleet-headcount-governor' }));
+vi.mock('@papercusp/flags/server', async original => ({
+  ...await original<object>(),
+  getFlag: async (flag: string) => flag === 'papercusp-fleet-headcount-governor',
+}));
 vi.mock('../../../packages/operator-core/lib/agent-fleets-store', async original => ({
   ...await original<object>(), listFleetHeadcountTargets: m.targets,
   listExpiredFleetTopUpRules: async () => [], claimFleetHeadcountAttempt: m.claimHeadcount,
@@ -101,6 +104,8 @@ describe('lost host to restored native conversation', () => {
     const native = '30c49db4-e1e3-4ac7-9bec-960c500b46ea';
     const config = join(root, 'codex');
     mkdirSync(join(config, 'sessions'), { recursive: true });
+    mkdirSync(join(root, 'bin'));
+    const nativeCli = join(root, 'bin', 'codex');
     writeFileSync(join(config, 'config.toml'), '');
     const transcript = join(config, 'sessions', `rollout-${native}.jsonl`);
     writeFileSync(transcript, '');
@@ -113,6 +118,7 @@ describe('lost host to restored native conversation', () => {
           '--account=default', '--carry=warm', '--role=su', ...(scenario.headless ? ['--headless'] : [])])}::jsonb)
       RETURNING id`;
     const children: ChildProcess[] = [];
+    let nativeOutput = '';
     const hostModule = fileURLToPath(new URL('../scripts/psu-pty-host.mjs', import.meta.url));
     const readMeta = () => {
       try { return JSON.parse(readFileSync(metaPathFor(owner), 'utf8')); } catch { return undefined; }
@@ -120,7 +126,8 @@ describe('lost host to restored native conversation', () => {
     const start = async (work: boolean) => {
       const startedPayload = { type: 'task_started', turn_id: 'journey-original' };
       const completedPayload = { type: 'task_complete', turn_id: 'journey-original' };
-      const completes = work && (scenario.negative === 'completed' || scenario.waiting);
+      const completes = (work && (scenario.negative === 'completed' || scenario.waiting)) ||
+        (scenario.productionGuarded && children.length > 0 && !scenario.waiting);
       // Reject malformed fixture events before paying for a native process.
       const at = Date.now();
       const fixtureRows = [startedPayload, ...(completes ? [completedPayload] : [])]
@@ -147,25 +154,30 @@ describe('lost host to restored native conversation', () => {
           JSON.stringify({type:'event_msg',timestamp:new Date().toISOString(),payload:${JSON.stringify(completedPayload)}})+String.fromCharCode(10)),200);` : ''}
         process.stdout.write('\x1b[6nmodel: GPT-6.1-Sol xhigh'+String.fromCharCode(10)+
           'Ready · GPT-6.1-Sol xhigh · Context 100% left'+String.fromCharCode(10));`;
+      // The managed host adds Codex startup configuration to argv. Execute a
+      // real script that accepts those arguments rather than passing them to
+      // Node's own option parser through a symlink.
+      writeFileSync(nativeCli, `#!${process.execPath}\n${nativeCode}`, { mode: 0o700 });
       const hostCode = `import {hostThroughPty} from ${JSON.stringify(hostModule)};
         import {EventEmitter} from 'node:events';
         const stdin=Object.assign(new EventEmitter(),{isTTY:false,resume(){},pause(){}});
         const signalSource=new EventEmitter();
-        const done=hostThroughPty({command:process.execPath,args:['-e',${JSON.stringify(nativeCode)}],
+        const done=hostThroughPty({command:${JSON.stringify(nativeCli)},args:[],
           cwd:${JSON.stringify(root)},ownerId:${JSON.stringify(owner)},advSessionId:${JSON.stringify(String(adv.id))},
           env:process.env,bridgeTty:${scenario.stopped},activityPersistMs:25,
           resolveRespawnNativeId:()=>${JSON.stringify(native)},
-          io:{stdin,stdout:{isTTY:false,write(){return true;}}},signalSource,onExit(){}});
+          io:{stdin,stdout:{isTTY:false,write(data){process.stdout.write(data);return true;}}},signalSource,onExit(){}});
         ${scenario.stopped && work ? "setTimeout(()=>stdin.emit('data',Buffer.from([3])),500);" : ''}
         process.on('SIGTERM',()=>signalSource.emit('SIGTERM')); await done;`;
       const child = spawn(process.execPath, ['--input-type=module', '-e', hostCode], {
-        cwd: root, detached: true, stdio: ['ignore', 'ignore', 'pipe'],
+        cwd: root, detached: true, stdio: ['ignore', 'pipe', 'pipe'],
         env: hermeticEnv({ CODEX_HOME: config, PAPERCUSP_SID: owner,
           PAPERCUSP_AGENT: 'codex', PAPERCUSP_WORKSPACE_ID: ws,
           PAPERCUSP_PSU_HEADLESS: scenario.headless ? '1' : '0' }),
       });
       children.push(child);
       let stderr = '';
+      child.stdout?.on('data', chunk => { nativeOutput += chunk; });
       child.stderr?.on('data', chunk => { stderr += chunk; });
       return eventually(() => {
         if (child.exitCode != null) throw new Error(`fixture host exited: ${stderr}`);
@@ -177,12 +189,25 @@ describe('lost host to restored native conversation', () => {
       }, () => JSON.stringify({ stage: 'host-start', meta: readMeta(), stderr }));
     };
     try {
+      if (scenario.productionGuarded) {
+        // Exercise the real envelope/resume path against the private registry.
+        // Validate its prerequisites before opening either native process.
+        const { writeOperatorState } = await import('../../../packages/operator-core/lib/operator-state-pg');
+        await writeOperatorState('harness_registry', {
+          projects: [{ slug: 'papercusp', path: root }],
+        }, ws);
+        const { buildConsoleEnvelope } = await import('../../../packages/operator-core/lib/console-launcher');
+        expect((await buildConsoleEnvelope({ workspaceId: ws, slug: 'papercusp',
+          operatorBaseUrl: 'http://127.0.0.1:3170' })).cwd).toBe(root);
+        await vi.importActual('../../../packages/operator-core/lib/agent-tools/capability/launch-agent');
+      }
       const original = await start(true);
       await eventually(() => {
         const meta = readMeta();
         return meta?.execution?.phase === (scenario.negative === 'completed' || scenario.waiting ? 'settled' : 'running') &&
           (!scenario.stopped || meta.execution.ownerStopRequested) ? meta : undefined;
-      }, () => JSON.stringify({ stage: 'native-execution', meta: readMeta(),
+      }, () => JSON.stringify({ stage: 'native-execution', meta: readMeta(), nativeOutput,
+        exitCode: children.at(-1)?.exitCode, signalCode: children.at(-1)?.signalCode,
         transcript: readFileSync(transcript, 'utf8') }));
       if (scenario.waiting) {
         const wait = await waits.registerAwait({ subscriberId: owner, eventKey, policy: 'wake',
@@ -245,16 +270,36 @@ describe('lost host to restored native conversation', () => {
           // Preserve the real handler, resume resolver, safety callbacks and
           // verification. Only the last OS spawn is a deterministic native CLI.
           m.replacement.mockImplementation(async (options: any) => {
-            expect(options.envelope.env.PAPERCUSP_SID).toBe(owner);
-            expect(options.envelope.command).toContain(native);
-            const replacement = await start(true);
+            expect(options.coordOwnerId).toBe(owner);
+            expect(options.envelope.cwd).toBe(root);
+            expect(options.envelope.greetingCmd).toContain(native);
+            const replacement = await start(false);
+            const { nativeSessionIdFromHost } = await import('../../../packages/operator-core/lib/agent-launch-core');
+            expect(nativeSessionIdFromHost(replacement)).toBe(native);
+            // The deterministic native child owns this transcript. Observe the
+            // actual submitted kickoff before returning the spawner's receipt.
+            const kickoff = options.envelope.env.PAPERCUSP_KICKOFF_PROMPT;
+            let kickoffProof;
+            if (kickoff) {
+              await eventually(() => readMeta()?.execution?.phase === 'settled' ? true : undefined,
+                () => JSON.stringify({ stage: 'replacement-ready', execution: readMeta()?.execution }));
+              const delivery = await injectIntoHostWithConfirmation(socketPathFor(owner), { mode: 'turn',
+                data: `${kickoff}\n${boundaryMarker}`, deliveryId: `kickoff:${owner}` });
+              const witnessed = await eventually(() => {
+                const rows = readFileSync(transcript, 'utf8').split('\n').filter(Boolean).map(row => JSON.parse(row));
+                return rows.some(row => row.type === 'response_item' && row.payload?.role === 'user' &&
+                  row.payload.content?.some((part: any) => part.text?.includes(kickoff))) ? true : undefined;
+              }, () => JSON.stringify({ stage: 'kickoff-native-witness', delivery,
+                execution: readMeta()?.execution, transcript: readFileSync(transcript, 'utf8') }));
+              kickoffProof = { persisted: witnessed, nativeRef: transcript, reason: null };
+            }
             return { status: 'ok', pid: replacement.pid, terminal: 'headless',
-              child: children.at(-1), display: null, desktopEnvResolvedVia: null };
+              child: children.at(-1), display: null, desktopEnvResolvedVia: null, kickoffProof };
           });
           const response = await production.default.handler({ ...args,
             [production.INTERNAL_INTERRUPTION_RECOVERY]: args[Symbol.for('host-journey')],
           }, launchContext);
-          expect(response.isError, JSON.stringify(response)).not.toBe(true);
+          expect('isError' in response && response.isError, JSON.stringify(response)).not.toBe(true);
           expect(m.replacement).toHaveBeenCalledTimes(1);
           return response;
         }

@@ -4712,6 +4712,11 @@ describe("acquireCheckpointRunLock", () => {
     await buffer.emit({ key: 'green-checkpoint:red:papercusp', summary: 'other', payload: { sha: 'candidate-2', runId: 'run-1' } });
     expect(emitted).toEqual([]);
     const result = { candidate: 'candidate-1', runId: 'run-1', green: false, reason: 'not-green' } as CheckpointResult;
+    const snapshot = buffer.snapshot(result);
+    expect(snapshot).toEqual([red]);
+    expect(buffer.snapshot({ ...result, green: true })).toEqual([]);
+    (snapshot[0]!.payload as { sha: string }).sha = 'mutated-after-snapshot';
+    expect(buffer.snapshot(result)).toEqual([red]);
     await emitTerminalCheckpointResult(result, {
       record: async () => { order.push('record'); return true; },
       writeHuman: () => order.push('human'),

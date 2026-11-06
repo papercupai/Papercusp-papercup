@@ -32,6 +32,7 @@ import {
 } from "../../../packages/operator-core/lib/model-context-budget.mjs";
 import {
   parseArgs,
+  main,
   codexOriginalRoutingFingerprint,
   assertOriginalCodexRouting,
   applyOriginalCodexRouting,
@@ -403,6 +404,42 @@ import {
   // eslint-disable-next-line @typescript-eslint/ban-ts-comment
   // @ts-ignore -- generated .mjs data module, no type declarations.
 } from "../scripts/tool-delivery.generated.mjs";
+
+describe("exact remote resume host", () => {
+  it("parses both hostname forms without losing the exact resume id", () => {
+    for (const host of [["--resume-host=remote-1"], ["--resume-host", "remote-1"]]) {
+      expect(parseArgs(["--resume", "42", ...host])).toMatchObject({
+        resume: true, resumeId: "42", resumeHost: "remote-1",
+      });
+    }
+  });
+
+  it("refuses missing, malformed and sessionless host restrictions", () => {
+    for (const host of ["", "../remote", "remote host", "--no-picker", "remote\nother"]) {
+      expect(() => parseArgs(["--resume=42", `--resume-host=${host}`])).toThrow("--resume-host");
+    }
+    expect(() => parseArgs(["--resume=42", "--resume-host"])).toThrow("--resume-host");
+    expect(() => parseArgs(["--resume-host=remote-1"])).toThrow("exact session id");
+    expect(() => parseArgs(["--resume", "--resume-host=remote-1"])).toThrow("exact session id");
+  });
+
+  it("refuses a wrong destination after the connection controller returns locally", async () => {
+    const controller = vi.fn(async () => ({ handled: false, argv: ["--resume=42", `--resume-host=${hostname()}-other`] }));
+    await expect(main({ connectionFrontController: controller })).rejects.toThrow("Resume refused");
+    expect(controller).toHaveBeenCalledOnce();
+  });
+
+  it("lets a completed remote connection own the verdict without applying a local-host check", async () => {
+    const controller = vi.fn(async () => ({ handled: true, exitCode: 0, argv: ["--resume=42", `--resume-host=${hostname()}-other`] }));
+    const oldExitCode = process.exitCode;
+    try {
+      await main({ connectionFrontController: controller });
+      expect(process.exitCode).toBe(0);
+    } finally {
+      process.exitCode = oldExitCode;
+    }
+  });
+});
 
 describe("interactive role picker", () => {
   it("selects the SU execution tier without an extra prompt or operator fetch", async () => {
@@ -3680,6 +3717,7 @@ describe("psu-launcher arg parsing", () => {
       picker: true,
       resume: false,
       resumeId: null,
+      resumeHost: null,
       fork: false,
       agent: null,
       role: null,

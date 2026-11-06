@@ -19,7 +19,7 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const {
   ledgerDir, openDeliveryLedger, codeIntelDelivery, MAX_DELIVERY_RECEIPTS, MAX_TURN_START_OUTCOME_RECEIPTS,
 } = await import(path.join(HERE, '..', 'delivery-ledger.mjs'));
-const { runInjection } = await import(path.join(HERE, '..', 'core.mjs'));
+const { runInjection, postInjection } = await import(path.join(HERE, '..', 'core.mjs'));
 
 const home = () => ({ PAPERCUSP_HOME: mkdtempSync(path.join(tmpdir(), 'ledger-unit-')) });
 type CodeIntelState = { turn: string; chars: number; subjects: string[] };
@@ -139,6 +139,9 @@ describe('delivery ledger', () => {
         operatorOrigin: 'https://private-user:private-password@operator.example/private/path?private-query=1#private-fragment',
         timeoutMs: 2500,
         elapsedMs: 2500.4,
+        preFetchMs: Number.NaN,
+        fetchMs: -1,
+        responseStatus: 200.5,
         headersElapsedMs: -1,
         responseBodyMs: Number.POSITIVE_INFINITY,
         error: 'private transport error must not be stored',
@@ -161,6 +164,9 @@ describe('delivery ledger', () => {
         operatorOrigin: 'https://operator.example',
         timeoutMs: 2500,
         elapsedMs: 2500,
+        preFetchMs: null,
+        fetchMs: null,
+        responseStatus: null,
         headersElapsedMs: null,
         responseBodyMs: null,
       },
@@ -230,6 +236,48 @@ describe('delivery ledger', () => {
     });
     expect(JSON.stringify(receipt)).not.toContain('PRIVATE PROMPT');
     expect(JSON.stringify(receipt)).not.toContain('/private/path');
+  });
+
+  it('separates pre-fetch work from fetch latency on a markerless response', async () => {
+    const env = { ...home(), PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:48111' };
+    const owner = 'su-clock-split';
+    const requestId = 'request-clock-split';
+    const ledger = openDeliveryLedger(owner, env);
+    let firstClockRead = true;
+    const now = () => {
+      if (firstClockRead) { firstClockRead = false; return 0; }
+      return 4000;
+    };
+
+    await expect(postInjection('turn-start', { owner, client: 'codex', turnStartRequestId: requestId }, {
+      env,
+      now,
+      fetchImpl: async () => new Response(JSON.stringify({ text: '', privateResponse: 'must not persist' }), {
+        status: 202,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+      onTurnStartOutcome: (outcome: object) => ledger.recordOutcome(outcome),
+    })).resolves.toBeNull();
+
+    const receiptBytes = readFileSync(path.join(ledgerDir(env), `${owner}.outcomes`,
+      `${createHash('sha256').update(requestId).digest('hex')}.json`), 'utf8');
+    expect(JSON.parse(receiptBytes)).toMatchObject({
+      hookOutcome: 'response-received',
+      serverOutcome: 'missing',
+      loopMarkerAppend: 'unknown',
+      transport: {
+        phase: 'body-received',
+        timeoutMs: 2500,
+        elapsedMs: 4000,
+        preFetchMs: 4000,
+        fetchMs: 0,
+        responseStatus: 202,
+        headersElapsedMs: 4000,
+        responseBodyMs: 0,
+      },
+    });
+    expect(receiptBytes).not.toContain('must not persist');
+    expect(receiptBytes).not.toContain('privateResponse');
   });
 
   it('records an unreceived response without retaining transport error text', async () => {

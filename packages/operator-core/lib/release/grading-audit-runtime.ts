@@ -13,7 +13,7 @@ import { SUBSTRATE_SOCKET_ENV } from '../sync/hyperbee/substrate-socket-path';
 import { acquireGradingAuditSubjectMutex } from '../scorecards';
 import { killTask } from '../task-manager/control';
 import { managedSpawn } from '../task-manager/managed-spawn';
-import { listTasks } from '../task-manager/store';
+import { getTask, listTasks } from '../task-manager/store';
 import type { TaskRow } from '../task-manager/types';
 import { runWithWorkspaceIfConcrete } from '../workspace-als';
 import { measureBootOperatorArtifact, operatorArtifactSource, writeOperatorArtifactManifest } from './operator-artifact';
@@ -26,7 +26,16 @@ import {
 } from './grading-audit-source-pin';
 
 const LABEL = 'grading-audit-runtime:';
-const READINESS_ATTEMPTS = 30;
+const READINESS_RETRY_DELAY_MS = 1000;
+
+type GradingAuditRuntimeReadinessStopReason =
+  | 'task-not-live'
+  | 'task-not-found'
+  | 'task-liveness-unknown'
+  | 'caller-aborted'
+  | 'caller-deadline'
+  | 'runtime-expired'
+  | 'probe-not-recoverable';
 
 /** Persisted before spawn; sufficient to recover without the staging alias. */
 export interface GradingAuditRuntimeLocator extends GradingAuditSourcePin {
@@ -73,13 +82,16 @@ export interface GradingAuditRuntimeReadinessDiagnostic {
   readiness: { method: 'GET'; url: string; timeoutMs: number };
   taskRead: { tool: 'processes:list'; args: { taskId: string } };
   recovery: { tool: 'scorecards:repair'; args: { targetIds: string[] } };
+  stopReason?: GradingAuditRuntimeReadinessStopReason;
+  taskState?: TaskRow['state'] | 'missing' | 'unknown';
 }
 
 export class GradingAuditRuntimeReadinessError extends Error {
   constructor(readonly diagnostic: GradingAuditRuntimeReadinessDiagnostic) {
     const probe = diagnostic.lastProbe;
     super(`Audit runtime readiness is unknown (${probe.reason}${probe.httpStatus ? ` HTTP ${probe.httpStatus}` : ''}` +
-      `${probe.errorCode ? ` ${probe.errorCode}` : ''}); retained task ${diagnostic.taskId} at ${diagnostic.locator.baseUrl}`);
+      `${probe.errorCode ? ` ${probe.errorCode}` : ''}${diagnostic.stopReason ? `; ${diagnostic.stopReason}` : ''}); ` +
+      `retained task ${diagnostic.taskId} at ${diagnostic.locator.baseUrl}`);
     this.name = 'GradingAuditRuntimeReadinessError';
   }
 }
@@ -124,11 +136,14 @@ export interface GradingAuditRuntimeDeps {
   logDir?: string;
   spawn?: (workspaceId: string, locator: GradingAuditRuntimeLocator) => Promise<string>;
   /** Legacy injected probes may return BuildInfo/null; null remains explicitly unknown. */
-  probe?: (baseUrl: string) => Promise<GradingAuditRuntimeProbeResult | BuildInfo | null>;
+  probe?: (baseUrl: string, options?: { signal?: AbortSignal; timeoutMs: number }) =>
+    Promise<GradingAuditRuntimeProbeResult | BuildInfo | null>;
+  /** Current task-ledger lifecycle state for a readiness probe's exact task. */
+  taskState?: (taskId: string) => Promise<TaskRow['state'] | null>;
   attach?: (taskId: string, workspaceId: string, issueIds: string[], acceptanceRefs?: string[]) => Promise<void>;
   pendingAcceptanceRefs?: (workspaceId: string, refs: string[]) => Promise<string[]>;
   stop?: (taskId: string) => Promise<void>;
-  sleep?: (ms: number) => Promise<void>;
+  sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
 }
 
 function sameBuild(a: BuildInfo, b: BuildInfo): boolean {
@@ -344,9 +359,14 @@ function mayBeRecovering(probe: GradingAuditRuntimeProbeFailure): boolean {
     (probe.reason === 'http-error' && [502, 503, 504].includes(probe.httpStatus ?? 0));
 }
 
-async function probe(baseUrl: string): Promise<GradingAuditRuntimeProbeResult> {
+async function probe(
+  baseUrl: string,
+  options: { signal?: AbortSignal; timeoutMs: number } = { timeoutMs: 2000 },
+): Promise<GradingAuditRuntimeProbeResult> {
   try {
-    const response = await fetch(`${baseUrl}/api/health`, { signal: AbortSignal.timeout(2000) });
+    const response = await fetch(`${baseUrl}/api/health`, {
+      signal: options.signal ?? AbortSignal.timeout(options.timeoutMs),
+    });
     if (!response.ok) return { status: 'unready', reason: 'http-error', httpStatus: response.status };
     let body: Partial<BuildInfo> | null;
     try { body = await response.json() as Partial<BuildInfo> | null; }
@@ -426,10 +446,18 @@ export async function ensureGradingAuditRuntime(input: {
   recoverySourceRoot?: string;
   /** A claimed source work-item may still need conformance after its audit settles. */
   acceptanceRef?: string;
+  /** Bound readiness waiting by the tool caller's response budget and cancellation. */
+  deadlineAtMs?: number;
+  signal?: AbortSignal;
 }, deps: GradingAuditRuntimeDeps = {}): Promise<GradingAuditRuntimeBinding> {
   const label = labelFor(input.evaluatorBuild, input.workspaceId);
   return (deps.mutex ?? mutex)(input.workspaceId, label, async () => {
-    const now = Math.floor((deps.now?.() ?? Date.now()) / 1000);
+    const nowMs = () => deps.now?.() ?? Date.now();
+    const callerDeadlineAtMs = typeof input.deadlineAtMs === 'number' && Number.isFinite(input.deadlineAtMs)
+      ? input.deadlineAtMs : Number.POSITIVE_INFINITY;
+    if (input.signal?.aborted) throw new Error('Audit runtime caller aborted before acquisition');
+    if (nowMs() >= callerDeadlineAtMs) throw new Error('Audit runtime caller deadline elapsed before acquisition');
+    const now = Math.floor(nowMs() / 1000);
     const rows = await (deps.list ?? listRuntimeTasks)(input.workspaceId, label);
     const exact = rows.filter(row => row.detail.label === label);
     if (exact.some(row => row.state === 'unaccounted')) throw new Error('Audit runtime ownership is unaccounted');
@@ -487,21 +515,68 @@ export async function ensureGradingAuditRuntime(input: {
       }
       await (deps.stop ?? stopRuntime)(sibling.taskId);
     }
+    const readinessStop = async (currentTaskId: string): Promise<{
+      stopReason: GradingAuditRuntimeReadinessStopReason;
+      taskState?: TaskRow['state'] | 'missing' | 'unknown';
+    } | null> => {
+      if (input.signal?.aborted) return { stopReason: 'caller-aborted' };
+      const atMs = nowMs();
+      if (atMs >= callerDeadlineAtMs) return { stopReason: 'caller-deadline' };
+      if (atMs >= locator.expiresAtSec * 1000) return { stopReason: 'runtime-expired' };
+      let state: TaskRow['state'] | null;
+      try {
+        state = await (deps.taskState ?? (async (id) => (await getTask(id))?.state ?? null))(currentTaskId);
+      } catch {
+        return { stopReason: 'task-liveness-unknown', taskState: 'unknown' };
+      }
+      if (state === 'running' || state === 'pending') return null;
+      return { stopReason: state ? 'task-not-live' : 'task-not-found', taskState: state ?? 'missing' };
+    };
+    const readinessRemainingMs = () => Math.max(0, Math.min(
+      callerDeadlineAtMs - nowMs(), locator.expiresAtSec * 1000 - nowMs(),
+    ));
     const readProbe = async (): Promise<GradingAuditRuntimeProbeResult> => {
       try {
-        const result = await (deps.probe ?? probe)(locator.baseUrl);
+        const timeoutMs = Math.max(1, Math.min(2000, readinessRemainingMs()));
+        const timeoutSignal = AbortSignal.timeout(timeoutMs);
+        const signal = input.signal ? AbortSignal.any([input.signal, timeoutSignal]) : timeoutSignal;
+        const result = await (deps.probe ?? probe)(locator.baseUrl, { signal, timeoutMs });
         if (!result) return { status: 'unready', reason: 'unknown' };
         return 'status' in result ? result : { status: 'ready', build: result };
       } catch (error) { return probeFailure(error, 'fetch-error'); }
     };
-    const readinessError = (lastProbe: GradingAuditRuntimeProbeFailure, attempts: number) =>
+    const readinessError = (
+      lastProbe: GradingAuditRuntimeProbeFailure,
+      attempts: number,
+      stop?: Awaited<ReturnType<typeof readinessStop>>,
+    ) =>
       new GradingAuditRuntimeReadinessError({ taskId, locator,
         logPath: taskId === existing?.row.taskId ? existing.row.logPath ?? null
           : deps.spawn ? null : runtimeLogPath(locator, deps.logDir),
         lastProbe, attempts, readiness: { method: 'GET', url: `${locator.baseUrl}/api/health`, timeoutMs: 2000 },
         taskRead: { tool: 'processes:list', args: { taskId } },
-        recovery: { tool: 'scorecards:repair', args: { targetIds: [input.issueId] } } });
-    let liveProbe = isLive ? await readProbe() : null;
+        recovery: { tool: 'scorecards:repair', args: { targetIds: [input.issueId] } },
+        ...(stop ? { stopReason: stop.stopReason, ...(stop.taskState ? { taskState: stop.taskState } : {}) } : {}) });
+    const sleepBeforeRetry = async () => {
+      const remainingMs = readinessRemainingMs();
+      if (remainingMs <= 0) return;
+      await (deps.sleep ?? sleepWithSignal)(Math.min(READINESS_RETRY_DELAY_MS, remainingMs), input.signal);
+    };
+    let liveProbe: GradingAuditRuntimeProbeResult | null = null;
+    let liveAttempts = 0;
+    if (isLive) {
+      const beforeProbeStop = await readinessStop(taskId);
+      if (beforeProbeStop) {
+        throw readinessError({ status: 'unready', reason: 'unknown' }, liveAttempts, beforeProbeStop);
+      }
+      liveProbe = await readProbe();
+      liveAttempts = 1;
+      const afterProbeStop = await readinessStop(taskId);
+      if (afterProbeStop) {
+        throw readinessError(liveProbe.status === 'unready' ? liveProbe : { status: 'unready', reason: 'unknown' },
+          liveAttempts, afterProbeStop);
+      }
+    }
     let attached = false;
     if (isLive && liveProbe?.status === 'unready') {
       // HTTP readiness is not process-lifetime evidence. Preserve the enrolled
@@ -511,49 +586,87 @@ export async function ensureGradingAuditRuntime(input: {
       // or invalid health remains unknown, never permission to replace it.
       await (deps.attach ?? attach)(taskId, input.workspaceId, issueIds, acceptanceRefs);
       attached = true;
-      let attempts = 1;
-      while (liveProbe.status === 'unready' && mayBeRecovering(liveProbe) && attempts < READINESS_ATTEMPTS &&
-        Math.floor((deps.now?.() ?? Date.now()) / 1000) < locator.expiresAtSec) {
-        await (deps.sleep ?? (ms => new Promise(resolve => setTimeout(resolve, ms))))(1000);
-        if (Math.floor((deps.now?.() ?? Date.now()) / 1000) >= locator.expiresAtSec) break;
+      while (liveProbe.status === 'unready') {
+        const stop = await readinessStop(taskId);
+        if (stop) throw readinessError(liveProbe, liveAttempts, stop);
+        if (!mayBeRecovering(liveProbe)) {
+          throw readinessError(liveProbe, liveAttempts, { stopReason: 'probe-not-recoverable' });
+        }
+        await sleepBeforeRetry();
+        const beforeProbeStop = await readinessStop(taskId);
+        if (beforeProbeStop) throw readinessError(liveProbe, liveAttempts, beforeProbeStop);
         liveProbe = await readProbe();
-        attempts += 1;
+        liveAttempts += 1;
         if (liveProbe.status === 'ready' && !sameBuild(liveProbe.build, input.evaluatorBuild)) {
           throw new Error('Audit runtime evaluator identity mismatch');
         }
       }
-      if (liveProbe.status === 'unready') throw readinessError(liveProbe, attempts);
-      if (Math.floor((deps.now?.() ?? Date.now()) / 1000) >= locator.expiresAtSec) {
-        throw new Error('Audit runtime expired during readiness recovery');
-      }
+      const readyStop = await readinessStop(taskId);
+      if (readyStop) throw readinessError({ status: 'unready', reason: 'unknown' }, liveAttempts, readyStop);
     }
     if (isLive && liveProbe?.status === 'ready' && sameBuild(liveProbe.build, input.evaluatorBuild)) {
       if (!attached) await (deps.attach ?? attach)(taskId, input.workspaceId, issueIds, acceptanceRefs);
     } else {
+      if (input.signal?.aborted) throw new Error('Audit runtime caller aborted before spawn');
+      if (nowMs() >= callerDeadlineAtMs) throw new Error('Audit runtime caller deadline elapsed before spawn');
+      if (nowMs() >= locator.expiresAtSec * 1000) throw new Error('Audit runtime expired before spawn');
       if (isLive) await (deps.stop ?? stopRuntime)(taskId);
       taskId = await (deps.spawn ?? ((workspaceId, current) => spawnRuntime(workspaceId, current, deps.logDir)))(
         input.workspaceId, locator);
       let ready = false;
       let lastProbe: GradingAuditRuntimeProbeFailure = { status: 'unready', reason: 'unknown' };
-      for (let attempt = 0; attempt < READINESS_ATTEMPTS; attempt += 1) {
+      let attempts = 0;
+      let stop: Awaited<ReturnType<typeof readinessStop>> = null;
+      while (!ready) {
+        stop = await readinessStop(taskId);
+        if (stop) break;
         const result = await readProbe();
+        attempts += 1;
         const actual = result.status === 'ready' ? result.build : null;
         if (actual && !sameBuild(actual, input.evaluatorBuild)) {
           await (deps.stop ?? stopRuntime)(taskId);
           throw new Error('Audit runtime evaluator identity mismatch');
         }
-        if (actual) { ready = true; break; }
+        if (actual) {
+          stop = await readinessStop(taskId);
+          if (!stop) ready = true;
+          break;
+        }
         if (result.status === 'unready') lastProbe = result;
-        await (deps.sleep ?? (ms => new Promise(resolve => setTimeout(resolve, ms))))(1000);
+        stop = await readinessStop(taskId);
+        // A freshly enrolled task may still be warming while its health probe
+        // cannot classify the failure. Keep that exact live task until the
+        // caller/runtime bound or task ledger ends the wait; malformed health
+        // and other classified failures still stop immediately.
+        if (stop || (lastProbe.reason !== 'unknown' && !mayBeRecovering(lastProbe))) {
+          if (!stop) stop = { stopReason: 'probe-not-recoverable' };
+          break;
+        }
+        await sleepBeforeRetry();
       }
       // Keep an unready task under its existing confined deadline. Its locator
       // and pin let the next canonical repair retry the same exact evaluator;
       // expiry and authoritative task termination still govern replacement.
-      if (!ready) throw readinessError(lastProbe, READINESS_ATTEMPTS);
+      if (!ready) throw readinessError(lastProbe, attempts, stop ?? { stopReason: 'runtime-expired' });
     }
     return { taskId, baseUrl: locator.baseUrl, evaluatorBuild: input.evaluatorBuild,
       bundleSha256: locator.bundleSha256, expiresAtSec: locator.expiresAtSec,
       ...(locator.sourceRecovery ? { sourceRecovery: locator.sourceRecovery } : {}) };
+  });
+}
+
+function sleepWithSignal(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise(resolve => {
+    if (signal?.aborted) return resolve();
+    let timer: ReturnType<typeof setTimeout>;
+    const finish = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', finish);
+      resolve();
+    };
+    timer = setTimeout(finish, ms);
+    signal?.addEventListener('abort', finish, { once: true });
+    if (signal?.aborted) finish();
   });
 }
 

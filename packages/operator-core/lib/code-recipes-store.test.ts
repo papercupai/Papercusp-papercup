@@ -14,6 +14,8 @@ it('keeps system/hook choice separate from verified agent choice and unknown att
   expect(recipeRunChoice({ source: 'omp-hook-session', ownerId: 'hook:collector' })).toBe('hook');
   expect(recipeRunChoice({ source: 'omp-hook-session', ownerId: 'agent-session' })).toBe('agent');
   expect(recipeRunChoice({ source: 'static-client', ownerId: 'remembered-agent-name' })).toBe('unknown');
+  expect(recipeRunChoice({ source: 'omp-hook-session' })).toBe('unknown');
+  expect(recipeRunChoice({ source: 'signed-spawn', ownerId: ' ' })).toBe('unknown');
   expect(recipeRunChoice({})).toBe('unknown');
 });
 

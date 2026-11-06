@@ -12,7 +12,6 @@ import type { DependencyBaseline } from './plan-library-ship-check';
 import { createHash } from 'node:crypto';
 import { discoverySubjectSnapshot, type DiscoveryAuditContext, type DiscoveryAuditPayload } from '../../plan-audits';
 import { previewDiscoveryDeclaration } from './plan-declarations';
-import { readResearchTrail } from '../../code-intelligence/research-trail';
 import { listSpecEvidence } from './spec-evidence-store';
 
 /** Existing source research and canonical evidence bindings supply facts; the
@@ -31,8 +30,6 @@ export async function resolveDiscoveryAuditContext(content: string, previous: st
   ];
   const refs = [...new Set(previewDiscoveryDeclaration(content).data?.findings.flatMap(row => row.evidenceRefs) ?? [])];
   const evidence: DiscoveryAuditContext['evidence'] = [];
-  const trail = options.workspaceId
-    ? await readResearchTrail(options.workspaceId, options.ownerId, options.harnessSlug).catch(() => null) : null;
   const proofIds = refs.filter(ref => /^proof:[1-9]\d*$/.test(ref)).map(ref => Number(ref.slice(6)));
   const proofs = proofIds.length && options.workspaceId ? await listSpecEvidence({
     workspaceId: options.workspaceId, harnessSlug: options.harnessSlug, planSlugs: [options.planSlug],
@@ -42,16 +39,15 @@ export async function resolveDiscoveryAuditContext(content: string, previous: st
     const unknown = (reason: string) => evidence.push({ ref, state: 'unknown', usable: false, fingerprint: null, reason });
     if (ref.startsWith('source:')) {
       const sourcePath = ref.slice(7);
-      const retained = options.prior?.evidence.some(row => row.ref === ref && row.fingerprint !== null);
-      if (!retained && !trail?.subjects.some(subject => subject.path === sourcePath)) {
-        unknown('Select a source captured by the existing research trail, or a canonical proof binding.'); continue;
-      }
+      // Research capture is optional client assistance, not source authority.
+      // Resolve the selected source through the existing citation boundary and
+      // measure its current bytes even when that client captured no trail.
       const located = await locateReference(options, sourcePath);
       if (!located.location) { unknown('reason' in located.lookup ? located.lookup.reason : 'Source unavailable.'); continue; }
       try {
         const bytes = await readFile(located.location.absolutePath);
         evidence.push({ ref, state: 'current', usable: true, fingerprint: createHash('sha256').update(bytes).digest('hex') });
-      } catch { unknown('The captured source could not be read at finalization.'); }
+      } catch { unknown('The selected source could not be read at finalization.'); }
     } else if (/^proof:[1-9]\d*$/.test(ref)) {
       const proof = proofs.find(row => row.id === Number(ref.slice(6)));
       if (!proof) { unknown('Canonical evidence binding unavailable.'); continue; }

@@ -11,6 +11,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { StoredInFlightCandidate } from './in-flight-candidate';
 import {
   beginQualificationTransaction,
+  observeQualificationProgress,
   QUALIFICATION_POST_VERDICT_HANG_MS,
   settleQualificationTransaction,
   type CheckpointQualificationTransaction,
@@ -108,6 +109,9 @@ function deps(over: Partial<LostRunSweepDeps> = {}): LostRunSweepDeps & {
     readHolder: async () => 'su-holder',
     readOwnerFleetSlug: async () => 'gate-fleet',
     attention: { resolve: async () => true },
+    // Ordinary alarm fixtures do not write to a real routines table. Dedicated
+    // observer cases below exercise the row transition and stale-fence result.
+    recordProgressObservation: async () => ({ status: 'idempotent', transaction: {} as CheckpointQualificationTransaction }),
     ...over,
     broadcast: (over.broadcast as ReturnType<typeof vi.fn>) ?? vi.fn(async () => true),
     notifyOwner: (over.notifyOwner as ReturnType<typeof vi.fn>) ?? vi.fn(async () => {}),
@@ -278,6 +282,64 @@ describe('sweepLostGateRuns (P-005 / R-5)', () => {
 });
 
 describe('qualification progress in the existing lost-run sweep', () => {
+  it('observer-partition-restart: a failed probe is persisted and alarmed without a retry', async () => {
+    const tx = qualification(NOW - 1000);
+    tx.runId = 'run-1';
+    tx.currentPhysicalRunner = { ...tx.currentPhysicalRunner!, unit: 'root.scope', phaseEnteredAtMs: NOW - 300_000 };
+    const { sql, row } = fakeRoutineRow(null, tx);
+    const record = vi.fn<NonNullable<LostRunSweepDeps['recordProgressObservation']>>(async (target, sample) => {
+      const result = observeQualificationProgress(row.qualification as CheckpointQualificationTransaction, target, sample);
+      row.qualification = result.transaction;
+      return result;
+    });
+    const d = deps({ probeQualificationRunner: () => new Promise(() => {}), probeTimeoutMs: 5,
+      recordProgressObservation: record, observerGeneration: 'external', observerSequence: 1, monotonicAtMs: 1000 });
+    await sweepLostGateRuns(sql, d);
+    expect(record).toHaveBeenCalledOnce();
+    expect((row.qualification as CheckpointQualificationTransaction).progressObservation).toMatchObject({
+      health: 'unknown', reason: 'observer-probe-failed', semantic: 'unknown',
+    });
+    expect(d.broadcast.mock.calls[0][0].body).toContain('observer telemetry is UNKNOWN');
+    expect(row.retries).toBe(0);
+    for (const [sequence, health] of [[2, 'baseline'], [3, 'healthy']] as const) {
+      await sweepLostGateRuns(sql, deps({ probeQualificationRunner: () => 'live', recordProgressObservation: record,
+        nowMs: NOW + sequence * 1000, monotonicAtMs: 1000 + sequence * 1000,
+        observerGeneration: 'external', observerSequence: sequence }));
+      expect((row.qualification as CheckpointQualificationTransaction).progressObservation?.health).toBe(health);
+    }
+  });
+
+  it('stale-sample-replay: a changed row during the probe cannot trigger a stale requeue', async () => {
+    const { sql, row } = fakeRoutineRow(null, qualification());
+    const d = deps({ probeQualificationRunner: () => 'dead', recordProgressObservation: async () => ({
+      status: 'conflict', transaction: row.qualification as CheckpointQualificationTransaction,
+      refusalReason: 'observer-fence-mismatch',
+    }) });
+    await sweepLostGateRuns(sql, d);
+    expect(d.broadcast).not.toHaveBeenCalled();
+    expect(row.retries).toBe(0);
+  });
+
+  describe.each(['live', 'dead'] as const)('observer commit failure with a %s runner', liveness => {
+    it.each(['pending-head-queue-mismatch', 'observer-sample-invalid',
+      'observer-generation-history-invalid', 'observer-future-sample'])(
+      'alarms unknown and retains custody after %s', async refusalReason => {
+        const tx = qualification(NOW - 1000);
+        const { sql, row } = fakeRoutineRow(null, tx);
+        const readQualificationRunLog = vi.fn(async () => null);
+        const d = deps({ probeQualificationRunner: () => liveness, readQualificationRunLog,
+          recordProgressObservation: async () => ({ status: 'conflict', transaction: tx, refusalReason }) });
+        await expect(sweepLostGateRuns(sql, d)).resolves.toEqual({
+          alarmed: ['papercusp'], deduped: [], failed: ['papercusp'],
+        });
+        expect(d.broadcast.mock.calls[0][0].body).toContain('observer telemetry is UNKNOWN');
+        expect(row.retries).toBe(0);
+        expect(row.qualification).toEqual(tx);
+        expect(readQualificationRunLog).not.toHaveBeenCalled();
+      },
+    );
+  });
+
   function qualification(heartbeatAtMs = NOW - 4 * 60_000): CheckpointQualificationTransaction {
     const ready = beginQualificationTransaction(null, {
       attemptId: 'attempt-1', candidate: 'candidate-1', nowMs: NOW - 5 * 60_000,

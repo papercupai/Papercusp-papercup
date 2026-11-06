@@ -13,18 +13,20 @@ import { deriveIndexFromContent } from './agent-tools/plans/derive-index';
 import { writePlanIndexRows } from './agent-tools/plans/plan-index-rows';
 import { readPlanLineNodes, writePlanLineNodes } from './agent-tools/plans/plan-line-graph';
 import { parseRequirementBars, parseBarMappings } from './acceptance-bar-seed';
+import { checkDraftItemStartGate } from './agent-tools/plans/draft-item-start-gate';
 import { seedPlan, setupPlanPgFixture, type PlanPgFixture } from './agent-tools/plans/__tests__/_pg-tool-fixture';
 
 let harness = 'zzz-discovery-audit';
 let fixtureCase = 0;
-const slug = 'discovery-audit-fixture';
+let slug = 'discovery-audit-fixture';
 let fx: PlanPgFixture;
 const declaration = {
   questions: [], notApplicable: 'The existing helper already establishes the small change; no material unknowns remain.',
   findings: [{ id: 'F-1', questions: [], conclusion: 'Reuse the existing helper at the missing caller.',
     evidenceRefs: ['source:helper.ts'], dispositions: [{ target: 'P-001', decision: 'reuse', reason: 'Current source covers the implementation.' }] }],
 };
-const draft = `---\nslug: ${slug}\nstatus: draft\n---\n# Draft\n\n## Now\nDraft\n\n## Phase 1\n\n- **P-001** \`todo\` Wire the existing helper\n\n## Discovery\n\n\`\`\`discovery\n${JSON.stringify(declaration)}\n\`\`\`\n`;
+const draftTemplate = `---\nslug: discovery-audit-fixture\nstatus: draft\n---\n# Draft\n\n## Now\nDraft\n\n## Phase 1\n\n- **P-001** \`todo\` Wire the existing helper\n\n## Discovery\n\n\`\`\`discovery\n${JSON.stringify(declaration)}\n\`\`\`\n`;
+let draft = draftTemplate;
 const context = async (): Promise<DiscoveryAuditContext> => ({
   targets: [{ ref: 'P-001', change: 'proposed' }],
   evidence: [{ ref: 'source:helper.ts', state: 'current', usable: true, fingerprint: 'a'.repeat(64) }],
@@ -58,7 +60,37 @@ beforeEach(async () => {
   // Activation creates immutable clause history. Keep each case's namespace
   // separate; the isolated database's owned teardown removes the whole fixture.
   harness = `zzz-discovery-audit-${++fixtureCase}`;
+  // Subject resolution hashes the slug and refuses ambiguous registrations.
+  slug = `discovery-audit-fixture-${fixtureCase}`;
+  draft = draftTemplate.replace('slug: discovery-audit-fixture', `slug: ${slug}`);
   await revision();
+});
+
+it('refuses a new implementation item before finalization, admits reconciled discovery, and preserves running work', async () => {
+  let accepted = 0;
+  const evaluateDiscovery = async () => {
+    const result = await withCurrentDiscovery(input(), async () => undefined, { context });
+    return result.ok ? { ok: true as const } : { ok: false as const, error: result.error,
+      nextAction: 'nextAction' in result ? result.nextAction : undefined };
+  };
+  const attempt = async (content = draft) => {
+    const refusal = await checkDraftItemStartGate({ slug, itemId: 'P-001', toStatus: 'wip',
+      readPlanContent: async () => content, evaluateDiscovery,
+      evaluateGate: async () => ({ satisfied: true }), hasCoveringWorkItem: async () => true });
+    if (!refusal) accepted++;
+    return refusal;
+  };
+  expect(await attempt()).toMatchObject({ error: 'discovery_not_ready' });
+  expect(accepted).toBe(0);
+  expect(await recordCurrentDiscoveryAudit(input(), { context })).toMatchObject({ ok: true });
+  expect(await attempt()).toBeNull();
+  expect(accepted).toBe(1);
+  const changed = draft.replace('Wire the existing helper', 'Replace the helper with new behavior');
+  await revision(changed);
+  expect(await attempt(changed)).toMatchObject({ error: 'discovery_not_ready' });
+  expect(accepted).toBe(1);
+  expect(await attempt(changed.replace('`todo`', '`wip`'))).toBeNull();
+  expect(accepted).toBe(2);
 });
 
 describe('discovery uses existing revision and audit authorities', () => {

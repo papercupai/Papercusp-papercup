@@ -430,7 +430,8 @@ export interface BootHarnessOpts {
    */
   mergePollMs?: number;
   /**
-   * WI-10002836 test seam: minimum spacing (ms) between own-compaction progress rows.
+   * WI-10002836 test seam: minimum spacing (ms) between snapshot progress rows,
+   * shared by own compaction and on-demand release head snapshots.
    * Default `OWN_COMPACTION_PROGRESS_INTERVAL_MS`. Tests pass 0 to record every window.
    */
   ownCompactionProgressIntervalMs?: number;
@@ -3473,6 +3474,20 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
     const startedAt = Date.now();
     const lengthBefore = ownLog.length;
     try {
+      // EI-28015705131222529: the periodic producer defers an unreadable anchor,
+      // but the head path used to skip that protection and fold millions of old
+      // blocks from zero while holding the merge gate. Resolve the same anchor
+      // first, including when the periodic producer is disabled. A genuinely
+      // snapshot-free log is known; an unreadable tail must remain retryable.
+      if (!ownCompactionAnchorKnown) {
+        const anchor = await discoverOwnCompactionAnchor();
+        if (!ownCompactionAnchorKnown) {
+          throw new Error(
+            `[snapshot] cannot produce a head snapshot while the compaction anchor is ${anchor}; ` +
+              'retry after anchor discovery recovers instead of folding unknown history from zero.',
+          );
+        }
+      }
       // WI-10003060 — the cut ships this set as the published seed, so it drops the same
       // dead governor receipts as the own compaction. Without the filter a cut that seeds
       // from an unfiltered set, or folds from 0, re-ships them (56% of set@7711093's rows,
@@ -3512,6 +3527,26 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         // ~7h failure mode). An unfiltered set is a safe seed for this filtered fold:
         // `SnapshotRowFolder.add` drops the excluded tables from its rows again.
         ...(lastOwnCompactionSet ? { priorSnapshotHint: lastOwnCompactionSet } : {}),
+        // EI-28010958079614294: a release waits on this fold just as it does on an
+        // own compaction. Reuse its bounded cursor diagnostics and mirrored event
+        // kind: peer_capped only enters the volatile history ring, not stdout/PG.
+        onProgress: throttleSnapshotFoldProgress(
+          (progress) => {
+            try {
+              recordBootEvent(
+                opts.workspaceId,
+                opts.harnessSlug,
+                'own_log_compaction',
+                `on-demand head snapshot progress: ${formatSnapshotFoldProgress(progress)} ` +
+                  `mainHeapUsedMb=${Math.round(process.memoryUsage().heapUsed / 1_048_576)} ` +
+                  `elapsedMs=${Date.now() - startedAt}`,
+              );
+            } catch {
+              // observability must never abort the release snapshot
+            }
+          },
+          { minIntervalMs: opts.ownCompactionProgressIntervalMs ?? OWN_COMPACTION_PROGRESS_INTERVAL_MS },
+        ),
       });
       if (snap.appended) {
         // The cadence restarts from this set, and the anchor is now known. It excludes

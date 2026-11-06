@@ -147,6 +147,27 @@ describe('subject files are the first ring of relative runtime imports', () => {
 });
 
 describe('deriveBindingFromTestRun', () => {
+  it.each([['pass', 'passed'], ['fail', 'failed']] as const)(
+    'keeps ledger-backed census %s polarity and its committed tree instrument', (status, outcome) => {
+      const out = deriveBindingFromTestRun(input({ evidenceKind: 'coverage-census',
+        treeInstrumentKey: 'embedded-terminal-host-census' }), run({ status }), root, 'run');
+      expect(out).toMatchObject({ ok: true, binding: {
+        evidenceKind: 'coverage-census', testRunId: 42,
+        measurement: { treeInstrumentKey: 'embedded-terminal-host-census', testPaths: [TEST] },
+        details: { testRun: { commitSha: 'abcdef0123456789', worktreeDirty: false },
+          adequacy: { outcome, collected: true, executed: true, skipped: false } },
+      } });
+    },
+  );
+
+  it('does not turn a surviving census mutant into passing census proof', () => {
+    const out = deriveBindingFromTestRun(input({ evidenceKind: 'coverage-census',
+      treeInstrumentKey: 'embedded-terminal-host-census' }),
+    run({ status: 'pass', source: 'mutation-probe', execution_details: { mutationPhase: 'mutant' } }), root, 'run');
+    expect(out).toMatchObject({ ok: true, binding: { evidenceKind: 'coverage-census',
+      details: { adequacy: { outcome: 'survived' } } } });
+  });
+
   describe.each(['integration', 'e2e'])('isolated %s receipt derivation', testLayer => {
   const isolatedReceipts = [
     { runId: '20261008T164557Z-3031268', resultSha256: 'a'.repeat(64),

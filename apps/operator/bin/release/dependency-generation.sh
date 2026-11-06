@@ -4539,6 +4539,14 @@ dependency_generation_main() {
     input_before="$(dependency_generation_input_fingerprint "$build_root")" || return 1
   fi
   dependency_generation_ensure "$build_root" "$generation_root" || return $?
+  # Lease the immutable identity BEFORE exposing an input selector. A competing
+  # publisher can run retention as soon as indexing drops the publication lock;
+  # acquiring here protects both that interval and the exact-ref reopen below.
+  DEPENDENCY_GENERATION_TOKEN="$(
+    dependency_generation_selector_token "$DEPENDENCY_GENERATION_PATH"
+  )" || return 1
+  dependency_generation_acquire_selector_lease "$generation_root" "$DEPENDENCY_GENERATION_ID" \
+    "${lease_owner_pid:-$$}" "$DEPENDENCY_GENERATION_TOKEN" || return $?
   if [ "$DEPENDENCY_GENERATION_SCOPE_MODE" = 'full' ]; then
     # Index under the PRE-build inputs, and never abort on live lockfile drift.
     #
@@ -4562,23 +4570,23 @@ dependency_generation_main() {
     # The drift is still worth recording, and for --ensure-ref the re-open by
     # the exact candidate key below remains the arbiter of whether this
     # generation actually fits the candidate — a typed miss, not a fatal.
-    input_after="$(dependency_generation_input_fingerprint "$build_root")" || return 1
+    input_after="$(dependency_generation_input_fingerprint "$build_root")" || {
+      dependency_generation_release_selector_lease
+      return 1
+    }
     if [ "$input_after" != "$input_before" ]; then
       dependency_generation_log \
         "live dependency inputs changed during generation prewarm (before=$input_before after=$input_after); indexing under the pre-build inputs the copied trees reflect"
     fi
     dependency_generation_publish_input_selector \
-      "$generation_root" "$input_before" || return $?
+      "$generation_root" "$input_before" || {
+      retention_rc=$?
+      dependency_generation_release_selector_lease
+      return "$retention_rc"
+    }
   else
-    DEPENDENCY_GENERATION_TOKEN="$(
-      dependency_generation_selector_token "$DEPENDENCY_GENERATION_PATH"
-    )" || return 1
     DEPENDENCY_GENERATION_INPUT_FINGERPRINT='unindexed'
   fi
-  # Protect the just-published/reused identity even when several generations
-  # share the same second-level `created` timestamp and retention ordering ties.
-  dependency_generation_acquire_selector_lease "$generation_root" "$DEPENDENCY_GENERATION_ID" \
-    "${lease_owner_pid:-$$}" "$DEPENDENCY_GENERATION_TOKEN" || return $?
   dependency_generation_apply_retention "$generation_root" "$integration_root" || {
     retention_rc=$?
     dependency_generation_release_selector_lease

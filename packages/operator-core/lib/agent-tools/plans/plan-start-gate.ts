@@ -61,7 +61,7 @@ export const PLAN_START_GATE_ENTRYPOINTS = [
  *  re-derive anything: what is missing, why, and what to do about it. */
 export interface PlanStartRefusal {
   error: 'plan_inputs_not_ready';
-  code: Exclude<PlanStartReadiness, { ready: true }>['code'] | 'acceptance_bar_contract_not_ready' | 'initial_change_scope_missing';
+  code: Exclude<PlanStartReadiness, { ready: true }>['code'] | 'acceptance_bar_contract_not_ready' | 'initial_change_scope_missing' | 'discovery_not_ready';
   slug: string;
   /** Declared-required fields that were not supplied. */
   missing: string[];
@@ -128,6 +128,15 @@ export async function checkPlanStartable(
   if (!row) return { ok: true, row: null, inputs: overrides ?? null };
   const verdict = startVerdictForRow(row, slug, overrides);
   if (!verdict.ok) return verdict;
+  const { withCurrentDiscovery } = await import('../../plan-audits');
+  const discovery = await withCurrentDiscovery({ workspaceId: row.workspaceId, harnessSlug: row.harnessSlug,
+    planSlug: slug, createdBy: 'system:plan-start' }, async () => undefined);
+  if (!discovery.ok) return { ok: false, kind: 'inputs', row, refusal: {
+    error: 'plan_inputs_not_ready', code: 'discovery_not_ready', slug, missing: [],
+    issues: [discovery.error], source: 'plan-discovery',
+    hint: 'nextAction' in discovery && discovery.nextAction ? discovery.nextAction
+      : 'Finalize current discovery with plans:audit { phase:"discovery", slug } before implementation starts.',
+  } };
   // Authoring remains incremental; running plans are not sent back through initial scoping.
   if (door === 'start' && (row.status === 'draft' || row.status === 'ready')) {
     const needsScope = initialChangeScopeProblems({ content: row.content,

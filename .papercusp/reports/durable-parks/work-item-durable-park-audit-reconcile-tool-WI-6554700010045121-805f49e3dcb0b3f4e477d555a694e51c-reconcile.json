@@ -1,0 +1,25 @@
+{
+  "schemaVersion": "durable-park-reconcile-v1",
+  "runId": "work-item-durable-park-audit:reconcile:tool:WI-6554700010045121:805f49e3dcb0b3f4e477d555a694e51c",
+  "inputSha256": "805f49e3dcb0b3f4e477d555a694e51c69457063577eb36f1ae4eafda6e80c6b",
+  "workspaceId": "papercusp-workspace",
+  "harnessSlug": "papercusp",
+  "generatedAt": "2026-11-06T06:41:28.682Z",
+  "actor": "su-d990b197-6745-4723-abd6-977d9686780c",
+  "requested": 1,
+  "cleared": 1,
+  "unchanged": 0,
+  "rows": [
+    {
+      "id": "WI-6554700010045121",
+      "outcome": "cleared",
+      "expectedParkFingerprint": "a91b8059d8cbea84f774f88a0cde21122ac2f5575ad9cd06673c6af37e575f96",
+      "observedParkFingerprint": "a91b8059d8cbea84f774f88a0cde21122ac2f5575ad9cd06673c6af37e575f96",
+      "reasonCode": "operator-directed",
+      "evidence": "Avi explicitly authorized AUTO SELF cell-identity-context-delta-integration-2026-11-02 through verified shipment (full owner fact mode-instructions:auto read2026-11-06T06:34Z). Temporary P008 custody WI-6554700010030915 claimed and scoped checkpoint saved; D011/D016/D017 and prior audited scoped adoption receipts1214865 read. Only this canonical P001 conversion park; legacy WI-6554700010045060 already accepted committed with ordinary audits passed and independent relations76531/76536. Preserve other holds/leases, IDs/DAG/BARs; global P008 remains open/unverified. No force/global migration.",
+      "preservedLease": false,
+      "takenBy": null
+    }
+  ],
+  "artifactPath": "reports/durable-parks/work-item-durable-park-audit-reconcile-tool-WI-6554700010045121-805f49e3dcb0b3f4e477d555a694e51c-reconcile.json"
+}

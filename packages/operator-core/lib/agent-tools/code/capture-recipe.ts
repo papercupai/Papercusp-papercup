@@ -26,6 +26,7 @@ import {
   findActiveRecipeByStructuralFingerprint,
   isLowValueRecipe,
   type CodeRecipeRow,
+  type RecipeRunEvidence,
 } from '../../code-recipes-store';
 import type { NormalizedExecutionTrace } from '../../orchestration-trace';
 import type { CapabilityManifestV1, RecipeBindingSchemaV1 } from '../../recipe-contract';
@@ -185,6 +186,7 @@ export interface CaptureRecipeInput {
   role: string | null;
   /** Server-derived choice provenance; an absent receipt stays unknown. */
   choice?: 'agent' | 'hook' | 'system' | 'unknown';
+  runEvidence?: RecipeRunEvidence;
   /** Agent-supplied title/description (optional — derived when absent). */
   title?: string;
   description?: string;
@@ -398,6 +400,7 @@ export async function captureRecipe(
       success: true,
       reused: target.disposition !== 'created',
       executionTrace: input.executionTrace,
+      runEvidence: input.runEvidence,
       usage: { version: 1, selection: target.disposition === 'created' ? 'authored' : 'automatic-match',
         choice: input.choice ?? 'unknown', mode: 'commit', outcome: 'success', settled: true },
     });

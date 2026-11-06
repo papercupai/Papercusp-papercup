@@ -46,6 +46,9 @@ function fixture(evaluatorBuild = { sha: 'exact123456', version: '1.2.3' }) {
     now: () => 1000000, currentSource: () => source, freePort: async () => 45187,
     recoverSource: (workspaceId, build, now) => recoverGradingAuditRuntimeSource(root, workspaceId, build, now),
     list: async (_ws, label) => rows.filter(row => String(row.detail.label).startsWith(label)),
+    // A custom spawn stub models a successfully registered running task without
+    // necessarily adding a TaskRow; tests that exercise termination mutate a row.
+    taskState: async taskId => rows.find(row => row.taskId === taskId)?.state ?? 'running',
     mutex: async (_ws, _key, fn) => {
       const previous = tail;
       let unlock!: () => void;
@@ -65,9 +68,16 @@ function fixture(evaluatorBuild = { sha: 'exact123456', version: '1.2.3' }) {
       (rows.find(row => row.taskId === id)!.detail.gradingAuditRuntime as GradingAuditRuntimeLocator).issueIds = ids;
       (rows.find(row => row.taskId === id)!.detail.gradingAuditRuntime as GradingAuditRuntimeLocator).acceptanceRefs = acceptanceRefs;
     }),
-    probe: vi.fn(async () => evaluatorBuild), stop, sleep: async () => {},
+    probe: vi.fn(async () => evaluatorBuild), stop, sleep: vi.fn(async () => {}),
   };
   return { root, rows, source, deps, stop, input: { workspaceId: 'ws', issueId: 'EI-a', evaluatorBuild } };
+}
+
+function setReadinessDeadline(f: ReturnType<typeof fixture>, budgetMs = 30_000): number {
+  let elapsedMs = 0;
+  f.deps.now = () => 1_000_000 + elapsedMs;
+  f.deps.sleep = vi.fn(async (ms: number) => { elapsedMs += ms; });
+  return 1_000_000 + budgetMs;
 }
 
 async function rebuiltFixture() {
@@ -421,12 +431,14 @@ describe('exact grading audit runtime lifecycle (EI-25971079852455067)', () => {
       failure: { reason: 'fetch-error' } },
   ])('retains exact task diagnostics for $label and reuses the task once ready', async ({ response, failure }) => {
     const f = fixture();
+    const deadlineAtMs = setReadinessDeadline(f);
     const runtime = await ensureGradingAuditRuntime(f.input, f.deps);
     f.rows[0].logPath = join(f.root, 'recorded-runtime.log');
     delete f.deps.probe;
     const fetchHealth = vi.spyOn(globalThis, 'fetch').mockImplementation(response);
-    const error = await ensureGradingAuditRuntime({ ...f.input, issueId: 'EI-b', acceptanceRef: 'WI-source' }, f.deps)
+    const error = await ensureGradingAuditRuntime({ ...f.input, issueId: 'EI-b', acceptanceRef: 'WI-source', deadlineAtMs }, f.deps)
       .catch(error => error);
+    const recoverable = ['connection-error', 'timeout'].includes(String(failure.reason)) || failure.httpStatus === 503;
     expect(error).toBeInstanceOf(GradingAuditRuntimeReadinessError);
     expect(error.diagnostic).toEqual({
       taskId: runtime.taskId, locator: { ...f.source, baseUrl: runtime.baseUrl, expiresAtSec: runtime.expiresAtSec,
@@ -436,6 +448,7 @@ describe('exact grading audit runtime lifecycle (EI-25971079852455067)', () => {
       readiness: { method: 'GET', url: runtime.baseUrl + '/api/health', timeoutMs: 2000 },
       taskRead: { tool: 'processes:list', args: { taskId: runtime.taskId } },
       recovery: { tool: 'scorecards:repair', args: { targetIds: ['EI-b'] } },
+      stopReason: recoverable ? 'caller-deadline' : 'probe-not-recoverable',
     });
     expect(f.stop).not.toHaveBeenCalled();
     expect(f.deps.spawn).toHaveBeenCalledTimes(1);
@@ -447,10 +460,11 @@ describe('exact grading audit runtime lifecycle (EI-25971079852455067)', () => {
 
   it('retains a newly enrolled warming runtime after the readiness window and reuses it once ready', async () => {
     const f = fixture();
+    const deadlineAtMs = setReadinessDeadline(f);
     f.deps.probe = vi.fn().mockResolvedValue(null);
-    const error = await ensureGradingAuditRuntime(f.input, f.deps).catch(error => error);
+    const error = await ensureGradingAuditRuntime({ ...f.input, deadlineAtMs }, f.deps).catch(error => error);
     expect(error).toBeInstanceOf(GradingAuditRuntimeReadinessError);
-    expect(error.diagnostic).toMatchObject({ taskId: 'runtime-0', logPath: null, attempts: 30,
+    expect(error.diagnostic).toMatchObject({ taskId: 'runtime-0', logPath: null, attempts: 30, stopReason: 'caller-deadline',
       lastProbe: { status: 'unready', reason: 'unknown' },
       locator: { ...f.source, baseUrl: 'http://127.0.0.1:45187', issueIds: ['EI-a'] } });
     expect(f.stop).not.toHaveBeenCalled();
@@ -463,12 +477,63 @@ describe('exact grading audit runtime lifecycle (EI-25971079852455067)', () => {
     expect((f.rows[0].detail.gradingAuditRuntime as GradingAuditRuntimeLocator).issueIds).toEqual(['EI-a', 'EI-b']);
   });
 
+  it('continues exact readiness probing after more than 30 refusals while the task remains live', async () => {
+    const f = fixture();
+    const deadlineAtMs = setReadinessDeadline(f, 60_000);
+    let probes = 0;
+    f.deps.probe = vi.fn(async () => ++probes <= 35
+      ? { status: 'unready', reason: 'connection-error', errorCode: 'ECONNREFUSED' }
+      : { status: 'ready', build: f.input.evaluatorBuild });
+
+    const runtime = await ensureGradingAuditRuntime({ ...f.input, deadlineAtMs }, f.deps);
+
+    expect(runtime.taskId).toBe('runtime-0');
+    expect(probes).toBe(36);
+    expect(f.deps.sleep).toHaveBeenCalledTimes(35);
+    expect(f.rows[0]?.state).toBe('running');
+    expect(f.deps.spawn).toHaveBeenCalledTimes(1);
+  });
+
+  it('stops readiness retries when the task ledger reports the runtime ended', async () => {
+    const f = fixture();
+    let probes = 0;
+    f.deps.probe = vi.fn(async () => {
+      probes += 1;
+      if (probes === 2) f.rows[0]!.state = 'exited';
+      return { status: 'unready', reason: 'connection-error', errorCode: 'ECONNREFUSED' };
+    });
+
+    const error = await ensureGradingAuditRuntime(f.input, f.deps).catch(error => error);
+
+    expect(error).toBeInstanceOf(GradingAuditRuntimeReadinessError);
+    expect(error.diagnostic).toMatchObject({ attempts: 2, stopReason: 'task-not-live', taskState: 'exited' });
+    expect(probes).toBe(2);
+    expect(f.deps.sleep).toHaveBeenCalledTimes(1);
+  });
+
+  it('stops readiness retries when the caller aborts', async () => {
+    const f = fixture();
+    const controller = new AbortController();
+    f.deps.probe = vi.fn(async () => {
+      controller.abort();
+      return { status: 'unready', reason: 'connection-error', errorCode: 'ECONNREFUSED' };
+    });
+
+    const error = await ensureGradingAuditRuntime({ ...f.input, signal: controller.signal }, f.deps).catch(error => error);
+
+    expect(error).toBeInstanceOf(GradingAuditRuntimeReadinessError);
+    expect(error.diagnostic).toMatchObject({ attempts: 1, stopReason: 'caller-aborted' });
+    expect(f.deps.probe).toHaveBeenCalledTimes(1);
+    expect(f.deps.sleep).not.toHaveBeenCalled();
+  });
+
   it('retains the last measured probe reason after the bounded startup window', async () => {
     const f = fixture();
+    const deadlineAtMs = setReadinessDeadline(f);
     f.deps.probe = vi.fn().mockResolvedValueOnce({ status: 'unready', reason: 'connection-error', errorCode: 'ECONNREFUSED' })
       .mockResolvedValue({ status: 'unready', reason: 'http-error', httpStatus: 503 });
-    const error = await ensureGradingAuditRuntime(f.input, f.deps).catch(error => error);
-    expect(error.diagnostic).toMatchObject({ attempts: 30,
+    const error = await ensureGradingAuditRuntime({ ...f.input, deadlineAtMs }, f.deps).catch(error => error);
+    expect(error.diagnostic).toMatchObject({ attempts: 30, stopReason: 'caller-deadline',
       lastProbe: { status: 'unready', reason: 'http-error', httpStatus: 503 } });
     expect(f.stop).not.toHaveBeenCalled();
     expect(f.deps.probe).toHaveBeenCalledTimes(30);

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
-import postgres from 'postgres';
+import postgres, { type Sql } from 'postgres';
 import { buildConnectionOptions } from '@papercusp/db-org';
 import { createFreshTestDb } from '@papercusp/test-config/pg';
 import { managedSpawn } from '../task-manager/managed-spawn';
@@ -8,7 +8,10 @@ import { killScopeUnit } from '../task-manager/control';
 import { newTaskId, scopeUnitForTask } from '../task-manager/types';
 import { userManagerBusReachable } from '../systemd-scope';
 import { runQualificationCommand, type QualificationCommandOptions } from './checkpoint-qualification-command';
-import type { recordStoredQualificationChildScope } from './checkpoint-qualification-transaction';
+import { beginQualificationTransaction, checkpointPidIdentity, observeQualificationProgress,
+  probeRunnerLiveness, parseCheckpointQualificationTransaction, QUALIFICATION_PROGRESS_STALE_MS, type CheckpointQualificationTransaction,
+  type recordStoredQualificationChildScope } from './checkpoint-qualification-transaction';
+import { sweepLostGateRuns } from './lost-gate-run-alarm';
 
 // Persistence is a fixture; worker processes, PostgreSQL lock waits, cgroups,
 // command timers and death-aware scope cleanup execute their real paths.
@@ -24,7 +27,7 @@ function running(pid: number) {
 }
 
 describe.runIf(process.platform === 'linux' && userManagerBusReachable())('qualification independent stalled-process bounds', () => {
-  it.each(['chatty', 'database-lock'] as const)('bounds %s while a healthy peer completes', async mode => {
+  it.each(['chatty', 'database-lock', 'blocked-controller'] as const)('bounds %s while a healthy peer completes', async mode => {
     const database = mode === 'database-lock' ? await createFreshTestDb({ prefix: 'qualification_stall' }) : undefined;
     const sql = database ? postgres(database.url, { max: 1, onnotice: () => {} }) : undefined;
     const stalledId = newTaskId(), healthyId = newTaskId(), units = [stalledId, healthyId].map(id => scopeUnitForTask(id));
@@ -70,6 +73,10 @@ describe.runIf(process.platform === 'linux' && userManagerBusReachable())('quali
           await client.unsafe('SELECT pg_advisory_lock(42)');
           process.exit(99);
         })().catch(error => { console.error('guarded worker failed', error.code ?? error.name); process.exit(98); });
+      ` : mode === 'blocked-controller' ? `
+        console.log(JSON.stringify({ pid: process.pid }));
+        // Its controller event loop cannot send another heartbeat or inspect children.
+        while (true) {}
       ` : `
         console.log(JSON.stringify({ pid: process.pid }));
         setInterval(() => console.log('heartbeat without completed work'), 40);
@@ -108,8 +115,38 @@ describe.runIf(process.platform === 'linux' && userManagerBusReachable())('quali
       expect(healthy).toMatchObject({ code: 0, signal: null });
       expect(healthy.stdout).toContain('completed healthy work');
       expect(running(workerPid)).toBe(true);
+      if (mode === 'blocked-controller') {
+        const heartbeatAtMs = spawnedAt;
+        const fixture = beginQualificationTransaction(null, { attemptId: 'blocked-attempt',
+          candidate: 'blocked-candidate', nowMs: heartbeatAtMs }).transaction;
+        let tx: CheckpointQualificationTransaction = { ...fixture, phase: 'running', runId: 'blocked-run',
+          currentPhysicalRunner: { id: 'blocked-runner', candidate: 'blocked-candidate', reservedAtMs: spawnedAt,
+            unit: units[0], childScopeUnits: [units[0]!], childScopeReservedAtMs: spawnedAt,
+            pid: workerPid, pidIdentity: checkpointPidIdentity(workerPid),
+            phase: 'suite', phaseEnteredAtMs: spawnedAt, heartbeatAtMs, evidenceRefs: [] } };
+        expect(parseCheckpointQualificationTransaction(tx), 'blocked controller fixture must pass the stored schema').not.toBeNull();
+        const sqlFixture = (async () => [{ install_slug: 'blocked-install', workspace_id: 'blocked-workspace',
+          marker: null, alarmed_key: null, progress_alarmed_key: null, qualification: tx }]) as unknown as Sql;
+        const broadcast = vi.fn(async (_event: { conditionKey?: string }) => true);
+        // Only the elapsed business clock is injected; the blocked OS process,
+        // independent scope probe and external sweep execute on real event loops.
+        await sweepLostGateRuns(sqlFixture, { nowMs: heartbeatAtMs + QUALIFICATION_PROGRESS_STALE_MS + 1,
+          monotonicAtMs: 1000, observerGeneration: 'external-observer', observerSequence: 1,
+          probeQualificationRunner: runner => probeRunnerLiveness(runner),
+          recordProgressObservation: async (target, sample) => {
+            const result = observeQualificationProgress(tx, target, sample);
+            tx = result.transaction;
+            return result;
+          },
+          claim: async () => true, readHolder: async () => null, hostFleetSlug: null,
+          broadcast, notifyOwner: async () => {}, attention: { resolve: async () => true } });
+        expect(tx.progressObservation).toMatchObject({ health: 'baseline', controller: 'silent', semantic: 'unknown' });
+        expect(broadcast).toHaveBeenCalledOnce();
+        expect(broadcast.mock.calls[0]?.[0]).toMatchObject({ conditionKey: 'green-checkpoint-run-progress:blocked-install' });
+        expect(running(workerPid)).toBe(true); // observation did not stop or release the worker
+      }
       expect(await outcome).toMatchObject({ message: 'qualification-worker-hard-timeout' });
-      expect(messages).toBeGreaterThan(2);
+      if (mode !== 'blocked-controller') expect(messages).toBeGreaterThan(2);
       expect(releasedAt - spawnedAt).toBeGreaterThanOrEqual(3900);
       expect(releasedAt - spawnedAt).toBeLessThan(6000);
       expect(running(workerPid)).toBe(false);

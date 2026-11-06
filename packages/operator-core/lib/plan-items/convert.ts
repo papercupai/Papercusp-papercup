@@ -742,8 +742,8 @@ export async function convertPlanItem(opts: ConvertPlanItemOpts): Promise<Conver
   // coord:declare-intent's auto-convert, plans:set-status' claim conversion), so this is
   // the one place that stops new work starting on a draft plan with no activation audit.
   // Resuming an item that an open work-item already covers still passes. Runs before
-  // the lease, so a refusal leaves nothing behind. A lookup failure fails OPEN
-  // (logged): the plan's own activation stays fail-closed in with-plan-lock.ts.
+  // the lease, so a refusal leaves nothing behind. A lookup failure fails CLOSED:
+  // an unavailable discovery verdict cannot authorize a new implementation start.
   try {
     const { checkDraftItemStartGateLive } = await import('../agent-tools/plans/draft-item-start-gate');
     const refusal = await checkDraftItemStartGateLive({
@@ -758,9 +758,11 @@ export async function convertPlanItem(opts: ConvertPlanItemOpts): Promise<Conver
     if (refusal) return { status: 'refused', reason: refusal.hint, code: refusal.error };
   } catch (error) {
     console.warn(
-      `[plan-items/convert] draft item-start gate skipped for ${opts.planSlug}#${opts.itemId}: ` +
+      `[plan-items/convert] item-start gate unavailable for ${opts.planSlug}#${opts.itemId}: ` +
         (error instanceof Error ? error.message : String(error)),
     );
+    return { status: 'refused', code: 'discovery_not_ready',
+      reason: 'Current discovery could not be verified. Retry the item start after the discovery authority is available.' };
   }
 
   // ── 1. Policy + lease FIRST (assignment / work-group / mutual exclusion) ──

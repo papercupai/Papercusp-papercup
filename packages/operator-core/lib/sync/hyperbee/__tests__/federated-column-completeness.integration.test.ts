@@ -168,6 +168,8 @@ const NOT_FEDERATED: Record<string, Record<string, string>> = {
     // Append-only ledger; every content column federates. (Empty.)
   },
   harness_plans: {
+    execution_start_revision_seq: 'machine-local canonical successful-start receipt; migration 1613 excludes it from federation clocks',
+    execution_start_invalidation: 'machine-local invalidation provenance; migration 1620 records reasons and masks federation clocks without backfilling authority',
     verification_profile: 'machine-local execution/verification policy; explicitly excluded from federation clocks by migration 1537',
     verification_profile_source: 'provenance of the local verification profile; migration 1537 masks profile-only writes',
     // harness_plans federates the canonical markdown `content` + content_hash +

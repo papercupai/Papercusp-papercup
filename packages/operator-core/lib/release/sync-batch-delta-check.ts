@@ -1025,24 +1025,23 @@ export function recordCoverageOpportunities(
   }
 
   const cutoff = observedUntilMs - COVERAGE_RETENTION_MS;
-  const missedBetweenInvocations = Math.max(0, Math.round((tick.atMs - lastAtMs) / intervalMs) - 1);
-  const missedDuringInvocation = Math.max(0, Math.ceil((observedUntilMs - tick.atMs) / intervalMs) - 1);
   const missed: CoverageTick[] = [];
-  const appendMissed = (originMs: number, count: number): void => {
-    const firstIndex = Math.max(
-      1,
-      count - COVERAGE_MAX_TICKS + 1,
-      Math.ceil((cutoff - originMs) / intervalMs),
+  // Schedule opportunities use epoch-aligned buckets, as the acceptance reader does.
+  // Rounding elapsed time loses a bucket when invocation timestamps drift across its edges.
+  const appendMissed = (firstSlot: number, endSlot: number): void => {
+    const first = Math.max(
+      firstSlot,
+      endSlot - COVERAGE_MAX_TICKS,
+      Math.ceil(cutoff / intervalMs),
     );
-    for (let index = firstIndex; index <= count; index += 1) {
-      const atMs = originMs + index * intervalMs;
-      if (atMs >= cutoff && atMs < observedUntilMs) {
-        missed.push({ atMs, evaluated: false, status: 'missed-opportunity' });
-      }
+    for (let slot = first; slot < endSlot; slot += 1) {
+      missed.push({ atMs: slot * intervalMs, evaluated: false, status: 'missed-opportunity' });
     }
   };
-  appendMissed(lastAtMs, missedBetweenInvocations);
-  appendMissed(tick.atMs, missedDuringInvocation);
+  const invocationSlot = Math.floor(tick.atMs / intervalMs);
+  appendMissed(Math.floor(lastAtMs / intervalMs) + 1, invocationSlot);
+  // A boundary exactly at completion has not yet been observed as missed.
+  appendMissed(invocationSlot + 1, Math.ceil(observedUntilMs / intervalMs));
 
   const base = prior ?? { ticks: [] };
   return [...missed, tick]

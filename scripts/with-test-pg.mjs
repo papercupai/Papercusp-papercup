@@ -352,11 +352,11 @@ function persistIsolatedProgress(record) {
   }
 }
 function cleanupStage(stage, detail = {}) {
-  // Cleanup is operational evidence for every isolated CLI. The proof flag
-  // gates original-worker admission and detailed /proc sampling, not whether
-  // a caller can distinguish a finished child from a still-stopping database.
-  if (!isolatedRuntime) return;
+  // Every invocation owns a private PG, including the ordinary test router.
+  // Keep its stop/removal receipts too; only proof IPC and detailed /proc
+  // sampling require the isolated-runtime flags.
   const message = { kind: 'isolated-runtime-cleanup', stage,
+    observedAtMs: Date.now(),
     elapsedMs: Date.now() - cleanupStartedAt,
     supervisorPid: process.pid, workspace: runtimeId, runtimeRoot, dataDir, pgPort: port, ...detail };
   persistIsolatedProgress({ kind: 'cleanup', stage, elapsedMs: message.elapsedMs,
@@ -747,6 +747,10 @@ if (isolatedRuntime) {
     // Verifier ownership identifies the enclosing managed task, not the private
     // product identity. Its receipt must survive runtime isolation for cleanup.
     'PAPERCUSP_CAPABILITY_BASH_BACKGROUND_TASK_ID',
+    // The enclosing test door admitted this run before product DB/identity
+    // isolation. Its decision is execution provenance, not a product endpoint.
+    // Dropping it repeats shared-tree policy against the private product DB.
+    'PAPERCUSP_RESTRICTED_HOLD_PREFLIGHT',
     // Optional receipts from the existing committed-source loader are evidence,
     // not an operator identity or endpoint. Retain them in the profile child.
     'PAPERCUSP_COMMITTED_SOURCE_AUDIT', 'PAPERCUSP_COMMITTED_SOURCE_NOTICES',

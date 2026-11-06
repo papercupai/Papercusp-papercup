@@ -2,7 +2,7 @@ import { defineVitestConfig } from '@papercusp/test-config/vitest-config';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { tsImport } from 'tsx/esm/api';
-import { prepareRuntimeReader } from './vitest.e2e.config.ts';
+import { prepareRuntimeReader, waitForRuntimeWitness } from './vitest.e2e.config.ts';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 // Reuse the live profile's selected runtime for integration evidence as well.
@@ -13,7 +13,10 @@ const profileRuntimeReader = await prepareRuntimeReader();
 const recoveryProfile = process.env.PAPERCUSP_APP_OPERATION_LIVE_PROFILE;
 const recoveryRuntime = recoveryProfile === 'packages/operator-core/test/fixtures/session-recovery.live-profile.json'
   || recoveryProfile === 'packages/operator-core/test/fixtures/session-recovery-release.live-profile.json'
-  ? { url: process.env.PAPERCUSP_OPERATOR_URL ?? '', runtime: await profileRuntimeReader?.() ?? null }
+  ? {
+      url: process.env.PAPERCUSP_OPERATOR_URL ?? '',
+      runtime: await waitForRuntimeWitness(profileRuntimeReader!),
+    }
   : null;
 // Preload the existing host resolver before the reporter's bounded witness
 // read. Ordinary isolated integration suites do not open the live-host graph.

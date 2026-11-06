@@ -126,6 +126,7 @@ import {
   recordPlanAudit,
   repoCitationContextForHarness,
   resolvePlanItemHomeHarness,
+  type PlanAudit,
 } from '../../plan-audits';
 import { ensureActivationAuditRepairFiling } from './activation-audit-repair';
 import { getPlanRow } from './source';
@@ -165,6 +166,23 @@ const mockReuseResolvers = vi.mocked(defaultReuseReferenceResolvers);
 const mockAcceptanceRubrics = vi.mocked(getAcceptanceRubricsForPlan);
 const mockListScorecards = vi.mocked(listScorecards);
 
+function priorActivationAudit(activation: NonNullable<PlanAudit['activation']>): PlanAudit {
+  return {
+    planSlug: 'plan-a',
+    harnessSlug: 'papercusp',
+    auditSeq: 7,
+    createdBy: 'su-auditor',
+    createdAt: '2026-06-01T00:00:00.000Z',
+    auditKind: 'activation',
+    auditedSha: null,
+    activation,
+    auditedPlanRevision: null,
+    items: [],
+    findings: [],
+    summary: null,
+  };
+}
+
 const ctx = {
   log: vi.fn(),
   signal: new AbortController().signal,
@@ -187,11 +205,13 @@ describe('non-activating discovery finalization', () => {
   it('requires only slug and phase; derives readiness without activation or completion side effects', async () => {
     vi.clearAllMocks();
     mockRecordDiscovery.mockResolvedValue({ ok: true, preview: true, dryRun: true,
-      discovery: { readiness: { ready: false, state: 'blocked', nextAction: 'Answer Q-1' } },
+      discovery: { readiness: { ready: false, state: 'blocked', evidenceRefs: ['source:cache.ts'], nextAction: 'Answer Q-1' } },
       auditedPlanRevision: { id: 12, seq: 3, contentHash: 'a'.repeat(64) } } as never);
     const args = tool.args.parse({ harness: 'papercusp', slug: 'draft', phase: 'discovery', dryRun: true });
     const reply = await tool.handler(args, ctx);
     expect('data' in reply && reply.data).toMatchObject({ phase: 'discovery', readiness: { ready: false }, dryRun: true });
+    expect('data' in reply && reply.data).toMatchObject({ workflow: { stage: 'discovery',
+      label: 'Provisional discovery brief', evidenceRefs: ['source:cache.ts'], nextAction: 'Answer Q-1' } });
     expect(mockRecordDiscovery).toHaveBeenCalledWith(expect.objectContaining({ planSlug: 'draft', dryRun: true }));
     expect(mockRecordActivation).not.toHaveBeenCalled();
     expect(mockRecord).not.toHaveBeenCalled();
@@ -200,6 +220,20 @@ describe('non-activating discovery finalization', () => {
     for (const field of ['summary', 'items', 'findings', 'mappings', 'classRef']) {
       expect(tool.args.safeParse({ slug: 'draft', phase: 'discovery', [field]: field === 'summary' ? 'copied status' : [] }).success).toBe(false);
     }
+  });
+
+  it.each([false, true])('an existing session receives the current stage; finalized=%s', async finalized => {
+    mockRecordDiscovery.mockResolvedValueOnce({ ok: true,
+      discovery: { readiness: { ready: true, state: 'ready', evidenceRefs: ['source:cache.ts'],
+        nextAction: 'Finalize discovery with plans:audit phase=discovery before implementation review.' } },
+      ...(finalized ? { audit: { auditSeq: 14 } } : { dryRun: true, preview: true }) } as never);
+    const reply = await tool.handler(tool.args.parse({ harness: 'papercusp', slug: 'draft', phase: 'discovery', dryRun: !finalized }), ctx);
+    expect('data' in reply && reply.data).toMatchObject({ workflow: {
+      stage: finalized ? 'implementation-review' : 'discovery', evidenceRefs: ['source:cache.ts'],
+      nextAction: finalized ? expect.stringContaining('original intent and its full BARs') : expect.stringContaining('Finalize discovery'),
+    } });
+    for (const effect of [mockRecordActivation, mockRecord, mockSetSpecClause, mockEmitPlanEvent])
+      expect(effect).not.toHaveBeenCalled();
   });
 });
 
@@ -1200,9 +1234,7 @@ describe('plans:audit phase:activation', () => {
   });
 
   it('carries prior coverage when a re-audit has no new source ranges or mappings', async () => {
-    mockPreviousActivation.mockResolvedValue({
-      auditSeq: 7,
-      activation: {
+    mockPreviousActivation.mockResolvedValue(priorActivationAudit({
         sourceRanges: [{ sourceKind: 'codex', sessionId: 'prior-session', fromTurn: 1, toTurn: 9 }],
         mappings: [{
           id: 'M-001',
@@ -1214,8 +1246,7 @@ describe('plans:audit phase:activation', () => {
         repairedOmissions: ['prior repair'],
         rejectedOrSuperseded: [],
         unresolvedBlockers: [],
-      },
-    } as never);
+    }));
     mockResolveSourceRefs.mockImplementation(async (_sql, _workspaceId, refs) =>
       refs.map((ref) => ({ ref, ok: true as const, source: 'index' as const })),
     );
@@ -1867,9 +1898,7 @@ describe('plans:audit phase:activation', () => {
   });
 
   it('carries prior activation mappings and source ranges into a partial additive re-audit', async () => {
-    mockPreviousActivation.mockResolvedValue({
-      auditSeq: 7,
-      activation: {
+    mockPreviousActivation.mockResolvedValue(priorActivationAudit({
         sourceRanges: [{ sourceKind: 'codex', sessionId: 'prior-session', fromTurn: 1, toTurn: 9 }],
         mappings: [{
           id: 'M-001',
@@ -1881,8 +1910,7 @@ describe('plans:audit phase:activation', () => {
         repairedOmissions: ['prior repair'],
         rejectedOrSuperseded: [],
         unresolvedBlockers: [],
-      },
-    } as never);
+    }));
     mockResolveSourceRefs.mockImplementation(async (_sql, _workspaceId, refs) =>
       refs.map((ref) => ({ ref, ok: true as const, source: 'index' as const })),
     );
@@ -1920,9 +1948,7 @@ describe('plans:audit phase:activation', () => {
   });
 
   it('refuses reuse of a stable mapping id for a different requirement', async () => {
-    mockPreviousActivation.mockResolvedValue({
-      auditSeq: 7,
-      activation: {
+    mockPreviousActivation.mockResolvedValue(priorActivationAudit({
         sourceRanges: [{ sourceKind: 'codex', sessionId: 'session-full-id', fromTurn: 0, toTurn: 20 }],
         mappings: [{
           id: 'M-001',
@@ -1934,8 +1960,7 @@ describe('plans:audit phase:activation', () => {
         repairedOmissions: [],
         rejectedOrSuperseded: [],
         unresolvedBlockers: [],
-      },
-    } as never);
+    }));
 
     const result = ((await tool.handler(activationArgs({
       mappings: [{

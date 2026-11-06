@@ -23,6 +23,8 @@ pub struct PaneSpec {
     /// Close the pane when its command exits (`--close-on-exit`) — watch panes
     /// exit themselves when their agent leaves the roster; no EXITED husk.
     pub close_on_exit: bool,
+    /// Canonical launch record for the companion's exact pane binding.
+    pub adv_session_id: Option<i64>,
 }
 
 impl PaneSpec {
@@ -33,6 +35,7 @@ impl PaneSpec {
             cwd: None,
             stacked: false,
             close_on_exit: false,
+            adv_session_id: None,
         }
     }
     /// Open into the focused stack + auto-close on exit — the dock agent-stack
@@ -44,6 +47,10 @@ impl PaneSpec {
     }
     pub fn titled(mut self, title: impl Into<String>) -> Self {
         self.title = Some(title.into());
+        self
+    }
+    pub fn for_session(mut self, adv_session_id: i64) -> Self {
+        self.adv_session_id = (adv_session_id > 0).then_some(adv_session_id);
         self
     }
     /// Set the working directory the pane's command runs in (zellij `--cwd`).

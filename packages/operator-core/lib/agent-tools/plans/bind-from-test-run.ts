@@ -165,7 +165,7 @@ export const testRunBindingSchema = z
       .number()
       .int()
       .positive(),
-    evidenceKind: z.enum(['test', 'mutation', 'counterexample']).optional(),
+    evidenceKind: z.enum(['test', 'mutation', 'counterexample', 'coverage-census']).optional(),
     sourcePaths: repoFilesEvidenceMeasurementSchema.shape.sourcePaths
       .optional()
       .describe("Overrides imports + mutant subject."),
@@ -323,7 +323,7 @@ export interface DerivedTestRunBinding {
   specId?: string;
   sourceValId?: string;
   specRevision?: number;
-  evidenceKind: 'test' | 'mutation' | 'counterexample';
+  evidenceKind: 'test' | 'mutation' | 'counterexample' | 'coverage-census';
   evidenceRef: string;
   testRunId: number;
   measurement: {
@@ -757,7 +757,7 @@ function runFacts(row: TestRunEvidenceRow, kind: DerivedTestRunBinding['evidence
     Array.isArray(execution.failedCaseTitles) &&
     execution.failedCaseTitles.some((title) => typeof title === 'string' && title.length > 0);
   const outcome =
-    kind === 'test' || (kind === 'counterexample' && deriveKind(row) !== 'mutation')
+    kind === 'test' || ((kind === 'counterexample' || kind === 'coverage-census') && deriveKind(row) !== 'mutation')
       ? // A caller-declared counterexample over an ordinary test run is still a test execution.
         // Its green status does not mean a mutant survived; only a canonical mutant row carries
         // the caught/survived polarity below.

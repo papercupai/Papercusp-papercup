@@ -25,6 +25,39 @@ function deps(
 }
 
 describe('checkDraftItemStartGate (WI-10008137)', () => {
+  it.each(['draft', 'ready', 'active'])('refuses a new implementation start on %s before activation or open-cover bypass', async status => {
+    const d = deps(plan(status, { 'P-001': 'todo' }), audited, true);
+    const evaluateDiscovery = vi.fn(async () => ({ ok: false as const, error: 'discovery_not_ready', nextAction: 'Resolve Q-1.' }));
+    expect(await checkDraftItemStartGate({ slug: 's', itemId: 'P-001', toStatus: 'wip', ...d, evaluateDiscovery }))
+      .toMatchObject({ error: 'discovery_not_ready', hint: 'Resolve Q-1.' });
+    expect(d.evaluateGate).not.toHaveBeenCalled();
+    expect(d.hasCoveringWorkItem).not.toHaveBeenCalled();
+  });
+
+  it('admits reconciled discovery and leaves registered task work about the draft outside item-start authority', async () => {
+    const d = deps(plan('ready', { 'P-001': 'todo' }), audited);
+    const evaluateDiscovery = vi.fn(async () => ({ ok: true as const }));
+    expect(await checkDraftItemStartGate({ slug: 's', itemId: 'P-001', toStatus: 'wip', ...d, evaluateDiscovery })).toBeNull();
+    expect(evaluateDiscovery).toHaveBeenCalledOnce();
+    evaluateDiscovery.mockClear();
+    expect(await checkDraftItemStartGate({ slug: 's', itemId: 'P-001', toStatus: 'todo', ...d, evaluateDiscovery })).toBeNull();
+    expect(evaluateDiscovery).not.toHaveBeenCalled();
+  });
+
+  it('preserves already-started work and terminal reflection without reopening discovery', async () => {
+    const evaluateDiscovery = vi.fn(async () => ({ ok: false as const, error: 'discovery_not_ready' }));
+    for (const [status, terminalCovered] of [['wip', false], ['todo', true]] as const) {
+      const d = deps(plan('draft', { 'P-001': status }), unaudited, false, terminalCovered);
+      expect(await checkDraftItemStartGate({ slug: 's', itemId: 'P-001', toStatus: 'done', ...d, evaluateDiscovery })).toBeNull();
+    }
+    expect(evaluateDiscovery).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when current discovery cannot be measured', async () => {
+    const d = deps(plan('active', { 'P-001': 'todo' }), audited);
+    await expect(checkDraftItemStartGate({ slug: 's', itemId: 'P-001', toStatus: 'wip', ...d,
+      evaluateDiscovery: async () => { throw new Error('discovery read unavailable'); } })).rejects.toThrow('discovery read unavailable');
+  });
   it('refuses starting a todo item on an unaudited draft plan', async () => {
     for (const toStatus of ['wip', 'done']) {
       const d = deps(plan('draft', { 'P-001': 'todo' }), unaudited);

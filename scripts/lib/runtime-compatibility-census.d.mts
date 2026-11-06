@@ -9,13 +9,14 @@
  * are checked against pinned tree metadata BEFORE asking Git for blob bytes.
  * Unavailable/over-budget requested paths remain addressable in unresolved.
  * @param {{ runGit?: (root: string, args: string[], options?: any) => any,
- *   includePaths?: string[], maxBytes?: number, maxFiles?: number }} [options]
+ *   includePaths?: string[], maxBytes?: number, maxFiles?: number, maxInputBytes?: number }} [options]
  */
-export function readCommittedSources(root: string, revision?: string, { runGit, includePaths, maxBytes, maxFiles }?: {
+export function readCommittedSources(root: string, revision?: string, { runGit, includePaths, maxBytes, maxFiles, maxInputBytes, }?: {
     runGit?: (root: string, args: string[], options?: any) => any;
     includePaths?: string[];
     maxBytes?: number;
     maxFiles?: number;
+    maxInputBytes?: number;
 }): {
     sources: any[];
     repositories: any[];
@@ -24,6 +25,7 @@ export function readCommittedSources(root: string, revision?: string, { runGit, 
         paths: string[] | null;
         maxBytes: number | null;
         maxFiles: number | null;
+        maxInputBytes: number;
         bytesRead: number;
         filesRead: number;
         populationComplete: boolean;

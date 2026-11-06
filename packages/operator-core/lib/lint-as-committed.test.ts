@@ -1776,7 +1776,7 @@ describe('extracted-tree lifecycle (WI-10005705)', () => {
     }) => Promise<{ removed: { name: string; reason: string }[]; kept: { name: string; reason: string }[] }>;
     sweepStaleWorkRootsWithRetentionPins: (
       o: { root: string; nowMs: number; cwds: string[]; isAlive: (pid: number) => boolean },
-      pins: { dir: string; nowMs: number },
+      pins: { dir: string; nowMs: number; timeoutMs?: number },
     ) => Promise<{ removed: { name: string; reason: string }[]; kept: { name: string; reason: string }[] }>;
     WORK_ROOT_PREFIX: string;
     OWNER_MARKER: string;
@@ -1818,6 +1818,39 @@ describe('extracted-tree lifecycle (WI-10005705)', () => {
       expect(await mod.cleanupCommittedWorkRoot(source)).toBe(true);
       expect(existsSync(source)).toBe(false);
     } finally {
+      vi.unstubAllEnvs();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('defers optional sweep and exit cleanup while a pin writer stays active', async () => {
+    const { withFsMutex } = await import('../../../scripts/lib/fs-mutex.mjs');
+    const root = mkdtempSync(join(tmpdir(), 'lac-busy-retention-pin-'));
+    const warnings = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      vi.stubEnv('PAPERCUSP_FS_MUTEX_LOCK_DIR', join(root, 'locks'));
+      vi.stubEnv('PAPERCUSP_DISABLE_FS_MUTEX', '');
+      vi.stubEnv('PAPERCUSP_RELEASE_RETENTION_ROOT', join(root, 'leases'));
+      const source = join(root, `${WORK_ROOT_PREFIX}deferred`);
+      const nowMs = Date.now();
+      mkdirSync(join(source, '.git'), { recursive: true });
+      writeFileSync(join(source, OWNER_MARKER), JSON.stringify({
+        pid: 101, keep: false, createdAtMs: nowMs - MAX_AGE_MS - H,
+      }));
+      await withFsMutex('papercusp-disk-retention', async () => {
+        expect(await mod.cleanupCommittedWorkRoot(source, false, { timeoutMs: 50 })).toBe(false);
+        const swept = await sweepStaleWorkRootsWithRetentionPins(
+          { root, nowMs, cwds: [], isAlive: () => false },
+          { dir: join(root, 'leases'), nowMs, timeoutMs: 50 },
+        );
+        expect(swept).toEqual({ removed: [], kept: [], deferred: true });
+        expect(existsSync(source)).toBe(true);
+      });
+      expect(warnings).toHaveBeenCalledTimes(2);
+      expect(await mod.cleanupCommittedWorkRoot(source)).toBe(true);
+      expect(existsSync(source)).toBe(false);
+    } finally {
+      warnings.mockRestore();
       vi.unstubAllEnvs();
       rmSync(root, { recursive: true, force: true });
     }

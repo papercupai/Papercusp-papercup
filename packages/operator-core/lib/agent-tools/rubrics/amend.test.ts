@@ -1198,6 +1198,7 @@ describe('rubrics:amend routed review (P-006, RR-P-006-amend-opens-routed-review
   it('D-034: the actual handler and local relevance-router preserve the actionable review ahead of a large preview', async () => {
     const largePreview = {
       ...approvalRequired,
+      candidateValidation: { candidateHash: 'a'.repeat(64), generatedSpecCount: 1 },
       rubricRevision: 4,
       subjectPlanRevision: 9,
       approval: { ...approvalRequired.approval, subjectPlan: 'acceptance-subject' },
@@ -1369,6 +1370,23 @@ describe('rubrics:amend routed review (P-006, RR-P-006-amend-opens-routed-review
       expect.objectContaining({ previewPostRef: 'thread-post:77' }));
   });
 
+  it('keeps the new evidence boundary when reclaiming a retained re-review receipt', async () => {
+    rubricsMocks.previewAcceptanceBarAmendment.mockResolvedValue(approvalRequired);
+    reviewMocks.openAcceptanceBarAmendmentReview
+      .mockResolvedValueOnce({ state: 'no-eligible-reviewer', previewPostRef: 'thread-post:42',
+        freshReviewer: { state: 'launched', taskId: 'reviewer-old', ownerId: 'reviewer-1' } })
+      .mockResolvedValueOnce({ state: 'no-eligible-reviewer', previewPostRef: 'thread-post:42',
+        freshReviewer: { state: 'launched', taskId: 'reviewer-new', ownerId: 'reviewer-2' } });
+    reviewMocks.inspectFreshAmendmentReviewer.mockResolvedValue({ state: 'reclaimable', taskId: 'reviewer-old' });
+    const args = { ...patchArgs, reviewPreviewPost: 'thread-post:42', reviewEvidencePost: 'thread-post:50' };
+    await body(args);
+    const retried = await body(args);
+    expect(retried.review).toMatchObject({ freshReviewer: { taskId: 'reviewer-new' } });
+    expect(reviewMocks.inspectFreshAmendmentReviewer).toHaveBeenCalledWith(expect.objectContaining({
+      previewPostRef: 'thread-post:42', reviewEvidencePost: 'thread-post:50' }));
+    expect(workItemMocks.commentWorkItem).not.toHaveBeenCalled();
+  });
+
   it('a dry run that needs no approval carries no review', async () => {
     rubricsMocks.previewAcceptanceBarAmendment.mockResolvedValue({ ...approvalRequired, approvalRequired: false });
 
@@ -1445,6 +1463,63 @@ describe('rubrics:amend receipts (RSR-P-008-C)', () => {
     });
     return { promise, resolve, reject };
   };
+
+  it('reports current fresh-reviewer health without rewriting the retained launch receipt', async () => {
+    const idempotencyKey = 'reviewer-health-status';
+    const result = {
+      ok: true,
+      dryRun: true,
+      review: {
+        state: 'no-eligible-reviewer',
+        previewPostRef: 'thread-post:42',
+        reviewEvidencePost: 'thread-post:50',
+        freshReviewer: {
+          state: 'launched',
+          taskId: 'reviewer-1',
+          ownerId: 'reviewer-owner',
+          nativeRef: '/retained/reviewer-1.jsonl',
+        },
+      },
+    };
+    const key = 'ws-amend-test:acceptance-example:' + idempotencyKey;
+    const row = {
+      idempotency_key: idempotencyKey,
+      rubric_ref: 'acceptance-example',
+      state: 'previewed',
+      started_at: new Date(),
+      finished_at: new Date(),
+      result_json: result,
+      error: null,
+    };
+    receiptDb.rows.set(key, row);
+    reviewMocks.inspectFreshAmendmentReviewer.mockResolvedValue({
+      state: 'reclaimable',
+      taskId: 'reviewer-1',
+      taskState: 'running',
+      reason: 'provider-error',
+      evidence: 'gateway returned 429: all accounts throttled',
+    });
+
+    const status = await statusBody({ rubricRef: 'acceptance-example', idempotencyKey });
+
+    expect(status).toMatchObject({
+      state: 'previewed',
+      source: 'receipt',
+      freshReviewerHealth: {
+        state: 'reclaimable',
+        reason: 'provider-error',
+        evidence: 'gateway returned 429: all accounts throttled',
+      },
+      note: expect.stringContaining('same idempotency key and original arguments'),
+    });
+    expect(reviewMocks.inspectFreshAmendmentReviewer).toHaveBeenCalledWith({
+      workspaceId: 'ws-amend-test',
+      previewPostRef: 'thread-post:42',
+      reviewEvidencePost: 'thread-post:50',
+      reviewer: result.review.freshReviewer,
+    });
+    expect(row.result_json).toEqual(result);
+  });
 
   beforeEach(() => {
     receiptDb.rows.clear();

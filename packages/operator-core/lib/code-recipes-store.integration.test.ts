@@ -393,6 +393,25 @@ describe('code_recipes store (real PG)', () => {
     expect(after.hasEmbedding).toBe(true);
   });
 
+  it('P003-COSTS: keeps measured zero, missing units and invocation identity distinct without storing extra input', async () => {
+    const recipe = await upsertRecipe(db.adminSql, { id: 'p003-measured-run', potSlug: null,
+      title: 'Measured run', description: 'Raw units fixture', script: 'return 1;' });
+    const runEvidence = { version: 1 as const, invocationId: 'dispatch:recorded', attempt: 2, executed: true,
+      sourceBytes: 13, intermediateBytes: null, elapsedBeforeRecordMs: 0 };
+    await recordRecipeRun(db.adminSql, {
+      recipeId: recipe.id, workspaceId: 'ws-p003-costs', potSlug: null,
+      countTowardRecipe: false, runEvidence: { ...runEvidence, rawScript: 'must not persist' } as typeof runEvidence,
+    });
+    const rows = await db.adminSql`SELECT execution_trace FROM harness_shared.code_recipe_runs
+      WHERE workspace_id = 'ws-p003-costs'`;
+    expect(rows[0].execution_trace).toEqual({ runEvidence });
+    for (const intermediateBytes of [-1, NaN, Infinity]) {
+      await expect(recordRecipeRun(db.adminSql, { recipeId: recipe.id, workspaceId: 'ws-p003-costs',
+        potSlug: null, runEvidence: { ...runEvidence, intermediateBytes } })).rejects.toThrow('invalid_recipe_run_evidence');
+    }
+    expect(await db.adminSql`SELECT id FROM harness_shared.code_recipe_runs WHERE workspace_id = 'ws-p003-costs'`).toHaveLength(1);
+  });
+
   it('recordRecipeRun increments run_count/success_count/last_run_at + writes a run row', async () => {
     const ws = 'ws-cr-runs';
     await upsertRecipe(db.adminSql, {

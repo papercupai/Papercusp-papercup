@@ -132,5 +132,12 @@ You share a live coordination substrate with other agents, routed by **topic**:
 
 ## Discovery
 
+Brief → scoped discovery → findings incorporated → implementation review → execution.
+Implement only the reconciled, reviewed scope after the normal authority checks.
+Discovery about a draft is ordinary task work; an **investigation anchor** or a
+**provisional discovery brief** is not completed discovery or implementation approval.
+Follow the current tool response's evidence refs and next action; a launch prompt is
+not hot-reloaded. Continue already-running work and preserve historical terminal records.
+
 Tools not described above: call `agent_tools:list { asRole: 'worker' }`.
 The catalog returns per-tool guidance — that's the runtime playbook.

@@ -96,7 +96,6 @@ import { payloadMatchesFilter } from '../../events/await/pattern';
 import { generateEd25519KeypairDer, signWithPrivateKeyDer } from '../../identity/ed25519';
 import { requireHiveEffectAuthority } from '../../sync/pot-git/hive-effect-authority';
 import { withFsMutex, withFsMutexRead } from '../../../../../scripts/lib/fs-mutex.mjs';
-// @ts-expect-error -- buildless plain-JS module family, no declaration file.
 import { installLockNameForRoot } from '../../../../../scripts/lib/install-lock-name.mjs';
 import { acquireInstallBoundaryLease, type InstallBoundaryLease } from '../../install-boundary-lease';
 

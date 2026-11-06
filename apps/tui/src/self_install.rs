@@ -131,20 +131,26 @@ impl Layout {
     }
 
     pub fn launcher(&self) -> PathBuf {
-        self.bin_dir.join("pui")
+        self.bin_dir
+            .join(format!("pui{}", std::env::consts::EXE_SUFFIX))
     }
 
     fn launcher_target(&self) -> PathBuf {
-        self.current().join("bin").join("pui")
+        self.current()
+            .join("bin")
+            .join(format!("pui{}", std::env::consts::EXE_SUFFIX))
     }
 
     /// `$PUI_BIN_DIR/psu`: the link to the psu a release unit ships (D-031).
     pub fn psu_launcher(&self) -> PathBuf {
-        self.bin_dir.join("psu")
+        self.bin_dir
+            .join(self.psu_launcher_target().file_name().unwrap())
     }
 
     fn psu_launcher_target(&self) -> PathBuf {
-        self.current().join("bin").join("psu")
+        let bin = self.current().join("bin");
+        crate::fresh_exec::executable_in(&bin, "psu")
+            .unwrap_or_else(|| bin.join(if cfg!(windows) { "psu.cmd" } else { "psu" }))
     }
 }
 
@@ -228,7 +234,7 @@ fn psu_holder(layout: &Layout) -> PsuHolder {
 /// Decide the psu link for activating a release whose root is `release_root`.
 fn plan_psu_link(layout: &Layout, release_root: &Path) -> PsuLink {
     let path = layout.psu_launcher();
-    let ships_psu = release_root.join("bin").join("psu").is_file();
+    let ships_psu = crate::fresh_exec::executable_in(&release_root.join("bin"), "psu").is_some();
     match (psu_holder(layout), ships_psu) {
         (PsuHolder::Foreign(holder), true) => PsuLink::Foreign {
             path,
@@ -365,11 +371,13 @@ pub fn read_release_unit(root: &Path) -> Result<ReleaseUnit> {
     verify_contents(root)?;
     let manifest_path = root.join(MANIFEST_NAME);
     let manifest = install::read_manifest(&manifest_path)?;
-    if manifest.binary_path != "bin/pui" {
+    let expected_binary = format!("bin/pui{}", std::env::consts::EXE_SUFFIX);
+    if manifest.binary_path != expected_binary {
         bail!(
-            "{} names binaryPath {:?}; a relocatable release unit must name \"bin/pui\"",
+            "{} names binaryPath {:?}; a relocatable release unit must name {:?}",
             manifest_path.display(),
-            manifest.binary_path
+            manifest.binary_path,
+            expected_binary
         );
     }
     if Path::new(&manifest.companion_path).is_absolute() {
@@ -443,7 +451,7 @@ fn verify_executes_here(unit: &ReleaseUnit) -> Result<()> {
             bail!("this release was built for {target}; this machine is {here}");
         }
     }
-    let binary = unit.root.join("bin").join("pui");
+    let binary = unit.root.join(&unit.manifest.binary_path);
     let output = output_of_fresh_executable(Command::new(&binary).args(["self", "stamp"]))
         .with_context(|| format!("run {} on {here}", binary.display()))?;
     if !output.status.success() {
@@ -559,14 +567,7 @@ pub struct Status {
 }
 
 fn first_on_path(name: &str, path_var: Option<&std::ffi::OsStr>) -> Option<PathBuf> {
-    use std::os::unix::fs::PermissionsExt;
-    std::env::split_paths(path_var?)
-        .map(|dir| dir.join(name))
-        .find(|candidate| {
-            fs::metadata(candidate)
-                .map(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
-                .unwrap_or(false)
-        })
+    std::env::split_paths(path_var?).find_map(|dir| crate::fresh_exec::executable_in(&dir, name))
 }
 
 pub fn status(layout: &Layout, path_var: Option<&std::ffi::OsStr>) -> Status {
@@ -806,10 +807,64 @@ fn replace_symlink(link: &Path, target: &Path) -> Result<()> {
         .context("link path has no file name")?
         .to_string_lossy();
     let temporary = link.with_file_name(format!(".{name}.tmp-{}", std::process::id()));
-    let _ = fs::remove_file(&temporary);
+    remove_link_if_present(&temporary)?;
+    #[cfg(unix)]
     std::os::unix::fs::symlink(target, &temporary)
         .with_context(|| format!("create link {}", temporary.display()))?;
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::FileTypeExt;
+        let resolved = if target.is_absolute() {
+            target.to_path_buf()
+        } else {
+            link.parent().context("link has no parent")?.join(target)
+        };
+        let result = if resolved.is_dir() {
+            std::os::windows::fs::symlink_dir(target, &temporary)
+        } else {
+            std::os::windows::fs::symlink_file(target, &temporary)
+        };
+        result.with_context(|| format!("create link {}; Windows requires Developer Mode or the Create symbolic links privilege", temporary.display()))?;
+        // Windows cannot rename over a directory symlink. Preserve the old
+        // pointer until the replacement is ready, and restore it if switching
+        // fails. Never recurse through a release pointer when cleaning up.
+        if fs::symlink_metadata(link).is_ok_and(|m| m.file_type().is_symlink_dir()) {
+            let backup = link.with_file_name(format!(".{name}.tmp-old-{}", std::process::id()));
+            remove_link_if_present(&backup)?;
+            fs::rename(link, &backup)?;
+            if let Err(error) = fs::rename(&temporary, link) {
+                fs::rename(&backup, link)
+                    .context("restore previous release pointer after failed switch")?;
+                let _ = remove_link_if_present(&temporary);
+                return Err(error).context("switch Windows release pointer");
+            }
+            return remove_link_if_present(&backup);
+        }
+    }
     fs::rename(&temporary, link).with_context(|| format!("replace link {}", link.display()))
+}
+
+fn remove_link_if_present(path: &Path) -> Result<()> {
+    match fs::symlink_metadata(path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
+        Ok(metadata) => {
+            if !metadata.file_type().is_symlink() {
+                bail!(
+                    "{} is not a PUI link; refusing to remove it",
+                    path.display()
+                );
+            }
+            #[cfg(windows)]
+            {
+                use std::os::windows::fs::FileTypeExt;
+                if metadata.file_type().is_symlink_dir() {
+                    return fs::remove_dir(path).map_err(Into::into);
+                }
+            }
+            fs::remove_file(path).map_err(Into::into)
+        }
+    }
 }
 
 /// Refuse, before anything changes, a launcher path held by something PUI did
@@ -1723,16 +1778,18 @@ pub fn diagnostics_report(layout: &Layout, ctx: &LifecycleContext) -> Vec<String
 }
 
 fn save_diagnostics(layout: &Layout, ctx: &LifecycleContext) -> Result<PathBuf> {
+    #[cfg(unix)]
     use std::os::unix::fs::OpenOptionsExt;
     let report = diagnostics_report(layout, ctx).join("\n") + "\n";
     fs::create_dir_all(&layout.data_dir)?;
     let path = layout
         .data_dir
         .join(format!("pui-diagnostics-{}.txt", epoch_now()));
-    let mut file = fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    options.mode(0o600);
+    let mut file = options
         .open(&path)
         .with_context(|| format!("create {}", path.display()))?;
     std::io::Write::write_all(&mut file, report.as_bytes())?;
@@ -2054,6 +2111,87 @@ pub fn run(args: &[String]) -> Result<()> {
 }
 
 #[cfg(test)]
+mod portable_install_tests {
+    use super::*;
+
+    #[test]
+    fn path_lookup_uses_platform_executable_names() {
+        let dir = tempfile::tempdir().unwrap();
+        let binary = dir
+            .path()
+            .join(format!("pui{}", std::env::consts::EXE_SUFFIX));
+        fs::write(&binary, b"fixture").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&binary, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let path = std::env::join_paths([dir.path()]).unwrap();
+        assert_eq!(first_on_path("pui", Some(&path)), Some(binary));
+        assert_eq!(first_on_path("missing", Some(&path)), None);
+    }
+
+    #[test]
+    fn native_release_manifest_requires_the_platform_binary() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir(dir.path().join("bin")).unwrap();
+        let binary = format!("bin/pui{}", std::env::consts::EXE_SUFFIX);
+        fs::write(dir.path().join(&binary), b"native fixture").unwrap();
+        fs::write(dir.path().join("pui-companion.wasm"), b"wasm").unwrap();
+        let mut manifest = json!({
+            "schemaVersion":1,"sourceSha":"abc123","sourceDirty":false,"builtAtEpoch":1,
+            "binaryPath":binary,"binarySha256":install::sha256_file(&dir.path().join(&binary)).unwrap(),
+            "companionPath":"pui-companion.wasm","companionSha256":install::sha256_file(&dir.path().join("pui-companion.wasm")).unwrap(),
+            "version":"1.0.0","target":install::this_target()
+        });
+        let file = dir.path().join(MANIFEST_NAME);
+        fs::write(&file, manifest.to_string()).unwrap();
+        assert_eq!(
+            read_release_unit(dir.path()).unwrap().manifest.binary_path,
+            binary
+        );
+        manifest["binaryPath"] = json!(if cfg!(windows) {
+            "bin/pui"
+        } else {
+            "bin/pui.exe"
+        });
+        fs::write(&file, manifest.to_string()).unwrap();
+        assert!(read_release_unit(dir.path())
+            .unwrap_err()
+            .to_string()
+            .contains("binaryPath"));
+    }
+
+    #[test]
+    fn release_pointer_switch_and_removal_keep_release_directories() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = dir.path().join("first");
+        let second = dir.path().join("second");
+        fs::create_dir(&first).unwrap();
+        fs::create_dir(&second).unwrap();
+        fs::write(first.join("identity"), b"first").unwrap();
+        fs::write(second.join("identity"), b"second").unwrap();
+        let pointer = dir.path().join("current");
+        replace_symlink(&pointer, Path::new("first")).unwrap();
+        assert_eq!(fs::read(pointer.join("identity")).unwrap(), b"first");
+        replace_symlink(&pointer, Path::new("second")).unwrap();
+        assert_eq!(fs::read(pointer.join("identity")).unwrap(), b"second");
+        remove_link_if_present(&pointer).unwrap();
+        assert_eq!(fs::read(first.join("identity")).unwrap(), b"first");
+        assert_eq!(fs::read(second.join("identity")).unwrap(), b"second");
+    }
+
+    #[test]
+    fn temporary_pointer_cleanup_never_removes_a_regular_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("foreign");
+        fs::write(&file, b"keep me").unwrap();
+        assert!(remove_link_if_present(&file).is_err());
+        assert_eq!(fs::read(file).unwrap(), b"keep me");
+    }
+}
+
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;

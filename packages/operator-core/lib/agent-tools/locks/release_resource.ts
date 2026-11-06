@@ -102,6 +102,7 @@ export default defineTool({
         // EI-22464497553650176: releasing the lease is the cleanup boundary;
         // ride out transient workspace contention instead of returning a
         // per-item failure that strands the caller's named-resource lock.
+        // notify-classification: {"id":"packages/operator-core/lib/agent-tools/locks/release_resource.ts#<module>/handler/releaseOne:c39cc0947b4182b78771:1","classification":"durable","reason":"Release by resource sweeps expiry before deleting owned locks. Post-commit expiry receipts emit resource-release events; announceResourceRelease also signals deleted exclusive rows and sends availability notices to the retained waiter audience.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
         const r = await acquireWithContentionRetry(() =>
           inWorkspaceTxn(domain, ownerId, (tx) =>
             tryReleaseResource(tx, { coordinationDomain: domain, owner: ownerId, resource: item.resource }),
@@ -122,6 +123,7 @@ export default defineTool({
         ? await resourceLockIdDomains(ownerId, item.lock_id)
         : candidateResourceLockDomains();
       for (const domain of domains) {
+        // notify-classification: {"id":"packages/operator-core/lib/agent-tools/locks/release_resource.ts#<module>/handler/releaseOne:b0ee9a5cfe83a52d507f:1","classification":"durable","reason":"Release by lock ID retries the stored coordination domains and may emit expiry receipts. The later explicit release event and retained-waiter back-up notice remain delivery obligations even when the database release succeeds.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
         const r = await acquireWithContentionRetry(() =>
           inWorkspaceTxn(domain, ownerId, (tx) =>
             tryReleaseResource(tx, { coordinationDomain: domain, owner: ownerId, lockId: item.lock_id }),
@@ -146,6 +148,7 @@ export default defineTool({
     const env = await runBulk(
       bulkItems,
       async (item) => {
+        // notify-classification: {"id":"packages/operator-core/lib/agent-tools/locks/release_resource.ts#<module>/handler/<callback>:86633dc43d5c7cdc1634:1","classification":"durable","reason":"The bulk callback delegates to releaseOne, including expiry release signals, explicit deleted-exclusive events and targeted waiter back-up messages. A successful per-item lock result does not verify those terminal consequences.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
         const r = await releaseOne(item);
         const expiredLocks = r.expired ?? [];
         const heldResourceSuggestions = r.heldResourceSuggestions ?? [];

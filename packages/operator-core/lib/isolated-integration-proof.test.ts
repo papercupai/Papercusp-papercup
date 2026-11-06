@@ -330,10 +330,15 @@ it.for([{ cooperative: true, abort: false }, { cooperative: false, abort: false 
   });
   try {
     await once(child, 'message');
+    // Drive only the parent's deadline. The real child gets to acknowledge
+    // cooperative cleanup before the simulated hard-stop clock advances.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
     const controller = new AbortController();
     const captured = captureIsolatedWorker(child, evidenceDir,
       { timeoutMs: abort ? 10_000 : 50, killGraceMs: 1000, drainGraceMs: 1000, signal: controller.signal });
     if (abort) controller.abort(new Error('outer testcase deadline'));
+    else await vi.advanceTimersByTimeAsync(50);
+    if (!cooperative) await vi.advanceTimersByTimeAsync(1000);
     const result = await captured;
     expect(result).toMatchObject({ timedOut: !abort, aborted: abort,
       abortReason: abort ? 'Error: outer testcase deadline' : null, timeoutPhase: abort ? null : 'bootstrap',
@@ -346,6 +351,7 @@ it.for([{ cooperative: true, abort: false }, { cooperative: false, abort: false 
     if (abort) expect(isolatedWorkerFailureDetail(result.output, result))
       .toContain('ISOLATED_WORKER_ABORT reason=Error: outer testcase deadline');
   } finally {
+    vi.useRealTimers();
     try { process.kill(-child.pid!, 'SIGKILL'); } catch { /* owned group already reaped */ }
     if (child.connected) child.disconnect();
     rmSync(evidenceDir, { recursive: true, force: true });
@@ -435,6 +441,52 @@ it.each([false, true])('cannot use provenance output to escape bootstrap or disa
   });
 });
 
+it('renews native bootstrap on source census advances while keeping the case execution clock separate', async () => {
+  const options = { ...routerPhaseOptions, testFileExecutionFromStdout: 'case' as const,
+    phaseTimeouts: { ...routerPhaseOptions.phaseTimeouts, bootstrapMaxMs: 300 } };
+  await withCapturedRouter(options, async (child, result) => {
+    await vi.advanceTimersByTimeAsync(90);
+    child.stderr!.emit('data', 'TEST_FILE_FINALIZATION ' + JSON.stringify({ phase: 'provenance-progress',
+      step: 'source-census', event: 'progress', completedFiles: 1, totalFiles: 2 }) + '\n');
+    await vi.advanceTimersByTimeAsync(100);
+    expect(child.kill).not.toHaveBeenCalled();
+    child.stderr!.emit('data', 'TEST_FILE_CASE_TRACE {"event":"started","file":"native.test.ts","name":"native handoff"}\n');
+    await vi.advanceTimersByTimeAsync(79);
+    expect(child.kill).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(child.kill).toHaveBeenCalledWith('SIGTERM');
+    child.emit('close');
+    expect(await result).toMatchObject({ timedOut: true, timeoutPhase: 'execute' });
+  });
+});
+
+it.each(['repeated', 'regressed', 'changed-total', 'absolute-ceiling'])(
+  'bounds native bootstrap source census progress: %s', async scenario => {
+    const options = { ...routerPhaseOptions, testFileExecutionFromStdout: 'case' as const,
+      phaseTimeouts: { ...routerPhaseOptions.phaseTimeouts, bootstrapMaxMs: 250 } };
+    await withCapturedRouter(options, async (child, result) => {
+      const progress = (completedFiles: number, totalFiles = 4) => child.stderr!.emit('data',
+        'TEST_FILE_FINALIZATION ' + JSON.stringify({ phase: 'provenance-progress',
+          step: 'source-census', event: 'progress', completedFiles, totalFiles }) + '\n');
+      await vi.advanceTimersByTimeAsync(90);
+      progress(1);
+      await vi.advanceTimersByTimeAsync(100);
+      expect(child.kill).not.toHaveBeenCalled();
+      progress(scenario === 'regressed' ? 0 : scenario === 'repeated' ? 1 : 2,
+        scenario === 'changed-total' ? 5 : 4);
+      await vi.advanceTimersByTimeAsync(10);
+      if (scenario === 'absolute-ceiling') {
+        expect(child.kill).not.toHaveBeenCalled();
+        await vi.advanceTimersByTimeAsync(40);
+        progress(3);
+        await vi.advanceTimersByTimeAsync(10);
+      }
+      expect(child.kill).toHaveBeenCalledWith('SIGTERM');
+      child.emit('close');
+      expect(await result).toMatchObject({ timedOut: true, timeoutPhase: 'bootstrap' });
+    });
+  });
+
 it.each([0, 1, 2])('extends bounded finalization only for advancing source census counts: %s', async nextCount => {
   const options = { ...routerPhaseOptions, phaseTimeouts: { ...routerPhaseOptions.phaseTimeouts,
     finalizeMaxMs: 90 } };
@@ -458,6 +510,44 @@ it.each([0, 1, 2])('extends bounded finalization only for advancing source censu
     expect(child.kill).toHaveBeenCalledWith('SIGTERM');
     child.emit('close');
     expect(await result).toMatchObject({ timedOut: true, timeoutPhase: 'finalize' });
+  });
+});
+
+it('measures bootstrap and finalization source census progress independently', async () => {
+  const options = { ...routerPhaseOptions, testFileExecutionFromStdout: 'case' as const,
+    phaseTimeouts: { ...routerPhaseOptions.phaseTimeouts, bootstrapMaxMs: 300, finalizeMaxMs: 90 } };
+  await withCapturedRouter(options, async (child, result) => {
+    const progress = (completedFiles: number, totalFiles: number) => child.stderr!.emit('data',
+      'TEST_FILE_FINALIZATION ' + JSON.stringify({ phase: 'provenance-progress',
+        step: 'source-census', event: 'progress', completedFiles, totalFiles }) + '\n');
+    progress(4, 4);
+    child.stderr!.emit('data', 'TEST_FILE_CASE_TRACE {"event":"started","file":"native.test.ts","name":"native handoff"}\n');
+    child.stderr!.emit('data', 'TEST_FILE_FINALIZATION {"phase":"files-complete"}\n');
+    await vi.advanceTimersByTimeAsync(20);
+    progress(1, 2);
+    await vi.advanceTimersByTimeAsync(39);
+    expect(child.kill).not.toHaveBeenCalled();
+    progress(1, 2);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(child.kill).toHaveBeenCalledWith('SIGTERM');
+    child.emit('close');
+    expect(await result).toMatchObject({ timedOut: true, timeoutPhase: 'finalize' });
+  });
+});
+
+it('ignores bootstrap source census output when router observation is disabled', async () => {
+  const options = { ...routerPhaseOptions, testFileExecutionFromStdout: false,
+    phaseTimeouts: { ...routerPhaseOptions.phaseTimeouts, bootstrapMaxMs: 300 } };
+  await withCapturedRouter(options, async (child, result) => {
+    await vi.advanceTimersByTimeAsync(90);
+    child.stderr!.emit('data', 'TEST_FILE_FINALIZATION ' + JSON.stringify({ phase: 'provenance-progress',
+      step: 'source-census', event: 'progress', completedFiles: 1, totalFiles: 2 }) + '\n');
+    // The watchdog's initial observation is at t=0, so the first checkpoint
+    // at t=100 is still within its stall window; no fresh evidence reaches t=200.
+    await vi.advanceTimersByTimeAsync(110);
+    expect(child.kill).toHaveBeenCalledWith('SIGTERM');
+    child.emit('close');
+    expect(await result).toMatchObject({ timedOut: true, timeoutPhase: 'bootstrap' });
   });
 });
 
@@ -755,11 +845,18 @@ it.each(['exit', 'signal'] as const)('fails bounded host cleanup when a descenda
     const [chunk] = await once(host.stdout!, 'data');
     nativePid = Number(String(chunk).trim());
     expect(Number.isSafeInteger(nativePid)).toBe(true);
-    await expect(stopPrivateOperatorHost(host, undefined, 100)).rejects.toThrow('stdio drainage did not settle');
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    const exited = once(host, 'exit');
+    const stopped = expect(stopPrivateOperatorHost(host, undefined, 100))
+      .rejects.toThrow('stdio drainage did not settle');
+    await exited;
+    await vi.advanceTimersByTimeAsync(100);
+    await stopped;
     expect(host.exitCode !== null || host.signalCode !== null).toBe(true);
     if (termination === 'signal') expect(host.signalCode).toBe('SIGKILL');
     expect(() => process.kill(nativePid!, 0)).not.toThrow();
   } finally {
+    vi.useRealTimers();
     host.kill('SIGKILL');
     if (nativePid) try { process.kill(nativePid, 'SIGKILL'); } catch { /* already reaped */ }
     host.stdout?.destroy(); host.stderr?.destroy();

@@ -229,6 +229,23 @@ describe('normalizeExecutionTrace (P-013)', () => {
     });
   });
 
+  it('R2 settled execution is counted once across wrappers', async () => {
+    const script = 'return tools.work_items.get({ id: "WI-1" });';
+    const record = (ordinal: number, disposition: OrchestrationCallRecord['disposition']): OrchestrationCallRecord =>
+      ({ ordinal, tool: 'work_items:get', effect: 'read', disposition, outputReferences: [] });
+    const success = record(0, 'settled');
+    const calls = [success, { ...success }, record(1, 'rejected'), record(2, 'semantic_rejected'), record(3, 'in_flight')];
+    for (const backend of ['server', 'client-compat'] as const) {
+      const trace = await normalizeExecutionTrace({ script, tools: TOOLS, backend, callRecords: calls });
+      expect(trace.toolGraph.runtimeCalls.map(c => [c.ordinal, c.disposition])).toEqual([
+        [0, 'settled'], [1, 'rejected'], [2, 'semantic_rejected'], [3, 'in_flight'],
+      ]);
+      expect(trace.toolGraph.runtimeCalls).toHaveLength(4);
+      await expect(normalizeExecutionTrace({ script, tools: TOOLS, backend,
+        callRecords: [success, record(0, 'rejected')] })).rejects.toThrow('conflicting_orchestration_call_copies');
+    }
+  });
+
   it('preserves validated output-reference identity but excludes it and runtime outcomes from the fingerprint', async () => {
     const record = (uri: string, sha256: string, disposition: OrchestrationCallRecord['disposition']): OrchestrationCallRecord => ({
       ordinal: 0,

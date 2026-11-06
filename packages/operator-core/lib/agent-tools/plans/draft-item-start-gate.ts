@@ -31,7 +31,7 @@ export interface DraftItemStartRefusal {
   ok: false;
   slug: string;
   itemId: string;
-  error: 'activation_audit_required';
+  error: 'activation_audit_required' | 'discovery_not_ready';
   /** The gate's own code: conversation_audit_required or item_provenance_unresolved. */
   gateCode: string | undefined;
   hint: string;
@@ -44,6 +44,8 @@ export async function checkDraftItemStartGate(input: {
   /** The plan body; null when the plan could not be read (the normal path reports that). */
   readPlanContent: () => Promise<string | null>;
   evaluateGate: () => Promise<ConversationActivationGateVerdict>;
+  /** The shared current-discovery evaluator; omitted only by legacy pure callers. */
+  evaluateDiscovery?: () => Promise<{ ok: true } | { ok: false; error: string; nextAction?: string }>;
   /** True when a non-terminal work-item already covers this plan item. */
   hasCoveringWorkItem: () => Promise<boolean>;
   /** True when a terminal work-item proves a stale todo→done reflection. */
@@ -54,9 +56,6 @@ export async function checkDraftItemStartGate(input: {
   const content = await input.readPlanContent();
   if (!content) return null;
   const index = deriveIndexFromContent(content);
-  if (index.status !== 'draft') return null;
-  if (isActivationAuditExemptTemplate(index.template)) return null;
-
   const item = index.items.find((candidate) => candidate.id === input.itemId);
   // Unknown item: let the normal path return its own item_not_found.
   if (!item) return null;
@@ -70,6 +69,18 @@ export async function checkDraftItemStartGate(input: {
   if (input.toStatus === 'done' && input.hasTerminalCoveringWorkItem) {
     if (await input.hasTerminalCoveringWorkItem()) return null;
   }
+
+  // A pre-created open work-item does not establish that implementation has
+  // begun. Only the canonical started status or terminal reflection above may
+  // bypass discovery; every new start, including on an active plan, rechecks it.
+  if (input.evaluateDiscovery) {
+    const discovery = await input.evaluateDiscovery();
+    if (!discovery.ok) return { ok: false, slug: input.slug, itemId: input.itemId,
+      error: 'discovery_not_ready', gateCode: discovery.error,
+      hint: discovery.nextAction ?? 'Finalize current discovery with plans:audit { phase:"discovery", slug } before starting implementation.' };
+  }
+  if (index.status !== 'draft') return null;
+  if (isActivationAuditExemptTemplate(index.template)) return null;
 
   const gate = await input.evaluateGate();
   if (gate.satisfied) return null;
@@ -165,6 +176,14 @@ export async function checkDraftItemStartGateLive(input: {
         harnessSlug,
         planSlug: input.slug,
       });
+    },
+    evaluateDiscovery: async () => {
+      const { withCurrentDiscovery } = await import('../../plan-audits');
+      const { workspaceId, harnessSlug } = await scope();
+      const result = await withCurrentDiscovery({ workspaceId, harnessSlug, planSlug: input.slug,
+        createdBy: 'system:item-start' }, async () => undefined);
+      return result.ok ? { ok: true as const } : { ok: false as const, error: result.error,
+        nextAction: 'nextAction' in result ? result.nextAction : undefined };
     },
     hasCoveringWorkItem: async () => (await readCoverage()).hasOpen,
     hasTerminalCoveringWorkItem: async () => (await readCoverage()).hasTerminal,

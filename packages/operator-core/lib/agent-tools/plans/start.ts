@@ -133,9 +133,9 @@ export default defineTool({
   description:
     "Approve a plan and promote its open items to claimable work-items. A draft moves to ready only after `plans:audit { phase:'activation' }`; plans with first-class clauses also require the spec-quality chain and a settled non-author `grading-integrity` audit. Re-starting is a no-op. Runs a plan-start consult and may return `consult_available`; override with `consulted` + `consult_reason`.",
   guidance: {
-    when: "After auditing the complete plan conversation and recording `plans:audit { phase:'activation' }`. For first-class clauses, finish `plans:evaluate-spec-quality` → terminal `scorecards:emit` → independent `grading-integrity` audit before starting.",
+    when: "After scoped Discovery findings are incorporated and finalized with plans:audit { slug, phase:'discovery' }, full implementation review and the complete source-conversation activation audit. First-class clauses also need spec-quality → terminal scorecard → independent grading-integrity audit. In-flight work and historical terminal records are preserved.",
     notWhen: 'The plan is already started; use plans:pause or plans:set-run-status.',
-    chaining: "Audit → `plans:audit { phase:'activation' }` → `plans:evaluate-spec-quality { slug }` → terminal `scorecards:emit` → non-author `grading-integrity` audit → verify it is settled → `plans:start { slug }`. Re-audit after material edits; cosmetic edits do not require it. See `/internal/docs/system/plan-inputs`.",
+    chaining: "Brief → scoped discovery → findings incorporated → plans:audit { slug, phase:'discovery' } → full independent implementation review → activation audit → plans:evaluate-spec-quality → terminal scorecard and settled independent audit → plans:start { slug }. Relevant changes reopen affected discovery judgments; cosmetic edits reuse them. See `/internal/docs/system/plan-inputs`.",
     seeAlso: [
       'plans:launch (have an agent autonomously advance the started plan)',
       'plans:set-status (manually move items along once started)',
@@ -1102,11 +1102,11 @@ export default defineTool({
       requestedStructured?: boolean;
       workspaceId?: string;
     };
-    if (!receiptCtx.transport || receiptCtx.transportCapExempt || receiptCtx.requestedStructured) {
+    if (!receiptCtx.transport) {
       return bulkContent(env);
     }
     const { resolveAgentIdentity } = await import('../coordination/identity');
-    return applyResultDoorAsync(
+    const doored = await applyResultDoorAsync(
       { content: [{ type: 'text' as const, text: JSON.stringify(env) }] },
       {
         toolName: 'plans:start',
@@ -1114,5 +1114,11 @@ export default defineTool({
         ownerId: resolveAgentIdentity(ctx).ownerId,
       },
     );
+    // The result door shapes model-facing content and may rebuild an oversized
+    // result without its structured payload. Restore the canonical response
+    // after shaping so structured transports retain the full machine contract.
+    return receiptCtx.transportCapExempt || receiptCtx.requestedStructured
+      ? { ...doored, structuredContent: env }
+      : doored;
   },
 });

@@ -554,6 +554,19 @@ continuation gate picks, not a law.
   scenarios) BEFORE requirements, and requirements before tasks. Ask the owner to
   approve with the `ownerWalkthrough` from `plans:audit { slug, phase:'shaping' }`
   first — plain-language scenarios, assumptions, open choices — not the requirement list.
+- **Discover before implementation review.** Brief → scoped discovery → findings
+  incorporated → implementation review → execution. Discovery is ordinary task work
+  about a draft. Inspect current behavior, gaps and feasibility; code-intelligence
+  suggestions are leads. Author bounded questions, conclusions, existing evidence
+  refs and target dispositions in `## Discovery`, save with `plans:set-content`, then
+  `plans:audit { slug, phase:'discovery' }` derives readiness without activation.
+  Until finalized, label it a **provisional discovery brief**. Review original intent
+  and the reconciled revision with full BAR re-review and no round cap; implementation
+  still requires authority. Small/general plans may reuse evidence and justify no
+  change; reopen only affected judgments on relevant changes. Preserve in-flight work
+  and historical terminal records. Example: proof-warming P-001 "inventory current
+  behavior and find gaps" needs those answers now: inspect the existing cache, cite
+  current evidence, remove duplicate work and retain only the evidenced gap before review.
 - **Plan before non-trivial work.** A plan is REQUIRED when work decomposes
   into ≥2 work-items, has inter-dependent steps, outlives one session, or
   sequences multiple subsystems: `plans:new` + `plans:add-item`, then

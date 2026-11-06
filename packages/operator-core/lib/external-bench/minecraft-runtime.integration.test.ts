@@ -1,7 +1,9 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createHash } from 'node:crypto';
+import { spawn } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { freezeMinecraftTrial } from './minecraft-protocol';
@@ -10,11 +12,23 @@ import { readRestoredBenchmarkContext, restoreBenchmarkContext, type BenchmarkCo
 import { collectMinecraftEvidence, exportMinecraftEvidence, gradeMinecraftEvidence,
   readMinecraftEvidenceExport } from './minecraft-evidence';
 import { liveProcExec } from './grader/index';
+import { resolveExecutedMapPgUrl } from '../../../../scripts/lib/executed-source-map.mjs';
+import { captureIsolatedWorker, isolatedTestFileWorkerOptions, isolatedWorkerFailureDetail,
+  recordIsolatedIntegrationProof } from '../../test/isolated-integration-proof';
 
 const assets = fileURLToPath(new URL('../../vendor/minecraft-runtime/', import.meta.url));
 const pins = JSON.parse(await readFile(join(assets, 'runtime-pins.json'), 'utf8'));
 let root: string, jar: string, botImage: string;
 const runtimes: MinecraftRuntime[] = [];
+const filePath = 'packages/operator-core/lib/external-bench/minecraft-runtime.integration.test.ts';
+const repoRoot = resolve(import.meta.dirname, '../../../..');
+const worker = process.env.PC_MINECRAFT_RUNTIME_WORKER === '1';
+
+if (worker) {
+if (!/^test-runtime-/.test(process.env.PAPERCUSP_WORKSPACE_ID ?? '')
+  || process.env.PAPERCUSP_SKIP_PG_DISCOVERY !== '1') {
+  throw Error('Minecraft proof worker requires the owned isolated runtime');
+}
 beforeAll(async () => {
   // Fail the expensive setup at its actual prerequisite, with bounded diagnostics.
   const daemon = await liveProcExec('docker', ['version', '--format', '{{.Server.Version}}'], { timeoutMs: 15_000 });
@@ -139,3 +153,73 @@ describe('real Minecraft/Mineflayer isolation and cancellation (scripted, no mod
     expect(live.code).toBe(0); expect(live.stdout.trim()).toBe('');
   }, 300_000);
 });
+} else {
+  const options = isolatedTestFileWorkerOptions(process.env, 1);
+  it('retains real Minecraft connection, isolation, cancellation and reset with original private-runtime cleanup', async context => {
+    const sources = [
+      'packages/operator-core/lib/external-bench/minecraft-runtime.ts',
+      'packages/operator-core/lib/external-bench/minecraft-protocol.ts',
+      'packages/operator-core/lib/external-bench/minecraft-evidence.ts',
+      'packages/operator-core/lib/external-bench/reproducibility/context.ts',
+    ];
+    const runId = await recordIsolatedIntegrationProof({
+      root: repoRoot, filePath, sourcePaths: [...sources,
+        'packages/operator-core/lib/external-bench/reproducibility/canonical-json.ts',
+        'packages/operator-core/lib/external-bench/grader/index.ts',
+        ...['package.json', 'package-lock.json', 'runtime-pins.json', 'Dockerfile',
+          'bot.cjs', 'program.cjs', 'THIRD_PARTY_NOTICES.md']
+          .map(name => `packages/operator-core/vendor/minecraft-runtime/${name}`),
+        'scripts/test-files.mjs'],
+      retainedArtifacts: ['phases/execute/worker.log', 'phases/execute/test-receipts.ndjson',
+        'phases/execute/executed-source-map.json'],
+      execute: async (observe, evidenceDir) => {
+        const receipts = join(evidenceDir, 'test-receipts.ndjson');
+        const mapPath = join(evidenceDir, 'executed-source-map.json');
+        const env: NodeJS.ProcessEnv = { ...process.env, PC_ISOLATED_RUNTIME_PROOF: '1',
+          PC_MINECRAFT_RUNTIME_WORKER: '1',
+          PC_EXECUTED_SOURCE_MAP_WORKSPACE: 'papercusp-workspace',
+          PC_EXECUTED_SOURCE_MAP_OUT: mapPath,
+          PAPERCUSP_TEST_RUNS_DB_URL: resolveExecutedMapPgUrl().url,
+          PAPERCUSP_TEST_RUN_HARNESS: 'papercusp',
+          PAPERCUSP_TEST_RUN_WORKSPACE: 'papercusp-workspace',
+          PAPERCUSP_TEST_RUN_RECEIPT_FILE: receipts };
+        delete env.PC_HEAVY_PREEMPT_READY_FILE;
+        delete env.PC_HEAVY_PSI_FINALIZATION_FILE;
+        const child = spawn(process.execPath, [join(repoRoot, 'scripts/with-test-pg.mjs'),
+          '--isolated-runtime', '--', process.execPath,
+          '--import', join(repoRoot, 'scripts/lib/committed-source-loader.mjs'),
+          join(repoRoot, 'scripts/test-files.mjs'), filePath], {
+          cwd: repoRoot, detached: true, stdio: ['ignore', 'pipe', 'pipe', 'ipc'], env,
+        });
+        observe(child);
+        try {
+          const result = await captureIsolatedWorker(child, evidenceDir, options);
+          expect(result, isolatedWorkerFailureDetail(result.output)).toMatchObject({ code: 0, signal: null,
+            timedOut: false, exitWaitTimedOut: false, stdioDrainTimedOut: false });
+          const rows = readFileSync(receipts, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+          const row = rows.find(value => value.filePath === filePath);
+          expect(row).toMatchObject({ outcome: 'inserted', row: { status: 'pass', executionDetails: {
+            passed: 2, failed: 0, skipped: 0, collectionFailed: false,
+          } } });
+          for (const title of ['resets the real saved world and permitted memory',
+            'connects an enrolled bot, enforces RPC permissions and host isolation']) {
+            expect(row.row.executionDetails.passedCaseTitles.some((passed: string) => passed.includes(title))).toBe(true);
+          }
+          const map = JSON.parse(readFileSync(mapPath, 'utf8'));
+          const original = map.rows.find((value: any) => value.testFile === filePath)?.sourceEvidence;
+          expect(original?.status).toBe('stable');
+          for (const source of sources) {
+            expect(original.sources.find((value: any) => value.path === source)).toMatchObject({
+              basis: 'vite-pre-transform',
+              sha256: createHash('sha256').update(readFileSync(join(repoRoot, source))).digest('hex'),
+            });
+          }
+        } finally {
+          if (child.exitCode === null && child.signalCode === null) child.kill('SIGTERM');
+        }
+      },
+    });
+    Object.assign(context.task.meta, { papercuspIsolatedRuntimeRunId: runId });
+    console.info('MINECRAFT_RUNTIME_PROOF_RUN ' + runId);
+  }, options.testTimeoutMs);
+}

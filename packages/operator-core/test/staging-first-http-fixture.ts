@@ -11,7 +11,7 @@ import { loadHarnessRegistry, saveHarnessRegistry } from '../lib/harness-registr
 import { readProcessIdentity } from '../lib/process-identity';
 import { resolvePlanScope } from '../lib/agent-tools/plans/source';
 import { buildPrivateOperatorApiBundle, privateBundleRuntimeEnv, privateNativeDockerHost, waitForPrivateOperator, stopPrivateOperatorHost, qualifyCommittedReaderSource, observeCommittedReaderLoadedSources, resolvePreparedCommittedReaderSource, resolvePreparedPrivateApiBundle } from './private-http-workspace-preflight';
-import { captureIsolatedWorker, isolatedTestFileWorkerOptions, isolatedWorkerOptions, retainIsolatedWorkerProgress } from './isolated-integration-proof';
+import { captureIsolatedWorker, isolatedTestFileWorkerOptions, isolatedWorkerOptions, isolatedWorkerFailureDetail, retainIsolatedWorkerProgress } from './isolated-integration-proof';
 import { measurePrivateUnrelatedCheckpointScenario } from './private-unrelated-write-http-scenario';
 
 let host: ChildProcess | undefined;
@@ -301,7 +301,7 @@ async function main() {
       ? { ...isolatedWorkerOptions(180_000, env), testFileExecutionFromStdout: 'case' as const }
       : isolatedTestFileWorkerOptions(env, 1);
     const result = await captureIsolatedWorker(child, censusDir, censusOptions);
-    assert.equal(result.code, 0, result.output.slice(-12000));
+    assert.equal(result.code, 0, isolatedWorkerFailureDetail(result.output, result));
     assert.equal(result.signal, null);
     assert.equal(result.timedOut, false);
     const resultLine = result.output.split(/\r?\n/).find(row => row.startsWith('TEST_FILE_RESULT '));

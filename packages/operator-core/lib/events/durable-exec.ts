@@ -10,6 +10,8 @@
  */
 
 import type { UnifiedToolContext } from '@papercusp/agent-mcp';
+import { createHash } from 'node:crypto';
+import { canonicalJson } from '@papercusp/hash-chain';
 import {
   executeDurableReaction as genericExecuteDurableReaction,
   type DurableReactionPayload as GenericDurableReactionPayload,
@@ -17,9 +19,15 @@ import {
 import { fireReactionInProcess, reactionBackgroundActivityAllowed } from './dispatch-reaction';
 import { claimReaction, releaseReaction, markReactionFailed, reactionOutcome, completeReaction, markReactionUncertain } from './reaction-dedup';
 import type { SerializableReactionParent } from './reaction-id';
+import { reconcileGateActionReceipt } from '../release/gate-action-receipt';
 
 /** The JSON-serializable workflow payload for one durable reaction. */
 export type DurableReactionPayload = GenericDurableReactionPayload<SerializableReactionParent>;
+
+/** Bind a receiver receipt to the entire immutable request, not just a rule's dedup id. */
+function reactionExecutionId(payload: DurableReactionPayload): string {
+  return `reaction-execution:${createHash('sha256').update(canonicalJson(payload)).digest('hex')}`;
+}
 
 export async function executeDurableReaction(payload: DurableReactionPayload): Promise<void> {
   if (payload.ruleId !== payload.cause.ruleId) return;
@@ -33,6 +41,14 @@ export async function executeDurableReaction(payload: DurableReactionPayload): P
     // The PG idempotency ledger (migration 153) — `harness_shared.event_reactions`.
     store: { claim: claimReaction, release: releaseReaction, markFailed: markReactionFailed,
       outcome: reactionOutcome, complete: completeReaction, uncertain: markReactionUncertain },
+    // This receipt proves the short launch boundary only. It never proves that
+    // the detached deploy finished or that an exact artifact shipped.
+    // Force deploy has further mandatory side effects after launch; a launch
+    // receipt cannot acknowledge that entire action.
+    reconcile: p => p.fire === 'release:deploy' && p.args.op === 'trigger'
+      ? reconcileGateActionReceipt({ workspaceId: p.parent.workspaceId!, action: p.fire,
+          executionId: reactionExecutionId(p) })
+      : Promise.resolve('uncertain'),
     // Rebuild the reaction's scope from the serializable parent and dispatch.
     fire: (p) =>
       fireReactionInProcess({
@@ -41,6 +57,7 @@ export async function executeDurableReaction(payload: DurableReactionPayload): P
         parentCtx: { ...p.parent } as UnifiedToolContext,
         cause: p.cause,
         capability: p.capability,
+        executionId: reactionExecutionId(p),
       }),
     log: (msg) => console.warn(`[events] ${msg}`),
   });

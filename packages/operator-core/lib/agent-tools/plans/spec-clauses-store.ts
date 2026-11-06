@@ -1,7 +1,8 @@
 /** Canonical first-class plan spec clause storage (P-002 / D-001..D-003). */
 import { createHash } from 'node:crypto';
+import { z } from 'zod';
 import { withWorkspace } from '@papercusp/db-org';
-import { isRecordedTestLayer } from '@papercusp/test-config/execution-details';
+import { isRecordedTestLayer, RECORDED_TEST_LAYERS } from '@papercusp/test-config/execution-details';
 import { isNonAutomatedBehaviorClass } from '../../plan-verification-profile';
 import { pgTimestampToIso, pgTimestampToIsoOrNull } from '../../pg-timestamp';
 import { resolveSpecScopeSlug } from './adhoc-spec-scope';
@@ -115,6 +116,46 @@ export interface SpecClauseWrite {
   sourceBar?: SpecClauseBarPin | null;
   actorId: string;
 }
+
+/** One authoring schema for plans:set-specs and generated amendment candidates. */
+export const specWriteSchema = z.object({
+  specId: z.string().min(1).max(200).regex(/^\S+$/, 'specId may not contain whitespace'),
+  expectedRevision: z.number().int().min(0),
+  sourceValId: z.string().regex(/^VAL-[A-Za-z0-9._-]+$/).nullable().optional(),
+  planItemId: z.string().regex(/^P-\d{3,}$/),
+  behavior: z.string().trim().min(1).max(12_000),
+  behaviorClass: z.enum(SPEC_BEHAVIOR_CLASSES),
+  requiredEvidence: z.array(z.string().trim().min(1).max(1000)).max(100).optional(),
+  requiredTestLayers: z.array(z.enum(RECORDED_TEST_LAYERS)).max(50).optional(),
+  mutationRequired: z.boolean().optional(),
+  lifecycleStatus: z.enum(SPEC_LIFECYCLE_STATUSES),
+  supersedes: z.object({ specId: z.string().min(1).max(200), revision: z.number().int().positive() }).nullable().optional(),
+  exemption: z.record(z.string(), z.unknown()).nullable().optional(),
+  falsifier: z.object({
+    observation: z.string().trim().min(1).max(4000),
+    probeMethod: z.string().trim().min(1).max(4000).nullable().optional(),
+    requiredScenarios: z.array(z.string().trim().min(1).max(200).regex(SPEC_PROOF_OBLIGATION_ID_RE))
+      .min(1).max(100).refine((ids) => new Set(ids).size === ids.length, 'proof obligation ids must be unique')
+      .nullable().optional(),
+    causalPairing: z.enum(SPEC_CAUSAL_PAIRING_MODES).nullable().optional(),
+  }).nullable().optional(),
+  acceptanceRef: z.string().trim().min(1).max(1000).nullable().optional(),
+  sourceBar: z.object({
+    barKey: z.string().trim().min(1).max(200),
+    barHash: z.string().regex(/^[a-f0-9]{64}$/),
+    barSetHash: z.string().regex(/^[a-f0-9]{64}$/),
+    rubricSlug: z.string().trim().min(1).max(200),
+    rubricRevision: z.number().int().positive(),
+    evidencePlane: z.enum(['tree', 'deployed', 'live']),
+  }).nullable().optional(),
+}).superRefine((spec, ctx) => {
+  if (spec.lifecycleStatus === 'exempt' && !spec.exemption) {
+    ctx.addIssue({ code: 'custom', path: ['exemption'], message: 'lifecycleStatus=exempt requires structured exemption provenance' });
+  }
+  if (spec.lifecycleStatus !== 'exempt' && spec.exemption) {
+    ctx.addIssue({ code: 'custom', path: ['exemption'], message: 'exemption is only valid when lifecycleStatus=exempt' });
+  }
+});
 
 export interface SpecClauseRevision {
   planSlug: string;

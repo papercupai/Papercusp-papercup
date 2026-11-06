@@ -157,8 +157,8 @@ describe('conversations:get handler (bulk keyed-array)', () => {
     getM.mockResolvedValue({
       ...detail('c-owner', { producer: 'coord:ask-owner' }),
       posts: [
-        { id: 1, author_id: 'su-agent', body: 'CONTINUE', created_ts: 't1' },
-        { id: 2, author_id: ADMIN_COORD_UI_OWNER, body: 'RESCOPE', created_ts: 't2' },
+        { id: 1, thread_id: 'c-owner', author_id: 'su-agent', body: 'CONTINUE', created_ts: 't1' },
+        { id: 2, thread_id: 'c-owner', author_id: ADMIN_COORD_UI_OWNER, body: 'RESCOPE', created_ts: 't2' },
       ],
     });
     const b = await body({ id: 'c-owner' });

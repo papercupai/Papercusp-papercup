@@ -3535,10 +3535,16 @@ describe('WI-4494: recordCheckpointVerdict — the producer records', () => {
     const verdict = { reason: 'up-to-date' as const, green: true, candidate: 'abc123def456789', runId: 'run-1' };
     try {
       recordStoredQualificationVerdict.mockResolvedValueOnce({ status: 'updated' });
-      expect(await recordCheckpointVerdict(target, verdict)).toBe(true);
+      expect(await recordCheckpointVerdict(target, verdict, { terminalEvents: [{
+        key: 'release:green:my-harness', summary: 'advanced', payload: { sha: verdict.candidate, runId: verdict.runId },
+      }] })).toBe(true);
       expect(recordStoredQualificationVerdict).toHaveBeenCalledWith(target, expect.objectContaining({
         attemptId: 'attempt-1', runId: 'run-1', terminalEvent: {
-          status: 'up-to-date', detail: expect.objectContaining({ runId: 'run-1', candidate: 'abc123def456' }),
+          status: 'up-to-date', detail: expect.objectContaining({ runId: 'run-1', candidate: 'abc123def456',
+            terminalDelivery: expect.objectContaining({ pending: true, identity: expect.objectContaining({
+              attemptId: 'attempt-1', runId: 'run-1', candidate: verdict.candidate,
+            }), events: [expect.objectContaining({ key: 'release:green:my-harness' })] }),
+          }),
         },
       }));
       expect(appendPipelineEvent).not.toHaveBeenCalled();

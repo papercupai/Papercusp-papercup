@@ -94,8 +94,21 @@ describe('P-015 / D-025 — holder implies booted', () => {
 
   it('flags a stale-build sibling as the competing explanation for the violation', () => {
     const v = judgeHolderBootInvariant({ ...D025_STATE, staleBuild: [3271] });
-    expect(v.code).toBe('holder-without-boot');
+    expect(v).toMatchObject({ ok: true, code: 'holder-unreachable' });
     expect(v.message).toMatch(/predate the probe route/);
+  });
+
+  it('keeps a partial negative probe undetermined when the actual holder did not answer', () => {
+    const v = judgeHolderBootInvariant({
+      storeLocked: true,
+      holderFound: false,
+      answered: [3070, 3170, 16964],
+      probed: [3070, 3170, 3271, 16964],
+    });
+    expect(v).toMatchObject({ ok: true, code: 'holder-unreachable' });
+    expect(v.message).toContain('unanswered 3271');
+    expect(v.message).toContain('undetermined, NOT a D-025 violation');
+    expect(v.message).not.toContain('Some process on this box holds the store while denying');
   });
 
   describe('falsifiability — each control MISSES a distinction the real judge makes', () => {

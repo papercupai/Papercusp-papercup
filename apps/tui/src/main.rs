@@ -1782,12 +1782,9 @@ fn bare_launch(inputs: BareLaunchInputs) -> BareLaunch {
 
 /// Is a `zellij` executable on PATH?
 fn zellij_on_path() -> bool {
-    use std::os::unix::fs::PermissionsExt;
     std::env::var_os("PATH").is_some_and(|path| {
-        std::env::split_paths(&path).any(|dir| {
-            std::fs::metadata(dir.join("zellij"))
-                .is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
-        })
+        std::env::split_paths(&path)
+            .any(|dir| fresh_exec::executable_in(&dir, "zellij").is_some())
     })
 }
 
@@ -1950,11 +1947,11 @@ async fn run_workbench() -> Result<()> {
         Err(_) => {
             // A clean machine must reach the repair form even with no operator.
             // No multiplexer/session binding exists yet on this path.
-            use std::os::unix::process::CommandExt;
-            let error = std::process::Command::new(std::env::current_exe()?)
-                .arg("hud")
-                .env(session_config::SETUP_DRAFT_ENV, "")
-                .exec();
+            let error = fresh_exec::replace(
+                std::process::Command::new(std::env::current_exe()?)
+                    .arg("hud")
+                    .env(session_config::SETUP_DRAFT_ENV, ""),
+            );
             return Err(error.into());
         }
     };
@@ -3698,19 +3695,17 @@ fn reconnect_setup_process(
     reconnect: &session_config::SetupReconnect,
     enhanced: bool,
 ) -> Result<()> {
-    use std::os::unix::process::CommandExt;
     let executable = std::env::current_exe()?;
     let mut command = setup_reconnect_command(&executable, reconnect);
-    exec_restoring_terminal(enhanced, || command.exec().into())
+    exec_restoring_terminal(enhanced, || fresh_exec::replace(&mut command).into())
 }
 
 /// Setup's `l` / `h`: hand the terminal to the bundled psu (D-031), which signs
 /// in when asked and runs PUI on the chosen remote host. PUI re-execs itself as
 /// the psu supervisor so a cancelled or failed sign-in returns here (P-021).
 fn connect_setup_process(sign_in: bool, draft: &str, enhanced: bool) -> Result<()> {
-    use std::os::unix::process::CommandExt;
     let mut command = setup_connect_command(&std::env::current_exe()?, sign_in, draft);
-    exec_restoring_terminal(enhanced, || command.exec().into())
+    exec_restoring_terminal(enhanced, || fresh_exec::replace(&mut command).into())
 }
 
 fn setup_connect_command(
@@ -9885,9 +9880,8 @@ mod tests {
         use std::sync::atomic::{AtomicUsize, Ordering};
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-        let dir = tempfile::tempdir().unwrap();
-        let socket = dir.path().join("account-refetch.sock");
-        let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let socket = std::path::PathBuf::from(format!("tcp://{}", listener.local_addr().unwrap()));
         let account_reads = Arc::new(AtomicUsize::new(0));
         let recorded_account_reads = account_reads.clone();
         let memory_reads = Arc::new(AtomicUsize::new(0));

@@ -11,6 +11,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { capturePgDiagnosticContext, recordPgResult } from '@papercusp/db-org/acquire-registry';
+import * as acquireDiagnostics from '@papercusp/db-org/acquire-registry';
 import { withNamedQueryDiagnosticContext } from '../../../agent-tools/db-diagnostic-correlation-wiring';
 const planExecutionGuard = vi.hoisted(() => vi.fn());
 const priorityOrgPgMock = vi.hoisted(() => vi.fn(async (run: () => Promise<unknown>) => run()));
@@ -505,6 +506,168 @@ describe('POST /agent-mcp/tool-guard', () => {
       expect(out.text, tool).toMatch(/^Refused by identity kernel rule kernel:guard-input-bound: tool input exceeds the guard input bound/);
     }
     expect(readAppliedWornRulesMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('tool-guard request acquisition diagnostics', () => {
+  const request = (owner: string, guardRequestId = randomUUID()) => new Request('http://localhost/api/agent-mcp/tool-guard', {
+    method: 'POST', body: JSON.stringify({ owner, workspace: 'ws', tool: 'Edit', guardRequestId,
+      input: { secret: NEVER_EMIT_MARKER } }),
+  });
+  function timingHarness() {
+    let now = 0;
+    const clock = vi.spyOn(performance, 'now').mockImplementation(() => now);
+    const log = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    return {
+      setNow: (value: number) => { now = value; },
+      diagnostics: () => log.mock.calls.filter(([label]) => label === '[tool-guard-timing]')
+        .map(([, body]) => JSON.parse(body as string)),
+      restore: () => { clock.mockRestore(); log.mockRestore(); },
+    };
+  }
+
+  it('keeps overlapping requests isolated when their acquisitions finish in a foreign context', async () => {
+    const timing = timingHarness();
+    let bothEntered!: () => void;
+    const entered = new Promise<void>(resolve => { bothEntered = resolve; });
+    const pending = new Map<string, { finish: () => void; diagnosticRequestId: string | undefined }>();
+    planExecutionGuard.mockImplementation(({ ownerId }) => {
+      const ticket = acquireDiagnostics.beginAcquire(ownerId === 'first' ? 'org-admin-priority' : 'org-app-priority');
+      const diagnosticRequestId = acquireDiagnostics.pgAcquireTimingSnapshot()?.requestId;
+      return new Promise(resolve => {
+        pending.set(ownerId, { diagnosticRequestId, finish: () => {
+          ticket.acquired(); ticket.release();
+          resolve(ownerId === 'first' ? { code: 'plan_execution_not_ready', reason: 'draft' } : null);
+        } });
+        if (pending.size === 2) bothEntered();
+      });
+    });
+    const firstId = randomUUID();
+    const secondId = randomUUID();
+    try {
+      await acquireDiagnostics.withPgAcquireDiagnostics('foreign.request', async foreignId => {
+        const foreign = acquireDiagnostics.beginAcquire('org-app');
+        foreign.acquired();
+        try {
+          const first = route('/agent-mcp/tool-guard').handler(request('first', firstId));
+          const second = route('/agent-mcp/tool-guard').handler(request('second', secondId));
+          await entered;
+          timing.setNow(600);
+          pending.get('second')!.finish();
+          expect(await (await second).json()).toEqual({ ok: true, text: '' });
+          pending.get('first')!.finish();
+          expect(await (await first).json()).toEqual({ ok: true, text: 'plan_execution_not_ready: draft' });
+          const records = timing.diagnostics();
+          expect(records.map(record => record.guardRequestId)).toEqual([secondId, firstId]);
+          for (const [index, owner] of ['second', 'first'].entries()) {
+            const snapshot = records[index].pgAcquisitions;
+            expect(snapshot).toMatchObject({ coverage: 'instrumented-acquisition-seam-only',
+              requestId: pending.get(owner)!.diagnosticRequestId, operation: 'native-tool-guard', omitted: 0 });
+            expect(snapshot.requestId).not.toBe(foreignId);
+            expect(snapshot.requestId).not.toBe(records[index].guardRequestId);
+            expect(snapshot.acquisitions).toEqual([expect.objectContaining({
+              pool: owner === 'first' ? 'org-admin-priority' : 'org-app-priority', outcome: 'acquired',
+            })]);
+          }
+          expect(records[0].pgAcquisitions.requestId).not.toBe(records[1].pgAcquisitions.requestId);
+          expect(JSON.stringify(records)).not.toContain(NEVER_EMIT_MARKER);
+        } finally { foreign.release(); }
+      });
+    } finally { timing.restore(); }
+  });
+
+  it('preserves partial histories on early refusal and labels pending waits as unobserved', async () => {
+    const timing = timingHarness();
+    let waiting: ReturnType<typeof acquireDiagnostics.beginAcquire> | undefined;
+    let finishIdentity: ((value: null) => void) | undefined;
+    planExecutionGuard.mockImplementation(async () => {
+      const completed = acquireDiagnostics.beginAcquire('org-admin-priority');
+      completed.acquired(); completed.release();
+      const cancelled = acquireDiagnostics.beginAcquire('org-app-priority');
+      cancelled.release();
+      await Promise.resolve();
+      timing.setNow(600);
+      return { code: 'plan_execution_not_ready', reason: 'draft' };
+    });
+    readAppliedWornRulesMock.mockImplementation(() => {
+      waiting = acquireDiagnostics.beginAcquire('org-app-priority');
+      return new Promise<null>(resolve => { finishIdentity = resolve; });
+    });
+    try {
+      const res = await route('/agent-mcp/tool-guard').handler(request('builder'));
+      expect(await res.json()).toEqual({ ok: true, text: 'plan_execution_not_ready: draft' });
+      expect(waiting).toBeDefined();
+      const snapshot = timing.diagnostics()[0].pgAcquisitions;
+      expect(snapshot).toMatchObject({ coverage: 'instrumented-acquisition-seam-only',
+        timing: 'begin-to-acquired-or-release-not-query-time', pendingAcquisitions: 'not-retained', omitted: 0 });
+      expect(snapshot.acquisitions.map((entry: { outcome: string }) => entry.outcome))
+        .toEqual(['acquired', 'released-before-acquire']);
+      waiting!.release();
+      finishIdentity!(null);
+      await Promise.resolve();
+      expect(timing.diagnostics()[0].pgAcquisitions).toEqual(snapshot);
+    } finally { waiting?.release(); finishIdentity?.(null); timing.restore(); }
+  });
+
+  it('retains the instrument bound and omitted count without adding reads or changing denial', async () => {
+    const timing = timingHarness();
+    planExecutionGuard.mockImplementation(async () => {
+      for (let index = 0; index < acquireDiagnostics.PG_ACQUIRE_TIMING_LIMIT + 3; index++) {
+        const ticket = acquireDiagnostics.beginAcquire('org-admin-priority');
+        ticket.acquired(); ticket.release();
+      }
+      timing.setNow(600);
+      return { code: 'plan_execution_not_ready', reason: 'draft' };
+    });
+    try {
+      const res = await route('/agent-mcp/tool-guard').handler(request('builder'));
+      expect(await res.json()).toEqual({ ok: true, text: 'plan_execution_not_ready: draft' });
+      const snapshot = timing.diagnostics()[0].pgAcquisitions;
+      expect(snapshot.capacity).toBe(acquireDiagnostics.PG_ACQUIRE_TIMING_LIMIT);
+      expect(snapshot.acquisitions).toHaveLength(acquireDiagnostics.PG_ACQUIRE_TIMING_LIMIT);
+      expect(snapshot.omitted).toBe(3);
+      expect(planExecutionGuard).toHaveBeenCalledTimes(1);
+      expect(readAppliedWornRulesMock).not.toHaveBeenCalled();
+    } finally { timing.restore(); }
+  });
+
+  it('keeps the 500ms threshold and distinguishes an empty observed history from unavailable diagnostics', async () => {
+    const timing = timingHarness();
+    try {
+      for (const duration of [499, 500]) {
+        timing.setNow(0);
+        planExecutionGuard.mockImplementation(async () => { timing.setNow(duration); return null; });
+        const res = await route('/agent-mcp/tool-guard').handler(request('builder'));
+        expect(await res.json()).toEqual({ ok: true, text: '' });
+        expect(timing.diagnostics()).toHaveLength(duration < 500 ? 0 : 1);
+      }
+      expect(timing.diagnostics()[0].pgAcquisitions).toMatchObject({
+        coverage: 'instrumented-acquisition-seam-only', acquisitions: [], omitted: 0,
+        pendingAcquisitions: 'not-retained',
+      });
+    } finally { timing.restore(); }
+  });
+
+  it.each(['allow', 'refuse', 'throw'] as const)('a throwing snapshot preserves the original %s result', async outcome => {
+    const timing = timingHarness();
+    const originalError = new Error('original authority read failed');
+    const snapshot = vi.spyOn(acquireDiagnostics, 'pgAcquireTimingSnapshot').mockImplementation(() => {
+      throw new Error(NEVER_EMIT_MARKER);
+    });
+    planExecutionGuard.mockImplementation(async () => {
+      timing.setNow(600);
+      if (outcome === 'throw') throw originalError;
+      return outcome === 'refuse' ? { code: 'plan_execution_not_ready', reason: 'draft' } : null;
+    });
+    try {
+      const result = route('/agent-mcp/tool-guard').handler(request('builder'));
+      if (outcome === 'throw') await expect(result).rejects.toBe(originalError);
+      else expect(await (await result).json()).toEqual({ ok: true,
+        text: outcome === 'refuse' ? 'plan_execution_not_ready: draft' : '' });
+      expect(snapshot).toHaveBeenCalledTimes(1);
+      expect(timing.diagnostics()[0].pgAcquisitions).toEqual({ coverage: 'unavailable' });
+      expect(JSON.stringify(timing.diagnostics())).not.toContain(NEVER_EMIT_MARKER);
+    } finally { snapshot.mockRestore(); timing.restore(); }
   });
 });
 

@@ -14,6 +14,7 @@ import {
 import { buildAcceptanceBarSeed } from './acceptance-bar-seed';
 import { specClauseWriteIssues } from './agent-tools/plans/spec-clauses-store';
 import { AcceptanceBarCandidateError } from './acceptance-bar-projection';
+import { rubricTemplateDataAuthoringSchema } from './agent-tools/plans/rubric-template';
 
 // Mirrors the fixture in acceptance-bar-amendment.test.ts. R-1 mapped to P-001 is what
 // makes the canonical identity `AUTO-BAR-R-1-P-001` -- the exact clause that wedged the
@@ -68,7 +69,7 @@ function seedTemplateData(planContent = subjectPlan()) {
     rubricRevision: 4,
   });
   if (!seeded.ok) throw new Error('fixture seed failed');
-  return seeded.templateData;
+  return rubricTemplateDataAuthoringSchema.parse(seeded.templateData);
 }
 
 /** One row of the clause-projection SELECT, defaulting to a healthy bar-linked clause. */
@@ -81,7 +82,7 @@ function clauseRow(overrides: Record<string, unknown> = {}) {
     source_bar_hash: 'stored-bar-hash',
     plan_item_id: 'P-001',
     behavior: 'The writer persists one canonical BAR.',
-    behavior_class: 'observable',
+    behavior_class: 'happy-path',
     falsifier: null,
     required_evidence: ['tree'],
     required_test_layers: [],
@@ -170,7 +171,7 @@ describe('complete generated candidate preflight (P-002)', () => {
     const expected = specClauseWriteIssues({
       specId: row.spec_id, expectedRevision: 1, planItemId: 'P-001',
       behavior: row.behavior, behaviorClass: 'happy-path', lifecycleStatus: 'active',
-      falsifier,
+      falsifier, actorId: 'preview',
     });
     expect(expected).toEqual([{ status: 'falsifier_invalid', specId: row.spec_id, reason: 'required_scenario_duplicate' }]);
     await expect(preview([row], data)).rejects.toThrow(JSON.stringify(expected[0]));

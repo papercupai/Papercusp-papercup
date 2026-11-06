@@ -1321,7 +1321,13 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     git(fixture.repo, ['rm', '-r', '--', 'node_modules', 'apps/operator/node_modules']);
     const script = 'scripts/source-preview.mjs';
     const helper = 'papercusp-desktop/bin/lib/pinned-deps.sh';
-    write(fixture.repo, script, "import value from '@native-proof/runtime';\nimport { typed } from './schema';\nif (value !== typed) throw Error('wrong dependency');\nconsole.log(process.argv.includes('verifier-measure') ? '4096' : 'inputs-ok');\n");
+    write(fixture.repo, script, [
+      "import value from '@native-proof/runtime';",
+      "import { typed } from './schema';",
+      "if (value !== typed) throw Error('wrong dependency');",
+      `if (process.argv.includes('verifier-measure') && process.argv.includes('--ref')) { const index = process.argv.indexOf('--repo'); if (index < 0 || process.argv[index + 1] !== ${JSON.stringify(fixture.repo)}) throw Error('measurement must use the Git source repository'); }`,
+      "console.log(process.argv.includes('verifier-measure') ? '4096' : 'inputs-ok');",
+    ].join('\n') + '\n');
     write(fixture.repo, 'scripts/schema/index.ts', "export const typed: string = 'private-snapshot';\n");
     write(fixture.repo, 'scripts/schema/package.json', '{"type":"module"}\n');
     write(fixture.repo, DEPENDENCY_POLICY_PATH, DEPENDENCY_POLICY);
@@ -2804,6 +2810,25 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     await expect(validateVerifierInputs({ repo: fixture.repo, ref: fixture.commit, inputs: [input] }))
       .rejects.toThrow(`dirty tested-input mismatch: ${input}`);
     expect(readdirSync(tmp).sort()).toEqual(before);
+  });
+
+  it('keeps committed input and size checks rooted when the verifier source is nested in its worktree', async () => {
+    const repo = join(tmp, 'verifier-nested-input-source');
+    mkdirSync(repo, { recursive: true });
+    git(repo, ['init', '-q', '-b', 'main']);
+    const input = 'src/lsp-fleet-replay-runtime.ts';
+    write(repo, input, 'export const runtime = "pinned";\n');
+    git(repo, ['add', input]);
+    git(repo, ['commit', '-qm', 'source']);
+    const commit = git(repo, ['rev-parse', 'HEAD']);
+    const snapshot = join(repo, 'apps/operator/dist-verify/nested');
+    mkdirSync(join(snapshot, dirname(input)), { recursive: true });
+    cpSync(join(repo, input), join(snapshot, input));
+
+    const checked = await validateVerifierInputs({ repo: snapshot, ref: commit, inputs: [input] });
+    expect(checked).toEqual({ sha: commit, paths: [input] });
+    expect(measureVerifierSourceBytes({ repo: snapshot, ref: commit }))
+      .toBe(measureVerifierSourceBytes({ repo, ref: commit }));
   });
 
   it('shares native tooling validation with preparation and refuses drift before allocating', async () => {

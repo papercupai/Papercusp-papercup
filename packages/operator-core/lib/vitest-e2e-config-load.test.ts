@@ -1,7 +1,7 @@
 import { resolve } from 'node:path';
 import { loadConfigFromFile } from 'vite';
 import { describe, expect, it, vi } from 'vitest';
-import { prepareRuntimeReader } from '../vitest.e2e.config';
+import { prepareRuntimeReader, waitForRuntimeWitness } from '../vitest.e2e.config';
 import { unitExcludedVitestTest } from '../../../scripts/lib/related-tests.mjs';
 
 describe('operator e2e config loading', () => {
@@ -62,6 +62,67 @@ describe('operator e2e config loading', () => {
       } finally { vi.unstubAllEnvs(); }
     },
   );
+
+  it.each([
+    ['staging', 'packages/operator-core/test/fixtures/session-recovery.live-profile.json', 'http://127.0.0.1:9171', '3170'],
+    ['release', 'packages/operator-core/test/fixtures/session-recovery-release.live-profile.json', 'http://127.0.0.1:3170', '3070'],
+  ])('rejects a %s session-recovery URL that disagrees with its profile before loading runtime code', async (_route, profile, operatorUrl, expectedPort) => {
+    vi.stubEnv('PAPERCUSP_APP_OPERATION_LIVE_PROFILE', profile);
+    vi.stubEnv('PAPERCUSP_OPERATOR_URL', operatorUrl);
+    vi.stubEnv('PAPERCUSP_SID', 'test-session');
+    vi.stubEnv('PAPERCUSP_TEST_RUN_WORKSPACE', 'test-workspace');
+    const load = vi.fn();
+    const pg = vi.fn();
+    try {
+      await expect(prepareRuntimeReader(load, pg)).rejects.toThrow(
+        `live-profile-selected-operator-port-mismatch:expected-${expectedPort}`,
+      );
+      expect(load).not.toHaveBeenCalled();
+      expect(pg).not.toHaveBeenCalled();
+    } finally { vi.unstubAllEnvs(); }
+  });
+
+  it.each([
+    ['staging', 'packages/operator-core/test/fixtures/session-recovery.live-profile.json', 'http://127.0.0.1:3170'],
+    ['release', 'packages/operator-core/test/fixtures/session-recovery-release.live-profile.json', 'http://127.0.0.1:3070'],
+  ])('accepts the %s session-recovery URL declared by its profile', async (_route, profile, operatorUrl) => {
+    vi.stubEnv('PAPERCUSP_APP_OPERATION_LIVE_PROFILE', profile);
+    vi.stubEnv('PAPERCUSP_OPERATOR_URL', operatorUrl);
+    vi.stubEnv('PAPERCUSP_SID', 'test-session');
+    vi.stubEnv('PAPERCUSP_TEST_RUN_WORKSPACE', 'test-workspace');
+    const load = vi.fn(async () => ({
+      listRuntimeVintage: vi.fn(async () => []),
+      measureRuntimeVintageEnvironment: vi.fn(() => null),
+    }));
+    const pg = vi.fn();
+    try {
+      expect(await prepareRuntimeReader(load, pg)).toBeTypeOf('function');
+      expect(load).toHaveBeenCalledOnce();
+      expect(pg).toHaveBeenCalledOnce();
+    } finally { vi.unstubAllEnvs(); }
+  });
+
+  it('waits for a late runtime-vintage fingerprint before selecting the live runtime', async () => {
+    const witness = { fingerprint: 'a'.repeat(64) };
+    const read = vi.fn().mockResolvedValueOnce(null).mockResolvedValueOnce(witness);
+    const sleep = vi.fn(async () => {});
+    await expect(waitForRuntimeWitness(read, { sleep })).resolves.toEqual(witness);
+    expect(read).toHaveBeenCalledTimes(2);
+    expect(sleep).toHaveBeenCalledWith(250);
+  });
+
+  it('bounds selected-runtime convergence when the host witness never arrives', async () => {
+    let elapsedMs = 0;
+    const read = vi.fn(async () => null);
+    const sleep = vi.fn(async (milliseconds: number) => { elapsedMs += milliseconds; });
+    await expect(waitForRuntimeWitness(read, {
+      timeoutMs: 600,
+      now: () => elapsedMs,
+      sleep,
+    })).rejects.toThrow('live-profile-runtime-vintage-not-ready-after-600ms');
+    expect(read).toHaveBeenCalledTimes(3);
+    expect(elapsedMs).toBe(600);
+  });
 
   it.each(['integration', 'e2e'])('refuses incomplete parked profile inputs while loading the %s config', async (layer) => {
     vi.stubEnv('PAPERCUSP_APP_OPERATION_LIVE_PROFILE',
@@ -180,7 +241,7 @@ describe('operator e2e config loading', () => {
   it('reads runtime witnesses from the reporter ledger instead of an embedded app database', async () => {
     vi.stubEnv('PAPERCUSP_APP_OPERATION_LIVE_PROFILE',
       'docs/evidence/app-agent-tasks-durable-execution-2026-10-06/live-e2e-profile-20261007.json');
-    vi.stubEnv('PAPERCUSP_TEST_RUNS_DB_URL', 'postgresql://ledger.test:5432/papercusp');
+    vi.stubEnv('PAPERCUSP_TEST_RUNS_DB_URL', 'postgresql://localhost:5432/papercusp');
     vi.stubEnv('HARNESS_ADMIN_DATABASE_URL', 'postgresql://embedded.test:24680/papercusp');
     vi.stubEnv('PAPERCUSP_TEST_RUN_WORKSPACE', 'shared-ledger-workspace');
     vi.stubEnv('PAPERCUSP_WORKSPACE_ID', 'verify-tauri-isolated-fixture');
@@ -198,7 +259,11 @@ describe('operator e2e config loading', () => {
         listRuntimeVintage, measureRuntimeVintageEnvironment,
       }), async () => pg as any);
       expect(await reader!()).toMatchObject({ fingerprint: 'b'.repeat(64) });
-      expect(pg).toHaveBeenCalledWith('postgresql://ledger.test:5432/papercusp', expect.any(Object));
+      expect(pg).toHaveBeenCalledWith('postgresql://localhost:5432/papercusp', expect.objectContaining({
+        host: '127.0.0.1',
+        max: 1,
+        connect_timeout: 1,
+      }));
       expect(listRuntimeVintage).toHaveBeenCalledWith('shared-ledger-workspace', sql, expect.any(Array));
       expect(measureRuntimeVintageEnvironment).toHaveBeenCalledWith(rows, expect.any(Array));
       expect(sql.end).toHaveBeenCalledWith({ timeout: 0 });
@@ -217,6 +282,41 @@ describe('operator e2e config loading', () => {
       }), async () => pg as any);
       await expect(reader!()).rejects.toThrow('runtime ledger unavailable');
       expect(sql.end).toHaveBeenCalledWith({ timeout: 0 });
+    } finally { vi.unstubAllEnvs(); }
+  });
+
+  it.each([
+    ['remote plain', 'postgresql://ledger.example:5432/papercusp', ''],
+    ['localhost TLS', 'postgresql://localhost:5432/papercusp?sslmode=verify-full', ''],
+    ['localhost with PGSSL', 'postgresql://localhost:5432/papercusp', 'require'],
+  ])('preserves the %s runtime-witness route', async (_route, url, pgSsl) => {
+    vi.stubEnv('PAPERCUSP_APP_OPERATION_LIVE_PROFILE',
+      'docs/evidence/app-agent-tasks-durable-execution-2026-10-06/live-e2e-profile-20261007.json');
+    vi.stubEnv('PAPERCUSP_TEST_RUNS_DB_URL', url);
+    vi.stubEnv('PAPERCUSP_TEST_RUN_WORKSPACE', 'shared-ledger-workspace');
+    vi.stubEnv('PAPERCUSP_WORKSPACE_ID', 'verify-tauri-isolated-fixture');
+    vi.stubEnv('PGSSL', pgSsl);
+    const sql = { end: vi.fn(async () => {}) };
+    let actualUrl: string | undefined;
+    let actualOptions: Record<string, unknown> | undefined;
+    const pg = vi.fn((target: string, options: Record<string, unknown>) => {
+      actualUrl = target;
+      actualOptions = options;
+      return sql;
+    });
+    try {
+      const reader = await prepareRuntimeReader(async () => ({
+        listRuntimeVintage: async () => [],
+        measureRuntimeVintageEnvironment: () => 'c'.repeat(64),
+      }), async () => pg as any);
+      await reader!();
+      expect(actualUrl).toBe(url);
+      expect(actualOptions).toMatchObject({
+        max: 1,
+        connect_timeout: 1,
+        onnotice: expect.any(Function),
+      });
+      expect(actualOptions).not.toHaveProperty('host');
     } finally { vi.unstubAllEnvs(); }
   });
 });
