@@ -1,0 +1,302 @@
+---
+rel_path: "security/p001-transformers-package-source-preparation-20261106-v1.json"
+updated_at: 1793940845979
+_body: "content"
+---
+
+{
+  "schema": "p001-transformers-package-source-preparation-v1",
+  "plan": "app-security-runtime-boundaries-and-defense-in-depth-2026-10-31",
+  "workItem": "WI-6554700010044289",
+  "currentWorkItem": "WI-6554700010045753",
+  "producer": "su-9aa0bac1-57ab-408e-a009-fd2b58012aa0",
+  "status": "package-source-identities-only-unqualified",
+  "recordedAt": "2026-11-06T04:54:05.957Z",
+  "sources": {
+    "priorCanonical": "security/p001-native-distribution-source-classification-20261106-rerank-dependency-v18.json",
+    "identities": "security/p001-transformers-package-source-identities-20261106-v1.json",
+    "verification": "security/p001-transformers-package-source-verification-20261106-v1.json"
+  },
+  "evidenceScope": "Public tarball matches retained lock SHA512; two independent acquisitions and archive readers agree manifest and four declared entry byte identities. Entry source effect analysis is pending. No install scripts/module/worker/native execution; no proof that installed runtime bytes match this package.",
+  "identities": {
+    "schema": "p001-transformers-package-source-identities-v1",
+    "acquiredAt": "2026-11-06T04:52:38.889400+00:00",
+    "sourceLockRow": {
+      "path": "node_modules/@huggingface/transformers",
+      "entry": {
+        "version": "4.2.0",
+        "resolved": "https://registry.npmjs.org/@huggingface/transformers/-/transformers-4.2.0.tgz",
+        "integrity": "sha512-8BRCoBMH0XsWaEIamuR0LrJGAfftgHAfb2Vrffy0VKlSAE/MnUJ5/h/zTfEP3fDIft+nk7TqB8xXEyABGitBjQ==",
+        "license": "Apache-2.0",
+        "dependencies": {
+          "@huggingface/jinja": "^0.5.6",
+          "@huggingface/tokenizers": "^0.1.3",
+          "onnxruntime-node": "1.24.3",
+          "onnxruntime-web": "1.26.0-dev.20260416-b7804b056c",
+          "sharp": "^0.34.5"
+        }
+      }
+    },
+    "acquisition": {
+      "requestedUrl": "https://registry.npmjs.org/@huggingface/transformers/-/transformers-4.2.0.tgz",
+      "finalUrl": "https://registry.npmjs.org/@huggingface/transformers/-/transformers-4.2.0.tgz",
+      "status": 200,
+      "headers": {
+        "Content-Type": "application/octet-stream",
+        "Content-Length": "2162844",
+        "ETag": "\"40c7bc57eb381e80e230d5eb9f1d27c1\"",
+        "Last-Modified": "Wed, 22 Apr 2026 16:28:42 GMT"
+      },
+      "archiveBytes": 2162844,
+      "archiveSha256": "0874b37bbeed0441d37e4445f8a543ab37b41c2ba6bb89f37c5474074b34deee",
+      "archiveIntegrity": "sha512-8BRCoBMH0XsWaEIamuR0LrJGAfftgHAfb2Vrffy0VKlSAE/MnUJ5/h/zTfEP3fDIft+nk7TqB8xXEyABGitBjQ==",
+      "retainedLockIntegrityMatches": true,
+      "tarReadMode": "in-memory metadata/read only; no file extraction/install script/module execution"
+    },
+    "manifest": {
+      "path": "package.json",
+      "bytes": 2673,
+      "sha256": "9cf12901d934e5a0628c6f163484abade392ab2d3b369d458ed3dfdeaa7f9a39",
+      "text": "{\n  \"name\": \"@huggingface/transformers\",\n  \"version\": \"4.2.0\",\n  \"description\": \"State-of-the-art Machine Learning for the web. Run 🤗 Transformers directly in your browser, with no need for a server!\",\n  \"main\": \"./dist/transformers.node.cjs\",\n  \"types\": \"./types/transformers.d.ts\",\n  \"type\": \"module\",\n  \"exports\": {\n    \"node\": {\n      \"import\": {\n        \"types\": \"./types/transformers.d.ts\",\n        \"default\": \"./dist/transformers.node.mjs\"\n      },\n      \"require\": {\n        \"types\": \"./types/transformers.d.ts\",\n        \"default\": \"./dist/transformers.node.cjs\"\n      }\n    },\n    \"default\": {\n      \"types\": \"./types/transformers.d.ts\",\n      \"default\": \"./dist/transformers.web.js\"\n    }\n  },\n  \"repository\": {\n    \"type\": \"git\",\n    \"url\": \"git+https://github.com/huggingface/transformers.js.git\"\n  },\n  \"keywords\": [\n    \"transformers\",\n    \"transformers.js\",\n    \"huggingface\",\n    \"hugging face\",\n    \"machine learning\",\n    \"deep learning\",\n    \"artificial intelligence\",\n    \"AI\",\n    \"ML\"\n  ],\n  \"author\": \"Hugging Face\",\n  \"license\": \"Apache-2.0\",\n  \"bugs\": {\n    \"url\": \"https://github.com/huggingface/transformers.js/issues\"\n  },\n  \"homepage\": \"https://github.com/huggingface/transformers.js#readme\",\n  \"dependencies\": {\n    \"@huggingface/jinja\": \"^0.5.6\",\n    \"@huggingface/tokenizers\": \"^0.1.3\",\n    \"onnxruntime-node\": \"1.24.3\",\n    \"onnxruntime-web\": \"1.26.0-dev.20260416-b7804b056c\",\n    \"sharp\": \"^0.34.5\"\n  },\n  \"devDependencies\": {\n    \"@types/jest\": \"^30.0.0\",\n    \"@types/node\": \"^24.1.0\",\n    \"@webgpu/types\": \"^0.1.69\",\n    \"esbuild\": \"^0.27.2\",\n    \"jest\": \"^30.2.0\",\n    \"jest-environment-node\": \"^30.2.0\",\n    \"jsdoc-to-markdown\": \"^9.1.3\",\n    \"typescript\": \"5.9.3\"\n  },\n  \"files\": [\n    \"src\",\n    \"dist\",\n    \"types\",\n    \"README.md\",\n    \"LICENSE\",\n    \"!**/*.tsbuildinfo\"\n  ],\n  \"publishConfig\": {\n    \"access\": \"public\"\n  },\n  \"jsdelivr\": \"./dist/transformers.min.js\",\n  \"unpkg\": \"./dist/transformers.min.js\",\n  \"scripts\": {\n    \"format\": \"prettier --write . --ignore-path ../../.prettierignore\",\n    \"format:check\": \"prettier --check . --ignore-path ../../.prettierignore\",\n    \"typegen\": \"tsc --build\",\n    \"dev\": \"node scripts/dev.mjs\",\n    \"build\": \"node scripts/build.mjs && pnpm typegen\",\n    \"test\": \"node --experimental-vm-modules --expose-gc node_modules/jest/bin/jest.js --verbose --logHeapUsage\",\n    \"readme\": \"python ./docs/scripts/build_readme.py\",\n    \"docs-api\": \"node ./docs/scripts/generate.js\",\n    \"docs-build\": \"doc-builder build transformers.js ./docs/source/ --not_python_module --build_dir ./docs/build/\",\n    \"docs-preview\": \"doc-builder preview transformers.js ./docs/source/ --not_python_module\"\n  }\n}",
+      "parsed": {
+        "name": "@huggingface/transformers",
+        "version": "4.2.0",
+        "description": "State-of-the-art Machine Learning for the web. Run 🤗 Transformers directly in your browser, with no need for a server!",
+        "main": "./dist/transformers.node.cjs",
+        "types": "./types/transformers.d.ts",
+        "type": "module",
+        "exports": {
+          "node": {
+            "import": {
+              "types": "./types/transformers.d.ts",
+              "default": "./dist/transformers.node.mjs"
+            },
+            "require": {
+              "types": "./types/transformers.d.ts",
+              "default": "./dist/transformers.node.cjs"
+            }
+          },
+          "default": {
+            "types": "./types/transformers.d.ts",
+            "default": "./dist/transformers.web.js"
+          }
+        },
+        "repository": {
+          "type": "git",
+          "url": "git+https://github.com/huggingface/transformers.js.git"
+        },
+        "keywords": [
+          "transformers",
+          "transformers.js",
+          "huggingface",
+          "hugging face",
+          "machine learning",
+          "deep learning",
+          "artificial intelligence",
+          "AI",
+          "ML"
+        ],
+        "author": "Hugging Face",
+        "license": "Apache-2.0",
+        "bugs": {
+          "url": "https://github.com/huggingface/transformers.js/issues"
+        },
+        "homepage": "https://github.com/huggingface/transformers.js#readme",
+        "dependencies": {
+          "@huggingface/jinja": "^0.5.6",
+          "@huggingface/tokenizers": "^0.1.3",
+          "onnxruntime-node": "1.24.3",
+          "onnxruntime-web": "1.26.0-dev.20260416-b7804b056c",
+          "sharp": "^0.34.5"
+        },
+        "devDependencies": {
+          "@types/jest": "^30.0.0",
+          "@types/node": "^24.1.0",
+          "@webgpu/types": "^0.1.69",
+          "esbuild": "^0.27.2",
+          "jest": "^30.2.0",
+          "jest-environment-node": "^30.2.0",
+          "jsdoc-to-markdown": "^9.1.3",
+          "typescript": "5.9.3"
+        },
+        "files": [
+          "src",
+          "dist",
+          "types",
+          "README.md",
+          "LICENSE",
+          "!**/*.tsbuildinfo"
+        ],
+        "publishConfig": {
+          "access": "public"
+        },
+        "jsdelivr": "./dist/transformers.min.js",
+        "unpkg": "./dist/transformers.min.js",
+        "scripts": {
+          "format": "prettier --write . --ignore-path ../../.prettierignore",
+          "format:check": "prettier --check . --ignore-path ../../.prettierignore",
+          "typegen": "tsc --build",
+          "dev": "node scripts/dev.mjs",
+          "build": "node scripts/build.mjs && pnpm typegen",
+          "test": "node --experimental-vm-modules --expose-gc node_modules/jest/bin/jest.js --verbose --logHeapUsage",
+          "readme": "python ./docs/scripts/build_readme.py",
+          "docs-api": "node ./docs/scripts/generate.js",
+          "docs-build": "doc-builder build transformers.js ./docs/source/ --not_python_module --build_dir ./docs/build/",
+          "docs-preview": "doc-builder preview transformers.js ./docs/source/ --not_python_module"
+        }
+      }
+    },
+    "entryIdentities": [
+      {
+        "path": "dist/transformers.node.cjs",
+        "bytes": 1307721,
+        "sha256": "398bcef3e3b36d189d39c00dcf2e1c31e22e72ca83969c753800fa158c8df5a4",
+        "kind": "regular-file"
+      },
+      {
+        "path": "dist/transformers.node.mjs",
+        "bytes": 1256499,
+        "sha256": "4932ec78a6b136d97d09a12093afb476530d9aa099dbaf1f9822ad56bfe2bc3d",
+        "kind": "regular-file"
+      },
+      {
+        "path": "dist/transformers.web.js",
+        "bytes": 1099109,
+        "sha256": "25e0cbdf5df922996299fcd2cf835101ba979b134389a0dcc54f92022ca7e0ff",
+        "kind": "regular-file"
+      },
+      {
+        "path": "types/transformers.d.ts",
+        "bytes": 1887,
+        "sha256": "d2a8597db6c0ee8f24d3545ae56decee0e48db0fe24b472a989e72e5ed5ff235",
+        "kind": "regular-file"
+      }
+    ],
+    "candidateExecution": false,
+    "installedRuntimeIdentityProven": false
+  },
+  "verification": {
+    "schema": "p001-transformers-package-source-verification-v1",
+    "method": "independent Node fetch/crypto/zlib and raw tar-header reader against Python urllib/hashlib/tarfile extraction",
+    "archiveIntegrityMatchesRetainedLock": true,
+    "archiveIdentityMatches": true,
+    "manifestTextAndIdentityMatch": true,
+    "entries": [
+      {
+        "path": "dist/transformers.node.cjs",
+        "bytes": 1307721,
+        "sha256": "398bcef3e3b36d189d39c00dcf2e1c31e22e72ca83969c753800fa158c8df5a4",
+        "identityMatches": true
+      },
+      {
+        "path": "dist/transformers.node.mjs",
+        "bytes": 1256499,
+        "sha256": "4932ec78a6b136d97d09a12093afb476530d9aa099dbaf1f9822ad56bfe2bc3d",
+        "identityMatches": true
+      },
+      {
+        "path": "dist/transformers.web.js",
+        "bytes": 1099109,
+        "sha256": "25e0cbdf5df922996299fcd2cf835101ba979b134389a0dcc54f92022ca7e0ff",
+        "identityMatches": true
+      },
+      {
+        "path": "types/transformers.d.ts",
+        "bytes": 1887,
+        "sha256": "d2a8597db6c0ee8f24d3545ae56decee0e48db0fe24b472a989e72e5ed5ff235",
+        "identityMatches": true
+      }
+    ],
+    "candidateExecution": false,
+    "installedRuntimeIdentityProven": false
+  },
+  "sourceFindings": [
+    {
+      "source": "package.json exports",
+      "finding": "node.import default selects dist/transformers.node.mjs; node.require default and main select dist/transformers.node.cjs. Browser default selects dist/transformers.web.js; type declarations are separate."
+    },
+    {
+      "source": "verified archive acquisition",
+      "finding": "Python urllib/hashlib/tarfile and independent Node fetch/crypto/zlib/raw tar reader agree exact retained integrity, archiveSHA256, complete manifest text and four entry identities."
+    },
+    {
+      "source": "prior retained ONNX lock row",
+      "finding": "Exact onnxruntime-node artifact/native installer identity remains unresolved; Transformers package identity cannot supply that proof."
+    }
+  ],
+  "populationStates": [
+    {
+      "population": "handler",
+      "status": "unknown",
+      "closureAccepted": false
+    },
+    {
+      "population": "effect",
+      "status": "unknown",
+      "closureAccepted": false
+    },
+    {
+      "population": "entry-point",
+      "status": "unknown",
+      "closureAccepted": false
+    },
+    {
+      "population": "loader",
+      "status": "unknown",
+      "closureAccepted": false
+    },
+    {
+      "population": "native-helper",
+      "status": "unknown",
+      "closureAccepted": false
+    },
+    {
+      "population": "distribution",
+      "status": "unknown",
+      "closureAccepted": false
+    },
+    {
+      "population": "observed-route",
+      "status": "unknown",
+      "closureAccepted": false
+    }
+  ],
+  "missing": [
+    "Complete configured occurrence and package-entry populations.",
+    "Worker script, @papercusp/module-singleton entry, Transformers/onnx native resolution/cache/model effects and both parent/worker/inline execution paths.",
+    "Independently committed row applicability, exact loaded/distribution/platform identities and actual positive/negative enforcement proof.",
+    "Outside-lineage review, authenticated complete authors/admin bootstrap and final exact signed installed-artifact proof.",
+    "WorkerData override, installed dependency/model asset identities and cache/network/native/device effects remain unqualified.",
+    "Exact installed onnxruntime-node distribution/native bytes lack a binding in the retained lock row. Public same-version candidates do not repair that historical binding."
+  ],
+  "applicabilityCommitted": false,
+  "populationComplete": false,
+  "closureAccepted": false,
+  "executionAdmitted": false,
+  "qualificationExecuted": false,
+  "nextNamedSourceUnit": {
+    "package": {
+      "name": "@huggingface/transformers",
+      "version": "4.2.0",
+      "url": "https://registry.npmjs.org/@huggingface/transformers/-/transformers-4.2.0.tgz",
+      "integrity": "sha512-8BRCoBMH0XsWaEIamuR0LrJGAfftgHAfb2Vrffy0VKlSAE/MnUJ5/h/zTfEP3fDIft+nk7TqB8xXEyABGitBjQ==",
+      "archiveSha256": "0874b37bbeed0441d37e4445f8a543ab37b41c2ba6bb89f37c5474074b34deee",
+      "archiveBytes": 2162844
+    },
+    "files": [
+      {
+        "path": "dist/transformers.node.cjs",
+        "bytes": 1307721,
+        "sha256": "398bcef3e3b36d189d39c00dcf2e1c31e22e72ca83969c753800fa158c8df5a4",
+        "kind": "regular-file"
+      },
+      {
+        "path": "dist/transformers.node.mjs",
+        "bytes": 1256499,
+        "sha256": "4932ec78a6b136d97d09a12093afb476530d9aa099dbaf1f9822ad56bfe2bc3d",
+        "kind": "regular-file"
+      }
+    ],
+    "instruction": "Read the two exact pinned Node distribution entries statically next. ESM worker import selects node.import; createRequire resolution in the parent selects node.require. Reuse verified archive and entry identities, do not reinstall/import/execute candidates or replay prior source/tests. Retained onnxruntime-node1.24.3 identity remains version-only: separately dated public metadata or bytes cannot establish historical loaded/native/distribution identity."
+  }
+}

@@ -1,0 +1,962 @@
+---
+rel_path: "security/p001-memory-package-entry-source-preparation-20261106-v1.json"
+updated_at: 1793938148479
+_body: "content"
+---
+
+{
+  "schema": "p001-memory-package-entry-source-preparation-v1",
+  "plan": "app-security-runtime-boundaries-and-defense-in-depth-2026-10-31",
+  "workItem": "WI-6554700010044289",
+  "currentWorkItem": "WI-6554700010045753",
+  "producer": "su-9aa0bac1-57ab-408e-a009-fd2b58012aa0",
+  "status": "UNQUALIFIED_SOURCE_PREPARATION",
+  "recordedAt": "2026-11-06T04:09:08.465Z",
+  "evidenceScope": "Historical pinned package/source declarations only. No candidate import, worker, runtime probe, build, installation, applicability, security qualification or shipment.",
+  "sources": {
+    "priorCanonical": "security/p001-native-distribution-source-classification-20261106-memory-helper-v12.json",
+    "extraction": "security/p001-memory-package-entry-source-extraction-20261106-v2.json",
+    "verification": "security/p001-memory-package-entry-source-verification-20261106-v1.json",
+    "consumer": "packages/operator-core/lib/memory/embed-sidecar-wiring.ts"
+  },
+  "rootIdentityReused": true,
+  "extraction": {
+    "schema": "p001-memory-package-entry-source-extraction-v2",
+    "rootRevision": "42d905b5b2fcbea2bb651178a7ff3c905cf89626",
+    "analyzer": {
+      "name": "typescript compiler API",
+      "version": "6.0.3",
+      "purpose": "offline parsing, no candidate import"
+    },
+    "rootRows": [
+      {
+        "repository": ".",
+        "repositoryRevision": "42d905b5b2fcbea2bb651178a7ff3c905cf89626",
+        "path": "package.json",
+        "gitBlob": "bbf4ac8136895d0555231fb99146f20bb5c40886",
+        "sha256": "2a94c4fd43d93c1453e8d0b13b2047004d5df6b52520dc5a64a15872dc7c4ee3",
+        "bytes": 35330,
+        "selected": {
+          "name": "@papercupai/papercusp-monorepo",
+          "workspaces": [
+            "libs/generic/rerank",
+            "libs/generic/memory"
+          ],
+          "dependencies": {}
+        }
+      },
+      {
+        "repository": ".",
+        "repositoryRevision": "42d905b5b2fcbea2bb651178a7ff3c905cf89626",
+        "path": "packages/operator-core/package.json",
+        "gitBlob": "9eb4ffa762671ef5673cdba77867002001667f7a",
+        "sha256": "7368c8432701a9c3ebdcb8fa94058bd4836f6c85e16372f20d50f3385b9daae4",
+        "bytes": 17554,
+        "selected": {
+          "name": "@papercusp/operator-core",
+          "dependencies": {
+            "@papercusp/memory": "*",
+            "@papercusp/rerank": "*"
+          }
+        }
+      },
+      {
+        "repository": ".",
+        "repositoryRevision": "42d905b5b2fcbea2bb651178a7ff3c905cf89626",
+        "path": "package-lock.json",
+        "gitBlob": "a8cb14da54bc33aedff29301c9abdcf1cab23133",
+        "sha256": "a20ed6c4aa15befa12baf21a955bcadb1d91523c42b834961f1d28170e98cf42",
+        "bytes": 1432077,
+        "selected": {
+          "lockfileVersion": 3,
+          "packages": {
+            "libs/generic/memory": {
+              "name": "@papercusp/memory",
+              "version": "0.1.0",
+              "dependencies": {
+                "@papercusp/module-singleton": "*",
+                "pg": "^8.20.0",
+                "tokenizers": "0.23.2"
+              },
+              "devDependencies": {
+                "@types/pg": "^8.15.5",
+                "vitest": "^4.1.4"
+              },
+              "optionalDependencies": {
+                "@huggingface/transformers": "4.2.0"
+              }
+            },
+            "libs/generic/rerank": {
+              "name": "@papercusp/rerank",
+              "version": "0.1.0",
+              "license": "UNLICENSED",
+              "dependencies": {
+                "@papercusp/module-singleton": "*",
+                "zeroentropy": "^0.1.0-alpha.10"
+              },
+              "peerDependencies": {
+                "@huggingface/transformers": ">=4"
+              },
+              "peerDependenciesMeta": {
+                "@huggingface/transformers": {
+                  "optional": true
+                }
+              }
+            },
+            "node_modules/@papercusp/memory": {
+              "resolved": "libs/generic/memory",
+              "link": true
+            },
+            "node_modules/@papercusp/rerank": {
+              "resolved": "libs/generic/rerank",
+              "link": true
+            }
+          }
+        }
+      }
+    ],
+    "packages": [
+      {
+        "name": "@papercusp/memory",
+        "repository": "libs/generic/memory",
+        "repositoryRevision": "fe9878936d3da86d872fc1a5fdd29877e903d1f0",
+        "gitlink": "160000 commit fe9878936d3da86d872fc1a5fdd29877e903d1f0\tlibs/generic/memory",
+        "manifest": {
+          "repository": "libs/generic/memory",
+          "repositoryRevision": "fe9878936d3da86d872fc1a5fdd29877e903d1f0",
+          "path": "package.json",
+          "gitBlob": "f92795ee429b010cc9ad5cfd823aa0a547ca5487",
+          "sha256": "be1dc2242efc6304cebbb6e7714119de7c9aa2228f28c6960e82aee1b060b100",
+          "bytes": 1336,
+          "text": "{\n  \"name\": \"@papercusp/memory\",\n  \"version\": \"0.1.0\",\n  \"private\": true,\n  \"type\": \"module\",\n  \"description\": \"Persistent-memory store behind a swappable MemoryBackend seam: neutral remember/search/list/forget/update verbs over {id,text,kind,scope,score,metadata}, a backend registry + selector (configureMemory({backend})), and three shipped impls — mem0 (mem0ai/oss + canonical pgvector store, per-embedder vec tables, local BGE embedder, re-embed pass), noop (clean 'no store'), and claude-file (Claude Code topic-file bridge). Host-agnostic — admin URL, LLM credentials, embedder, and backend choice are injected via configureMemory(). Zero @papercusp/@restart runtime deps.\",\n  \"main\": \"./src/index.ts\",\n  \"types\": \"./src/index.ts\",\n  \"exports\": {\n    \".\": {\n      \"types\": \"./src/index.ts\",\n      \"import\": \"./src/index.ts\",\n      \"default\": \"./src/index.ts\"\n    },\n    \"./bench\": {\n      \"types\": \"./src/bench/index.ts\",\n      \"import\": \"./src/bench/index.ts\",\n      \"default\": \"./src/bench/index.ts\"\n    }\n  },\n  \"scripts\": {\n    \"test\": \"vitest run\"\n  },\n  \"dependencies\": {\n    \"@papercusp/module-singleton\": \"*\",\n    \"pg\": \"^8.20.0\",\n    \"tokenizers\": \"0.23.2\"\n  },\n  \"optionalDependencies\": {\n    \"@huggingface/transformers\": \"4.2.0\"\n  },\n  \"devDependencies\": {\n    \"@types/pg\": \"^8.15.5\",\n    \"vitest\": \"^4.1.4\"\n  }\n}\n"
+        },
+        "entry": {
+          "repository": "libs/generic/memory",
+          "repositoryRevision": "fe9878936d3da86d872fc1a5fdd29877e903d1f0",
+          "path": "src/index.ts",
+          "gitBlob": "12e819652c80b15f21ce3816c662d7fabceefc87",
+          "sha256": "201abd830fe18e3e0e4519f2b8a164895b5170b37908bb86d5884257b5fe5b14",
+          "bytes": 9429,
+          "text": "/**\n * @papercusp/memory — the mem0-backed persistent-memory store core.\n *\n * Host-agnostic: the embedded-pg admin URL, LLM credentials, the resolved\n * embedder (a pre-built embed fn + mode + dims), the explicit-mode\n * embedder builder, and the optional adaptive-instruction feed are all\n * injected via `configureMemory()`. mem0 owns its own `pg.Client`, so\n * no shared transaction handle is injected.\n *\n * The operator's curation pipeline (learning loop, pre-turn injection,\n * harness anchoring, dedup judge, insights index) stays in the operator\n * and is built ON TOP of this store via the `memory:*` tool wrappers.\n *\n * Extracted per papercusp-systems-abstraction-2026-05-29 (P-021).\n */\n\nexport {\n  configureMemory,\n  memoryHost,\n  isMemoryConfigured,\n  type MemoryHost,\n  type MemoryCredentials,\n  type ResolvedEmbedder,\n  type EmbedFn,\n} from './config';\n\nexport {\n  getMemoryClient,\n  getResolvedMode,\n  getResolvedProfile,\n  invalidateMemoryClient,\n  disposeMemoryClient,\n  embedForCurrentClient,\n  vectorSearchCanonical,\n} from './mem0-client';\n\n// Injectable fact-extraction LLM seam (mem0-extraction-via-claude-session\n// D-003): hosts implement `ExtractionLlm` (mem0ai's LLM shape) and hand it\n// back from `MemoryHost.getExtractionLlm` to become cascade rung #1.\n// `ExtractionAuthError` is the typed throw that triggers a STICKY demotion\n// to the key rungs (D-004); `FallbackExtractionLlm` is the cascade wrapper\n// (exported for hosts that compose their own cascades + for tests).\nexport {\n  ExtractionAuthError,\n  FallbackExtractionLlm,\n  type ExtractionLlm,\n  type ExtractionLlmMessage,\n  type ExtractionLlmResponse,\n} from './extraction-llm';\n\n// The neutral, swappable store seam (generalize-memory-backend-swappable\n// D-001/D-002/D-004). Consumers call getMemoryBackend() and the neutral\n// verbs; which store serves them is the host's `backend` config flip.\nexport {\n  MemoryUnavailableError,\n  scopesOf,\n  type ListOptions,\n  type ListPageOptions,\n  type MemoryAvailability,\n  type MemoryBackend,\n  type ManagedMemoryWrites,\n  type ManagedMemoryResource,\n  type LegRunStats,\n  type MemoryEntry,\n  type MemoryListPage,\n  type RetrievalProvenance,\n  type ScoreScale,\n  type SearchLegStats,\n  type RememberOptions,\n  type SearchFloorPolicy,\n  type SearchOptions,\n  type SearchOptionsCommon,\n  type UpdatePatch,\n} from './backend';\nexport {\n  LEXICAL_SCOPE_CONCURRENCY,\n  Mem0Backend,\n  extractAddedIds,\n  type Mem0BackendDeps,\n} from './mem0-backend';\nexport { applyScoreFloor, type ScoreFloorOptions } from './score-floor';\n/** The ONE runtime-opaque optional-dependency import — see ./dynamic-import. */\nexport { dynamicImport } from './dynamic-import';\nexport {\n  createTextSimilarity,\n  diversityDisabledByEnv,\n  diversityRerank,\n  lexicalSimilarity,\n  textSimilarity,\n  type DiversityRerankOptions,\n} from './diversity-rerank';\nexport { HybridBackend, type HybridBackendOptions } from './hybrid-backend';\nexport { LexicalLegBackend } from './lexical-leg';\nexport {\n  fuse,\n  fuseCosineGated,\n  DEFAULT_RRF_K,\n  DEFAULT_MIN_LEX_SCORE,\n  type FusionMode,\n  type FusionOptions,\n} from './hybrid-fusion';\nexport { NoopBackend, NOOP_DISABLED_REASON } from './noop-backend';\n// The Claude Code topic-file bridge (generalize-memory-backend-swappable\n// D-005 / claude-memory-projection-integration P-004): read/write the\n// native Claude file memory through the neutral seam. Hosts register it:\n//   registerMemoryBackend('claude-file', () => new ClaudeFileMemoryBackend({ memoryDir }));\nexport {\n  ClaudeFileMemoryBackend,\n  CLAUDE_FILE_BACKEND_NAME,\n  MEMORY_DIR_MISSING_REASON,\n  type ClaudeFileBackendOptions,\n} from './claude-file-backend';\nexport {\n  parseTopicFile,\n  serializeTopicFile,\n  typeForKind,\n  slugify,\n  deriveDescription,\n  claudeProjectMemoryDir,\n  CLAUDE_MEMORY_TYPES,\n  type ClaudeMemoryType,\n  type TopicFile,\n} from './topic-file';\nexport {\n  getMemoryBackend,\n  registerMemoryBackend,\n  registeredMemoryBackends,\n  _resetMemoryBackendsForTest,\n} from './backend-registry';\n\nexport {\n  connectionString,\n  pgFields,\n  pgClientFields,\n  type Mem0PgConnection,\n} from './mem0-connection';\n\nexport {\n  memoryProfileCoverageSql,\n  normalizeMemoryProfileCoverage,\n  reembedMemories,\n  type MemoryProfileCoverage,\n  type ReembedOptions,\n  type ReembedResult,\n} from './reembed';\n\nexport {\n  relinkEntities,\n  type RelinkResult,\n} from './relink-entities';\n\nexport {\n  activeVecTable,\n  embedAndUpsertVector,\n  VEC_TABLE,\n  MODE_DIMS,\n  MEMORY_VECTOR_STORAGE_PROFILES,\n  memoryStorageAcceptsProfile,\n  validateMemoryStorageCompatibility,\n  resolveMemoryVectorBinding,\n  type MemoryVectorStorageProfile,\n  type ResolvedMemoryVectorBinding,\n  type ResolvedVecMode,\n} from './vec-write';\n\nexport {\n  embedViaWorker,\n  buildLocalEmbedder,\n  getWorkerState,\n  _resetWorker,\n  shutdownLocalEmbedder,\n  recycleEmbedWorker,\n  LOCAL_EMBEDDER_MODEL,\n} from './local-embedder-worker';\n\nexport {\n  buildMdenseOnEmbedder,\n  mdenseOnPrompt,\n  readMdenseOnExport,\n  MDENSEON_MODEL,\n  MDENSEON_REVISION,\n  MDENSEON_NATIVE_DIMS,\n  type MdenseOnKind,\n  type MdenseOnExportManifest,\n} from './mdenseon-embedder';\n\n// What device the embedders actually run on. Exported so the sidecar's /healthz\n// can report it: embed latency had no detector, so fourteen filings searched the\n// scheduler for a cause that lived in the execution target.\nexport {\n  EMBED_ORT_PACKAGE,\n  embedRequestedExecution,\n  embedExecutionHealth,\n  embedExecutionTarget,\n  embedGpuProviderAvailable,\n  embedProviderLibraries,\n  ensureEmbedBackendsProbed,\n  type EmbedBackend,\n  type EmbedExecutionHealth,\n  type EmbedExecutionProbe,\n  type EmbedExecutionTarget,\n  type EmbedRequestedExecution,\n} from './execution-target';\n\n// Which device the embedders run on (auto|gpu|cpu: a concrete PAPERCUSP_EMBED_DEVICE\n// host override, else the host-supplied Settings choice), with a\n// verified-by-construction GPU choice and a recorded CPU fallback.\nexport {\n  EMBED_DEVICE_ENV,\n  _resetEmbedDeviceState,\n  constructEmbedPipeline,\n  currentEmbedDeviceDecision,\n  decideEmbedDevice,\n  embedDeviceDemotion,\n  embedDeviceSetting,\n  embedPipelineDevices,\n  parseEmbedDevicePreference,\n  resolveEmbedDevicePreference,\n  setEmbedDeviceSetting,\n  type EmbedDevice,\n  type EmbedDeviceDecision,\n  type EmbedDeviceDemotion,\n  type EmbedDevicePreference,\n  type EmbedDeviceSelection,\n} from './embed-device';\n\nexport {\n  buildGemmaEmbedder,\n  gemmaPrompt,\n  mrlTruncate,\n  GEMMA_MODEL,\n  GEMMA_TARGET_DIMS,\n  type GemmaEmbedKind,\n} from './gemma-embedder';\n\n// The declared dim table (D-001). Exported so callers that CHOOSE a width —\n// the MRL bench sweep especially — can ask whether that width is one the model\n// was actually trained at, instead of re-encoding the model card by hand and\n// letting the two drift.\nexport {\n  EMBEDDER_DIM_SPECS,\n  CANDIDATE_DIM_SPECS,\n  PGVECTOR_METRIC_SPECS,\n  dimSpecFor,\n  isTrainedDim,\n  validateEmbedderDimSpec,\n  validateEmbedderProfile,\n  validateEmbedderProfileRegistry,\n  pgvectorMetricSpec,\n  pgvectorScoreFromDistance,\n  type EmbedderMode,\n  type EmbedderDimSpec,\n  type EmbedderProfileSpec,\n  type EmbeddingProfileId,\n  type EmbeddingRecipeId,\n  type EmbeddingDistanceMetric,\n  type EmbeddingPooling,\n  type EmbeddingOutputDtype,\n  type EmbeddingRevisionPolicy,\n  type EmbeddingNormalization,\n  type PgvectorDistanceOperator,\n  type PgvectorIndexOperatorClass,\n  type PgvectorScoreConversion,\n  type PgvectorMetricSpec,\n  type MrlSupport,\n  type UntrainedCutAck,\n} from './embedder-dims';\n\n// Bake-off candidates for the prose surfaces' untrained-MRL-384 cut (plan\n// prose-embedding-384-untrained-mrl-fix-2026-08-02, P-003). Exported so the\n// eval CLI measures the SAME builders a winner would ship with — measuring a\n// bench-local reimplementation and then shipping a different one is how an\n// embedding decision goes unexamined in the first place.\nexport {\n  buildGraniteEmbedder,\n  graniteNativeDims,\n  GRANITE_MODELS,\n  GRANITE_SPEC_KEYS,\n  type GraniteVariant,\n  type GraniteEmbedKind,\n} from './granite-embedder';\n\nexport {\n  buildQwen3Embedder,\n  qwen3Prompt,\n  QWEN3_MODEL,\n  QWEN3_NATIVE_DIMS,\n  QWEN3_QUERY_TASK,\n  type Qwen3EmbedKind,\n} from './qwen3-embedder';\n\nexport {\n  buildHarrierEmbedder,\n  harrierPrompt,\n  HARRIER_MODEL,\n  HARRIER_NATIVE_DIMS,\n  HARRIER_GRAPH_OUTPUT,\n  HARRIER_QUERY_TASK,\n  type HarrierEmbedKind,\n} from './harrier-embedder';\n\nexport {\n  buildSidecarFirstEmbedder,\n  sidecarEmbedBatch,\n  resolveEmbedSidecarUrl,\n  EMBED_SIDECAR_URL_ENV,\n  DEFAULT_SIDECAR_TIMEOUT_MS,\n  DEFAULT_SIDECAR_MAX_ATTEMPTS,\n  SIDECAR_MAX_TEXT_CHARS,\n  SIDECAR_BATCH_PER_TEXT_MS,\n  SIDECAR_BATCH_TIMEOUT_CAP_MS,\n  sidecarBatchTimeoutMs,\n  SidecarEmbedHttpError,\n  isNonRetryableSidecarError,\n  type SidecarFirstEmbedderOpts,\n  type SidecarEmbedBatchOpts,\n  type SidecarEmbedResponse,\n} from './sidecar-embedder';\nexport { normalizeEmbeddingText } from './embed-coalesce';\n\nexport { CanonicalVectorStore, LEXICAL_QUERY_CONCURRENCY } from './canonical-store';\n/**\n * The lexical leg's own tokenizer. Exported because anything ASKING a question\n * of that leg needs to know what its query will actually be reduced to — the\n * 32-token cap keeps the HEAD, so a caller composing a query can only tell\n * whether the part it appended survived by running the real tokenizer.\n * Re-implementing it would defeat the point.\n */\nexport { lexicalTokens } from './canonical-store';\n"
+        },
+        "parseDiagnostics": [],
+        "moduleEdges": [
+          {
+            "kind": "export",
+            "specifier": "./config",
+            "line": 17,
+            "declaration": "export {\n  configureMemory,\n  memoryHost,\n  isMemoryConfigured,\n  type MemoryHost,\n  type MemoryCredentials,\n  type ResolvedEmbedder,\n  type EmbedFn,\n} from './config';",
+            "typeOnly": false
+          },
+          {
+            "kind": "export",
+            "specifier": "./mem0-client",
+            "line": 27,
+            "declaration": "export {\n  getMemoryClient,\n  getResolvedMode,\n  getResolvedProfile,\n  invalidateMemoryClient,\n  disposeMemoryClient,\n  embedForCurrentClient,\n  vectorSearchCanonical,\n} from './mem0-client';",
+            "typeOnly": false
+          },
+          {
+            "kind": "export",
+            "specifier": "./extraction-llm",
+            "line": 43,
+            "declaration": "export {\n  ExtractionAuthError,\n  FallbackExtractionLlm,\n  type ExtractionLlm,\n  type ExtractionLlmMessage,\n  type ExtractionLlmResponse,\n} from './extraction-llm';",
+            "typeOnly": false
+          },
+          {
+            "kind": "export",
+            "specifier": "./backend",
+            "line": 54,
+            "declaration": "export {\n  MemoryUnavailableError,\n  scopesOf,\n  type ListOptions,\n  type ListPageOptions,\n  type MemoryAvailability,\n  type MemoryBackend,\n  type ManagedMemoryWrites,\n  type ManagedMemoryResource,\n  type LegRunStats,\n  type MemoryEntry,\n  type MemoryListPage,\n  type RetrievalProvenance,\n  type ScoreScale,\n  type SearchLegStats,\n  type RememberOptions,\n  type SearchFloorPolicy,\n  type SearchOptions,\n  type SearchOptionsCommon,\n  type UpdatePatch,\n} from './backend';",
+            "typeOnly": false
+          },
+          {
+            "kind": "export",
+            "specifier": "./mem0-backend",
+            "line": 75,
+            "declaration": "export {\n  LEXICAL_SCOPE_CONCURRENCY,\n  Mem0Backend,\n  extractAddedIds,\n  type Mem0BackendDeps,\n} from './mem0-backend';",
+            "typeOnly": false
+          },
+          {
+            "kind": "export",
+            "specifier": "./score-floor",
+            "line": 81,
+            "declaration": "export { applyScoreFloor, type ScoreFloorOptions } from './score-floor';",
+            "typeOnly": false
+          },
+          {
+            "kind": "export",
+            "specifier": "./dynamic-import",
+            "line": 83,
+            "declaration": "export { dynamicImport } from './dynamic-import';",
+            "typeOnly": false
+          },
+          {
+            "kind": "export",
+            "specifier": "./diversity-rerank",
+            "line": 84,
+            "declaration": "export {\n  createTextSimilarity,\n  diversityDisabledByEnv,\n  diversityRerank,\n  lexicalSimilarity,\n  textSimilarity,\n  type DiversityRerankOptions,\n} from './diversity-rerank';",
+            "typeOnly": false
+          },
+          {
+            "kind": "export",
+            "specifier": "./hybrid-backend",
+            "line": 92,
+            "declaration": "export { HybridBackend, type HybridBackendOptions } from './hybrid-backend';",
+            "typeOnly": false
+          },
+          {
+            "kind": "export",
+            "specifier": "./lexical-leg",
+            "line": 93,
+            "declaration": "export { LexicalLegBackend } from './lexical-leg';",
+            "typeOnly": false
+          },
+          {
+            "kind": "export",
+            "specifier": "./hybrid-fusion",
+            "line": 94,
+            "declaration": "export {\n  fuse,\n  fuseCosineGated,\n  DEFAULT_RRF_K,\n  DEFAULT_MIN_LEX_SCORE,\n  type FusionMode,\n  type FusionOptions,\n} from './hybrid-fusion';",
+            "typeOnly": false
+          },
+          {
+            "kind": "export",
+            "specifier": "./noop-backend",
+            "line": 102,
+            "declaration": "export { NoopBackend, NOOP_DISABLED_REASON } from './noop-backend';",
+            "typeOnly": false
+          },
+          {
+            "kind": "export",
+            "specifier": "./claude-file-backend",
+            "line": 107,
+            "declaration": "export {\n  ClaudeFileMemoryBackend,\n  CLAUDE_FILE_BACKEND_NAME,\n  MEMORY_DIR_MISSING_REASON,\n  type ClaudeFileBackendOptions,\n} from './claude-file-backend';",
+            "typeOnly": false
+          },
+          {
+            "kind": "export",
+            "specifier": "./topic-file",
+            "line": 113,
+            "declaration": "export {\n  parseTopicFile,\n  serializeTopicFile,\n  typeForKind,\n  slugify,\n  deriveDescription,\n  claudeProjectMemoryDir,\n  CLAUDE_MEMORY_TYPES,\n  type ClaudeMemoryType,\n  type TopicFile,\n} from './topic-file';",
+            "typeOnly": false
+          },
+          {
+            "kind": "export",
+            "specifier": "./backend-registry",
+            "line": 124,
+            "declaration": "export {\n  getMemoryBackend,\n  registerMemoryBackend,\n  registeredMemoryBackends,\n  _resetMemoryBackendsForTest,\n} from './backend-registry';",
+            "typeOnly": false
+          },
+          {
+            "kind": "export",
+            "specifier": "./mem0-connection",
+            "line": 131,
+            "declaration": "export {\n  connectionString,\n  pgFields,\n  pgClientFields,\n  type Mem0PgConnection,\n} from './mem0-connection';",
+            "typeOnly": false
+          },
+          {
+            "kind": "export",
+            "specifier": "./reembed",
+            "line": 138,
+            "declaration": "export {\n  memoryProfileCoverageSql,\n  normalizeMemoryProfileCoverage,\n  reembedMemories,\n  type MemoryProfileCoverage,\n  type ReembedOptions,\n  type ReembedResult,\n} from './reembed';",
+            "typeOnly": false
+          },
+          {
+            "kind": "export",
+            "specifier": "./relink-entities",
+            "line": 147,
+            "declaration": "export {\n  relinkEntities,\n  type RelinkResult,\n} from './relink-entities';",
+            "typeOnly": false
+          },
+          {
+            "kind": "export",
+            "specifier": "./vec-write",
+            "line": 152,
+            "declaration": "export {\n  activeVecTable,\n  embedAndUpsertVector,\n  VEC_TABLE,\n  MODE_DIMS,\n  MEMORY_VECTOR_STORAGE_PROFILES,\n  memoryStorageAcceptsProfile,\n  validateMemoryStorageCompatibility,\n  resolveMemoryVectorBinding,\n  type MemoryVectorStorageProfile,\n  type ResolvedMemoryVectorBinding,\n  type ResolvedVecMode,\n} from './vec-write';",
+            "typeOnly": false
+          },
+          {
+            "kind": "export",
+            "specifier": "./local-embedder-worker",
+            "line": 166,
+            "declaration": "export {\n  embedViaWorker,\n  buildLocalEmbedder,\n  getWorkerState,\n  _resetWorker,\n  shutdownLocalEmbedder,\n  recycleEmbedWorker,\n  LOCAL_EMBEDDER_MODEL,\n} from './local-embedder-worker';",
+            "typeOnly": false
+          },
+          {
+            "kind": "export",
+            "specifier": "./mdenseon-embedder",
+            "line": 176,
+            "declaration": "export {\n  buildMdenseOnEmbedder,\n  mdenseOnPrompt,\n  readMdenseOnExport,\n  MDENSEON_MODEL,\n  MDENSEON_REVISION,\n  MDENSEON_NATIVE_DIMS,\n  type MdenseOnKind,\n  type MdenseOnExportManifest,\n} from './mdenseon-embedder';",
+            "typeOnly": false
+          },
+          {
+            "kind": "export",
+            "specifier": "./execution-target",
+            "line": 190,
+            "declaration": "export {\n  EMBED_ORT_PACKAGE,\n  embedRequestedExecution,\n  embedExecutionHealth,\n  embedExecutionTarget,\n  embedGpuProviderAvailable,\n  embedProviderLibraries,\n  ensureEmbedBackendsProbed,\n  type EmbedBackend,\n  type EmbedExecutionHealth,\n  type EmbedExecutionProbe,\n  type EmbedExecutionTarget,\n  type EmbedRequestedExecution,\n} from './execution-target';",
+            "typeOnly": false
+          },
+          {
+            "kind": "export",
+            "specifier": "./embed-device",
+            "line": 208,
+            "declaration": "export {\n  EMBED_DEVICE_ENV,\n  _resetEmbedDeviceState,\n  constructEmbedPipeline,\n  currentEmbedDeviceDecision,\n  decideEmbedDevice,\n  embedDeviceDemotion,\n  embedDeviceSetting,\n  embedPipelineDevices,\n  parseEmbedDevicePreference,\n  resolveEmbedDevicePreference,\n  setEmbedDeviceSetting,\n  type EmbedDevice,\n  type EmbedDeviceDecision,\n  type EmbedDeviceDemotion,\n  type EmbedDevicePreference,\n  type EmbedDeviceSelection,\n} from './embed-device';",
+            "typeOnly": false
+          },
+          {
+            "kind": "export",
+            "specifier": "./gemma-embedder",
+            "line": 227,
+            "declaration": "export {\n  buildGemmaEmbedder,\n  gemmaPrompt,\n  mrlTruncate,\n  GEMMA_MODEL,\n  GEMMA_TARGET_DIMS,\n  type GemmaEmbedKind,\n} from './gemma-embedder';",
+            "typeOnly": false
+          },
+          {
+            "kind": "export",
+            "specifier": "./embedder-dims",
+            "line": 240,
+            "declaration": "export {\n  EMBEDDER_DIM_SPECS,\n  CANDIDATE_DIM_SPECS,\n  PGVECTOR_METRIC_SPECS,\n  dimSpecFor,\n  isTrainedDim,\n  validateEmbedderDimSpec,\n  validateEmbedderProfile,\n  validateEmbedderProfileRegistry,\n  pgvectorMetricSpec,\n  pgvectorScoreFromDistance,\n  type EmbedderMode,\n  type EmbedderDimSpec,\n  type EmbedderProfileSpec,\n  type EmbeddingProfileId,\n  type EmbeddingRecipeId,\n  type EmbeddingDistanceMetric,\n  type EmbeddingPooling,\n  type EmbeddingOutputDtype,\n  type EmbeddingRevisionPolicy,\n  type EmbeddingNormalization,\n  type PgvectorDistanceOperator,\n  type PgvectorIndexOperatorClass,\n  type PgvectorScoreConversion,\n  type PgvectorMetricSpec,\n  type MrlSupport,\n  type UntrainedCutAck,\n} from './embedder-dims';",
+            "typeOnly": false
+          },
+          {
+            "kind": "export",
+            "specifier": "./granite-embedder",
+            "line": 274,
+            "declaration": "export {\n  buildGraniteEmbedder,\n  graniteNativeDims,\n  GRANITE_MODELS,\n  GRANITE_SPEC_KEYS,\n  type GraniteVariant,\n  type GraniteEmbedKind,\n} from './granite-embedder';",
+            "typeOnly": false
+          },
+          {
+            "kind": "export",
+            "specifier": "./qwen3-embedder",
+            "line": 283,
+            "declaration": "export {\n  buildQwen3Embedder,\n  qwen3Prompt,\n  QWEN3_MODEL,\n  QWEN3_NATIVE_DIMS,\n  QWEN3_QUERY_TASK,\n  type Qwen3EmbedKind,\n} from './qwen3-embedder';",
+            "typeOnly": false
+          },
+          {
+            "kind": "export",
+            "specifier": "./harrier-embedder",
+            "line": 292,
+            "declaration": "export {\n  buildHarrierEmbedder,\n  harrierPrompt,\n  HARRIER_MODEL,\n  HARRIER_NATIVE_DIMS,\n  HARRIER_GRAPH_OUTPUT,\n  HARRIER_QUERY_TASK,\n  type HarrierEmbedKind,\n} from './harrier-embedder';",
+            "typeOnly": false
+          },
+          {
+            "kind": "export",
+            "specifier": "./sidecar-embedder",
+            "line": 302,
+            "declaration": "export {\n  buildSidecarFirstEmbedder,\n  sidecarEmbedBatch,\n  resolveEmbedSidecarUrl,\n  EMBED_SIDECAR_URL_ENV,\n  DEFAULT_SIDECAR_TIMEOUT_MS,\n  DEFAULT_SIDECAR_MAX_ATTEMPTS,\n  SIDECAR_MAX_TEXT_CHARS,\n  SIDECAR_BATCH_PER_TEXT_MS,\n  SIDECAR_BATCH_TIMEOUT_CAP_MS,\n  sidecarBatchTimeoutMs,\n  SidecarEmbedHttpError,\n  isNonRetryableSidecarError,\n  type SidecarFirstEmbedderOpts,\n  type SidecarEmbedBatchOpts,\n  type SidecarEmbedResponse,\n} from './sidecar-embedder';",
+            "typeOnly": false
+          },
+          {
+            "kind": "export",
+            "specifier": "./embed-coalesce",
+            "line": 319,
+            "declaration": "export { normalizeEmbeddingText } from './embed-coalesce';",
+            "typeOnly": false
+          },
+          {
+            "kind": "export",
+            "specifier": "./canonical-store",
+            "line": 321,
+            "declaration": "export { CanonicalVectorStore, LEXICAL_QUERY_CONCURRENCY } from './canonical-store';",
+            "typeOnly": false
+          },
+          {
+            "kind": "export",
+            "specifier": "./canonical-store",
+            "line": 329,
+            "declaration": "export { lexicalTokens } from './canonical-store';",
+            "typeOnly": false
+          }
+        ],
+        "requiredExports": [
+          {
+            "name": "EmbedFn",
+            "originName": "EmbedFn",
+            "typeOnly": true,
+            "specifier": "./config",
+            "line": 24
+          },
+          {
+            "name": "buildLocalEmbedder",
+            "originName": "buildLocalEmbedder",
+            "typeOnly": false,
+            "specifier": "./local-embedder-worker",
+            "line": 168
+          },
+          {
+            "name": "buildGemmaEmbedder",
+            "originName": "buildGemmaEmbedder",
+            "typeOnly": false,
+            "specifier": "./gemma-embedder",
+            "line": 228
+          },
+          {
+            "name": "GemmaEmbedKind",
+            "originName": "GemmaEmbedKind",
+            "typeOnly": true,
+            "specifier": "./gemma-embedder",
+            "line": 233
+          },
+          {
+            "name": "buildHarrierEmbedder",
+            "originName": "buildHarrierEmbedder",
+            "typeOnly": false,
+            "specifier": "./harrier-embedder",
+            "line": 293
+          },
+          {
+            "name": "buildSidecarFirstEmbedder",
+            "originName": "buildSidecarFirstEmbedder",
+            "typeOnly": false,
+            "specifier": "./sidecar-embedder",
+            "line": 303
+          },
+          {
+            "name": "resolveEmbedSidecarUrl",
+            "originName": "resolveEmbedSidecarUrl",
+            "typeOnly": false,
+            "specifier": "./sidecar-embedder",
+            "line": 305
+          }
+        ],
+        "requiredExportResolutions": [
+          {
+            "name": "EmbedFn",
+            "originName": "EmbedFn",
+            "typeOnly": true,
+            "specifier": "./config",
+            "line": 24,
+            "candidates": [
+              "src/config",
+              "src/config.ts",
+              "src/config.tsx",
+              "src/config/index.ts"
+            ],
+            "found": [
+              {
+                "path": "src/config.ts",
+                "gitBlob": "1789bf6cf8de7992d2e452f068d404778e2cc4ca",
+                "bytes": 11529
+              }
+            ]
+          },
+          {
+            "name": "buildLocalEmbedder",
+            "originName": "buildLocalEmbedder",
+            "typeOnly": false,
+            "specifier": "./local-embedder-worker",
+            "line": 168,
+            "candidates": [
+              "src/local-embedder-worker",
+              "src/local-embedder-worker.ts",
+              "src/local-embedder-worker.tsx",
+              "src/local-embedder-worker/index.ts"
+            ],
+            "found": [
+              {
+                "path": "src/local-embedder-worker.ts",
+                "gitBlob": "69ebc609610cc0cc3188978ac91b44c880b1f0d6",
+                "bytes": 66402
+              }
+            ]
+          },
+          {
+            "name": "buildGemmaEmbedder",
+            "originName": "buildGemmaEmbedder",
+            "typeOnly": false,
+            "specifier": "./gemma-embedder",
+            "line": 228,
+            "candidates": [
+              "src/gemma-embedder",
+              "src/gemma-embedder.ts",
+              "src/gemma-embedder.tsx",
+              "src/gemma-embedder/index.ts"
+            ],
+            "found": [
+              {
+                "path": "src/gemma-embedder.ts",
+                "gitBlob": "809e6ff255b819fd60a22e4c600646d94c3aa915",
+                "bytes": 9897
+              }
+            ]
+          },
+          {
+            "name": "GemmaEmbedKind",
+            "originName": "GemmaEmbedKind",
+            "typeOnly": true,
+            "specifier": "./gemma-embedder",
+            "line": 233,
+            "candidates": [
+              "src/gemma-embedder",
+              "src/gemma-embedder.ts",
+              "src/gemma-embedder.tsx",
+              "src/gemma-embedder/index.ts"
+            ],
+            "found": [
+              {
+                "path": "src/gemma-embedder.ts",
+                "gitBlob": "809e6ff255b819fd60a22e4c600646d94c3aa915",
+                "bytes": 9897
+              }
+            ]
+          },
+          {
+            "name": "buildHarrierEmbedder",
+            "originName": "buildHarrierEmbedder",
+            "typeOnly": false,
+            "specifier": "./harrier-embedder",
+            "line": 293,
+            "candidates": [
+              "src/harrier-embedder",
+              "src/harrier-embedder.ts",
+              "src/harrier-embedder.tsx",
+              "src/harrier-embedder/index.ts"
+            ],
+            "found": [
+              {
+                "path": "src/harrier-embedder.ts",
+                "gitBlob": "06cc1e6db7e74d2c4ebdaee55e4565117810bc1a",
+                "bytes": 7698
+              }
+            ]
+          },
+          {
+            "name": "buildSidecarFirstEmbedder",
+            "originName": "buildSidecarFirstEmbedder",
+            "typeOnly": false,
+            "specifier": "./sidecar-embedder",
+            "line": 303,
+            "candidates": [
+              "src/sidecar-embedder",
+              "src/sidecar-embedder.ts",
+              "src/sidecar-embedder.tsx",
+              "src/sidecar-embedder/index.ts"
+            ],
+            "found": [
+              {
+                "path": "src/sidecar-embedder.ts",
+                "gitBlob": "f4df564acaa54415b14b59b3a7ab41969b447937",
+                "bytes": 19360
+              }
+            ]
+          },
+          {
+            "name": "resolveEmbedSidecarUrl",
+            "originName": "resolveEmbedSidecarUrl",
+            "typeOnly": false,
+            "specifier": "./sidecar-embedder",
+            "line": 305,
+            "candidates": [
+              "src/sidecar-embedder",
+              "src/sidecar-embedder.ts",
+              "src/sidecar-embedder.tsx",
+              "src/sidecar-embedder/index.ts"
+            ],
+            "found": [
+              {
+                "path": "src/sidecar-embedder.ts",
+                "gitBlob": "f4df564acaa54415b14b59b3a7ab41969b447937",
+                "bytes": 19360
+              }
+            ]
+          }
+        ],
+        "effectCalls": []
+      },
+      {
+        "name": "@papercusp/rerank",
+        "repository": "libs/generic/rerank",
+        "repositoryRevision": "40e78e06b07a94203e151a44979394acc2dbc871",
+        "gitlink": "160000 commit 40e78e06b07a94203e151a44979394acc2dbc871\tlibs/generic/rerank",
+        "manifest": {
+          "repository": "libs/generic/rerank",
+          "repositoryRevision": "40e78e06b07a94203e151a44979394acc2dbc871",
+          "path": "package.json",
+          "gitBlob": "797e81474c3c438468c7758f0121500aba2df257",
+          "sha256": "3624c8ef04c70aa1a0b8bbb8d147ade32e7ac4c3adf2067e9037e23dd3780513",
+          "bytes": 1420,
+          "text": "{\n  \"name\": \"@papercusp/rerank\",\n  \"version\": \"0.1.0\",\n  \"description\": \"Engine-agnostic cross-encoder reranking: a local ONNX cross-encoder (no key, no network) or the hosted ZeroEntropy zerank API. Shared across Papercusp and Restart.\",\n  \"license\": \"UNLICENSED\",\n  \"$comment_type\": \"MUST stay \\\"module\\\". This package is named-imported by ESM consumers (@papercusp/search-core, operator-core) running under tsx. As a TYPELESS package tsx transpiles it to CJS, and Node then links named imports via cjs-module-lexer — which cannot see `export … from` re-export chains, so the whole namespace links EMPTY and EVERY named import throws at runtime. Unit tests and tsc do NOT catch it (vitest/vite bundle instead of linking). Native ESM makes re-exports linkable.\",\n  \"type\": \"module\",\n  \"main\": \"src/index.ts\",\n  \"types\": \"src/index.ts\",\n  \"exports\": {\n    \".\": {\n      \"types\": \"./src/index.ts\",\n      \"import\": \"./src/index.ts\",\n      \"default\": \"./src/index.ts\"\n    }\n  },\n  \"sideEffects\": false,\n  \"scripts\": {\n    \"test\": \"vitest run --passWithNoTests\",\n    \"typecheck\": \"tsc --noEmit\"\n  },\n  \"dependencies\": {\n    \"@papercusp/module-singleton\": \"*\",\n    \"zeroentropy\": \"^0.1.0-alpha.10\"\n  },\n  \"peerDependencies\": {\n    \"@huggingface/transformers\": \">=4\"\n  },\n  \"peerDependenciesMeta\": {\n    \"@huggingface/transformers\": {\n      \"optional\": true\n    }\n  },\n  \"publishConfig\": {\n    \"access\": \"restricted\"\n  }\n}\n"
+        },
+        "entry": {
+          "repository": "libs/generic/rerank",
+          "repositoryRevision": "40e78e06b07a94203e151a44979394acc2dbc871",
+          "path": "src/index.ts",
+          "gitBlob": "3215e591887d472275dbf3ead3ae96e121590384",
+          "sha256": "8ce43e8d8fdf4c30d2bf7ed964e99616965ee6dbf57f0a05f950f67c2ec16660",
+          "bytes": 17470,
+          "text": "/**\n * @papercusp/rerank — engine-agnostic cross-encoder reranking.\n *\n * Stage B of the retrieve→rerank pipeline: given a query and candidate docs\n * (from ANY retriever — Typesense, Postgres, pgvector, …), reorder them by a\n * cross-encoder's relevance score. Has NO project-specific deps, so it can be\n * lifted into any consumer unchanged — the only per-project differences are the\n * config (engine, model, topN, threshold).\n *\n * Two engines, one contract:\n *   - `local`        — an ONNX cross-encoder in-process (no key, no network, no\n *                      per-call cost). See `local-engine.ts`.\n *   - `zeroentropy`  — the hosted zerank API (calibrated scores, instruction\n *                      following, someone else's GPU).\n *\n * Fail-safe by design: if the engine is unavailable or errors, it returns the\n * candidates in their ORIGINAL order — a rerank outage degrades to \"retrieval\n * order\", it never breaks search. Every engine funnels through the same\n * `EngineScores` seam below precisely so that guarantee is enforced in ONE\n * place and cannot be re-litigated per engine.\n */\nimport ZeroEntropy from 'zeroentropy';\n\nimport { type LocalRerankOptions, localEngineScores, scoreCrossEncoder } from './local-engine';\nimport { isDeadlineFailure } from './scorer-gate';\nimport type { RerankScoreFn } from './sidecar-reranker';\n\nexport {\n  RERANK_MAX_CONCURRENT_ENV,\n  RerankDeadlineError,\n  getScorerGateState,\n  isDeadlineFailure,\n  runInScorerGate,\n} from './scorer-gate';\n\nexport {\n  DEFAULT_BATCH_SIZE,\n  DEFAULT_MAX_LENGTH,\n  DEFAULT_RERANK_DTYPE,\n  FAST_RERANKER_MODEL,\n  LOCAL_RERANKER_MODEL,\n  ORT_SESSION_OPTIONS,\n  activeExecutionTarget,\n  loadCrossEncoder,\n  localRerankAvailable,\n  rerankExecutionHealth,\n  scoreCrossEncoder,\n  scoreCrossEncoderInline,\n  type LocalRerankOptions,\n  type RerankExecutionHealth,\n} from './local-engine';\n\nexport {\n  getRerankWorkerState,\n  scoreViaWorker,\n  shutdownLocalReranker,\n  type ScoreViaWorkerRequest,\n} from './local-reranker-worker';\n\nexport {\n  CPU_EXECUTION_TARGET,\n  CUDA_EXECUTION_TARGET,\n  RERANK_DEVICE_ENV,\n  WEBGPU_EXECUTION_TARGET,\n  demotedTarget,\n  executionTargetFor,\n  isCoherentTarget,\n  resolveExecutionTarget,\n  type RerankDevice,\n  type RerankExecutionTarget,\n} from './execution-target';\n\nexport {\n  DEFAULT_SIDECAR_MAX_ATTEMPTS,\n  DEFAULT_SIDECAR_TIMEOUT_MS,\n  RERANK_SIDECAR_URL_ENV,\n  SIDECAR_MAX_TEXT_CHARS,\n  SidecarRerankHttpError,\n  buildSidecarFirstReranker,\n  isNonRetryableSidecarError,\n  resolveRerankSidecarUrl,\n  sidecarRerankBatch,\n  type RerankScoreFn,\n  type SidecarFirstRerankerOpts,\n  type SidecarRerankResponse,\n} from './sidecar-reranker';\n\nexport interface RerankDoc<T> {\n  /** Stable id (for caching / debugging). */\n  id: string;\n  /** The text the reranker scores against the query (e.g. product title). */\n  text: string;\n  /** Caller's payload, carried through untouched. */\n  row: T;\n}\n\n/** Which cross-encoder does the scoring. Default `zeroentropy`. */\nexport type RerankEngine = 'zeroentropy' | 'local';\n\nexport interface RerankOptions extends LocalRerankOptions {\n  /**\n   * Scoring engine. `local` runs ONNX in-process (no key, no network);\n   * `zeroentropy` calls the hosted zerank API. Default `zeroentropy` — callers\n   * opt in to local, so an existing consumer's behavior is unchanged.\n   */\n  engine?: RerankEngine;\n  /** Model id. Engine-specific: a zerank model, or an HF cross-encoder repo id. */\n  model?: string;\n  /** API key (hosted engine only). Default process.env.ZEROENTROPY_API_KEY. */\n  apiKey?: string;\n  /** Return only the top N after reranking. Default: all. */\n  topN?: number;\n  /**\n   * Drop results below this relevance score. Meaningful because both engines\n   * emit a 0..1 score (zerank's is calibrated; the local engine squashes its\n   * logit through a sigmoid) — unlike uncalibrated vector distances.\n   *\n   * ⚠ Absolute thresholds are DTYPE-SPECIFIC on the local engine: quantization\n   * preserves ordering but compresses the score range, so a floor fitted on\n   * fp32 rejects too much at q8. Fit it on the dtype you deploy.\n   */\n  minScore?: number;\n  /**\n   * Scoring function override for `engine: 'local'` — returns scores\n   * index-aligned with the docs, and MAY throw.\n   *\n   * This is how a sidecar-backed scorer (buildSidecarFirstReranker) reaches the\n   * ranking logic without a third engine branch: whatever it throws is caught\n   * by the SAME fail-safe seam as an in-process failure, so a sidecar outage\n   * degrades to retrieval order exactly like a missing ONNX runtime does.\n   *\n   * Typed as {@link RerankScoreFn} rather than re-declared inline, so the\n   * optional deadline argument cannot drift between the two spellings — the\n   * inline copy is what made this field silently two-arity while the exported\n   * contract had grown a third.\n   */\n  scorer?: RerankScoreFn;\n  /**\n   * Instruction for an instruction-following reranker (zerank-2). The\n   * ZeroEntropy SDK has no dedicated instruction field, so it's prepended to the\n   * query — zerank-2 reads it as ranking guidance, e.g. \"Rank the actual product\n   * the shopper wants above parts/accessories for it.\" Default: none.\n   *\n   * IGNORED by the `local` engine: a plain cross-encoder is trained on\n   * (query, passage) pairs and injecting instruction prose into the query\n   * degrades its scoring rather than steering it.\n   */\n  instruction?: string;\n  /**\n   * Wall-clock bound on SCORING. On expiry the rerank degrades through the\n   * SAME fail-safe passthrough as any other scoring failure — it never throws\n   * and never stalls the caller. Default {@link DEFAULT_RERANK_TIMEOUT_MS};\n   * `0`/`Infinity` disables it.\n   *\n   * ⚠ This is a BACKSTOP against a hang, deliberately NOT a UX budget. It sits\n   * ABOVE the sidecar client's own 15s retry budget (DEFAULT_SIDECAR_TIMEOUT_MS)\n   * so it can never pre-empt that retry policy and convert a recoverable blip\n   * into a silent degradation. A user-facing caller wanting search-grade\n   * latency must pass its OWN, much tighter value — the right bound depends on\n   * the caller's latency contract, which this library cannot know.\n   *\n   * The losing promise is not cancellable (neither ONNX inference nor an\n   * in-flight fetch aborts here), so it runs to completion in the background\n   * and its result is discarded; a late rejection is swallowed rather than\n   * surfacing as an unhandled rejection after we have already degraded.\n   */\n  timeoutMs?: number;\n  /**\n   * Called EXACTLY ONCE, and only when this call fell through to the fail-safe\n   * passthrough — i.e. the returned rows are the INPUT order with\n   * `reranked: false`. Never called on a successful rerank.\n   *\n   * WHY IT EXISTS (WI-37670). The passthrough is the whole point of this\n   * library's fail-safe contract, but it is byte-identical to what a\n   * rerank-DISABLED caller produces, so from the outside a degraded stage and a\n   * healthy stage that simply found nothing to reorder look the same. A caller\n   * measuring the reranker's effect (an A/B, a bench, a scorecard) then reads a\n   * confident +0.000 and concludes \"reranking does not help\" — which happened,\n   * and had to be retracted. Reporting WHY the passthrough fired is what lets a\n   * caller void the reading instead of publishing it.\n   */\n  onDegrade?: (reason: RerankDegradeReason) => void;\n}\n\n/**\n * Why a rerank call fell through to the fail-safe passthrough.\n *\n * These mean OPPOSITE things operationally and must not be collapsed:\n * `empty-input` is benign; `timeout` says the stage was too slow for the\n * caller's budget (raise the budget, cut the candidate count, or reduce\n * in-flight concurrency — one serialized inference thread multiplies every\n * concurrent call's wall clock); `scoring-failed` says the engine could not\n * score at all (missing credential, unavailable runtime, a scorer that threw,\n * or a length mismatch); `no-usable-scores` says it scored but nothing survived\n * shaping (`minScore`/`topN`).\n */\nexport type RerankDegradeReason = 'empty-input' | 'timeout' | 'scoring-failed' | 'no-usable-scores';\n\nexport interface RerankResult<T> {\n  /** Caller's payload, carried through untouched. */\n  row: T;\n  /** Relevance score (0..1), or 0 when reranking was skipped. */\n  score: number;\n  /** True when the score came from the reranker (vs. a fail-safe passthrough). */\n  reranked: boolean;\n}\n\n/**\n * What every engine returns: scores index-aligned with the input docs.\n * - `null`      → the engine could not score at all; fail-safe passthrough.\n * - `undefined` at index i → this doc was not scored, and is dropped.\n */\ntype EngineScores = Array<number | undefined> | null;\n\nlet _client: ZeroEntropy | null = null;\nlet _clientKey: string | null = null;\nfunction getClient(apiKey: string): ZeroEntropy {\n  if (!_client || _clientKey !== apiKey) {\n    _client = new ZeroEntropy({ apiKey });\n    _clientKey = apiKey;\n  }\n  return _client;\n}\n\n/**\n * True if reranking is configured.\n *\n * The `local` engine needs no credential, so it is always configured — pass the\n * options object to ask about a specific engine. The legacy string form\n * (`rerankAvailable(apiKey)`) still asks the hosted-engine question.\n */\nexport function rerankAvailable(optsOrApiKey?: string | RerankOptions): boolean {\n  const opts: RerankOptions = typeof optsOrApiKey === 'string' ? { apiKey: optsOrApiKey } : (optsOrApiKey ?? {});\n  if (opts.engine === 'local') return true;\n  return !!(opts.apiKey ?? process.env.ZEROENTROPY_API_KEY);\n}\n\n/** Hosted zerank. Returns index-aligned scores, or null to trigger passthrough. */\nasync function zeroEntropyScores<T>(\n  query: string,\n  docs: Array<RerankDoc<T>>,\n  opts: RerankOptions,\n): Promise<EngineScores> {\n  const apiKey = opts.apiKey ?? process.env.ZEROENTROPY_API_KEY;\n  if (!apiKey) return null;\n\n  try {\n    const res = await getClient(apiKey).models.rerank({\n      model: opts.model ?? 'zerank-2',\n      // zerank-2 instruction-following format (per ZeroEntropy docs): the\n      // instruction is embedded in the query via XML tags, NOT a free-text prefix.\n      query: opts.instruction ? `<query>${query}</query>\\n<instruction>${opts.instruction}</instruction>` : query,\n      documents: docs.map((d) => d.text),\n    });\n    const scores: Array<number | undefined> = new Array(docs.length).fill(undefined);\n    for (const r of (res.results ?? []) as Array<{ index: number; relevance_score: number }>) {\n      // Out-of-range indices from the API are dropped, not crashed on.\n      if (docs[r.index] !== undefined) scores[r.index] = r.relevance_score;\n    }\n    return scores;\n  } catch {\n    return null;\n  }\n}\n\n/** Local cross-encoder — in-process by default, or an injected `scorer` (e.g.\n *  the sidecar client). Returns index-aligned scores, or null to fail safe. */\nasync function localScores<T>(\n  query: string,\n  docs: Array<RerankDoc<T>>,\n  opts: RerankOptions,\n): Promise<EngineScores | typeof SCORE_TIMEOUT> {\n  const texts = docs.map((d) => d.text);\n  if (!opts.scorer) {\n    // Deliberately NOT `localEngineScores`, which collapses every failure into\n    // the same `null`. A deadline failure — including an admission SHED, where\n    // the shared scorer refused the job at ~0ms because it provably could not\n    // finish in time — must reach the caller as `timeout`, not `scoring-failed`:\n    // those two call for opposite responses, which is the whole reason\n    // `onDegrade` names them separately (WI-37670). The fail-safe itself is\n    // unchanged; only the reason is now preserved.\n    try {\n      return await scoreCrossEncoder(query, texts, opts);\n    } catch (err) {\n      return isDeadlineFailure(err) ? SCORE_TIMEOUT : null;\n    }\n  }\n  try {\n    // Forward the deadline: the production wiring ALWAYS takes this branch (the\n    // operator injects a sidecar-first scorer), and with no sidecar that scorer\n    // is the in-process cross-encoder. Omitting it here would leave the shipped\n    // desktop path — the only one with the defect — still unbounded.\n    // The third argument is passed ONLY when there is a deadline to pass, so a\n    // scorer (or a test spy) that expects the original two-arg shape sees it\n    // unchanged.\n    const scores =\n      opts.deadline === undefined\n        ? await opts.scorer(query, texts)\n        : await opts.scorer(query, texts, { deadline: opts.deadline });\n    // A length mismatch would misalign every score with its document, so treat\n    // it as a failure rather than ranking on garbage.\n    if (!Array.isArray(scores) || scores.length !== texts.length) return null;\n    return scores.map((s) => (typeof s === 'number' && Number.isFinite(s) ? s : undefined));\n  } catch (err) {\n    // Same distinction as the branch above: an injected scorer (the sidecar\n    // client, whose own fallback is the in-process engine) can surface a\n    // deadline failure, and that is a budget verdict rather than an outage.\n    return isDeadlineFailure(err) ? SCORE_TIMEOUT : null;\n  }\n}\n\n/**\n * Reorder `docs` by cross-encoder relevance to `query`. Returns results sorted\n * best-first. On a missing credential, an unavailable engine, or any error,\n * returns `docs` in original order (reranked=false) so callers can always use\n * the result safely.\n */\n/**\n * Backstop bound on scoring (ms). Deliberately ABOVE the sidecar client's own\n * 15s retry budget so it never truncates that retry policy — this catches a\n * genuine HANG (a wedged in-process engine, a scorer that never settles), not\n * a slow-but-progressing rerank. Callers with a latency contract (a user-facing\n * search route) pass their own, tighter `timeoutMs`.\n */\nexport const DEFAULT_RERANK_TIMEOUT_MS = 20_000;\n\n/** Distinguishes \"the timer won\" from a legitimate `null` scoring result. */\nconst SCORE_TIMEOUT = Symbol('rerank-score-timeout');\n\n/**\n * Resolve `scores`, or the {@link SCORE_TIMEOUT} sentinel if `timeoutMs` elapses\n * first. Both still take the SINGLE fail-safe passthrough in {@link rerank} —\n * the sentinel exists only so the passthrough can NAME which of the two fired,\n * because \"too slow for your budget\" and \"the engine cannot score\" call for\n * opposite responses from the caller.\n */\nasync function withScoreTimeout<S>(\n  scores: Promise<S>,\n  timeoutMs: number,\n): Promise<S | typeof SCORE_TIMEOUT> {\n  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) return scores;\n\n  // The race loser keeps running (inference/fetch are not cancellable here). If\n  // it later REJECTS with nobody awaiting it, Node reports an unhandled\n  // rejection — attach the sink now, before racing, so there is no window.\n  scores.catch(() => {});\n\n  let timer: ReturnType<typeof setTimeout> | undefined;\n  try {\n    const winner = await Promise.race([\n      scores,\n      new Promise<typeof SCORE_TIMEOUT>((resolve) => {\n        timer = setTimeout(() => resolve(SCORE_TIMEOUT), timeoutMs);\n      }),\n    ]);\n    return winner;\n  } finally {\n    // Always clear: a surviving timer would hold the event loop open for up to\n    // timeoutMs after a fast rerank already returned.\n    if (timer !== undefined) clearTimeout(timer);\n  }\n}\n\nexport async function rerank<T>(\n  query: string,\n  docs: Array<RerankDoc<T>>,\n  opts: RerankOptions = {},\n): Promise<Array<RerankResult<T>>> {\n  // Every fail-safe passthrough NAMES its reason: a caller measuring the\n  // reranker's effect cannot otherwise tell a degrade from a null result.\n  const passthrough = (reason: RerankDegradeReason): Array<RerankResult<T>> => {\n    opts.onDegrade?.(reason);\n    return docs.slice(0, opts.topN ?? docs.length).map((d) => ({ row: d.row, score: 0, reranked: false }));\n  };\n\n  if (!query.trim() || docs.length === 0) return passthrough('empty-input');\n\n  const timeoutMs = opts.timeoutMs ?? DEFAULT_RERANK_TIMEOUT_MS;\n\n  // Give the in-process engine the SAME instant the race is measuring against,\n  // so it can stop scoring rather than run on unwatched after we degrade. The\n  // race alone cannot do this: its loser is not cancellable. Only the local\n  // engine is ours to stop — a hosted HTTP call is bounded by its own client,\n  // and an injected `scorer` belongs to the caller.\n  const scoringOpts: RerankOptions =\n    opts.engine === 'local' && Number.isFinite(timeoutMs) && timeoutMs > 0 && opts.deadline === undefined\n      ? { ...opts, deadline: Date.now() + timeoutMs }\n      : opts;\n\n  const scores = await withScoreTimeout(\n    opts.engine === 'local'\n      ? localScores(query, docs, scoringOpts)\n      : zeroEntropyScores(query, docs, scoringOpts),\n    timeoutMs,\n  );\n  if (scores === SCORE_TIMEOUT) return passthrough('timeout');\n  if (!scores) return passthrough('scoring-failed');\n\n  let ordered = docs\n    .map((d, i) => ({ row: d.row, score: scores[i], reranked: true }))\n    .filter((r): r is { row: T; score: number; reranked: true } => typeof r.score === 'number')\n    // Descending by score. Array.prototype.sort is stable, so equal scores keep\n    // their retrieval order — the right tiebreak, since retrieval order already\n    // encodes the first-stage ranking.\n    .sort((a, b) => b.score - a.score);\n\n  if (typeof opts.minScore === 'number') ordered = ordered.filter((r) => r.score >= opts.minScore!);\n  if (typeof opts.topN === 'number') ordered = ordered.slice(0, opts.topN);\n  // Guard: if shaping left nothing usable, fall back rather than drop results.\n  return ordered.length > 0 ? ordered : passthrough('no-usable-scores');\n}\n"
+        },
+        "parseDiagnostics": [],
+        "moduleEdges": [
+          {
+            "kind": "import",
+            "specifier": "zeroentropy",
+            "line": 22,
+            "declaration": "import ZeroEntropy from 'zeroentropy';",
+            "typeOnly": false
+          },
+          {
+            "kind": "import",
+            "specifier": "./local-engine",
+            "line": 24,
+            "declaration": "import { type LocalRerankOptions, localEngineScores, scoreCrossEncoder } from './local-engine';",
+            "typeOnly": false
+          },
+          {
+            "kind": "import",
+            "specifier": "./scorer-gate",
+            "line": 25,
+            "declaration": "import { isDeadlineFailure } from './scorer-gate';",
+            "typeOnly": false
+          },
+          {
+            "kind": "import",
+            "specifier": "./sidecar-reranker",
+            "line": 26,
+            "declaration": "import type { RerankScoreFn } from './sidecar-reranker';",
+            "typeOnly": true
+          },
+          {
+            "kind": "export",
+            "specifier": "./scorer-gate",
+            "line": 28,
+            "declaration": "export {\n  RERANK_MAX_CONCURRENT_ENV,\n  RerankDeadlineError,\n  getScorerGateState,\n  isDeadlineFailure,\n  runInScorerGate,\n} from './scorer-gate';",
+            "typeOnly": false
+          },
+          {
+            "kind": "export",
+            "specifier": "./local-engine",
+            "line": 36,
+            "declaration": "export {\n  DEFAULT_BATCH_SIZE,\n  DEFAULT_MAX_LENGTH,\n  DEFAULT_RERANK_DTYPE,\n  FAST_RERANKER_MODEL,\n  LOCAL_RERANKER_MODEL,\n  ORT_SESSION_OPTIONS,\n  activeExecutionTarget,\n  loadCrossEncoder,\n  localRerankAvailable,\n  rerankExecutionHealth,\n  scoreCrossEncoder,\n  scoreCrossEncoderInline,\n  type LocalRerankOptions,\n  type RerankExecutionHealth,\n} from './local-engine';",
+            "typeOnly": false
+          },
+          {
+            "kind": "export",
+            "specifier": "./local-reranker-worker",
+            "line": 53,
+            "declaration": "export {\n  getRerankWorkerState,\n  scoreViaWorker,\n  shutdownLocalReranker,\n  type ScoreViaWorkerRequest,\n} from './local-reranker-worker';",
+            "typeOnly": false
+          },
+          {
+            "kind": "export",
+            "specifier": "./execution-target",
+            "line": 60,
+            "declaration": "export {\n  CPU_EXECUTION_TARGET,\n  CUDA_EXECUTION_TARGET,\n  RERANK_DEVICE_ENV,\n  WEBGPU_EXECUTION_TARGET,\n  demotedTarget,\n  executionTargetFor,\n  isCoherentTarget,\n  resolveExecutionTarget,\n  type RerankDevice,\n  type RerankExecutionTarget,\n} from './execution-target';",
+            "typeOnly": false
+          },
+          {
+            "kind": "export",
+            "specifier": "./sidecar-reranker",
+            "line": 73,
+            "declaration": "export {\n  DEFAULT_SIDECAR_MAX_ATTEMPTS,\n  DEFAULT_SIDECAR_TIMEOUT_MS,\n  RERANK_SIDECAR_URL_ENV,\n  SIDECAR_MAX_TEXT_CHARS,\n  SidecarRerankHttpError,\n  buildSidecarFirstReranker,\n  isNonRetryableSidecarError,\n  resolveRerankSidecarUrl,\n  sidecarRerankBatch,\n  type RerankScoreFn,\n  type SidecarFirstRerankerOpts,\n  type SidecarRerankResponse,\n} from './sidecar-reranker';",
+            "typeOnly": false
+          }
+        ],
+        "requiredExports": [
+          {
+            "name": "buildSidecarFirstReranker",
+            "originName": "buildSidecarFirstReranker",
+            "typeOnly": false,
+            "specifier": "./sidecar-reranker",
+            "line": 79
+          },
+          {
+            "name": "RerankScoreFn",
+            "originName": "RerankScoreFn",
+            "typeOnly": true,
+            "specifier": "./sidecar-reranker",
+            "line": 83
+          }
+        ],
+        "requiredExportResolutions": [
+          {
+            "name": "buildSidecarFirstReranker",
+            "originName": "buildSidecarFirstReranker",
+            "typeOnly": false,
+            "specifier": "./sidecar-reranker",
+            "line": 79,
+            "candidates": [
+              "src/sidecar-reranker",
+              "src/sidecar-reranker.ts",
+              "src/sidecar-reranker.tsx",
+              "src/sidecar-reranker/index.ts"
+            ],
+            "found": [
+              {
+                "path": "src/sidecar-reranker.ts",
+                "gitBlob": "7e9d79ec39396063a25a4ee10d1a1bb85cb4b9b9",
+                "bytes": 22554
+              }
+            ]
+          },
+          {
+            "name": "RerankScoreFn",
+            "originName": "RerankScoreFn",
+            "typeOnly": true,
+            "specifier": "./sidecar-reranker",
+            "line": 83,
+            "candidates": [
+              "src/sidecar-reranker",
+              "src/sidecar-reranker.ts",
+              "src/sidecar-reranker.tsx",
+              "src/sidecar-reranker/index.ts"
+            ],
+            "found": [
+              {
+                "path": "src/sidecar-reranker.ts",
+                "gitBlob": "7e9d79ec39396063a25a4ee10d1a1bb85cb4b9b9",
+                "bytes": 22554
+              }
+            ]
+          }
+        ],
+        "effectCalls": [
+          {
+            "line": 248,
+            "callee": "getClient(apiKey).models.rerank",
+            "expression": "getClient(apiKey).models.rerank({\n      model: opts.model ?? 'zerank-2',\n      // zerank-2 instruction-following format (per ZeroEntropy docs): the\n      // instruction is embedded in the query via XML tags, NOT a free-text prefix.\n      query: opts.instruction ? `<query>${query}</query>\\n<instruction>${opts.instruction}</instruction>` : query,\n      documents: docs.map((d) => d.text),\n    })"
+          },
+          {
+            "line": 248,
+            "callee": "getClient",
+            "expression": "getClient(apiKey)"
+          },
+          {
+            "line": 283,
+            "callee": "scoreCrossEncoder",
+            "expression": "scoreCrossEncoder(query, texts, opts)"
+          },
+          {
+            "line": 298,
+            "callee": "opts.scorer",
+            "expression": "opts.scorer(query, texts)"
+          },
+          {
+            "line": 299,
+            "callee": "opts.scorer",
+            "expression": "opts.scorer(query, texts, { deadline: opts.deadline })"
+          },
+          {
+            "line": 303,
+            "callee": "scores.map",
+            "expression": "scores.map((s) => (typeof s === 'number' && Number.isFinite(s) ? s : undefined))"
+          },
+          {
+            "line": 346,
+            "callee": "scores.catch",
+            "expression": "scores.catch(() => {})"
+          },
+          {
+            "line": 353,
+            "callee": "setTimeout",
+            "expression": "setTimeout(() => resolve(SCORE_TIMEOUT), timeoutMs)"
+          },
+          {
+            "line": 353,
+            "callee": "resolve",
+            "expression": "resolve(SCORE_TIMEOUT)"
+          },
+          {
+            "line": 360,
+            "callee": "clearTimeout",
+            "expression": "clearTimeout(timer)"
+          },
+          {
+            "line": 390,
+            "callee": "withScoreTimeout",
+            "expression": "withScoreTimeout(\n    opts.engine === 'local'\n      ? localScores(query, docs, scoringOpts)\n      : zeroEntropyScores(query, docs, scoringOpts),\n    timeoutMs,\n  )"
+          },
+          {
+            "line": 392,
+            "callee": "localScores",
+            "expression": "localScores(query, docs, scoringOpts)"
+          },
+          {
+            "line": 393,
+            "callee": "zeroEntropyScores",
+            "expression": "zeroEntropyScores(query, docs, scoringOpts)"
+          },
+          {
+            "line": 399,
+            "callee": "docs\n    .map((d, i) => ({ row: d.row, score: scores[i], reranked: true }))\n    .filter((r): r is { row: T; score: number; reranked: true } => typeof r.score === 'number')\n    // Descending by score. Array.prototype.sort is stable, so equal scores keep\n    // their retrieval order — the right tiebreak, since retrieval order already\n    // encodes the first-stage ranking.\n    .sort",
+            "expression": "docs\n    .map((d, i) => ({ row: d.row, score: scores[i], reranked: true }))\n    .filter((r): r is { row: T; score: number; reranked: true } => typeof r.score === 'number')\n    // Descending by score. Array.prototype.sort is stable, so equal scores keep\n    // their retrieval order — the right tiebreak, since retrieval order already\n    // encodes the first-stage ranking.\n    .sort((a, b) => b.score - a.score)"
+          },
+          {
+            "line": 399,
+            "callee": "docs\n    .map((d, i) => ({ row: d.row, score: scores[i], reranked: true }))\n    .filter",
+            "expression": "docs\n    .map((d, i) => ({ row: d.row, score: scores[i], reranked: true }))\n    .filter((r): r is { row: T; score: number; reranked: true } => typeof r.score === 'number')"
+          }
+        ]
+      }
+    ],
+    "supersedes": "security/p001-memory-package-entry-source-extraction-20261106-v1.json"
+  },
+  "verification": {
+    "schema": "p001-memory-package-entry-identity-verification-v1",
+    "method": "Python hashlib/git-show versus Node crypto/git-cat-file; complete bytes+text equality",
+    "checks": [
+      {
+        "repository": ".",
+        "revision": "42d905b5b2fcbea2bb651178a7ff3c905cf89626",
+        "path": "package.json",
+        "sha256": "2a94c4fd43d93c1453e8d0b13b2047004d5df6b52520dc5a64a15872dc7c4ee3",
+        "bytes": 35330,
+        "matches": true,
+        "textMatches": null
+      },
+      {
+        "repository": ".",
+        "revision": "42d905b5b2fcbea2bb651178a7ff3c905cf89626",
+        "path": "packages/operator-core/package.json",
+        "sha256": "7368c8432701a9c3ebdcb8fa94058bd4836f6c85e16372f20d50f3385b9daae4",
+        "bytes": 17554,
+        "matches": true,
+        "textMatches": null
+      },
+      {
+        "repository": ".",
+        "revision": "42d905b5b2fcbea2bb651178a7ff3c905cf89626",
+        "path": "package-lock.json",
+        "sha256": "a20ed6c4aa15befa12baf21a955bcadb1d91523c42b834961f1d28170e98cf42",
+        "bytes": 1432077,
+        "matches": true,
+        "textMatches": null
+      },
+      {
+        "repository": "libs/generic/memory",
+        "revision": "fe9878936d3da86d872fc1a5fdd29877e903d1f0",
+        "path": "package.json",
+        "sha256": "be1dc2242efc6304cebbb6e7714119de7c9aa2228f28c6960e82aee1b060b100",
+        "bytes": 1336,
+        "matches": true,
+        "textMatches": true
+      },
+      {
+        "repository": "libs/generic/memory",
+        "revision": "fe9878936d3da86d872fc1a5fdd29877e903d1f0",
+        "path": "src/index.ts",
+        "sha256": "201abd830fe18e3e0e4519f2b8a164895b5170b37908bb86d5884257b5fe5b14",
+        "bytes": 9429,
+        "matches": true,
+        "textMatches": true
+      },
+      {
+        "repository": "libs/generic/rerank",
+        "revision": "40e78e06b07a94203e151a44979394acc2dbc871",
+        "path": "package.json",
+        "sha256": "3624c8ef04c70aa1a0b8bbb8d147ade32e7ac4c3adf2067e9037e23dd3780513",
+        "bytes": 1420,
+        "matches": true,
+        "textMatches": true
+      },
+      {
+        "repository": "libs/generic/rerank",
+        "revision": "40e78e06b07a94203e151a44979394acc2dbc871",
+        "path": "src/index.ts",
+        "sha256": "8ce43e8d8fdf4c30d2bf7ed964e99616965ee6dbf57f0a05f950f67c2ec16660",
+        "bytes": 17470,
+        "matches": true,
+        "textMatches": true
+      }
+    ]
+  },
+  "scannerScope": {
+    "parser": "TypeScript AST; offline only",
+    "moduleEdges": "Static import/export declarations, type-only markers and dynamic import syntax; syntax is not observed load closure.",
+    "effectCalls": "Name-filtered call expressions are navigation aids, not comprehensive effect inference. Full entry source text is retained.",
+    "resolution": "Declared ESM import condition and exact git tree candidates; does not emulate a deployed loader or compiled artifact."
+  },
+  "sourceFindings": [
+    {
+      "topic": "identity",
+      "finding": "Pinned root workspace and operator dependencies plus npm link records name libs/generic/memory and libs/generic/rerank. Root gitlinks, not root revision as a library revision, select fe9878936d3da86d872fc1a5fdd29877e903d1f0 and 40e78e06b07a94203e151a44979394acc2dbc871 respectively."
+    },
+    {
+      "topic": "entries",
+      "finding": "Both package manifests declare type=module and the dot import export src/index.ts. Complete manifests and entries independently match Python hashlib/git-show against Node crypto/git-cat-file. Exact source identity does not establish a built or installed entry."
+    },
+    {
+      "topic": "consumed-exports",
+      "finding": "Consumer functions resolve through named re-exports to local-embedder-worker.ts, gemma-embedder.ts, harrier-embedder.ts, sidecar-embedder.ts and sidecar-reranker.ts. EmbedFn, GemmaEmbedKind and RerankScoreFn are type-only named exports. Their source metadata is recorded; child bodies have not been read in this unit."
+    },
+    {
+      "topic": "broader-entry-edges",
+      "finding": "Memory entry has runtime re-export declarations beyond the consumed functions, including storage/backend/client/vector/file/model/device modules. Rerank entry has a runtime zeroentropy import, local-engine/scorer-gate imports and worker/execution-target/sidecar re-exports. Its sidecar import type declaration is type-only, while its sidecar re-export also contains runtime exports. Actual linking, transpilation, bundler pruning and generated dependency bytes remain unknown."
+    },
+    {
+      "topic": "rerank-effects",
+      "finding": "Full entry source contains environment fallback for ZEROENTROPY_API_KEY, new ZeroEntropy client construction and a hosted models.rerank request; local scoring and injected scorer calls, degradation callbacks and a timeout race are separate paths. This is source syntax and delegated API use, not observed authorized/denied effects."
+    },
+    {
+      "topic": "dependency-manifests",
+      "finding": "Memory declares module-singleton, pg, tokenizers and optional transformers dependencies; rerank declares module-singleton/zeroentropy and optional transformers peer metadata. These declarations do not establish resolved dependency artifact closure or native/model files. sideEffects:false on rerank is package metadata, not proof a build removed an import."
+    }
+  ],
+  "populationStates": [
+    {
+      "population": "handler",
+      "status": "unknown",
+      "closureAccepted": false
+    },
+    {
+      "population": "effect",
+      "status": "unknown",
+      "closureAccepted": false
+    },
+    {
+      "population": "entry-point",
+      "status": "unknown",
+      "closureAccepted": false
+    },
+    {
+      "population": "loader",
+      "status": "unknown",
+      "closureAccepted": false
+    },
+    {
+      "population": "native-helper",
+      "status": "unknown",
+      "closureAccepted": false
+    },
+    {
+      "population": "distribution",
+      "status": "unknown",
+      "closureAccepted": false
+    },
+    {
+      "population": "observed-route",
+      "status": "unknown",
+      "closureAccepted": false
+    }
+  ],
+  "missing": [
+    "Full source and opaque dependency/effect expansion beyond these two entries.",
+    "Actual configured occurrences, per-platform/distribution artifacts and currently loaded code/resources/trust identities.",
+    "Independently derived immutable row applicability and outside-lineage eligible review before qualification.",
+    "Protected author identity/bootstrap, native 10.15 and exact signed installed P-020 proof."
+  ],
+  "applicabilityCommitted": false,
+  "populationComplete": false,
+  "closureAccepted": false,
+  "executionAdmitted": false,
+  "qualificationExecuted": false,
+  "nextNamedSourceUnit": {
+    "files": [
+      {
+        "repository": "libs/generic/memory",
+        "repositoryRevision": "fe9878936d3da86d872fc1a5fdd29877e903d1f0",
+        "path": "src/sidecar-embedder.ts",
+        "gitBlob": "f4df564acaa54415b14b59b3a7ab41969b447937",
+        "bytes": 19360,
+        "export": "buildSidecarFirstEmbedder"
+      },
+      {
+        "repository": "libs/generic/rerank",
+        "repositoryRevision": "40e78e06b07a94203e151a44979394acc2dbc871",
+        "path": "src/sidecar-reranker.ts",
+        "gitBlob": "7e9d79ec39396063a25a4ee10d1a1bb85cb4b9b9",
+        "bytes": 22554,
+        "export": "buildSidecarFirstReranker"
+      }
+    ],
+    "instruction": "Read these two exact pinned sidecar client sources next. Reuse retained entry/root/package evidence; do not replay prior memory/helper/worker/manifests/native/packaging/census/raw-shard work."
+  }
+}

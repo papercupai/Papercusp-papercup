@@ -3592,6 +3592,29 @@ export async function readStoredQualification(
   }
 }
 
+/** Serialize terminal event admission with every successor/cancellation mutation. */
+export async function withStoredQualificationTerminalAuthority<T>(
+  target: GateVerdictTarget,
+  identity: { attemptId: string; candidate: string; runId: string; green: boolean },
+  admit: () => Promise<T>,
+): Promise<T> {
+  return boundedOrgTxn(async (tx) => {
+    const rows = await tx<{ metadata: Record<string, unknown> | null }[]>`
+      SELECT metadata FROM harness_shared.routines
+      WHERE workspace_id = ${target.workspaceId} AND install_slug = ${target.installSlug}
+        AND target_role = 'system:green-checkpoint' FOR UPDATE`;
+    const current = rows.length === 1
+      ? parseCheckpointQualificationTransaction(rows[0]!.metadata?.[CHECKPOINT_QUALIFICATION_METADATA_KEY]) : null;
+    if (!current || current.phase !== 'terminal' || current.attemptId !== identity.attemptId ||
+        current.runId !== identity.runId || current.candidate !== identity.candidate ||
+        current.outcome.kind !== (identity.green ? 'green' : 'red'))
+      throw new Error('checkpoint terminal wake superseded or current authority unmeasured');
+    // The receiver queues wakes and cancels sibling awaits before a successor
+    // can acquire this same row. A read outside this lock permits stale wakes.
+    return admit();
+  }, QUALIFICATION_STORE_TXN_OPTIONS);
+}
+
 export function recordStoredQualificationVerdict(
   target: GateVerdictTarget,
   input: {

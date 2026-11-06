@@ -1,0 +1,31 @@
+---
+rel_path: "reports/durable-parks/work-item-durable-park-audit-reconcile-tool-WI-6554700010044172-857889248d7882986f3be8158e376a45-reconcile.json"
+updated_at: 1793943692248
+_body: "content"
+---
+
+{
+  "schemaVersion": "durable-park-reconcile-v1",
+  "runId": "work-item-durable-park-audit:reconcile:tool:WI-6554700010044172:857889248d7882986f3be8158e376a45",
+  "inputSha256": "857889248d7882986f3be8158e376a45184e259f3ce95bdee533ed0a0eb4d8ae",
+  "workspaceId": "papercusp-workspace",
+  "harnessSlug": "papercusp",
+  "generatedAt": "2026-11-06T05:41:32.247Z",
+  "actor": "su-6658849f-658a-4320-a483-43f2693dbcfb",
+  "requested": 1,
+  "cleared": 1,
+  "unchanged": 0,
+  "rows": [
+    {
+      "id": "WI-6554700010044172",
+      "outcome": "cleared",
+      "expectedParkFingerprint": "03fb79c8d31aa15d78c5c24ce717716cf85a67f926042250728e0db9f79cf4ec",
+      "observedParkFingerprint": "03fb79c8d31aa15d78c5c24ce717716cf85a67f926042250728e0db9f79cf4ec",
+      "reasonCode": "operator-directed",
+      "evidence": "Avi verified owner AUTO/self standing scope mode-instructions:auto authorizes carrying active-agent-session-recovery-2026-11-02 through shipment. Temporary P008 custody WI-6554700010030915 under D011/D016; bounded adoption of this one canonical P002 conversion-owned unassigned node only. Implementation/proof remains WI-6554700010044858; preserve all other holds, BARs and D010 retention prerequisite.",
+      "preservedLease": false,
+      "takenBy": null
+    }
+  ],
+  "artifactPath": "reports/durable-parks/work-item-durable-park-audit-reconcile-tool-WI-6554700010044172-857889248d7882986f3be8158e376a45-reconcile.json"
+}

@@ -76,6 +76,8 @@ export interface UsageWindowRow {
   sessions: number;
   firstDay: string | null;
   lastDay: string | null;
+  /** Exact observed UTC days; endpoints alone cannot establish the interior. */
+  observedDays?: string[];
 }
 
 /**
@@ -91,10 +93,11 @@ SELECT tool_name,
        sum(result_bytes)::bigint   AS result_bytes,
        count(DISTINCT session_id)::int AS sessions,
        min(day)::text              AS first_day,
-       max(day)::text              AS last_day
+       max(day)::text              AS last_day,
+       array_agg(DISTINCT day::text) AS observed_days
   FROM harness_shared.tool_usage_rollup
  WHERE workspace_id = $1
-   AND day >= ((now() AT TIME ZONE 'UTC')::date - ($2)::int)
+   AND day >= ($2)::date AND day < ($3)::date
  GROUP BY tool_name, verb, intent_label
 `;
 
@@ -112,7 +115,7 @@ SELECT tool_name,
        count(*)::bigint                AS calls,
        count(DISTINCT spawn_id)::int   AS spawns
   FROM harness_shared.tool_invocations
- WHERE invoked_at >= now() - (($1)::int || ' days')::interval
+ WHERE invoked_at >= ($1)::timestamptz AND invoked_at < ($3)::timestamptz
    AND status = 'ok'
    AND tool_name = ANY($2)
  GROUP BY tool_name
@@ -161,6 +164,14 @@ export interface BucketReport {
 }
 
 export interface WindowCoverage {
+  /** Activity is not an ingest watermark or a client census. */
+  sourceClients: Record<'claude' | 'codex' | 'omp', 'complete' | 'unknown' | 'unsupported' | 'not-applicable'>;
+  completedWindows: 'complete' | 'unknown';
+  populationMatch: 'matched' | 'unknown';
+  backlog: number | null;
+  counterpartRead: 'complete' | 'unknown' | 'failed';
+  window: { start: string; end: string } | null;
+  dayCoverage: 'measured' | 'lower-bound';
   /** Days requested. */
   requestedDays: number;
   /** Distinct days actually present in the rollup for this window. */
@@ -239,8 +250,11 @@ export function summarizeSubstitutionReport(opts: {
   const days = new Set<string>();
   let firstDay: string | null = null;
   let lastDay: string | null = null;
+  let exactDays = usage.length > 0;
 
   for (const r of usage) {
+    if (r.observedDays) r.observedDays.forEach(day => days.add(day));
+    else exactDays = false;
     if (r.firstDay) {
       days.add(r.firstDay);
       if (firstDay === null || r.firstDay < firstDay) firstDay = r.firstDay;
@@ -322,6 +336,12 @@ export function summarizeSubstitutionReport(opts: {
     buckets,
     topVerbs,
     coverage: {
+      // This legacy rail has no per-client census, committed ingest watermark,
+      // pending-byte measure, or join from native session IDs to dispatch owners.
+      // Full-looking activity alone must never assert any of those properties.
+      sourceClients: { claude: 'unknown', codex: 'unsupported', omp: 'unsupported' },
+      completedWindows: 'unknown', populationMatch: 'unknown', backlog: null,
+      counterpartRead: 'unknown', window: null, dayCoverage: exactDays ? 'measured' : 'lower-bound',
       requestedDays: sinceDays,
       daysWithData: days.size,
       firstDay,
@@ -359,14 +379,20 @@ export function frozenBaselineOf(
 export async function readSubstitutionReport(
   runQuery: RunQuery,
   registry: SubstitutionRow[],
-  opts: { sinceDays?: number; workspaceId?: string } = {},
+  opts: { sinceDays?: number; workspaceId?: string; now?: Date } = {},
 ): Promise<SubstitutionReport> {
   const sinceDays = clampReportSinceDays(opts.sinceDays);
+  // Both sources read the same closed UTC days. Today's partially ingested
+  // rollup and a rolling MCP interval are not interchangeable populations.
+  const now = opts.now ?? new Date();
+  if (!Number.isFinite(now.getTime())) throw new Error('invalid_report_time');
+  const end = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())).toISOString();
+  const start = new Date(Date.parse(end) - sinceDays * 86_400_000).toISOString();
   const rawUsage = await runQuery<{
     tool_name: string; verb: string; intent_label: string;
     calls: string | number; atoms: string | number; result_bytes: string | number;
-    sessions: string | number; first_day: string | null; last_day: string | null;
-  }>(USAGE_WINDOW_SQL, [opts.workspaceId ?? ROLLUP_CORPUS_WORKSPACE, sinceDays]);
+    sessions: string | number; first_day: string | null; last_day: string | null; observed_days?: string[];
+  }>(USAGE_WINDOW_SQL, [opts.workspaceId ?? ROLLUP_CORPUS_WORKSPACE, start, end]);
 
   const usage: UsageWindowRow[] = rawUsage.map((r) => ({
     toolName: r.tool_name,
@@ -378,31 +404,39 @@ export async function readSubstitutionReport(
     sessions: Number(r.sessions) || 0,
     firstDay: r.first_day,
     lastDay: r.last_day,
+    ...(r.observed_days ? { observedDays: r.observed_days } : {}),
   }));
 
   // Only the tools the registry actually names — a counterpart read is a join
   // key, not a survey of the whole tool catalogue.
   const toolNames = [...new Set(registry.map((r) => r.toolName))];
   let counterparts: CounterpartRow[] = [];
+  let counterpartRead: WindowCoverage['counterpartRead'] = 'unknown';
   if (toolNames.length > 0) {
     try {
       const raw = await runQuery<{ tool_name: string; calls: string | number; spawns: string | number }>(
         COUNTERPART_SQL,
-        [sinceDays, toolNames],
+        [start, toolNames, end],
       );
       counterparts = raw.map((r) => ({
         toolName: r.tool_name,
         calls: Number(r.calls) || 0,
         spawns: Number(r.spawns) || 0,
       }));
+      counterpartRead = 'complete';
     } catch {
       // Counterpart counts are the comparison half; losing them must not lose
       // the bash half, which is the number P-029 actually tracks.
       counterparts = [];
+      counterpartRead = 'failed';
     }
   }
 
-  return summarizeSubstitutionReport({ sinceDays, usage, counterparts, registry });
+  const report = summarizeSubstitutionReport({ sinceDays, usage, counterparts, registry });
+  report.coverage.window = { start, end };
+  report.coverage.counterpartRead = counterpartRead;
+  if (counterpartRead !== 'complete') report.buckets.forEach(bucket => { bucket.substitutionRate = null; });
+  return report;
 }
 
 /** A pot-coordination-health-shaped rating. */
@@ -447,6 +481,14 @@ export function gradeSubstitution(report: SubstitutionReport): SubstitutionGrade
         'ingest-time bucket attribution, or the registry was empty during ingest). Substitution ' +
         'cannot be rated; the Bash share and cost figures below are still valid.',
     };
+  }
+  if (report.coverage.partial || report.coverage.dayCoverage !== 'measured') {
+    return { rating: 'unknown', evidence: `PARTIAL or unmeasured window: ${report.coverage.daysWithData}/${report.coverage.requestedDays} observed days; activity endpoints do not prove complete ingestion` };
+  }
+  if (report.coverage.completedWindows !== 'complete' || report.coverage.populationMatch !== 'matched'
+    || report.coverage.counterpartRead !== 'complete' || report.coverage.backlog !== 0
+    || Object.values(report.coverage.sourceClients).some(status => status !== 'complete' && status !== 'not-applicable')) {
+    return { rating: 'unknown', evidence: 'source/client coverage, completed ingest windows, backlog or matched native/MCP population is unverified; observed counts cannot grade migration efficacy' };
   }
   const rated = report.buckets.filter((b) => b.substitutionRate !== null);
   if (rated.length === 0) {

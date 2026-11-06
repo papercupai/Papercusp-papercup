@@ -1,10 +1,13 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { readFile } from 'node:fs/promises';
+import { fileURLToPath } from 'node:url';
 import type postgres from 'postgres';
+import * as discoveryAudits from '../../../plan-audits';
 import { withPlanLock } from '../with-plan-lock';
 import { hashPlanContent } from '../content-hash';
 import { evaluateConversationActivationGate } from '../plan-activation-gate';
 import { resolveReuseReferences } from '../plan-declarations';
-import { defaultReuseReferenceResolvers } from '../plan-declaration-resolvers';
+import { defaultReuseReferenceResolvers, resolveDiscoveryAuditContext } from '../plan-declaration-resolvers';
 import {
   cleanupPlans,
   registerHarnessProject,
@@ -38,12 +41,26 @@ const DECLARATION_SECTIONS =
   '{"searched":[],"reused":[],"newSurfaces":[],"notApplicable":"Test fixture; no code surface."}\n```\n' +
   '\n## Third-party libraries\n\n```libraries\n{"needs":[],"notApplicable":"Test fixture; no library need."}\n```\n';
 
-const DRAFT = DRAFT_WITHOUT_DECLARATIONS + DECLARATION_SECTIONS;
+const DISCOVERY_SECTION = '\n## Discovery\n\n```discovery\n' + JSON.stringify({
+  questions: [], notApplicable: 'This bounded fixture reuses the maintained activation gate; no implementation unknown remains.',
+  findings: [{ id: 'F-1', questions: [], conclusion: 'Retain the existing activation audit contract after discovery finalization.',
+    evidenceRefs: ['source:packages/operator-core/lib/agent-tools/plans/__tests__/activation-audit-gate.integration.test.ts'],
+    dispositions: [{ target: 'P-001', decision: 'reuse', reason: 'The maintained gate cases establish the required activation behavior.' }] }],
+}) + '\n```\n';
+const DRAFT = DRAFT_WITHOUT_DECLARATIONS + DECLARATION_SECTIONS + DISCOVERY_SECTION;
 
 let fx: PlanPgFixture;
+const currentDiscovery = discoveryAudits.withCurrentDiscovery;
+const discoveryContext: NonNullable<Parameters<typeof discoveryAudits.recordCurrentDiscoveryAudit>[1]>['context'] =
+  (body, previous, prior, historicalTargets) => resolveDiscoveryAuditContext(body, previous, {
+    repoRoot: fileURLToPath(new URL('../../../../../../', import.meta.url)), sql: fx.admin,
+    workspaceId: fx.workspaceId, harnessSlug: HARNESS, planSlug: SLUG, ownerId: 'su-test', prior, historicalTargets,
+  });
 
 beforeAll(async () => {
-  fx = await setupPlanPgFixture();
+  fx = await setupPlanPgFixture({ isolated: true });
+  await fx.admin.unsafe(await readFile(fileURLToPath(new URL(
+    '../../../../../../libs/papercusp/libs/db/sql/1619-plan-discovery-audits.sql', import.meta.url)), 'utf8'));
   await registerHarnessProject(fx.admin, fx.workspaceId, HARNESS);
 }, 90_000);
 
@@ -56,7 +73,21 @@ beforeEach(async () => {
   await fx.admin`DELETE FROM harness_shared.plan_audits WHERE workspace_id = ${fx.workspaceId} AND harness_slug = ${HARNESS}`;
   await cleanupPlans(fx.admin, fx.workspaceId, HARNESS);
   await registerHarnessProject(fx.admin, fx.workspaceId, HARNESS);
+  // Use the actual persisted discovery writer/checker with this private fixture's
+  // source authority. Production admission and activation checks remain intact.
+  vi.spyOn(discoveryAudits, 'withCurrentDiscovery').mockImplementation((input, accept, _effects, tx) =>
+    currentDiscovery(input, accept, { context: discoveryContext }, tx));
 });
+afterEach(() => vi.restoreAllMocks());
+
+async function finalizeDiscovery() {
+  const anchor = await appendPlanRevision(fx.admin, DRAFT);
+  await fx.admin`UPDATE harness_shared.harness_plans SET content_hash=${anchor.contentHash}
+    WHERE workspace_id=${fx.workspaceId} AND harness_slug=${HARNESS} AND plan_slug=${SLUG}`;
+  expect(await discoveryAudits.recordCurrentDiscoveryAudit({ workspaceId: fx.workspaceId,
+    harnessSlug: HARNESS, planSlug: SLUG, createdBy: 'su-test' }, { context: discoveryContext }))
+    .toMatchObject({ ok: true, discovery: { readiness: { ready: true } } });
+}
 
 async function activationAudit(sql: postgres.Sql, planSlug = SLUG) {
   await sql`
@@ -64,10 +95,12 @@ async function activationAudit(sql: postgres.Sql, planSlug = SLUG) {
       (workspace_id, harness_slug, plan_slug, audit_seq, created_by, audit_kind,
        activation, audited_plan_revision_id, audited_plan_revision_seq,
        audited_plan_content_hash, items, findings)
-    VALUES
-      (${fx.workspaceId}, ${HARNESS}, ${planSlug}, 1, 'su-test', 'activation',
+    SELECT
+      ${fx.workspaceId}, ${HARNESS}, ${planSlug}, COALESCE(MAX(audit_seq), 0) + 1, 'su-test', 'activation',
        ${JSON.stringify({ sourceRanges: [], mappings: [], repairedOmissions: [], rejectedOrSuperseded: [], unresolvedBlockers: [] })}::text::jsonb,
-       1, 1, ${'a'.repeat(64)}, '[]'::jsonb, '[]'::jsonb)`;
+       1, 1, ${'a'.repeat(64)}, '[]'::jsonb, '[]'::jsonb
+      FROM harness_shared.plan_audits
+     WHERE workspace_id=${fx.workspaceId} AND harness_slug=${HARNESS} AND plan_slug=${planSlug}`;
 }
 
 async function appendPlanRevision(sql: postgres.Sql, body: string) {
@@ -94,10 +127,12 @@ async function activationAuditAt(
       (workspace_id, harness_slug, plan_slug, audit_seq, created_by, audit_kind,
        activation, audited_plan_revision_id, audited_plan_revision_seq,
        audited_plan_content_hash, items, findings)
-    VALUES
-      (${fx.workspaceId}, ${HARNESS}, ${SLUG}, 1, 'su-test', 'activation',
+    SELECT
+      ${fx.workspaceId}, ${HARNESS}, ${SLUG}, COALESCE(MAX(audit_seq), 0) + 1, 'su-test', 'activation',
        ${JSON.stringify({ sourceRanges: [], mappings: [], repairedOmissions: [], rejectedOrSuperseded: [], unresolvedBlockers: [] })}::text::jsonb,
-       ${anchor.id}, ${anchor.seq}, ${anchor.contentHash}, '[]'::jsonb, '[]'::jsonb)`;
+       ${anchor.id}, ${anchor.seq}, ${anchor.contentHash}, '[]'::jsonb, '[]'::jsonb
+      FROM harness_shared.plan_audits
+     WHERE workspace_id=${fx.workspaceId} AND harness_slug=${HARNESS} AND plan_slug=${SLUG}`;
 }
 
 const flipReady = (body: string) => body.replace('status: draft', 'status: ready');
@@ -181,6 +216,7 @@ describe('conversation activation audit gate', () => {
 
   it('blocks a raw draft→ready content transition and leaves the row unchanged', async () => {
     await seedPlan(fx.admin, fx.workspaceId, HARNESS, SLUG, DRAFT);
+    await finalizeDiscovery();
 
     const result = await withPlanLock<{ ok: true }>(
       {} as never,
@@ -200,6 +236,7 @@ describe('conversation activation audit gate', () => {
 
   it('admits the same transition after an activation audit exists', async () => {
     await seedPlan(fx.admin, fx.workspaceId, HARNESS, SLUG, DRAFT);
+    await finalizeDiscovery();
     await activationAudit(fx.admin);
 
     const result = await withPlanLock<{ ok: true }>(
@@ -244,7 +281,7 @@ describe('conversation activation audit gate', () => {
       { slug: SLUG, harnessSlug: HARNESS, workspaceId: fx.workspaceId, intent: 'test direct ready' },
       async () => ({ newBody: flipReady(DRAFT), value: { ok: true } }),
     );
-    expect(direct).toMatchObject({ kind: 'refused', value: { code: 'conversation_audit_required' } });
+    expect(direct).toMatchObject({ kind: 'refused', value: { code: 'discovery_not_ready' } });
 
     await seedPlan(fx.admin, fx.workspaceId, HARNESS, SLUG, flipReady(DRAFT));
     const cosmetic = await withPlanLock<{ ok: true }>(
@@ -349,6 +386,7 @@ describe('conversation activation audit gate', () => {
 
   it('keeps the activation audit requirement for ordinary plans', async () => {
     await seedPlan(fx.admin, fx.workspaceId, HARNESS, SLUG, DRAFT);
+    await finalizeDiscovery();
     const result = await withPlanLock<{ ok: true }>(
       {} as never,
       { slug: SLUG, harnessSlug: HARNESS, workspaceId: fx.workspaceId, intent: 'test ordinary activation' },

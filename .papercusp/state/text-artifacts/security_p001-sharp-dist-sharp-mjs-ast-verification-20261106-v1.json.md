@@ -1,0 +1,362 @@
+---
+rel_path: "security/p001-sharp-dist-sharp-mjs-ast-verification-20261106-v1.json"
+updated_at: 1793942907802
+_body: "content"
+---
+
+{
+  "schema": "p001-sharp-independent-source-ast-verification-v1",
+  "recordedAt": "2026-11-06T05:28:27.616Z",
+  "archive": {
+    "bytes": 214749,
+    "sha256": "3b6bbbe6b308f5c383938ca4a31926cd5d79c4651ed8c5fda16a97da2014a9ac",
+    "retainedIntegrityMatched": true
+  },
+  "path": "dist/sharp.mjs",
+  "bytes": 6357,
+  "sha256": "d0c3ce3837636a140e8363850823e3b8dc2b000928303664cc9fc1aa2ba326ee",
+  "parser": {
+    "tool": "typescript",
+    "version": "6.0.3",
+    "path": "/home/marsh-office/papercupai-workspace/papercusp/node_modules/typescript/lib/typescript.js",
+    "sha256": "d3f3cd2b04b7f466f4484df921b744223f7bd1f3e353ec9110bdf52695b983d5"
+  },
+  "parseDiagnostics": [],
+  "moduleEdges": [
+    {
+      "kind": "ImportDeclaration",
+      "specifier": "node:module",
+      "argumentKind": "StringLiteral",
+      "argumentText": "\"node:module\"",
+      "start": 169,
+      "end": 212,
+      "line": 8,
+      "column": 1,
+      "functionAncestors": []
+    },
+    {
+      "kind": "ImportDeclaration",
+      "specifier": "detect-libc",
+      "argumentKind": "StringLiteral",
+      "argumentText": "\"detect-libc\"",
+      "start": 213,
+      "end": 267,
+      "line": 9,
+      "column": 1,
+      "functionAncestors": []
+    },
+    {
+      "kind": "ImportDeclaration",
+      "specifier": "./libvips.mjs",
+      "argumentKind": "StringLiteral",
+      "argumentText": "\"./libvips.mjs\"",
+      "start": 269,
+      "end": 305,
+      "line": 11,
+      "column": 1,
+      "functionAncestors": []
+    },
+    {
+      "kind": "ImportDeclaration",
+      "specifier": "../package.json",
+      "argumentKind": "StringLiteral",
+      "argumentText": "'../package.json'",
+      "start": 306,
+      "end": 362,
+      "line": 12,
+      "column": 1,
+      "functionAncestors": []
+    },
+    {
+      "kind": "RequireCall",
+      "specifier": null,
+      "argumentKind": "TemplateExpression",
+      "argumentText": "`../src/build/Release/sharp-${runtimePlatform}-${version}.node`",
+      "start": 670,
+      "end": 742,
+      "line": 25,
+      "column": 11,
+      "functionAncestors": []
+    },
+    {
+      "kind": "RequireCall",
+      "specifier": null,
+      "argumentKind": "TemplateExpression",
+      "argumentText": "`../src/build/Release/sharp-wasm32-${version}.node`",
+      "start": 816,
+      "end": 876,
+      "line": 31,
+      "column": 13,
+      "functionAncestors": []
+    },
+    {
+      "kind": "RequireCall",
+      "specifier": "@img/sharp-darwin-arm64/sharp.node",
+      "argumentKind": "StringLiteral",
+      "argumentText": "\"@img/sharp-darwin-arm64/sharp.node\"",
+      "start": 1020,
+      "end": 1065,
+      "line": 40,
+      "column": 17,
+      "functionAncestors": []
+    },
+    {
+      "kind": "RequireCall",
+      "specifier": "@img/sharp-darwin-x64/sharp.node",
+      "argumentKind": "StringLiteral",
+      "argumentText": "\"@img/sharp-darwin-x64/sharp.node\"",
+      "start": 1123,
+      "end": 1166,
+      "line": 43,
+      "column": 17,
+      "functionAncestors": []
+    },
+    {
+      "kind": "RequireCall",
+      "specifier": "@img/sharp-linux-arm/sharp.node",
+      "argumentKind": "StringLiteral",
+      "argumentText": "\"@img/sharp-linux-arm/sharp.node\"",
+      "start": 1223,
+      "end": 1265,
+      "line": 46,
+      "column": 17,
+      "functionAncestors": []
+    },
+    {
+      "kind": "RequireCall",
+      "specifier": "@img/sharp-linux-arm64/sharp.node",
+      "argumentKind": "StringLiteral",
+      "argumentText": "\"@img/sharp-linux-arm64/sharp.node\"",
+      "start": 1324,
+      "end": 1368,
+      "line": 49,
+      "column": 17,
+      "functionAncestors": []
+    },
+    {
+      "kind": "RequireCall",
+      "specifier": "@img/sharp-linux-ppc64/sharp.node",
+      "argumentKind": "StringLiteral",
+      "argumentText": "\"@img/sharp-linux-ppc64/sharp.node\"",
+      "start": 1427,
+      "end": 1471,
+      "line": 52,
+      "column": 17,
+      "functionAncestors": []
+    },
+    {
+      "kind": "RequireCall",
+      "specifier": "@img/sharp-linux-riscv64/sharp.node",
+      "argumentKind": "StringLiteral",
+      "argumentText": "\"@img/sharp-linux-riscv64/sharp.node\"",
+      "start": 1532,
+      "end": 1578,
+      "line": 55,
+      "column": 17,
+      "functionAncestors": []
+    },
+    {
+      "kind": "RequireCall",
+      "specifier": "@img/sharp-linux-s390x/sharp.node",
+      "argumentKind": "StringLiteral",
+      "argumentText": "\"@img/sharp-linux-s390x/sharp.node\"",
+      "start": 1637,
+      "end": 1681,
+      "line": 58,
+      "column": 17,
+      "functionAncestors": []
+    },
+    {
+      "kind": "RequireCall",
+      "specifier": "@img/sharp-linux-x64/sharp.node",
+      "argumentKind": "StringLiteral",
+      "argumentText": "\"@img/sharp-linux-x64/sharp.node\"",
+      "start": 1738,
+      "end": 1780,
+      "line": 61,
+      "column": 17,
+      "functionAncestors": []
+    },
+    {
+      "kind": "RequireCall",
+      "specifier": "@img/sharp-linuxmusl-arm64/sharp.node",
+      "argumentKind": "StringLiteral",
+      "argumentText": "\"@img/sharp-linuxmusl-arm64/sharp.node\"",
+      "start": 1843,
+      "end": 1891,
+      "line": 64,
+      "column": 17,
+      "functionAncestors": []
+    },
+    {
+      "kind": "RequireCall",
+      "specifier": "@img/sharp-linuxmusl-x64/sharp.node",
+      "argumentKind": "StringLiteral",
+      "argumentText": "\"@img/sharp-linuxmusl-x64/sharp.node\"",
+      "start": 1952,
+      "end": 1998,
+      "line": 67,
+      "column": 17,
+      "functionAncestors": []
+    },
+    {
+      "kind": "RequireCall",
+      "specifier": "@img/sharp-win32-arm64/sharp.node",
+      "argumentKind": "StringLiteral",
+      "argumentText": "\"@img/sharp-win32-arm64/sharp.node\"",
+      "start": 2057,
+      "end": 2101,
+      "line": 70,
+      "column": 17,
+      "functionAncestors": []
+    },
+    {
+      "kind": "RequireCall",
+      "specifier": "@img/sharp-win32-ia32/sharp.node",
+      "argumentKind": "StringLiteral",
+      "argumentText": "\"@img/sharp-win32-ia32/sharp.node\"",
+      "start": 2159,
+      "end": 2202,
+      "line": 73,
+      "column": 17,
+      "functionAncestors": []
+    },
+    {
+      "kind": "RequireCall",
+      "specifier": "@img/sharp-win32-x64/sharp.node",
+      "argumentKind": "StringLiteral",
+      "argumentText": "\"@img/sharp-win32-x64/sharp.node\"",
+      "start": 2259,
+      "end": 2301,
+      "line": 76,
+      "column": 17,
+      "functionAncestors": []
+    },
+    {
+      "kind": "RequireCall",
+      "specifier": "@img/sharp-freebsd-wasm32/sharp.node",
+      "argumentKind": "StringLiteral",
+      "argumentText": "\"@img/sharp-freebsd-wasm32/sharp.node\"",
+      "start": 2388,
+      "end": 2435,
+      "line": 80,
+      "column": 17,
+      "functionAncestors": []
+    },
+    {
+      "kind": "RequireCall",
+      "specifier": "@img/sharp-webcontainers-wasm32/sharp.node",
+      "argumentKind": "StringLiteral",
+      "argumentText": "\"@img/sharp-webcontainers-wasm32/sharp.node\"",
+      "start": 2495,
+      "end": 2548,
+      "line": 83,
+      "column": 17,
+      "functionAncestors": []
+    },
+    {
+      "kind": "RequireCall",
+      "specifier": "@img/sharp-wasm32/sharp.node",
+      "argumentKind": "StringLiteral",
+      "argumentText": "\"@img/sharp-wasm32/sharp.node\"",
+      "start": 3253,
+      "end": 3292,
+      "line": 104,
+      "column": 13,
+      "functionAncestors": []
+    },
+    {
+      "kind": "RequireCall",
+      "specifier": null,
+      "argumentKind": "TemplateExpression",
+      "argumentText": "`@img/sharp-libvips-${runtimePlatform}/package`",
+      "start": 5031,
+      "end": 5087,
+      "line": 146,
+      "column": 26,
+      "functionAncestors": []
+    }
+  ],
+  "effects": [
+    {
+      "callee": "createRequire",
+      "expression": "createRequire(import.meta.url)",
+      "start": 380,
+      "end": 410,
+      "line": 14,
+      "column": 17,
+      "functionAncestors": []
+    },
+    {
+      "callee": "runtimePlatformArch",
+      "expression": "runtimePlatformArch()",
+      "start": 571,
+      "end": 592,
+      "line": 18,
+      "column": 25,
+      "functionAncestors": []
+    },
+    {
+      "callee": "sharp._isUsingX64V2",
+      "expression": "sharp._isUsingX64V2()",
+      "start": 2649,
+      "end": 2670,
+      "line": 86,
+      "column": 79,
+      "functionAncestors": []
+    },
+    {
+      "callee": "process.emitWarning",
+      "expression": "process.emitWarning(\n        \"Binaries provided by Electron for use on Linux may be incompatible with sharp - see https://sharp.pixelplumbing.com/install#electron-and-linux\",\n        { code: \"SharpElectronLinux\" }\n      )",
+      "start": 2944,
+      "end": 3165,
+      "line": 93,
+      "column": 7,
+      "functionAncestors": []
+    },
+    {
+      "callee": "isUnsupportedNodeRuntime",
+      "expression": "isUnsupportedNodeRuntime()",
+      "start": 3857,
+      "end": 3883,
+      "line": 122,
+      "column": 7,
+      "functionAncestors": []
+    },
+    {
+      "callee": "isUnsupportedNodeRuntime",
+      "expression": "isUnsupportedNodeRuntime()",
+      "start": 3919,
+      "end": 3945,
+      "line": 123,
+      "column": 33,
+      "functionAncestors": []
+    },
+    {
+      "callee": "familySync",
+      "expression": "familySync()",
+      "start": 5116,
+      "end": 5128,
+      "line": 147,
+      "column": 28,
+      "functionAncestors": []
+    },
+    {
+      "callee": "versionSync",
+      "expression": "versionSync()",
+      "start": 5132,
+      "end": 5145,
+      "line": 147,
+      "column": 44,
+      "functionAncestors": []
+    }
+  ],
+  "targetExecuted": false,
+  "installedRuntimeIdentityProven": false,
+  "independentMatchesPython": {
+    "bytes": true,
+    "sha256": true,
+    "archiveSha256": true
+  },
+  "captureCommand": "node <<'NODE'\nconst crypto=require('node:crypto'),zlib=require('node:zlib'),fs=require('node:fs'),ts=require('typescript');\nconst sha=b=>crypto.createHash('sha256').update(b).digest('hex');\n(async()=>{\n const response=await fetch('https://registry.npmjs.org/sharp/-/sharp-0.35.5.tgz'); if(!response.ok)throw new Error('HTTP '+response.status);\n const archive=Buffer.from(await response.arrayBuffer());\n if(archive.length!==214749||sha(archive)!=='3b6bbbe6b308f5c383938ca4a31926cd5d79c4651ed8c5fda16a97da2014a9ac'||'sha512-'+crypto.createHash('sha512').update(archive).digest('base64')!=='sha512-Ywn4OnzGukp7CDMrp08RQ50YKmuwG47brZgIVPTvBaaAfQlRlygrRqSrxdCiL9M+LlzLBiJ68IR1QqvzHyjC7g==')throw new Error('archive identity mismatch');\n const tar=zlib.gunzipSync(archive),entries=new Map();\n for(let at=0;at+512<=tar.length;){const header=tar.subarray(at,at+512);if(header.every(x=>x===0))break;\n const name=header.subarray(0,100).toString().split('\\0')[0],prefix=header.subarray(345,500).toString().split('\\0')[0],size=parseInt(header.subarray(124,136).toString().replaceAll('\\0','').trim()||'0',8);\n entries.set((prefix?prefix+'/':'')+name,tar.subarray(at+512,at+512+size));at+=512+Math.ceil(size/512)*512;}\n const path=\"dist/sharp.mjs\",bytes=entries.get('package/'+path);if(!bytes)throw new Error('missing '+path);\n const text=bytes.toString('utf8'),source=ts.createSourceFile(path,text,ts.ScriptTarget.Latest,true,ts.ScriptKind.JS),moduleEdges=[],effects=[];\n const position=n=>{const start=n.getStart(source),lc=source.getLineAndCharacterOfPosition(start);return{start,end:n.end,line:lc.line+1,column:lc.character+1};};\n const scope=n=>{const out=[];for(let p=n.parent;p&&!ts.isSourceFile(p);p=p.parent)if(ts.isFunctionLike(p))out.push(ts.SyntaxKind[p.kind]+':'+(p.name?.getText(source)||'<anonymous>'));return out;};\n const selected=new Set(['createRequire','runtimePlatformArch','isUnsupportedNodeRuntime','familySync','versionSync','sharp._isUsingX64V2','process.emitWarning','util.debuglog','util.inherits','stream.Duplex.call','Object.assign','this._createInputDescriptor','this.constructor.call','structuredClone','this._whenStreamInFinished','this._flattenBufferIn','clone.emit','Sharp.queue.emit']);\n function visit(n){\n  if(ts.isImportDeclaration(n)||ts.isExportDeclaration(n)&&n.moduleSpecifier){const arg=n.moduleSpecifier;moduleEdges.push({kind:ts.SyntaxKind[n.kind],specifier:arg.text,argumentKind:ts.SyntaxKind[arg.kind],argumentText:arg.getText(source),...position(n),functionAncestors:scope(n)});}\n  if(ts.isCallExpression(n)){const callee=n.expression.getText(source);\n   if(callee==='require'||n.expression.kind===ts.SyntaxKind.ImportKeyword){const arg=n.arguments[0];moduleEdges.push({kind:callee==='require'?'RequireCall':'DynamicImport',specifier:arg&&ts.isStringLiteralLike(arg)?arg.text:null,argumentKind:arg?ts.SyntaxKind[arg.kind]:null,argumentText:arg?.getText(source),...position(n),functionAncestors:scope(n)});}\n   if(selected.has(callee))effects.push({callee,expression:n.getText(source),...position(n),functionAncestors:scope(n)});\n  }\n  ts.forEachChild(n,visit);\n }visit(source);\n console.log(JSON.stringify({schema:'p001-sharp-independent-source-ast-verification-v1',recordedAt:new Date().toISOString(),archive:{bytes:archive.length,sha256:sha(archive),retainedIntegrityMatched:true},path,bytes:bytes.length,sha256:sha(bytes),parser:{tool:'typescript',version:ts.version,path:require.resolve('typescript'),sha256:sha(fs.readFileSync(require.resolve('typescript')))},parseDiagnostics:source.parseDiagnostics.map(x=>({code:x.code,start:x.start,message:ts.flattenDiagnosticMessageText(x.messageText,' ')})),moduleEdges,effects,targetExecuted:false,installedRuntimeIdentityProven:false}));\n})().catch(e=>{console.error(e);process.exitCode=1});\nNODE"
+}

@@ -76,10 +76,6 @@ export const BM25_CORPORA = [
     textExprTemplate: "coalesce({body}, '')",
   },
   {
-    table: 'carry_notes', indexName: 'carry_notes_bm25', textConfig: 'english', legacyTsvColumn: 'note_tsv',
-    textExprTemplate: "coalesce({note}, '')",
-  },
-  {
     table: 'code_recipes', indexName: 'code_recipes_bm25', textConfig: 'english', legacyTsvColumn: 'title_tsv',
     textExprTemplate: TITLE_DESCRIPTION,
   },

@@ -171,6 +171,30 @@ describe('testing:run selector arbitration', () => {
     expect(testEvidenceRecoveryRunId(originRunId, { error: undefined, detachedRunId })).toBe(originRunId);
   });
 
+  it('retains exact ledger file identities in every detached request before the runner starts', () => {
+    // A zero-exit child and matching ledger cannot recover a verified PASS when
+    // the durable request lost its requested-file population (EI-28022013442930187).
+    const expected = ['apps/operator/bin/host-handler-http.test.ts', 'packages/operator-core/lib/testing-run-store.test.ts'];
+    const files = [join(REPO_ROOT, expected[0]!), `./${expected[1]}`];
+    const single = buildDetachedTestRunRequest({ root: REPO_ROOT, files, timeoutMs: 90_000 });
+    const focused = buildDetachedTestRunRequest({ root: REPO_ROOT, files,
+      testNamePattern: 'focused proof', timeoutMs: 90_000 });
+    const mixed = buildDetachedMixedTestRunRequest({ groups: [
+      { root: REPO_ROOT, files: [files[0]!] },
+      { root: REPO_ROOT, files: [files[1]!] },
+    ], timeoutMs: 90_000 });
+
+    for (const request of [single, focused, mixed]) {
+      expect(request.requestedFiles).toEqual(expected);
+    }
+    // Persist a copy: subsequent caller edits must not change the population
+    // against which the terminal child and per-file ledger are reconciled.
+    files[0] = 'unrequested.test.ts';
+    expect(single.requestedFiles).toEqual(expected);
+    expect(focused.requestedFiles).toEqual(expected);
+    expect(mixed.requestedFiles).toEqual(expected);
+  });
+
   it('keeps detached timeout recovery locally adoptable and preserves its explicit harness scope', () => {
     const files = ['agent-credentials.test.ts'];
     const single = buildDetachedTestRunRequest({

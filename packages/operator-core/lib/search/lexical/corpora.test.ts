@@ -100,6 +100,10 @@ describe('BM25 exact-list sources ↔ keepLegacyColumn', () => {
 });
 
 describe('BM25 corpus registry', () => {
+  it('does not maintain a write-only BM25 index for carry-note checkpoints', () => {
+    expect(BM25_CORPORA.map(c => c.indexName)).not.toContain('carry_notes_bm25');
+  });
+
   it('has one entry per table and per index name, each named <table>_bm25', () => {
     expect(new Set(BM25_CORPORA.map(c => c.table)).size).toBe(BM25_CORPORA.length);
     for (const c of BM25_CORPORA) expect(c.indexName).toBe(`${c.table}_bm25`);

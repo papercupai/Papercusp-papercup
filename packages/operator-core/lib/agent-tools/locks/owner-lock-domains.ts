@@ -50,8 +50,11 @@ export async function domainsHoldingLocks({
   lockId,
   exclude,
 }: DomainsHoldingLocksOpts): Promise<string[]> {
+  // notify-classification: {"id":"packages/operator-core/lib/agent-tools/locks/owner-lock-domains.ts#<module>/domainsHoldingLocks:40e72844df81469ea8c1:1","classification":"durable","reason":"Bootstrap can apply lock-store migrations inside beginSuLockTransaction, whose post-commit path drains resource-expiry receipts. Preserve that shared delivery classification until the callback's receipt and notification effects are proved; successful bootstrap alone is not a delivery verdict.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
   await ensureBootstrap();
+  // notify-classification: {"id":"packages/operator-core/lib/agent-tools/locks/owner-lock-domains.ts#<module>/domainsHoldingLocks:58910b9de4587628725a:1","classification":"durable","reason":"The retry resolves an owner's file-lock domains from a SELECT-only readQueue snapshot. It creates no expiry receipts, but the transaction's shared receipt drain and generic retry-root ambiguity remain conservatively unverified under EI-28019593823641196; do not infer an owner notice from the merged roots.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
   const snapshot = await acquireWithContentionRetry(() =>
+    // notify-classification: {"id":"packages/operator-core/lib/agent-tools/locks/owner-lock-domains.ts#<module>/domainsHoldingLocks/<callback>:6c7d82f45119283808f0:1","classification":"durable","reason":"This callback only selects the owner's active locks across coordination domains. readQueue uses beginSuLockTransaction and its post-commit resource-expiry receipt drain; the callback marks no receipts, so keep the shared-wrapper classification unverified until precise context and receipt-empty proof are available.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     readQueue(getTxPool(), { coordinationDomain: null, owner: ownerId }),
   );
   const domains = new Set<string>();
@@ -91,8 +94,11 @@ export async function ownedLocksForPaths({
   const requestedPaths = [...new Set(paths)];
   if (requestedPaths.length === 0) return [];
 
+  // notify-classification: {"id":"packages/operator-core/lib/agent-tools/locks/owner-lock-domains.ts#<module>/ownedLocksForPaths:40e72844df81469ea8c1:1","classification":"durable","reason":"Nonempty path resolution first bootstraps the lock store and may apply migrations inside beginSuLockTransaction. Its shared post-commit expiry receipt drain remains an unverified classification; resolving owned paths does not itself prove that terminal delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
   await ensureBootstrap();
+  // notify-classification: {"id":"packages/operator-core/lib/agent-tools/locks/owner-lock-domains.ts#<module>/ownedLocksForPaths:bf132f9b2aa85dfac8fb:1","classification":"durable","reason":"The retry reads only this owner's requested file-lock paths and groups the returned rows without releasing anything. Preserve the shared transaction receipt-drain classification and EI-28019593823641196 callback ambiguity as unverified; this lookup is not evidence that a release notice was delivered.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
   const snapshot = await acquireWithContentionRetry(() =>
+    // notify-classification: {"id":"packages/operator-core/lib/agent-tools/locks/owner-lock-domains.ts#<module>/ownedLocksForPaths/<callback>:9d5424f38fc7208f5291:1","classification":"durable","reason":"The callback selects owner-and-path-filtered locks through readQueue, creating no resource-expiry receipts. beginSuLockTransaction still invokes the shared post-commit receipt drain. Keep that wrapper classification unverified until the precise empty-receipt path is established, without inventing a targeted owner-message obligation.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     readQueue(getTxPool(), {
       coordinationDomain: null,
       owner: ownerId,

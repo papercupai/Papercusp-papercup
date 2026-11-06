@@ -150,6 +150,23 @@ afterAll(async () => {
 });
 
 describe('legacy tsvector retirement (R-14, D-011, D-012, D-016)', () => {
+  it('migration 1621 drops the unused carry-note BM25 index and prevents recreation', async () => {
+    const before = await sql`SELECT corpus_index, outcome FROM harness_shared.bm25_ensure_indexes()`;
+    expect(before.some(row => row.corpus_index === 'carry_notes_bm25')).toBe(true);
+    expect(await exists('harness_shared.carry_notes_bm25')).toBe(true);
+
+    await sql.unsafe(migrationSql(1621));
+    resetBm25Availability();
+    expect(await exists('harness_shared.carry_notes_bm25')).toBe(false);
+
+    const after = await sql`SELECT corpus_index, outcome FROM harness_shared.bm25_ensure_indexes()`;
+    expect(after.some(row => row.corpus_index === 'carry_notes_bm25')).toBe(false);
+    expect(await exists('harness_shared.carry_notes_bm25')).toBe(false);
+    expect(await generated('carry_notes', 'note_tsv')).toBe('s');
+    expect(await sql`SELECT id FROM harness_shared.carry_notes WHERE note_tsv @@ to_tsquery('english', 'quokka')`)
+      .toEqual([{ id: 1 }]);
+  });
+
   it('migration 1452 retires every gated corpus, keeps the exact-list corpora, skips a busy table, and keeps values, legacy queries and views', async () => {
     // calibration: the fixture's legacy queries return rows, so equality below is not vacuous
     expect(before.bare.length).toBeGreaterThan(0);
@@ -224,7 +241,7 @@ describe('legacy tsvector retirement (R-14, D-011, D-012, D-016)', () => {
     expect(outcomeOf(rows, 'harness_plans')).toBe('kept:exact-list');
     expect(outcomeOf(rows, 'work_items')).toBe('kept:exact-list');
     expect(outcomeOf(rows, 'session_turns')).toBe('kept:exact-list');
-    expect(outcomeOf(rows, 'carry_notes')).toBe('skipped:bm25-index-not-valid');
+    expect(rows.some(r => r.table_name === 'carry_notes')).toBe(false);
     expect(outcomeOf(rows, 'documents')).toBe('skipped:table-missing');
     const goals = rows.find(r => r.table_name === 'goals')!;
     expect(goals.outcome).toBe('retired');
@@ -234,17 +251,18 @@ describe('legacy tsvector retirement (R-14, D-011, D-012, D-016)', () => {
     expect(await generated('work_items', '_search')).toBe('s');
   });
 
-  it('a dry run changes nothing; the maintenance workflow retires a corpus once its BM25 index is valid', async () => {
-    await sql`SELECT * FROM harness_shared.bm25_ensure_indexes()`;
-    expect(outcomeOf(await retire(true), 'carry_notes')).toBe('would-retire');
+  it('a dry run changes nothing; maintenance does not recreate the retired carry-note index', async () => {
+    const ensured = await sql`SELECT corpus_index, outcome FROM harness_shared.bm25_ensure_indexes()`;
+    expect(ensured.some(row => row.corpus_index === 'carry_notes_bm25')).toBe(false);
+    expect(await exists('harness_shared.carry_notes_bm25')).toBe(false);
+    expect((await retire(true)).some(row => row.table_name === 'carry_notes')).toBe(false);
     expect(await generated('carry_notes', 'note_tsv')).toBe('s');
 
     const report = await runBm25Maintenance(sql, { maxCompactionSteps: 0 });
     expect(report.errors).toEqual([]);
-    expect(report.retired).toEqual([
-      expect.objectContaining({ table: 'carry_notes', column: 'note_tsv', outcome: 'retired' }),
-    ]);
-    expect(await generated('carry_notes', 'note_tsv')).toBe('v');
+    expect(report.retired.some(row => row.table === 'carry_notes')).toBe(false);
+    expect(await exists('harness_shared.carry_notes_bm25')).toBe(false);
+    expect(await generated('carry_notes', 'note_tsv')).toBe('s');
     expect(await generated('work_items', '_search')).toBe('s');
     expect(await sql`SELECT id FROM harness_shared.carry_notes WHERE note_tsv @@ to_tsquery('english', 'quokka')`).toEqual([{ id: 1 }]);
   });

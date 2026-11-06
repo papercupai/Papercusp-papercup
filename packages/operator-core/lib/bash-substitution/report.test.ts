@@ -281,17 +281,23 @@ describe('clampReportSinceDays', () => {
 });
 
 describe('gradeSubstitution', () => {
-  const bigWindow = (rate: number): Parameters<typeof gradeSubstitution>[0] =>
-    summarizeSubstitutionReport({
+  const bigWindow = (rate: number): Parameters<typeof gradeSubstitution>[0] => {
+    const report = summarizeSubstitutionReport({
       sinceDays: 7,
       usage: [
-        usageRow({ toolName: 'Bash', calls: 500 }),
-        usageRow({ toolName: 'Bash', intentLabel: 'file-range-read', atoms: Math.round(100 * (1 - rate)) }),
+        usageRow({ toolName: 'Bash', calls: 500, observedDays: Array.from({ length: 7 }, (_, i) => `2026-07-${20 + i}`) }),
+        usageRow({ toolName: 'Bash', intentLabel: 'file-range-read', atoms: Math.round(100 * (1 - rate)), observedDays: [DAY] }),
       ],
       counterparts: [{ toolName: 'capability:read', calls: Math.round(100 * rate), spawns: 5 }],
       registry: [regRow()],
       baselineOf: noBaseline,
     });
+    // Explicit trusted-census fixture for the pure grader. The legacy reader
+    // cannot produce these assurances from activity counts alone.
+    report.coverage = { ...report.coverage, sourceClients: { claude: 'complete', codex: 'not-applicable', omp: 'not-applicable' },
+      completedWindows: 'complete', populationMatch: 'matched', backlog: 0, counterpartRead: 'complete' };
+    return report;
+  };
 
   it('is unknown on an empty registry', () => {
     const r = summarizeSubstitutionReport({
@@ -316,7 +322,32 @@ describe('gradeSubstitution', () => {
   });
 
   it('says so in the evidence when the window is partial', () => {
-    expect(gradeSubstitution(bigWindow(0.8)).evidence).toContain('PARTIAL');
+    const report = bigWindow(0.8);
+    report.coverage.partial = true;
+    expect(gradeSubstitution(report)).toMatchObject({ rating: 'unknown', evidence: expect.stringContaining('PARTIAL') });
+  });
+
+  it('R9 stale unmatched windows cannot grade healthy', () => {
+    const stale = summarizeSubstitutionReport({ sinceDays: 7,
+      usage: [usageRow({ calls: 500, firstDay: '2026-07-20', lastDay: '2026-07-20' }),
+        usageRow({ intentLabel: 'file-range-read', atoms: 1 })],
+      counterparts: [{ toolName: 'capability:read', calls: 999, spawns: 20 }], registry: [regRow()], baselineOf: noBaseline });
+    expect(stale.buckets[0]!.substitutionRate).toBe(.999);
+    expect(gradeSubstitution(stale).rating).toBe('unknown');
+    for (const status of ['unknown', 'unsupported'] as const) {
+      const completeDays = bigWindow(.9);
+      completeDays.coverage.sourceClients.codex = status;
+      expect(gradeSubstitution(completeDays).rating).toBe('unknown');
+    }
+    for (const field of ['completedWindows', 'populationMatch', 'counterpartRead'] as const) {
+      const report = bigWindow(.9);
+      report.coverage[field] = 'unknown';
+      expect(gradeSubstitution(report).rating).toBe('unknown');
+    }
+    const backlog = bigWindow(.9); backlog.coverage.backlog = null;
+    expect(gradeSubstitution(backlog).rating).toBe('unknown');
+    backlog.coverage.backlog = 1;
+    expect(gradeSubstitution(backlog).rating).toBe('unknown');
   });
 });
 
@@ -329,7 +360,29 @@ describe('readSubstitutionReport', () => {
     }) as Parameters<typeof readSubstitutionReport>[0];
     await readSubstitutionReport(runQuery, [regRow()], { sinceDays: 7 });
     expect(seen[0].p[0]).toBe(ROLLUP_CORPUS_WORKSPACE);
-    expect(seen[0].p[1]).toBe(7);
+    expect(Date.parse(String(seen[0].p[2])) - Date.parse(String(seen[0].p[1]))).toBe(7 * 86_400_000);
+  });
+
+  it('uses identical closed UTC boundaries and exact observed days while retaining unknown source coverage', async () => {
+    const seen: Array<{ q: string; p: unknown[] }> = [];
+    const days = Array.from({ length: 7 }, (_, i) => `2026-07-${20 + i}`);
+    const runQuery = (async (q: string, p: unknown[]) => {
+      seen.push({ q, p });
+      return seen.length === 1 ? [{ tool_name: 'Bash', verb: '', intent_label: '', calls: 500, atoms: 0,
+        result_bytes: 0, sessions: 3, first_day: days[0], last_day: days[6], observed_days: days },
+      { tool_name: 'Bash', verb: '', intent_label: 'file-range-read', calls: 0, atoms: 1, result_bytes: 0,
+        sessions: 1, first_day: days[0], last_day: days[6], observed_days: days }]
+        : [{ tool_name: 'capability:read', calls: 999, spawns: 20 }];
+    }) as Parameters<typeof readSubstitutionReport>[0];
+    const report = await readSubstitutionReport(runQuery, [regRow()], { sinceDays: 7, now: new Date('2026-07-27T15:00:00Z') });
+    expect(seen[0].p.slice(1)).toEqual(['2026-07-20T00:00:00.000Z', '2026-07-27T00:00:00.000Z']);
+    expect([seen[1].p[0], seen[1].p[2]]).toEqual(seen[0].p.slice(1));
+    expect(seen[0].q).toContain('day < ($3)::date');
+    expect(seen[1].q).toContain('invoked_at < ($3)::timestamptz');
+    expect(report.coverage).toMatchObject({ daysWithData: 7, partial: false, dayCoverage: 'measured',
+      sourceClients: { claude: 'unknown', codex: 'unsupported', omp: 'unsupported' },
+      populationMatch: 'unknown', completedWindows: 'unknown', backlog: null, counterpartRead: 'complete' });
+    expect(gradeSubstitution(report).rating).toBe('unknown');
   });
 
   it('asks tool_invocations only about the tools the registry names', async () => {
@@ -363,5 +416,7 @@ describe('readSubstitutionReport', () => {
     const r = await readSubstitutionReport(runQuery, [regRow()], {});
     expect(r.calls.bash).toBe(42);
     expect(r.buckets[0].toolCalls).toBe(0);
+    expect(r.buckets[0].substitutionRate).toBeNull();
+    expect(r.coverage.counterpartRead).toBe('failed');
   });
 });

@@ -75,6 +75,20 @@ it('ranks deduplicated corpus outcomes and exposes unknown residue OUTCOME-P-003
   expect(serialized).not.toMatch(/tokenSavings|modelSavings|savedTokens/);
 });
 
+it('R10 failed replay lowers reliability evidence', () => {
+  const successful = observations();
+  const rank = (rows: ReturnType<typeof observations>) => rankSqlToolCandidates(aggregateSqlDemand(rows, coverage)).candidates[0]!;
+  const before = rank(successful);
+  const after = rank([...successful, ...observations({ prefix: 'failed-retry', status: 'error', calls: 1 })]);
+  expect(after.counts).toEqual({ ok: 10, error: 1, refused: 0, unknown: 0 });
+  expect(after.components.find(c => c.key === 'successStability')!.value).toBe(10 / 11);
+  expect(after.score).toBeLessThan(before.score);
+  expect(after.observedCost).toEqual(before.observedCost);
+  expect(after.verifiedAgents).toBe(before.verifiedAgents);
+  const copies = rank([...successful, ...successful, ...observations({ prefix: 'failed-retry', status: 'error', calls: 1 })]);
+  expect(copies).toEqual(after);
+});
+
 it('is invariant to source order and breaks equal-score ties by scoped identity', () => {
   const rows = [...observations({ prefix: 'left' }), ...observations({ prefix: 'right', projection: 'name' })];
   const forward = rankSqlToolCandidates(aggregateSqlDemand(rows, coverage));

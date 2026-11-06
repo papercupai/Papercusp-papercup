@@ -259,6 +259,22 @@ there and redo it.
   scenarios) BEFORE requirements, and requirements before tasks. Ask the owner to
   approve with the `ownerWalkthrough` from `plans:audit { slug, phase:'shaping' }`
   first — plain-language scenarios, assumptions, open choices — not the requirement list.
+- **Discover before implementation review.** Brief → scoped discovery → findings
+  incorporated → implementation review → execution. Discovery is ordinary task work
+  about a draft, not starting its implementation. Use code-intelligence suggestions
+  as leads; inspect current behavior, remaining gaps and feasibility. In `## Discovery`,
+  author bounded questions, conclusions, existing evidence refs and dispositions on
+  current R/P/D/section targets. Save with `plans:set-content`, then finalize with
+  `plans:audit { slug, phase:'discovery' }`; the server derives facts and freshness.
+  An incomplete draft is a **provisional discovery brief**. Reviewers read original
+  intent and the reconciled revision with full BAR re-review and no round cap.
+  Implementers start only after review and authority checks. Small/general plans may
+  reuse current evidence and justify unchanged scope; relevant changes reopen only
+  affected judgments. Keep in-flight work and historical terminal records intact.
+  Example: original proof-warming P-001 "inventory current behavior and find gaps"
+  cannot defer those answers until implementation. Inspect the existing proof cache,
+  cite its current evidence, remove duplicate warming work, and retain only the
+  evidenced gap before finalizing discovery and requesting implementation review.
 - **Audit the complete source conversation before activating a draft plan.** Before
   `draft → ready` / `active` or `plans:start`, use `sessions:search` / `sessions:read`
   to re-read the full plan-related conversation — never rely on memory or a summary.
