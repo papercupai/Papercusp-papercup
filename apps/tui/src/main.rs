@@ -113,6 +113,8 @@ Subcommands:
   prompt-pane [OWNER]        Open the agent prompt board
   mail-pane [OWNER]          Open the agent coordination board
   work-pane [OWNER]          Open the agent work board
+  orders-pane [OWNER]        Open the agent's current orders
+  activity-pane [OWNER]      Open the agent's current activity
   network-pane               Open the cross-Hive network board
   hive-pane <KEY>            Open a Hive dossier
   context-pane [SOURCE ID]   Open Context for the live Sentinel or an exact session
@@ -360,6 +362,14 @@ fn cli_version_line(version: &str, sha: &str, dirty: &str) -> String {
 /// The chat surface (`pui --solo`, which is also what the chat workbench's main
 /// pane runs — P-030) is never reactive: its workbench `pui hud` pane owns
 /// pending launches, and a solo chat has no multiplexer to open a pane in.
+fn agent_pane_scope(value: Option<&str>, default: app::WakeFilter) -> app::WakeFilter {
+    match value.map(str::trim).filter(|value| !value.is_empty()) {
+        Some("--mug" | "--queen") => app::WakeFilter::Queen,
+        Some(owner) => app::WakeFilter::Owner(owner.to_owned()),
+        None => default,
+    }
+}
+
 fn reactive_launch_mode(subcommand: Option<&str>) -> bool {
     matches!(subcommand, Some("hud") | Some("dock-driver"))
 }
@@ -475,7 +485,8 @@ async fn main() -> Result<()> {
         // context-pane: the dock's canonical context projection. `plans-pane`
         // remains an unadvertised compatibility alias for existing layouts.
         Some("dock-driver") | Some("wake-pane") | Some("prompt-pane") | Some("mail-pane")
-        | Some("work-pane") | Some("network-pane") | Some("hive-pane") | Some("context-pane")
+        | Some("work-pane") | Some("orders-pane") | Some("activity-pane")
+        | Some("network-pane") | Some("hive-pane") | Some("context-pane")
         | Some("plans-pane") => {}
         _ => {}
     }
@@ -487,7 +498,8 @@ async fn main() -> Result<()> {
         Some("dock-driver") => Some(app::Tab::Fleet),
         // wake-pane: the staged-wake board (EI-312).
         Some("wake-pane") => Some(app::Tab::Wake),
-        Some("prompt-pane") | Some("mail-pane") | Some("work-pane") => Some(app::Tab::AgentCtx),
+        Some("prompt-pane") | Some("mail-pane") | Some("work-pane")
+        | Some("orders-pane") | Some("activity-pane") => Some(app::Tab::AgentCtx),
         // network-pane: the cross-Hive board; hive-pane: one row's dossier
         // (same tab — `network_focus` below selects the mode).
         Some("network-pane") | Some("hive-pane") => Some(app::Tab::Network),
@@ -512,6 +524,8 @@ async fn main() -> Result<()> {
     let agent_ctx_mode = match subcommand.as_deref() {
         Some("mail-pane") => app::AgentCtxMode::Mail,
         Some("work-pane") => app::AgentCtxMode::Work,
+        Some("orders-pane") => app::AgentCtxMode::Orders,
+        Some("activity-pane") => app::AgentCtxMode::Activity,
         _ => app::AgentCtxMode::Prompt,
     };
     // Hive drill-in pane (hive-network-surface B-09, the B-10 tab seam): the
@@ -557,7 +571,6 @@ async fn main() -> Result<()> {
     // server-filtered via `network.hive.wakes`).
     let wake_filter: app::WakeFilter = match subcommand.as_deref() {
         Some("wake-pane") => match cli.positional(1) {
-            Some("--queen") => app::WakeFilter::Queen,
             Some("--hive") => match cli.positional(2) {
                 Some(h) if !h.trim().is_empty() => app::WakeFilter::Hive(h.trim().to_string()),
                 _ => {
@@ -565,16 +578,13 @@ async fn main() -> Result<()> {
                     std::process::exit(2);
                 }
             },
-            Some(o) if !o.trim().is_empty() => app::WakeFilter::Owner(o.trim().to_string()),
-            _ => app::WakeFilter::All,
+            owner => agent_pane_scope(owner, app::WakeFilter::All),
         },
         // The agent-context panes share the wake-pane's scope grammar; their
         // bare default is the QUEEN (they sit in her dock column).
-        Some("prompt-pane") | Some("mail-pane") | Some("work-pane") => match cli.positional(1) {
-            Some("--queen") | None => app::WakeFilter::Queen,
-            Some(o) if !o.trim().is_empty() => app::WakeFilter::Owner(o.trim().to_string()),
-            _ => app::WakeFilter::Queen,
-        },
+        Some("prompt-pane") | Some("mail-pane") | Some("work-pane")
+        | Some("orders-pane") | Some("activity-pane") =>
+            agent_pane_scope(cli.positional(1), app::WakeFilter::Queen),
         _ => app::WakeFilter::All,
     };
     // The dock-driver drives the reactive agent stack (hive-agent-tabs
@@ -5389,6 +5399,42 @@ async fn agent_ctx_loop(
     scope: app::WakeFilter,
     tx: UnboundedSender<Event>,
 ) {
+    if matches!(
+        mode,
+        app::AgentCtxMode::Orders | app::AgentCtxMode::Activity
+    ) {
+        // Subscribe before the first snapshot so a change during the gather
+        // remains queued. Reuse the GUI's producer invalidations; the interval
+        // only reconciles missed events and retries a disconnected transport.
+        let mut stream: Option<tokio::sync::mpsc::UnboundedReceiver<sse::SseFrame>> = None;
+        let mut reconcile = tokio::time::interval(Duration::from_secs(60));
+        loop {
+            let refresh = tokio::select! {
+                _ = tx.closed() => return,
+                _ = reconcile.tick() => {
+                    if stream.is_none() {
+                        if let Ok(client) = OperatorClient::from_discovery().await {
+                            stream = client.subscribe_sse("/api/zero-harness/sse").await.ok();
+                        }
+                    }
+                    true
+                }
+                frame = async {
+                    match stream.as_mut() {
+                        Some(rx) => rx.recv().await,
+                        None => std::future::pending().await,
+                    }
+                } => match frame {
+                    Some(frame) => matches!(frame.event.as_str(), "invalidate" | "update")
+                        && agent_ctx::matches_sidebar_invalidation(mode, &scope, &frame.data),
+                    None => { stream = None; false }
+                },
+            };
+            if refresh {
+                fetch_agent_ctx(mode, scope.clone(), tx.clone()).await;
+            }
+        }
+    }
     let mut ticker = tokio::time::interval(Duration::from_millis(5000));
     loop {
         ticker.tick().await;
@@ -5477,6 +5523,12 @@ async fn fetch_agent_ctx(
                     .bee_assignment(&owner)
                     .await
                     .map_err(|e| e.to_string())?;
+            }
+            app::AgentCtxMode::Orders => {
+                data.orders = Some(client.agent_orders(&owner).await.map_err(|e| e.to_string())?);
+            }
+            app::AgentCtxMode::Activity => {
+                data.activity = Some(client.agent_activity(&owner).await.map_err(|e| e.to_string())?);
             }
         }
         Ok(data)
@@ -9615,6 +9667,8 @@ mod tests {
             Some("prompt-pane"),
             Some("mail-pane"),
             Some("work-pane"),
+            Some("orders-pane"),
+            Some("activity-pane"),
             Some("network-pane"),
             Some("hive-pane"),
             Some("context-pane"),
@@ -9660,6 +9714,23 @@ mod tests {
             assert!(
                 !pane_fetches_attention(Some(t)),
                 "{t:?} never renders the attention inbox"
+            );
+        }
+    }
+
+    #[test]
+    fn agent_pane_scope_resolves_mug_and_legacy_queen_without_owner_guessing() {
+        for default in [app::WakeFilter::All, app::WakeFilter::Queen] {
+            for alias in ["--mug", "--queen", "  --mug  "] {
+                assert_eq!(
+                    agent_pane_scope(Some(alias), default.clone()),
+                    app::WakeFilter::Queen
+                );
+            }
+            assert_eq!(agent_pane_scope(None, default.clone()), default);
+            assert_eq!(
+                agent_pane_scope(Some("su-exact-owner"), default),
+                app::WakeFilter::Owner("su-exact-owner".into())
             );
         }
     }
@@ -9755,6 +9826,8 @@ mod tests {
         let recorded_memory_reads = memory_reads.clone();
         let pipeline_reads = Arc::new(AtomicUsize::new(0));
         let recorded_pipeline_reads = pipeline_reads.clone();
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let recorded_requests = requests.clone();
         let server = tokio::spawn(async move {
             let (stream, _) = listener.accept().await.unwrap();
             let (mut reader, mut writer) = stream.into_split();
@@ -9773,6 +9846,9 @@ mod tests {
                     .as_str()
                     .and_then(|body| serde_json::from_str::<serde_json::Value>(body).ok());
                 let tool_name = tool_body.as_ref().and_then(|body| body["name"].as_str());
+                recorded_requests.lock().unwrap().push(format!(
+                    "{} {} {}", id, request["input"]["path"], tool_name.unwrap_or("")
+                ));
                 if request["input"]["path"] == "/api/agent-mcp/run-tool" {
                     match tool_name {
                         Some("accounts:status") => {
@@ -9872,7 +9948,11 @@ mod tests {
                 ),
             )
             .await
-            .expect("fixture refetch completed");
+            .unwrap_or_else(|_| panic!(
+                "fixture refetch timed out: frame={frame:?}, requests={:?}, events={:?}",
+                requests.lock().unwrap(),
+                std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>()
+            ));
             assert_eq!(
                 account_reads.load(Ordering::SeqCst),
                 expected_reads,
@@ -9899,7 +9979,11 @@ mod tests {
                     ),
                 )
                 .await
-                .expect("scoped fixture refetch completed");
+                .unwrap_or_else(|_| panic!(
+                    "scoped fixture refetch timed out: requests={:?}, events={:?}",
+                    requests.lock().unwrap(),
+                    std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>()
+                ));
             }};
         }
 

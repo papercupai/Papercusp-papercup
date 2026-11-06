@@ -14,6 +14,14 @@ const MODULE_CLIS = [
   { path: 'packages/operator-core/lib/native-device-fixture.ts', failure: 'NATIVE_HTTPS_FIXTURE_PREFLIGHT_FAILED=Disposable workspace required' },
 ];
 
+/** Mutation controls must not depend on imports retained by production code. */
+function withRawEntryGuard(source: string, guard: string) {
+  return source.replace(guard,
+    'if (process.argv[1] && __rawGuardResolve(process.argv[1]) === __rawGuardFileURLToPath(import.meta.url))')
+    + '\nimport { resolve as __rawGuardResolve } from "node:path";'
+    + '\nimport { fileURLToPath as __rawGuardFileURLToPath } from "node:url";';
+}
+
 /** Exercise the real entry guards without starting another test runner. */
 async function withScript(script: string, bundled: boolean, run: (entry: string, root: string) => void, rawGuard = false) {
   const root = mkdtempSync(join(tmpdir(), 'cli-entry-scripts-'));
@@ -42,7 +50,7 @@ async function withScript(script: string, bundled: boolean, run: (entry: string,
               const guard = 'if (isCliEntry(import.meta.url))';
               if (!source.includes(guard)) throw new Error('Expected the production CLI-entry guard');
               return {
-                contents: source.replace(guard, 'if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url))'),
+                contents: withRawEntryGuard(source, guard),
                 loader: 'js',
               };
             });
@@ -101,8 +109,7 @@ async function withModuleCli(modulePath: string, bundled: boolean, run: (entry: 
           }));
           if (rawGuard) build.onLoad({ filter: /\.(?:ts|mts)$/ }, args => {
             if (args.path !== sourcePath) return;
-            return { contents: source.replace(guard,
-              'if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url))'), loader: 'ts' };
+            return { contents: withRawEntryGuard(source, guard), loader: 'ts' };
           });
         },
       }],

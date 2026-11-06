@@ -2629,6 +2629,32 @@ impl OperatorClient {
         Ok(frontier)
     }
 
+    /// Read the GUI's existing owner-scoped sidebar query over the selected
+    /// transport. No tool-result truncation, private gather or label matching.
+    async fn agent_sidebar_query<T: serde::de::DeserializeOwned>(
+        &self,
+        name: &str,
+        owner: &str,
+    ) -> Result<T> {
+        let args = serde_json::json!({ "ownerId": owner });
+        let payload = self
+            .get_json(&format!(
+                "/api/zero-harness/rest-query?name={}&args={}",
+                urlencode(name),
+                urlencode(&args.to_string()),
+            ))
+            .await?;
+        decode_agent_sidebar(&payload, owner)
+    }
+
+    pub async fn agent_orders(&self, owner: &str) -> Result<crate::agent_ctx::AgentOrders> {
+        self.agent_sidebar_query("agentOrders.byOwner", owner).await
+    }
+
+    pub async fn agent_activity(&self, owner: &str) -> Result<crate::agent_ctx::AgentActivity> {
+        self.agent_sidebar_query("agentDetail.byOwner", owner).await
+    }
+
     /// The prompt an agent runs on (`GET /api/fleet/agent-prompt`, dock
     /// prompt-pane): a spawn's recorded prompt_body + brief/model/tier, or a
     /// live role-persona render when only a `role` hint is available (the
@@ -3397,6 +3423,26 @@ impl OperatorClient {
 /// args when the call goes through `/api/agent-mcp/run-tool`; leaving it out lets
 /// the result-door apply its default clipped tier, which can splice a literal
 /// truncation marker into the inner JSON and make the frontier undecodable.
+fn decode_agent_sidebar<T: serde::de::DeserializeOwned>(
+    payload: &serde_json::Value,
+    owner: &str,
+) -> Result<T> {
+    if let Some(error) = payload.get("error") {
+        return Err(anyhow!("agent sidebar unavailable: {error}"));
+    }
+    let rows = payload
+        .get("rows")
+        .and_then(serde_json::Value::as_array)
+        .context("agent sidebar unavailable: missing rows")?;
+    if rows.len() != 1 || rows[0].get("ownerId").and_then(serde_json::Value::as_str) != Some(owner)
+    {
+        return Err(anyhow!(
+            "agent sidebar unavailable: expected exactly one row for the selected owner"
+        ));
+    }
+    serde_json::from_value(rows[0].clone()).context("decode agent sidebar")
+}
+
 fn work_frontier_burn_down_args(harness: &str) -> serde_json::Value {
     serde_json::json!({
         "harness": harness,
@@ -3754,6 +3800,73 @@ fn parse_federated_hives(text: &str) -> Result<Vec<crate::models::PresenceRow>> 
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn agent_sidebar_rejects_missing_duplicate_foreign_and_error_rows() {
+        use serde_json::json;
+        for payload in [
+            json!({}),
+            json!({"rows":[]}),
+            json!({"rows":[{"ownerId":"su-other"}]}),
+            json!({"rows":[{"ownerId":"su-selected"},{"ownerId":"su-selected"}]}),
+            json!({"error":"unknown queryName: agentOrders.byOwner", "rows":[{"ownerId":"su-selected"}]}),
+        ] {
+            assert!(
+                super::decode_agent_sidebar::<crate::agent_ctx::AgentOrders>(
+                    &payload,
+                    "su-selected"
+                )
+                .is_err()
+            );
+        }
+        let orders = super::decode_agent_sidebar::<crate::agent_ctx::AgentOrders>(
+            &json!({"rows":[{"ownerId":"su-selected", "directives":[]}],"version":"1"}),
+            "su-selected",
+        )
+        .unwrap();
+        assert!(orders.directives.unwrap().is_empty());
+        assert!(orders.mission.is_none());
+    }
+
+    #[tokio::test]
+    async fn agent_sidebar_wire_uses_gui_queries_and_selected_owner_with_bearer() {
+        use super::*;
+        use serde_json::json;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let client = OperatorClient {
+            transport: Transport::Http(HttpClient::new(base.clone(), Some("fixture-token".into()))),
+            endpoint: base,
+            selection_source: "test".into(),
+        };
+        let server = tokio::spawn(async move {
+            for name in ["agentOrders.byOwner", "agentDetail.byOwner"] {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut bytes = Vec::new();
+                loop {
+                    let mut chunk = [0; 1024];
+                    let count = socket.read(&mut chunk).await.unwrap();
+                    assert!(count > 0);
+                    bytes.extend_from_slice(&chunk[..count]);
+                    if bytes.windows(4).any(|w| w == b"\r\n\r\n") { break; }
+                }
+                let request = String::from_utf8(bytes).unwrap();
+                let target = request.lines().next().unwrap().split_whitespace().nth(1).unwrap();
+                let url = reqwest::Url::parse(&format!("http://fixture{target}")).unwrap();
+                assert_eq!(url.path(), "/api/zero-harness/rest-query");
+                let params: std::collections::HashMap<_, _> = url.query_pairs().collect();
+                assert_eq!(params.get("name").unwrap(), name);
+                assert_eq!(serde_json::from_str::<serde_json::Value>(params.get("args").unwrap()).unwrap(), json!({"ownerId":"su-selected & exact"}));
+                assert!(request.to_ascii_lowercase().contains("authorization: bearer fixture-token"));
+                let body = json!({"rows":[{"ownerId":"su-selected & exact","directives":[],"locks":{"held":[]}}],"version":"fixture"}).to_string();
+                socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
+            }
+        });
+        assert!(client.agent_orders("su-selected & exact").await.unwrap().directives.unwrap().is_empty());
+        assert!(client.agent_activity("su-selected & exact").await.unwrap().locks.unwrap().held.unwrap().is_empty());
+        server.await.unwrap();
+    }
+
     use super::*;
 
     #[test]

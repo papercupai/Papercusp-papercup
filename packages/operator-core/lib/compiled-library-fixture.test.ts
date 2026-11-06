@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { expect, it } from 'vitest';
-import { compileLibraryFixture } from './compiled-library-fixture';
+import { compileLibraryFixture } from '../test/compiled-library-fixture';
 
 const root = resolve(import.meta.dirname, '../../..');
 

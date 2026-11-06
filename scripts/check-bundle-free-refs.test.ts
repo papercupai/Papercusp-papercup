@@ -378,4 +378,22 @@ describe('bundle-host.sh wiring', () => {
     expect(invocation).toContain('--base-dir "$REPO_ROOT"');
     expect(invocation).toContain('exit 1');
   });
+
+  it('declares every external package imported by the checker directly in the root manifest', () => {
+    const checker = readFileSync(path.join(__dirname, 'check-bundle-free-refs.mjs'), 'utf8');
+    const manifest = JSON.parse(readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
+    const declared = new Set([
+      ...Object.keys(manifest.dependencies ?? {}),
+      ...Object.keys(manifest.devDependencies ?? {}),
+      ...Object.keys(manifest.optionalDependencies ?? {}),
+      ...Object.keys(manifest.peerDependencies ?? {}),
+    ]);
+    const importedPackages = [...checker.matchAll(/^\s*import\s+(?:[^;]*?\sfrom\s+)?['"]([^'"]+)['"]/gm)]
+      .map(([, specifier]) => specifier)
+      .filter((specifier) => !specifier.startsWith('node:') && !specifier.startsWith('.'))
+      .map((specifier) => specifier.startsWith('@')
+        ? specifier.split('/').slice(0, 2).join('/')
+        : specifier.split('/')[0]);
+    expect([...new Set(importedPackages)].filter((name) => !declared.has(name))).toEqual([]);
+  });
 });

@@ -560,9 +560,9 @@ pub fn chat_dock_kdl(_brain_argv: &[String], lex: &crate::lexicon::Lexicon) -> S
     // fleet-wide wake board (per-bee queues grouped there).
     //
     // The queen's side column (dock 4-pane split, owner ask 2026-06-11): the
-    // 38% column right of her chat is FOUR stacked data boards — the prompt
-    // the agent runs on (brief led first), the staged-wake queue, her coord mail, and her
-    // work items + plan linkage. Each is its own `pui <x>-pane --queen`
+    // 38% column right of her chat is FOUR stacked data boards — canonical
+    // GUI Orders, the staged-wake queue, coord mail, and canonical GUI Activity.
+    // Each is its own `pui <x>-pane --mug`
     // process (one pinned Tab each); zellij owns the vertical stack.
     // overwatch-role-2026-06-15 (owner ask 2026-06-15): the OVERWATCH supervisor's
     // interactive pane sits ABOVE the ♛ queen block — a fully-scoped no-picker psu
@@ -589,7 +589,7 @@ pub fn chat_dock_kdl(_brain_argv: &[String], lex: &crate::lexicon::Lexicon) -> S
     // still starts, still records ~/.papercusp/sentinel-deep-pane, and stays wakeable
     // over coord. That was the load-bearing risk; a deep half that never launched would
     // be a far worse regression than a cosmetic duplicate.
-    // The Mug's stacked sub-panes (prompt/wakes/mail/work) are glyph-PREFIXED with the
+    // The Mug's stacked sub-panes (Orders/wakes/mail/Activity) are glyph-PREFIXED with the
     // Mug's own kind-glyph so AgentPaneKind::from_glyph_prefix regroups them with the
     // Mug (P-011), not as loose panes. DERIVE it — these four used to hardcode the
     // literal, so when the owner swapped the Mug/Cup glyphs (2026-07-12) they silently
@@ -611,9 +611,9 @@ pub fn chat_dock_kdl(_brain_argv: &[String], lex: &crate::lexicon::Lexicon) -> S
                 args "brain-view" "--queen"
             }}
             pane stacked=true size="38%" {{
-                pane name="{q}✉ prompt" expanded=true {{
+                pane name="{q}✉ Orders" expanded=true {{
                     command "pui"
-                    args "prompt-pane" "--mug"
+                    args "orders-pane" "--mug"
                 }}
                 pane name="{q}⏸ wakes" {{
                     command "pui"
@@ -623,9 +623,9 @@ pub fn chat_dock_kdl(_brain_argv: &[String], lex: &crate::lexicon::Lexicon) -> S
                     command "pui"
                     args "mail-pane" "--mug"
                 }}
-                pane name="{q}☑ work" {{
+                pane name="{q}☑ Activity" {{
                     command "pui"
-                    args "work-pane" "--mug"
+                    args "activity-pane" "--mug"
                 }}
             }}
         }}
@@ -1673,22 +1673,22 @@ mod tests {
             "queen split container: {on}"
         );
         // The queen's side column is the FOUR stacked data boards (dock 4-pane
-        // split, owner ask 2026-06-11): prompt → wakes → mail → work, top-down.
-        assert!(on.contains("args \"prompt-pane\" \"--mug\""));
+        // split, owner ask 2026-06-11): Orders → wakes → mail → Activity.
+        assert!(on.contains("args \"orders-pane\" \"--mug\""));
         assert!(on.contains("args \"wake-pane\" \"--mug\""));
         assert!(on.contains("args \"mail-pane\" \"--mug\""));
-        assert!(on.contains("args \"work-pane\" \"--mug\""));
-        assert!(on.contains("name=\"☕✉ prompt\""));
+        assert!(on.contains("args \"activity-pane\" \"--mug\""));
+        assert!(on.contains("name=\"☕✉ Orders\""));
         assert!(on.contains("name=\"☕⏸ wakes\""));
         assert!(on.contains("name=\"☕✉ mail\""));
-        assert!(on.contains("name=\"☕☑ work\""));
-        let brief_at = on.find("☕✉ prompt").expect("prompt pane");
+        assert!(on.contains("name=\"☕☑ Activity\""));
+        let brief_at = on.find("☕✉ Orders").expect("Orders pane");
         let queen_wakes_at = on.find("☕⏸ wakes").expect("queen wake pane");
         let mail_at = on.find("☕✉ mail").expect("mail pane");
-        let work_at = on.find("☕☑ work").expect("work pane");
+        let work_at = on.find("☕☑ Activity").expect("Activity pane");
         assert!(
             brief_at < queen_wakes_at && queen_wakes_at < mail_at && mail_at < work_at,
-            "side column order is prompt → wakes → mail → work"
+            "side column order is Orders → wakes → mail → Activity"
         );
         // P-004/D-009: the reactive driver + the fleet-wide wake board remain
         // stack members.
@@ -1696,7 +1696,7 @@ mod tests {
         assert!(on.contains("args \"wake-pane\"\n")); // the fleet-wide pane (bare wake-pane)
         assert!(on.contains("name=\"⏸ wakes\""));
         // queen transcript-view + overwatch transcript-view (D-003) + queen
-        // prompt/wakes/mail/work + driver + fleet-wakes + the network tab's
+        // Orders/wakes/mail/Activity + driver + fleet-wakes + the network tab's
         // network-pane + the Context tab's context-pane = 10.
         assert_eq!(on.matches("command \"pui\"").count(), 10);
         assert!(on.contains("args \"network-pane\""));

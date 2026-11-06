@@ -70,6 +70,9 @@
 #   host's GitHub CLI login is hidden too (empty GH_CONFIG_DIR, GH_TOKEN/
 #   GITHUB_TOKEN stripped), because creating a new-folder pot publishes it with
 #   `gh repo create` whenever gh is logged in (WI-10003268).
+#   Explicit report-sharing acceptance may set VERIFY_TAURI_GITHUB_AUTH_LOGIN:
+#   only auth token/status for that login are exposed through a guarded gh shim.
+#   Tokens remain in the host credential store; all other gh commands are denied.
 #
 #   Default (VERIFY_TAURI_ISOLATED_DB unset) is UNCHANGED: shared live DB, as
 #   warned above — because many verify runs legitimately want to read/exercise
@@ -1512,6 +1515,53 @@ validate_isolated_shortcut() {
   esac
 }
 validate_isolated_shortcut || exit $?
+
+# The report-sharing fixture needs Octokit's selected-account credential while
+# retaining the isolated rig's gh write prohibition. Never expose ambient token
+# variables or the host config to the launched operator itself.
+validate_isolated_github_auth() {
+  local login="${VERIFY_TAURI_GITHUB_AUTH_LOGIN:-}"
+  [ -n "$login" ] || return 0
+  if [ "${VERIFY_TAURI_ISOLATED_DB:-0}" != 1 ] || [ "${PAPERCUSP_REPORT_SHARING_NATIVE_LIVE:-0}" != 1 ]; then
+    echo 'FATAL: GitHub auth profile requires isolated DB and explicit report-sharing fixture opt-in.' >&2
+    return 2
+  fi
+  if [[ ! "$login" =~ ^[A-Za-z0-9][A-Za-z0-9-]{0,38}$ ]]; then
+    echo 'FATAL: invalid selected GitHub login.' >&2
+    return 2
+  fi
+  command -v gh >/dev/null || return 2
+}
+validate_isolated_github_auth || exit $?
+
+prepare_isolated_github_auth() {
+  local login="${VERIFY_TAURI_GITHUB_AUTH_LOGIN:-}"
+  [ -n "$login" ] || return 0
+  validate_isolated_github_auth || return $?
+  local binary config wrapper
+  binary="$(command -v gh)"
+  [[ "$binary" = /* ]] || { echo 'FATAL: gh must resolve to an absolute executable.' >&2; return 2; }
+  config="${GH_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/gh}"
+  wrapper="$WORK/gh-auth-only"
+  mkdir -p "$wrapper"
+  {
+    printf '#!/usr/bin/env bash\nset -eu\n'
+    printf 'binary=%q\nconfig=%q\nlogin=%q\n' "$binary" "$config" "$login"
+    cat <<'GH_AUTH_ONLY'
+if [ "$#" -eq 4 ] && [ "$1" = auth ] && [ "$2" = token ] && [ "$3" = --user ] && [ "$4" = "$login" ]; then
+  exec env -u GH_TOKEN -u GITHUB_TOKEN -u GH_ENTERPRISE_TOKEN -u GITHUB_ENTERPRISE_TOKEN GH_CONFIG_DIR="$config" "$binary" auth token --hostname github.com --user "$login"
+elif [ "$#" -eq 2 ] && [ "$1" = auth ] && [ "$2" = status ]; then
+  exec env -u GH_TOKEN -u GITHUB_TOKEN -u GH_ENTERPRISE_TOKEN -u GITHUB_ENTERPRISE_TOKEN GH_CONFIG_DIR="$config" "$binary" auth status --hostname github.com
+fi
+echo 'GitHub command denied by isolated auth-only profile.' >&2
+exit 2
+GH_AUTH_ONLY
+  } > "$wrapper/gh"
+  chmod 700 "$wrapper" "$wrapper/gh"
+  # These are generated shell assignments; %q preserves paths byte-for-byte.
+  printf -v ISOLATED_GITHUB_AUTH_ENV ' PATH=%q PAPERCUSP_GITHUB_LOGIN=%q' "$wrapper:$OPERATOR_SOURCE_ROOT/apps/operator/node_modules/.bin:$OPERATOR_SOURCE_ROOT/node_modules/.bin:$PATH" "$login"
+  ISOLATED_ENV_LINE+="$ISOLATED_GITHUB_AUTH_ENV"
+}
 
 seed_isolated_shortcut() {
   [ -n "$ISOLATED_SHORTCUT" ] || return 0
@@ -4595,6 +4645,7 @@ PGWATCHDOG
   # The disposable PG cluster has no data in common with the host backup.
   # Keep the guard, with a coordination namespace private to this run.
   ISOLATED_ENV_LINE+=" KOPIA_BACKUP_LOCK_PATH=\"$WORK/backup-guard/kopia.lock\" KOPIA_BACKUP_STATE_DIR=\"$WORK/backup-guard/state\""
+  prepare_isolated_github_auth || exit $?
 fi
 
 # ── launch the isolated dev instance (agent-e2e.mdx §1.3 recipe, packaged) ──

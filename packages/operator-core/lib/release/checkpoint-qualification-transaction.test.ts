@@ -133,10 +133,32 @@ describe('prepared selection authority shape', () => {
       inputFingerprint: '1'.repeat(64), reused: true, root: '/generations' },
   });
 
-  it('recovers the complete committed selection through the stored transaction parser', () => {
-    const transaction = { ...begin(), preparedSelection: prepared() };
+  it('recovers the complete compact committed selection through the stored transaction parser', () => {
+    const { queue: _legacyQueue, ...selection } = prepared();
+    const transaction = { ...begin(), preparedSelection: { ...selection, queueAuthority: null } };
     expect(parseCheckpointQualificationTransaction(JSON.parse(JSON.stringify(transaction))))
       .toEqual(transaction);
+  });
+
+  it.each([
+    { name: 'null queue', queue: null },
+    { name: 'captured queue', queue: createFrozenCandidateQueue({ candidate: 'candidate-1',
+      qualificationAttemptId: 'attempt-1', base: null, nowMs: 200,
+      affectedTestProofGroup: 'original-run' }) },
+  ])('migrates a legacy $name without losing selection authority', ({ queue }) => {
+    const { queue: _legacyQueue, ...selection } = prepared();
+    const transaction = { ...begin(), preparedSelection: { ...selection, queue } };
+    const expected = { ...transaction, preparedSelection: { ...selection,
+      queueAuthority: queue === null ? null : {
+        candidate: queue.candidate, openedAtMs: queue.openedAtMs,
+        qualificationAttemptId: queue.qualificationAttemptId ?? null, base: queue.base,
+        repairHead: queue.repairHead, judgesCandidate: true, phase: 'ready-to-test',
+      },
+    } };
+    const recovered = parseCheckpointQualificationTransaction(JSON.parse(JSON.stringify(transaction)));
+    expect(recovered).toEqual(expected);
+    expect(recovered!.preparedSelection).not.toHaveProperty('queue');
+    expect(parseCheckpointQualificationTransaction(JSON.parse(JSON.stringify(recovered)))).toEqual(expected);
   });
 
   it('voids a selection made for a candidate the attempt no longer names (WI-6554700010010801)', () => {

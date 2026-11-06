@@ -78,6 +78,39 @@ describe('EI-10387 — verify-tauri-headless can genuinely isolate the database'
     expect(src).toMatch(/PAPERCUSP_WORKSPACE=\\"\$ISOLATED_WORKSPACE\\"/);
   });
 
+  it('exposes only selected-account auth reads in the explicit GitHub fixture profile', () => {
+    const work = mkdtempSync(join(tmpdir(), 'verify-github-auth-'));
+    try {
+      const validate = src.match(/validate_isolated_github_auth\(\) \{\n[\s\S]*?\n\}\n/)?.[0];
+      const prepare = src.match(/prepare_isolated_github_auth\(\) \{\n[\s\S]*?\n\}\n/)?.[0];
+      expect(validate).toBeTruthy(); expect(prepare).toBeTruthy();
+      const bin = join(work, 'bin'); mkdirSync(bin);
+      writeFileSync(join(bin, 'gh'), '#!/usr/bin/env node\nconsole.log(JSON.stringify({args:process.argv.slice(2),config:process.env.GH_CONFIG_DIR,token:process.env.GH_TOKEN??null,other:process.env.GITHUB_TOKEN??null}));\n', { mode: 0o700 });
+      const run = (args: string[], overrides: Record<string, string> = {}) => spawnSync('bash', ['-c', [
+        'set -eu', validate, prepare,
+        'ISOLATED_ENV_LINE=""; OPERATOR_SOURCE_ROOT="$FIXTURE_ROOT"; WORK="$FIXTURE_ROOT"',
+        'prepare_isolated_github_auth',
+        'if [ -z "$ISOLATED_ENV_LINE" ]; then printf default-scrub; exit; fi',
+        'exec "$WORK/gh-auth-only/gh" "$@"',
+      ].join('\n'), 'probe', ...args], { encoding: 'utf8', env: {
+        ...hermeticSpawnEnv(), PATH: bin + ':' + process.env.PATH, FIXTURE_ROOT: work,
+        GH_CONFIG_DIR: join(work, "host config's gh"), GH_TOKEN: 'must-be-stripped', GITHUB_TOKEN: 'also-stripped',
+        VERIFY_TAURI_GITHUB_AUTH_LOGIN: 'selected', VERIFY_TAURI_ISOLATED_DB: '1', PAPERCUSP_REPORT_SHARING_NATIVE_LIVE: '1', ...overrides,
+      } });
+      const token = run(['auth', 'token', '--user', 'selected']);
+      expect(token.status, token.stderr).toBe(0);
+      expect(JSON.parse(token.stdout)).toEqual({ args: ['auth', 'token', '--hostname', 'github.com', '--user', 'selected'], config: join(work, "host config's gh"), token: null, other: null });
+      expect(run(['auth', 'status']).status).toBe(0);
+      for (const args of [['repo', 'create'], ['api', '/user'], ['auth', 'switch'], ['auth', 'token'], ['auth', 'token', '--user', 'other'], ['auth', 'status', '--show-token']]) {
+        const result = run(args);
+        expect(result.status, args.join(' ')).toBe(2); expect(result.stdout).toBe('');
+      }
+      expect(run(['auth', 'status'], { VERIFY_TAURI_ISOLATED_DB: '0' }).status).toBe(2);
+      expect(run(['auth', 'status'], { PAPERCUSP_REPORT_SHARING_NATIVE_LIVE: '0' }).status).toBe(2);
+      expect(run([], { VERIFY_TAURI_GITHUB_AUTH_LOGIN: '' }).stdout).toBe('default-scrub');
+    } finally { rmSync(work, { recursive: true, force: true }); }
+  });
+
   it('mints a private bearer and never reuses the real user bearer', () => {
     const work = mkdtempSync(join(tmpdir(), 'verify-bearer-isolation-'));
     try {
