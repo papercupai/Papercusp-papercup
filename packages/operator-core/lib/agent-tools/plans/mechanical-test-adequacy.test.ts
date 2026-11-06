@@ -178,6 +178,52 @@ describe('mechanical test adequacy', () => {
     expect(grade([row, proof('mutation')])).toMatchObject({ verdict: 'fail' });
   });
 
+  const focusedProof = (id: number, title: string) => {
+    const row = proof('test', id);
+    row.evidenceRef = file;
+    row.testRunExecution!.skipped = 10;
+    row.testRunExecution!.passedCaseTitles = [title];
+    row.details.adequacy = { testCases: [title] };
+    return row;
+  };
+  const gradeFocused = (rows: SpecEvidenceForAdequacy[]) => evaluateMechanicalTestAdequacy({
+    clause, evidence: [...rows, proof('mutation')],
+    sourceBarTestRequirements: { status: 'required', files: [file], cases: [
+      { file, testName: 'initial boundary' }, { file, testName: 'later round trip' },
+    ] },
+  });
+
+  it('combines complementary current runs bound to the same test file', () => {
+    const original = focusedProof(10, 'initial boundary');
+    const additional = focusedProof(11, 'later round trip');
+    expect(gradeFocused([original, additional])).toMatchObject({ verdict: 'pass', gaps: [] });
+    expect(gradeFocused([additional, original])).toMatchObject({ verdict: 'pass', gaps: [] });
+  });
+
+  it.each(['stale', 'replayed', 'failed', 'withdrawn', 'mutant'])(
+    'does not fill a required selector with a %s complementary run', defect => {
+      const original = focusedProof(10, 'initial boundary');
+      if (defect === 'stale') original.currentness.overall = 'stale';
+      if (defect === 'replayed') original.currentness.provenance = 'replayed-snapshot';
+      if (defect === 'failed') Object.assign(original.testRunExecution!, { status: 'fail', failed: 1 });
+      if (defect === 'withdrawn') Object.assign(original, { withdrawal: { reason: 'superseded' } });
+      if (defect === 'mutant') original.testRunProvenance = { ...original.testRunProvenance!,
+        source: 'mutation-probe', mutationPhase: 'mutant', mutation };
+      expect(gradeFocused([original, focusedProof(11, 'later round trip')])).toMatchObject({
+        verdict: 'fail', gaps: [expect.stringContaining('initial boundary')],
+      });
+    },
+  );
+
+  it('uses the newest correction within each immutable run without reviving older annotations', () => {
+    const original = focusedProof(10, 'initial boundary');
+    const corrected = focusedProof(12, 'a different case');
+    corrected.testRunId = original.testRunId;
+    expect(gradeFocused([original, corrected, focusedProof(11, 'later round trip')])).toMatchObject({
+      verdict: 'fail', gaps: [expect.stringContaining('initial boundary')],
+    });
+  });
+
   it.each(['baseline', 'copy-baseline'])('accepts an unmutated %s as passing test evidence', leg => {
     const row = proof('test');
     row.testRunProvenance = { ...row.testRunProvenance!, source: 'mutation-probe', mutationPhase: leg,

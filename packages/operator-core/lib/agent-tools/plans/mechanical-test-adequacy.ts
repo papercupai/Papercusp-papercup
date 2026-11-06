@@ -27,7 +27,7 @@ import { hasLinkedMutationBaseline, latestLogicalEvidence, type SpecEvidenceForA
 import { hasMatchingDeclaredCaseTitle, repoFilesEvidenceMeasurementSchema } from './spec-evidence-store';
 import type { SourceBarTestRequirements } from './source-bar-test-requirements';
 import { CALIBRATION_LEGS } from '@papercusp/test-config/mutation-descriptor';
-import { isRecordedCaseTitle, MAX_RECORDED_PASSED_CASES } from '@papercusp/test-config/execution-details';
+import { isRecordedCaseIdentity, MAX_RECORDED_PASSED_CASES } from '@papercusp/test-config/execution-details';
 
 export interface MechanicalAdequacyClause {
   planSlug: string;
@@ -83,7 +83,7 @@ function isPassingLedgerRun(
   const execution = row.testRunExecution;
   const rawCases = (row.details.adequacy as { testCases?: unknown } | undefined)?.testCases;
   if (rawCases !== undefined && (!Array.isArray(rawCases) ||
-    rawCases.length > MAX_RECORDED_PASSED_CASES || !rawCases.every(isRecordedCaseTitle))) return false;
+    rawCases.length > MAX_RECORDED_PASSED_CASES || !rawCases.every(isRecordedCaseIdentity))) return false;
   // Parameterized cases may share a full title, and the reporter stores title
   // identities as a set. Repeating an identity adds no claim; every unique title
   // must still match the measured ledger below.
@@ -141,16 +141,33 @@ export function evaluateMechanicalTestAdequacy(input: {
   if (sourceBarTestRequirements.status !== 'required') return { applicable: false };
 
   const requiredFiles = [...new Set(sourceBarTestRequirements.files.map(normalizeTestPath))].sort();
-  const clauseRows = latestLogicalEvidence(
-    input.evidence.filter(
+  const exactRows = input.evidence.filter(
       (row) =>
         row.planSlug === clause.planSlug &&
         row.specId === clause.specId &&
         row.specRevision === clause.revision &&
         (clause.contentHash === undefined || row.specFingerprint === clause.contentHash) &&
         !isWithdrawn(row),
-    ),
-  );
+    );
+  // A file reference can carry several complementary focused executions. A new
+  // run does not correct the case coverage of another immutable run. Preserve
+  // corrections within each run before combining their measured selectors;
+  // non-test evidence keeps its existing logical-version semantics.
+  const testAttempts = new Map<number, SpecEvidenceForAdequacy[]>();
+  const otherRows: SpecEvidenceForAdequacy[] = [];
+  for (const row of exactRows) {
+    if (row.evidenceKind === 'test' && row.testRunId !== null) {
+      const attempt = testAttempts.get(row.testRunId) ?? [];
+      attempt.push(row);
+      testAttempts.set(row.testRunId, attempt);
+    } else {
+      otherRows.push(row);
+    }
+  }
+  const clauseRows = [
+    ...latestLogicalEvidence(otherRows),
+    ...[...testAttempts.values()].flatMap(attempt => latestLogicalEvidence(attempt)),
+  ];
 
   const gaps: string[] = [];
   const passingTestBindingIds: Record<string, number> = {};

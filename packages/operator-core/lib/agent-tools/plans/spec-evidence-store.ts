@@ -15,6 +15,7 @@ import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { withWorkspace } from '@papercusp/db-org';
 import {
   parseTestRunExecutionDetails,
+  isRecordedCaseIdentity,
   passedCaseTitlesIncomplete,
   stableRecordedRuntimeEnvironment,
 } from '@papercusp/test-config/execution-details';
@@ -137,6 +138,29 @@ async function readRecordedTestCases(
       status: r.status,
       durationMs: r.duration_ms,
     })),
+  };
+}
+
+/** Use complete per-case outcomes, including identities omitted by compact titles. */
+function measuredPassingCaseTitles(
+  execution: NonNullable<ReturnType<typeof parseTestRunExecutionDetails>>,
+  cases: RecordedTestCase[] | undefined,
+): { passedCaseTitles?: string[]; passedCaseTitlesIncomplete?: true } {
+  if (!cases) return {
+    ...(execution.passedCaseTitles ? { passedCaseTitles: [...execution.passedCaseTitles] } : {}),
+    ...(passedCaseTitlesIncomplete(execution) ? { passedCaseTitlesIncomplete: true } : {}),
+  };
+  const complete = cases.length === execution.passed + execution.failed + execution.skipped
+    && cases.filter(c => c.status === 'pass').length === execution.passed
+    && cases.filter(c => c.status === 'fail').length === execution.failed
+    && cases.filter(c => c.status === 'skip').length === execution.skipped;
+  const nonPassing = cases.filter(c => c.status !== 'pass').map(c => c.caseKey);
+  const titles = complete ? [...new Set(cases.filter(c => c.status === 'pass'
+    && isRecordedCaseIdentity(c.caseKey)
+    && !nonPassing.some(title => hasSameCaseTitleIdentity(title, c.caseKey))).map(c => c.caseKey))] : [];
+  return {
+    passedCaseTitles: titles,
+    ...(!complete || titles.length < execution.passed ? { passedCaseTitlesIncomplete: true as const } : {}),
   };
 }
 
@@ -3046,6 +3070,8 @@ export function mutationCaughtCaseClaimMessage(
 }
 
 interface EvidenceRow extends CurrentnessRow {
+  test_run_cases?: RecordedTestCase[];
+  mutation_baseline_cases?: RecordedTestCase[];
   verifies_binding_id?: number | string | null;
   /** P-011: the BAR pin of the bound clause revision, when it was projected from a rubric. */
   source_rubric_slug?: string | null;
@@ -5010,6 +5036,28 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
      ORDER BY b.observed_at DESC, b.id DESC
       LIMIT ${limit}`;
       recordPhase('bindingRowsQuery', bindingRowsStartedAt);
+      // Batch in the same workspace snapshot rather than querying per binding.
+      const runIds = [...new Set(rows.flatMap(row => [row.test_run_id, row.mutation_baseline_id])
+        .filter((id): id is number | string => id != null).map(Number))];
+      if (runIds.length > 0 && (await tx`SELECT to_regclass('harness_shared.test_case_runs') IS NOT NULL AS present`)[0]?.present) {
+        const cases = await tx<Array<{ test_run_id: number | string; case_key: string;
+          occurrence: number; status: RecordedTestCase['status']; duration_ms: number | null }>>`
+          SELECT test_run_id, case_key, occurrence, status, duration_ms
+            FROM harness_shared.test_case_runs
+           WHERE test_run_id = ANY(${runIds}::bigint[])
+           ORDER BY test_run_id, case_index`;
+        const byRun = new Map<number, RecordedTestCase[]>();
+        for (const c of cases) {
+          const id = Number(c.test_run_id);
+          const recorded = byRun.get(id) ?? [];
+          recorded.push({ caseKey: c.case_key, occurrence: c.occurrence, status: c.status, durationMs: c.duration_ms });
+          byRun.set(id, recorded);
+        }
+        for (const row of rows) {
+          row.test_run_cases = byRun.get(Number(row.test_run_id));
+          row.mutation_baseline_cases = byRun.get(Number(row.mutation_baseline_id));
+        }
+      }
       const scorecardIds = [
         ...new Set(
           rows
@@ -5533,12 +5581,7 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
                   ...(parsedTestRunExecution.scenarioId !== undefined
                     ? { scenarioId: parsedTestRunExecution.scenarioId }
                     : {}),
-                  ...(parsedTestRunExecution.passedCaseTitles !== undefined
-                    ? { passedCaseTitles: [...parsedTestRunExecution.passedCaseTitles] }
-                    : {}),
-                  ...(passedCaseTitlesIncomplete(parsedTestRunExecution)
-                    ? { passedCaseTitlesIncomplete: true }
-                    : {}),
+                  ...measuredPassingCaseTitles(parsedTestRunExecution, row.test_run_cases),
                   ...(parsedTestRunExecution.testLayer !== undefined || canonicalOperationalAdapterLayer({
                     framework: row.test_run_framework, source: row.test_run_source,
                     filePath: row.test_run_file_path, runGroupId: parsedTestRunExecution.runGroupId,
@@ -5567,12 +5610,7 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
                     failed: baselineExecution.failed,
                     skipped: baselineExecution.skipped,
                     collectionFailed: baselineExecution.collectionFailed,
-                    ...(baselineExecution.passedCaseTitles !== undefined
-                      ? { passedCaseTitles: [...baselineExecution.passedCaseTitles] }
-                      : {}),
-                    ...(passedCaseTitlesIncomplete(baselineExecution)
-                      ? { passedCaseTitlesIncomplete: true }
-                      : {}),
+                    ...measuredPassingCaseTitles(baselineExecution, row.mutation_baseline_cases),
                   }
                 : null,
             } : {}),

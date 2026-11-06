@@ -30,7 +30,7 @@ import type {
 } from '../../harness/improvements/observation-types';
 import type { SourceBarTestRequirements } from './source-bar-test-requirements';
 import {
-  isRecordedCaseTitle,
+  isRecordedCaseIdentity,
   isRecordedTestLayer,
   MAX_RECORDED_PASSED_CASES,
   passedCaseTitlesIncomplete,
@@ -1097,7 +1097,7 @@ function detailsOf(evidence: Pick<SpecEvidenceForAdequacy, 'details' | 'provisio
     if (
       Array.isArray(raw.testCases) &&
       raw.testCases.length <= MAX_RECORDED_PASSED_CASES &&
-      raw.testCases.every(isRecordedCaseTitle) &&
+      raw.testCases.every(isRecordedCaseIdentity) &&
       new Set(raw.testCases).size === raw.testCases.length
     ) {
       testCases = [...raw.testCases];
@@ -1126,7 +1126,7 @@ function detailsOf(evidence: Pick<SpecEvidenceForAdequacy, 'details' | 'provisio
           !Array.isArray(cases) ||
           cases.length === 0 ||
           cases.length > MAX_RECORDED_PASSED_CASES ||
-          !cases.every((caseTitle) => isRecordedCaseTitle(caseTitle) && declaredCases.has(caseTitle)) ||
+          !cases.every((caseTitle) => isRecordedCaseIdentity(caseTitle) && declaredCases.has(caseTitle)) ||
           new Set(cases).size !== cases.length
         ) return false;
         normalized[scenario] = [...cases] as string[];

@@ -3651,6 +3651,50 @@ describe('plans:bind-spec-evidence { fromTestRun } derives the binding from a re
       .toEqual(['case omitted from title cap']);
   });
 
+  it('projects multiline passing case identities through adequacy and refuses incomplete or conflicting case ledgers', async () => {
+    await specs.setSpecClause(clause({ mutationRequired: false }));
+    const title = 'outer > first prompt: <context>\n  another task\n</context>';
+    const runId = await recordRun();
+    await setRunExecutionDetails(runId, {
+      schemaVersion: 1, root: h.repoRoot, filePath: DERIVE_TEST, runGroupId: null,
+      workspaceId: WORKSPACE, harnessSlug: HARNESS, testNamePattern: 'first prompt',
+      passed: 1, failed: 0, skipped: 1, collectionFailed: false, mutationPhase: null,
+      commitSha: 'c0ffee1234567890', worktreeDirty: false, testLayer: 'integration',
+      passedCaseTitles: [], passedCaseTitlesTruncated: true,
+    });
+    await db.sql`INSERT INTO harness_shared.test_case_runs (test_run_id, case_index, case_key, status, duration_ms)
+      VALUES (${runId}, 0, ${title}, 'pass', 3), (${runId}, 1, 'outer > unselected', 'skip', NULL)`;
+    expect(await bindFromRun(runId, 'WI-101', { adequacy: {
+      collected: true, skipped: false, executed: true, outcome: 'passed',
+      targeted: 'SPEC-003-01', testLayer: 'integration', pathReachable: true, testCases: [title],
+    } })).toMatchObject({ ok: true, status: 'created' });
+    const read = async () => (await evidenceStore.listSpecEvidence({
+      harnessSlug: HARNESS, planSlugs: ['reconnect-plan'], workItemIds: ['WI-101'], evidenceRefs: [DERIVE_TEST],
+    })).find(row => row.testRunId === runId)!;
+    const projected = await read();
+    expect(projected.testRunExecution).toMatchObject({ passed: 1, skipped: 1, passedCaseTitles: [title] });
+    expect(projected.testRunExecution).not.toHaveProperty('passedCaseTitlesIncomplete');
+    const { evaluateSpecTestAdequacy } = await import('./spec-test-adequacy');
+    const revisions = await specs.listSpecClauses({ harnessSlug: HARNESS, planSlug: 'reconnect-plan' });
+    const evaluate = (row: typeof projected) => evaluateSpecTestAdequacy({
+      clause: revisions[0]!, evidence: [row], classRef: 'plan-class-feature-ship',
+    });
+    expect(evaluate(projected).ratings['correct-layer'].rating).toBe('pass');
+
+    // Counts must agree with the file result; partial normalized rows cannot fill a title gap.
+    await db.sql`DELETE FROM harness_shared.test_case_runs WHERE test_run_id = ${runId} AND case_index = 1`;
+    const incomplete = await read();
+    expect(incomplete.testRunExecution).toMatchObject({ passedCaseTitles: [], passedCaseTitlesIncomplete: true });
+    expect(evaluate(incomplete).ratings['correct-layer'].rating).not.toBe('pass');
+
+    // A passed occurrence does not prove another skipped occurrence with the same identity.
+    await db.sql`INSERT INTO harness_shared.test_case_runs (test_run_id, case_index, case_key, occurrence, status)
+      VALUES (${runId}, 1, ${title}, 2, 'skip')`;
+    const conflicting = await read();
+    expect(conflicting.testRunExecution).toMatchObject({ passedCaseTitles: [], passedCaseTitlesIncomplete: true });
+    expect(evaluate(conflicting).ratings['correct-layer'].rating).not.toBe('pass');
+  });
+
   it('resolves declared cases against the per-case ledger, closing the title-cap bypass (P-002 / R-2)', async () => {
     await specs.setSpecClause(clause({ mutationRequired: false }));
     // The same capped-title shape the previous case binds successfully: 65 passed, 64
@@ -3687,6 +3731,8 @@ describe('plans:bind-spec-evidence { fromTestRun } derives the binding from a re
     })).find((row) => row.testRunId === runId);
     expect((beyondCapEvidence?.details as { adequacy: { testCases: string[] } }).adequacy.testCases)
       .toEqual(['outer > case beyond the title cap']);
+    expect(beyondCapEvidence?.testRunExecution?.passedCaseTitles).toEqual(keys);
+    expect(beyondCapEvidence?.testRunExecution).not.toHaveProperty('passedCaseTitlesIncomplete');
 
     // A declared case the run never executed is refused, even though the capped title list
     // could not have proved it absent — and even beside a declared case that DID match.
