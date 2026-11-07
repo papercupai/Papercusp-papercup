@@ -24,7 +24,34 @@ fn repo_root() -> PathBuf {
         .unwrap_or(manifest)
 }
 
+// Source-inspection tests must travel with cross-built test executables.
+// Only cfg(test) code includes the generated table.
+fn embed_test_sources() {
+    let manifest = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").unwrap());
+    let src = manifest.join("src");
+    println!("cargo:rerun-if-changed={}", src.display());
+    let mut sources: Vec<_> = std::fs::read_dir(&src)
+        .expect("read PUI sources")
+        .map(|entry| entry.expect("PUI source entry").path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "rs"))
+        .collect();
+    sources.sort();
+    let mut table = String::from("pub(crate) const SOURCE_FILES: &[(&str, &str)] = &[\n");
+    for path in sources {
+        println!("cargo:rerun-if-changed={}", path.display());
+        table.push_str(&format!(
+            "({:?}, include_str!({:?})),\n",
+            path.file_name().unwrap().to_str().unwrap(),
+            path.to_str().unwrap(),
+        ));
+    }
+    table.push_str("];\n");
+    let out = PathBuf::from(env::var_os("OUT_DIR").unwrap()).join("pui-test-sources.rs");
+    std::fs::write(out, table).expect("write embedded PUI test sources");
+}
+
 fn main() {
+    embed_test_sources();
     for name in [
         "PUI_BUILD_SHA",
         "PUI_BUILD_DIRTY",

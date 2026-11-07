@@ -3,7 +3,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { WorkItem } from '../../work-items';
 import { createBranchedSqlMock } from '../../testing/sql-mock';
 
-const { sqlMock } = vi.hoisted(() => ({ sqlMock: vi.fn() }));
+const { sqlMock } = vi.hoisted(() => ({
+  sqlMock: Object.assign(vi.fn(), { unsafe: (fragment: string) => fragment }),
+}));
 vi.mock('@papercusp/db-org', async (original) => ({
   ...(await original<typeof import('@papercusp/db-org')>()),
   getOrgPg: () => ({ sql: sqlMock }),

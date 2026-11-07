@@ -9,6 +9,8 @@ import { rescoreRubric } from './harness/routines/rubric-rescore-action';
 import './agent-tools/dev/pg_query';
 import { continuityProbeSchema } from './continuity-probes';
 import { buildTenantScopeAdvisory } from './pg-read-query';
+import { readFile } from 'node:fs/promises';
+import type { Rubric } from './rubrics';
 
 let db: OrgTestDb;
 beforeAll(async () => { db = await createOrgTestDb(); }, 180_000);
@@ -181,3 +183,67 @@ it('registered workspace rubric rescores the real ledger without masking another
     AND file_path=${`rubric-check/${definition.rubricRef}/${sqlFeedbackIdentity(failed)}:repair-outcome:0`}`;
   expect(await measure()).toEqual({ 'proposal-quality': 'healthy', 'repair-outcome': 'unknown' });
 });
+
+it('R13 canonical SQL rubric ledger preserves failed and unknown measurements', async () => {
+  const { setupPlanPgFixture } = await import('./agent-tools/plans/__tests__/_pg-tool-fixture');
+  const { runWithWorkspace } = await import('./workspace-als');
+  const { proposeRubric, getRubric } = await import('./rubrics');
+  const { recordRubricCheckResults } = await import('./check-results-ledger');
+  const { emitScorecard, scorecardEmitArgs, _closeScorecardEmitMutexForTests } = await import('./agent-tools/scorecards/emit');
+  const snapshots = JSON.parse(await readFile(new URL('../test/fixtures/unified-learning-active-rubrics.json', import.meta.url), 'utf8'));
+  const source = snapshots.rubrics.find((r: Rubric) => r.rubricId === SQL_FEEDBACK_RUBRIC) as Rubric;
+  expect(source).toMatchObject({ status: 'active', revision: 5,
+    criteriaHash: '3c0aeb548bd0bf872894e96671980e1f5d076b77406199e91cf0d3e0052c6b04' });
+  const fx = await setupPlanPgFixture({ isolated: true });
+  try {
+    await runWithWorkspace(source.workspaceId, async () => {
+      await proposeRubric({ rubricId: source.rubricId, kind: 'standard', characteristic: source.characteristic,
+        title: source.title, description: source.description, criteria: source.criteria,
+        methodRef: source.methodRef ?? undefined, ratingScale: source.ratingScale, status: 'active',
+        by: source.createdBy ?? 'su-r13-rubric-author' });
+      expect(await getRubric(source.rubricId)).toMatchObject({ status: 'active', criteriaHash: source.criteriaHash });
+      const value = input(); value.workspaceId = source.workspaceId; value.measuredAt = new Date().toISOString();
+      for (const window of ['baseline', 'observation'] as const) value.repair![window].scopeRef = `${source.workspaceId}/papercusp`;
+      value.repair!.observation.rawAgents = 10;
+      const candidate = await recordSqlCandidateFeedback(value, { client: fx.admin });
+      expect(candidate.outcome.status).toBe('failed');
+      const [candidateRow] = await fx.admin`SELECT execution_details FROM harness_shared.test_runs
+        WHERE id=${candidate.testRunIds[1]!}`;
+      const candidateCheck = parseTestRunExecutionDetails(candidateRow!.execution_details)!.check!;
+      const context = JSON.parse(candidateCheck.provenance!.procedure.snapshot);
+      const report = JSON.parse(context.recipeOutcomes.observation);
+      expect(report).toMatchObject({ lineage: { rubricRef: source.rubricId,
+        criterionKey: `${sqlFeedbackIdentity(value)}:repair-outcome`, checkKind: 'probe', instrumentKey: null },
+        scope: { workspaceId: source.workspaceId, harnessSlug: 'papercusp' },
+        coverage: { state: 'unknown', complete: false }, benefit: { measuredSavings: null } });
+      const measure = async (expected: 'broken' | 'unknown') => {
+        const scored = await rescoreRubric({ rubricRef: source.rubricId, workspaceId: source.workspaceId, harnessSlug: 'papercusp' }, {
+          dispatchTool: async (_tool, args) => {
+            const sql = String(args.sql);
+            expect(await buildTenantScopeAdvisory(sql, { workspaceId: source.workspaceId, harnessSlug: 'papercusp' })).toBeNull();
+            return { rows: await fx.admin.unsafe(sql) };
+          },
+          record: (rows, scope) => recordRubricCheckResults(rows, scope, fx.admin),
+          emit: async () => ({}) as never,
+        });
+        expect(scored.probeError).toBeUndefined(); expect(scored.executed).toBe(2);
+        const latest = await readLatestRubricCheckResults({ rubricRef: source.rubricId, workspaceId: source.workspaceId }, fx.admin);
+        const row = [...latest.values()].find(r => r.check.criterionKey === 'repair-outcome')!;
+        expect(scored.testRunIds).toContain(row.testRunId);
+        const card = await emitScorecard(scorecardEmitArgs.parse({ rubricRef: source.rubricId, fromLedger: true,
+          ledgerDispositions: { 'repair-outcome': { disregard: 'Controlled failed/unknown cohort in an isolated acceptance database.' } } }),
+          { createdBy: 'su-r13-independent-grader', ctxHarness: 'papercusp', workspaceId: source.workspaceId },
+          { dispatchTool: async () => { throw new Error('ledger emission must not re-execute SQL'); } });
+        expect(card.ok).toBe(true);
+        if (!('issueId' in card) || typeof card.issueId !== 'string') throw new Error(JSON.stringify(card));
+        const [stored] = await fx.admin`SELECT payload FROM harness_shared.work_items WHERE feature_id=${card.issueId}`;
+        expect(stored!.payload.observation.ratings['repair-outcome']).toMatchObject({ rating: expected, ratedFrom: 'ledger',
+          evidenceRef: `test_runs:${row.testRunId}`, ledgerResult: { testRunId: row.testRunId } });
+      };
+      await measure('broken');
+      value.repair = null; value.measuredAt = new Date().toISOString();
+      await recordSqlCandidateFeedback(value, { client: fx.admin });
+      await measure('unknown');
+    });
+  } finally { await _closeScorecardEmitMutexForTests(); await fx.dispose(); }
+}, 180_000);

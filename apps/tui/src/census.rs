@@ -43,6 +43,8 @@ use ratatui::{backend::TestBackend, Terminal};
 use serde_json::json;
 use std::path::PathBuf;
 
+include!(concat!(env!("OUT_DIR"), "/pui-test-sources.rs"));
+
 /// Render size for every cell. Wide enough that no marker is clipped by a
 /// column truncation, tall enough that every destination's body has room.
 const W: u16 = 200;
@@ -618,17 +620,8 @@ struct NonStripRow {
 
 fn source_sites(tab: Tab) -> Vec<(String, usize)> {
     let needle = format!("Tab::{tab:?}");
-    let src = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src");
     let mut out: Vec<(String, usize)> = Vec::new();
-    let mut names: Vec<_> = std::fs::read_dir(&src)
-        .expect("src dir")
-        .filter_map(|e| e.ok())
-        .map(|e| e.file_name().to_string_lossy().into_owned())
-        .filter(|n| n.ends_with(".rs") && n != "census.rs")
-        .collect();
-    names.sort();
-    for name in names {
-        let text = std::fs::read_to_string(src.join(&name)).unwrap_or_default();
+    for &(name, text) in SOURCE_FILES.iter().filter(|(name, _)| *name != "census.rs") {
         let count = text
             .match_indices(&needle)
             .filter(|(i, m)| {
@@ -638,7 +631,7 @@ fn source_sites(tab: Tab) -> Vec<(String, usize)> {
             })
             .count();
         if count > 0 {
-            out.push((name, count));
+            out.push((name.to_string(), count));
         }
     }
     out
@@ -954,7 +947,7 @@ fn census_table_is_current() {
     let md = artifact_markdown(&rows, &non_strip);
 
     // JSON twin for tooling — target/ is build output, never committed.
-    let json_dir = crate_path("target/census");
+    let json_dir = std::env::current_dir().unwrap().join("target/census");
     let _ = std::fs::create_dir_all(&json_dir);
     let _ = std::fs::write(
         json_dir.join("surface-state-census.json"),
@@ -967,7 +960,7 @@ fn census_table_is_current() {
         std::fs::write(&path, &md).unwrap();
         return;
     }
-    let committed = std::fs::read_to_string(&path).unwrap_or_default();
+    let committed = include_str!("../docs/surface-state-census.md");
     if committed != md {
         let first_diff = committed
             .lines()

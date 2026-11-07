@@ -97,16 +97,22 @@ function walk(dir: string, out: string[]): void {
   }
 }
 
+let writerCensus: Array<{ file: string; recorded: boolean }> | undefined;
 function contentWriters(): Array<{ file: string; recorded: boolean }> {
+  if (writerCensus) return writerCensus;
   const files: string[] = [];
   for (const root of SCAN_ROOTS) walk(join(REPO_ROOT, root), files);
   const writers: Array<{ file: string; recorded: boolean }> = [];
   for (const full of files) {
     const rel = relative(REPO_ROOT, full);
-    const src = stripCommentsOnly(readFileSync(full, 'utf8'), rel);
+    const raw = readFileSync(full, 'utf8');
+    // Every detector below requires this literal table identity. Avoid parsing
+    // unrelated source; candidates still cross the comment-aware detector.
+    if (!raw.includes('harness_shared.harness_plans')) continue;
+    const src = stripCommentsOnly(raw, rel);
     if (writesPlanContent(src)) writers.push({ file: rel, recorded: recordsRevision(src) });
   }
-  return writers;
+  return writerCensus = writers;
 }
 
 describe('raw harness_plans content writers record a plan_revisions row', () => {

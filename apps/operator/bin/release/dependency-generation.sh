@@ -2806,7 +2806,11 @@ dependency_generation_copy_with_progress() (
   stall_sec="${DEPENDENCY_GENERATION_INFLIGHT_STALL_SEC:-1500}"
   case "$stall_sec" in ''|*[!0-9]*|0) stall_sec=1500 ;; esac
   [ "$interval" -le "$stall_sec" ] || interval="$stall_sec"
-  if [ "$reflink" = --rsync-checksum ]; then
+  if [ "$reflink" = --exec ]; then
+    # Record scans and hash verification are read-heavy setup work too. The
+    # sampler stays outside this child, so its own /proc reads cannot count.
+    "${@:4}" &
+  elif [ "$reflink" = --rsync-checksum ]; then
     # Pinned independent snapshots keep their staging tree across interruption.
     # Checksums, rather than size/mtime, authorize reuse of a completed file.
     # Optional filters exclude live caches before traversing them, preserving
@@ -2832,7 +2836,11 @@ dependency_generation_copy_with_progress() (
     now="$(date +%s)"
     [ "$now" -ge "$next" ] || continue
     next=$((now + interval))
-    written="$(dependency_generation_subtree_io "$pid" copy-written)"
+    if [ "$reflink" = --exec ]; then
+      written="$(dependency_generation_subtree_io "$pid")"
+    else
+      written="$(dependency_generation_subtree_io "$pid" copy-written)"
+    fi
     read_bytes=0
     if [ "$reflink" = --rsync-checksum ]; then
       read_bytes="$(dependency_generation_subtree_io "$pid" copy-read)"
@@ -2856,8 +2864,13 @@ dependency_generation_copy_with_progress() (
       reported="$written"
       read_reported="$read_bytes"
       dependency_generation_publish_copy_progress "copy:$pid:$copy_epoch:$written:$read_bytes"
-      dependency_generation_log \
-        "copy progress: ${dest##*/tree/} written=$((written / 1048576))MiB elapsed=$((now - started))s"
+      if [ "$reflink" = --exec ]; then
+        dependency_generation_log \
+          "work progress: ${dest##*/tree/} io=$((written / 1048576))MiB elapsed=$((now - started))s"
+      else
+        dependency_generation_log \
+          "copy progress: ${dest##*/tree/} written=$((written / 1048576))MiB elapsed=$((now - started))s"
+      fi
       if [ "$reflink" = --rsync-checksum ]; then
         dependency_generation_log "checksum read progress: ${dest##*/tree/} read=$((read_bytes / 1048576))MiB"
       fi
@@ -2908,6 +2921,11 @@ dependency_generation_incremental_supported() {
 # like dependency_generation_prune_ephemeral. Exit 2: a path or link target holds
 # a control character, which the line-oriented records cannot carry.
 dependency_generation_source_records() {
+  dependency_generation_copy_with_progress "$1" "$2" --exec \
+    dependency_generation_source_records_impl "$@"
+}
+
+dependency_generation_source_records_impl() {
   local root="$1" out="$2" rc=0
   [ -d "$root" ] || return 1
   (
@@ -3020,6 +3038,11 @@ dependency_generation_records_carry() {
 # D-018). Any hashing failure only shrinks the verified set: those files are
 # copied, so a failure can never keep a wrong file.
 dependency_generation_incremental_verify() {
+  dependency_generation_copy_with_progress "$1" "$3/checksums" --exec \
+    dependency_generation_incremental_verify_impl "$@"
+}
+
+dependency_generation_incremental_verify_impl() {
   local src="$1" seed="$2" work="$3" live_pid live_rc=0 seed_rc=0
   : > "$work/verified" || return 1
   LC_ALL=C awk -F '\t' '
@@ -3063,7 +3086,7 @@ dependency_generation_copy_incremental() {
   ' "$work/predecessor" > "$work/trusted" || return 1
   LC_ALL=C comm -12 "$live_records" "$work/trusted" > "$work/exact" || return 1
   LC_ALL=C comm -23 "$live_records" "$work/trusted" > "$work/unmatched" || return 1
-  dependency_generation_incremental_verify "$src" "$seed" "$work" || return 1
+  dependency_generation_incremental_verify "$src" "$seed" "$work" || return $?
   LC_ALL=C awk -F '\t' -v verified="$work/kept-verified" -v changed="$work/changed" '
     FILENAME == ARGV[1] { same[$0] = 1; next }
     ($1 in same) { print > verified; next }
@@ -3143,6 +3166,7 @@ dependency_generation_copy_changed_tree() {
     captured_ns="$(dependency_generation_now_ns)"
     records_rc=0
     dependency_generation_source_records "$src" "$live" || records_rc=$?
+    case "$records_rc" in 73|130|143) return "$records_rc" ;; esac
   fi
   if [ -n "$predecessor" ] && [ -d "$predecessor/tree/$rel" ]; then
     size_ref="$predecessor/tree/$rel"
@@ -3157,7 +3181,7 @@ dependency_generation_copy_changed_tree() {
     rm -rf -- "$work"
     case "$rc" in
       0) DEPENDENCY_GENERATION_TREES_INCREMENTAL=$((DEPENDENCY_GENERATION_TREES_INCREMENTAL + 1)) ;;
-      76|77) rm -f -- "$live"; return "$rc" ;;
+      73|76|77|130|143) rm -f -- "$live"; return "$rc" ;;
       *)
         dependency_generation_log "incremental copy unavailable for $rel; copying it in full"
         rc=1

@@ -340,6 +340,18 @@ const LIVE_INBOX_ABSENCE_SUBJECT = /^(?:unanswered|unread)\s+(?:direct\s+)?messa
 const ACTION_DISPOSITION_ABSENCE_SUBJECT =
   /^(?:action|step|operation|retry|request|call|command|change|reassignment|execution|invocation)\b(?:(?:[^.;\n]{0,60}\b(?:is|are|was|were)\s+(?:currently\s+)?(?:(?:not|never)\s+)?(?:being\s+)?(?:taken|made|performed|executed|invoked|called|run|issued|sent|attempted|started|applied|reassigned|continued)\b)|(?:[^.;\n]{0,60}\b(?:not|never)\s+(?:reassigning|executing|performing|running|calling|sending|issuing|attempting)\b))/i;
 
+/**
+ * WI-27735910929077428: a first-person list such as "we have no bug claim,
+ * no change-kind declaration, no code edit/test/rerun yet" describes this
+ * session's actions and receipts. The `edit/test/rerun` slash sequence looks
+ * like a repository path to the recheck synthesizer, but searching source
+ * cannot establish whether this session made a claim or ran an action. Keep
+ * this deliberately closed over the observed action nouns so real surfaces
+ * such as a "code edit runner" still reach the repository-absence guard.
+ */
+const ACTOR_ACTION_NEGATION_SUBJECT =
+  /^(?:(?:bug claim|change-kind declaration|code edit\/test\/rerun)(?:\s+(?:yet|now))?)(?:,\s*(?:no\s+)?(?:bug claim|change-kind declaration|code edit\/test\/rerun)(?:\s+(?:yet|now))?)*$/i;
+
 function isNonSurfaceAbsenceSubject(subject: string): boolean {
   // Absence-pattern captures can end inside parenthetical prose (for example,
   // "there was no mismatch to test)"). Closing delimiters are not part of the
@@ -349,7 +361,8 @@ function isNonSurfaceAbsenceSubject(subject: string): boolean {
     RHETORICAL_ABSENCE_SUBJECT.test(normalized) ||
     LIVE_STATE_ABSENCE_SUBJECT.test(normalized) ||
     LIVE_INBOX_ABSENCE_SUBJECT.test(normalized) ||
-    ACTION_DISPOSITION_ABSENCE_SUBJECT.test(normalized)
+    ACTION_DISPOSITION_ABSENCE_SUBJECT.test(normalized) ||
+    ACTOR_ACTION_NEGATION_SUBJECT.test(normalized)
   );
 }
 

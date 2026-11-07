@@ -17,8 +17,9 @@ vi.mock('./sync-sse', () => ({ notifySyncInvalidate: vi.fn(async () => {}) }));
 const fallbackObservations = await import('./degradation/fallback-observations');
 const { captureImprovement } = await import('./harness/improvements/capture-core');
 const { createIssue } = await import('./issues-engineer');
-const { enterAgentReview } = await import('./harness/improvements/agent-review');
-const { getWorkItem } = await import('./work-items');
+const { enterAgentReview, reconcileAgentReviewGrade } = await import('./harness/improvements/agent-review');
+const { getWorkItem, claimWorkItem } = await import('./work-items');
+const { runWorkItemAdmissionPromoter } = await import('./work-items-admission-promoter');
 const { submitSqlCandidateReview, submitMonitoredCandidateReview, readMonitoredCandidateReview } = await import('./sql-tool-candidate-review');
 const { runSqlOpportunityCensus } = await import('./harness/routines/sql-read-census-action');
 const { buildScratchUri, safeScratchFilesystemPath } = await import('./scratch-uri');
@@ -110,6 +111,46 @@ it('accepted ownership is read from the current review item R5-CONTRACT', async 
   expect(await submitSqlCandidateReview(input(), deps())).toMatchObject({
     status: 'accepted', workItemId: first.workItemId, queue: 'implementation', owner: 'su-implementer',
   });
+});
+
+it('R10 accepted candidate enters owned engineering workflow', async () => {
+  const pending = await submitSqlCandidateReview(input(), deps());
+  const [grade] = await db.adminSql`SELECT idea_id FROM harness_shared.scout_routed_ideas
+    WHERE workspace_id=${WS} AND routed_ref=${'wi:' + pending.workItemId}`;
+  expect(grade).toBeDefined();
+  // Only the independent grade is fixture input. Approval, readiness, comments,
+  // release and the implementation claim use the maintained workflow itself.
+  await db.adminSql`UPDATE harness_shared.scout_routed_ideas
+    SET human_grade=5, graded_by='su-independent-reviewer', human_feedback='controlled approval'
+    WHERE workspace_id=${WS} AND idea_id=${grade!.idea_id}`;
+  const approved = await reconcileAgentReviewGrade({ ideaId: grade!.idea_id, gradedBy: 'su-independent-reviewer' });
+  expect(approved).toMatchObject({ workItemId: pending.workItemId, status: 'approved' });
+  // Independent review and duplicate admission are separate gates. Approval
+  // must not let the implementation claim skip the maintained admission path.
+  const [beforeAdmission] = await db.adminSql`SELECT admission FROM harness_shared.work_items
+    WHERE workspace_id=${WS} AND feature_id=${pending.workItemId!}`;
+  expect(beforeAdmission!.admission).toBe('pending');
+  expect(await claimWorkItem(pending.workItemId!, 'su-implementer', { harness: HARNESS })).toBeNull();
+  const admission = await runWorkItemAdmissionPromoter({
+    workspaceId: WS, harnessSlug: HARNESS, sql: db.adminSql,
+    targetItemIds: [pending.workItemId!], noModel: true,
+    llmCall: async () => { throw new Error('single candidate admission must not call a model'); },
+  });
+  expect(admission).toMatchObject({ promoted: 1, held: 0, modelCalled: false });
+  expect(await claimWorkItem(pending.workItemId!, 'su-implementer', { harness: HARNESS })).toMatchObject({ assignee: 'su-implementer' });
+  const accepted = await submitSqlCandidateReview(input(), deps());
+  expect(accepted).toMatchObject({ status: 'accepted', queue: 'implementation', owner: 'su-implementer',
+    workItemId: pending.workItemId, lifecycleId: pending.lifecycleId, editionId: pending.editionId });
+  const item = await getWorkItem(accepted.workItemId!, HARNESS);
+  expect(item).toMatchObject({ assignee: 'su-implementer', payload: {
+    agentReview: { status: 'approved', submittedBy: 'su-sql-filer' },
+    implementationReadiness: { status: 'ready', reason: 'agent-review-approved', evidence: {
+      review: { reviewer: 'su-independent-reviewer', grade: 5, submittedBy: 'su-sql-filer' },
+    } },
+  } });
+  expect(await submitSqlCandidateReview(input(), deps())).toEqual(accepted);
+  const rows = await db.adminSql`SELECT feature_id FROM harness_shared.work_items WHERE workspace_id=${WS}`;
+  expect(rows).toHaveLength(1);
 });
 it('suppressed and ineligible candidates never file work R5-CONTRACT', async () => {
   capture.mockClear();

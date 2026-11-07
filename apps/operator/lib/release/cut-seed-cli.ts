@@ -160,7 +160,6 @@ import {
   HEAD_SNAPSHOT_PATH,
   type LiveHeadSnapshotNoHolder,
 } from '@papercusp/operator-core/lib/sync/hyperbee/live-head-snapshot-client';
-import { detectWedgedListener } from '@papercusp/operator-core/lib/service-health';
 import { CURRENT_SCHEMA_VERSION } from '@papercusp/operator-core/lib/sync/hyperbee/schema-version';
 import { loadHiveKeyStatus, type HiveKeyStatus } from '@papercusp/operator-core/lib/identity/hive-keypair';
 import { papercuspPathForWorkspace } from '@papercusp/operator-core/lib/papercusp-root';
@@ -169,6 +168,15 @@ import type { BootedHarnessHandle, LocalWriteOp } from '@papercusp/operator-core
 
 const DEFAULT_HIVE = 'papercusp';
 const DEFAULT_ORIGIN = 'https://github.com/Papercusp/papercup';
+
+// Listener diagnostics need the service-health graph only after a holder probe
+// fails. Loading it at CLI startup pulls in the operator/event graph before even
+// invalid arguments can be refused (EI-28021202817236715).
+const detectWedgedListener: typeof import('@papercusp/operator-core/lib/service-health').detectWedgedListener =
+  async (...args) => {
+    const serviceHealth = await import('@papercusp/operator-core/lib/service-health');
+    return serviceHealth.detectWedgedListener(...args);
+  };
 
 /** Keep a long filtered scan visibly alive without writing one line per 256-block window. */
 export const CUT_SEED_FILTERED_PROGRESS_INTERVAL_MS = 60_000;

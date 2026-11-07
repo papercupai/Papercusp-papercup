@@ -336,6 +336,43 @@ describe('diagnostic scorecard baseline', () => {
     readAndEvaluateAcceptanceBarLifecycleM.mockResolvedValue({ satisfied: false, message: 'proof missing' });
   });
 
+  const dispatchDiagnostic = async (args: unknown, authorized: boolean) => {
+    const projected = lookupByMcpName('scorecards:emit');
+    expect(projected).toBeDefined();
+    return dispatchProjectedTool(projected!, 'scorecards:emit', args, {
+      log: vi.fn(), signal: new AbortController().signal, progress: vi.fn(), emit: vi.fn(),
+      workspaceId: 'default', runId: 'diagnostic-public-writer-test',
+      isSuperuser: authorized, uiClientId: 'su-diagnostic-public-writer-test',
+      role: authorized ? 'operator' : 'unlisted-diagnostic-writer',
+      gateBypass: { capability: true, quota: true },
+      transport: 'mcp', requestedFormat: 'json', contextTier: 'trimmed', tx: {},
+    }, {});
+  };
+
+  it('public diagnostic writer refuses an unauthorized actor while the same valid input persists for an authorized actor', async () => {
+    const args = { rubricRef: rubric.rubricId, purpose: 'diagnostic', subject, ratings: RATINGS };
+    const denied = await dispatchDiagnostic(args, false);
+    expect(denied.ok).toBe(false);
+    expect(denied.error?.code).toBe('role_not_allowed');
+    expect(captureM).not.toHaveBeenCalled();
+    expect(getRubricM).not.toHaveBeenCalled();
+
+    const allowed = await dispatchDiagnostic(args, true);
+    expect(allowed.ok, JSON.stringify(allowed)).toBe(true);
+    expect(readJsonResult<{ ok: boolean; purpose: string }>(allowed.result!)).toMatchObject({ ok: true, purpose: 'diagnostic' });
+    expect(captureM).toHaveBeenCalledOnce();
+  });
+
+  it('public diagnostic writer refuses invalid evidence before persistence', async () => {
+    const result = await dispatchDiagnostic({ rubricRef: rubric.rubricId, purpose: 'diagnostic', subject,
+      ratings: { ...RATINGS, 'crit-a': { rating: 'fail', evidence: '' } } }, true);
+
+    expect(result.ok).toBe(false);
+    expect(result.error?.code).toBe('invalid_input');
+    expect(captureM).not.toHaveBeenCalled();
+    expect(getRubricM).not.toHaveBeenCalled();
+  });
+
   it('persists a confirmed failure despite missing acceptance proof without a grading transition', async () => {
     const ratings = { ...RATINGS, 'crit-a': { rating: 'fail', evidence: 'The measured criterion failed.' } };
     const result = await emitScorecard(scorecardEmitArgs.parse({ rubricRef: rubric.rubricId,
@@ -532,15 +569,33 @@ describe('emitScorecard', () => {
     getRubricM.mockResolvedValue({ ...RUBRIC, rubricId: 'spec-quality' });
     getRubricPlanRevisionM.mockResolvedValue(5);
     getRubricCriteriaHashM.mockResolvedValue(criteriaHash);
+    const build = { sha: 'unit-quality-evaluator', version: '1.0.0' };
+    const subject = { kind: 'plan' as const, ref: `spec-set:plan-class-feature-ship:${'b'.repeat(64)}:quality-plan` };
 
     const r = await emitScorecard({
       rubricRef: 'spec-quality',
-      subject: { kind: 'plan', ref: 'quality-plan:plan-class-feature-ship:spec-set' },
+      subject,
       ratings: RATINGS,
       terminal: true,
-    }, { createdBy: 'su-evaluator' });
+      rerunRecipe: {
+        schemaVersion: 1, evaluator: 'plans:evaluate-spec-quality', evaluatorBuild: build, specSetHashVersion: 2,
+        args: { harness: 'papercusp', slug: 'quality-plan', classRef: 'plan-class-feature-ship',
+          evaluatorBuild: build, specSetHashVersion: 2, expectedSpecSetHash: 'b'.repeat(64),
+          replaySnapshot: { planContentHash: 'c'.repeat(64), clausesAsOf: '2026-11-01T00:00:00Z' } },
+      },
+    }, { createdBy: 'su-evaluator' }, {
+      getEvaluatorBuild: () => build,
+      dispatchTool: vi.fn(async () => ({ ok: true, specSetHash: 'b'.repeat(64), specSetHashVersion: 2,
+        evaluatorBuild: build, scorecardDraft: { subject, ratings: RATINGS } })),
+      resolveSpecQualityPlanSubject: async () => ({ planSlug: 'quality-plan', harnessSlug: 'papercusp' }),
+      withCurrentDiscovery: async (_input, accept) => ({
+        ok: true,
+        // This isolated stamping callback does not consume discovery's transaction or subject.
+        result: await (accept as () => ReturnType<typeof accept>)(),
+      }),
+    });
 
-    expect(r).toMatchObject({ ok: true, created: true });
+    expect(r, JSON.stringify(r)).toMatchObject({ ok: true, created: true });
     expect(captureM.mock.calls[0][0]).toMatchObject({
       payloadExtra: { observation: {
         rubricRef: 'spec-quality',

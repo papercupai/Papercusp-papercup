@@ -249,8 +249,13 @@ export default defineTool({
     // key, then fetch `text` only for those winning kickoff/closing rows. DISTINCT
     // ON still gives both ends without a second round-trip per session, which is
     // the whole point: the old pattern cost one read PER SESSION.
+    //
+    // Keep the timestamp window indexable and materialize it before the D-006
+    // exclusion. COALESCE(ts, ingested_at) defeats the historical time indexes;
+    // applying restrictedTurnSql in that base scan also runs its correlated
+    // disclosure check across the full transcript table before the window filter.
     const rows: DigestRow[] = await tx<DigestRow[]>`
-      WITH scoped AS (
+      WITH scoped_window AS MATERIALIZED (
         SELECT workspace_id, source_kind, session_id, turn_idx, speaker,
                ts, ingested_at, owner, harness_slug, cwd
           FROM harness_shared.session_turns
@@ -259,11 +264,22 @@ export default defineTool({
            AND (${owner}::text IS NULL OR owner = ${owner})
            AND (${sourceKind ?? null}::text IS NULL OR source_kind = ${sourceKind ?? null})
            AND (${args.cwd_contains ?? null}::text IS NULL OR cwd ILIKE '%' || ${args.cwd_contains ?? null} || '%')
-           AND (${since ?? null}::timestamptz IS NULL OR COALESCE(ts, ingested_at) >= ${since ?? null}::timestamptz)
-           AND COALESCE(ts, ingested_at) <= ${until}::text::timestamptz
+           AND (
+             (ts IS NOT NULL
+               AND (${since ?? null}::timestamptz IS NULL OR ts >= ${since ?? null}::timestamptz)
+               AND ts <= ${until}::text::timestamptz)
+             OR
+             (ts IS NULL
+               AND (${since ?? null}::timestamptz IS NULL OR ingested_at >= ${since ?? null}::timestamptz)
+               AND ingested_at <= ${until}::text::timestamptz)
+           )
            AND ingested_at <= ${snapshotAt}::text::timestamptz
-           -- D-006 reader rule (WI-10005570): another agent's disclosure-window turns never reach a digest.
-           AND NOT ${restrictedTurnSql(tx as unknown as Parameters<typeof restrictedTurnSql>[0], 'session_turns', [readerOwnerOf(ctx)]) as never}
+      ),
+      scoped AS MATERIALIZED (
+        SELECT windowed.*
+          FROM scoped_window windowed
+         -- D-006 reader rule (WI-10005570): another agent's disclosure-window turns never reach a digest.
+         WHERE NOT ${restrictedTurnSql(tx as unknown as Parameters<typeof restrictedTurnSql>[0], 'windowed', [readerOwnerOf(ctx)]) as never}
       ),
       agg AS (
         SELECT source_kind, session_id, count(*)::int AS turns,

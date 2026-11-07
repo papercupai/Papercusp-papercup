@@ -1,0 +1,61 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Workbench P-001 native Windows portable fixture regression",
+  "framework": "cargo",
+  "command": [".\\pui-tests.exe", "--test-threads=4"],
+  "exitCode": 0,
+  "startedAt": "2026-11-06T07:28:35.346712Z",
+  "finishedAt": "2026-11-06T07:29:09.766537Z",
+  "summary": "Previously executed native Windows main PUI test target after portable fixture repair: 1393 passed, 0 failed, 19 ignored in 30.77s. The seven formerly failing cases separately passed in 8.70s. This imports retained execution evidence; no suite was replayed. These are test executable results, not installed-app acceptance or shipment proof. Five other Windows test targets and native installed Ubuntu/macOS/Windows acceptance remain outside this evidence.",
+  "workItem": "WI-6554700010045850",
+  "parentWorkItem": "WI-6554700010029572",
+  "plan": "quick-access-search-launcher-2026-10-26",
+  "nativeRunDirectory": "workbench-p001-portable-20261106T0727-b3cf9",
+  "artifact": {
+    "path": "/mnt/data/cargo-target/x86_64-pc-windows-msvc/debug/deps/pui-8a27b33d312e8d78.exe",
+    "sha256": "44468fe6a85708fccd95ee68811de071bbf8cb00cea12629b80bd3a5aa08655f",
+    "nativeRunAlias": ".\\pui-tests.exe",
+    "target": "x86_64-pc-windows-msvc",
+    "linkage": "static CRT, using existing release-builder target-feature=+crt-static"
+  },
+  "prerequisites": {
+    "git": "Official MinGit 2.56.0.windows.4, provisioned in the isolated run directory",
+    "gitArchiveSha256": "e3bf78351fe777fba47ddee5950082f8a98bb0f02604fdc7ba3ee2cb68ffa877",
+    "sourceInspection": "Exact build-time source snapshots embedded into cfg(test) source-inspection tests; no Linux checkout path required on Windows"
+  },
+  "sourceSha256": {
+    "apps/tui/build.rs": "021501a61982e056f7a1143b896464548046cc40073d640cc7cdc9611d9f8151",
+    "apps/tui/src/app.rs": "784fd3828ffb5bd3808d22c3ffa033864d80af0318f6aad4a79a80fcf81a0eb1",
+    "apps/tui/src/layout.rs": "bfffed590542bb2ae66ef026dc143b956cab4fe75e676c563e8e1d1f7cac3672",
+    "apps/tui/src/census.rs": "ce4115a45ac173f138dccdb0e8445570fa3981877245ee1a2ed1ebaf0cfece13",
+    "apps/tui/src/public_release_ux_tests.rs": "a047cab39afbd58338d81acfab888c7c5d94ef164be2d96980fb99d9606f09c3"
+  },
+  "assertions": [
+    {"id":"session-setup-native-absolute-path","passed":true,"evidence":"app::tests::session_setup_registers_project_only_after_review_then_requires_selection ... ok"},
+    {"id":"native-path-list","passed":true,"evidence":"layout::tests::session_path_puts_the_launching_build_first_once ... ok"},
+    {"id":"embedded-pane-census","passed":true,"evidence":"census::census_non_strip_variants_are_pane_only_and_unreachable_from_strip ... ok"},
+    {"id":"embedded-current-census","passed":true,"evidence":"census::census_table_is_current ... ok"},
+    {"id":"embedded-registry-reuse","passed":true,"evidence":"public_release_ux_tests::r14_p002_registry_reuse_and_required_screen_states_remain_explicit ... ok"},
+    {"id":"real-git-checkout-drift","passed":true,"evidence":"install::tests::checkout_drift_counts_pui_commits_since_the_build ... ok"},
+    {"id":"real-git-ancestry","passed":true,"evidence":"install::tests::operator_generation_contained_asks_real_git_for_ancestry ... ok"},
+    {"id":"native-main-target","passed":true,"evidence":"test result: ok. 1393 passed; 0 failed; 19 ignored; 0 measured; 0 filtered out; finished in 30.77s; native exec22815 exit0"},
+    {"id":"source-and-artifact-custody","passed":true,"evidence":"On recovery, SHA-256 of all five listed current source files and the retained executable equals the original v4 custody manifest."}
+  ],
+  "logs": {
+    "baseline": "/tmp/wb-p001-windows-native-20261106-v2-static.log",
+    "focused": "/tmp/wb-p001-windows-native-20261106-v3-portable.log",
+    "full": "/tmp/wb-p001-windows-native-20261106-v4-full-repaired.log",
+    "custody": "/tmp/wb-p001-windows-native-20261106-v4-full-repaired-custody.json",
+    "build": "/tmp/wb-p001-windows-xwin-tests-build-20261106-v3-portable.log",
+    "linuxFocused": "/tmp/wb-p001-portable-fixtures-linux-20261106-v2.log"
+  },
+  "logSha256": {
+    "full": "4a54ab96407b439258aa222a25e1f738a532cda8bb96f78afb39be37eff0cc82",
+    "focused": "f63dee61194a77f8bc70c6c27b336f706a57055e26b354b351da3121afa23c48",
+    "custody": "ba9cfcef473d118ec8288ccdcc0ab2d477272d9faaf47d181652e59375eb9316"
+  },
+  "rootCause": "Unix-only absolute-path and PATH fixtures, runtime reads of an unavailable compile-time Linux source tree, and missing real Git in the native VM. The detector gap was lack of actual Windows execution: prior Linux and cross-compilation checks could not exercise these OS assumptions.",
+  "recurrenceGuard": "The existing seven maintained Cargo tests now run with portable fixtures and embedded source snapshots. Their native Windows execution, including real Git, checks the same failure classes without skipping or quarantining tests.",
+  "scopeLimits": ["Not native installed-app acceptance", "Not a release or shipment certificate", "Other five Windows test executables were not run", "19 pre-existing ignored tests remain explicitly reported"]
+}

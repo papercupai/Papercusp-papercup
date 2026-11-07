@@ -363,8 +363,8 @@ describe('findCoverageWorkItems (PG)', () => {
   });
 });
 
-describe('draft item-start gate recognizes stamped execution coverage (PG)', () => {
-  it('lets an implements-only stamped work-item continue through an unaudited draft plan', async () => {
+describe('draft item-start gate recognizes stamped terminal coverage (PG)', () => {
+  it('treats an implements-only stamped terminal work-item as completion evidence', async () => {
     const id = 'EI-draft-gate-stamped';
     const slug = 'p-draft-gate-stamped';
     const itemId = 'P-008';
@@ -374,9 +374,11 @@ describe('draft item-start gate recognizes stamped execution coverage (PG)', () 
                   VALUES ('web', ${id}, 'bug', ${WS},
                           ${rootSql.json({ plan_item: { plan_slug: slug, item_id: itemId, harness_slug: 'web' } })})`;
     await edge({ plan: slug, item: itemId, srcKind: 'issue', srcRef: id, rel: IMPLEMENTS_REL });
+    wiState.states[id] = 'resolved';
 
-    // The residual-coverage helper intentionally remains relates-only. The start
-    // gate also consults the durable conversion stamp for existing execution work.
+    // Residual coverage remains relates-only. A terminal implements-only stamped
+    // row is completion evidence for a stale todo→done reflection and must bypass
+    // draft discovery without weakening the gate for a new start.
     expect(await findCoverageWorkItems(slug, itemId, [WS])).toEqual([]);
     const input = {
       workspaceId: WS,
@@ -566,6 +568,37 @@ describe('convertPlanItem step 2: terminal records must not mask a live one (EI-
       VALUES (${WS}, ${HARNESS}, 'WI-node', 'feature', 'pz', 'P-031')`;
     await edge({ plan: 'pz', item: 'P-031', srcKind: 'issue', srcRef: 'WI-child' });
     expect(await convert('P-031')).toMatchObject({ status: 'resumed', workItem: { id: 'WI-node' } });
+    expect(createWorkItemM).not.toHaveBeenCalled();
+  });
+
+  it('resumes a plans:start promoted feature linked only by source_plan columns', async () => {
+    givenPlanItem('P-033');
+    await rootSql`INSERT INTO harness_shared.work_items
+      (workspace_id, harness_slug, feature_id, item_kind, status, payload,
+       source_plan_slug, source_plan_item_ids, created_ts, updated_ts)
+      VALUES (${WS}, ${HARNESS}, 'WI-promoted-P-033', 'feature', 'open', ${rootSql.json({})},
+              'pz', ARRAY['P-033']::text[], 1, 1)`;
+
+    expect(await convert('P-033')).toMatchObject({
+      status: 'resumed',
+      workItem: { id: 'WI-promoted-P-033' },
+    });
+    expect(createWorkItemM).not.toHaveBeenCalled();
+  });
+
+  it('refuses multiple live promoted-feature mappings instead of minting an issue sibling', async () => {
+    givenPlanItem('P-034');
+    for (const [id, created] of [['WI-promoted-P-034-a', 1], ['WI-promoted-P-034-b', 2]] as const) {
+      await rootSql`INSERT INTO harness_shared.work_items
+        (workspace_id, harness_slug, feature_id, item_kind, status, payload,
+         source_plan_slug, source_plan_item_ids, created_ts, updated_ts)
+        VALUES (${WS}, ${HARNESS}, ${id}, 'feature', 'open', ${rootSql.json({})},
+                'pz', ARRAY['P-034']::text[], ${created}, ${created})`;
+    }
+
+    const result = await convert('P-034');
+
+    expect(result).toMatchObject({ status: 'refused', code: 'ambiguous_plan_item_mapping' });
     expect(createWorkItemM).not.toHaveBeenCalled();
   });
 

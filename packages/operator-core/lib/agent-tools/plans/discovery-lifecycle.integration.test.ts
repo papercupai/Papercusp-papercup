@@ -13,8 +13,11 @@ import { checkDraftItemStartGate } from './draft-item-start-gate';
 import { discoveryDeclarationSchema, type DiscoveryDeclaration } from './plan-declarations';
 import { resolveDiscoveryAuditContext } from './plan-declaration-resolvers';
 import { recordCurrentDiscoveryAudit, withCurrentDiscovery } from '../../plan-audits';
+import * as discoveryAudits from '../../plan-audits';
+import * as activationGate from './plan-activation-gate';
+import { withPlanLock } from './with-plan-lock';
 import { persistResearchBatch } from '../../code-intelligence/research-trail';
-import { getFeedbackCore, type GetFeedbackDeps, type GetFeedbackRequest } from '../../consult/get-feedback-core';
+import { acceptFeedbackRequestCore, getFeedbackCore, type GetFeedbackDeps, type GetFeedbackRequest } from '../../consult/get-feedback-core';
 import { BAR_CRITIQUE_POLICY } from '../../consult/selection-policies';
 
 // Verbatim P-001, read from the original plan's canonical revision 3.
@@ -79,11 +82,11 @@ function revisedFindings(): DiscoveryDeclaration {
       ] }],
   };
 }
-function reviewDeps() {
+function reviewDeps(context = resolver) {
   const route = vi.fn(async () => { throw new Error('REVIEW_ROUTING_ADMITTED'); });
   const open = vi.fn(async () => { throw new Error('UNEXPECTED_CONVERSATION'); });
   const deps = { getSql: () => fx.admin, route, open,
-    withCurrentDiscovery: ((request, accept) => withCurrentDiscovery(request, accept, { context: resolver })) as NonNullable<GetFeedbackDeps['withCurrentDiscovery']>,
+    withCurrentDiscovery: ((request, accept) => withCurrentDiscovery(request, accept, { context })) as NonNullable<GetFeedbackDeps['withCurrentDiscovery']>,
   } as unknown as GetFeedbackDeps;
   const request: GetFeedbackRequest = { workspaceId: fx.workspaceId, requesterId: OWNER,
     policy: BAR_CRITIQUE_POLICY, originTaskRef: slug, harnessSlug: harness, allowDispatch: true,
@@ -114,6 +117,104 @@ beforeEach(async () => {
 });
 
 describe('original proof-warming discovery before review and implementation', () => {
+  it('refuses a barrier-controlled source change before an actual review request can route, open or persist', async () => {
+    await revision(plan(revisedFindings(), true));
+    expect(await finalized()).toMatchObject({ ok: true, discovery: { readiness: { ready: true } } });
+    let measured!: () => void;
+    let release!: () => void;
+    const measurement = new Promise<void>(resolve => { measured = resolve; });
+    const barrier = new Promise<void>(resolve => { release = resolve; });
+    let reads = 0;
+    const review = reviewDeps(async (...args) => {
+      const observed = await resolver(...args);
+      if (++reads === 1) { measured(); await barrier; }
+      return observed;
+    });
+    const [{ count: before }] = await fx.admin`SELECT count(*)::int AS count FROM harness_shared.plan_audits
+      WHERE workspace_id=${fx.workspaceId} AND harness_slug=${harness} AND plan_slug=${slug}`;
+    const attempt = review.attempt();
+    await measurement;
+    try { await writeFile(join(root, 'proof-cache.ts'), 'export const retainedProofCache = null;\n'); }
+    finally { release(); }
+    expect(await attempt).toMatchObject({ error: 'discovery_not_ready' });
+    expect(review.route).not.toHaveBeenCalled();
+    expect(review.open).not.toHaveBeenCalled();
+    const [{ count: after }] = await fx.admin`SELECT count(*)::int AS count FROM harness_shared.plan_audits
+      WHERE workspace_id=${fx.workspaceId} AND harness_slug=${harness} AND plan_slug=${slug}`;
+    const [{ count: requests }] = await fx.admin`SELECT count(*)::int AS count FROM harness_shared.consult_state
+      WHERE workspace_id=${fx.workspaceId} AND requester_id=${OWNER}`;
+    expect(after).toBe(before);
+    expect(requests).toBe(0);
+  });
+
+  it('converges concurrent and restarted current review acceptance on one persisted request', async () => {
+    await revision(plan(revisedFindings(), true));
+    expect(await finalized()).toMatchObject({ ok: true, discovery: { readiness: { ready: true } } });
+    let opened!: () => void;
+    let release!: () => void;
+    const opening = new Promise<void>(resolve => { opened = resolve; });
+    const barrier = new Promise<void>(resolve => { release = resolve; });
+    const created: string[] = [];
+    const open: GetFeedbackDeps['open'] = async input => {
+      const rows = await fx.admin`INSERT INTO harness_shared.coord_conversations
+        (workspace_id,id,kind,asker_id,title,body)
+        VALUES (${fx.workspaceId},${input.id!},'consult',${OWNER},${input.title},${input.body})
+        ON CONFLICT (workspace_id,id) DO NOTHING RETURNING id`;
+      if (rows.length) { created.push(input.id!); opened(); await barrier; }
+      return { conversation_id: input.id!, thread_id: input.id!, delivered: 0 };
+    };
+    const deps: Pick<GetFeedbackDeps, 'getSql' | 'open' | 'withCurrentDiscovery'> = {
+      getSql: () => fx.admin, open,
+      withCurrentDiscovery: (input, accept) => withCurrentDiscovery(input, accept, { context: resolver }),
+    };
+    const request: GetFeedbackRequest = { workspaceId: fx.workspaceId, requesterId: OWNER,
+      harnessSlug: harness, originTaskRef: slug, policy: BAR_CRITIQUE_POLICY,
+      question: 'Review the complete reconciled current BAR set.', requestKey: slug };
+    const first = acceptFeedbackRequestCore(request, deps);
+    await opening;
+    try {
+      expect(await acceptFeedbackRequestCore(request, deps)).toMatchObject({ error: 'discovery_not_ready' });
+    } finally { release(); }
+    const accepted = await first;
+    expect(accepted).toMatchObject({ ok: true, verdict: 'accepted' });
+    expect(await acceptFeedbackRequestCore(request, deps)).toMatchObject(accepted);
+    expect(created).toHaveLength(1);
+    const [{ count }] = await fx.admin`SELECT count(*)::int AS count FROM harness_shared.consult_state
+      WHERE workspace_id=${fx.workspaceId} AND conversation_id=${created[0]!}`;
+    expect(count).toBe(1);
+  });
+
+  it('guards the canonical draft-to-ready writer before activation effects and preserves the draft on refusal', async () => {
+    const original = discoveryAudits.withCurrentDiscovery;
+    const localSource: typeof withCurrentDiscovery = (request, accept, _effects, transaction) =>
+      original(request, accept, { context: resolver }, transaction);
+    const discovery = vi.spyOn(discoveryAudits, 'withCurrentDiscovery').mockImplementation(localSource);
+    const reachedActivation = new Error('RECONCILED_DISCOVERY_REACHED_ACTIVATION');
+    const activation = vi.spyOn(activationGate, 'evaluateConversationActivationGate')
+      .mockImplementation(async () => { throw reachedActivation; });
+    const transition = () => withPlanLock({ workspaceId: fx.workspaceId, harnessSlug: harness },
+      { slug, workspaceId: fx.workspaceId, harnessSlug: harness, actorId: OWNER,
+        intent: 'lifecycle fixture enters implementation review' },
+      async current => ({ newBody: current!.replace('status: draft', 'status: ready'), value: 'ready' }));
+    try {
+      const [before] = await fx.admin`SELECT content,version FROM harness_shared.harness_plans
+        WHERE workspace_id=${fx.workspaceId} AND harness_slug=${harness} AND plan_slug=${slug}`;
+      expect(await transition()).toMatchObject({ kind: 'refused', value: { code: 'discovery_not_ready' } });
+      expect(activation).not.toHaveBeenCalled();
+      const [after] = await fx.admin`SELECT content,version FROM harness_shared.harness_plans
+        WHERE workspace_id=${fx.workspaceId} AND harness_slug=${harness} AND plan_slug=${slug}`;
+      expect(after).toEqual(before);
+      await revision(plan(revisedFindings(), true));
+      expect(await finalized()).toMatchObject({ ok: true, discovery: { readiness: { ready: true } } });
+      await expect(transition()).rejects.toBe(reachedActivation);
+      expect(activation).toHaveBeenCalledTimes(1);
+      expect(discovery.mock.calls.every(call => call[3] !== undefined)).toBe(true);
+    } finally {
+      activation.mockRestore();
+      discovery.mockRestore();
+    }
+  });
+
   it('refuses the exact deferred census and a falsely asserted ready record before routing/opening/starting', async () => {
     const review = reviewDeps();
     for (const declaration of [pending, { ...pending, questions: questions.map(question => ({ ...question, outcome: 'answered' as const })) }]) {

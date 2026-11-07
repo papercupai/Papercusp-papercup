@@ -82,6 +82,7 @@ import {
   type TerminalCompletionConflict,
 } from '../../work-items';
 import { refuseNonAgentWorkAtDoor } from '../../work-nature/agent-work-door-gate';
+import { readWorkItemDefinition } from '../../work-item-definition';
 import {
   CompletionRecordSchema,
   CompletionVerificationEvidenceSchema,
@@ -4485,15 +4486,44 @@ async function completeOneTracked(
   // member of a population. Keep the universal-verification gate for ordinary closes,
   // and for malformed self-duplicate claims, but do not make a valid non-self
   // `completion.duplicateOf` carry an unrelated population partition.
+  // EI-28017561467711444: a caller's report/artifact population cannot replace
+  // the requested acceptance criteria. Apply this to every successful declared
+  // task, including honest partial summaries without universal wording. Progress
+  // records and administrative dispositions keep their existing contracts.
+  const acceptanceCriteria = readWorkItemDefinition(existing.payload)?.acceptanceCriteria ?? [];
+  const declaredCriteriaCoverageApplicable =
+    closeIntentRequested && successfulClose && !duplicateCloseCoverageException && acceptanceCriteria.length > 0;
   const verificationCoverageApplicable =
-    closeIntentRequested &&
-    !duplicateCloseCoverageException &&
-    isVerificationWorkItem(existing) &&
-    claimsUniversalVerification(it.completion);
+    declaredCriteriaCoverageApplicable ||
+    (closeIntentRequested &&
+      !duplicateCloseCoverageException &&
+      isVerificationWorkItem(existing) &&
+      claimsUniversalVerification(it.completion));
+  const coverage = completionEvidenceForGate?.coverage;
+  const declaredCriteriaCoverageError = (() => {
+    if (!declaredCriteriaCoverageApplicable) return undefined;
+    const contract =
+      'Copy workDefinition.acceptanceCriteria verbatim into completion.verification.coverage.population and checked. ' +
+      'Keep unfinished work open; a record-only progress note does not close the task. ' +
+      'An explicitly changed scope must be recorded in the work definition before closing.';
+    if (!hasEnumeratedVerificationCoverage(coverage)) {
+      return `REJECTED — ${it.id} has declared workDefinition.acceptanceCriteria, but no valid enumerated criterion coverage. ${contract} ${COMPLETION_COVERAGE_CONTRACT}`;
+    }
+    const population = new Set(coverage!.population);
+    const missing = acceptanceCriteria.filter((criterion) => !population.has(criterion));
+    if (missing.length > 0) {
+      return `REJECTED — ${it.id} completion coverage omits workDefinition.acceptanceCriteria: ${missing.map((entry) => JSON.stringify(entry)).join(', ')}. ${contract}`;
+    }
+    const checked = new Set(coverage!.checked ?? []);
+    const unchecked = acceptanceCriteria.filter((criterion) => !checked.has(criterion));
+    return unchecked.length > 0
+      ? `REJECTED — ${it.id} cannot close successfully with unchecked acceptance criteria: ${unchecked.map((entry) => JSON.stringify(entry)).join(', ')}. ${contract}`
+      : undefined;
+  })();
   const verificationCoverageGap =
-    verificationCoverageApplicable && !hasEnumeratedVerificationCoverage(completionEvidenceForGate?.coverage);
-  const misplacedResidueEntries = misplacedResiduePopulationEntries(completionEvidenceForGate?.coverage);
-  const verificationCoverageError = verificationCoverageGap
+    verificationCoverageApplicable && !hasEnumeratedVerificationCoverage(coverage);
+  const misplacedResidueEntries = misplacedResiduePopulationEntries(coverage);
+  const verificationCoverageError = declaredCriteriaCoverageError ?? (verificationCoverageGap
     ? // EI-20223460482316333 / EI-20224260070669261 / EI-20225113964896785 /
       // EI-20225202699515538 / EI-20222447336206097 — five agents filed the SAME
       // friction on 2026-08-12 alone: the refusal named the *concept* ("enumerated
@@ -4504,7 +4534,7 @@ async function completeOneTracked(
       misplacedResidueEntries.length > 0
       ? `REJECTED — ${it.id} is a verification-shaped item making a universal coverage claim, but population entries ${misplacedResidueEntries.map((entry) => JSON.stringify(entry)).join(', ')} are in residue at completion.verification.coverage (or the equivalent top-level completion.coverage alias). Residue is not a partition bucket; move those entries to checked, notChecked, or notApplicable. ${COMPLETION_COVERAGE_CONTRACT}`
       : `REJECTED — ${it.id} is a verification-shaped item making a universal coverage claim, but its completion has no valid enumerated coverage. Add it at completion.verification.coverage (or the equivalent top-level completion.coverage alias). ${COMPLETION_COVERAGE_CONTRACT} Re-open/keep the item open and re-send the completion with that coverage record; do not claim "every/all/nothing" from a partial pass.`
-    : undefined;
+    : undefined);
   // EI-20962416980274656: this gate is deterministic from the submitted record,
   // so reject at the completion boundary BEFORE constructing/persisting/emitting a
   // completion. The former path converted it into `stateError` later, after enough

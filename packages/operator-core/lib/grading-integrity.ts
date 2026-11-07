@@ -694,6 +694,8 @@ export interface DispatchPendingGradingAuditsInput {
 }
 
 export interface DispatchPendingGradingAuditsDeps {
+  withCurrentDiscovery?: typeof import('./plan-audits').withCurrentDiscovery;
+  resolveSpecQualityPlanSubject?: typeof import('./agent-tools/plans/spec-quality').resolveSpecQualityPlanSubject;
   /**
    * WI-6554700010013275: run one stranded card's re-certification call and return the
    * plans:certify-spec-clauses reply body. Defaults to that tool's handler under the
@@ -2034,14 +2036,16 @@ function hasCitedSpecEvidenceBindings(card: ScorecardRow): boolean {
   const recipe = card.rerunRecipe;
   // Newer recipes pin immutable row ids. Legacy recipes pin the same rows by
   // their exact args.current tuples; both need a read-time currentness check.
-  return Boolean(recipe?.selection.bindingIds?.length || recipe?.args.current?.length);
+  return recipe?.evaluator === 'plans:evaluate-spec-test-adequacy' &&
+    Boolean(recipe.selection.bindingIds?.length || recipe.args.current?.length);
 }
 
 function gradingAuditReservationSnapshot(
   card: ScorecardRow,
   evidence?: ScorecardEvidenceRow,
 ): ScorecardGradingAuditReservationSnapshot {
-  const bindingIds = [...(card.rerunRecipe?.selection.bindingIds ?? [])]
+  const recipe = card.rerunRecipe?.evaluator === 'plans:evaluate-spec-test-adequacy' ? card.rerunRecipe : undefined;
+  const bindingIds = [...(recipe?.selection.bindingIds ?? [])]
     .filter((id): id is number => Number.isSafeInteger(id) && id > 0)
     .sort((a, b) => a - b);
   const currentness = evidence?.evidenceBindingCurrentness;
@@ -2072,8 +2076,10 @@ function gradingAuditReservationSnapshot(
 function scorecardAuditEvidenceMatchesListRow(card: ScorecardRow, evidence: ScorecardEvidenceRow): boolean {
   const cardAudit = card.gradingAudit;
   const evidenceAudit = evidence.gradingAudit;
-  const cardBindingIds = card.rerunRecipe?.selection.bindingIds;
-  const evidenceBindingIds = evidence.rerunRecipe?.selection.bindingIds;
+  const cardBindingIds = card.rerunRecipe?.evaluator === 'plans:evaluate-spec-test-adequacy'
+    ? card.rerunRecipe.selection.bindingIds : undefined;
+  const evidenceBindingIds = evidence.rerunRecipe?.evaluator === 'plans:evaluate-spec-test-adequacy'
+    ? evidence.rerunRecipe.selection.bindingIds : undefined;
   return (
     card.issueId === evidence.issueId &&
     cardAudit?.state === 'pending' &&
@@ -2391,7 +2397,8 @@ export async function dispatchPendingGradingAudits(
     staleEvidencePendingCards,
     GRADING_AUDIT_DISPATCH_CONCURRENCY,
     async (card) => {
-      const bindingIds = card.rerunRecipe?.selection.bindingIds;
+      const bindingIds = card.rerunRecipe?.evaluator === 'plans:evaluate-spec-test-adequacy'
+        ? card.rerunRecipe.selection.bindingIds : undefined;
       const stampedAt = card.gradingAudit?.stampedAt;
       if (!bindingIds?.length || !stampedAt) return;
       let cancelled = false;
@@ -2473,6 +2480,7 @@ export async function dispatchPendingGradingAudits(
       const runtime = await (deps.ensureRuntime ?? ensureGradingAuditRuntime)({
         workspaceId, issueId: card.issueId, evaluatorBuild: build,
         allowSeed: build.sha === liveEvaluatorBuild.sha && build.version === liveEvaluatorBuild.version,
+        signal: input.ctx.signal, deadlineAtMs: input.ctx.deadlineAtMs,
       });
       if (!build.sha || runtime.evaluatorBuild.sha !== build.sha || runtime.evaluatorBuild.version !== build.version ||
           runtime.expiresAtSec <= Math.floor((deps.now?.() ?? Date.now()) / 1000)) {
@@ -2568,9 +2576,10 @@ export async function dispatchPendingGradingAudits(
   const retireProvenTerminalAuditTasks = async (issueId: string) => {
     const retiredTaskIds: string[] = [];
     const codes: GradingAuditRecoveryCode[] = [];
+    const terminalFailures: Array<{ taskId: string; backend: 'claude' | 'codex'; code: GradingAuditRecoveryCode }> = [];
     const errors: string[] = [];
     const remainingTaskIds: string[] = [];
-    if (!workspaceId) return { retiredTaskIds, codes, errors, remainingTaskIds };
+    if (!workspaceId) return { retiredTaskIds, codes, terminalFailures, errors, remainingTaskIds };
 
     const labelPrefix = `${GRADING_AUDIT_TASK_LABEL_PREFIX}${issueId}`;
     let tasks: Awaited<ReturnType<typeof listTasks>>;
@@ -2585,6 +2594,7 @@ export async function dispatchPendingGradingAudits(
       return {
         retiredTaskIds,
         codes,
+        terminalFailures,
         errors: [`retained auditor task read failed: ${error instanceof Error ? error.message : String(error)}`],
         remainingTaskIds,
       };
@@ -2596,7 +2606,7 @@ export async function dispatchPendingGradingAudits(
     });
     // A full page cannot prove that another healthy reviewer is absent.
     if (tasks.length >= 10) return {
-      retiredTaskIds, codes, errors: ['retained auditor task scan reached its page limit'],
+      retiredTaskIds, codes, terminalFailures, errors: ['retained auditor task scan reached its page limit'],
       remainingTaskIds: matchingTasks.map(task => task.taskId),
     };
     // A boot can fail before creating a native transcript. Apply the same
@@ -2690,12 +2700,14 @@ export async function dispatchPendingGradingAudits(
       }
       retiredTaskIds.push(task.taskId);
       codes.push(terminalFailure.code);
+      terminalFailures.push({ taskId: task.taskId,
+        backend: nativeSession.agent === 'claude' ? 'claude' : 'codex', code: terminalFailure.code });
     }
     remainingTaskIds.push(...matchingTasks.filter(task => !retiredTaskIds.includes(task.taskId)).map(task => task.taskId));
-    return { retiredTaskIds, codes, errors, remainingTaskIds };
+    return { retiredTaskIds, codes, terminalFailures, errors, remainingTaskIds };
   };
 
-  const dispatchTarget = async (issueId: string): Promise<PendingGradingAuditDispatchReceipt> => {
+  const dispatchReadyTarget = async (issueId: string): Promise<PendingGradingAuditDispatchReceipt> => {
     let phase: GradingAuditDispatchPhase = 'dispatch';
     const markPhase = (next: GradingAuditDispatchPhase) => {
       phase = next;
@@ -3056,6 +3068,15 @@ export async function dispatchPendingGradingAudits(
               workspaceId: input.ctx.workspaceId, reservedAt: heldReservation.reservedAt,
             })) {
           reservation = await reserve(issueId, idempotencyKey, reservationOptions);
+          // Carry the proven native failure through the fresh-lease cleanup,
+          // just as the ordinary retained-task path does. Otherwise this retry
+          // silently returns to Claude and does not consume its retry budget.
+          const failure = cleanup.terminalFailures[0];
+          if (reservation.status === 'claimed' && failure && terminalFallbacks < GRADING_AUDIT_MAX_TERMINAL_FALLBACKS) {
+            terminalFallbacks += 1;
+            launchBackend = await terminalRetryBackend(failure.backend, launchBackend);
+            currentIdempotencyKey = recoveryKeyFor(failure.taskId, failure.code);
+          }
         }
         // EI-26950964476692806: exact-runtime recovery runs before reservation
         // admission. A fresh lease must not suppress the restored endpoint's
@@ -3999,6 +4020,20 @@ export async function dispatchPendingGradingAudits(
     }
   };
 
+  const dispatchTarget = async (issueId: string): Promise<PendingGradingAuditDispatchReceipt> => {
+    const card = pendingById.get(issueId);
+    if (card?.rubricRef !== 'spec-quality') return dispatchReadyTarget(issueId);
+    const { resolveSpecQualityPlanSubject } = await import('./agent-tools/plans/spec-quality');
+    const subject = workspaceId && card.subject?.kind === 'plan'
+      ? await (deps.resolveSpecQualityPlanSubject ?? resolveSpecQualityPlanSubject)(workspaceId, card.subject.ref) : null;
+    if (!subject) return { issueId, rubricRef: card.rubricRef, state: 'skipped',
+      reason: 'discovery_subject_unresolved: regenerate the exact registered plan spec-quality draft.' };
+    const { withCurrentDiscovery } = await import('./plan-audits');
+    const admitted = await (deps.withCurrentDiscovery ?? withCurrentDiscovery)({ workspaceId: workspaceId!,
+      ...subject, createdBy: GRADING_AUDIT_DISPATCH_ACTOR }, async () => dispatchReadyTarget(issueId));
+    return admitted.ok ? admitted.result : { issueId, rubricRef: card.rubricRef, state: 'skipped',
+      reason: `${admitted.error}: ${'nextAction' in admitted ? admitted.nextAction ?? '' : ''}` };
+  };
   const receipts = await mapWithConcurrency(
     requestedTargetIds,
     GRADING_AUDIT_DISPATCH_CONCURRENCY,

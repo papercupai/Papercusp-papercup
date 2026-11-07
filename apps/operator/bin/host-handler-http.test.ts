@@ -222,7 +222,12 @@ describe('host handler HTTP composition', () => {
     try {
       const captured = await captureOperatorHttpSecurityPopulation();
       expect(captured.surfaces.find(row => row.kind === 'registered-event-reaction' && row.surfaceId === id))
-        .toMatchObject({ attrs: { on: ['vault:probe', 'vault:other'], fire: 'vault:effect' } });
+        .toMatchObject({ attrs: { on: ['vault:probe', 'vault:other'], fire: 'vault:effect',
+          mode: 'durable', onlyOnSuccess: true, capability: null,
+          whenKind: 'callback', argsKind: 'data', hasDedupKey: false,
+          loadedWhenFunctionSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+          loadedArgsFunctionSha256: null, loadedDedupKeyFunctionSha256: null,
+          functionFingerprintScope: 'loaded-function-text-only', actualEffectCoverage: 'unknown' } });
       expect(JSON.stringify(captured)).not.toContain('private-census-canary');
       expect(when).not.toHaveBeenCalled();
       expect(captured.unresolved).toContain('reaction-registration-source-and-adapter-reconciliation-unverified');
@@ -230,6 +235,73 @@ describe('host handler HTTP composition', () => {
     } finally { unregisterReactionRule(id); }
     const after = await captureOperatorHttpSecurityPopulation();
     expect(after.surfaces.some(row => row.kind === 'registered-event-reaction' && row.surfaceId === id)).toBe(false);
+  });
+
+  it.each(['when', 'args', 'dedupKey'] as const)(
+    'changes immutable discovery when the loaded %s callback changes at the same reaction id', async (callback) => {
+      const id = `vault-census-callback-${callback}`;
+      let executions = 0;
+      const original = () => { executions++; throw Error('original private callback'); };
+      const replacement = () => { executions++; throw Error('replacement private callback'); };
+      const stringify = vi.fn(() => { throw Error('discovery used a callback toString override'); });
+      Object.defineProperty(original, 'toString', { value: stringify });
+      const rule = { id, on: 'vault:probe', fire: 'vault:effect',
+        when: original, args: original, dedupKey: original };
+      registerReactionRule(rule);
+      try {
+        const before = await captureRuntimeSecurityCensus();
+        expect((await captureRuntimeSecurityCensus()).discoverySha256).toBe(before.discoverySha256);
+        registerReactionRule({ ...rule, [callback]: replacement });
+        const after = await captureRuntimeSecurityCensus();
+        const hashField = { when: 'loadedWhenFunctionSha256', args: 'loadedArgsFunctionSha256',
+          dedupKey: 'loadedDedupKeyFunctionSha256' }[callback];
+        const previousRow = before.rows.find(row => row.kind === 'registered-event-reaction' && row.surfaceId === id)!;
+        const currentRow = after.rows.find(row => row.kind === 'registered-event-reaction' && row.surfaceId === id)!;
+        expect(previousRow.attrs[hashField]).toMatch(/^[a-f0-9]{64}$/);
+        expect(currentRow.attrs[hashField]).toMatch(/^[a-f0-9]{64}$/);
+        expect(currentRow.attrs[hashField]).not.toBe(previousRow.attrs[hashField]);
+        expect(after.discoverySha256).not.toBe(before.discoverySha256);
+        expect(after).toMatchObject({ populationComplete: false, closureAccepted: false, executionAdmitted: false });
+        expect(after.unresolved).toContain('reaction-registration-source-and-adapter-reconciliation-unverified');
+        expect(JSON.stringify(after)).not.toContain('private callback');
+        expect(executions).toBe(0);
+        expect(stringify).not.toHaveBeenCalled();
+      } finally { unregisterReactionRule(id); }
+    },
+  );
+
+  it('captures reaction execution metadata without inspecting private data conditions or arguments', async () => {
+    const id = 'vault-census-reaction-metadata';
+    let discovering = false;
+    const inspect = vi.fn(() => {
+      if (discovering) throw Error('discovery inspected private data');
+      return 'private-reaction-data-canary';
+    });
+    const privateData = { payload: 'private-reaction-data-canary', get secret() { return inspect(); } };
+    const rule = { id, on: 'vault:probe', fire: 'vault:effect', when: privateData, args: privateData,
+      mode: 'sync' as const, onlyOnSuccess: false, capability: 'vault:read' };
+    registerReactionRule(rule);
+    try {
+      // Registration validates data conditions; only capture must avoid reading them.
+      discovering = true;
+      inspect.mockClear();
+      const before = await captureRuntimeSecurityCensus();
+      expect(before.rows.find(row => row.kind === 'registered-event-reaction' && row.surfaceId === id))
+        .toMatchObject({ attrs: { mode: 'sync', onlyOnSuccess: false, capability: 'vault:read',
+          whenKind: 'data', argsKind: 'data', hasDedupKey: false,
+          loadedWhenFunctionSha256: null, loadedArgsFunctionSha256: null, loadedDedupKeyFunctionSha256: null,
+          actualEffectCoverage: 'unknown' } });
+      expect(JSON.stringify(before)).not.toContain('private-reaction-data-canary');
+      expect(inspect).not.toHaveBeenCalled();
+      discovering = false;
+      registerReactionRule({ ...rule, mode: 'durable', onlyOnSuccess: true, capability: 'vault:write' });
+      discovering = true;
+      inspect.mockClear();
+      const after = await captureRuntimeSecurityCensus();
+      expect(after.discoverySha256).not.toBe(before.discoverySha256);
+      expect(after).toMatchObject({ populationComplete: false, closureAccepted: false, executionAdmitted: false });
+      expect(inspect).not.toHaveBeenCalled();
+    } finally { unregisterReactionRule(id); }
   });
   it('includes unloaded plugin declarations in the declared census without promoting them to serving handlers', async () => {
     _injectPluginHostForTests([], { roots: [], unavailable: [], candidates: [{

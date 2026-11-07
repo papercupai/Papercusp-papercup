@@ -85,6 +85,9 @@ let tmp: string;
 let fx: Superproject;
 let out: string;
 
+const BG_RECIPE_BUDGET_MEASUREMENTS = { 'bg.compiler.before-build': 1_000,
+  'bg.compiler.custody': 2_000, 'bg.compiler.build': 1_000, 'bg.compiler.verify': 3_000 };
+
 describe('BG teardown resource inventory source controls', () => {
   const roots: string[] = [];
   afterAll(() => { for (const root of roots) rmSync(root, { recursive: true, force: true }); });
@@ -884,6 +887,54 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
       .toThrow('requires completed phase');
     writeFileSync(path, JSON.stringify({ ...rows[0], sequence: 9 }));
     expect(() => readVerifierPhaseMeasurements(path)).toThrow('Invalid verifier phase budget receipt');
+  });
+
+  it('retains the slowest completed repeated phase and excludes later failed or unfinished attempts', () => {
+    const path = join(tmp, 'verifier-repeated-budget-history.jsonl');
+    const events = [
+      ['started', 0, undefined], ['completed', 80, 80],
+      ['started', 81, undefined], ['completed', 91, 10],
+      ['started', 92, undefined], ['failed', 192, 100], ['started', 193, undefined],
+    ];
+    writeFileSync(path, events.map(([event, elapsedMs, durationMs], index) => JSON.stringify({
+      schemaVersion: 'verifier-phase-v1', sequence: index + 1, phase: 'bg.compiler.custody',
+      event, elapsedMs, ...(durationMs === undefined ? {} : { durationMs }),
+    })).join('\n'));
+    expect(readVerifierPhaseMeasurements(path)).toEqual({ 'bg.compiler.custody': 80 });
+  });
+
+  it('forecasts every remaining BG compiler and the complete publication tail before deadline admission', () => {
+    const measurements = { 'bg.compiler.before-build': 100_000, 'bg.compiler.custody': 200_000,
+      'bg.compiler.build': 1_000, 'bg.compiler.verify': 300_000, 'bg.recipe.compiler.0': 650_000 };
+    const estimate = estimateVerifierCommandBudget(measurements, 0, { bgRecipe: { invocationCount: 10 } });
+    expect(estimate.unknownChild).toBe(false);
+    expect(estimate.recipePhases?.map(row => row.phase)).toEqual([
+      'bg.recipe.validate', 'bg.recipe.begin', ...Array.from({ length: 10 }, (_, i) => `bg.recipe.compiler.${i}`),
+      'bg.recipe.assets', 'bg.recipe.output', 'bg.recipe.logical', 'bg.recipe.publish', 'bg.recipe.verify',
+    ]);
+    expect(estimate.recipePhases?.find(row => row.phase === 'bg.recipe.logical')?.estimateMs).toBe(7 * 650_000);
+    expect(estimate.recipePhases?.find(row => row.phase === 'bg.recipe.publish')?.estimateMs).toBe(6 * 650_000);
+    expect(() => admitVerifierCommandBudget(estimate, { nowMs: 1_000,
+      env: { PAPERCUSP_TASK_DEADLINE_EPOCH_MS: String(1_000 + estimate.remainingMs) } }))
+      .toThrow('TASK_DEADLINE_REFUSAL');
+    expect(admitVerifierCommandBudget(estimate, { nowMs: 1_000,
+      env: { PAPERCUSP_TASK_DEADLINE_EPOCH_MS: String(estimate.requiredTimeoutMs) } }).cleanupReserveMs).toBe(120_000);
+    const completedPhases = estimate.recipePhases!.slice(0, 11).map(row => row.phase);
+    const remaining = estimateVerifierCommandBudget(measurements, 0,
+      { bgRecipe: { invocationCount: 10, completedPhases } });
+    expect(remaining.recipePhases?.[0]?.phase).toBe('bg.recipe.compiler.9');
+    expect(remaining.recipePhases?.at(-1)?.phase).toBe('bg.recipe.verify');
+    const active = estimateVerifierCommandBudget(measurements, 0, { bgRecipe: { invocationCount: 10,
+      completedPhases, activePhase: { phase: 'bg.recipe.compiler.9', elapsedMs: 100_000 } } });
+    expect(active.recipePhases?.[0]?.estimateMs).toBe(550_000);
+    const slower = estimateVerifierCommandBudget({ ...measurements, 'bg.compiler.verify': 900_000,
+      'bg.recipe.publish': 12_000_000 }, 0, { bgRecipe: { invocationCount: 10, completedPhases } });
+    expect(slower.remainingMs).toBeGreaterThan(remaining.remainingMs);
+    expect(slower.recipePhases?.find(row => row.phase === 'bg.recipe.publish')?.estimateMs).toBe(12_000_000);
+    expect(() => estimateVerifierCommandBudget({}, 0, { bgRecipe: { invocationCount: 10 } }))
+      .toThrow('requires completed phase');
+    expect(() => estimateVerifierCommandBudget(measurements, 0, { bgRecipe: {
+      invocationCount: 10, completedPhases: ['bg.recipe.compiler.0'] } })).toThrow('completion order');
   });
 
   it('reserves measured launch time before selecting a caller deadline and refuses an insufficient ceiling', () => {
@@ -3330,6 +3381,50 @@ describe('BG inherited manifest and original source boundaries', () => {
     expect((await qualifyBgVerifierOutput(fixture)).artifact.sourceBlobs).toEqual(fixture.prepared.acceptedManifest.members);
   });
 
+  it('BG compiler final boundary reads the full source census once while retaining build identity verification', async () => {
+    const fixture = await maintainedCompilerCandidate();
+    const receiptPath = join(fixture.prepared.root, '.verifier-source.json');
+    const read = nativeFs.readFileSync;
+    let finalBoundary = false, receiptReads = 0;
+    const spy = vi.spyOn(nativeFs, 'readFileSync').mockImplementation((...args) => {
+      if (finalBoundary && args[0] === receiptPath) receiptReads++;
+      return Reflect.apply(read, nativeFs, args);
+    });
+    syncBuiltinESMExports();
+    try {
+      const compiled = await compileBgVerifierInvocation({ ...fixture, runPhase: async (phase, operation) => {
+        finalBoundary = phase === 'bg.compiler.verify';
+        try { return await operation(); }
+        finally { finalBoundary = false; }
+      } });
+      // The original-receipt digest and the maintained source verifier each
+      // read it once. Two full censuses would read it four times.
+      expect(receiptReads).toBe(2);
+      expect(compiled.consumed.map(row => row.path)).toContain('node_modules/fixture-dependency/index.js');
+      expect(existsSync(fixture.entry)).toBe(true);
+    } finally { spy.mockRestore(); syncBuiltinESMExports(); }
+  });
+
+  it.each(['bg.compiler.before-build', 'bg.compiler.custody', 'bg.compiler.verify'].flatMap(boundary =>
+    ['source', 'dependency', 'configuration'].map(defect => ({ boundary, defect }))))(
+    'BG compiler retains fresh $defect checks at $boundary after census composition', async ({ boundary, defect }) => {
+      const fixture = await maintainedCompilerCandidate();
+      const path = defect === 'source'
+        ? join(fixture.prepared.root, fixture.prepared.source.testedInputs[0]!.path)
+        : defect === 'dependency' ? join(fixture.prepared.root, 'node_modules/fixture-dependency/index.js')
+          : fixture.invocation.configuration[0]!;
+      let reached = false;
+      await expect(compileBgVerifierInvocation({ ...fixture, runPhase: async (phase, operation) => {
+        if (phase === boundary) {
+          reached = true;
+          writeFileSync(path, Buffer.concat([readFileSync(path), Buffer.from('\n// boundary drift\n')]));
+        }
+        return operation();
+      } })).rejects.toThrow();
+      expect(reached).toBe(true);
+      expect(existsSync(fixture.entry)).toBe(false);
+    });
+
   it('BG compiler API refuses substituted JavaScript before evaluation even when restored after import', async () => {
     const fixture = await maintainedCompilerCandidate();
     const api = fixture.invocation.compiler, original = readFileSync(api);
@@ -3646,7 +3741,10 @@ describe('BG inherited manifest and original source boundaries', () => {
     ] });
     const transaction = prepareBgVerifierBuildTransaction(fixture.args);
     const publication = await runBgVerifierBuildRecipe({ transaction, ownerPid: process.pid,
-      runPhase: bgRecipePhaseRunner('asset-tree-publication') });
+      runPhase: bgRecipePhaseRunner('asset-tree-publication'), budget: {
+        measurements: BG_RECIPE_BUDGET_MEASUREMENTS,
+        env: { PAPERCUSP_TASK_DEADLINE_EPOCH_MS: '1000000000' }, now: () => 1_000,
+      } });
     expect(publication.logical.files).toHaveLength(fixture.args.outputs.length + fixture.args.assets.length);
     for (const asset of fixture.args.assets) {
       const source = join(fixture.prepared.root, asset.source), copied = join(fixture.stage, asset.final);
@@ -3654,6 +3752,41 @@ describe('BG inherited manifest and original source boundaries', () => {
       expect(statSync(copied).ino).not.toBe(statSync(source).ino);
     }
     expect(verifyBgVerifierPublication(publication, publication)).toBe(publication);
+  });
+
+  it.each(['unknown', 'insufficient'] as const)(
+    'BG recipe refuses %s whole-recipe budget before stage creation or compiler effects', async kind => {
+      const fixture = await transactionCandidate();
+      const transaction = prepareBgVerifierBuildTransaction(fixture.args);
+      const runPhase = vi.fn(async (_phase, operation) => operation());
+      await expect(runBgVerifierBuildRecipe({ transaction, ownerPid: process.pid, runPhase,
+        budget: { measurements: kind === 'unknown' ? {} : BG_RECIPE_BUDGET_MEASUREMENTS,
+          env: { PAPERCUSP_TASK_DEADLINE_EPOCH_MS: '121001' }, now: () => 1_000 } }))
+        .rejects.toThrow(kind === 'unknown' ? 'requires completed phase' : 'TASK_DEADLINE_REFUSAL');
+      expect(runPhase).not.toHaveBeenCalled();
+      expect(existsSync(transaction.stage)).toBe(false);
+      expect(existsSync(join(transaction.bank.path, transaction.publicationLeaf!))).toBe(false);
+    });
+
+  it('BG recipe preserves the original clock and refuses a late publication after logical qualification', async () => {
+    const fixture = await transactionCandidate();
+    const transaction = prepareBgVerifierBuildTransaction(fixture.args);
+    let nowMs = 1_000;
+    const deadlineEpochMs = 1_000_000_000;
+    const completed: string[] = [];
+    await expect(runBgVerifierBuildRecipe({ transaction, ownerPid: process.pid,
+      budget: { measurements: BG_RECIPE_BUDGET_MEASUREMENTS,
+        env: { PAPERCUSP_TASK_DEADLINE_EPOCH_MS: String(deadlineEpochMs) }, now: () => nowMs },
+      runPhase: async (phase, operation) => {
+        if (phase === 'bg.recipe.publish') nowMs = deadlineEpochMs - 120_000;
+        const result = await operation();
+        completed.push(phase);
+        return result;
+      } })).rejects.toThrow('TASK_DEADLINE_REFUSAL');
+    expect(completed).toContain('bg.recipe.logical');
+    expect(completed).not.toContain('bg.recipe.publish');
+    expect(existsSync(join(transaction.bank.path, transaction.publicationLeaf!))).toBe(false);
+    expect(existsSync(transaction.recipe!.outfile)).toBe(true);
   });
 
   it('BG ancillary asset custody publishes the original source bytes beside compiled main and worker outputs', async () => {

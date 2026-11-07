@@ -1364,20 +1364,20 @@ mod tests {
 
     #[test]
     fn session_path_puts_the_launching_build_first_once() {
-        let exe = Path::new("/work/target/debug/pui");
-        let inherited = std::ffi::OsString::from("/home/u/.cargo/bin:/work/target/debug:/usr/bin");
-        let path = session_path_env(exe, Some(&inherited)).unwrap();
+        let root = std::env::temp_dir().join("pui-path-fixture");
+        let build = root.join("target/debug");
+        let cargo = root.join("cargo/bin");
+        let system = root.join("system/bin");
+        let exe = build.join("pui");
+        let inherited = std::env::join_paths([&cargo, &build, &system]).unwrap();
+        let path = session_path_env(&exe, Some(&inherited)).unwrap();
         assert_eq!(
             std::env::split_paths(&path).collect::<Vec<_>>(),
-            vec![
-                PathBuf::from("/work/target/debug"),
-                PathBuf::from("/home/u/.cargo/bin"),
-                PathBuf::from("/usr/bin"),
-            ],
+            vec![build.clone(), cargo, system],
         );
         assert_eq!(
-            session_path_env(exe, None).unwrap(),
-            std::ffi::OsString::from("/work/target/debug"),
+            session_path_env(&exe, None).unwrap(),
+            build.into_os_string(),
         );
         assert_eq!(session_path_env(Path::new("pui"), Some(&inherited)), None);
     }

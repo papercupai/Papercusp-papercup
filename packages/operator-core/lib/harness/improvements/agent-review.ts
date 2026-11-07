@@ -826,6 +826,11 @@ export async function adoptAgentReviewRevision(
   if (workItem.state !== 'open') return { adopted: false, workItem: null, reason: 'not-open' };
   const current = readAgentReviewState(workItem.payload);
   if (!current) return { adopted: false, workItem: null, reason: 'not-agent-review' };
+  // Recovery does not authorize lifting a durable park. The claim writer also
+  // checks this atomically in case a hold races discovery.
+  if (isClaimHoldParked(workItem.payload)) {
+    return { adopted: false, workItem: null, state: current, reason: 'claim-refused' };
+  }
   if (current.status !== 'revision-requested') {
     return { adopted: false, workItem: null, state: current, reason: `not-revision-requested:${current.status}` };
   }
@@ -980,6 +985,7 @@ export async function adoptNextAgentReviewRevision(
        AND status = 'open'
        AND item_kind IN (${sql.unsafe(ISSUE_FAMILY_KINDS_SQL_LIST)}, 'feature')
        AND ${depsBlockedExclusionSql(sql)}
+       AND ${claimHoldExclusionSql(sql, 'wi.payload')}
        AND COALESCE(payload, '{}'::jsonb) -> 'agentReview' ->> 'status' = 'revision-requested'
        AND COALESCE(payload, '{}'::jsonb) -> 'agentReview' ->> 'revisionKind' IS DISTINCT FROM 'reproduction'
        AND COALESCE(payload, '{}'::jsonb) -> 'agentReview' ->> 'submittedBy' IS DISTINCT FROM ${LEGACY_AGENT_REVIEW_SUBMITTER}

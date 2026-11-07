@@ -72,6 +72,7 @@ const RESOLVED_CODEX_DEFAULT = 'gpt-5.6-sol:xhigh';
 const savedCodexSqliteHomes = process.env.PAPERCUSP_CODEX_SQLITE_HOMES_DIR;
 const savedSuCodexHomes = process.env.PAPERCUSP_SU_CODEX_HOMES_DIR;
 const savedPapercuspHome = process.env.PAPERCUSP_HOME;
+const savedTurnProvenanceDir = process.env.PAPERCUSP_TURN_PROVENANCE_DIR;
 
 beforeEach(() => {
   ownerSidSyncCalls.length = 0;
@@ -82,6 +83,7 @@ beforeEach(() => {
   process.env.PAPERCUSP_HOME = join(fakeHome, '.papercusp');
   process.env.PAPERCUSP_SU_CODEX_HOMES_DIR = join(fakeHome, '.papercusp', 'su-codex-homes');
   process.env.PAPERCUSP_CODEX_SQLITE_HOMES_DIR = join(fakeHome, 'codex-sqlite-homes');
+  delete process.env.PAPERCUSP_TURN_PROVENANCE_DIR;
   // Home and hook tests must not depend on the installed Codex CLI supporting
   // `debug models`. Tests for a particular model replace this isolated cache.
   mkdirSync(join(fakeHome, '.codex'), { recursive: true });
@@ -101,6 +103,8 @@ afterEach(() => {
   else process.env.PAPERCUSP_SU_CODEX_HOMES_DIR = savedSuCodexHomes;
   if (savedPapercuspHome === undefined) delete process.env.PAPERCUSP_HOME;
   else process.env.PAPERCUSP_HOME = savedPapercuspHome;
+  if (savedTurnProvenanceDir === undefined) delete process.env.PAPERCUSP_TURN_PROVENANCE_DIR;
+  else process.env.PAPERCUSP_TURN_PROVENANCE_DIR = savedTurnProvenanceDir;
 });
 
 function withResolvedDefault<T extends (opts: any) => any>(fn: T): T {

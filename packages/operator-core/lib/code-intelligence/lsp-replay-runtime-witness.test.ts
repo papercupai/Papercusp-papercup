@@ -1,6 +1,8 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
+import childProcess from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { assertReplayOracleRuntimeQualified, freezeQualifiedReplayConfig, qualifyReplayOracleRuntime, replayHash, replayLoadedRuntime, replayOracleFingerprint,
@@ -260,6 +262,56 @@ describe('independent parent oracle producer', () => {
     expect(JSON.parse(readFileSync(join(f.options.witnessDirectory, 'terminal.json'), 'utf8'))).toMatchObject({ code: 0, signal: null });
     expect(readProcessIdentity(qualified.oracleProvenance.runtime!.process.pid)).toBeNull();
     await expect(freezeQualifiedReplayConfig(f.inputPath, f.outputPath, f.options, f.deps)).rejects.toThrow('replay-oracle-output-exists');
+  });
+  it.runIf(['x64', 'arm64', 'ia32', 'arm'].includes(process.arch))('persists each native dependency scan start and terminal outcome', async () => {
+    const f = producer();
+    const addon = join(f.root, 'sshcrypto.node');
+    const header = Buffer.alloc(20);
+    const machines: Partial<Record<typeof process.arch, number>> = { x64: 62, arm64: 183, ia32: 3, arm: 40 };
+    header.set([0x7f, 0x45, 0x4c, 0x46]); header[5] = 1; header.writeUInt16LE(machines[process.arch]!, 18);
+    writeFileSync(addon, header);
+    const options = { ...f.options, runtimePaths: [...f.options.runtimePaths, addon] };
+    const dependencies = { processReader: f.deps.processReader };
+    const realExecFileSync = childProcess.execFileSync;
+    let failAddonScan = false;
+    const timeout = Object.assign(new Error('spawnSync ldd ETIMEDOUT'), { code: 'ETIMEDOUT', signal: 'SIGTERM', status: null });
+    const scan = vi.spyOn(childProcess, 'execFileSync').mockImplementation(((command: string, args: string[]) => {
+      expect(command).toBe('ldd');
+      if (args[0] === addon && failAddonScan) throw timeout;
+      if (args[0] === addon) return 'statically linked';
+      return realExecFileSync('ldd', [args[0]], { encoding: 'utf8', timeout: 10_000 });
+    }) as typeof childProcess.execFileSync);
+    syncBuiltinESMExports();
+    try {
+      await freezeQualifiedReplayConfig(f.inputPath, f.outputPath, options, dependencies);
+      const successRows = readFileSync(join(f.options.witnessDirectory, 'phases.jsonl'), 'utf8')
+        .trim().split('\n').map(line => JSON.parse(line));
+      expect(successRows.filter(row => row.file === addon)).toEqual([
+        expect.objectContaining({ phase: 'native-dependency-scan-started', operationPhase: 'declaring-runtime', scanId: 1,
+          startedAtMs: expect.any(Number) }),
+        expect.objectContaining({ phase: 'native-dependency-scan-succeeded', operationPhase: 'declaring-runtime', scanId: 1,
+          elapsedMs: expect.any(Number) }),
+      ]);
+
+      failAddonScan = true;
+      const failedOptions = { ...options, witnessDirectory: join(f.root, 'failed-native-receipts') };
+      await expect(freezeQualifiedReplayConfig(f.inputPath, join(f.root, 'failed-qualified.json'), failedOptions, dependencies))
+        .rejects.toThrow('ETIMEDOUT');
+      const failedRows = readFileSync(join(failedOptions.witnessDirectory, 'phases.jsonl'), 'utf8')
+        .trim().split('\n').map(line => JSON.parse(line));
+      expect(failedRows.filter(row => row.file === addon)).toEqual([
+        expect.objectContaining({ phase: 'native-dependency-scan-started', operationPhase: 'declaring-runtime',
+          startedAtMs: expect.any(Number) }),
+        expect.objectContaining({ phase: 'native-dependency-scan-failed', operationPhase: 'declaring-runtime',
+          elapsedMs: expect.any(Number), error: { name: 'Error', message: 'spawnSync ldd ETIMEDOUT', code: 'ETIMEDOUT',
+            signal: 'SIGTERM', status: null } }),
+      ]);
+      expect(JSON.parse(readFileSync(join(failedOptions.witnessDirectory, 'terminal.json'), 'utf8')))
+        .toMatchObject({ pid: null, phase: 'declaring-runtime', error: expect.stringContaining('ETIMEDOUT') });
+    } finally {
+      scan.mockRestore();
+      syncBuiltinESMExports();
+    }
   });
   it('refuses missing native closure before candidate work and succeeds only with a new prospective declaration', async () => {
     const f = producer();

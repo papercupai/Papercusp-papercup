@@ -938,7 +938,7 @@ describe('scorecards:get evidence-first projection', () => {
       ...scorecard,
       issueId: 'EI-large-scorecard-metadata',
       subject: { kind: 'scorecard' as const, ref: `subject:${'s'.repeat(18_000)}` },
-      criteria: [{ key: 'criterion-1', rating: 'pass', evidence: 'exact evidence' }],
+      criteria: [{ key: 'criterion-1', rating: 'pass', evidence: 'e'.repeat(12_000) }],
     };
     readScorecardEvidenceM.mockResolvedValue({ kind: 'found', scorecard: largeMetadata });
     readScorecardRecipeHeaderM.mockResolvedValue({
@@ -1018,6 +1018,67 @@ describe('scorecards:get evidence-first projection', () => {
       else process.env.PAPERCUSP_RESULT_DOOR_OFF = previousDoorOff;
       rmSync(scratchRoot, { recursive: true, force: true });
     }
+  });
+
+  it('keeps selected evidence pages useful when retained ledger provenance exceeds the inline budget', async () => {
+    const evidence = 'f'.repeat(16_000);
+    const provenance = { diagnostic: 'p'.repeat(18_000) };
+    const ledgerCard = {
+      ...scorecard,
+      issueId: 'EI-ledger-provenance-page',
+      criteria: [{
+        key: 'ledger-measurement',
+        rating: 'pass',
+        evidence,
+        ratedFrom: 'ledger' as const,
+        ledgerResult: { testRunId: 123, value: 1, unit: 'count', provenance },
+      }],
+    };
+    const smallDoors = { ...BAKED_DOOR_CONSTANTS, maxTurnFloorTokens: 3_200 };
+    const inlineBudgetChars =
+      computeTurnDoors(0, smallDoors).resultEach * CHARS_PER_TOKEN_ESTIMATE;
+    doorConstantsMock.mockReturnValue(smallDoors);
+    mockResolvedTyped(readScorecardEvidenceM, { kind: 'found', scorecard: ledgerCard as never });
+
+    let args: Record<string, unknown> | undefined = {
+      issueId: ledgerCard.issueId,
+      criterionKey: 'ledger-measurement',
+      evidenceOffset: 0,
+    };
+    let recovered = '';
+    let pages = 0;
+    while (args) {
+      expect(++pages).toBeLessThanOrEqual(20);
+      const response = await getTool.handler(args as never, makeDispatchContext()) as {
+        data: {
+          ok: boolean;
+          scorecard: { criteria: Array<{ evidence: string; ledgerResult?: { provenance?: unknown } }> };
+          evidenceRead: {
+            complete: boolean;
+            offset: number;
+            next?: { args: { evidenceOffset: number } };
+          };
+        };
+      };
+      expect(response.data.ok).toBe(true);
+      expect(JSON.stringify(response.data).length).toBeGreaterThan(inlineBudgetChars);
+      const criterionPage = response.data.scorecard.criteria[0];
+      const chunk = criterionPage?.evidence ?? '';
+      expect(chunk.length).toBeGreaterThan(1);
+      expect(criterionPage?.ledgerResult?.provenance).toEqual(provenance);
+      expect(response.data.evidenceRead.offset).toBe(recovered.length);
+      recovered += chunk;
+      if (response.data.evidenceRead.complete) {
+        expect(response.data.evidenceRead.next).toBeUndefined();
+        args = undefined;
+      } else {
+        expect(response.data.evidenceRead.next?.args.evidenceOffset).toBe(recovered.length);
+        args = response.data.evidenceRead.next?.args;
+      }
+    }
+
+    expect(pages).toBeGreaterThan(1);
+    expect(recovered).toBe(evidence);
   });
 
   it('recovers an oversized replay recipe without hiding audit metadata or criterion evidence', async () => {

@@ -4991,6 +4991,165 @@ describe('work_items:complete (keyed-array)', () => {
       testResult: 'manual source review completed',
     };
 
+    const requestedCriteria = ['Measure every requested rubric criterion', 'Verify automatic fleet reporting'];
+    const declaredVerificationItem = {
+      ...verificationItem,
+      payload: { workDefinition: { acceptanceCriteria: requestedCriteria } },
+    };
+
+    it('rejects full verification completion whose coverage omits declared acceptance criteria', async () => {
+      getWorkItem.mockResolvedValue(declaredVerificationItem);
+      setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...declaredVerificationItem, state: 'resolved' }));
+      const r = await one({
+        id: 'WI-verify',
+        state: 'resolved',
+        completion: {
+          ...universalCompletion,
+          coverage: { population: ['report artifact'], checked: ['report artifact'], residue: [] },
+        },
+      });
+
+      expect(r.ok).toBe(false);
+      expect(r.verificationCoverageError).toContain('workDefinition.acceptanceCriteria');
+      expect(r.verificationCoverageError).toContain(requestedCriteria[0]);
+      expect(r).not.toHaveProperty('completion');
+      expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+    });
+
+    it.each(['notChecked', 'notApplicable'] as const)(
+      'rejects declared acceptance criteria left in %s even with an honest partial summary',
+      async (bucket) => {
+        getWorkItem.mockResolvedValue(declaredVerificationItem);
+        setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...declaredVerificationItem, state: 'resolved' }));
+        const r = await one({
+          id: 'WI-verify',
+          state: 'resolved',
+          completion: {
+            summary: 'Report saved; requested measurement remains unfinished.',
+            verifiedHow: 'manual',
+            testResult: 'Partial source review',
+            coverage: {
+              population: requestedCriteria,
+              checked: [requestedCriteria[1]],
+              [bucket]: [requestedCriteria[0]],
+              residue: [],
+            },
+          },
+        });
+
+        expect(r.ok).toBe(false);
+        expect(r.verificationCoverageError).toContain('unchecked acceptance criteria');
+        expect(r.verificationCoverageError).toContain(requestedCriteria[0]);
+        expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+      },
+    );
+
+    it('requires criterion coverage on a successful declared task without verification wording', async () => {
+      getWorkItem.mockResolvedValue({ ...declaredVerificationItem, title: 'Produce the fleet report', summary: '' });
+      setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...declaredVerificationItem, state: 'resolved' }));
+      const r = await one({
+        id: 'WI-verify',
+        state: 'resolved',
+        completion: { summary: 'Report saved.', verifiedHow: 'manual', testResult: 'Review completed' },
+      });
+
+      expect(r.ok).toBe(false);
+      expect(r.verificationCoverageError).toContain('workDefinition.acceptanceCriteria');
+      expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+    });
+
+    it('allows declared acceptance criteria checked alongside additional artifact coverage', async () => {
+      getWorkItem.mockResolvedValue(declaredVerificationItem);
+      setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...declaredVerificationItem, state: 'resolved' }));
+      const population = [...requestedCriteria, 'report artifact'];
+      const r = await one({
+        id: 'WI-verify',
+        state: 'resolved',
+        completion: {
+          ...universalCompletion,
+          coverage: { population, checked: population, residue: [] },
+        },
+      });
+
+      expect(r.ok).toBe(true);
+      expect(r.verificationCoverageError).toBeUndefined();
+      expect(setWorkItemStateWithAliasInfo).toHaveBeenCalled();
+    });
+
+    it('preserves record-only progress with unfinished declared acceptance criteria', async () => {
+      getWorkItem.mockResolvedValue(declaredVerificationItem);
+      const r = await one({
+        id: 'WI-verify',
+        completion: { summary: 'Report saved; measurement continues.', verifiedHow: 'manual' },
+      });
+
+      expect(r.ok).toBe(true);
+      expect(r.verificationCoverageError).toBeUndefined();
+      expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+    });
+
+    it('allows explicit bounded acceptance criteria while broader artifact sampling remains unexercised', async () => {
+      const boundedItem = {
+        ...verificationItem,
+        payload: { workDefinition: { acceptanceCriteria: [requestedCriteria[1]] } },
+      };
+      getWorkItem.mockResolvedValue(boundedItem);
+      setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...boundedItem, state: 'resolved' }));
+      const r = await one({
+        id: 'WI-verify',
+        state: 'resolved',
+        completion: {
+          summary: 'Verified the requested reporting scope; broader sampling is unexercised.',
+          verifiedHow: 'manual',
+          testResult: 'Reporting checked',
+          coverage: {
+            population: [requestedCriteria[1], 'broader artifact sample'],
+            checked: [requestedCriteria[1]],
+            notChecked: ['broader artifact sample'],
+            residue: [],
+          },
+        },
+      });
+
+      expect(r.ok).toBe(true);
+      expect(r.verificationCoverageError).toBeUndefined();
+      expect(setWorkItemStateWithAliasInfo).toHaveBeenCalled();
+    });
+
+    it('preserves explicit abandonment with unfinished declared acceptance criteria', async () => {
+      getWorkItem.mockResolvedValue(declaredVerificationItem);
+      setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...declaredVerificationItem, state: 'dropped' }));
+      const r = await one({
+        id: 'WI-verify',
+        state: 'dropped',
+        completion: { summary: 'Explicitly abandoned this task; requested work was not completed.' },
+      });
+
+      expect(r.ok).toBe(true);
+      expect(r.verificationCoverageError).toBeUndefined();
+      expect(setWorkItemStateWithAliasInfo).toHaveBeenCalled();
+    });
+
+    it('preserves evidence-backed duplicate disposition with declared acceptance criteria', async () => {
+      getWorkItem.mockResolvedValue(declaredVerificationItem);
+      setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...declaredVerificationItem, state: 'resolved' }));
+      resolveWorkItemRef.mockResolvedValue({ kind: 'bug', ref: 'papercup#EI-20252354779271625' });
+      const r = await one({
+        id: 'WI-verify',
+        state: 'resolved',
+        completion: {
+          ...universalCompletion,
+          duplicateOf: 'EI-20252354779271625',
+          testsRun: 'source comparison',
+          testResult: 'same requested work tracked by survivor',
+        },
+      });
+
+      expect(r.ok).toBe(true);
+      expect(r.verificationCoverageError).toBeUndefined();
+      expect(setWorkItemStateWithAliasInfo).toHaveBeenCalled();
+    });
+
     it('rejects a universal verification close without enumerated coverage', async () => {
       getWorkItem.mockResolvedValue(verificationItem);
       const r = await one({ id: 'WI-verify', state: 'resolved', completion: universalCompletion });

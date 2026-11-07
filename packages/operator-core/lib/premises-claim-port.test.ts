@@ -76,6 +76,17 @@ describe('detectAbsencePremises', () => {
     expect(derive('The note says no such action, not reassigning or executing it.')).toEqual([]);
   });
 
+  it('does not turn session-scoped claim/action negatives into repository absences', () => {
+    const body = 'We have NO bug claim, NO change-kind declaration, NO code edit/test/rerun yet.';
+
+    expect(derive(body)).toEqual([]);
+    expect(uncoveredAbsencePremises(body, 'carry-note')).toEqual([]);
+  });
+
+  it('still flags a durable source surface with similar action words', () => {
+    expect(derive('There is no code edit/test/rerun parser in the checkpoint writer.')).toHaveLength(1);
+  });
+
   it('does not treat a no-mismatch test outcome as a missing surface', () => {
     const conditional =
       "If the test fails on the 'tip' case precondition, drop 'tip' from it.each (the preflight then honoured the input, so there was no mismatch to test).";

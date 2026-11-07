@@ -4597,7 +4597,43 @@ describe('WI-10004094: one build per dependency identity, with visible copy prog
     expect(result.stderr).toMatch(/checksum read progress: .* read=[1-9]\d*MiB/);
   }, NATIVE_SHELL_TIMEOUT_MS);
 
-  it.each(['writes', 'checksum-reads', 'stalled', 'unmeasured'] as const)
+  it.each(['records', 'checksums'] as const)('reports measured progress during incremental %s work', phase => {
+    const root = mkdtempSync(join(tmpdir(), 'dependency-record-progress-')); roots.push(root);
+    mkdirSync(join(root, 'src'), { recursive: true });
+    mkdirSync(join(root, 'seed'), { recursive: true });
+    mkdirSync(join(root, 'work'), { recursive: true });
+    mkdirSync(join(root, 'bin'), { recursive: true });
+    writeFileSync(join(root, 'bin/sha256sum'), '#!/usr/bin/env bash\nadvance_until_sample || exit 1\nPATH="$ORIGINAL_PATH" command sha256sum "$@"\n', { mode: 0o755 });
+    writeFileSync(join(root, 'src/payload'), 'x'.repeat(1_048_576));
+    writeFileSync(join(root, 'seed/payload'), 'x'.repeat(1_048_576));
+    const wrapper = [
+      'set -uo pipefail; source "$SCRIPT"',
+      'eval "__orig_$(declare -f dependency_generation_log)"; dependency_generation_log() { __orig_dependency_generation_log "$@"; printf "%s\\n" "$*" >> "$ROOT/log"; }',
+      // Exercise the actual record/hash entry points. The real I/O belongs to
+      // the worker subtree; the supervisor has no timer-only heartbeat.
+      'advance_until_sample() { local chunk i; for i in $(seq 1 100); do IFS= read -r -N 1048576 chunk < "$ROOT/src/payload"; grep -q "work progress:" "$ROOT/log" 2>/dev/null && return 0; command sleep 0.1; done; return 1; }',
+      'if [ "$PHASE" = records ]; then',
+      '  find() { advance_until_sample || return 1; command find "$@"; }',
+      '  dependency_generation_source_records "$ROOT/src" "$ROOT/records"; rc=$?',
+      '  grep -q "payload" "$ROOT/records" || exit 1',
+      'else',
+      '  printf "payload\\tf\\t644\\t0\\t0\\t1048576\\t1\\t1\\t1\\t\\n" > "$ROOT/work/predecessor"',
+      '  command cp "$ROOT/work/predecessor" "$ROOT/work/unmatched"',
+      '  export -f advance_until_sample',
+      '  dependency_generation_incremental_verify "$ROOT/src" "$ROOT/seed" "$ROOT/work"; rc=$?',
+      '  grep -qx payload "$ROOT/work/verified" || exit 1',
+      'fi',
+      'echo RC=$rc',
+    ].join('\n');
+    const result = spawnSync('bash', ['-c', wrapper], { encoding: 'utf8', timeout: NATIVE_SHELL_TIMEOUT_MS,
+      env: { ...process.env, SCRIPT, ROOT: root, PHASE: phase, PATH: `${join(root, 'bin')}:${process.env.PATH}`,
+        ORIGINAL_PATH: process.env.PATH, DEPENDENCY_GENERATION_COPY_PROGRESS_SEC: '1' } });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain('RC=0');
+    expect(result.stderr).toMatch(/work progress: .* io=[1-9]\d*MiB/);
+  }, NATIVE_SHELL_TIMEOUT_MS);
+
+  it.each(['writes', 'checksum-reads', 'work-reads', 'stalled', 'unmeasured', 'work-stalled'] as const)
     ('uses measured copy inactivity rather than elapsed time: %s', activity => {
       const root = mkdtempSync(join(tmpdir(), 'dependency-copy-stall-')); roots.push(root);
       const wrapper = [
@@ -4606,9 +4642,9 @@ describe('WI-10004094: one build per dependency identity, with visible copy prog
         'date() { cat "$ROOT/tick"; }',
         'cp() { echo "$BASHPID" > "$ROOT/child"; while [ ! -f "$ROOT/done" ]; do command sleep 0.01; done; }',
         'rsync() { cp; }',
-        'dependency_generation_subtree_io() { local tick; tick=$(cat "$ROOT/tick"); if { [ "$ACTIVITY" = writes ] && [ "$2" = copy-written ]; } || { [ "$ACTIVITY" = checksum-reads ] && [ "$2" = copy-read ]; }; then echo $((tick * 1048576)); elif [ "$ACTIVITY" != unmeasured ]; then echo 0; fi; }',
+        'dependency_generation_subtree_io() { local tick; tick=$(cat "$ROOT/tick"); if { [ "$ACTIVITY" = writes ] && [ "${2:-}" = copy-written ]; } || { [ "$ACTIVITY" = checksum-reads ] && [ "${2:-}" = copy-read ]; } || { [ "$ACTIVITY" = work-reads ] && [ -z "${2:-}" ]; }; then echo $((tick * 1048576)); elif [ "$ACTIVITY" != unmeasured ]; then echo 0; fi; }',
         'sleep() { local tick; tick=$(( $(cat "$ROOT/tick") + 1 )); echo "$tick" > "$ROOT/tick"; if [ "$tick" -ge 6 ]; then touch "$ROOT/done"; fi; command sleep 0.03; }',
-        'rc=0; dependency_generation_copy_with_progress "$ROOT/src" "$ROOT/dest" --rsync-checksum || rc=$?',
+        'rc=0; case "$ACTIVITY" in work-*) dependency_generation_copy_with_progress "$ROOT/src" "$ROOT/dest" --exec cp || rc=$? ;; *) dependency_generation_copy_with_progress "$ROOT/src" "$ROOT/dest" --rsync-checksum || rc=$? ;; esac',
         'printf "RC=%s TICK=%s\\n" "$rc" "$(cat "$ROOT/tick")"',
         'child=$(cat "$ROOT/child"); if kill -0 "$child" 2>/dev/null; then echo CHILD_ALIVE; kill -KILL "$child"; fi',
       ].join('\n');
@@ -4617,7 +4653,7 @@ describe('WI-10004094: one build per dependency identity, with visible copy prog
           DEPENDENCY_GENERATION_COPY_PROGRESS_SEC: '1', DEPENDENCY_GENERATION_INFLIGHT_STALL_SEC: '2' } });
       expect(result.status, result.stderr).toBe(0);
       expect(result.stdout).not.toContain('CHILD_ALIVE');
-      if (activity === 'writes' || activity === 'checksum-reads') {
+      if (activity === 'writes' || activity === 'checksum-reads' || activity === 'work-reads') {
         expect(result.stdout).toMatch(/RC=0 TICK=[6-9]/);
         expect(result.stderr).not.toContain('COPY_STALLED');
       } else {

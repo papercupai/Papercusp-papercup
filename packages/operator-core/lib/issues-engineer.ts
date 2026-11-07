@@ -3394,10 +3394,10 @@ export async function claimIssue(
        AND ${operationClaims.operationWorkerClaimWhereSql(sql, operationClaimRead, {
          payload: 'target.payload', id: 'target.issue_id', harness: 'target.scope',
        })}
-       -- Reviewer pickup is self-select, even though it reaches the shared by-id writer.
-       -- The capability lifts the intake floor only; a concurrent durable park still wins.
+       -- Review and revision-adoption pickup are self-select, even through this
+       -- by-id writer. Neither capability authorizes lifting a concurrent park.
        AND ${
-         agentReviewAdmission
+         agentReviewAdmission || revisionAdoptionAdmission
            ? sql`COALESCE(target.payload, '{}'::jsonb) ->> '_claimHold' IS DISTINCT FROM 'true'`
            : sql`TRUE`
        }

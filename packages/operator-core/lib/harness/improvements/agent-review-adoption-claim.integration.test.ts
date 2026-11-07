@@ -140,6 +140,39 @@ describe('BQL D-008 revision adoption through the real claim writer', () => {
     expect(deps.resolveSubmitterLiveness).toHaveBeenCalledWith(GONE, { claimsHeld: false });
   });
 
+  it.each([
+    ['issue', true], ['issue', 'true'], ['feature', true], ['feature', 'true'],
+  ] as const)('preserves a %s park added after adoption admission was minted; hold=%s', async (family, hold) => {
+    const seed = await contentRevision(tag());
+    let id = seed.id;
+    if (family === 'feature') {
+      id = `F-adoption-park-${tag()}`;
+      const payload = (await row(seed.id)).payload;
+      await db.adminSql`INSERT INTO harness_shared.harness_features_consolidated
+        (workspace_id, harness_slug, feature_id, title, summary, item_kind, status, payload, created_ts, updated_ts)
+        VALUES (${seed.workspace}, ${seed.harness}, ${id}, 'Content revision', 'Park race fixture',
+          'feature', 'open', ${JSON.stringify(payload)}::text::jsonb, 0, 0)`;
+    }
+    const admission = await mintFor(id, ADOPTER);
+    expect(admission).not.toBeNull();
+    // The UPDATE must re-check a park added after this capability was minted.
+    await mergeWorkItemPayload(id, { _claimHold: hold, claim_hold_by: OTHER }, { harness: seed.harness });
+    expect(await claimWorkItem(id, ADOPTER, {
+      harness: seed.harness, revisionAdoptionAdmission: admission!,
+    })).toBeNull();
+    const parked = await row(id);
+    expect(parked.taken_by).toBeNull();
+    expect(parked.payload).toMatchObject({ _claimHold: hold, claim_hold_by: OTHER });
+    expect(parked.payload?.agentReview).toMatchObject({ submittedBy: GONE, round: 2 });
+
+    // Calibration: the same admission succeeds once the park is explicitly lifted.
+    await db.adminSql`UPDATE harness_shared.work_items SET payload=payload - '_claimHold' - 'claim_hold_by'
+      WHERE workspace_id=${seed.workspace} AND feature_id=${id}`;
+    expect(await claimWorkItem(id, ADOPTER, {
+      harness: seed.harness, revisionAdoptionAdmission: admission!,
+    })).toMatchObject({ id, assignee: ADOPTER });
+  });
+
   it('adopts a revision still held by its gone submitter through the expected-holder CAS', async () => {
     const { id, harness } = await contentRevision(tag(), GONE);
 

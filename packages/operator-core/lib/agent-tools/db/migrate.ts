@@ -367,8 +367,28 @@ type PsqlResult = {
   diagnostics?: { backendApplicationName?: string; phases: MigrationPhase[] };
 };
 
-type StaleMigrationFence = Exclude<FenceCheck, { current: true }> | { current: false; reason: 'check_failed' };
+type FenceReadFailure = Array<{ name: string; code?: string }>;
+type StaleMigrationFence = Exclude<FenceCheck, { current: true }> |
+  { current: false; reason: 'check_failed'; checkFailure: FenceReadFailure };
 type MigrationFenceGuard = Pick<FenceToken, 'assertCurrent'> & { marker: string };
+
+/** Keep driver/SQLSTATE causes without returning SQL, DSNs, messages or stacks. */
+function migrationFenceReadFailure(error: unknown): FenceReadFailure {
+  const failures: FenceReadFailure = [];
+  try {
+    for (let cause = asRecord(error); cause && failures.length < 4; cause = asRecord(cause.cause)) {
+      const name = typeof cause.name === 'string' && /^[A-Za-z][A-Za-z0-9]{0,63}$/.test(cause.name)
+        ? cause.name : 'UnknownError';
+      const code = typeof cause.code === 'string' && /^[A-Z0-9_]{1,64}$/.test(cause.code)
+        ? cause.code : undefined;
+      failures.push({ name, ...(code ? { code } : {}) });
+    }
+  } catch {
+    // Even an exception with unreadable properties must still cancel the child.
+    if (failures.length < 4) failures.push({ name: 'UninspectableError' });
+  }
+  return failures.length ? failures : [{ name: 'UnknownError' }];
+}
 
 type PsqlRunner = (
   cmd: string,
@@ -473,8 +493,8 @@ export const runPsql: PsqlRunner = async (cmd, args, opts) => {
             let check: FenceCheck | StaleMigrationFence;
             try {
               check = await opts.fence!.assertCurrent();
-            } catch {
-              check = { current: false, reason: 'check_failed' };
+            } catch (error) {
+              check = { current: false, reason: 'check_failed', checkFailure: migrationFenceReadFailure(error) };
             }
             if (!check.current && !settled) {
               staleFence = check;
@@ -1176,9 +1196,13 @@ export default defineTool({
                 diagnostics: r.diagnostics,
                 fence_seq: fence.seq,
                 ...('live_fence_seq' in r.staleFence ? { live_fence_seq: r.staleFence.live_fence_seq } : {}),
+                ...('checkFailure' in r.staleFence ? { fence_check_failure: r.staleFence.checkFailure } : {}),
                 attempts,
                 stderr: r.stderr.slice(-2000),
-                note: 'Migration stopped when its exact exclusive(db-schema) lease ceased to be current. Earlier breakpoint chunks may have committed; no later chunk was admitted.',
+                note: (r.staleFence.reason === 'check_failed'
+                  ? 'Migration stopped because its exact exclusive(db-schema) lease could not be re-verified. '
+                  : 'Migration stopped when its exact exclusive(db-schema) lease ceased to be current. ') +
+                  'Earlier breakpoint chunks may have committed; no later chunk was admitted.',
               });
             }
             // WI-6002: before trusting this failure, check whether it's actually

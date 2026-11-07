@@ -20242,6 +20242,7 @@ async function dispatchCiWorkflow(
   ref: string,
   log: (s: string) => void,
   baseSha?: string | null,
+  candidateSha?: string,
 ): Promise<void> {
   try {
     const { gitOriginUrl, parseGithubRemote } =
@@ -20261,15 +20262,44 @@ async function dispatchCiWorkflow(
       log("ci-dispatch: skipped — gh not authenticated");
       return;
     }
-    await oc.rest.actions.createWorkflowDispatch({
+    const target = gateVerdictTargetFromEnv() ?? resolveHomeGateVerdictTarget();
+    if (!target || !candidateSha) {
+      log("ci-dispatch: skipped — exact candidate/workspace identity unavailable");
+      return;
+    }
+    const request = {
       owner: coords.owner,
       repo: coords.repo,
       workflow_id: "test.yml",
       ref,
       ...(baseSha ? { inputs: { base: baseSha } } : {}),
+    };
+    // Git's ref update is idempotent; workflow_dispatch is not. Reuse the
+    // existing reaction ledger so a restarted finalizer never sends it twice.
+    // A lost API response or ledger acknowledgment stays explicitly uncertain:
+    // GitHub provides no exact receiver receipt that would justify a retry.
+    const dedupId = `checkpoint-ci:${createHash("sha256").update(JSON.stringify([
+      target.workspaceId, target.installSlug, candidateSha, request,
+    ])).digest("hex")}`;
+    const { executeDurableReaction } = await import("@papercusp/event-reaction");
+    const { claimReaction, releaseReaction, markReactionFailed, reactionOutcome,
+      completeReaction, markReactionUncertain } =
+      await import("@papercusp/operator-core/lib/events/reaction-dedup");
+    await executeDurableReaction({
+      fire: "github:workflow-dispatch", args: request,
+      parent: { workspaceId: target.workspaceId }, dedupId,
+      ruleId: "checkpoint-ci-dispatch", triggerTool: "checkpoint:promotion",
+      cause: { rootRunId: dedupId, ruleId: "checkpoint-ci-dispatch", depth: 0, chain: [] },
+    }, {
+      store: { claim: claimReaction, release: releaseReaction, markFailed: markReactionFailed,
+        outcome: reactionOutcome, complete: completeReaction, uncertain: markReactionUncertain },
+      fire: async () => {
+        await oc.rest.actions.createWorkflowDispatch(request);
+        return { ok: true };
+      },
     });
     log(
-      `ci-dispatch: triggered test.yml on ${coords.owner}/${coords.repo}@${ref}` +
+      `ci-dispatch: completion recorded for test.yml on ${coords.owner}/${coords.repo}@${ref}` +
         (baseSha
           ? ` (base=${baseSha.slice(0, 8)})`
           : " (no base — first advance, test.yml defaults to origin/main)"),
@@ -22753,7 +22783,8 @@ export function realCheckpointDeps(
         "--source-only",
       ],
       {
-        timeoutMs: SETUP_TREE_TIMEOUT_MS,
+        // Exact-source preparation shares the qualification's owned lifetime.
+        // Opaque checkout/materialization time is not scoped stop authority.
         killProcessGroupOnTimeout: true,
       },
     );
@@ -24224,10 +24255,8 @@ export function realCheckpointDeps(
       // retains the full independent-copy fallback. The DEPLOY keeps `auto` + the
       // verify-before-cutover preflight (mcp-host-availability-resilience-2026-06-22).
       //
-      // WI-7069: BOUNDED — this used to be the one unbounded call on the candidate-selection→
-      // suite path (see SETUP_TREE_TIMEOUT_MS). `killProcessGroupOnTimeout` ensures a timeout
-      // reaches the script's whole subtree (git/cp/npm), not just the `bash` wrapper, so it
-      // can't orphan a half-finished node_modules copy.
+      // WI-5610: setup retains the qualification's owned lifetime. An explicit
+      // scoped cancellation still reaches the whole enrolled script subtree.
       // WI-41117: setup-release already emits precise stage markers, but runCmd used to retain
       // them only in memory and then discard both streams when the 30m timeout rejected. Relay
       // complete lines through the checkpoint's durable logger while preserving runCmd's normal
@@ -26131,7 +26160,7 @@ export function realCheckpointDeps(
       // See dispatchCiWorkflow's doc comment (EI-18661485259809120): the pushed commit's
       // `[skip ci]` message means the push above never actually triggers test.yml on
       // GitHub's side — re-fire it explicitly so the remote gate still runs.
-      await dispatchCiWorkflow(cfg.integrationRoot, ref, log, baseSha);
+      await dispatchCiWorkflow(cfg.integrationRoot, ref, log, baseSha, candidateSha);
     },
     async broadcast(summary, body) {
       const { sendMessage } =
@@ -26146,6 +26175,12 @@ export function realCheckpointDeps(
       // a different product's commit. The event payload already carries `pipeline`
       // (see emitEvent above); the human/agent-facing message did not — it does now.
       const pipeline = pipelineName(cfg.integrationRoot);
+      const target = gateVerdictTargetFromEnv();
+      // Reconstruct the same delivery key after a finalizer loses its ack.
+      // sendMessage returns the durable winner for an explicit msgId.
+      const msgId = `checkpoint-broadcast:${createHash("sha256").update(JSON.stringify([
+        target?.workspaceId ?? null, target?.installSlug ?? null, pipeline, runId, summary, body ?? null,
+      ])).digest("hex")}`;
       await sendMessage(
         {
           ownerId: "green-checkpoint",
@@ -26159,6 +26194,7 @@ export function realCheckpointDeps(
           summary: `${pipelineTag(pipeline)} ${summary}`,
           body,
           category: "service-health",
+          msgId,
         },
       );
     },

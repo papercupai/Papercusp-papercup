@@ -55,6 +55,7 @@ import {
   type ScorecardAcceptance,
   type AcceptanceSeatSuccession,
   type SpecTestAdequacyRerunRecipe,
+  type ScorecardRerunRecipe,
   asStructuredObservation,
 } from '../../harness/improvements/observation-types';
 import { readRunningGeneration } from '../../scout/generation-watermark';
@@ -153,7 +154,9 @@ import {
   type recordRubricCheckResults,
 } from '../../check-results-ledger';
 import { fillRatingsFromLedger } from '../../scorecard-ledger-fill';
-import { getEffectiveItemAudits, getLatestActivationAudit, getPlanItemStatuses } from '../../plan-audits';
+import { getEffectiveItemAudits, getLatestActivationAudit, getPlanItemStatuses, withCurrentDiscovery } from '../../plan-audits';
+import { resolveSpecQualityPlanSubject, SPEC_QUALITY_RUBRIC_REF } from '../plans/spec-quality';
+import { specQualityRerunRecipeSchema, specQualityIdentityRefusal } from '../plans/spec-quality-identity';
 import { resolveHarnessPaths } from '../../resolve-harness-paths';
 import { resolvePlanHarness } from '../plans/source';
 import { classifyEvaluatorBuildCurrentness } from './get';
@@ -809,7 +812,7 @@ const scorecardEmitBaseShape = {
       .describe(
         'Fresh fingerprints as plans:get current; non-code outcomes require them. Omission stays unknown.',
       ),
-    rerunRecipe: specTestAdequacyRerunRecipeSchema.optional(),
+    rerunRecipe: z.union([specTestAdequacyRerunRecipeSchema, specQualityRerunRecipeSchema]).optional(),
     subject: z
       .object({
         kind: z.enum(['agent-run', 'session', 'work-item', 'plan', 'pot', 'rubric', 'scorecard']).optional(),
@@ -1831,8 +1834,11 @@ export async function emitScorecard(
       ReturnType<typeof getBlueprintOperationTerminalWorker>;
     /** Shortened mutex deadline seam for real-Postgres contention tests. */
     scorecardMutexWaitTimeoutMs?: number;
+    withCurrentDiscovery?: typeof withCurrentDiscovery;
+    resolveSpecQualityPlanSubject?: typeof resolveSpecQualityPlanSubject;
   } = {},
 ) {
+  const emit = async () => {
   // WI-10005715: a field that ENDS in the MCP result door's clip marker is a clipped
   // tool response re-typed as evidence. Refuse before ANY store read, so a clipped
   // draft costs nothing and persists nothing. Covers every route into the write
@@ -2069,6 +2075,37 @@ export async function emitScorecard(
       !args.pendingDeliveryBarKeys?.includes(criterion.barKey ?? '')), args.ratings);
     if (citationRefusal) return { ok: false as const, ...citationRefusal };
   }
+  if (args.rubricRef === SPEC_QUALITY_RUBRIC_REF) {
+    const recipe = specQualityRerunRecipeSchema.safeParse(args.rerunRecipe);
+    const invalid = (error: string) => ({ ok: false as const, code: 'invalid_spec_quality_binding', error });
+    if (!recipe.success) return invalid('Use the current plans:evaluate-spec-quality draft with its complete evaluator-bound rerunRecipe; no card or audit was created.');
+    const pin = recipe.data;
+    const mismatch = specQualityIdentityRefusal(pin, (deps.getEvaluatorBuild ?? getBuildInfo)());
+    if (mismatch) return { ok: false as const, ...mismatch };
+    if (pin.specSetHashVersion !== pin.args.specSetHashVersion ||
+        pin.evaluatorBuild.sha !== pin.args.evaluatorBuild.sha || pin.evaluatorBuild.version !== pin.args.evaluatorBuild.version) {
+      return invalid('Quality recipe and replay arguments disagree on evaluator identity; re-evaluate on the current build.');
+    }
+    if (!deps.dispatchTool) return invalid('Quality evaluator replay is unavailable; no card or audit was created.');
+    let replay: {
+      ok?: boolean; specSetHash?: string; evaluatorBuild?: { sha: string | null; version: string };
+      specSetHashVersion?: number; scorecardDraft?: { subject?: { kind?: string; ref?: string }; ratings?: ObservationRatings }; error?: string;
+    } | null;
+    try {
+      replay = unwrapSpecTestAdequacyReplay(await deps.dispatchTool(pin.evaluator, pin.args)) as typeof replay;
+    } catch (error) {
+      return invalid(`Quality evaluator replay failed (${error instanceof Error ? error.message : String(error)}); no card or audit was created.`);
+    }
+    if (replay?.ok !== true || replay.specSetHash !== pin.args.expectedSpecSetHash ||
+        replay.specSetHashVersion !== pin.specSetHashVersion || !replay.evaluatorBuild ||
+        specQualityIdentityRefusal(replay, pin.evaluatorBuild) ||
+        replay.scorecardDraft?.subject?.kind !== args.subject?.kind ||
+        replay.scorecardDraft?.subject?.ref !== args.subject?.ref || !replay.scorecardDraft?.ratings ||
+        scorecardEvidenceFingerprint({ rubricRef: SPEC_QUALITY_RUBRIC_REF, ratings: replay.scorecardDraft.ratings }) !==
+          scorecardEvidenceFingerprint({ rubricRef: SPEC_QUALITY_RUBRIC_REF, ratings: args.ratings ?? {} })) {
+      return invalid(`Quality replay did not reproduce the exact subject, ratings and evaluator identity (${replay?.error ?? 'mismatch'}); no card or audit was created.`);
+    }
+  }
   const specTestAdequacyBindingError = validateSpecTestAdequacyBinding(args);
   if (specTestAdequacyBindingError) return { ok: false as const, ...specTestAdequacyBindingError };
   let releaseScorecardEmitMutex: (() => Promise<void>) | undefined;
@@ -2121,7 +2158,9 @@ export async function emitScorecard(
     const specTestAdequacyReplayError = input.previewOnly
       ? undefined
       : await validateSpecTestAdequacyReplay(args, deps.dispatchTool, measurementEvidence => {
-          args = { ...args, rerunRecipe: { ...args.rerunRecipe!, measurementEvidence } };
+          if (args.rerunRecipe?.evaluator === 'plans:evaluate-spec-test-adequacy') {
+            args = { ...args, rerunRecipe: { ...args.rerunRecipe, measurementEvidence } };
+          }
         });
     if (specTestAdequacyReplayError) return { ok: false as const, ...specTestAdequacyReplayError };
     // EI-21765534049482705: a meta-rubric card whose subject is an active
@@ -2788,7 +2827,7 @@ export async function emitScorecard(
       ratings,
       instrumentSnapshots,
       ...(acceptance ? { acceptance } : {}),
-      ...(args.rerunRecipe ? { rerunRecipe: args.rerunRecipe as SpecTestAdequacyRerunRecipe } : {}),
+      ...(args.rerunRecipe ? { rerunRecipe: args.rerunRecipe as ScorecardRerunRecipe } : {}),
       ...(boundTestedSha ? { testedSha: boundTestedSha } : {}),
     });
     // ── the vetting stamp (consult-min-max-and-rubric-vetting-2026-08-17 P-004) ──
@@ -4546,6 +4585,16 @@ export async function emitScorecard(
       releaseGradingAuditSubjectMutex = undefined;
     }
   }
+  };
+  if (args.rubricRef !== SPEC_QUALITY_RUBRIC_REF) return emit();
+  const workspaceId = input.workspaceId ?? activeWorkspaceId();
+  const subject = args.subject?.kind === 'plan'
+    ? await (deps.resolveSpecQualityPlanSubject ?? resolveSpecQualityPlanSubject)(workspaceId, args.subject.ref) : null;
+  if (!subject) return { ok: false as const, code: 'discovery_subject_unresolved',
+    error: 'Spec-quality review requires its exact registered plan subject; regenerate the current evaluator draft.' };
+  const admitted = await (deps.withCurrentDiscovery ?? withCurrentDiscovery)({ workspaceId, ...subject,
+    createdBy: input.createdBy }, emit);
+  return admitted.ok ? admitted.result : { ...admitted, code: admitted.error };
 }
 
 export default defineTool({

@@ -43,7 +43,7 @@ import { runAsExternalIngress } from '@papercusp/operator-core/lib/auth/forwarde
 import { isServedOnExternalIngress, notServedOnExternalIngress } from './external-ingress-paths';
 import { MCP_OAUTH_WELL_KNOWN } from '@papercusp/operator-core/lib/connected-apps/mcp-oauth-discovery';
 import { createDesktopPortalLifecycle } from './desktop-portal-lifecycle';
-import { registerRuntimeSecurityCapture } from '@papercusp/operator-core/lib/observability/runtime';
+import { loadedHandlerFingerprint, registerRuntimeSecurityCapture } from '@papercusp/operator-core/lib/observability/runtime';
 import { enterGuardHttpRequest, markGuardHttpStage } from '@papercusp/operator-core/lib/endpoint-route/telemetry';
 
 const host = new Hono<{ Bindings: HttpBindings | Http2Bindings }>();
@@ -184,7 +184,20 @@ export async function captureOperatorHttpSecurityPopulation(): Promise<import('@
   const queries = enumerateSyncQuerySurfaces({ securitySnapshot: true });
   const reactions = listReactionRules().map(rule => ({ kind: 'registered-event-reaction',
     surfaceId: rule.id, sourceFile: null, fidelity: 'observed' as const,
-    attrs: { on: rule.on, fire: rule.fire, source: rule.source ?? null } }));
+    // Inspect loaded callback text without evaluating predicates, argument
+    // templates or dedup keys. Data conditions/arguments may contain secrets.
+    // These digests cannot attest captured values, imports or actual effects.
+    attrs: { on: Array.isArray(rule.on) ? [...rule.on] : rule.on,
+      fire: rule.fire, source: rule.source ?? null,
+      mode: rule.mode ?? 'durable', onlyOnSuccess: rule.onlyOnSuccess ?? true,
+      capability: rule.capability ?? null,
+      whenKind: rule.when === undefined ? 'absent' : typeof rule.when === 'function' ? 'callback' : 'data',
+      argsKind: rule.args === undefined ? 'absent' : typeof rule.args === 'function' ? 'callback' : 'data',
+      hasDedupKey: typeof rule.dedupKey === 'function',
+      loadedWhenFunctionSha256: typeof rule.when === 'function' ? loadedHandlerFingerprint(rule.when) : null,
+      loadedArgsFunctionSha256: typeof rule.args === 'function' ? loadedHandlerFingerprint(rule.args) : null,
+      loadedDedupKeyFunctionSha256: typeof rule.dedupKey === 'function' ? loadedHandlerFingerprint(rule.dedupKey) : null,
+      functionFingerprintScope: 'loaded-function-text-only', actualEffectCoverage: 'unknown' } }));
   return {
     surfaces: [...outer.surfaces, ...inner.surfaces, ...plugins.surfaces, ...handlers, ...loader.surfaces,
       ...dbos.surfaces, ...reactions, ...queries],

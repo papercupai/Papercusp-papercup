@@ -70,10 +70,9 @@ fn r14_p002_registry_reuse_and_required_screen_states_remain_explicit() {
             contract.contains(&format!("src/{source}")),
             "missing reuse route: {source}"
         );
-        assert!(std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("src")
-            .join(source)
-            .is_file());
+        assert!(crate::census::SOURCE_FILES
+            .iter()
+            .any(|(name, text)| *name == source && !text.is_empty()));
     }
     assert_eq!(ir["ecosystem"], "ratatui");
     for state in [

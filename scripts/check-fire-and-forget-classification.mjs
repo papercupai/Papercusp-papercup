@@ -209,8 +209,11 @@ export function censusSources(sources) {
         }
         const child = { parent: scope, names: new Map(), owner: s, label: `${scope.label}/${localName}` };
         s.params = n.parameters.map(p => binding(p.name, null, child));
+        s.calls = [];
+        s.hasRest = n.parameters.some(p => p.dotDotDotToken);
         if (n.modifiers?.some(m => m.kind === ts.SyntaxKind.ExportKeyword)) exports.set(n.modifiers.some(m => m.kind === ts.SyntaxKind.DefaultKeyword) ? 'default' : localName, { id: s.id });
         for (const p of n.parameters) if (p.initializer) visit(p.initializer, child);
+        s.defaults = n.parameters.map(p => ({ present: !!p.initializer, ref: ref(p.initializer, child) }));
         visit(n.body, child);
         return;
       }
@@ -250,21 +253,26 @@ export function censusSources(sources) {
           try { declarations.push(JSON.parse(annotation[1])); }
           catch { gaps.push({ path, kind: 'invalid-classification-json', offset: n.getStart(sf) }); }
         }
-        calls.push({ path, line, owner: scope.owner, context: scope.label, callee, args, declarations, discarded: discarded(n), expression: tokens(n, sf) });
-        if (scope.owner) scope.owner.edges.push(callee);
+        const call = { path, line, owner: scope.owner, context: scope.label, callee, args, declarations, discarded: discarded(n), expression: tokens(n, sf) };
+        calls.push(call);
+        if (scope.owner) { scope.owner.edges.push(callee); scope.owner.calls.push(call); }
       }
     }
     visit(sf, top);
   }
-  function targets(r, seen = new Set()) {
+  function targets(r, seen = new Set(), context = null) {
     if (!r || seen.has(r)) return [];
     seen.add(r);
     if (r.literal !== undefined) return [{ literal: r.literal }];
     if (r.id) {
+      if (context?.has(r.id)) {
+        const bound = context.get(r.id);
+        return targets(bound.ref, seen, bound.context);
+      }
       const s = symbols.get(r.id);
       if (!s || seen.has(`id:${r.id}`)) return [];
       seen.add(`id:${r.id}`);
-      return [s, ...s.aliases.flatMap(a => targets(a, seen))];
+      return [context ? { ...s, boundContext: context } : s, ...s.aliases.flatMap(a => targets(a, seen, context))];
     }
     if (r.root) return [{ roots: new Set([r.root]) }];
     if (r.module !== undefined) {
@@ -273,25 +281,26 @@ export function censusSources(sources) {
       seen.add(key);
       const m = modules.get(r.module);
       if (r.name === '*') return [{ module: m }];
-      return [...targets(m?.exports.get(r.name), seen), ...(m?.stars ?? []).flatMap(s => targets({ ...s, name: r.name }, seen)), ...(notificationName(r.name) ? targets(root(r.name), seen) : [])];
+      return [...targets(m?.exports.get(r.name), seen, context), ...(m?.stars ?? []).flatMap(s => targets({ ...s, name: r.name }, seen, context)), ...(notificationName(r.name) ? targets(root(r.name), seen) : [])];
     }
     if (r.memberRef !== undefined) {
-      const keys = targets(r.memberRef, new Set(seen)).map(t => t.literal).filter(k => k !== undefined);
+      const keys = targets(r.memberRef, new Set(seen), context).map(t => t.literal).filter(k => k !== undefined);
       // Unknown computed dispatch is included conservatively, never silently clean.
-      return keys.length ? keys.flatMap(member => targets({ base: r.base, member }, new Set(seen))) : [{ roots: new Set(['<unresolved-computed-dispatch>']) }];
+      return keys.length ? keys.flatMap(member => targets({ base: r.base, member }, new Set(seen), context)) : [{ roots: new Set(['<unresolved-computed-dispatch>']) }];
     }
     if (r.member) {
-      const bases = targets(r.base, seen);
+      const bases = targets(r.base, seen, context);
       if (/^(call|apply|bind)$/.test(r.member)) return bases;
-      return [...bases.flatMap(b => b.module ? [...targets(b.module.exports.get(r.member), new Set(seen)), ...b.module.stars.flatMap(s => targets({ ...s, name: r.member }, new Set(seen)))] : b.members?.has(r.member) ? targets({ id: b.members.get(r.member).id }, new Set(seen)) : []), ...(notificationName(r.member) ? targets(root(r.member), seen) : [])];
+      return [...bases.flatMap(b => b.module ? [...targets(b.module.exports.get(r.member), new Set(seen), context), ...b.module.stars.flatMap(s => targets({ ...s, name: r.member }, new Set(seen), context))] : b.members?.has(r.member) ? targets({ id: b.members.get(r.member).id }, new Set(seen), b.boundContext ?? context) : []), ...(notificationName(r.member) ? targets(root(r.member), seen) : [])];
     }
     let scope = r.scope;
     while (scope && !scope.names.has(r.name)) scope = scope.parent;
-    return [...(scope ? targets({ id: scope.names.get(r.name).id }, seen) : []), ...(notificationName(r.name) ? targets(root(r.name), seen) : [])];
+    return [...(scope ? targets({ id: scope.names.get(r.name).id }, seen, context) : []), ...(notificationName(r.name) ? targets(root(r.name), seen) : [])];
   }
   // Parameter injection also reveals wrappers whose names contain no notify token.
   if (process.env.NOTIFY_CENSUS_PROGRESS) console.error(`NOTIFY_CENSUS_PROGRESS graph symbols=${symbols.size} calls=${calls.length}`);
   for (const c of calls) for (const target of targets(c.callee)) c.args.forEach((a, i) => { if (target.params?.[i]) { target.params[i].edges.push(a); target.params[i].aliases.push(a); } });
+  if (process.env.NOTIFY_CENSUS_PROGRESS) console.error(`NOTIFY_CENSUS_PROGRESS injected at=${Date.now()}`);
   const reverse = new Map();
   const forward = new Map();
   for (const s of symbols.values()) for (const e of s.edges) for (const t of targets(e)) {
@@ -302,6 +311,7 @@ export function censusSources(sources) {
     else for (const r of t.roots ?? []) s.roots.add(r);
   }
   const queue = [...symbols.values()].filter(s => s.roots.size).map(s => s.id);
+  if (process.env.NOTIFY_CENSUS_PROGRESS) console.error(`NOTIFY_CENSUS_PROGRESS linked at=${Date.now()} rooted=${queue.length}`);
   const queued = new Set(queue);
   for (let i = 0; i < queue.length; i++) {
     const id = queue[i]; queued.delete(id);
@@ -311,7 +321,9 @@ export function censusSources(sources) {
       if (changed && !queued.has(receiver)) { queued.add(receiver); queue.push(receiver); }
     }
   }
+  if (process.env.NOTIFY_CENSUS_PROGRESS) console.error(`NOTIFY_CENSUS_PROGRESS propagated at=${Date.now()}`);
   for (const c of calls) { c.targets = targets(c.callee); c.argumentTargets = c.args.flatMap(a => targets(a)); }
+  if (process.env.NOTIFY_CENSUS_PROGRESS) console.error(`NOTIFY_CENSUS_PROGRESS resolved at=${Date.now()}`);
   const detached = new Set();
   const detachedQueue = [];
   const mark = (id) => { if (id && !detached.has(id)) { detached.add(id); detachedQueue.push(id); } };
@@ -322,10 +334,55 @@ export function censusSources(sources) {
     }
   }
   for (let i = 0; i < detachedQueue.length; i++) for (const id of forward.get(detachedQueue[i]) ?? []) mark(id);
+
+  // Keep the global graph for discovery and conservative fallback, but do not
+  // reuse its union of every caller's callback arguments as a call's own roots.
+  // Bind arguments at each invocation, including the lexical context of forwarded
+  // closures. Unsupported signatures, recursion and exhausted work budgets retain
+  // the original roots instead of silently certifying a path as notification-free.
+  const globalRoots = c => [...new Set(targets(c.callee).flatMap(t => [...t.roots ?? []]))];
+  function callRoots(c, context = new Map(), visiting = new Set(), budget = { remaining: 256 }) {
+    if (--budget.remaining < 0 || visiting.size >= 24 || /^(call|apply|bind)$/.test(c.callee?.member ?? '')) return globalRoots(c);
+    const roots = new Set();
+    for (const t of targets(c.callee, new Set(), context)) {
+      if (!t.id) { for (const r of t.roots ?? []) roots.add(r); continue; }
+      if (!t.calls) {
+        // Alias targets are also returned above. Their globally propagated roots
+        // would reintroduce the caller union we are deliberately substituting.
+        if (!t.aliases.length) for (const r of t.roots) roots.add(r);
+        continue;
+      }
+      if (visiting.has(t.id) || t.hasRest || t.params.some(p => !p)) {
+        for (const r of t.roots) roots.add(r);
+        continue;
+      }
+      const bound = new Map(t.boundContext ?? context);
+      let unsupported = false;
+      t.params.forEach((p, i) => {
+        const value = c.args[i];
+        const fallback = t.defaults[i];
+        if (value) bound.set(p.id, { ref: value, context });
+        else if (fallback?.present) {
+          if (!fallback.ref) unsupported = true;
+          else bound.set(p.id, { ref: fallback.ref, context: bound });
+        } else bound.set(p.id, { ref: null, context });
+      });
+      if (unsupported) { for (const r of t.roots) roots.add(r); continue; }
+      const nested = new Set(visiting); nested.add(t.id);
+      for (const call of t.calls) for (const r of callRoots(call, bound, nested, budget)) roots.add(r);
+    }
+    return [...roots];
+  }
   const occurrences = new Map();
   const sites = [];
+  let refined = 0;
   for (const c of calls) {
-    const roots = [...new Set(c.targets.flatMap(t => [...t.roots ?? []]))].sort();
+    // This pass refines existing candidates; the global graph remains the
+    // discovery authority. Do not recursively revisit the much larger clean
+    // population or calls whose custody never becomes detached.
+    if (!c.targets.some(t => t.roots?.size) || (!c.discarded && !detached.has(c.owner?.id))) continue;
+    if (process.env.NOTIFY_CENSUS_PROGRESS && refined++ % 10000 === 0) console.error(`NOTIFY_CENSUS_PROGRESS refined=${refined - 1} at=${Date.now()}`);
+    const roots = callRoots(c).sort();
     if (!roots.length || (!c.discarded && !detached.has(c.owner?.id))) continue;
     const key = `${c.path}#${c.context}:${digest(c.expression).slice(0, 20)}`;
     const ordinal = (occurrences.get(key) ?? 0) + 1; occurrences.set(key, ordinal);

@@ -1119,11 +1119,23 @@ export function verifyBgVerifierSource(prepared, boundary) {
  *   dependencies: ReturnType<typeof captureVerifierDependencies> }} options
  */
 export function createBgVerifierCompilerCustody({ prepared, dependencies }) {
-  verifyBgVerifierSource(prepared, 'before-build');
+  return bgVerifierCompilerCustody({ prepared, dependencies }, (boundary, original) => {
+    verifyBgVerifierSource(prepared, boundary);
+    assert.deepEqual(captureVerifierDependencies({ dest: prepared.root, receipt: prepared.source }), original,
+      'BG compiler dependency census changed');
+  });
+}
+
+/** Compose checks within one synchronous boundary, never across phase awaits.
+ * The callback is private: callers cannot supply a cached or skipped fence.
+ * @param {Parameters<typeof createBgVerifierCompilerCustody>[0]} options
+ * @param {(boundary: 'before-build' | 'before-publication',
+ *   original: ReturnType<typeof captureVerifierDependencies>) => void} verifyBoundary
+ */
+function bgVerifierCompilerCustody({ prepared, dependencies }, verifyBoundary) {
   const original = freezeBgExpectation(dependencies);
   assert.equal(original.root, prepared.root, 'BG compiler dependency root mismatch');
-  assert.deepEqual(captureVerifierDependencies({ dest: prepared.root, receipt: prepared.source }), original,
-    'BG compiler dependency census changed');
+  verifyBoundary('before-build', original);
   const files = new Map(prepared.source.files.map(row => [row.path, row]));
   for (const tree of original.trees) for (const row of tree.files) {
     const path = `${tree.path}/${row.path}`;
@@ -1205,9 +1217,7 @@ export function createBgVerifierCompilerCustody({ prepared, dependencies }) {
   return { plugin, readToolchainInput: readInput,
     consumed: () => freezeBgExpectation([...consumed.values()].sort((a, b) => a.path.localeCompare(b.path))),
     verifyBeforePublication() {
-      verifyBgVerifierSource(prepared, 'before-publication');
-      assert.deepEqual(captureVerifierDependencies({ dest: prepared.root, receipt: prepared.source }), original,
-        'BG compiler dependency census changed');
+      verifyBoundary('before-publication', original);
       for (const [local, expected] of originalIdentities)
         assert.deepEqual(inputIdentity(local), expected, `BG compiler original input identity changed: ${local}`);
       for (const [local, expected] of originalDirectories)
@@ -1880,10 +1890,51 @@ export function verifyBgVerifierPublication(publication, args) {
  * complete evidence. Re-entry always refuses the existing stage, including an
  * attempt whose compiler failed. There is no cache/fallback or service effect.
  * This does not establish the production runtime closure or authorize activation.
- * @param {Parameters<typeof beginBgVerifierBuildTransaction>[0] & { runPhase?: VerifierPhaseRunner }} args
+ * @param {Parameters<typeof beginBgVerifierBuildTransaction>[0] & { runPhase?: VerifierPhaseRunner,
+ *   budget?: { measurements: Record<string, number>, env?: NodeJS.ProcessEnv, now?: () => number } }} args
  */
 export async function runBgVerifierBuildRecipe(args) {
-  const { transaction, runPhase = async (_phase, operation) => operation() } = args;
+  const { transaction, budget, runPhase: tracePhase = async (_phase, operation) => operation() } = args;
+  // Capture the caller's clock before the compiler replaces process.env. A
+  // deadline-bearing run must forecast the whole recipe before any stage effect.
+  const env = { ...(budget?.env ?? process.env) }, now = budget?.now ?? Date.now;
+  assert.ok(budget || env.PAPERCUSP_TASK_DEADLINE_EPOCH_MS === undefined,
+    'BG recipe deadline requires completed phase budget observations');
+  const measurements = { ...budget?.measurements };
+  /** @type {string[]} */
+  const completedPhases = [];
+  /** @type {{ phase: string, startedAtMs: number } | undefined} */
+  let activePhase;
+  const admit = () => {
+    if (!budget) return;
+    const estimate = estimateVerifierCommandBudget(measurements, 0, { bgRecipe: {
+      invocationCount: transaction.contexts.invocations.length, completedPhases,
+      ...(activePhase ? { activePhase: { phase: activePhase.phase,
+        elapsedMs: Math.max(0, now() - activePhase.startedAtMs) } } : {}),
+    } });
+    admitVerifierCommandBudget(estimate, { env, nowMs: now() });
+  };
+  admit();
+  /** @type {VerifierPhaseRunner} */
+  const runPhase = async (phase, operation) => {
+    const outer = phase.startsWith('bg.recipe.');
+    // stop is unconditional cleanup, including when admission itself refuses.
+    if (phase !== 'bg.compiler.stop') admit();
+    const before = now();
+    if (outer) activePhase = { phase, startedAtMs: before };
+    try {
+      const result = await tracePhase(phase, () => {
+        if (phase !== 'bg.compiler.stop') admit();
+        return operation();
+      });
+      measurements[phase] = Math.max(measurements[phase] ?? 0, Math.max(0, now() - before));
+      if (outer) { completedPhases.push(phase); activePhase = undefined; }
+      if (phase !== 'bg.compiler.stop') admit();
+      return result;
+    } finally {
+      if (outer) activePhase = undefined;
+    }
+  };
   await runPhase('bg.recipe.validate', () => {
     validateBgVerifierBuildTransaction(transaction);
     assert.ok(transaction.publicationLeaf, 'BG recipe publication destination is UNKNOWN');
@@ -1956,7 +2007,8 @@ export async function compileBgVerifierInvocation({ record, invocation, argv, ex
   assert.equal(invocation.environment.ESBUILD_BINARY_PATH, binary.realpath, 'BG compiler binary must be explicitly pinned');
   assert.equal(invocation.environment.ESBUILD_WORKER_THREADS, '0', 'BG compiler requires its owned service process');
   const custody = await runPhase('bg.compiler.custody', () =>
-    createBgVerifierCompilerCustody({ prepared: record.prepared, dependencies: record.dependencies }));
+    bgVerifierCompilerCustody({ prepared: record.prepared, dependencies: record.dependencies },
+      (boundary, original) => verifyBgVerifierBuildRecord({ ...record, dependencies: original }, invocation, boundary)));
   const originalEnv = process.env;
   /** @type {typeof import('esbuild') | undefined} */
   let compiler;
@@ -2015,9 +2067,7 @@ export async function compileBgVerifierInvocation({ record, invocation, argv, ex
     const result = await runPhase('bg.compiler.build', () => activeCompiler.build({ ...options, plugins: [custody.plugin] }));
     const consumed = await runPhase('bg.compiler.verify', () => {
       assert.equal(binaryLaunches, 1, 'BG compiler native consumption is UNKNOWN');
-      const consumed = custody.verifyBeforePublication();
-      verifyBgVerifierBuildRecord(record, invocation, 'before-publication');
-      return consumed;
+      return custody.verifyBeforePublication();
     });
     return await runPhase('bg.compiler.output', async () => {
       // esbuild write:false leaves failed or incoherent attempts unpublished.
@@ -3154,7 +3204,7 @@ export function readVerifierPhaseMeasurements(path) {
       if (row.event === 'completed') {
         assert.ok(Number.isSafeInteger(row.durationMs) && row.durationMs >= 0,
           'Invalid verifier phase duration');
-        measurements[row.phase] = row.durationMs;
+        measurements[row.phase] = Math.max(measurements[row.phase] ?? 0, row.durationMs);
       }
     }
   }
@@ -3169,27 +3219,66 @@ export function readVerifierPhaseMeasurements(path) {
  * Reserve at least 30s, or 125% of an explicitly measured launch delay. This is
  * a forecast; admission still checks the actual remaining clock independently.
  * @param {Record<string, number>} measurements @param {number} [childEstimateMs]
- * @param {{ observedLaunchMs?: number, maxTimeoutMs?: number, parentPgRelease?: boolean }} [options]
+ * @param {{ observedLaunchMs?: number, maxTimeoutMs?: number, parentPgRelease?: boolean,
+ *   bgRecipe?: { invocationCount: number, completedPhases?: string[],
+ *     activePhase?: { phase: string, elapsedMs: number } } }} [options]
  */
 export function estimateVerifierCommandBudget(measurements, childEstimateMs = 0,
-  { observedLaunchMs, maxTimeoutMs, parentPgRelease = false } = {}) {
-  for (const phase of VERIFIER_PREPARATION_PHASES)
-    assert.ok(Number.isSafeInteger(measurements[phase]) && measurements[phase] >= 0,
-      `Verifier budget requires completed phase: ${phase}`);
+  { observedLaunchMs, maxTimeoutMs, parentPgRelease = false, bgRecipe } = {}) {
+  for (const [phase, duration] of Object.entries(measurements))
+    assert.ok(Number.isSafeInteger(duration) && duration >= 0, `Invalid verifier phase duration: ${phase}`);
   assert.ok(Number.isSafeInteger(childEstimateMs) && childEstimateMs >= 0, 'Invalid verifier child estimate');
   assert.ok(observedLaunchMs === undefined || Number.isSafeInteger(observedLaunchMs) && observedLaunchMs >= 0,
     'Invalid verifier launch observation');
   assert.ok(maxTimeoutMs === undefined || Number.isSafeInteger(maxTimeoutMs) && maxTimeoutMs > 0,
     'Invalid verifier caller timeout ceiling');
-  const preparationMs = VERIFIER_PREPARATION_PHASES.reduce((total, phase) => total + measurements[phase], 0);
+  let recipePhases;
+  if (bgRecipe) {
+    const { invocationCount, completedPhases = [], activePhase } = bgRecipe;
+    assert.ok(Number.isSafeInteger(invocationCount) && invocationCount > 0 && invocationCount <= 1000,
+      'Invalid BG recipe invocation count');
+    for (const phase of ['bg.compiler.before-build', 'bg.compiler.custody', 'bg.compiler.build', 'bg.compiler.verify'])
+      assert.ok(Object.hasOwn(measurements, phase), `Verifier budget requires completed phase: ${phase}`);
+    const compilerMs = Math.max(1,
+      Object.entries(measurements).filter(([phase]) => phase.startsWith('bg.compiler.'))
+        .reduce((total, [, duration]) => total + duration, 0),
+      ...Object.entries(measurements).filter(([phase]) => /^bg\.recipe\.compiler\.\d+$/.test(phase))
+        .map(([, duration]) => duration));
+    // A completed compiler includes all three fresh censuses and consumed-byte
+    // checks. Use that whole cost for EACH tail census until a slower tail is
+    // observed. Counts follow the maintained call graph: logical qualification
+    // does output(2), artifact(2), logical(3); publication checks logical twice.
+    // These are explicit conservative proxies, never completed tail evidence.
+    /** @type {[string, number][]} */
+    const plan = [['bg.recipe.validate', 1], ['bg.recipe.begin', 3],
+      ...Array.from({ length: invocationCount }, (_, i) => /** @type {[string, number]} */ ([`bg.recipe.compiler.${i}`, 1])),
+      ['bg.recipe.assets', 2], ['bg.recipe.output', 2], ['bg.recipe.logical', 7],
+      ['bg.recipe.publish', 6], ['bg.recipe.verify', 3]];
+    assert.ok(new Set(completedPhases).size === completedPhases.length &&
+      completedPhases.every((phase, index) => phase === plan[index]?.[0]),
+    'BG recipe budget completion order changed');
+    if (activePhase) assert.ok(activePhase.phase === plan[completedPhases.length]?.[0] &&
+      Number.isSafeInteger(activePhase.elapsedMs) && activePhase.elapsedMs >= 0,
+    'Invalid BG recipe active phase');
+    recipePhases = plan.slice(completedPhases.length).map(([phase, passes]) => {
+      const estimateMs = Math.max(measurements[phase] ?? 0, compilerMs * Number(passes));
+      return { phase: String(phase), estimateMs: Math.max(0,
+        estimateMs - (activePhase?.phase === phase ? activePhase.elapsedMs : 0)) };
+    });
+  } else {
+    for (const phase of VERIFIER_PREPARATION_PHASES)
+      assert.ok(Object.hasOwn(measurements, phase), `Verifier budget requires completed phase: ${phase}`);
+  }
+  const preparationMs = bgRecipe ? 0 : VERIFIER_PREPARATION_PHASES.reduce((total, phase) => total + measurements[phase], 0);
   const sourceCheckMs = Math.max(...['deps.source.before', 'deps.source.after-snapshot',
     'deps.source.after-preflight', 'child.preflight', 'source.postverify'].map(phase => measurements[phase] ?? 0));
-  const dependencyCheckMs = Math.max(measurements['deps.census'], measurements['deps.postverify'] ?? 0);
+  const dependencyCheckMs = Math.max(measurements['deps.census'] ?? 0, measurements['deps.postverify'] ?? 0);
   // With no completed cleanup receipt, reserve at least the observed snapshot/freezing
   // work: deletion must still walk the whole population. This is a conservative proxy.
-  const cleanupMs = Math.max(120_000, measurements.cleanup ?? 0, measurements['source.freeze'], measurements['deps.snapshot']);
+  const cleanupMs = Math.max(120_000, measurements.cleanup ?? 0, measurements['source.freeze'] ?? 0, measurements['deps.snapshot'] ?? 0);
   const privatePgReleaseMs = parentPgRelease ? 10_000 : 0;
-  const remainingMs = sourceCheckMs * 2 + dependencyCheckMs + cleanupMs + privatePgReleaseMs + childEstimateMs;
+  const remainingMs = (recipePhases ? recipePhases.reduce((total, phase) => total + phase.estimateMs, 0)
+    : sourceCheckMs * 2 + dependencyCheckMs + childEstimateMs) + cleanupMs + privatePgReleaseMs;
   const remainingBudgetMs = Math.ceil(remainingMs * 1.25);
   // Preparation consumes its margin before child admission reforecasts the
   // remaining work. Reserve that child margin at launch too: a slower snapshot
@@ -3205,8 +3294,9 @@ export function estimateVerifierCommandBudget(measurements, childEstimateMs = 0,
       `maxTimeoutMs=${maxTimeoutMs} workEstimateMs=${totalMs} launchReserveMs=${launchReserveMs} — ` +
       'the caller ceiling cannot fit the work forecast plus launch reserve; do not start providers.', 2);
   return { preparationMs, sourceCheckMs, dependencyCheckMs, cleanupMs, childEstimateMs,
-    unknownChild: childEstimateMs === 0, remainingMs: remainingBudgetMs,
-    totalMs, observedLaunchMs: observedLaunchMs ?? null, launchReserveMs, requiredTimeoutMs };
+    unknownChild: !bgRecipe && childEstimateMs === 0, remainingMs: remainingBudgetMs,
+    totalMs, observedLaunchMs: observedLaunchMs ?? null, launchReserveMs, requiredTimeoutMs,
+    ...(recipePhases ? { recipePhases } : {}) };
 }
 
 /** Reuse the launcher's absolute deadline and the scheduler's attributable refusal. */
@@ -3216,7 +3306,7 @@ export function admitVerifierCommandBudget(estimate, { env = process.env, nowMs 
   const knownEstimateMs = Math.max(cleanupReserveMs, estimate ? (preparation ? estimate.totalMs : estimate.remainingMs) : 0);
   try {
     return { ...admitTaskDeadline({ env, nowMs, cleanupReserveMs, knownEstimateMs,
-      knownTasks: estimate ? VERIFIER_PREPARATION_PHASES.length : 0,
+      knownTasks: estimate ? (estimate.recipePhases?.length ?? VERIFIER_PREPARATION_PHASES.length) : 0,
       unknownTasks: estimate?.unknownChild === false ? 0 : 1 }), estimate };
   } catch (error) {
     throw new PreviewError(error.message, 2);
@@ -4195,7 +4285,9 @@ function printGate(verdict) {
 async function main(argv) {
   if (argv[0] === 'bg-build-begin' || argv[0] === 'bg-build-run') {
     const flags = ['--context', '--sha256', '--pid', '--entry', '--outfile', '--profile', '--builder', '--repo'];
-    assert.ok(argv.length === 1 + flags.length * 2 && flags.every((flag, index) => argv[index * 2 + 1] === flag),
+    const budgetPath = argv[0] === 'bg-build-run' && argv[17] === '--budget-from' ? argv[18] : undefined;
+    assert.ok(argv.length === 1 + flags.length * 2 + (budgetPath ? 2 : 0) &&
+      flags.every((flag, index) => argv[index * 2 + 1] === flag),
       'BG recipe requires its exact original transaction, digest, PID, command, builder and repository');
     const [contextPath, expectedHash, pidText, entry, outfile, profile, builder, repo] = flags.map((_, index) => argv[index * 2 + 2]);
     assert.ok(isAbsolute(contextPath) && /^[a-f0-9]{64}$/.test(expectedHash) && /^[1-9][0-9]*$/.test(pidText),
@@ -4215,7 +4307,8 @@ async function main(argv) {
       const phasePath = `${contextPath}.phases.${pidText}.jsonl`;
       assertOutsideArchive(record.prepared.root, resolve(phasePath));
       const runPhase = verifierPhaseRunner(phasePath, process.env, `${phasePath}.child.json`);
-      const publication = await runBgVerifierBuildRecipe({ transaction, ownerPid: Number(pidText), runPhase });
+      const publication = await runBgVerifierBuildRecipe({ transaction, ownerPid: Number(pidText), runPhase,
+        ...(budgetPath ? { budget: { measurements: readVerifierPhaseMeasurements(budgetPath) } } : {}) });
       console.log(JSON.stringify(publication));
       return 0;
     }

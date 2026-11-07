@@ -119,6 +119,56 @@ const envelope = (sequence: number): ChatEventEnvelope => ({ schemaVersion: 1, .
   eventId: `event-${sequence}`, sequence, event: { type: 'delta', text: `delta-${sequence}` } });
 
 describe('P010 durable PG turn ports (independent connections; no actual-host claim)', () => {
+  it('P012 preserves populated legacy history across additive adoption and interleaved legacy writes', async () => {
+    // This database belongs to this file. Exercise the actual pre-migration
+    // shape with data present, rather than adding the column to an empty log.
+    await first.unsafe('ALTER TABLE harness_shared.operator_turns DROP COLUMN chat_state');
+    try {
+      const legacyTools = [{ name: 'catalog:search', callId: 'legacy-call', result: { title: 'Saved result' } }];
+      await first.unsafe(`UPDATE harness_shared.operator_turns
+        SET text=$1,tools=$2::jsonb,source='text_typed',created_at=123,report=$3::jsonb WHERE id=$4`,
+      ['Saved history — before adoption', first.json(legacyTools), first.json({ title: 'Saved report' }), turn.turnId]);
+      const columns = 'id,conversation_id,workspace_id,seq,role,text,tools,source,created_at,report';
+      const before = await second.unsafe(`SELECT ${columns} FROM harness_shared.operator_turns WHERE id=$1`, [turn.turnId]);
+      await first.unsafe(readFileSync(migration, 'utf8'));
+      await first.unsafe(readFileSync(migration, 'utf8'));
+      expect(await second.unsafe(`SELECT ${columns} FROM harness_shared.operator_turns WHERE id=$1`, [turn.turnId]))
+        .toEqual(before);
+      expect((await second.unsafe('SELECT chat_state FROM harness_shared.operator_turns WHERE id=$1', [turn.turnId]))[0])
+        .toEqual({ chat_state: null });
+      expect(await store(second).read(turn)).toBeNull();
+
+      const pending = record();
+      expect(await store().seedInteraction(pending)).toBe(true);
+      const stateBeforeLegacyWrite = (await second.unsafe('SELECT chat_state FROM harness_shared.operator_turns WHERE id=$1',
+        [turn.turnId]))[0].chat_state;
+      // A prior worker updates only the columns it knows. Its write must not
+      // erase a pending decision now owned by the current worker.
+      await second.unsafe('UPDATE harness_shared.operator_turns SET text=$1 WHERE id=$2',
+        ['Saved history — legacy writer after adoption', turn.turnId]);
+      expect((await first.unsafe('SELECT chat_state,tools,report FROM harness_shared.operator_turns WHERE id=$1', [turn.turnId]))[0])
+        .toEqual({ chat_state: stateBeforeLegacyWrite, tools: legacyTools, report: { title: 'Saved report' } });
+      const identity = { conversationId: turn.conversationId, correlationId: pending.correlationId };
+      const current = resolver(store(second)).make();
+      expect(await current.read(identity, scope)).toEqual({ ok: true, value: pending });
+      expect(await current.resolve(identity, scope, answer('after-legacy-write')))
+        .toMatchObject({ ok: true, value: { revision: 1, response: { action: 'submit', value: { pick: 'yes' } } } });
+      expect(await resolver(store()).make().read(identity, scope))
+        .toMatchObject({ ok: true, value: { status: 'resolved', revision: 1 } });
+      expect(await resolver(store()).make().resolve(identity, scope, answer('duplicate-after-recovery')))
+        .toEqual({ ok: false, code: 'already-decided' });
+      const rows = await first.unsafe('SELECT text,tools,chat_state FROM harness_shared.operator_turns WHERE id=$1', [turn.turnId]);
+      expect(rows[0].text).toBe('Saved history — legacy writer after adoption');
+      expect(rows[0].tools).toHaveLength(legacyTools.length + 1);
+      expect(rows[0].tools[0]).toEqual(legacyTools[0]);
+      expect(rows[0].chat_state.interactions.choice).toMatchObject({ status: 'resolved', revision: 1 });
+    } finally {
+      // Restore the additive schema even when an assertion fails so a failed
+      // compatibility check cannot cause unrelated cases to fail on setup.
+      await first.unsafe(readFileSync(migration, 'utf8'));
+    }
+  });
+
   async function concreteCard() {
     await first.unsafe('DELETE FROM harness_shared.operator_turns');
     const parentBearer = 'concrete-parent-credential';

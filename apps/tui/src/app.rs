@@ -21189,19 +21189,24 @@ mod tests {
 
     #[test]
     fn session_setup_registers_project_only_after_review_then_requires_selection() {
+        let project_path = if cfg!(windows) {
+            "C:/operator/projects/new"
+        } else {
+            "/operator/projects/new"
+        };
         let mut a = setup_app();
         a.chat_input = "keep first draft".into();
         a.open_session_setup();
         a.on_key(KeyCode::Char('c'), KeyModifiers::NONE);
         a.update(Event::Paste("new-project".into()));
         assert_eq!(a.on_key(KeyCode::Enter, KeyModifiers::NONE), Action::Render);
-        a.update(Event::Paste("/operator/projects/new".into()));
+        a.update(Event::Paste(project_path.into()));
         assert_eq!(a.on_key(KeyCode::Enter, KeyModifiers::NONE), Action::Render);
         assert_eq!(
             a.on_key(KeyCode::Enter, KeyModifiers::NONE),
             Action::RegisterSetupProject {
                 slug: "new-project".into(),
-                path: "/operator/projects/new".into(),
+                path: project_path.into(),
             }
         );
         // Repeated Enter cannot duplicate the pending write.
@@ -21210,7 +21215,7 @@ mod tests {
             slug: "new-project".into(),
             result: Ok(vec![HarnessRef {
                 slug: "new-project".into(),
-                path: Some("/operator/projects/new".into()),
+                path: Some(project_path.into()),
             }]),
         });
         assert_eq!(

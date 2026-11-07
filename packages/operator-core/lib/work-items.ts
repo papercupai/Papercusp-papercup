@@ -6019,7 +6019,7 @@ export async function claimWorkItem(
     agentReviewAdmission?: AgentReviewClaimAdmission;
     /**
      * BQL D-008 revision adoption: exception to the issue intake floor for one exact content
-     * revision. Feature-family rows have no intake floor, so the feature branch ignores it.
+     * revision. Both families retain the self-select hold when using this capability.
      */
     revisionAdoptionAdmission?: AgentReviewRevisionAdoptionAdmission;
   } = {},
@@ -6136,6 +6136,9 @@ export async function claimWorkItem(
     const agentReviewAdmission = matchesAgentReviewClaimAdmission(opts.agentReviewAdmission, prior, assignee)
       ? opts.agentReviewAdmission
       : null;
+    const revisionAdoptionAdmission = matchesAgentReviewRevisionAdoptionAdmission(
+      opts.revisionAdoptionAdmission, prior, assignee,
+    ) ? opts.revisionAdoptionAdmission : null;
     const { sql } = getOrgPg();
     const expectedAssignee = opts.expectedAssignee?.trim() || null;
     // ws scopes the P-010 trust subquery in autoPickableWhereSql (D-004 — explicit,
@@ -6203,10 +6206,9 @@ export async function claimWorkItem(
          -- audited state transition; this predicate is the CAS backstop if the
          -- row became terminal after the pre-read above.
          AND lower(btrim(COALESCE(target.status, ''))) <> ALL(${ANY_FAMILY_TERMINAL_STATES as string[]}::text[])
-         -- The reviewer admission is used by self-selecting pickup after a queue read. It
-         -- lifts only the pending-review intake floor; it must retain the durable self-select
-         -- park even though ordinary named claims may intentionally bypass that floor.
-         AND ${agentReviewAdmission ? claimHoldExclusionSql(sql, 'target.payload') : sql`TRUE`}
+         -- Review and revision adoption are self-selecting pickup after a queue read.
+         -- Neither admission may bypass a durable park added after discovery.
+         AND ${agentReviewAdmission || revisionAdoptionAdmission ? claimHoldExclusionSql(sql, 'target.payload') : sql`TRUE`}
          AND ${agentReviewAdmission ? admissionRecoveryExclusionSql(sql, 'target.payload') : sql`TRUE`}
          AND ${agentReviewAdmission ? admissionHoldExclusionSql(sql, 'target.payload') : sql`TRUE`}
          AND ${operationClaims.operationWorkerClaimWhereSql(sql, operationClaimRead, {

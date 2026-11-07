@@ -5431,7 +5431,7 @@ describe('tools/call — role, profile, and workspace gating through the dispatc
       servedMode: 'not_modified',
       reconstructedFull: true,
     });
-    expect(JSON.parse(textOf(second))).toEqual(expected);
+    expect(jsonOf(second)).toEqual(expected);
   });
 
   it('delta proxy: explicit client _meta.delta is honored, not overwritten by the proxy cache', async () => {
@@ -5455,10 +5455,12 @@ describe('tools/call — role, profile, and workspace gating through the dispatc
       }),
     );
     const extra = extraFor(signedUrl({ role: 'scoper', spawn: 'spawn-wire-semantic' }));
-    expect(JSON.parse(textOf(await callTool('gatingtest:delta_wire', {}, extra)))).toEqual(previous);
+    // A focused run can receive the once-per-owner advisory on this first call.
+    // Compare the JSON payload block independently of advisory content blocks.
+    expect(jsonOf(await callTool('gatingtest:delta_wire', {}, extra))).toEqual(previous);
     const result = await callTool('gatingtest:delta_wire', {}, extra);
     expect(result.isError).toBeUndefined();
-    expect(JSON.parse(textOf(result))).toEqual(current);
+    expect(jsonOf(result)).toEqual(current);
     expect(result._meta?.delta).toMatchObject({ mode: 'full', reason: 'proxy_reconstructed' });
     expect(result._meta?.deltaProxy).toMatchObject({ servedMode: 'delta', reconstructedFull: true });
     expect(deltaWireRequested).toEqual([undefined, 'not_modified~wire-base']);
@@ -5480,7 +5482,7 @@ describe('tools/call — role, profile, and workspace gating through the dispatc
     await callTool('gatingtest:delta_wire', {}, extra);
     const result = await callTool('gatingtest:delta_wire', {}, extra);
     expect(result.isError).toBeUndefined();
-    expect(JSON.parse(textOf(result))).toEqual(current);
+    expect(jsonOf(result)).toEqual(current);
     expect(result._meta?.delta).toMatchObject({ mode: 'full', cursor: 'wire-recovered' });
     expect(deltaWireRequested).toEqual([undefined, 'not_modified~wire-base', undefined]);
     expect(deltaWireReplies).toEqual([]);
@@ -5500,7 +5502,7 @@ describe('tools/call — role, profile, and workspace gating through the dispatc
     await callTool('gatingtest:delta_wire', {}, extra);
     const result = await callTool('gatingtest:delta_wire', {}, extra);
     expect(result.isError).toBeUndefined();
-    expect(JSON.parse(textOf(result))).toEqual(data);
+    expect(jsonOf(result)).toEqual(data);
     expect(result._meta?.delta).toMatchObject({ mode: 'full', supported });
     expect(result._meta?.deltaProxy).toBeUndefined();
     expect(deltaWireRequested).toEqual([undefined, 'not_modified~wire-base', undefined]);

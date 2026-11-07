@@ -809,14 +809,47 @@ describe('db:migrate — lease loss after SQL guards (WI-10008141)', () => {
   );
 
   it('fails closed when post-wait lease validation is unavailable', async () => {
+    const failure = Object.assign(new Error('secret postgres://admin:password@host/db; SELECT private_data'), {
+      code: '08006', cause: Object.assign(new Error('secret connection detail'), { code: 'CONNECT_TIMEOUT' }),
+    });
     const assertCurrent = vi.fn()
       .mockResolvedValueOnce({ current: true, live_fence_seq: 7 })
-      .mockRejectedValue(new Error('lock database unavailable'));
+      .mockRejectedValue(failure);
     h.guardResource.mockImplementation(async (_spec, run) => ({
       acquired: true, result: await run({ seq: 7, assertCurrent }),
     }));
     const out = parse(await (migrateTool as never as { handler: Function }).handler({ file: FILE, confirm: true }, CTX));
     expect(out.reason).toBe('stale_fence_check_failed');
+    expect(out.fence_check_failure).toEqual([
+      { name: 'Error', code: '08006' }, { name: 'Error', code: 'CONNECT_TIMEOUT' },
+    ]);
+    expect(out.note).toContain('could not be re-verified');
+    expect(JSON.stringify(out)).not.toContain('secret');
+    expect(JSON.stringify(out)).not.toContain('password');
+    expect(h.recordResourceAction).not.toHaveBeenCalled();
+    expect((h.spawnSync.mock.calls[0][2] as { input: string }).input).not.toContain(`\\i ${FILE}`);
+  });
+
+  it.each([
+    ['unknown primitive', 'secret failure', [{ name: 'UnknownError' }]],
+    ['unsafe fields', { name: 'secret name', code: 'SELECT private_data' }, [{ name: 'UnknownError' }]],
+    ['cyclic cause', (() => { const error = new Error('secret'); error.cause = error; return error; })(),
+      Array.from({ length: 4 }, () => ({ name: 'Error' }))],
+    ['unreadable fourth cause', (() => {
+      const chain = Array.from({ length: 4 }, () => new Error('secret'));
+      for (let i = 0; i < 3; i++) chain[i].cause = chain[i + 1];
+      Object.defineProperty(chain[3], 'cause', { get() { throw new Error('secret'); } });
+      return chain[0];
+    })(), Array.from({ length: 4 }, () => ({ name: 'Error' }))],
+    ['unreadable properties', Object.defineProperty({}, 'name', { get() { throw new Error('secret'); } }),
+      [{ name: 'UninspectableError' }]],
+  ])('still withholds DDL for a fence exception with %s', async (_label, failure, expected) => {
+    const assertCurrent = vi.fn().mockResolvedValueOnce({ current: true }).mockRejectedValue(failure);
+    h.guardResource.mockImplementation(async (_spec, run) => ({
+      acquired: true, result: await run({ seq: 7, assertCurrent }),
+    }));
+    const out = parse(await (migrateTool as never as { handler: Function }).handler({ file: FILE, confirm: true }, CTX));
+    expect(out).toMatchObject({ reason: 'stale_fence_check_failed', fence_check_failure: expected });
     expect(h.recordResourceAction).not.toHaveBeenCalled();
     expect((h.spawnSync.mock.calls[0][2] as { input: string }).input).not.toContain(`\\i ${FILE}`);
   });

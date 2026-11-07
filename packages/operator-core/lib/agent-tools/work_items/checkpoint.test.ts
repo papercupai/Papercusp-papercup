@@ -5405,6 +5405,21 @@ describe('work_items:checkpoint — absence-premise continuity lint (WI-7238)', 
     expect(setWorkItemCheckpointWithPrior).toHaveBeenCalled();
   });
 
+  it('does not prescribe a repo search for this session\'s claim and action history', async () => {
+    const body =
+      'We have NO bug claim, NO change-kind declaration, NO code edit/test/rerun yet. ' +
+      'Both exact item claims returned not_claimable/admission-pending and the target item remains unassigned.';
+    getWorkItem.mockResolvedValue({ id: 'WI-SESSION-ACTION-NEGATION', harness: 'papercup' });
+    setWorkItemCheckpointWithPrior.mockResolvedValue({ stored: body, priorLength: 0 });
+    getWorkItemCheckpoint.mockResolvedValue(body);
+
+    const result = await one({ id: 'WI-SESSION-ACTION-NEGATION', checkpoint: body });
+
+    expect(result.ok).toBe(true);
+    expect(result).not.toHaveProperty('absenceLint');
+    expect(setWorkItemCheckpointWithPrior).toHaveBeenCalled();
+  });
+
   it('suppresses the advisory when the stored check rows already carry the falsifier', async () => {
     const check = {
       claim,

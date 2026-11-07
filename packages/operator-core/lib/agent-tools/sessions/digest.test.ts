@@ -57,6 +57,35 @@ describe('sessions:digest time-window bounds', () => {
     expect(boundValues).not.toContain('14d');
   });
 
+  it('keeps historical timestamp bounds indexable before disclosure filtering', async () => {
+    const tx = digestTx();
+
+    await handler()({
+      since: '2026-10-30T00:00:00.000Z',
+      until: '2026-10-31T23:59:59.000Z',
+    }, { workspaceId: 'ws-test', tx });
+
+    const statement = tx.mock.calls
+      .map(([strings]) => (Array.isArray(strings) ? strings.join('?') : ''))
+      .find((query) => query.includes('WITH scoped_window AS MATERIALIZED'));
+    expect(statement).toBeDefined();
+    expect(statement).toContain('ts IS NOT NULL');
+    expect(statement).toContain('ts >= ?');
+    expect(statement).toContain('ts <= ?');
+    expect(statement).toContain('ts IS NULL');
+    expect(statement).toContain('ingested_at >= ?');
+    expect(statement).toContain('ingested_at <= ?');
+    expect(statement).not.toContain('COALESCE(ts, ingested_at) >= ?');
+    expect(statement).not.toContain('COALESCE(ts, ingested_at) <= ?');
+
+    const windowCte = statement!.indexOf('scoped_window AS MATERIALIZED');
+    const filteredCte = statement!.indexOf('scoped AS MATERIALIZED');
+    const filteredBody = statement!.slice(filteredCte, statement!.indexOf('agg AS', filteredCte));
+    expect(filteredCte).toBeGreaterThan(windowCte);
+    expect(filteredBody).toContain('FROM scoped_window windowed');
+    expect(filteredBody).toContain('WHERE NOT ?');
+  });
+
   it('rejects an invalid since bound before opening a database query', async () => {
     const tx = vi.fn();
 

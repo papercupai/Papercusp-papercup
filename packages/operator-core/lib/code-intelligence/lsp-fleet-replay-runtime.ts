@@ -307,7 +307,13 @@ export async function freezeQualifiedReplayConfig(inputPath: string, outputPath:
     // must still match the complete prelaunch byte census before qualification.
     const sourceFiles = freezeReplayRuntimeFiles([input.rootPath], { nativeDependencies: () => [] });
     const files = { ...sourceFiles, ...freezeReplayRuntimeFiles([process.execPath, resolve(inputPath),
-      options.freezerEntry, ...options.compilerEntries, ...options.runtimePaths], deps) };
+      options.freezerEntry, ...options.compilerEntries, ...options.runtimePaths], {
+      nativeDependencies: deps.nativeDependencies,
+      onProgress: row => {
+        if (!row.phase.startsWith('native-dependency-scan-')) return;
+        appendFileSync(join(directory, 'phases.jsonl'), `${JSON.stringify({ ...row, atMs: Date.now(), operationPhase: phase })}\n`);
+      },
+    }) };
     const witness: ReplayRuntimeWitness = { directory, runId: input.runId,
       bootstraps: { [launch.entry]: launch.evalSha256 }, files };
     const declaration = { witness, freezerEntry: launch.entry, compilerEntries: options.compilerEntries };
@@ -421,15 +427,53 @@ export const replayOracleFingerprint = (oracle: Pick<ReplayOracle, 'sites' | 'st
  * Loaded-byte verification still refuses anything outside this population. */
 export function freezeReplayRuntimeFiles(paths: readonly string[], options: {
   nativeDependencies?: (file: string) => readonly string[];
-  onProgress?: (progress: { phase: string; completed: number; total: number }) => void;
+  onProgress?: (progress: {
+    phase: string; completed: number; total: number; file?: string; scanId?: number;
+    startedAtMs?: number; elapsedMs?: number;
+    error?: { name: string; message: string; code?: string; signal?: string; status?: number | null };
+  }) => void;
 } = {}): Record<string, string> {
   const files: Record<string, string> = {};
   const directories = new Set<string>();
   const buffer = Buffer.allocUnsafe(64 * 1024);
+  const pending = paths.map(path => ({ path: resolve(path), root: realpathSync(path), ancestors: [] as string[] }));
+  let completed = 0;
+  let nativeScanId = 0;
+  const describeScanError = (error: unknown) => {
+    const details = error && typeof error === 'object' ? error as {
+      code?: unknown; signal?: unknown; status?: unknown;
+    } : {};
+    const message = error instanceof Error ? error.message : String(error);
+    return {
+      name: error instanceof Error ? error.name : typeof error,
+      message: message.slice(0, 2_000),
+      ...(typeof details.code === 'string' || typeof details.code === 'number' ? { code: String(details.code) } : {}),
+      ...(typeof details.signal === 'string' ? { signal: details.signal } : {}),
+      ...(details.status === null || typeof details.status === 'number' ? { status: details.status } : {}),
+    };
+  };
+  const runLdd = (file: string) => {
+    const scanId = ++nativeScanId;
+    const startedAtMs = Date.now();
+    const report = (phase: string, fields: { elapsedMs?: number; error?: ReturnType<typeof describeScanError> } = {}) =>
+      options.onProgress?.({ phase, file, scanId, startedAtMs, completed, total: completed + pending.length, ...fields });
+    report('native-dependency-scan-started');
+    let output: string;
+    try { output = execFileSync('ldd', [file], { encoding: 'utf8', timeout: 10_000 }); }
+    catch (error) {
+      try { report('native-dependency-scan-failed', { elapsedMs: Date.now() - startedAtMs, error: describeScanError(error) }); }
+      catch (recordError) {
+        throw new Error(`native-dependency-scan-evidence-failed:${String(error).slice(0, 1_000)};${String(recordError).slice(0, 1_000)}`);
+      }
+      throw error;
+    }
+    report('native-dependency-scan-succeeded', { elapsedMs: Date.now() - startedAtMs });
+    return output;
+  };
   let hostLibc: 'glibc' | 'musl' | null | undefined;
   const resolveHostLibc = () => {
     if (hostLibc === undefined) {
-      const host = execFileSync('ldd', [process.execPath], { encoding: 'utf8', timeout: 10_000 });
+      const host = runLdd(process.execPath);
       const glibc = /\blibc\.so\.6\b/.test(host);
       const musl = /\b(?:libc\.musl-|ld-musl-)/.test(host);
       hostLibc = glibc !== musl ? (glibc ? 'glibc' : 'musl') : null;
@@ -491,12 +535,10 @@ export function freezeReplayRuntimeFiles(paths: readonly string[], options: {
       }
       if (dirname(directory) === directory) break;
     }
-    const output = execFileSync('ldd', [file], { encoding: 'utf8', timeout: 10_000 });
+    const output = runLdd(file);
     if (/=>\s+not found/.test(output)) throw new Error(`missing-replay-native-dependency:${file}`);
     return [...output.matchAll(/(?:=>\s+|^\s*)(\/[^\s]+)\s+\(/gm)].map(match => match[1]);
   });
-  const pending = paths.map(path => ({ path: resolve(path), root: realpathSync(path), ancestors: [] as string[] }));
-  let completed = 0;
   while (pending.length) {
     const { path, root, ancestors } = pending.pop()!;
     const actual = realpathSync(path);

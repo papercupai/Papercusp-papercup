@@ -2684,8 +2684,10 @@ prepare_verifier_spa() {
   VERIFIER_SPA_DIST="$build_root/dist"
   log "frozen operator SPA ready at $VERIFIER_SPA_DIST"
 }
-verifier_run_step verifier-spa-build prepare_verifier_spa || { spa_rc=$?; cleanup_operator_source_snapshot; exit "$spa_rc"; }
+# Reject an incompatible frozen host graph before spending the SPA build budget.
+# Import smoke stays after SPA prebuild, which materializes runtime assets.
 verifier_run_step verifier-host-bundle build_verifier_operator_host || { host_rc=$?; cleanup_operator_source_snapshot; exit "$host_rc"; }
+verifier_run_step verifier-spa-build prepare_verifier_spa || { spa_rc=$?; cleanup_operator_source_snapshot; exit "$spa_rc"; }
 verifier_run_step verifier-host-import-smoke smoke_verifier_operator_host || { smoke_rc=$?; cleanup_operator_source_snapshot; exit "$smoke_rc"; }
 if [ "$PREPARE_ONLY" -eq 1 ]; then
   log "PREPARE_ONLY_OK source snapshot and host import smoke; no native acceptance"

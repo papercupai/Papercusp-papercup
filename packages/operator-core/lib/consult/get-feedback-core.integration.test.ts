@@ -1231,7 +1231,9 @@ describe('recoverable interactive feedback requests', () => {
     expect(initial.totals).toMatchObject({ launched: 0, failed: 0 });
 
     for (let retry = 0; retry < 3; retry++) {
-      expect((await acceptFeedbackRequestCore(requests[0], fixture.deps)).conversation_id).toBe(conversationId);
+      const accepted = await acceptFeedbackRequestCore(requests[0], fixture.deps);
+      if ('error' in accepted) throw new Error(`unexpected acceptance refusal: ${accepted.error}`);
+      expect(accepted.conversation_id).toBe(conversationId);
     }
     // Persist both walks through the production writer. They are two launch
     // attempts for the same request, not two additional requests or a terminal
@@ -1292,6 +1294,7 @@ describe('recoverable interactive feedback requests', () => {
     const fixture = makeDeps(routeOf([]));
     const request = { ...baseReq, requestKey: 'accepted-scoring-lease-bound' };
     const accepted = await acceptFeedbackRequestCore(request, fixture.deps);
+    if ('error' in accepted) throw new Error(`unexpected acceptance refusal: ${accepted.error}`);
     const execute = vi.fn((payload, context) => getFeedbackCore(payload, {
       ...fixture.deps, acceptedRequest: context,
     }));
@@ -1311,6 +1314,7 @@ describe('recoverable interactive feedback requests', () => {
       const fixture = makeDeps(routeOf([], { degraded }));
       const request = { ...baseReq, requestKey: `recoverable-result-${degraded ?? 'measured'}`, minResponders: 0 };
       const accepted = await acceptFeedbackRequestCore(request, fixture.deps);
+      if ('error' in accepted) throw new Error(`unexpected acceptance refusal: ${accepted.error}`);
       expect(accepted).not.toHaveProperty('result');
       await continueFeedbackRequestCore(WS, accepted.conversation_id, {
         getSql: () => rootSql, now: () => NOW,
@@ -1354,6 +1358,7 @@ describe('recoverable interactive feedback requests', () => {
       const fixture = makeDeps(routeOf([], { degraded }));
       const request = { ...baseReq, requestKey: `unmeasured-concurrent-${degraded}` };
       const accepted = await acceptFeedbackRequestCore(request, fixture.deps);
+      if ('error' in accepted) throw new Error(`unexpected acceptance refusal: ${accepted.error}`);
       const run = (execute: Parameters<typeof continueFeedbackRequestCore>[2]['execute']) =>
         continueFeedbackRequestCore(WS, accepted.conversation_id, { getSql: () => rootSql, now: () => NOW, execute });
       await run((payload, context) => getFeedbackCore(payload, { ...fixture.deps, acceptedRequest: context }));
@@ -1467,6 +1472,7 @@ describe('recoverable interactive feedback requests', () => {
       const request = { ...baseReq, requestKey: `unmeasured-fence-${fence}`,
         ...(fence === 'retrieval-only' ? { allowDispatch: false } : {}) };
       const accepted = await acceptFeedbackRequestCore(request, fixture.deps);
+      if ('error' in accepted) throw new Error(`unexpected acceptance refusal: ${accepted.error}`);
       await continueFeedbackRequestCore(WS, accepted.conversation_id, { getSql: () => rootSql, now: () => NOW,
         execute: (payload, context) => getFeedbackCore(payload, { ...fixture.deps, acceptedRequest: context }),
       });
@@ -1520,6 +1526,7 @@ describe('recoverable interactive feedback requests', () => {
     const request = { ...baseReq, requestKey: planSlug, policy: 'bar-critique', originTaskRef: planSlug,
       harnessSlug: 'papercusp', excludeOwners: ['explicitly-excluded'], maxResponders: 1 };
     const accepted = await acceptFeedbackRequestCore(request, fixture.deps);
+    if ('error' in accepted) throw new Error(`unexpected acceptance refusal: ${accepted.error}`);
     await continueFeedbackRequestCore(WS, accepted.conversation_id, { getSql: () => rootSql, now: () => NOW,
       execute: (payload, context) => getFeedbackCore(payload, { ...fixture.deps, acceptedRequest: context }),
     });
@@ -1602,6 +1609,8 @@ describe('recoverable interactive feedback requests', () => {
     const [a, b] = await Promise.all([
       acceptFeedbackRequestCore(request, fixture.deps), acceptFeedbackRequestCore(request, fixture.deps),
     ]);
+    if ('error' in a) throw new Error(`unexpected acceptance refusal: ${a.error}`);
+    if ('error' in b) throw new Error(`unexpected acceptance refusal: ${b.error}`);
     expect(a).toMatchObject({ verdict: 'accepted', pending: true, state: 'routing' });
     expect(b).toMatchObject({ conversation_id: a.conversation_id, request_key: request.requestKey });
     expect(fixture.routeCalls).toHaveLength(0);
@@ -1615,10 +1624,13 @@ describe('recoverable interactive feedback requests', () => {
     const fixture = makeDeps(routeOf([]));
     const request = { ...baseReq, requestKey: 'recoverable-conflict', question: 'original recoverable question' };
     const accepted = await acceptFeedbackRequestCore(request, fixture.deps);
+    if ('error' in accepted) throw new Error(`unexpected acceptance refusal: ${accepted.error}`);
     expect(await acceptFeedbackRequestCore({ ...request, question: 'changed question' }, fixture.deps))
       .toMatchObject({ error: 'request_key_conflict', conversation_id: accepted.conversation_id });
     const peer = await acceptFeedbackRequestCore({ ...request, requesterId: 'another-requester' }, fixture.deps);
+    if ('error' in peer) throw new Error(`unexpected acceptance refusal: ${peer.error}`);
     const otherWorkspace = await acceptFeedbackRequestCore({ ...request, workspaceId: 'another-workspace' }, fixture.deps);
+    if ('error' in otherWorkspace) throw new Error(`unexpected acceptance refusal: ${otherWorkspace.error}`);
     expect(peer.conversation_id).not.toBe(accepted.conversation_id);
     expect(otherWorkspace.conversation_id).not.toBe(accepted.conversation_id);
   });
@@ -1627,6 +1639,7 @@ describe('recoverable interactive feedback requests', () => {
     const fixture = makeDeps(routeOf([cand('restart-expert')]));
     const request = { ...baseReq, requestKey: 'recoverable-restart', question: 'response lost before routing starts' };
     const accepted = await acceptFeedbackRequestCore(request, fixture.deps);
+    if ('error' in accepted) throw new Error(`unexpected acceptance refusal: ${accepted.error}`);
     const execute = vi.fn(async (payload: GetFeedbackRequest, context: NonNullable<GetFeedbackDeps['acceptedRequest']>) =>
       getFeedbackCore(payload, { ...fixture.deps, acceptedRequest: context }));
     const resumeRequest = (workspace: string, id: string) => id === accepted.conversation_id
@@ -1639,6 +1652,7 @@ describe('recoverable interactive feedback requests', () => {
     expect(fixture.opened).toHaveLength(1);
     expect(await resumeRequest(WS, accepted.conversation_id)).toBe(false);
     const replay = await acceptFeedbackRequestCore(request, fixture.deps);
+    if ('error' in replay) throw new Error(`unexpected acceptance refusal: ${replay.error}`);
     expect(replay).toMatchObject({ conversation_id: accepted.conversation_id, state: 'awaiting_responder', pending: false });
     expect((await stateRow(accepted.conversation_id)).routing).toMatchObject({
       request: { key: request.requestKey, result: { verdict: 'routed' } },
@@ -1650,6 +1664,7 @@ describe('recoverable interactive feedback requests', () => {
     const fixture = makeDeps(routeOf([cand('lease-expert')]));
     const request = { ...baseReq, requestKey: 'recoverable-lease', question: 'single worker lease' };
     const accepted = await acceptFeedbackRequestCore(request, fixture.deps);
+    if ('error' in accepted) throw new Error(`unexpected acceptance refusal: ${accepted.error}`);
     let release!: () => void;
     const barrier = new Promise<void>(resolve => { release = resolve; });
     let entered!: () => void;
@@ -1667,6 +1682,7 @@ describe('recoverable interactive feedback requests', () => {
     expect(fixture.reached).toHaveLength(1);
 
     const abandoned = await acceptFeedbackRequestCore({ ...request, requestKey: 'recoverable-abandoned' }, fixture.deps);
+    if ('error' in abandoned) throw new Error(`unexpected acceptance refusal: ${abandoned.error}`);
     await rootSql`UPDATE harness_shared.consult_state SET routing = jsonb_set(routing, '{request}',
       (routing->'request') || ${rootSql.json({ leaseToken: 'dead-process', leaseUntil: NOW.toISOString() } as never)})
       WHERE workspace_id = ${WS} AND conversation_id = ${abandoned.conversation_id}`;
@@ -1679,6 +1695,7 @@ describe('recoverable interactive feedback requests', () => {
   it('refuses a stale worker before dispatch after another lease won', async () => {
     const fixture = makeDeps(routeOf([cand('stale-worker-expert')]));
     const accepted = await acceptFeedbackRequestCore({ ...baseReq, requestKey: 'recoverable-stale-worker' }, fixture.deps);
+    if ('error' in accepted) throw new Error(`unexpected acceptance refusal: ${accepted.error}`);
     await expect(continueFeedbackRequestCore(WS, accepted.conversation_id, {
       getSql: () => rootSql, now: () => NOW,
       execute: async (payload, context) => {
@@ -1695,6 +1712,7 @@ describe('recoverable interactive feedback requests', () => {
     const fixture = makeDeps(routeOf([cand('durable-initial-expert')]));
     const accepted = await acceptFeedbackRequestCore({ ...baseReq, requestKey: `durable-initial-${policy ?? 'default'}`, policy,
       ...(policy === 'method-review' ? { methodReviewRubricRef: 'acceptance-durable-method' } : {}) }, fixture.deps);
+    if ('error' in accepted) throw new Error(`unexpected acceptance refusal: ${accepted.error}`);
     const execute = vi.fn((payload: GetFeedbackRequest, context: NonNullable<GetFeedbackDeps['acceptedRequest']>) =>
       getFeedbackCore(payload, { ...fixture.deps, acceptedRequest: context,
         resumeInitialDispatch: () => { throw new Error('process stopped before initial continuation'); } }));
@@ -1750,6 +1768,7 @@ describe('recoverable interactive feedback requests', () => {
     const fixture = makeDeps(routeOf([cand('capacity-first'), cand('capacity-next')]));
     const request = { ...baseReq, requestKey: 'native-capacity-recovery', maxResponders: 2 };
     const accepted = await acceptFeedbackRequestCore(request, fixture.deps);
+    if ('error' in accepted) throw new Error(`unexpected acceptance refusal: ${accepted.error}`);
     await continueFeedbackRequestCore(WS, accepted.conversation_id, {
       getSql: () => rootSql, now: () => NOW,
       execute: (payload, acceptedRequest) => getFeedbackCore(payload, {
@@ -1776,6 +1795,7 @@ describe('recoverable interactive feedback requests', () => {
   it('does not persist a target-capacity stop after its deferred dispatch lease is replaced', async () => {
     const fixture = makeDeps(routeOf([cand('capacity-stale')]));
     const accepted = await acceptFeedbackRequestCore({ ...baseReq, requestKey: 'capacity-stale-lease' }, fixture.deps);
+    if ('error' in accepted) throw new Error(`unexpected acceptance refusal: ${accepted.error}`);
     await continueFeedbackRequestCore(WS, accepted.conversation_id, {
       getSql: () => rootSql, now: () => NOW,
       execute: (payload, acceptedRequest) => getFeedbackCore(payload, {
@@ -1801,6 +1821,7 @@ describe('recoverable interactive feedback requests', () => {
     const fixture = makeDeps(routeOf(kind === 'empty' ? [] : [cand(`durable-${kind}`)]));
     const request = { ...baseReq, requestKey: `durable-${kind}`, allowDispatch: kind !== 'retrieval', minResponders: 0 };
     const accepted = await acceptFeedbackRequestCore(request, fixture.deps);
+    if ('error' in accepted) throw new Error(`unexpected acceptance refusal: ${accepted.error}`);
     const resumeInitialDispatch = vi.fn();
     let result: GetFeedbackResult | GetFeedbackError | undefined;
     await continueFeedbackRequestCore(WS, accepted.conversation_id, {
@@ -1823,6 +1844,7 @@ describe('recoverable interactive feedback requests', () => {
   it('does not replay dispatch after losing the response beyond the selected-row commit', async () => {
     const fixture = makeDeps(routeOf([cand('post-commit-expert')]));
     const accepted = await acceptFeedbackRequestCore({ ...baseReq, requestKey: 'recoverable-post-commit' }, fixture.deps);
+    if ('error' in accepted) throw new Error(`unexpected acceptance refusal: ${accepted.error}`);
     const execute = vi.fn((payload: GetFeedbackRequest, context: NonNullable<GetFeedbackDeps['acceptedRequest']>) =>
       getFeedbackCore(payload, { ...fixture.deps, acceptedRequest: context,
         reach: async () => { throw new Error('process lost after selected row committed'); } }));
@@ -2937,6 +2959,7 @@ describe('getFeedbackCore — subjectRef routing', () => {
     };
 
     const accepted = await acceptFeedbackRequestCore(request, fixture.deps);
+    if ('error' in accepted) throw new Error(`unexpected acceptance refusal: ${accepted.error}`);
     const stored = await rootSql`
       SELECT routing->'request'->'payload' AS payload
       FROM harness_shared.consult_state

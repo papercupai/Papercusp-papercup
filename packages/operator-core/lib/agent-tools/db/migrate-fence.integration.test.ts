@@ -164,6 +164,31 @@ describe('db:migrate exact fence through backup waits', () => {
     expect(acquired).toBe(false);
   }, 10_000);
 
+  it('retains the lease-reader SQLSTATE and cancels only its own backup waiter', async () => {
+    await backup`SELECT pg_advisory_lock(hashtext(${BACKUP_MIGRATION_ADVISORY_LOCK_KEY}))`;
+    const [{ pid: backupPid }] = await backup`SELECT pg_backend_pid() AS pid`;
+    const marker = start();
+    const migrationPid = await waitForBackupWait(marker);
+    try {
+      // Break only this private lease reader while the real backup wait is held.
+      await leases.unsafe('ALTER TABLE agent_resource_locks RENAME TO unavailable_lease_table');
+      const result = await pending;
+      expect(result?.staleFence).toMatchObject({ current: false, reason: 'check_failed',
+        checkFailure: [{ name: 'PostgresError', code: '42P01' }] });
+      expect(result?.status).not.toBe(0);
+      expect(await hasTable('proof_first')).toBe(false);
+      expect(await target`SELECT filename FROM harness_shared.schema_migrations`).toHaveLength(0);
+      await vi.waitFor(async () => {
+        expect(await target`SELECT pid FROM pg_stat_activity WHERE pid = ${migrationPid}`).toEqual([]);
+      }, { timeout: 5_000, interval: 50 });
+      expect(await target`SELECT pid FROM pg_stat_activity WHERE pid = ${backupPid}`).toHaveLength(1);
+      const [{ acquired }] = await target`SELECT pg_try_advisory_lock(hashtext(${BACKUP_MIGRATION_ADVISORY_LOCK_KEY})) AS acquired`;
+      expect(acquired).toBe(false);
+    } finally {
+      await leases.unsafe('ALTER TABLE unavailable_lease_table RENAME TO agent_resource_locks');
+    }
+  }, 10_000);
+
   it('checks again after the wait releases, before sending any DDL', async () => {
     await backup`SELECT pg_advisory_lock(hashtext(${BACKUP_MIGRATION_ADVISORY_LOCK_KEY}))`;
     const marker = start();

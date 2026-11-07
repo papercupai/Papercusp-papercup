@@ -583,13 +583,18 @@ function boundedEvidenceRead(
       },
     };
   };
+  const fitsEvidencePage = (candidate: ReturnType<typeof page>) => fitsInlineResult({
+    evidence: candidate.scorecard.criteria[0]?.evidence ?? '',
+    evidenceRead: candidate.evidenceRead,
+  }, inlineBudgetChars);
   let result = page();
-  while (!fitsInlineResult(result, inlineBudgetChars) && count > 1) {
+  while (!fitsEvidencePage(result) && count > 1) {
     count = Math.max(1, Math.floor(count / 2));
     result = page();
   }
-  // Keep the complete page when non-evidence metadata is the part that cannot
-  // fit inline; the shared result door can expose it through a recoverable ref.
+  // Size the evidence and its cursor independently from scorecard metadata.
+  // Large retained ledger provenance must not collapse a useful evidence page
+  // to one character; the shared result door spills oversized metadata whole.
   return result;
 }
 
@@ -641,7 +646,7 @@ export default defineTool({
     chaining:
       'Call dev:pipeline_position first; use the same exact route for scorecards:get and plans:evaluate-spec-test-adequacy. ' +
       'For adequacy, replay with { slug: rerunRecipe.args.slug, scorecardId: issueId }; match historicalAuditOnly.asOf to scorecard.createdAt. Use rerunRecipe.args only for present-state measurement. ' +
-      'Retained replay requires criterionKey. scope:probe-predicate returns one scalar; scope:sql-query needs complete typed rows from the original clock. Unavailable SQL inputs remain unavailable; never substitute live data. ' +
+      'Retained replay requires criterionKey. scope="probe-predicate" returns one scalar; scope="sql-query" needs complete typed rows from the original clock. Unavailable SQL inputs remain unavailable; never substitute live data. ' +
       'Batch independent criteria with small Promise.all groups; page sequentially and concatenate complete pages. Recover envelopes via capability:read and complete recipe/index/evidence pages before grading; emit the audit last. See /internal/docs/system/rubrics-scorecards.',
     returns:
     'Returns {ok, scorecard, evidenceRead, rerunRecipeRead?}; may include evidenceFingerprint and evaluatorBuildCurrentness. Oversized cards page indexes, criteria and recipes; recover complete evidence pages before grading.',

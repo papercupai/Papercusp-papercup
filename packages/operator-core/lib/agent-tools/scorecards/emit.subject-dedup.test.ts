@@ -12,6 +12,7 @@ const getRubricPlanRevision = vi.fn();
 const readRubricPlanRevision = vi.fn();
 const listScorecards = vi.fn();
 const captureImprovement = vi.fn();
+const getIssue = vi.fn();
 
 vi.mock('../../rubrics', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../rubrics')>();
@@ -20,6 +21,7 @@ vi.mock('../../rubrics', async (importOriginal) => {
     getRubric: (...args: unknown[]) => getRubric(...args),
     readRubric: (...args: unknown[]) => readRubric(...args),
     getRubricEvidenceIdentity: (...args: unknown[]) => getRubricEvidenceIdentity(...args),
+    getRubricCriteriaHash: async () => RUBRIC.criteriaHash,
     getRubricPlanRevision: (...args: unknown[]) => getRubricPlanRevision(...args),
     readRubricPlanRevision: (...args: unknown[]) => readRubricPlanRevision(...args),
   };
@@ -34,7 +36,7 @@ vi.mock('../../harness/improvements/capture-core', () => ({
 vi.mock('../../scout/generation-watermark', () => ({ readRunningGeneration: async () => null }));
 vi.mock('../../issues-engineer', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../issues-engineer')>();
-  return { ...actual, getIssue: async () => null };
+  return { ...actual, getIssue: (...args: unknown[]) => getIssue(...args) };
 });
 vi.mock('../../sync-sse', () => ({ notifySyncInvalidate: () => {} }));
 vi.mock('../../scorecard-emitted-events', () => ({ emitScorecardEmitted: async () => {} }));
@@ -120,6 +122,7 @@ beforeEach(() => {
   getRubricPlanRevision.mockResolvedValue(7);
   readRubricPlanRevision.mockResolvedValue({ ok: true, revision: 7 });
   listScorecards.mockResolvedValue([]);
+  getIssue.mockResolvedValue(null);
   captureImprovement.mockResolvedValue({ ok: true, created: true, issue: { id: 'EI-new' } });
 });
 
@@ -188,6 +191,7 @@ describe('scorecards:emit unchanged-evidence subject scope', () => {
       rerunRecipe,
     })?.rerunRecipe;
     expect(normalized).toBeDefined();
+    if (normalized?.evaluator !== 'plans:evaluate-spec-test-adequacy') throw new Error('Expected adequacy replay recipe');
     expect(normalized!.args).not.toEqual(rerunRecipe.args);
 
     const rawFingerprint = scorecardEvidenceFingerprint({ rubricRef, ratings, rerunRecipe });
@@ -241,7 +245,7 @@ describe('scorecards:emit unchanged-evidence subject scope', () => {
     expect(captureImprovement).not.toHaveBeenCalled();
   });
 
-  it('supersedes a same-author terminal card when changed evidence replaces a pending audit target', async () => {
+  it('requires an explicit correction to supersede a pending audit target with changed evidence', async () => {
     const oldRatings = { c1: { rating: 'pass', evidence: 'prior measured evidence' } };
     const priorCard = {
       issueId: 'EI-prior-terminal',
@@ -258,18 +262,22 @@ describe('scorecards:emit unchanged-evidence subject scope', () => {
     listScorecards.mockImplementation(async (filter: { limit?: number }) =>
       filter.limit === 1 || filter.limit === 100 ? [priorCard] : [],
     );
+    getIssue.mockResolvedValue({ id: priorCard.issueId, payload: { observation: priorCard } });
+    const args = {
+      rubricRef,
+      ratings: { c1: { rating: 'pass', evidence: 'new measured evidence' } },
+      terminal: true,
+      subject: { kind: 'plan' as const, ref: subjectRef },
+    };
+    const input = { createdBy: 'su-grader', ctxHarness: 'papercusp' };
 
-    const result = await emitScorecard(
-      {
-        rubricRef,
-        ratings: { c1: { rating: 'pass', evidence: 'new measured evidence' } },
-        terminal: true,
-        subject: { kind: 'plan', ref: subjectRef },
-      },
-      { createdBy: 'su-grader', ctxHarness: 'papercusp' },
-    );
+    const ordinaryMeasurement = await emitScorecard(args, input);
+    expect(ordinaryMeasurement).toMatchObject({ ok: false, code: 'grading_audit_required' });
+    expect(captureImprovement).not.toHaveBeenCalled();
 
-    expect(result).toMatchObject({ ok: true, created: true, supersedes: 'EI-prior-terminal' });
+    const result = await emitScorecard({ ...args, supersedes: priorCard.issueId }, input);
+
+    expect(result, JSON.stringify(result)).toMatchObject({ ok: true, created: true, supersedes: 'EI-prior-terminal' });
     expect(captureImprovement.mock.calls[0]?.[0].payloadExtra.observation).toMatchObject({
       supersedes: 'EI-prior-terminal',
     });

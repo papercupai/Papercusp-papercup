@@ -122,6 +122,70 @@ console.log(JSON.stringify({ sites: censusSources({ 'src/app.ts': 'void notifyOw
     expect(c.sites.some(s => s.expression === 'sendOwner ( )')).toBe(true);
   });
 
+  it('keeps retry callback roots separate for pure reads and owner notices', () => {
+    const c = scan(`
+      function retry(callback) { return callback(); }
+      function readOnly() { return database.query('SELECT 1'); }
+      retry(readOnly);
+      retry(notifyOwner);
+    `);
+    expect(c.gaps).toEqual([]);
+    expect(c.sites.some(s => s.expression === 'retry ( readOnly )')).toBe(false);
+    expect(c.sites.find(s => s.expression === 'retry ( notifyOwner )')?.roots).toContain('notifyOwner');
+    expect(c.sites.find(s => s.expression === 'callback ( )')?.roots).toContain('notifyOwner');
+  });
+
+  it('retains wrapper-owned notices with a pure retry callback', () => {
+    const c = scan(`
+      function retry(callback) { notifyAttention(); return callback(); }
+      function readOnly() { return database.query('SELECT 1'); }
+      retry(readOnly);
+      retry(sendOwner);
+    `);
+    expect(c.sites.find(s => s.expression === 'retry ( readOnly )')?.roots).toEqual(['notifyAttention']);
+    expect(c.sites.find(s => s.expression === 'retry ( sendOwner )')?.roots).toEqual(['notifyAttention', 'sendOwner']);
+    const records = classify(c).map(r => ({ ...r, classification: 'safe-to-lose' }));
+    expect(validateClassifications(c, records)).toContain(
+      `mandatory notice cannot be safe-to-lose: ${c.sites.find(s => s.expression === 'retry ( readOnly )')!.id}`,
+    );
+  });
+
+  it('keeps nested forwarded callback aliases scoped to their caller', () => {
+    const c = scan(`
+      function retry(callback) { const alias = callback; return alias(); }
+      function relay(callback) { return retry(() => callback()); }
+      function readOnly() { return database.query('SELECT 1'); }
+      const forwarding = relay;
+      forwarding(readOnly);
+      forwarding(sendOwner);
+    `);
+    expect(c.sites.some(s => s.expression === 'forwarding ( readOnly )')).toBe(false);
+    expect(c.sites.find(s => s.expression === 'forwarding ( sendOwner )')?.roots).toContain('sendOwner');
+  });
+
+  it('retains unknown computed callback dispatch and recursive notification paths', () => {
+    const c = scan(`
+      function retry(callback) { return callback(); }
+      function dispatch() { return bus[runtimeKey](); }
+      function recursive(callback) { if (again) recursive(callback); return callback(); }
+      retry(dispatch);
+      recursive(sendOwner);
+    `);
+    expect(c.sites.find(s => s.expression === 'retry ( dispatch )')?.roots).toContain('<unresolved-computed-dispatch>');
+    expect(c.sites.find(s => s.expression === 'recursive ( sendOwner )')?.roots).toContain('sendOwner');
+    expect(c.sites.find(s => s.expression === 'recursive ( callback )')?.roots).toContain('sendOwner');
+  });
+
+  it('retains conservative roots when callback forwarding exceeds the context depth bound', () => {
+    const wrappers = Array.from({ length: 32 }, (_, i) =>
+      `function step${i}(callback) { return ${i === 31 ? 'callback()' : `step${i + 1}(callback)`}; }`,
+    ).join('\n');
+    const c = scan(`${wrappers}\nstep0(sendOwner);`);
+    expect(c.gaps).toEqual([]);
+    expect(c.sites.find(s => s.expression === 'step0 ( sendOwner )')?.roots).toContain('sendOwner');
+    expect(validateClassifications(c, classify(c))).toEqual([]);
+  });
+
   it('terminates on cyclic barrel exports', () => {
     const c = censusSources({
       'src/a.ts': 'export * from "./b"; export const relay = notifyOwner;',

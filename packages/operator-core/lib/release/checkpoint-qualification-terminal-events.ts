@@ -4,7 +4,7 @@ import { canonicalJson } from '@papercusp/hash-chain';
 import { executeDurableReaction } from '@papercusp/event-reaction';
 import { getOrgPg } from '@papercusp/db-org';
 import type { GateVerdictTarget } from './gate-verdict-target';
-import { readStoredQualification } from './checkpoint-qualification-transaction';
+import { withStoredQualificationTerminalAuthority } from './checkpoint-qualification-transaction';
 import { claimReaction, releaseReaction, markReactionFailed, reactionOutcome,
   completeReaction, markReactionUncertain } from '../events/reaction-dedup';
 
@@ -42,6 +42,15 @@ export function checkpointTerminalDelivery(identity: TerminalIdentity, events: C
 
 /** An exact replay may attach a batch omitted by an earlier same-run recorder. */
 export async function attachCheckpointTerminalDelivery(target: GateVerdictTarget, delivery: CheckpointTerminalDelivery): Promise<boolean> {
+  try {
+    const rebuilt = checkpointTerminalDelivery(delivery.identity, delivery.events.map(({ id: _id, ...event }) => event));
+    if (delivery.schemaVersion !== 1 || delivery.identity.workspaceId !== target.workspaceId ||
+        delivery.identity.installSlug !== target.installSlug || rebuilt.batchId !== delivery.batchId ||
+        canonicalJson(rebuilt.events) !== canonicalJson(delivery.events) || delivery.pending !== true ||
+        Object.keys(delivery.accepted).length !== 0) return false;
+  } catch {
+    return false;
+  }
   const { sql } = getOrgPg();
   const rows = await sql`
     WITH exact AS MATERIALIZED (
@@ -99,16 +108,7 @@ export async function recoverCheckpointTerminalEvents(target: GateVerdictTarget,
           ruleId: 'checkpoint-terminal-wake', triggerTool: 'checkpoint:terminal', dedupId: event.id }, {
           store: { claim: claimReaction, release: releaseReaction, markFailed: markReactionFailed,
             outcome: reactionOutcome, complete: completeReaction, uncertain: markReactionUncertain },
-          fire: async () => {
-            // A stored historical batch cannot wake or cancel a successor's
-            // current waiters. Re-read immediately before the external seam.
-            const current = await readStoredQualification(target);
-            if (current.status !== 'present' || current.transaction.phase !== 'terminal' ||
-                current.transaction.attemptId !== delivery.identity.attemptId ||
-                current.transaction.runId !== delivery.identity.runId ||
-                current.transaction.candidate !== delivery.identity.candidate ||
-                current.transaction.outcome.kind !== (delivery.identity.green ? 'green' : 'red'))
-              throw new Error('checkpoint terminal wake superseded or current authority unmeasured');
+          fire: () => withStoredQualificationTerminalAuthority(target, delivery.identity, async () => {
             const emitted = deps.emit ? await deps.emit(event) : await (await import('../events/await/engine')).emitAwaitedEvent({
               ...event, workspaceId: target.workspaceId, source: 'green-checkpoint',
               cause: { rootRunId: event.id, ruleId: 'checkpoint-terminal-wake', depth: 0, chain: [] },
@@ -116,7 +116,7 @@ export async function recoverCheckpointTerminalEvents(target: GateVerdictTarget,
             if (emitted.ok !== true || emitted.latchRecorded !== true || !Array.isArray(emitted.notified) ||
                 (emitted.notified.length > 0 && !emitted.msgId)) throw new Error('checkpoint terminal wake admission unacknowledged');
             return { ok: true };
-          },
+          }),
         });
         // The reaction receipt precedes this projection. A crash here re-reads
         // that receipt automatically without re-emitting to any subscriber.

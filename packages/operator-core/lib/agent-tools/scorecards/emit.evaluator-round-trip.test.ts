@@ -570,7 +570,9 @@ describe('spec-test-adequacy evaluator → scorecards:emit round trip', () => {
       recipe.selection.evidence.map(({ evidenceRef }) => evidenceRef).sort((a, b) => a.localeCompare(b)),
     );
     expect(row!.scorecardDraft.rerunRecipe.args).toMatchObject({ replaySnapshot: true, bindingIds: [1, 3, 4, 5] });
-    expect(scorecardEmitArgs.parse(row!.scorecardDraft).rerunRecipe?.selection.bindingIds).toEqual([1, 3, 4, 5]);
+    const parsedRecipe = scorecardEmitArgs.parse(row!.scorecardDraft).rerunRecipe;
+    expect(parsedRecipe?.evaluator).toBe('plans:evaluate-spec-test-adequacy');
+    expect(parsedRecipe?.evaluator === 'plans:evaluate-spec-test-adequacy' && parsedRecipe.selection.bindingIds).toEqual([1, 3, 4, 5]);
 
     const exactReplay = await runEvaluator({
       ...row!.scorecardDraft.rerunRecipe.args,

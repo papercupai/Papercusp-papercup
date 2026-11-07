@@ -246,6 +246,16 @@ export function previewProductShaping(planContent: string) {
   // tool-result spill that conceals the diagnostic or review instructions.
   if (JSON.stringify(preview).length > PREVIEW_BUDGET) {
     const refs = (values: string[]) => values.slice(0, 3);
+    // Preserve distinct repair categories before spending the excerpt on repeats
+    // from several scenarios. A material choice must remain visible too.
+    const diagnosticCodes = new Set<string>();
+    const distinctDiagnostics = diagnostics.filter(row => {
+      if (diagnosticCodes.has(row.code)) return false;
+      diagnosticCodes.add(row.code);
+      return true;
+    });
+    const excerptDiagnostics = [...distinctDiagnostics,
+      ...diagnostics.filter(row => !distinctDiagnostics.includes(row))].slice(0, 5);
     const bounded = { ...preview, brief: brief ? { audience: brief.audience.slice(0, 240),
       problem: brief.problem.slice(0, 240), outcome: brief.outcome.slice(0, 240) } : null,
       reviewerBrief: { ...reviewerBrief, sourceRefs: refs(reviewerBrief.sourceRefs),
@@ -257,7 +267,7 @@ export function previewProductShaping(planContent: string) {
         requirementIds: row.requirementIds.slice(0, 5), planItemIds: row.planItemIds.slice(0, 5),
         linksAreExcerpt: row.requirementIds.length > 5 || row.planItemIds.length > 5 })),
       traceOmitted: Math.max(0, trace.length - 3),
-      diagnostics: diagnostics.slice(0, 5).map(row => ({ ...row, message: row.message.slice(0, 160) })),
+      diagnostics: excerptDiagnostics.map(row => ({ ...row, message: row.message.slice(0, 160) })),
       diagnosticsOmitted: Math.max(0, diagnostics.length - 5),
       ownerWalkthrough: null as string | null,
       overflowRead: 'Read the full canonical Product shaping section with plans:get; the brief, trace, diagnostics and walkthrough here are excerpts. renderOwnerWalkthrough over the full brief yields the complete walkthrough.' };

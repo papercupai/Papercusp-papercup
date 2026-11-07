@@ -25,6 +25,7 @@ vi.mock('./frozen-repair-edit-marker', () => ({ projectFrozenRepairMarker: () =>
 import {
   beginQualificationTransaction,
   beginStoredQualification,
+  cancelStoredQualification,
   composeStoredQualificationWork,
   checkpointPidIdentity,
   classifyScheduledQualificationJoin,
@@ -33,6 +34,7 @@ import {
   probeRunnerLiveness,
   readStoredQualification,
   recordStoredQualificationRunnerProgress,
+  recordStoredQualificationChildScope,
   recordStoredQualificationProgressObservation,
   qualificationProgressFence,
   recordStoredQualificationWorkProgress,
@@ -103,6 +105,41 @@ async function metadata(): Promise<Record<string, unknown>> {
 }
 
 describe('checkpoint qualification lifecycle (real row lock and JSONB)', () => {
+  it('progress-before-stop: re-reads an advancing enrolled payload before a stale stop decision', async () => {
+    const nowMs = Date.now();
+    const owner = { attemptId: 'stop-race', candidate: 'candidate-stop-race', runnerId: 'runner-stop-race',
+      runId: 'run-stop-race', pid: 42, pidIdentity: 'boot:42', unit: 'pc-stoproot.scope',
+      leaseDurationMs: 1000, started: true, nowMs: nowMs - 2000 };
+    const current = reserveQualificationRunner(beginQualificationTransaction(null, owner).transaction, owner).transaction;
+    await seed({ qualificationTransaction: current });
+    // A cleanup decision was made before a payload was enrolled or its selected
+    // completion became durable. The receiver must use the current locked row.
+    const staleDecision = { attemptId: current.attemptId, unit: owner.unit, reason: 'stale-cleanup', nowMs };
+    expect((await recordStoredQualificationChildScope(target, {
+      ...owner, unit: 'pc-stopchild.scope', operation: 'enroll', nowMs,
+    })).status).toBe('updated');
+    const progressAtMs = Date.now();
+    const work: QualificationWorkProgressInput = { ...owner, nowMs: progressAtMs, repairHead: null, root: '/repo',
+      taskKey: 'stop-race-work', runContext: 'ci', runnerIdentity: 'proof-v3 node', retryStates: [],
+      manifest: { schemaVersion: 1, units: [{ id: 'selected', kind: 'test', path: 'selected.test.ts' }] },
+      updates: [{ receipt: { unitId: 'selected', completionId: 'new-progress', observedAtMs: progressAtMs,
+        state: 'pass', firstAttemptVerdict: 'pass', worktreeDirty: false, observedCount: 1,
+        proof: { recordedSha: owner.candidate, runContext: 'ci', runnerIdentity: 'proof-v3 node',
+          executedModules: ['selected.test.ts'], readPaths: [], inputsCaptured: true, opaqueReasons: [] } } }] };
+    expect(await recordStoredQualificationWorkProgress(target, work)).toMatchObject({ status: 'updated' });
+    const beforeStop = await metadata();
+    expect(beforeStop.qualificationTransaction).toMatchObject({
+      currentPhysicalRunner: { id: owner.runnerId, childScopeUnits: ['pc-stopchild.scope'] },
+      continuation: { receipts: [{ completionId: 'new-progress' }] },
+    });
+    const stop = vi.fn(async () => ({ stopped: true }));
+    expect(await cancelStoredQualification(target, staleDecision, stop)).toMatchObject({
+      status: 'conflict', refusalReason: 'child-scope-custody-held',
+    });
+    expect(stop).not.toHaveBeenCalled();
+    expect(await metadata()).toEqual(beforeStop);
+  });
+
   it('independent observer persists selected work and rejects retired generations in real JSONB', async () => {
     const nowMs = Date.now();
     const clock = vi.spyOn(Date, 'now').mockReturnValue(nowMs);

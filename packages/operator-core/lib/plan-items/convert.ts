@@ -795,35 +795,43 @@ export async function convertPlanItem(opts: ConvertPlanItemOpts): Promise<Conver
   const planItem = { plan: opts.planSlug, item: opts.itemId, status: item.status, text: item.text };
 
   // ── 2. Resume an existing non-terminal execution record, if any ───────────
-  // Primary key: the `implements` edge. Fallback: the durable `payload.plan_item`
-  // STAMP — covers an edge deleted out-of-band, so a re-pickup never SILENTLY mints
-  // a second work_item for the same plan item (the re-pick-resumes contract; §2).
-  // EI-21213528544407590: consult the stamp not only when the edge resolver comes back
-  // EMPTY but also when it comes back TERMINAL. Both resolvers now prefer a live record
-  // over a terminal one, so a terminal answer here means every EDGE-linked record is
-  // terminal — which does not rule out a still-open record whose edge was pruned. Minting
-  // in that state produces the duplicate this bug was filed for. A stamped record is
-  // adopted over a terminal edge answer only when it is itself non-terminal; when nothing
-  // live exists anywhere the terminal record stands and step 3 mints, as before.
-  // The line IS its execution record after migration 1601. Older records may
-  // still carry implements edges or payload stamps, while a new node has neither.
-  // Resolve the canonical identity first, scoped to this tenant and harness, so
-  // pickup cannot mint another record or resume a preserved legacy child.
+  // Current plan-line nodes are the primary identity. Older conversions may be
+  // discoverable only through `implements` edges or payload.plan_item stamps.
+  // `plans:start` promotions have a fourth shape: feature rows whose only link is
+  // source_plan_slug/source_plan_item_ids. Reuse the canonical cross-family reader
+  // so coord:declare-intent cannot mint an issue sibling for that promoted feature.
   const { sql } = getOrgPg();
   const [node] = await sql<{ feature_id: string }[]>`
     SELECT feature_id FROM harness_shared.work_items
      WHERE workspace_id = ${opts.workspaceId} AND harness_slug = ${opts.harnessSlug}
        AND plan_slug = ${opts.planSlug} AND plan_line_id = ${opts.itemId}`;
-  let existing = node ? await getWorkItem(node.feature_id, opts.harnessSlug)
-    : await findImplementingWorkItem(opts.planSlug, opts.itemId);
+  let existing = node ? await getWorkItem(node.feature_id, opts.harnessSlug) : null;
   let edgeMissing = Boolean(node);
   if (!existing || TERMINAL_WORK_ITEM_STATES.has(existing.state)) {
-    const stamped = await findConvertedWorkItemByStamp(opts.planSlug, opts.itemId, opts.harnessSlug, opts.workspaceId);
-    if (stamped && (!existing || !TERMINAL_WORK_ITEM_STATES.has(stamped.state))) {
-      // Adopted from the stamp ⇒ this record carries no live implements edge
-      // (one would have been returned above), so re-link it below.
-      existing = stamped;
-      edgeMissing = true;
+    // Dynamic import avoids a static cycle: the linked-item reconciler imports
+    // IMPLEMENTS_REL from this module. It indexes the implements edge, payload
+    // stamp, and promoted feature columns with the same policy used by lane
+    // reconciliation.
+    const { findAllLinkedWorkItems, selectCanonicalLinkedWorkItem } =
+      await import('./reconcile-linked-work-items');
+    const linked = await findAllLinkedWorkItems(opts.planSlug, opts.itemId);
+    const { canonical, duplicates } = selectCanonicalLinkedWorkItem(linked);
+    if (duplicates.length > 0) {
+      const candidateIds = [canonical, ...duplicates]
+        .flatMap((wi) => wi ? [wi.id] : [])
+        .sort();
+      return {
+        status: 'refused',
+        code: 'ambiguous_plan_item_mapping',
+        reason:
+          `plan item ${opts.planSlug}#${opts.itemId} has multiple non-terminal linked work-items ` +
+          `(${candidateIds.join(', ')}); refusing to choose or mint a duplicate. Resolve the ` +
+          'canonical mapping before retrying.',
+      };
+    }
+    if (canonical) {
+      existing = canonical;
+      edgeMissing = !canonical.viaImplementsEdge;
     }
   }
   if (existing && !TERMINAL_WORK_ITEM_STATES.has(existing.state)) {

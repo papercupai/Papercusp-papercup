@@ -120,6 +120,36 @@ const mockGitOriginUrl = vi.fn(
   async (_dir: string) => "https://github.com/Papercusp/papercup.git",
 );
 
+const ciLedger = vi.hoisted(() => ({
+  rows: new Map<string, string>(),
+  failCompletion: false,
+}));
+vi.mock("@papercusp/operator-core/lib/events/reaction-dedup", () => ({
+  claimReaction: async ({ dedupId }: { dedupId: string }) => {
+    if (ciLedger.rows.has(dedupId)) return false;
+    ciLedger.rows.set(dedupId, "started");
+    return true;
+  },
+  reactionOutcome: async (id: string) => ciLedger.rows.get(id) === "completed" ? "completed" : "uncertain",
+  completeReaction: async (id: string) => {
+    if (ciLedger.failCompletion) throw new Error("completion acknowledgment lost");
+    ciLedger.rows.set(id, "completed");
+  },
+  markReactionUncertain: async (id: string) => { ciLedger.rows.set(id, "needs_reconciliation"); },
+  releaseReaction: async (id: string) => { ciLedger.rows.delete(id); },
+  markReactionFailed: async () => {},
+}));
+beforeEach(() => {
+  ciLedger.rows.clear();
+  ciLedger.failCompletion = false;
+});
+
+function stampCiFixtureTarget() {
+  vi.stubEnv("PAPERCUSP_GATE_VERDICT_WORKSPACE", "ci-replay-workspace");
+  vi.stubEnv("PAPERCUSP_GATE_VERDICT_HARNESS", "ci-replay-harness");
+  onTestFinished(() => { vi.unstubAllEnvs(); });
+}
+
 vi.mock("@papercusp/operator-core/lib/cupboard/resolve-repo-coords", () => ({
   gitOriginUrl: (dir: string) => mockGitOriginUrl(dir),
   parseGithubRemote: (url: string) => {
@@ -510,6 +540,89 @@ const cfg: ReleaseConfig = releaseConfig({
   // about it. Setting it also makes the build assertions below prove the build honours
   // cfg.spaBuildWorkspace instead of a hardcoded name, which is the stronger property.
   spaBuildWorkspace: "@example/fixture-spa",
+});
+
+describe("realCheckpointDeps.broadcast — finalization replay", () => {
+  it("reuses the durable delivery key after an acknowledged-result interruption", async () => {
+    const messages = await import("@papercusp/operator-core/lib/agent-tools/coordination/messages");
+    const send = vi.spyOn(messages, "sendMessage").mockResolvedValue({ msg_id: "durable-winner" } as
+      Awaited<ReturnType<typeof messages.sendMessage>>);
+    const { exec } = makeExec([]);
+    try {
+      await realCheckpointDeps(cfg, exec, "same-result-run").broadcast("Result ready", "Exact frozen result");
+      // Recreate the producer as a restarted finalizer would.
+      await realCheckpointDeps(cfg, exec, "same-result-run").broadcast("Result ready", "Exact frozen result");
+      await realCheckpointDeps(cfg, exec, "successor-run").broadcast("Result ready", "Exact frozen result");
+      await realCheckpointDeps(cfg, exec, "same-result-run").broadcast("Result ready", "Different result");
+      const keys = send.mock.calls.map(([, options]) => options.msgId);
+      expect(keys[0]).toMatch(/^checkpoint-broadcast:[a-f0-9]{64}$/);
+      expect(keys[1]).toBe(keys[0]);
+      expect(keys[2]).not.toBe(keys[0]);
+      expect(keys[3]).not.toBe(keys[0]);
+      expect(send.mock.calls[0]![1]).toMatchObject({ to: ["*"], body: "Exact frozen result" });
+    } finally {
+      send.mockRestore();
+    }
+  });
+});
+
+describe("realCheckpointDeps.push — CI dispatch replay", () => {
+  beforeEach(() => {
+    mockCreateWorkflowDispatch.mockReset().mockResolvedValue({});
+    vi.stubEnv("PAPERCUSP_GATE_VERDICT_WORKSPACE", "ci-replay-workspace");
+    vi.stubEnv("PAPERCUSP_GATE_VERDICT_HARNESS", "ci-replay-harness");
+  });
+  afterEach(() => vi.unstubAllEnvs());
+
+  it("does not repeat a successful GitHub request after its completion receipt is lost", async () => {
+    const { exec } = makeExec([]);
+    ciLedger.failCompletion = true;
+    await realCheckpointDeps(cfg, exec, "first-controller").push("ready", "base", "candidate");
+    expect(mockCreateWorkflowDispatch).toHaveBeenCalledOnce();
+    ciLedger.failCompletion = false;
+    await realCheckpointDeps(cfg, exec, "restarted-controller").push("ready", "base", "candidate");
+    expect(mockCreateWorkflowDispatch).toHaveBeenCalledOnce();
+    expect([...ciLedger.rows.values()]).toEqual(["needs_reconciliation"]);
+  });
+
+  it("re-reads a completed dispatch receipt after the producer restarts", async () => {
+    const { exec } = makeExec([]);
+    await realCheckpointDeps(cfg, exec, "first-controller").push("ready", "base", "candidate");
+    await realCheckpointDeps(cfg, exec, "restarted-controller").push("ready", "base", "candidate");
+    expect(mockCreateWorkflowDispatch).toHaveBeenCalledOnce();
+    expect([...ciLedger.rows.values()]).toEqual(["completed"]);
+  });
+
+  it("retains an ambiguous GitHub response without retrying the external effect", async () => {
+    const { exec } = makeExec([]);
+    mockCreateWorkflowDispatch.mockRejectedValueOnce(new Error("response lost after server acceptance"));
+    await realCheckpointDeps(cfg, exec).push("ready", "base", "candidate");
+    await realCheckpointDeps(cfg, exec).push("ready", "base", "candidate");
+    expect(mockCreateWorkflowDispatch).toHaveBeenCalledOnce();
+    expect([...ciLedger.rows.values()]).toEqual(["needs_reconciliation"]);
+  });
+
+  it("separates candidate, base, ref, workspace and harness identities", async () => {
+    const { exec } = makeExec([]);
+    const deps = realCheckpointDeps(cfg, exec);
+    await deps.push("ready", "base", "candidate");
+    await deps.push("ready", "base", "another-candidate");
+    await deps.push("ready", "another-base", "candidate");
+    await deps.push("another-ref", "base", "candidate");
+    vi.stubEnv("PAPERCUSP_GATE_VERDICT_WORKSPACE", "another-workspace");
+    await deps.push("ready", "base", "candidate");
+    vi.stubEnv("PAPERCUSP_GATE_VERDICT_HARNESS", "another-harness");
+    await deps.push("ready", "base", "candidate");
+    expect(mockCreateWorkflowDispatch).toHaveBeenCalledTimes(6);
+    expect(ciLedger.rows.size).toBe(6);
+  });
+
+  it("does not dispatch from a mutable ref without an exact candidate", async () => {
+    const { exec } = makeExec([]);
+    await realCheckpointDeps(cfg, exec).push("ready", "base");
+    expect(mockCreateWorkflowDispatch).not.toHaveBeenCalled();
+    expect(ciLedger.rows.size).toBe(0);
+  });
 });
 
 describe("realCheckpointDeps.runGateAtRef — proof-backed empty Vitest invocation", () => {
@@ -4146,6 +4259,12 @@ describe("realCheckpointDeps.setupTree / push — real-path wiring (gap #10)", (
         "--source-only",
       ],
     });
+    // WI-5610: exact-source materialization is part of setup's owned lifetime.
+    // The separate selection probe below retains its scoped validation guard.
+    expect(calls[0].opts).toMatchObject({ killProcessGroupOnTimeout: true });
+    expect(calls[0].opts).not.toHaveProperty("timeoutMs");
+    expect(calls[0].opts).not.toHaveProperty("timeoutResetsOnProgress");
+    expect(calls[0].opts).not.toHaveProperty("hardTimeoutMs");
     expect(calls[1]).toMatchObject({
       cmd: process.execPath,
       args: [
@@ -4351,9 +4470,10 @@ describe("realCheckpointDeps.setupTree / push — real-path wiring (gap #10)", (
   });
 
   it("push also workflow_dispatches test.yml (EI-18661485259809120: [skip ci] on every commit means the git push above never actually triggers it)", async () => {
+    stampCiFixtureTarget();
     mockCreateWorkflowDispatch.mockClear();
     const { exec } = makeExec([{ code: 0 }]);
-    await realCheckpointDeps(cfg, exec).push("ready");
+    await realCheckpointDeps(cfg, exec).push("ready", null, "candidate123");
     expect(mockCreateWorkflowDispatch).toHaveBeenCalledWith({
       owner: "Papercusp",
       repo: "papercup",
@@ -4366,7 +4486,7 @@ describe("realCheckpointDeps.setupTree / push — real-path wiring (gap #10)", (
     mockGetOctokit.mockRejectedValueOnce(new Error("network down"));
     const { exec, calls } = makeExec([{ code: 0 }]);
     await expect(
-      realCheckpointDeps(cfg, exec).push("ready"),
+      realCheckpointDeps(cfg, exec).push("ready", null, "candidate123"),
     ).resolves.toBeUndefined();
     // the git push itself still happened
     expect(calls[0].cmd).toBe("git");
@@ -4386,9 +4506,10 @@ describe("realCheckpointDeps.setupTree / push — real-path wiring (gap #10)", (
   // workflow_dispatch run checked out AT main IS HEAD, an always-empty diff that
   // reports `tasks=0 status=passed` having verified nothing.
   it("push threads a given baseSha through to the workflow_dispatch inputs.base", async () => {
+    stampCiFixtureTarget();
     mockCreateWorkflowDispatch.mockClear();
     const { exec } = makeExec([{ code: 0 }]);
-    await realCheckpointDeps(cfg, exec).push("ready", "deadbeef00112233");
+    await realCheckpointDeps(cfg, exec).push("ready", "deadbeef00112233", "candidate123");
     expect(mockCreateWorkflowDispatch).toHaveBeenCalledWith({
       owner: "Papercusp",
       repo: "papercup",
@@ -4402,11 +4523,13 @@ describe("realCheckpointDeps.setupTree / push — real-path wiring (gap #10)", (
   // advance) — the dispatch must degrade to the pre-WI-7013 shape (no `inputs` key
   // at all) rather than sending a literal "null"/"undefined" base.
   it("push omits inputs.base entirely when baseSha is null or omitted", async () => {
+    stampCiFixtureTarget();
     mockCreateWorkflowDispatch.mockClear();
     const { exec: exec1 } = makeExec([{ code: 0 }]);
-    await realCheckpointDeps(cfg, exec1).push("ready", null);
+    await realCheckpointDeps(cfg, exec1).push("ready", null, "candidate123");
     const { exec: exec2 } = makeExec([{ code: 0 }]);
-    await realCheckpointDeps(cfg, exec2).push("ready");
+    await realCheckpointDeps(cfg, exec2).push("ready", undefined, "candidate123");
+    expect(mockCreateWorkflowDispatch).toHaveBeenCalledOnce();
     for (const call of mockCreateWorkflowDispatch.mock.calls) {
       expect(call[0]).not.toHaveProperty("inputs");
     }

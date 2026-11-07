@@ -337,6 +337,62 @@ function createManifestResolutionFixture({
   };
 }
 
+function runManifestResolutionFixture(fixture, options) {
+  const started = performance.now();
+  const result = spawnSync(process.execPath, [fixture.cli, ...fixture.args], options);
+  if (result.error || result.status !== 0) {
+    const readTail = (path) => {
+      try { return readFileSync(path, "utf8").slice(-8192); }
+      catch { return "not started"; }
+    };
+    const diagnostic = "NPM_INSTALL_SAFE_FIXTURE_DIAGNOSTIC " + JSON.stringify({
+      elapsedMs: Math.round(performance.now() - started),
+      error: result.error?.message, code: result.error?.code,
+      status: result.status, signal: result.signal,
+      stdout: String(result.stdout ?? "").slice(-8192),
+      stderr: String(result.stderr ?? "").slice(-8192),
+      trace: readTail(fixture.tracePath),
+      phases: readTail(fixture.tracePath + ".phases.jsonl"),
+    });
+    // Preserve child streams: expected-failure tests inspect their exact contents.
+    // Emit evidence separately before cleanup, including when an assertion fails.
+    if (result.error) result.error.message += "\n" + diagnostic;
+    result.fixtureDiagnostic = diagnostic;
+    process.stderr.write(diagnostic + "\n");
+  }
+  return result;
+}
+
+for (const outcome of ["exit", "timeout"]) {
+  test(`manifest fixture diagnostics retain ${outcome} evidence before cleanup`, () => {
+    const root = mkdtempSync(join(tmpdir(), "install-safe-diagnostic-"));
+    const tracePath = join(root, "phases");
+    const phase = JSON.stringify({ phase: "resolve", event: "started" });
+    writeFileSync(tracePath + ".phases.jsonl", phase + "\n");
+    try {
+      const result = runManifestResolutionFixture({
+        cli: "--eval", tracePath,
+        args: [outcome === "exit"
+          ? 'process.stderr.write("NPM_INSTALL_SAFE_RESOLUTION_RETRY\\n".repeat(2)); process.exit(7)'
+          : "setInterval(() => {}, 1000)"],
+      }, { encoding: "utf8", timeout: 1000, env: { ...process.env, NODE_OPTIONS: "" } });
+      if (outcome === "timeout") {
+        assert.equal(result.error?.code, "ETIMEDOUT");
+        assert.match(result.error.message, /NPM_INSTALL_SAFE_FIXTURE_DIAGNOSTIC/);
+      } else {
+        assert.ifError(result.error);
+        assert.equal(result.status, 7);
+        assert.equal(result.stderr.match(/NPM_INSTALL_SAFE_RESOLUTION_RETRY/g)?.length, 2);
+      }
+      const diagnostic = JSON.parse(result.fixtureDiagnostic.split("NPM_INSTALL_SAFE_FIXTURE_DIAGNOSTIC ").at(-1));
+      assert.equal(diagnostic.phases, phase + "\n");
+      assert.equal(diagnostic.trace, "not started");
+      assert.equal(typeof diagnostic.elapsedMs, "number");
+      assert.equal(diagnostic.stderr, result.stderr);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+}
+
 test("manifest resolution fixtures ignore inherited npm routing config", {
   skip: process.platform === "win32",
 }, () => {
@@ -349,7 +405,7 @@ test("manifest resolution fixtures ignore inherited npm routing config", {
   });
   const fixture = createManifestResolutionFixture();
   try {
-    const result = spawnSync(process.execPath, [fixture.cli, ...fixture.args], {
+    const result = runManifestResolutionFixture(fixture, {
       encoding: "utf8", timeout: 15_000, env: fixture.env,
     });
     assert.ifError(result.error);
@@ -390,7 +446,7 @@ test("manifest-only resolution includes foreign npm workspaces in its snapshot",
   try {
     const dir = addForeignWorkspace(fixture);
     fixture.args.push("--package-lock-only");
-    const result = spawnSync(process.execPath, [fixture.cli, ...fixture.args], {
+    const result = runManifestResolutionFixture(fixture, {
       encoding: "utf8", timeout: 15_000, env: fixture.env,
     });
     assert.ifError(result.error);
@@ -411,7 +467,7 @@ test("unsupported foreign workspace dependencies fall back before incomplete res
     addForeignWorkspace(fixture, { "vendored-pkg": "file:vendor/package.tgz" });
     fixture.env.NPM_INSTALL_SAFE_TEST_FOREIGN_FALLBACK = "1";
     fixture.env.PAPERCUSP_SKIP_DEP_VERIFY = "1";
-    const result = spawnSync(process.execPath, [fixture.cli, ...fixture.args], {
+    const result = runManifestResolutionFixture(fixture, {
       encoding: "utf8", timeout: 15_000, env: fixture.env,
     });
     assert.ifError(result.error);
@@ -431,7 +487,7 @@ for (const lockOnly of [false, true]) {
       const lockPath = join(fixture.repoRoot, "package-lock.json");
       const original = readFileSync(lockPath, "utf8");
       if (lockOnly) fixture.args.push("--package-lock-only");
-      const result = spawnSync(process.execPath, [fixture.cli, ...fixture.args], {
+      const result = runManifestResolutionFixture(fixture, {
         encoding: "utf8", timeout: 15_000, env: fixture.env,
       });
       assert.ifError(result.error);
@@ -454,7 +510,7 @@ test("lock-only resolution does not publish unchanged installed dependencies", {
     try {
       if (viaConfig) fixture.env.npm_config_package_lock_only = 'true';
       else fixture.args.push('--package-lock-only');
-      const result = spawnSync(process.execPath, [fixture.cli, ...fixture.args], {
+      const result = runManifestResolutionFixture(fixture, {
         encoding: "utf8", timeout: 15_000, env: fixture.env,
       });
       assert.ifError(result.error);
@@ -472,7 +528,7 @@ test("reify and repair still publish and propagate generation failure", {
 }, () => {
   const fixture = createManifestResolutionFixture({ publisherStatus: 77 });
   try {
-    const result = spawnSync(process.execPath, [fixture.cli, ...fixture.args], {
+    const result = runManifestResolutionFixture(fixture, {
       encoding: "utf8", timeout: 15_000, env: fixture.env,
     });
     assert.ifError(result.error);
@@ -510,7 +566,7 @@ test("lock-only fallback does not verify or publish the unchanged installed tree
     if (viaConfig) fixture.env.npm_config_package_lock_only = 'true';
     else fixture.args.push('--package-lock-only');
     try {
-      const result = spawnSync(process.execPath, [fixture.cli, ...fixture.args], {
+      const result = runManifestResolutionFixture(fixture, {
         encoding: 'utf8', timeout: 15_000, env: fixture.env,
       });
       assert.ifError(result.error);
@@ -537,19 +593,10 @@ test("manifest resolution includes local archives from other workspaces without 
   lock.packages[consumer] = manifest;
   writeFileSync(lockPath, JSON.stringify(lock));
   try {
-    const result = spawnSync(process.execPath, [fixture.cli, ...fixture.args], {
+    const result = runManifestResolutionFixture(fixture, {
       encoding: "utf8", timeout: 15_000,
       env: { ...fixture.env, NPM_INSTALL_SAFE_TEST_FOREIGN_WORKSPACE: consumer, NPM_INSTALL_SAFE_TEST_ARCHIVE: archive },
     });
-    if (result.error || result.status !== 0) {
-      const phasePath = fixture.tracePath + ".phases.jsonl";
-      t.diagnostic(JSON.stringify({
-        error: result.error?.message, code: result.error?.code,
-        status: result.status, signal: result.signal,
-        stdout: result.stdout, stderr: result.stderr,
-        phases: existsSync(phasePath) ? readFileSync(phasePath, "utf8") : "not started",
-      }));
-    }
     assert.ifError(result.error);
     assert.equal(result.status, 0, result.stderr + result.stdout);
     const phases = readFileSync(fixture.tracePath, "utf8").trim().split("\n");
@@ -762,7 +809,7 @@ test("manifest-only installs refuse stale workspace metadata before resolution",
   writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + "\n");
 
   try {
-    const blocked = spawnSync(process.execPath, [fixture.cli, ...fixture.args], {
+    const blocked = runManifestResolutionFixture(fixture, {
       cwd: fixture.repoRoot,
       encoding: "utf8",
       timeout: 15_000,
@@ -778,7 +825,7 @@ test("manifest-only installs refuse stale workspace metadata before resolution",
     // the recorded graph disagrees with the manifests, then prove it proceeds once
     // the workspace lock mirror is reconciled.
     fixture.args.push("--package-lock-only");
-    const driftedLockOnly = spawnSync(process.execPath, [fixture.cli, ...fixture.args], {
+    const driftedLockOnly = runManifestResolutionFixture(fixture, {
       cwd: fixture.repoRoot,
       encoding: "utf8",
       timeout: 15_000,
@@ -793,7 +840,7 @@ test("manifest-only installs refuse stale workspace metadata before resolution",
     const lock = JSON.parse(readFileSync(lockPath, "utf8"));
     lock.packages["packages/operator-core"].dependencies = manifest.dependencies;
     writeFileSync(lockPath, JSON.stringify(lock, null, 2) + "\n");
-    const reconciled = spawnSync(process.execPath, [fixture.cli, ...fixture.args], {
+    const reconciled = runManifestResolutionFixture(fixture, {
       cwd: fixture.repoRoot,
       encoding: "utf8",
       timeout: 15_000,
@@ -812,7 +859,7 @@ test("repo writers can proceed during resolution but stay blocked during reify a
 }, () => {
   const fixture = createManifestResolutionFixture();
   try {
-    const result = spawnSync(process.execPath, [fixture.cli, ...fixture.args], {
+    const result = runManifestResolutionFixture(fixture, {
       encoding: "utf8",
       timeout: 15_000,
       env: fixture.env,
@@ -843,7 +890,7 @@ test("manifest-only install re-resolves against the current manifests when they 
   // bytes, so this models one peer edit landing mid-resolve (WI-10006714).
   const fixture = createManifestResolutionFixture({ staleDuringResolve: "once" });
   try {
-    const result = spawnSync(process.execPath, [fixture.cli, ...fixture.args], {
+    const result = runManifestResolutionFixture(fixture, {
       encoding: "utf8",
       timeout: 15_000,
       env: fixture.env,
@@ -902,7 +949,7 @@ test("manifest-only install gives up without reifying when the manifests change 
     "utf8",
   );
   try {
-    const result = spawnSync(process.execPath, [fixture.cli, ...fixture.args], {
+    const result = runManifestResolutionFixture(fixture, {
       encoding: "utf8",
       timeout: 15_000,
       env: fixture.env,
@@ -942,7 +989,7 @@ test("name@file package targets fall back to npm under the original repo writer"
   const fixture = createManifestResolutionFixture({ expectFallback: true });
   fixture.args[3] = "fixture-pkg@file:../fixture-pkg";
   try {
-    const result = spawnSync(process.execPath, [fixture.cli, ...fixture.args], {
+    const result = runManifestResolutionFixture(fixture, {
       encoding: "utf8",
       timeout: 15_000,
       env: fixture.env,

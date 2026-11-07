@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createServer, type Server } from 'node:http';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -19,6 +19,7 @@ let lateAcquire: (() => void) | undefined;
 let persistedBeforeHttp: boolean;
 let schemaQualified: boolean, rejectOperation: boolean, listRequests: string[];
 let schemaBySession: Map<string, boolean>;
+let emptyLegacyRelease: boolean;
 
 beforeEach(async () => {
   session = 'native-operation-session';
@@ -34,6 +35,7 @@ beforeEach(async () => {
   loseAcquire = false; unknownFinish = false; terminalWithoutRelease = false; legacy = false; lateAcquire = undefined;
   persistedBeforeHttp = true;
   schemaQualified = true; rejectOperation = false; listRequests = []; schemaBySession = new Map();
+  emptyLegacyRelease = false;
   server = createServer((req, res) => {
     let body = '';
     req.on('data', chunk => body += chunk);
@@ -112,6 +114,7 @@ beforeEach(async () => {
         for (const path of released) grants.delete(path);
         result = { ok: true, released, held_before: released.length };
       }
+      if (emptyLegacyRelease && name === 'locks:release' && !op) empty = true;
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end(JSON.stringify({ jsonrpc: '2.0', id: 1, result: {
         content: empty ? [] : [{ type: 'text', text: JSON.stringify(result) }],
@@ -137,7 +140,7 @@ async function hook(file: string, input: object, expectOperation = true, hookDir
     input: JSON.stringify(input), env: {
       ...process.env, HOME: home, PAPERCUSP_LOCKS_CACHE_DIR: cache, PAPERCUSP_WORKSPACE_ROOT: ws,
       PAPERCUSP_CANONICAL_TREE: repo, PAPERCUSP_OPERATOR_URL: origin,
-      PAPERCUSP_LOCKS_RELEASE_FALLBACK_URL: origin, PAPERCUSP_SID: owner, PAPERCUSP_LOCK_SID: owner,
+      PAPERCUSP_LOCKS_FALLBACK_OPERATOR_URL: origin, PAPERCUSP_SID: owner, PAPERCUSP_LOCK_SID: owner,
       PAPERCUSP_NATIVE_SESSION_ID: session, CODEX_HOME: undefined,
       PAPERCUSP_LIFECYCLE_REPLAY_TRACE: join(root, 'lifecycle-replays'),
       PAPERCUSP_LIFECYCLE_RELEASE_HOOK: join(hooks, 'posttooluse-locks-release.sh'),
@@ -278,6 +281,39 @@ describe('native hook operation fence', () => {
     expect(listRequests).toHaveLength(1);
     expect(acquires().length).toBeGreaterThanOrEqual(2);
     expect(acquires().every(r => r.args.hook_operation?.id === id)).toBe(true);
+  });
+
+  it('keeps an opaque legacy release inside the private fixture despite an inherited fallback', async () => {
+    let foreignCalls = 0;
+    const foreign = createServer((req, res) => {
+      req.resume();
+      req.on('end', () => {
+        foreignCalls++;
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ jsonrpc: '2.0', id: 1, result: {
+          content: [{ type: 'text', text: JSON.stringify({ ok: true, released: ['sub/one.ts'] }) }],
+        } }));
+      });
+    });
+    await new Promise<void>(resolve => foreign.listen(0, '127.0.0.1', resolve));
+    const address = foreign.address();
+    if (!address || typeof address === 'string') throw new Error('private fallback did not bind');
+    vi.stubEnv('PAPERCUSP_LOCKS_FALLBACK_OPERATOR_URL', `http://127.0.0.1:${address.port}`);
+    try {
+      schemaQualified = false;
+      await hook('pretooluse-locks-acquire.sh', payload(), false);
+      expect(fs.readFileSync(join(cache, 'edit-one.lock'), 'utf8')).toBe('legacy-lock');
+      emptyLegacyRelease = true;
+      const result = await hook('posttooluse-locks-release.sh', success(), false);
+      expect(foreignCalls).toBe(0);
+      expect(result.stdout).toContain('LOCK MODE UPDATE');
+      expect(fs.existsSync(join(cache, 'edit-one.lock'))).toBe(true);
+      expect(requests.filter(r => r.name === 'locks:release')).toHaveLength(1);
+    } finally {
+      vi.unstubAllEnvs();
+      foreign.closeAllConnections();
+      await new Promise<void>(resolve => foreign.close(() => resolve()));
+    }
   });
 
   it('an inert record (never pinned, past its deadline) is retired, never replayed or denied', async () => {

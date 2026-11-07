@@ -30,7 +30,7 @@ import * as reactionLedger from '../events/reaction-dedup';
 import { executeDurableReaction as executeHostDurableReaction } from '../events/durable-exec';
 import { fireReactionInProcess } from '../events/dispatch-reaction';
 import { executeWithGateActionReceipt, reconcileGateActionReceipt } from './gate-action-receipt';
-import { checkpointTerminalDelivery, recoverCheckpointTerminalEvents } from './checkpoint-qualification-terminal-events';
+import { attachCheckpointTerminalDelivery, checkpointTerminalDelivery, recoverCheckpointTerminalEvents } from './checkpoint-qualification-terminal-events';
 
 let org: OrgTestDb;
 let sql: Sql;
@@ -61,6 +61,99 @@ beforeEach(async () => {
 });
 
 describe('checkpoint qualification terminal outcomes (real Postgres)', () => {
+  it('exact terminal replay attaches an omitted immutable wake batch once', async () => {
+    const identity = { ...target, attemptId: 'attach-attempt', candidate: 'attach-candidate',
+      runId: 'attach-run', green: false, candidates: ['attach-candidate'] };
+    const events = [{ key: 'green-checkpoint:red:papercusp', summary: 'Original result.',
+      payload: { sha: identity.candidate, runId: identity.runId } }];
+    const delivery = checkpointTerminalDelivery(identity, events);
+    await beginStoredQualification(target, { ...identity, nowMs: 100 });
+    const verdict = { ...identity, reason: 'not-green', nowMs: 200,
+      terminalEvent: { status: 'not-green', detail: { ...identity, fullCandidate: identity.candidate } } };
+    expect((await recordStoredQualificationVerdict(target, verdict)).status).toBe('updated');
+    expect(await Promise.all([attachCheckpointTerminalDelivery(target, delivery),
+      attachCheckpointTerminalDelivery(target, delivery)])).toEqual([true, true]);
+    expect((await recordStoredQualificationVerdict(target, verdict)).status).toBe('terminal');
+    expect(await attachCheckpointTerminalDelivery(target,
+      checkpointTerminalDelivery(identity, [{ ...events[0]!, summary: 'Changed result.' }]))).toBe(false);
+    const tampered = structuredClone(delivery);
+    tampered.events[0]!.summary = 'Changed without a new fingerprint.';
+    expect(await attachCheckpointTerminalDelivery(target, tampered)).toBe(false);
+    expect(await attachCheckpointTerminalDelivery({ ...target, workspaceId: 'foreign-workspace' }, delivery)).toBe(false);
+    const rows = await sql<{ detail: { terminalDelivery: typeof delivery } }[]>`
+      SELECT detail FROM harness_shared.pipeline_events WHERE workspace_id = ${target.workspaceId}`;
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.detail.terminalDelivery).toEqual(delivery);
+  });
+
+  it('concurrent terminal recovery retains one admission and its completed receipt', async () => {
+    const identity = { ...target, attemptId: 'parallel-wake', candidate: 'parallel-candidate',
+      runId: 'parallel-run', green: false, candidates: ['parallel-candidate'] };
+    const delivery = checkpointTerminalDelivery(identity, [{ key: 'green-checkpoint:red:papercusp',
+      summary: 'Parallel result.', payload: { sha: identity.candidate, runId: identity.runId } }]);
+    await beginStoredQualification(target, { ...identity, nowMs: 100 });
+    expect((await recordStoredQualificationVerdict(target, { ...identity, reason: 'not-green', nowMs: 200,
+      terminalEvent: { status: 'not-green', detail: { ...identity, fullCandidate: identity.candidate,
+        terminalDelivery: delivery } } })).status).toBe('updated');
+    let entered!: () => void;
+    let release!: () => void;
+    const admitted = new Promise<void>(resolve => { entered = resolve; });
+    const barrier = new Promise<void>(resolve => { release = resolve; });
+    const emit = vi.fn(async () => {
+      entered();
+      await barrier;
+      return { ok: true, latchRecorded: true, notified: [], msgId: null };
+    });
+    const first = recoverCheckpointTerminalEvents(target, { emit });
+    try {
+      await admitted;
+      expect((await recoverCheckpointTerminalEvents(target, { emit })).failed).toHaveLength(1);
+      expect(emit).toHaveBeenCalledOnce();
+    } finally {
+      release();
+      expect((await first).failed).toEqual([]);
+    }
+    expect((await recoverCheckpointTerminalEvents(target, { emit })).failed).toEqual([]);
+    expect(emit).toHaveBeenCalledOnce();
+    expect(await reactionOutcome(delivery.events[0]!.id)).toBe('completed');
+    const [row] = await sql<{ detail: { terminalDelivery: typeof delivery } }[]>`
+      SELECT detail FROM harness_shared.pipeline_events WHERE workspace_id = ${target.workspaceId}`;
+    expect(row!.detail.terminalDelivery.pending).toBe(false);
+  });
+
+  it('concurrent successor cannot cross terminal wake receiver admission', async () => {
+    const identity = { ...target, attemptId: 'fenced-wake', candidate: 'fenced-candidate',
+      runId: 'fenced-run', green: false, candidates: ['fenced-candidate'] };
+    const delivery = checkpointTerminalDelivery(identity, [{ key: 'green-checkpoint:red:papercusp',
+      summary: 'Exact terminal result.', payload: { sha: identity.candidate, runId: identity.runId } }]);
+    await beginStoredQualification(target, { ...identity, nowMs: 100 });
+    expect((await recordStoredQualificationVerdict(target, { ...identity, reason: 'not-green', nowMs: 200,
+      terminalEvent: { status: 'not-green', detail: { ...identity, fullCandidate: identity.candidate,
+        terminalDelivery: delivery } } })).status).toBe('updated');
+    let successor: ReturnType<typeof beginStoredQualification> | undefined;
+    const emit = vi.fn(async () => {
+      // NOWAIT is an independent receiver-boundary probe: without the source
+      // row lock this succeeds, even if a competing promise has not run yet.
+      await expect(sql.begin(async tx => tx`SELECT metadata FROM harness_shared.routines
+        WHERE workspace_id = ${target.workspaceId} AND install_slug = ${target.installSlug}
+          AND target_role = 'system:green-checkpoint' FOR UPDATE NOWAIT`))
+        .rejects.toMatchObject({ code: '55P03' });
+      successor = beginStoredQualification(target, { attemptId: 'successor-after-admission',
+        candidate: 'successor-candidate', nowMs: 300 });
+      return { ok: true, latchRecorded: true, notified: [], msgId: null };
+    });
+    try {
+      expect((await recoverCheckpointTerminalEvents(target, { emit })).failed).toEqual([]);
+    } finally {
+      if (successor) expect((await successor).status).toBe('updated');
+    }
+    expect(emit).toHaveBeenCalledOnce();
+    expect(await readStoredQualification(target)).toMatchObject({ transaction: {
+      attemptId: 'successor-after-admission', candidate: 'successor-candidate', outcome: { kind: 'pending' } } });
+    await recoverCheckpointTerminalEvents(target, { emit });
+    expect(emit).toHaveBeenCalledOnce();
+  });
+
   it.each(['pending-before-send', 'admitted-before-projection', 'unacknowledged', 'wrong-identity', 'projection-without-receipt', 'superseded'] as const)(
     'durable terminal wake recovery: %s', async boundary => {
       const identity = { ...target, attemptId: 'wake-attempt', candidate: 'wake-candidate',

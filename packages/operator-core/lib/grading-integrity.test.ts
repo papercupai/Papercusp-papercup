@@ -166,6 +166,19 @@ function standardRubric(): Rubric {
 }
 
 function deps() {
+  type DiscoveryGate = NonNullable<DispatchPendingGradingAuditsDeps['withCurrentDiscovery']>;
+  // Keep the callback/result type relationship on a real generic adapter.
+  // Vitest's ReturnType-based mock cannot preserve that relationship itself.
+  const discoveryAdmission = vi.fn<(input: Parameters<DiscoveryGate>[0]) => string | null>()
+    .mockReturnValue(null);
+  const withCurrentDiscovery: DiscoveryGate = async (input, accept) => {
+    const refusal = discoveryAdmission(input);
+    if (refusal) return { ok: false, error: 'discovery_not_ready',
+      discovery: {} as never, nextAction: refusal };
+    return { ok: true, result: await accept({} as never, {} as never) };
+  };
+  const resolveSpecQualityPlanSubject = vi.fn<NonNullable<DispatchPendingGradingAuditsDeps['resolveSpecQualityPlanSubject']>>()
+    .mockResolvedValue({ planSlug: 'review-plan', harnessSlug: 'subject-harness' });
   const route = vi.fn<NonNullable<DispatchPendingGradingAuditsDeps['route']>>().mockResolvedValue({
     state: 'fallback',
     reason: 'existing router: no_qualified_responder',
@@ -203,6 +216,9 @@ function deps() {
   const generationAncestry = vi.fn<GenerationAncestry>().mockReturnValue(true);
   const listWorkspaceWideLoopStanddownOwners = vi.fn(async (_workspaceId: string, _nowMs: number) => new Set<string>());
   return {
+    withCurrentDiscovery,
+    discoveryAdmission,
+    resolveSpecQualityPlanSubject,
     listScorecards,
     cancelSuperseded,
     getEvaluatorBuild,
@@ -580,6 +596,18 @@ describe('retained grading auditor lease delivery (EI-25289706163098558)', () =>
 });
 
 describe('dispatchPendingGradingAudits', () => {
+  it('refuses stale plan discovery before spec-quality reservation, routing, or launch', async () => {
+    const d = deps();
+    d.listScorecards.mockResolvedValue([card('EI-stale-discovery', { rubricRef: 'spec-quality',
+      subject: { kind: 'plan', ref: 'spec-set:registered-subject' } })]);
+    d.discoveryAdmission.mockReturnValueOnce('Reconcile finding F-1.');
+    const result = await dispatchPendingGradingAudits({ targetIds: ['EI-stale-discovery'], ctx }, d);
+    expect(result.receipts[0]).toMatchObject({ state: 'skipped', reason: expect.stringContaining('discovery_not_ready') });
+    expect(d.discoveryAdmission).toHaveBeenCalledWith(expect.objectContaining({
+      workspaceId: 'ws-test', planSlug: 'review-plan', harnessSlug: 'subject-harness',
+    }));
+    for (const effect of [d.reserve, d.route, d.launch]) expect(effect).not.toHaveBeenCalled();
+  });
   it.each([
     { explicit: true, targeted: true, serving: true, launches: 1 },
     { explicit: true, targeted: true, serving: false, launches: 0 },
@@ -733,6 +761,7 @@ describe('dispatchPendingGradingAudits', () => {
     const d = deps();
     const issueId = 'EI-stale-binding-audit';
     const rerunRecipe = {
+      evaluator: 'plans:evaluate-spec-test-adequacy',
       args: { harness: 'papercusp' },
       selection: { bindingIds: [30308, 30309] },
       ...(evaluatorBuild ? { evaluatorBuild } : {}),
@@ -1554,10 +1583,14 @@ describe('dispatchPendingGradingAudits', () => {
     // A routed reviewer can inherit another host. Exact replay requires a fresh
     // independent judge bound to the host whose evaluator identity was checked.
     compatible.route.mockResolvedValue({ state: 'routed', conversationId: 'wrong-host-route' });
-    const result = await dispatchPendingGradingAudits({ targetIds: [issueId], ctx }, compatible);
+    const signal = new AbortController().signal;
+    const deadlineAtMs = Date.now() + 10_000;
+    const runtimeCtx = { ...ctx, signal, deadlineAtMs } as DispatchPendingGradingAuditsInput['ctx'];
+    const result = await dispatchPendingGradingAudits({ targetIds: [issueId], ctx: runtimeCtx }, compatible);
 
     expect(foreign.reserve).not.toHaveBeenCalled();
     expect(compatible.route).not.toHaveBeenCalled();
+    expect(compatible.ensureRuntime).toHaveBeenCalledWith(expect.objectContaining({ signal, deadlineAtMs }));
     expect(compatible.launch).toHaveBeenCalledWith(
       expect.objectContaining({ mcpTarget: 'spawn-host', independent: true }),
       expect.objectContaining(auditorCtx),
@@ -1934,7 +1967,8 @@ describe('dispatchPendingGradingAudits', () => {
   it('binds a profile-pinned card without a graded generation to the dispatcher host', async () => {
     const d = deps();
     const issueId = 'EI-routine-profile-unbound-generation';
-    d.listScorecards.mockResolvedValue([card(issueId, { rubricRef: 'spec-quality' })]);
+    d.listScorecards.mockResolvedValue([card(issueId, { rubricRef: 'spec-quality',
+      subject: { kind: 'plan', ref: 'spec-set:registered-subject' } })]);
     const profiledCtx = {
       ...ctx,
       gradingLaunch: { agent: 'codex', model: 'gpt-6.1-sol', effort: 'xhigh', account: 'auto' },
@@ -4151,9 +4185,10 @@ describe('dispatchPendingGradingAudits', () => {
     ]);
   });
 
-  it.each(['terminal', 'credit-balance', 'quoted', 'unreadable', 'healthy-peer'] as const)(
+  it.each(['terminal', 'credit-balance', 'credit-balance-periodic', 'quoted', 'unreadable', 'healthy-peer'] as const)(
     'repairs a fresh reserved auditor only with complete terminal proof: %s', async (proof) => {
       const d = deps();
+      const creditFailure = proof.startsWith('credit-balance');
       const issueId = 'EI-fresh-reserved-terminal';
       const sessionId = 'native-fresh-reserved';
       const ownerId = 'su-failed-reserved-auditor';
@@ -4173,15 +4208,18 @@ describe('dispatchPendingGradingAudits', () => {
       } as TaskRow;
       d.listTasks.mockResolvedValueOnce(proof === 'healthy-peer' ? [task, healthy] : [task]);
       const killTask = vi.fn(async (taskId: string) => ({ ok: true as const, taskId, action: 'kill' as const }));
-      const nativeErrorText = proof === 'credit-balance'
-        ? 'Credit balance too low · Add funds:'
+      const nativeErrorText = creditFailure
+        ? 'Credit balance is too low'
         : "API Error: 400 role 'system' is not supported on this model";
       const nativeTranscript = JSON.stringify({
         type: 'assistant', sessionId, isSidechain: false, isApiErrorMessage: proof !== 'quoted', apiErrorStatus: 400,
-        message: { role: 'assistant', stop_reason: 'end_turn', content: [{ type: 'text',
+        ...(creditFailure ? { error: 'billing_error' } : {}),
+        message: { role: 'assistant', stop_reason: creditFailure ? 'stop_sequence' : 'end_turn', content: [{ type: 'text',
           text: nativeErrorText }] },
       });
-      const result = await dispatchPendingGradingAudits({ targetIds: [issueId], ctx, harness: 'papercusp' }, {
+      const result = await dispatchPendingGradingAudits({
+        ...(proof === 'credit-balance-periodic' ? {} : { targetIds: [issueId] }), ctx, harness: 'papercusp',
+      }, {
         ...d, killTask,
         listNativeSessionsByTranscriptHandles: async () => [{ sessionId, coordOwnerId: ownerId, agent: 'claude' }],
         findSessionTranscript: async () => '/tmp/fresh-reserved.jsonl',
@@ -4190,18 +4228,20 @@ describe('dispatchPendingGradingAudits', () => {
             if (proof === 'unreadable') throw new Error('native evidence unavailable');
             return nativeTranscript;
           }
-          if (proof === 'credit-balance') {
-            return '  ⎿ Credit balance too low · Add funds: \n\n✻Sautéed for 1m 48s · done 5:15 AM\n❯';
+          if (creditFailure) {
+            return 'Auditor session started; waiting for first tool activity';
           }
           return "API Error: 400 role 'system' is not supported on this model\n❯";
         },
         terminalLogRecheckDelayMs: 0, terminalLogMaxRechecks: 0,
       });
-      if (proof === 'terminal' || proof === 'credit-balance') {
+      if (proof === 'terminal' || creditFailure) {
         expect(d.release).toHaveBeenCalledWith(issueId, prior.key,
           expect.objectContaining({ workspaceId: 'ws-test', reservedAt: prior.reservedAt }));
         expect(d.reserve).toHaveBeenCalledTimes(2);
         expect(d.launch).toHaveBeenCalledOnce();
+        expect(d.providerCanServe).toHaveBeenCalledWith('codex');
+        expect(d.launch.mock.calls[0]?.[0]).toMatchObject({ agent: 'codex', account: 'auto' });
         expect(result.receipts[0]).toMatchObject({ state: 'launched',
           terminalRecovery: { retiredTaskIds: [task.taskId], codes: ['inference_gateway_error'] } });
       } else {
@@ -4210,7 +4250,7 @@ describe('dispatchPendingGradingAudits', () => {
         expect(d.launch).not.toHaveBeenCalled();
         expect(result.receipts[0]).toMatchObject({ state: 'skipped' });
       }
-      if (proof === 'terminal' || proof === 'credit-balance' || proof === 'healthy-peer') expect(killTask).toHaveBeenCalledOnce();
+      if (proof === 'terminal' || creditFailure || proof === 'healthy-peer') expect(killTask).toHaveBeenCalledOnce();
       else expect(killTask).not.toHaveBeenCalled();
     },
   );

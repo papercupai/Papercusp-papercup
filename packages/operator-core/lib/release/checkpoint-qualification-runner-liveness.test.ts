@@ -165,6 +165,39 @@ describe('independent qualification semantic progress (P-002)', () => {
       .toMatchObject({ refusalReason: 'observer-sample-order' });
   });
 
+  it('unlimited-horizon-restart retains the same payload and requires fresh observer evidence', () => {
+    let tx = sample(sample(fixture(), 1), 2);
+    const horizon = 3 * (2 ** 31 - 1);
+    // Persisted state crosses several former aggregate timer horizons before a
+    // replacement observer starts with its own monotonic clock and sequence.
+    tx = parseCheckpointQualificationTransaction(JSON.parse(JSON.stringify({ ...tx,
+      continuation: undefined })))!;
+    expect(tx).not.toBeNull();
+    const payload = structuredClone(tx.currentPhysicalRunner);
+    const restarted = observeQualificationProgress(tx, target, {
+      fence: qualificationProgressFence(tx, target), observerGeneration: 'replacement-after-horizon',
+      sequence: 1, sampledAtMs: horizon, monotonicAtMs: 1, telemetryHealthy: true,
+    });
+    expect(restarted.status).toBe('updated');
+    tx = restarted.transaction;
+    expect(tx.progressObservation).toMatchObject({ health: 'baseline', semantic: 'unknown',
+      lastUsefulProgressMonotonicMs: null, retiredObserverGenerations: ['observer-1'] });
+    expect(observeQualificationProgress(tx, target, {
+      fence: qualificationProgressFence(tx, target), observerGeneration: 'observer-1',
+      sequence: 99, sampledAtMs: horizon + 1, monotonicAtMs: horizon, telemetryHealthy: true,
+    })).toMatchObject({ status: 'conflict', refusalReason: 'observer-retired-generation' });
+    tx = observeQualificationProgress(tx, target, {
+      fence: qualificationProgressFence(tx, target), observerGeneration: 'replacement-after-horizon',
+      sequence: 2, sampledAtMs: horizon + 1000, monotonicAtMs: 1001, telemetryHealthy: true,
+    }).transaction;
+    expect(tx.progressObservation).toMatchObject({ health: 'healthy', semantic: 'unknown' });
+    expect(tx.currentPhysicalRunner).toEqual(payload);
+    expect(tx.outcome).toEqual({ kind: 'pending' });
+    expect(reserveQualificationRunner(tx, { attemptId: tx.attemptId, runnerId: 'duplicate',
+      candidate: tx.candidate, incumbentLiveness: 'live', leaseDurationMs: LEASE_MS,
+      nowMs: horizon + 1000 }).status).toBe('conflict');
+  });
+
   it.each([-60_000, 60_000, 200_000])('clock-rebase or missed pass (%sms) demands a baseline', offset => {
     let tx = sample(fixture(), 1);
     tx = sample(tx, offset === 200_000 ? 202 : 2, 'observer-1', true, offset === 200_000 ? 0 : offset);

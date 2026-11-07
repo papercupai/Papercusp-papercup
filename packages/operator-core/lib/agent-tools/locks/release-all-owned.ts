@@ -53,6 +53,7 @@ export async function releaseAllOwnedLocks(params: {
   // the original Hive-lock miss.
   let heldDomains: string[] = [];
   try {
+    // notify-classification: {"id":"packages/operator-core/lib/agent-tools/locks/release-all-owned.ts#<module>/releaseAllOwnedLocks:1be55f9df5ebcf8c8054:1","classification":"durable","reason":"Resolves this owner's domains through a SELECT-only lock snapshot before any release. The shared transaction receipt drain and EI-28019593823641196 retry-callback ambiguity remain conservatively unverified; this lookup neither releases locks nor proves a terminal notification.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     heldDomains = await domainsHoldingLocks({ ownerId });
   } catch {
     // Best-effort widening. The primary domain still gets its normal release,
@@ -114,6 +115,7 @@ export async function releaseAllOwnedLocks(params: {
 
     if (outcome.released.length > 0) {
       noteShaTokenRelease(domain, outcome.released, null, Date.now());
+      // notify-classification: {"id":"packages/operator-core/lib/agent-tools/locks/release-all-owned.ts#<module>/releaseAllOwnedLocks:1c4c017aad07a60e053d:1","classification":"safe-to-lose","reason":"Only invalidates planLock.byPath for released plan-file locks; lock enforcement stays in the lock store. usePlanLock in apps/operator/app/admin/plans/plans-api.ts refreshes the current query on window focus and visible-tab transitions, recovering a dropped banner update."}
       notifyPlanLockChange(outcome.released);
       if (routed.via !== 'remote-authority' && routed.scope) {
         emitReleaseLockEvents((event) => void recordLockEvent(event), {

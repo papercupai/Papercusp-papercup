@@ -236,6 +236,60 @@ describe('P-026 canonical verifier scope before LIMIT, real PG', () => {
     expect(adopted.agentReviewAdoption).toMatchObject({ from: 'su-gone', sessionState: 'ended', adoptedBy: 'su-adopter' });
   });
 
+  it('adoption reaches an eligible revision beyond a full page of protected holds without clearing them', async () => {
+    for (let i = 0; i <= 30; i++) {
+      const payload = {
+        agentReview: {
+          status: 'revision-requested', ledgerIdeaId: `WI-HELD-REVISION-${i}`, round: 2,
+          revisionKind: 'content', submittedBy: 'su-gone',
+        },
+        ...(i < 30 ? { _claimHold: i % 2 === 0 ? true : 'true', claim_hold_by: 'su-park-owner' } : {}),
+      };
+      await db.adminSql`INSERT INTO harness_shared.work_items
+        (workspace_id, harness_slug, feature_id, title, summary, item_kind, status, payload, created_ts)
+        VALUES (${WS}, ${HARNESS}, ${`WI-HELD-REVISION-${i}`}, 'Content revision', 'Protected hold fixture',
+          'bug', 'open', ${JSON.stringify(payload)}::text::jsonb, ${i})`;
+    }
+    // Like an ordinary named claim, this writer does not filter holds. Discovery
+    // must never hand a protected row to it; the real-writer suite covers the CAS.
+    const { deps, claimWorkItem } = writer();
+    const adoptDeps = {
+      ...deps, claimWorkItem,
+      mergeWorkItemPayload: vi.fn(async (id: string, patch: Record<string, unknown>) => {
+        await db.adminSql`UPDATE harness_shared.work_items
+          SET payload=payload || ${JSON.stringify(patch)}::text::jsonb
+          WHERE workspace_id=${WS} AND feature_id=${id}`;
+        return deps.getWorkItem(id);
+      }),
+      getWorkItemDetail: vi.fn(async () => ({ posts: [] })),
+      commentWorkItem: vi.fn(async () => ({})),
+      resolveSubmitterLiveness: vi.fn(async () => ({ sessionState: 'ended' as const })),
+      resolveVerifiedSubmitterAlias: vi.fn(async () => null),
+    };
+    const scope = { adopter: 'su-adopter', harnessSlug: HARNESS, workspaceId: WS };
+    const result = await adoptNextAgentReviewRevision(scope, adoptDeps as never);
+    expect(result).toMatchObject({
+      adopted: true, workItem: { id: 'WI-HELD-REVISION-30' }, scanned: 1, refusals: {},
+    });
+    expect(claimWorkItem.mock.calls.map(([id]) => id)).toEqual(['WI-HELD-REVISION-30']);
+    const held = await db.adminSql`SELECT taken_by, payload FROM harness_shared.work_items
+      WHERE workspace_id=${WS} AND feature_id <> 'WI-HELD-REVISION-30' ORDER BY created_ts`;
+    expect(held).toHaveLength(30);
+    for (const row of held) {
+      expect(row.taken_by).toBeNull();
+      expect(String(row.payload._claimHold)).toBe('true');
+      expect(row.payload.claim_hold_by).toBe('su-park-owner');
+      expect(row.payload.agentReview.submittedBy).toBe('su-gone');
+      expect(row.payload.agentReviewAdoptionProbe).toBeUndefined();
+    }
+
+    // Positive control: releasing one hold makes precisely that revision discoverable.
+    await db.adminSql`UPDATE harness_shared.work_items SET payload=payload - '_claimHold' - 'claim_hold_by'
+      WHERE workspace_id=${WS} AND feature_id='WI-HELD-REVISION-0'`;
+    const released = await adoptNextAgentReviewRevision(scope, adoptDeps as never);
+    expect(released).toMatchObject({ adopted: true, workItem: { id: 'WI-HELD-REVISION-0' }, scanned: 1 });
+  });
+
   /**
    * bug-queue-legitimacy D-011 C (SPEC-BQL-P-009-CONVERGENCE): the window is the 25 OLDEST
    * candidates, so rows that can never be adopted at the head of the queue would pin it

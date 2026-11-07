@@ -252,6 +252,75 @@ describe('R16 repeatable existing-ledger reads', () => {
   let fx: PlanPgFixture;
   beforeAll(async () => { fx = await setupPlanPgFixture({ isolated: true }); }, 180_000);
   afterAll(async () => { await fx?.dispose(); });
+  it('R13 canonical active-rubric checks bind scorecard ledger identities', async () => {
+    const { proposeRubric, getRubric } = await import('../rubrics');
+    const { rescoreRubric } = await import('../harness/routines/rubric-rescore-action');
+    const { runInstrumentChecks, readLatestRubricCheckResults } = await import('../check-results-ledger');
+    const { emitScorecard, scorecardEmitArgs, _closeScorecardEmitMutexForTests } = await import('../agent-tools/scorecards/emit');
+    const { runWithWorkspace } = await import('../workspace-als');
+    const snapshots = JSON.parse(await readFile(new URL('../../test/fixtures/unified-learning-active-rubrics.json', import.meta.url), 'utf8'));
+    const source = snapshots.rubrics.find((r: Rubric) => r.rubricId === 'code-intel-reuse-measurement') as Rubric;
+    expect(source).toMatchObject({ status: 'active', revision: 8,
+      criteriaHash: '8fa50bf367007267c5b2f863d69460438b1d698d38c365d718d2ca9a2b6679b2' });
+    await runWithWorkspace(source.workspaceId, async () => {
+    // Install the exact live definition into the isolated store. The check and
+    // scorecard paths read it back themselves; no getRubric/resolver is mocked.
+    await proposeRubric({ rubricId: source.rubricId, kind: 'standard', characteristic: source.characteristic,
+      title: source.title, description: source.description, criteria: source.criteria,
+      methodRef: source.methodRef ?? undefined, ratingScale: source.ratingScale, status: 'active',
+      by: source.createdBy ?? 'su-r13-rubric-author' });
+    const active = await getRubric(source.rubricId);
+    expect(active).toMatchObject({ status: 'active', criteriaHash: source.criteriaHash });
+    expect(active!.criteria.map(c => c.key)).toEqual(source.criteria.map(c => c.key));
+    const harness = 'r13-canonical-reuse', stamp = new Date(Date.now() - 60_000).toISOString();
+    const choices = [ ['authored', 'success'], ['automatic-match', 'success'],
+      ['saved-replay', 'success'], ['saved-replay', 'error'], ['saved-replay', 'refused'] ];
+    for (const [index, [selection, outcome]] of choices.entries()) {
+      const callId = `r13-canonical-${index}`;
+      await fx.admin`INSERT INTO harness_shared.tool_invocations
+        (workspace_id,harness_slug,plugin_name,tool_name,role,spawn_id,window_key,invoked_at,status,transport,metadata_json)
+        VALUES (${source.workspaceId},${harness},'agent-mcp','recipes:run','operator','r13-canonical','r13',${stamp}::timestamptz,'ok','mcp',
+          ${fx.admin.json({ otel: { callId }, returnedContextBytes: 20, spillPending: false, resultDoorReason: 'within-budget' })})`;
+      await fx.admin`INSERT INTO harness_shared.code_recipe_runs
+        (recipe_id,workspace_id,agent_owner,agent_role,success,reused,execution_trace,ts)
+        VALUES ('r13-canonical',${source.workspaceId},'r13-agent','operator',${outcome === 'success'},true,
+          ${fx.admin.json({ usage: { version: 1, choice: 'agent', selection, outcome, mode: 'commit', settled: true },
+            runEvidence: { version: 1, invocationId: callId, attempt: 0, executed: outcome !== 'refused',
+              sourceBytes: 10, intermediateBytes: 5, elapsedBeforeRecordMs: 1 } })},${stamp}::timestamptz)`;
+    }
+    const scored = await rescoreRubric({ rubricRef: source.rubricId, workspaceId: source.workspaceId, harnessSlug: harness }, {
+      runInstruments: value => runInstrumentChecks(value), emit: async () => ({}) as never,
+    });
+    expect(scored).toMatchObject({ executed: 4 });
+    expect(scored.testRunIds).toHaveLength(4);
+    const latest = await readLatestRubricCheckResults({ rubricRef: source.rubricId, workspaceId: source.workspaceId });
+    const row = [...latest.values()].find(r => r.check.criterionKey === 'provider-outcomes')!;
+    expect(scored.testRunIds).toContain(row.testRunId);
+    expect(row).toMatchObject({ status: 'error', check: { rubricRef: source.rubricId, kind: 'instrument', value: null } });
+    const report = JSON.parse(row.detail!).recipeOutcomes;
+    expect(report).toMatchObject({ lineage: { rubricRef: source.rubricId, criterionKey: 'provider-outcomes',
+      instrumentKey: REUSE_MEASUREMENT_INSTRUMENT_KEYS.providerOutcomes },
+      measurement: { authored: 1, automaticMatches: 1, deliberateSelections: 3, replaySuccesses: 1,
+        replayErrors: 1, replayRefusals: 1, replayDenominator: 3, sourceBytes: 50, intermediateBytes: 25,
+        elapsedBeforeRecordMs: 5, returnedContextBytes: 100 },
+      coverage: { state: 'unknown', complete: false }, benefit: { state: 'unknown', measuredSavings: null },
+      units: { sourceBytes: 'utf8-bytes-per-receipt', returnedContextBytes: 'utf8-bytes-per-dispatch-at-settled-result-door' } });
+    const procedure = JSON.parse(row.check.provenance!.procedure.snapshot);
+    expect(procedure).toMatchObject({ instrumentKey: REUSE_MEASUREMENT_INSTRUMENT_KEYS.providerOutcomes,
+      window: { workspaceId: source.workspaceId, harnessSlug: harness } });
+    try {
+      const card = await emitScorecard(scorecardEmitArgs.parse({ rubricRef: source.rubricId, fromLedger: true }),
+        { createdBy: 'su-r13-independent-grader', ctxHarness: harness, workspaceId: source.workspaceId },
+        { dispatchTool: async () => { throw new Error('ledger emission must not re-execute a check'); } });
+      expect(card.ok).toBe(true);
+      if (!('issueId' in card) || typeof card.issueId !== 'string') throw new Error(JSON.stringify(card));
+      const [stored] = await fx.admin`SELECT payload FROM harness_shared.work_items WHERE feature_id=${card.issueId}`;
+      expect(stored!.payload.observation.ratings['provider-outcomes']).toMatchObject({ rating: 'unknown', ratedFrom: 'ledger',
+        evidenceRef: `test_runs:${row.testRunId}`, ledgerResult: { testRunId: row.testRunId, value: null } });
+      expect((await readLatestRubricCheckResults({ rubricRef: source.rubricId, workspaceId: source.workspaceId })).size).toBe(4);
+    } finally { await _closeScorecardEmitMutexForTests(); }
+    });
+  }, 120_000);
   it('recomputes persisted call columns and rejects damaged raw sites without using a saved score', async () => {
     const scope = { workspaceId: fx.workspaceId, harnessSlug: 'packed-producer', windowStart: at, windowEnd: now };
     const columns = createReuseCallColumns();
