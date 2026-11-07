@@ -1,7 +1,7 @@
 # Operator memory-bloat root cause: the claude-sessions fs-sweep churn (not the P2P layer)
 URL: /internal/docs/agent-insights/operator-memory-bloat-claude-sessions-fs-sweep
 
-The dominant bg-host/desktop-operator RSS bloat (9GB/min → 32GB watchdog recycle in ~4min) was claude-sessions.ts's full 12k-owner-dir sweep run per-miss by the compaction-usage watchdog, NOT the Hypercore/Corestore layer the prior WI-1089 hunt chased. Sampling heap profiler (scripts/leak-sample.mjs) named it; fix = negative + roots TTL caches. ~10x RSS-growth reduction, verified live.
+The dominant bg-host/desktop-operator RSS bloat came from repeated claude-sessions filesystem sweeps, not P2P. This document records the cache fix and the safe borrowed-sampler route for observing a process-owned V8 allocation profiler.
 
 import { Aside } from '@astrojs/starlight/components';
 
@@ -69,6 +69,12 @@ The V8 **sampling heap profiler** (`HeapProfiler.startSampling`) is low-overhead
 and names the exact **allocating call stack** — which is what you want when the leak is
 allocation-churn. `scripts/leak-sample.mjs <pid> [ms]` sends `SIGUSR1` to open the target's
 inspector, samples for the window, and prints the top allocation sites by bytes.
+
+## Safe observation of a live sampler
+
+The Node heap sampling profiler is isolate-wide across inspector clients. `scripts/leak-sample.mjs` starts and stops that shared sampler, then calls `closeInspector`; use it only when you own the target's inspector and sampler lifecycle. Do not run it against a product-owned live sampler.
+
+For an already-active sampler with an authoritative owner-state reader, use `withBorrowedHeapSamples` from `scripts/cdp-inspector.mjs`. It checks the sampler generation and settings plus the target PID and lifetime around each snapshot, excludes cumulative baseline samples by ordinal, and reports only new sampled objects still live at the endpoint. It never starts, stops, or reconfigures the borrowed sampler and fails closed when owner state or profile data is unavailable or reset. Its result is a sampling estimate, not total allocations, retained bytes, or exclusive request attribution. The maintained regression in `packages/operator-core/lib/cdp-inspector.test.ts` exercises two native inspector clients.
 
 ## Remaining baseline (\~0.9 GB/min — follow-ups, prior WI-1089 territory)
 

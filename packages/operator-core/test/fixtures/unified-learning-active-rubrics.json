@@ -1,0 +1,152 @@
+{
+  "schemaVersion": 1,
+  "capturedAt": "2026-11-06T07:33:00Z",
+  "source": "rubrics:get live active canonical workspace definitions; cloned only inside isolated maintained integration databases",
+  "rubrics": [
+    {
+      "rubricId": "code-intel-reuse-measurement",
+      "revision": 8,
+      "workspaceId": "papercusp-workspace",
+      "kind": "standard",
+      "characteristic": "code-intel-reuse",
+      "title": "Recorded code reuse and provider efficacy",
+      "description": "P019 uses existing registered instruments and outcome ledger. Preserve units, source windows and unknown populations.",
+      "criteria": [
+        {
+          "key": "redundancy",
+          "title": "Duplicate added lines per 1,000 eligible added lines",
+          "model": "Count duplicate added non-generated lines / eligible added lines * 1,000. A pinned complete 28-day source census is required; empty/incomplete is unknown.",
+          "method": "Resolve code-intel:reuse-redundancy-per-1000-lines; retain numerator, denominator, pinned source refs and window in the results ledger.",
+          "driftMarkers": "Incomplete source census is zero, denominator units drift, or source/window refs are absent.",
+          "replication": "Run testing:run {\"files\":[\"packages/operator-core/lib/code-intelligence/reuse-measurement.integration.test.ts\"],\"harness\":\"papercusp\"}. Inspect \"measures exact units and keeps unresolved populations separate\" and \"registered instruments recompute exact-window raw populations with explicit ledger units\": 10 duplicate added lines / 200 eligible added lines must yield 50 per 1,000, carried as ledger count quantity. Missing/mismatched raw window remains unknown. Retain exact source/test receipt and source refs. Then follow agent-insights/code-intel-reuse-measurement-runbook with the registered redundancy instrument.",
+          "check": {
+            "kind": "instrument",
+            "instrumentKey": "code-intel:reuse-redundancy-per-1000-lines"
+          }
+        },
+        {
+          "key": "search-before-write",
+          "title": "Eligible work items searched before first write",
+          "model": "Percentage of complete eligible work items with successful search before first write; incomplete work-item histories remain unknown and separate.",
+          "method": "Resolve code-intel:reuse-search-before-write in the same 28-day harness window. Preserve numerator, eligible denominator, unknown count and exact evidence refs.",
+          "driftMarkers": "Unknown histories count as failures or zero; post-write searches count as success; work items duplicate.",
+          "replication": "Run testing:run {\"files\":[\"packages/operator-core/lib/code-intelligence/reuse-measurement.integration.test.ts\"],\"harness\":\"papercusp\"}. Inspect \"counts a recorded search-before-write positive only through a unique exact assignment\" and \"registered instruments recompute exact-window raw populations with explicit ledger units\". Seeded eligible searched-before-first-write item yields100%; preserve eligible/observed/unknown partitions and exact invocation/assignment refs. Missing or ambiguous assignment stays unknown. Retain canonical receipt/source identity and follow agent-insights/code-intel-reuse-measurement-runbook.",
+          "check": {
+            "kind": "instrument",
+            "instrumentKey": "code-intel:reuse-search-before-write"
+          }
+        },
+        {
+          "key": "cross-file-calls",
+          "title": "Resolved calls crossing file boundaries",
+          "model": "Percentage of resolved static calls crossing files, with unresolved calls and incomplete syntax/source census separate.",
+          "method": "Resolve code-intel:reuse-cross-file-call-ratio for the pinned 28-day source window; retain cross-file numerator, resolved denominator, unresolved count and source refs.",
+          "driftMarkers": "Unresolved calls enter resolved denominator; incomplete census is complete; unknown is zero.",
+          "replication": "Run testing:run {\"files\":[\"packages/operator-core/lib/code-intelligence/reuse-measurement.integration.test.ts\"],\"harness\":\"papercusp\"}. Inspect \"derives exact added clone lines and a complete syntax-bound call census, including hidden locals and unresolved calls\" and \"registered instruments recompute exact-window raw populations with explicit ledger units\". Seeded one resolved cross-file call yields100%; unresolved calls remain a separate population. Pin source/window and retain canonical receipt. Follow agent-insights/code-intel-reuse-measurement-runbook; static calls do not prove runtime execution.",
+          "check": {
+            "kind": "instrument",
+            "instrumentKey": "code-intel:reuse-cross-file-call-ratio"
+          }
+        },
+        {
+          "key": "provider-outcomes",
+          "title": "Provider observations and reversible mature efficacy action",
+          "model": "Disjoint per-provider issued, independent receipt when available, acted-on/not-acted-on/unknown and selector-specific grep over next20invocations/30minutes. Deterministic10% work-item/provider holdout;14days and100+100 observed maturity;28day horizon. Wilson95% no-improvement on both measures reversibly disables with persisted evidence. Unknown/immature never disables.",
+          "method": "Resolve code-intel:reuse-provider-outcomes; inspect hash-verified exposure/activity refs, cohort maturity, evidence and reversal flag. Controlled fixtures in reuse-measurement.integration.test.ts prove mature-disable, keep and unknown.",
+          "driftMarkers": "Issued means delivered, absent activity is negative, selectors merge, immature data disables, or disable lacks evidence/reversal.",
+          "replication": "Run testing:run {\"files\":[\"packages/operator-core/lib/code-intelligence/reuse-measurement.integration.test.ts\"],\"harness\":\"papercusp\"}. Inspect \"partitions acted-on, not-acted-on and unknown without counting issuance as delivery\", hash-cohort/window cases, \"disables only a mature ineffective population and retains a mature beneficial population\", \"refuses disabling on immature, unknown, stale or foreign populations\", and persisted flag-writer case. Missing independent receipts/activity completeness remain unknown; only mature complete controlled evidence may disable via existing flag writer. Retain evidence and reversal flag. Follow agent-insights/code-intel-reuse-measurement-runbook.",
+          "check": {
+            "kind": "instrument",
+            "instrumentKey": "code-intel:reuse-provider-outcomes"
+          }
+        }
+      ],
+      "ratingScale": [
+        "healthy",
+        "degraded",
+        "broken",
+        "unknown"
+      ],
+      "criteriaHash": "8fa50bf367007267c5b2f863d69460438b1d698d38c365d718d2ca9a2b6679b2",
+      "methodRef": "agent-insights/code-intel-reuse-measurement-runbook",
+      "releaseGating": false,
+      "stalenessWatched": true,
+      "gradingAuthority": "independent",
+      "status": "active",
+      "createdBy": "su-0dd61ff4-d577-4fe7-9f60-ea00a582bfea",
+      "proposedBy": "su-0dd61ff4-d577-4fe7-9f60-ea00a582bfea",
+      "ratifiedBy": "su-9555fe66-e1fa-48ee-b53e-2c10298737ca",
+      "createdAt": "2026-10-25",
+      "updatedAt": "2026-11-02T16:39:23.204Z"
+    },
+    {
+      "rubricId": "sql-tool-opportunity-feedback",
+      "revision": 5,
+      "workspaceId": "papercusp-workspace",
+      "kind": "standard",
+      "characteristic": "sql-tool-opportunity-feedback",
+      "title": "SQL tool proposal quality and repair adoption",
+      "description": "",
+      "criteria": [
+        {
+          "key": "proposal-quality",
+          "title": "Proposal review quality",
+          "model": "Every proposal in the current 14-day workspace cohort has an accepted review; pending remains unknown and declined is a measured failure.",
+          "method": "Execute the scoped SQL probe over each candidate edition latest canonical ledger rows. Zero or more than 1000 members and incomplete evidence are unknown; any measured failure fails the cohort.",
+          "driftMarkers": "A candidate failure is masked by another pass, missing evidence is graded healthy, or the scope/window/denominator is absent.",
+          "replication": "Run npm run test:file -- packages/operator-core/lib/sql-tool-candidate-feedback.integration.test.ts; includes realPG scoped cohort failure, missing, repeat, and grading controls.",
+          "check": {
+            "kind": "probe",
+            "probe": {
+              "sql": "WITH latest AS (\n      SELECT DISTINCT ON (file_path) file_path,status,execution_details->'check'->>'criterionKey' AS key\n      FROM harness_shared.test_runs\n      WHERE workspace_id='papercusp-workspace' AND source='local' AND framework='rubric-check'\n        AND finished_at >= NOW() - INTERVAL '14 days' AND finished_at <= NOW()\n        AND file_path ~ '^rubric-check/sql-tool-opportunity-feedback/[a-f0-9]{64}:(proposal-quality|repair-outcome):0$'\n      ORDER BY file_path,finished_at DESC,id DESC\n    ), cohort AS (\n      SELECT status FROM latest WHERE key LIKE '%:proposal-quality'\n    ) SELECT CASE WHEN COUNT(*)=0 OR COUNT(*)>1000 THEN NULL\n      WHEN BOOL_OR(status='fail') THEN 0\n      WHEN BOOL_OR(status<>'pass') THEN NULL ELSE 1 END AS value FROM cohort",
+              "kind": "sql",
+              "expect": {
+                "op": "gte",
+                "path": "$.rows[0].value",
+                "value": 1
+              },
+              "maxRows": 1,
+              "schemaRevision": "projected-tool-registry-v1:c6e029400f58e1d0"
+            }
+          }
+        },
+        {
+          "key": "repair-outcome",
+          "title": "Measured repair adoption",
+          "model": "Every accepted proposal in the current 14-day workspace cohort has complete normalized repair evidence and passes coverage and tool adoption.",
+          "method": "Execute the scoped SQL probe over each candidate edition latest canonical ledger rows. Zero or more than 1000 members and incomplete evidence are unknown; any measured failure fails the cohort.",
+          "driftMarkers": "A candidate failure is masked by another pass, missing evidence is graded healthy, or the scope/window/denominator is absent.",
+          "replication": "Run npm run test:file -- packages/operator-core/lib/sql-tool-candidate-feedback.integration.test.ts; includes realPG scoped cohort failure, missing, repeat, and grading controls.",
+          "check": {
+            "kind": "probe",
+            "probe": {
+              "sql": "WITH latest AS (\n      SELECT DISTINCT ON (file_path) file_path,status,execution_details->'check'->>'criterionKey' AS key\n      FROM harness_shared.test_runs\n      WHERE workspace_id='papercusp-workspace' AND source='local' AND framework='rubric-check'\n        AND finished_at >= NOW() - INTERVAL '14 days' AND finished_at <= NOW()\n        AND file_path ~ '^rubric-check/sql-tool-opportunity-feedback/[a-f0-9]{64}:(proposal-quality|repair-outcome):0$'\n      ORDER BY file_path,finished_at DESC,id DESC\n    ), cohort AS (\n      SELECT COALESCE(r.status,'error') AS status FROM latest q\n      LEFT JOIN latest r ON r.key=replace(q.key,':proposal-quality',':repair-outcome')\n      WHERE q.key LIKE '%:proposal-quality' AND q.status='pass'\n    ) SELECT CASE WHEN COUNT(*)=0 OR COUNT(*)>1000 THEN NULL\n      WHEN BOOL_OR(status='fail') THEN 0\n      WHEN BOOL_OR(status<>'pass') THEN NULL ELSE 1 END AS value FROM cohort",
+              "kind": "sql",
+              "expect": {
+                "op": "gte",
+                "path": "$.rows[0].value",
+                "value": 1
+              },
+              "maxRows": 1,
+              "schemaRevision": "projected-tool-registry-v1:c6e029400f58e1d0"
+            }
+          }
+        }
+      ],
+      "ratingScale": [
+        "healthy",
+        "broken",
+        "unknown"
+      ],
+      "criteriaHash": "3c0aeb548bd0bf872894e96671980e1f5d076b77406199e91cf0d3e0052c6b04",
+      "methodRef": "agent-insights/repeat-measurements-are-rubric-checks",
+      "gradingAuthority": "independent",
+      "status": "active",
+      "createdBy": "su-3ceb42fc-eda4-4c09-9a87-23a45cdb3a36",
+      "proposedBy": "su-3ceb42fc-eda4-4c09-9a87-23a45cdb3a36",
+      "ratifiedBy": "su-6d6ef51d-8e08-43e3-82a7-f10b58cf2549",
+      "createdAt": "2026-10-25",
+      "updatedAt": "2026-10-25T19:39:18.501Z"
+    }
+  ]
+}

@@ -31,6 +31,32 @@ a rubric.
 Discovery: `rubrics:list` / `rubrics:search` show what the system already
 knows how to measure — check before proposing a near-duplicate.
 
+## Diagnostic baselines, readiness and final grading
+
+A diagnostic records what was observed before readiness is complete. It does not certify acceptance. Start with `scorecards:evaluate { rubricRef, purpose: 'diagnostic', subject }`, fill every applicable criterion, then persist with `scorecards:emit` using the same purpose, subject and ratings. A confirmed failure is a valid observation. For an unknown rating, include `unknownReason` and `nextEvidenceAction`; missing proof remains unknown.
+
+Diagnostic records retain rubric id, revision, `criteriaHash`, `barSetHash`, subject, source scope and observation window. This path preserves identity and authority checks while allowing missing readiness or instrument proof to be described. It cannot settle rubric vetting, independent acceptance or a release gate. Continue ordinary grading after the missing proof is supplied; that path still enforces its normal gates.
+
+Default `scorecards:list` history selects complete, finalized cards before its page limit. Standard cards require a passed independent audit under the current audit contract; acceptance and audit rubrics keep their existing independent gates. Use `includeDiagnostics: true` to inspect diagnostic baselines, or `includeUnfinalized: true` for unfinished grading history. These records carry `exclusionReasons`, including incomplete ratings and missing, pending, failed, stale or unknown audit proof. Finalized failures remain visible.
+
+Use `baselineRef` for a later re-grade that preserves its baseline. A diagnostic baseline is permitted only when the exact rubric identity, subject, scope and window still match. Use explicit `supersedes` for a corrected reading, rather than a new measurement. A diagnostic correction must target the same author's matching diagnostic. Ordinary later measurements preserve history. A changed rubric meaning or incompatible subject/window requires a new baseline; the evaluator returns an incompatibility reason instead of a misleading delta.
+
+`rubrics:trend` admits finalized records under the current rubric identity before limiting its sample. It reports retained samples, examined rows, exclusions and `hasMore`; examined rows include the eligible lookahead used for pagination. Distributions and observation age can summarize multiple subject cohorts, but direction is unknown across different subjects, scopes or observation windows. Inspect the comparison explanation before treating a trend as an improvement.
+
+## Reading criterion evidence and repairing readiness
+
+Use `plans:get-spec-evidence { slug, workItemIds, limit }` for a bounded current-criterion view. Each applicable current clause has a row, including clauses with no bindings. Read `evaluatedAt`, exact spec/rubric identity, evidence plane and receipts, source/test/fixture/environment/rubric fingerprints, per-dimension currentness, coverage and `nextEvidenceAction`. A missing applicable measurement stays unknown. Missing, stale, incompatible, withdrawn/rejected and instrument-unavailable proof have separate reasons; inspect these before asking for final grading. An ad-hoc work item keeps its actual plan association.
+
+The next responsible role follows the gap: an implementer supplies source and recurrence proof, an instrument owner restores a failed probe, and an eligible independent grader records final acceptance. Diagnostic assessment, readiness preflight and final acceptance are separate results. A diagnostic receipt never satisfies the latter two.
+
+## Durable author handoff
+
+An author-only vetting refusal can return an `authorHandoff` obligation in the existing work-item store. Its key includes workspace, harness, subject plan, rubric id, revision, `criteriaHash`, `barSetHash` and action. Retries and process restarts reuse that exact obligation. Inspect `work_items:get { id }` and its `payload.authorHandoff`: `queued` records delivery, `picked-up` records an authorized attempt, `blocked` explains missing authority/delivery/audit, `completed` names the final verdict, and `superseded` preserves a receipt for an obsolete tuple.
+
+The authorized recorder passes `authorHandoffId` to the ordinary `scorecards:emit` vetting request. The emitter checks the current tuple and existing author/successor policy at pickup and settlement. Pending or provisional audit evidence leaves the obligation unresolved; only a passed current independent audit can settle an eligible verdict. An absent author stays blocked until existing recovery/reassignment policy supplies authority. Delivery alone never means pickup or completion.
+
+This recovery path preserves the normal direct acceptance-rubric critique workflow. It creates no new author authority and imposes no extra meta-card prerequisite on ordinary critique.
+
 ## Monitoring the monitor
 
 Scorecards are only useful if they keep arriving, complete:

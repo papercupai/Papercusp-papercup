@@ -1,0 +1,50 @@
+---
+rel_path: "evidence/bg-parent-accepted-source-expectation-20261106-v1.json"
+updated_at: 1793929752120
+_body: "content"
+---
+
+{
+  "schemaVersion": 1,
+  "kind": "bg-accepted-source-expectation",
+  "authority": "independently-accepted-original-parent-source-only",
+  "evidenceRef": "consult:conv-mw3vxppj-0000-68c110f3e3854c7ebfdb70e39d59422c#thread-post:1214920",
+  "independentAcceptance": {
+    "ownerId": "su-c05233eb-d1be-4e44-b16e-51d9d3532894",
+    "reportId": "rpt_688532a6-0348-4b85-a9a3-cfd2ff98f630",
+    "reportBodySha256": "284d13b4034f2e4b03430ab16bacce885c4d62f8a77f9467c454940ab87b1b22",
+    "originalConsult": "conv-mw3vxppj-0000-68c110f3e3854c7ebfdb70e39d59422c",
+    "acceptedPostId": 1214920
+  },
+  "historicalSourceCommit": "72959875a3b38694f1f7ebaf78eb7b0782d954ab",
+  "sourceBlobs": {
+    "packages/operator-core/lib/dbos/routines-workflow.ts": "85c7396e72e5f8cddd5ddbba3b3a6a8d7119e31d",
+    "packages/operator-core/lib/endpoint-route/routes/agent-mcp/bootstrap-su.ts": "35ccbdd2ea73e7e3f376fcb37a762c6079b47e95",
+    "packages/operator-core/lib/harness/routines/loop-turn-start-stamp.ts": "aad6f1c7029ff189ccdbe0ed6676b808e0aab54c"
+  },
+  "sourceSha256": {
+    "packages/operator-core/lib/dbos/routines-workflow.ts": "2959316721171c028fef5d8ca83201f849c6f583c3a079178de51ddf843b9348",
+    "packages/operator-core/lib/endpoint-route/routes/agent-mcp/bootstrap-su.ts": "2c1a0a3fe64d0f03832c88f18cfd0ee0207c3032539982016211c895690b033b",
+    "packages/operator-core/lib/harness/routines/loop-turn-start-stamp.ts": "4e8edba73d6e6b3ee9e1ec6f5fcd02ee6a39c7258bf161728b92769c9ce2f98e"
+  },
+  "originalEvidenceRefs": [
+    "papercusp:evidence/bg-parent-original-source-retained-evidence-20261103.json",
+    "thread-post:1204094 line165",
+    "session:codex:01a16f55-1fed-7240-9697-c3b949dc3150 part70 part104",
+    "loop-rebase-critical-sweep-floor-2026-10-24 evidence68404 evidence68921"
+  ],
+  "plan": "bg-host-committed-generation-2026-10-24",
+  "planContentHash": "c77b68f8a286f7a75f4e1471eda685ff081bf5653819b50b5a9f099a56a6c623",
+  "workItem": "WI-6554700010028547",
+  "frozenBefore": [
+    "candidate-selection",
+    "source-preparation",
+    "builder-effects"
+  ],
+  "limitations": [
+    "Source authority only; original matching boot artifact and runtime authority remain UNKNOWN.",
+    "No original fire24 settlement, rollback, teardown, P001 acceptance or Luna shipment is established.",
+    "No member was selected by current HEAD, compiler output, candidate or nine-member integration cohort."
+  ]
+}
+

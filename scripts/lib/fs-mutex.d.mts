@@ -103,9 +103,9 @@ export function reconcileFsMutexStagingReaders(name: string, opts?: {
  * The callback may check for live queued writers and voluntarily return early.
  * The check uses the same ticket reclamation as acquisition; it never releases
  * the lock itself. Reader-mode and explicitly disabled locks have no check.
- * `waitForReadersBeforeReserve` leaves reader admission open while this writer
- * waits for existing readers. The reserved writer still drains again for races.
- * Continuous readers can exhaust the same timeout without blocking newcomers.
+ * `waitForReadersBeforeReserve` snapshots the current readers and leaves admission
+ * open while that cohort drains. The writer then reserves admission and drains all
+ * remaining/racing readers, so newcomers cannot indefinitely extend the open phase.
  *
  * @param {(context?: { hasWaiters: () => Promise<boolean> }) => Promise<T>} fn
  * @param {{ mode?: 'read' | 'reader' | 'write', waitForReadersBeforeReserve?: boolean, lockRootDir?: string, timeoutMs?: number, staleMs?: number, retryMs?: number, deferAfterHolderAgeMs?: number, onWaiting?: (info: { owner: string, elapsedMs: number }) => void, waitingNoticeIntervalMs?: number, onAcquired?: (info: { waitedMs: number, admissionSubphaseTimingsMs?: Record<string, number> }) => void, onTimedOut?: (info: { waitedMs: number, timeoutMs: number, admissionSubphaseTimingsMs?: Record<string, number> }) => void, intent?: Record<string, string | number | boolean>, io?: FsMutexIo }} [opts]

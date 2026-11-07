@@ -671,8 +671,27 @@ printf '%s' "$VERIFIER_SPA_DIST"
       args: ['verifier-verify', '--out', result.frozen, '--receipt', result.receipt, '--runtime-artifacts'] },
     { step: 'build' }]);
     expect(result.sourceOutputExists).toBe(false);
-    expect(source.indexOf('verifier_run_step verifier-spa-build')).toBeLessThan(source.indexOf('verifier_run_step verifier-host-bundle'));
+    expect(source.indexOf('verifier_run_step verifier-host-bundle')).toBeLessThan(source.indexOf('verifier_run_step verifier-spa-build'));
     expect(source.indexOf('verifier_run_step verifier-spa-build')).toBeLessThan(source.indexOf('vh_step isolated-database-prepare'));
+  });
+
+  it.each([0, 23])('checks frozen host bundling before starting the SPA build (exit=%s)', hostExit => {
+    const steps = source.split('\n').filter(line =>
+      line.startsWith('verifier_run_step verifier-host-bundle ') ||
+      line.startsWith('verifier_run_step verifier-spa-build '));
+    expect(steps).toHaveLength(2);
+    const result = spawnSync('bash', ['-c', [
+      'set -euo pipefail',
+      'verifier_run_step() { shift; "$@"; }',
+      `build_verifier_operator_host() { echo HOST_ATTEMPT; return ${hostExit}; }`,
+      'prepare_verifier_spa() { echo SPA_ATTEMPT; }',
+      'cleanup_operator_source_snapshot() { echo SOURCE_CLEANED; }',
+      ...steps,
+    ].join('\n')], { encoding: 'utf8', timeout: 5_000 });
+    expect(result.status, result.stderr).toBe(hostExit);
+    expect(result.stdout.trim().split('\n')).toEqual(hostExit === 0
+      ? ['HOST_ATTEMPT', 'SPA_ATTEMPT']
+      : ['HOST_ATTEMPT', 'SOURCE_CLEANED']);
   });
 
   it('builds on the admitted work volume when the source volume refuses output allocation', () => {

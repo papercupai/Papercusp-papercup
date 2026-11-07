@@ -851,6 +851,7 @@ export async function reconcileFsMutexStagingReaders(name, opts = {}) {
 async function waitForReaders(
   readersDir,
   {
+    readerCohort,
     timeoutMs,
     staleMs,
     retryMs,
@@ -861,14 +862,17 @@ async function waitForReaders(
   },
 ) {
   let announcedWaiting = false;
+  const isInReaderCohort = readerCohort == null
+    ? () => true
+    : (reader) => readerCohort.has(reader);
   // WI-1490656: same re-announce cadence as the write-lock wait. Fixing only the write path
   // would leave the identical silent-wait hole here — a writer blocked behind long-lived
   // READERS goes just as quiet, and looks just as much like a wedge.
   let lastWaitingNoticeMs = 0;
   for (;;) {
-    const readers = await listReaderLocks(readersDir);
+    const readers = (await listReaderLocks(readersDir)).filter(isInReaderCohort);
     for (const reader of readers) await reclaimAbandonedLock(reader, staleMs, io);
-    const activeReaders = await listReaderLocks(readersDir);
+    const activeReaders = (await listReaderLocks(readersDir)).filter(isInReaderCohort);
     if (activeReaders.length === 0) return;
 
     const elapsed = Date.now() - startedAt;
@@ -905,9 +909,9 @@ async function waitForReaders(
  * The callback may check for live queued writers and voluntarily return early.
  * The check uses the same ticket reclamation as acquisition; it never releases
  * the lock itself. Reader-mode and explicitly disabled locks have no check.
- * `waitForReadersBeforeReserve` leaves reader admission open while this writer
- * waits for existing readers. The reserved writer still drains again for races.
- * Continuous readers can exhaust the same timeout without blocking newcomers.
+ * `waitForReadersBeforeReserve` snapshots the current readers and leaves admission
+ * open while that cohort drains. The writer then reserves admission and drains all
+ * remaining/racing readers, so newcomers cannot indefinitely extend the open phase.
  *
  * @param {(context?: { hasWaiters: () => Promise<boolean> }) => Promise<T>} fn
  * @param {{ mode?: 'read' | 'reader' | 'write', waitForReadersBeforeReserve?: boolean, lockRootDir?: string, timeoutMs?: number, staleMs?: number, retryMs?: number, deferAfterHolderAgeMs?: number, onWaiting?: (info: { owner: string, elapsedMs: number }) => void, waitingNoticeIntervalMs?: number, onAcquired?: (info: { waitedMs: number, admissionSubphaseTimingsMs?: Record<string, number> }) => void, onTimedOut?: (info: { waitedMs: number, timeoutMs: number, admissionSubphaseTimingsMs?: Record<string, number> }) => void, intent?: Record<string, string | number | boolean>, io?: FsMutexIo }} [opts]
@@ -1134,10 +1138,16 @@ export async function withFsMutex(name, fn, opts = {}) {
       if (opts.waitForReadersBeforeReserve) {
         // EI-26278797990253601: reserving before a long generation reader
         // finishes blocked every new test/SDK reader although no mutation was
-        // running. Keep this oldest writer's FIFO ticket, but leave admission
-        // open until the current readers drain. The post-reservation drain is
-        // still required: a new reader can win between this check and mkdir.
+        // running. Keep this oldest writer's FIFO ticket, and leave admission
+        // open until the readers present at this point drain. Newcomers do not
+        // extend that cohort; the post-reservation drain below still catches
+        // readers that won before the writer mkdir.
+        const readerCohort = await measureAdmissionSubphase(
+          "reader-cohort-snapshot",
+          () => listReaderLocks(readersDir),
+        );
         await measureAdmissionSubphase("reader-drain-before-reserve", () => waitForReaders(readersDir, {
+          readerCohort: new Set(readerCohort),
           timeoutMs, staleMs, retryMs, startedAt,
           onWaiting: opts.onWaiting, waitingNoticeIntervalMs, io,
         }));

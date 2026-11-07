@@ -32,18 +32,28 @@ const WI = 'WI-test-attempts';
 let db: FreshPgDb;
 let logDir: string;
 
-async function insertJob(taskId: string, opts: { minutesAgo: number; logBody?: string; workItemId?: string | null }) {
+async function insertJob(taskId: string, opts: {
+  minutesAgo: number;
+  logBody?: string;
+  workItemId?: string | null;
+  taskClass?: string;
+  parentTaskId?: string | null;
+  rootTaskId?: string;
+  detail?: Record<string, unknown>;
+}) {
   const logPath = join(logDir, `${taskId}.log`);
   if (opts.logBody !== undefined) writeFileSync(logPath, opts.logBody);
   await db.sql`
     INSERT INTO harness_shared.task_ledger (
-      task_id, workspace_id, root_task_id, class, title, argv, launched_by,
+      task_id, workspace_id, root_task_id, parent_task_id, class, title, argv, launched_by,
       work_item_id, confined, state, started_at, log_path, detail
     ) VALUES (
-      ${taskId}, ${WS}, ${taskId}, 'bash-job', 'drill run',
+      ${taskId}, ${WS}, ${opts.rootTaskId ?? taskId}, ${opts.parentTaskId ?? null},
+      ${opts.taskClass ?? 'bash-job'}, 'drill run',
       ${JSON.stringify(['bash', '-c', `scripts/drill.sh --run-id ${taskId}`])}::jsonb, 'su-test',
       ${opts.workItemId === undefined ? WI : opts.workItemId}, true, 'running',
-      now() - make_interval(mins => ${opts.minutesAgo}), ${logPath}, '{}'::jsonb
+      now() - make_interval(mins => ${opts.minutesAgo}), ${logPath},
+      ${db.sql.json((opts.detail ?? {}) as postgres.JSONValue)}
     )
   `;
 }
@@ -124,6 +134,50 @@ describe('verification attempt ledger (R-1)', () => {
     expect(attempts.map((a) => a.taskId)).toEqual(['t-a', 't-b', 't-c']);
     expect(attempts[0]!.fingerprint).toBe(attempts[1]!.fingerprint);
     expect(attempts[2]!.fingerprint).not.toBe(attempts[0]!.fingerprint);
+  });
+
+  it('counts a detached testing run once and carries its structured child failure', async () => {
+    await insertJob('t-run-root', {
+      minutesAgo: 30,
+      logBody: 'Error: wrapper exited 17',
+      taskClass: 'bash-job',
+      detail: { runId: 'logical-run-1' },
+    });
+    await insertJob('t-run-child', {
+      minutesAgo: 28,
+      logBody: 'Error: one assertion failed',
+      taskClass: 'test-run',
+      parentTaskId: 't-run-root',
+      rootTaskId: 't-run-root',
+      detail: { runGroup: 'logical-run-1' },
+    });
+    expect(
+      await ledger.recordStructuredAttemptResult(
+        't-run-child',
+        { phase: 'unit', step: 'admission-launched', reasonCode: 'assertion_failed' },
+        db.sql,
+      ),
+    ).toBe(true);
+    await close('t-run-root', 17);
+    await close('t-run-child', 1);
+
+    await insertJob('t-independent', {
+      minutesAgo: 25,
+      logBody: 'Error: independent failure',
+      detail: { runId: 'logical-run-2' },
+    });
+    await close('t-independent', 1);
+
+    const attempts = await ledger.listWorkItemAttempts({ workspaceId: WS, workItemId: WI });
+    expect(attempts).toHaveLength(2);
+    expect(attempts.map((a) => a.taskId)).toEqual(['t-run-root', 't-independent']);
+    expect(attempts[0]).toMatchObject({
+      outcome: 'fail',
+      source: 'structured',
+      structured: { phase: 'unit', step: 'admission-launched', reasonCode: 'assertion_failed' },
+      label: 'phase=unit step=admission-launched reason=assertion_failed',
+    });
+    expect(attempts[0]!.fingerprint).toMatch(/^structured:[0-9a-f]{12}$/);
   });
 
   it('records a slow pass with no fingerprint', async () => {

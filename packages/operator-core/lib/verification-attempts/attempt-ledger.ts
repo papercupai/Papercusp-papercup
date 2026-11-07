@@ -211,6 +211,9 @@ export async function recordStructuredAttemptResult(
 
 interface AttemptRow {
   task_id: string;
+  root_task_id: string | null;
+  run_id: string | null;
+  run_group: string | null;
   class: string;
   title: string;
   state: string;
@@ -218,6 +221,71 @@ interface AttemptRow {
   started_at: Date | string;
   ended_at: Date | string | null;
   attempt: VerificationAttemptStamp | null;
+}
+
+function mapAttempt(r: AttemptRow): WorkItemAttempt {
+  const startedAt = new Date(r.started_at).toISOString();
+  const endedAt = r.ended_at ? new Date(r.ended_at).toISOString() : null;
+  return {
+    taskId: r.task_id,
+    taskClass: r.class,
+    title: r.title,
+    startedAt,
+    endedAt,
+    durationMs: r.attempt?.durationMs ?? (endedAt ? Date.parse(endedAt) - Date.parse(startedAt) : null),
+    outcome: endedAt ? (r.attempt?.outcome ?? attemptOutcome(r.state, r.exit_code)) : 'running',
+    fingerprint: r.attempt?.fingerprint ?? null,
+    label: r.attempt?.label ?? null,
+    source: r.attempt?.source ?? null,
+    evidenceExcerpt: r.attempt?.evidenceExcerpt ?? null,
+    evidenceExcerptTruncated: r.attempt?.evidenceExcerptTruncated ?? false,
+    commandFingerprint: r.attempt?.commandFingerprint ?? null,
+    structured: r.attempt?.structured ?? null,
+  };
+}
+
+/** testing:run names the same logical run `runId` on its detached row and `runGroup`
+ * on the foreground row. Trim both spellings into one key; unrelated task rows remain
+ * independent attempts. */
+function logicalRunId(r: AttemptRow): string | null {
+  const id = r.run_id?.trim() || r.run_group?.trim();
+  return id || null;
+}
+
+/** Collapse one testing run's task rows to its root attempt. Child failures still
+ * determine the run outcome, and a structured child failure is the most useful cause
+ * when the wrapper has only a generic exit fingerprint. */
+function collapseLogicalRun(rows: readonly AttemptRow[]): WorkItemAttempt {
+  const ordered = [...rows].sort((a, b) => ms(a.started_at) - ms(b.started_at));
+  const root = rows.find((r) => r.root_task_id === r.task_id) ?? ordered[0]!;
+  const base = mapAttempt(root);
+  const running = rows.some((r) => !r.ended_at);
+  const endedAtMs = rows
+    .map((r) => (r.ended_at ? ms(r.ended_at) : null))
+    .filter((value): value is number => value !== null);
+  const endedAt = !running && endedAtMs.length
+    ? new Date(Math.max(...endedAtMs)).toISOString()
+    : null;
+  const failures = rows.filter((r) =>
+    r.ended_at && (r.attempt?.outcome ?? attemptOutcome(r.state, r.exit_code)) === 'fail');
+  const failure = failures.find((r) => r.attempt?.structured)
+    ?? failures.find((r) => r.task_id === root.task_id)
+    ?? failures[0];
+  const cause = failure ? mapAttempt(failure) : base;
+
+  return {
+    ...base,
+    endedAt,
+    durationMs: endedAt ? Date.parse(endedAt) - Date.parse(base.startedAt) : base.durationMs,
+    outcome: endedAt === null ? 'running' : failure ? 'fail' : base.outcome,
+    fingerprint: cause.fingerprint,
+    label: cause.label,
+    source: cause.source,
+    evidenceExcerpt: cause.evidenceExcerpt,
+    evidenceExcerptTruncated: cause.evidenceExcerptTruncated,
+    commandFingerprint: base.commandFingerprint ?? cause.commandFingerprint,
+    structured: cause.structured,
+  };
 }
 
 /**
@@ -231,7 +299,9 @@ export async function listWorkItemAttempts(
   const sql = sqlOf(inject);
   const limit = Math.min(Math.max(input.limit ?? 200, 1), 1000);
   const rows = await sql<AttemptRow[]>`
-    SELECT task_id, class, title, state, exit_code, started_at, ended_at,
+    SELECT task_id, root_task_id,
+           detail->>'runId' AS run_id, detail->>'runGroup' AS run_group,
+           class, title, state, exit_code, started_at, ended_at,
            detail->'verificationAttempt' AS attempt
       FROM harness_shared.task_ledger
      WHERE workspace_id = ${input.workspaceId}
@@ -243,24 +313,18 @@ export async function listWorkItemAttempts(
      ORDER BY started_at ASC
      LIMIT ${limit}
   `;
-  return rows.map((r) => {
-    const started = new Date(r.started_at).toISOString();
-    const ended = r.ended_at ? new Date(r.ended_at).toISOString() : null;
-    return {
-      taskId: r.task_id,
-      taskClass: r.class,
-      title: r.title,
-      startedAt: started,
-      endedAt: ended,
-      durationMs: r.attempt?.durationMs ?? (ended ? Date.parse(ended) - Date.parse(started) : null),
-      outcome: r.ended_at ? (r.attempt?.outcome ?? attemptOutcome(r.state, r.exit_code)) : 'running',
-      fingerprint: r.attempt?.fingerprint ?? null,
-      label: r.attempt?.label ?? null,
-      source: r.attempt?.source ?? null,
-      evidenceExcerpt: r.attempt?.evidenceExcerpt ?? null,
-      evidenceExcerptTruncated: r.attempt?.evidenceExcerptTruncated ?? false,
-      commandFingerprint: r.attempt?.commandFingerprint ?? null,
-      structured: r.attempt?.structured ?? null,
-    };
-  });
+  const grouped = new Map<string, AttemptRow[]>();
+  const attempts: WorkItemAttempt[] = [];
+  for (const row of rows) {
+    const runId = logicalRunId(row);
+    if (!runId) {
+      attempts.push(mapAttempt(row));
+      continue;
+    }
+    const group = grouped.get(runId) ?? [];
+    group.push(row);
+    grouped.set(runId, group);
+  }
+  attempts.push(...[...grouped.values()].map(collapseLogicalRun));
+  return attempts.sort((a, b) => Date.parse(a.startedAt) - Date.parse(b.startedAt) || a.taskId.localeCompare(b.taskId));
 }

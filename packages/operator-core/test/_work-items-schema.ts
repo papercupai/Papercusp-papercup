@@ -592,9 +592,10 @@ export const HARNESS_FEATURES_CONSOLIDATED_DDL = `
     workspace_id text NOT NULL DEFAULT 'default',
     harness_slug text NOT NULL DEFAULT 'papercup',
     plan_slug text NOT NULL,
-    -- Canonical Markdown and hash from migration 122; the activation gate reads content.
+    -- Canonical Markdown, hash, and optimistic revision from migration 122; the activation gate reads all three.
     content text NOT NULL DEFAULT '',
     content_hash text NOT NULL DEFAULT '',
+    version bigint NOT NULL DEFAULT 0,
     status text,
     op_status text,
     op_started_at timestamptz,
@@ -607,6 +608,9 @@ export const HARNESS_FEATURES_CONSOLIDATED_DDL = `
   -- CREATE TABLE IF NOT EXISTS cannot repair a pre-existing minimal fixture shape.
   ALTER TABLE harness_shared.harness_plans ADD COLUMN IF NOT EXISTS content text NOT NULL DEFAULT '';
   ALTER TABLE harness_shared.harness_plans ADD COLUMN IF NOT EXISTS content_hash text NOT NULL DEFAULT '';
+  -- Migration 122's plan writer and current-discovery gate use this CAS revision;
+  -- without it a test fails at SELECT version before reaching its intended assertion.
+  ALTER TABLE harness_shared.harness_plans ADD COLUMN IF NOT EXISTS version bigint NOT NULL DEFAULT 0;
   -- Pre-existing fixture rows predate op_status; ALTER keeps an older fixture application
   -- (or a CREATE ... IF NOT EXISTS that no-ops against a stunted earlier shape) composable,
   -- exactly like the plan_item_claims doctrine above.

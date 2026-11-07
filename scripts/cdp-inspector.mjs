@@ -1396,17 +1396,46 @@ export function createCdpClient(
   return { ws, connect, send, evaluate, close };
 }
 
+function validInspectorPid(pid) {
+  return Number.isSafeInteger(pid) && pid > 0;
+}
+
+async function inspectorMatchesPid(wsUrl, expectedPid, timeoutMs) {
+  let client;
+  try {
+    client = createCdpClient(wsUrl, {
+      requestTimeoutMs: timeoutMs,
+      webSocketOptions: { handshakeTimeout: timeoutMs, maxPayload: 1024 * 1024 },
+    });
+    await client.connect();
+    const evaluated = await client.evaluate('process.pid', { returnByValue: true }, timeoutMs);
+    return evaluated?.result?.value === expectedPid;
+  } catch {
+    return false;
+  } finally {
+    client?.close();
+  }
+}
+
 /**
  * Find a Node inspector target and retain its port for post-close verification.
+ * When expectedPid is supplied, only return a target that reports that exact PID.
  * @param {{ startPort?: number, portCount?: number, fetchImpl?: InspectorFetch,
- *   requestTimeoutMs?: number }} [options]
+ *   requestTimeoutMs?: number, expectedPid?: number, pidProbeTimeoutMs?: number }} [options]
  */
 export async function discoverInspector({
   startPort = 9229,
   portCount = 6,
   fetchImpl = globalThis.fetch,
   requestTimeoutMs = 1_500,
+  expectedPid,
+  pidProbeTimeoutMs = 1_500,
 } = {}) {
+  if (expectedPid !== undefined && !validInspectorPid(expectedPid))
+    throw new TypeError('expectedPid must be a positive safe integer');
+  if (!Number.isSafeInteger(pidProbeTimeoutMs) || pidProbeTimeoutMs <= 0)
+    throw new TypeError('pidProbeTimeoutMs must be a positive safe integer');
+
   for (let port = startPort; port < startPort + portCount; port += 1) {
     try {
       const response = await fetchImpl(
@@ -1415,8 +1444,13 @@ export async function discoverInspector({
       );
       if (!response.ok) continue;
       const list = await response.json();
-      const target = list.find((entry) => entry.webSocketDebuggerUrl);
-      if (target) return { port, wsUrl: target.webSocketDebuggerUrl };
+      for (const target of list) {
+        const wsUrl = target?.webSocketDebuggerUrl;
+        if (!wsUrl) continue;
+        if (expectedPid !== undefined
+            && !(await inspectorMatchesPid(wsUrl, expectedPid, pidProbeTimeoutMs))) continue;
+        return { port, wsUrl };
+      }
     } catch {
       // Try the next candidate port.
     }
@@ -1465,7 +1499,8 @@ export async function waitForInspectorClosed(
  * @param {Pick<ReturnType<typeof createCdpClient>, 'evaluate' | 'close'>} client
  * @param {number} port
  * @param {{ evaluateTimeoutMs?: number, fetchImpl?: InspectorFetch,
- *   sleepImpl?: InspectorSleep, verifyTimeoutMs?: number, pollIntervalMs?: number }} [options]
+ *   sleepImpl?: InspectorSleep, verifyTimeoutMs?: number, pollIntervalMs?: number,
+ *   expectedPid?: number }} [options]
  */
 export async function closeInspector(
   client,
@@ -1476,8 +1511,27 @@ export async function closeInspector(
     sleepImpl = sleep,
     verifyTimeoutMs = DEFAULT_CLOSE_TIMEOUT_MS,
     pollIntervalMs = DEFAULT_CLOSE_POLL_MS,
+    expectedPid,
   } = {},
 ) {
+  if (expectedPid !== undefined) {
+    if (!validInspectorPid(expectedPid)) {
+      client.close();
+      throw new TypeError('expectedPid must be a positive safe integer');
+    }
+    try {
+      const evaluated = await client.evaluate('process.pid', { returnByValue: true }, evaluateTimeoutMs);
+      const actualPid = evaluated?.result?.value;
+      if (actualPid !== expectedPid) {
+        throw new Error('inspector PID mismatch: expected ' + expectedPid + ', found ' +
+          (Number.isSafeInteger(actualPid) ? actualPid : 'unknown'));
+      }
+    } catch (error) {
+      client.close();
+      throw errorMessage(error);
+    }
+  }
+
   let evaluationError = null;
   try {
     await client.evaluate('process._debugEnd()', { returnByValue: true }, evaluateTimeoutMs);

@@ -1458,6 +1458,96 @@ describe('withFsMutex fairness (FIFO ticket queue)', () => {
     await rm(dir, { recursive: true, force: true });
   });
 
+  it('reserves after the initial reader cohort drains even when newcomers keep arriving', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'pc-fs-mutex-reader-cohort-'));
+    process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = dir;
+    const name = 'reader-cohort-fairness';
+    let releaseInitial!: () => void;
+    const initialHeld = new Promise<void>(resolve => { releaseInitial = resolve; });
+    let signalInitial!: () => void;
+    const initialReady = new Promise<void>(resolve => { signalInitial = resolve; });
+    let releaseNewcomer!: () => void;
+    const newcomerHeld = new Promise<void>(resolve => { releaseNewcomer = resolve; });
+    let signalNewcomer!: () => void;
+    const newcomerReady = new Promise<void>(resolve => { signalNewcomer = resolve; });
+    let signalWriterWaiting!: () => void;
+    const writerWaiting = new Promise<void>(resolve => { signalWriterWaiting = resolve; });
+    let initialReader: Promise<string> | undefined;
+    let newcomerReader: Promise<string> | undefined;
+    let lateReader: Promise<string> | undefined;
+    let writer: Promise<string> | undefined;
+    let writerEntered = false;
+    let lateReaderEntered = false;
+    const pending: Array<Promise<unknown>> = [];
+
+    try {
+      initialReader = withFsMutexRead(name, async () => {
+        signalInitial();
+        await initialHeld;
+        return 'initial';
+      }, { timeoutMs: 5_000, retryMs: 5, intent: { testRole: 'initial' } });
+      await initialReady;
+
+      writer = withFsMutex(name, async () => {
+        writerEntered = true;
+        return 'writer';
+      }, {
+        waitForReadersBeforeReserve: true,
+        timeoutMs: 5_000,
+        retryMs: 5,
+        onWaiting: signalWriterWaiting,
+      });
+      await writerWaiting;
+
+      newcomerReader = withFsMutexRead(name, async () => {
+        signalNewcomer();
+        await newcomerHeld;
+        return 'newcomer';
+      }, { timeoutMs: 5_000, retryMs: 5, intent: { testRole: 'newcomer' } });
+      await newcomerReady;
+      expect(writerEntered).toBe(false);
+
+      releaseInitial();
+      await expect(initialReader).resolves.toBe('initial');
+
+      const writerLock = join(dir, `${name}.lock`);
+      const deadline = Date.now() + 2_000;
+      let reserved = false;
+      while (Date.now() < deadline) {
+        try {
+          await lstat(writerLock);
+          reserved = true;
+          break;
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+          await new Promise(resolve => setTimeout(resolve, 5));
+        }
+      }
+      expect(reserved).toBe(true);
+      expect(writerEntered).toBe(false);
+
+      lateReader = withFsMutexRead(name, async () => {
+        lateReaderEntered = true;
+        return 'late';
+      }, { timeoutMs: 120, retryMs: 5 });
+      await expect(lateReader).rejects.toThrow(/waiting for fs-mutex writer/);
+      expect(lateReaderEntered).toBe(false);
+
+      releaseNewcomer();
+      await expect(newcomerReader).resolves.toBe('newcomer');
+      await expect(writer).resolves.toBe('writer');
+    } finally {
+      releaseInitial();
+      releaseNewcomer();
+      if (initialReader) pending.push(initialReader);
+      if (newcomerReader) pending.push(newcomerReader);
+      if (lateReader) pending.push(lateReader);
+      if (writer) pending.push(writer);
+      await Promise.allSettled(pending);
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it('reclaims a ticket from a crashed waiter (confirmed-dead pid) instead of wedging behind it', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'pc-fs-mutex-'));
     process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = dir;

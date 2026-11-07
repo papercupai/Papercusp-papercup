@@ -338,14 +338,17 @@ export function createCdpClient<Socket extends CdpSocket = WebSocket>(wsUrl: str
 };
 /**
  * Find a Node inspector target and retain its port for post-close verification.
+ * When expectedPid is supplied, only return a target that reports that exact PID.
  * @param {{ startPort?: number, portCount?: number, fetchImpl?: InspectorFetch,
- *   requestTimeoutMs?: number }} [options]
+ *   requestTimeoutMs?: number, expectedPid?: number, pidProbeTimeoutMs?: number }} [options]
  */
-export function discoverInspector({ startPort, portCount, fetchImpl, requestTimeoutMs, }?: {
+export function discoverInspector({ startPort, portCount, fetchImpl, requestTimeoutMs, expectedPid, pidProbeTimeoutMs, }?: {
     startPort?: number;
     portCount?: number;
     fetchImpl?: InspectorFetch;
     requestTimeoutMs?: number;
+    expectedPid?: number;
+    pidProbeTimeoutMs?: number;
 }): Promise<{
     port: number;
     wsUrl: any;
@@ -368,14 +371,16 @@ export function waitForInspectorClosed(port: number, { fetchImpl, sleepImpl, tim
  * @param {Pick<ReturnType<typeof createCdpClient>, 'evaluate' | 'close'>} client
  * @param {number} port
  * @param {{ evaluateTimeoutMs?: number, fetchImpl?: InspectorFetch,
- *   sleepImpl?: InspectorSleep, verifyTimeoutMs?: number, pollIntervalMs?: number }} [options]
+ *   sleepImpl?: InspectorSleep, verifyTimeoutMs?: number, pollIntervalMs?: number,
+ *   expectedPid?: number }} [options]
  */
-export function closeInspector(client: Pick<ReturnType<typeof createCdpClient>, "evaluate" | "close">, port: number, { evaluateTimeoutMs, fetchImpl, sleepImpl, verifyTimeoutMs, pollIntervalMs, }?: {
+export function closeInspector(client: Pick<ReturnType<typeof createCdpClient>, "evaluate" | "close">, port: number, { evaluateTimeoutMs, fetchImpl, sleepImpl, verifyTimeoutMs, pollIntervalMs, expectedPid, }?: {
     evaluateTimeoutMs?: number;
     fetchImpl?: InspectorFetch;
     sleepImpl?: InspectorSleep;
     verifyTimeoutMs?: number;
     pollIntervalMs?: number;
+    expectedPid?: number;
 }): Promise<{
     closed: boolean;
 }>;

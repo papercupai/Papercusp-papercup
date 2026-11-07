@@ -150,12 +150,12 @@ afterAll(async () => {
 });
 
 describe('legacy tsvector retirement (R-14, D-011, D-012, D-016)', () => {
-  it('migration 1621 drops the unused carry-note BM25 index and prevents recreation', async () => {
+  it('migration 1622 drops the unused carry-note BM25 index and prevents recreation', async () => {
     const before = await sql`SELECT corpus_index, outcome FROM harness_shared.bm25_ensure_indexes()`;
     expect(before.some(row => row.corpus_index === 'carry_notes_bm25')).toBe(true);
     expect(await exists('harness_shared.carry_notes_bm25')).toBe(true);
 
-    await sql.unsafe(migrationSql(1621));
+    await sql.unsafe(migrationSql(1622));
     resetBm25Availability();
     expect(await exists('harness_shared.carry_notes_bm25')).toBe(false);
 

@@ -1,0 +1,8 @@
+{
+  "status": "failed",
+  "startedAtMs": 1793939093896,
+  "completedAtMs": 1793949478842,
+  "error": "Error: TASK_DEADLINE_REFUSAL remainingMs=78004 knownEstimateMs=120000 knownTasks=0 unknownTasks=1 remedy=raise-caller-timeout — the lane-aware historical wall projection exceeds the remaining launch clock, so a kill part-way through with no verdict is predicted. Refusing before anything runs instead.\n    at Module.admitVerifierCommandBudget (/home/marsh-office/papercupai-workspace/papercusp/scripts/source-preview.mjs:3213:11)\n    at runPhase (file:///home/marsh-office/papercupai-workspace/papercusp/[eval1]:115:9)\n    at async compileBgVerifierInvocation (/home/marsh-office/papercupai-workspace/papercusp/scripts/source-preview.mjs:1951:19)\n    at async runPhase (file:///home/marsh-office/papercupai-workspace/papercusp/[eval1]:113:20)\n    at async Module.runBgVerifierBuildRecipe (/home/marsh-office/papercupai-workspace/papercusp/scripts/source-preview.mjs:1896:19)\n    at async file:///home/marsh-office/papercupai-workspace/papercusp/[eval1]:132:25",
+  "inheritedDeadlineEpochMs": 1793949556845,
+  "originalTransactionSha256": "6111b2f2ca7d04ad729aa2c493881cdf4a6f3dab8e43e3e31e05f2aad336f054"
+}
