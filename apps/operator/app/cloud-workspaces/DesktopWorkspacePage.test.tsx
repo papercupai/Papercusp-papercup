@@ -171,9 +171,19 @@ describe("portal Desktops entry — approved option B", () => {
       render(<MachineSwitcherView localMode={location === "local"} value={null}
         rows={H.rows} loading={false} error={null} onSelect={vi.fn()} />);
       openDesktops(location);
-      expect(await screen.findByRole("region", { name: "Desktops for Running machine" })).toBeTruthy();
+      const expectedRegion = location === "local"
+        ? "Desktops on this computer"
+        : "Desktops for Running machine";
+      expect(await screen.findByRole("region", { name: expectedRegion })).toBeTruthy();
+      expect((screen.getByRole("combobox", { name: "Desktop workspace" }) as HTMLSelectElement).value)
+        .toBe(location === "local" ? "local" : "Running machine");
       expect((screen.getByRole("combobox", { name: "Machine" }) as HTMLSelectElement).value)
         .toBe((screen.getByRole("combobox", { name: "Desktop workspace" }) as HTMLSelectElement).value);
+      if (location === "local") {
+        expect(screen.queryByRole("region", { name: "Desktops for Running machine" })).toBeNull();
+      } else {
+        expect(H.queries).not.toContain("desktops.local");
+      }
     },
   );
 
@@ -212,6 +222,7 @@ describe("portal Desktops entry — approved option B", () => {
   });
 
   it("opens the desktop composition without expanding a cloud-host row", async () => {
+    H.params.desktopHost = "Research workspace";
     openDesktops();
     expect(
       await screen.findByRole("region", {
@@ -298,6 +309,7 @@ describe("portal Desktops entry — approved option B", () => {
   });
 
   it("offers This computer beside the cloud workspaces and switches to it in URL state", async () => {
+    H.params.desktopHost = "Research workspace";
     H.localRows = [
       {
         id: "ds-1",
