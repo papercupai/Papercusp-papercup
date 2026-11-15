@@ -39,12 +39,12 @@ export default function DesktopWorkspacePage() {
       ),
     [control.data],
   );
-  // "This computer" is available only on a local host. An empty hosted inventory
-  // (including a session with no selected workspace) grants no local machine.
+  // Match the persistent switcher's local default without choosing an unrequested
+  // remote machine. A hosted session never gains access to this computer.
   const showLocal =
     localMode &&
     (requestedHost === LOCAL_DESKTOP_HOST ||
-      (!requestedHost && !control.loading && !control.error && workspaces.length === 0));
+      (!requestedHost && !control.loading && !control.error));
   // Preserve explicit deep links; a missing subject must not silently select another machine.
   const selected = showLocal
     ? undefined
